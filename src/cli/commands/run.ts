@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 import { BeadsClient } from "../../lib/beads.js";
 import { ForemanStore } from "../../lib/store.js";
@@ -141,6 +141,21 @@ ${prompt}
   console.log(chalk.dim("The stop hook will keep feeding the prompt until bd ready returns 0 tasks."));
   console.log(chalk.dim("Monitor progress: bd stats\n"));
 
-  // Output the prompt so Claude starts working immediately
-  console.log(prompt);
+  // Find Claude CLI
+  const claudePath = process.env.CLAUDE_PATH || "/opt/homebrew/bin/claude";
+
+  // Spawn Claude interactively with the prompt.
+  // The ralph-loop stop hook intercepts session exit and re-feeds the prompt.
+  // stdio: "inherit" gives Claude full terminal control (interactive mode).
+  const result = spawnSync(claudePath, [
+    "--permission-mode", "bypassPermissions",
+    prompt,
+  ], {
+    cwd: process.cwd(),
+    stdio: "inherit",
+    env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
+  });
+
+  // Exit with Claude's exit code
+  process.exit(result.status ?? 0);
 }
