@@ -33,21 +33,23 @@ export async function decomposePrdWithLlm(
   ].join(" ");
 
   // Call Claude Code in non-interactive mode
+  // Use stdin pipe for large prompts (TRDs can exceed OS arg limits)
   const claudePath = findClaude();
   const args = [
     "--permission-mode", "bypassPermissions",
     "--print",
     "--output-format", "text",
     ...(model ? ["--model", model] : []),
-    "-s", systemPrompt,
-    prompt,
+    "--system-prompt", systemPrompt,
+    "-", // read prompt from stdin
   ];
 
   let stdout: string;
   try {
     stdout = execFileSync(claudePath, args, {
+      input: prompt,
       encoding: "utf-8",
-      timeout: 120_000, // 2 minutes
+      timeout: 600_000, // 10 minutes for large TRDs
       maxBuffer: 10 * 1024 * 1024,
       env: {
         ...process.env,
