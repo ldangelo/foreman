@@ -31,8 +31,11 @@ async function git(
     });
     return stdout.trim();
   } catch (err: any) {
-    const stderr = err.stderr?.trim() ?? err.message;
-    throw new Error(`git ${args[0]} failed: ${stderr}`);
+    const combined = [err.stdout, err.stderr]
+      .map((s) => (s ?? "").trim())
+      .filter(Boolean)
+      .join("\n") || err.message;
+    throw new Error(`git ${args[0]} failed: ${combined}`);
   }
 }
 
