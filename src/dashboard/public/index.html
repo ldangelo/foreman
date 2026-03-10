@@ -1,0 +1,1295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Foreman — Multi-Agent Orchestrator</title>
+<style>
+  :root {
+    --bg-primary: #0f172a;
+    --bg-card: #1e293b;
+    --bg-card-hover: #263548;
+    --bg-input: #334155;
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --border: #334155;
+    --blue: #3b82f6;
+    --blue-dim: #1e40af;
+    --green: #22c55e;
+    --green-dim: #166534;
+    --yellow: #eab308;
+    --yellow-dim: #854d0e;
+    --red: #ef4444;
+    --red-dim: #991b1b;
+    --purple: #a855f7;
+    --purple-dim: #6b21a8;
+    --orange: #f97316;
+    --radius: 8px;
+    --radius-lg: 12px;
+    --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+    --shadow-lg: 0 4px 12px rgba(0,0,0,0.4);
+    --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --transition: 200ms ease;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    line-height: 1.5;
+  }
+
+  /* ── Navbar ───────────────────────────────────────────────── */
+  .navbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    height: 56px;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .navbar-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--text-primary);
+  }
+  .navbar-brand svg { width: 24px; height: 24px; }
+  .navbar-links { display: flex; align-items: center; gap: 4px; }
+  .nav-link {
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition);
+    border: none;
+    background: none;
+    text-decoration: none;
+  }
+  .nav-link:hover { color: var(--text-primary); background: var(--bg-input); }
+  .nav-link.active { color: var(--blue); background: rgba(59,130,246,0.1); }
+  .conn-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .conn-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--red);
+    transition: background var(--transition);
+  }
+  .conn-dot.connected {
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    animation: pulse-dot 2s infinite;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  /* ── Main Content ─────────────────────────────────────────── */
+  .main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+  .view { display: none; animation: fade-in 200ms ease; }
+  .view.active { display: block; }
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── Section Headers ──────────────────────────────────────── */
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+  }
+  .section-title { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+  .section-subtitle { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+
+  /* ── Project Cards Grid ───────────────────────────────────── */
+  .project-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
+  }
+  .project-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    transition: all var(--transition);
+    cursor: default;
+  }
+  .project-card:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--blue-dim);
+    box-shadow: var(--shadow-lg);
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .card-title { font-size: 16px; font-weight: 600; }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-active   { background: rgba(34,197,94,0.15);  color: var(--green);  }
+  .badge-paused   { background: rgba(234,179,8,0.15);  color: var(--yellow); }
+  .badge-completed{ background: rgba(59,130,246,0.15); color: var(--blue);   }
+
+  .progress-section { margin-bottom: 14px; }
+  .progress-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+  }
+  .progress-bar {
+    height: 6px;
+    background: var(--bg-input);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--blue), var(--green));
+    border-radius: 3px;
+    transition: width 0.5s ease;
+  }
+
+  .card-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .stat-item {
+    text-align: center;
+    padding: 8px 4px;
+    background: var(--bg-primary);
+    border-radius: var(--radius);
+  }
+  .stat-value {
+    font-size: 16px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+  }
+  .stat-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 2px;
+  }
+  .pulse-indicator {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse-dot 1.5s infinite;
+  }
+
+  .card-actions { display: flex; gap: 8px; }
+  .btn {
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all var(--transition);
+  }
+  .btn:hover     { background: var(--bg-card-hover); border-color: var(--text-muted); }
+  .btn-primary   { background: var(--blue);     border-color: var(--blue);     color: #fff; }
+  .btn-primary:hover { background: #2563eb; }
+  .btn-warning   { background: var(--yellow-dim); border-color: var(--yellow-dim); color: var(--yellow); }
+  .btn-danger    { background: var(--red-dim);    border-color: var(--red-dim);    color: #fca5a5; }
+  .btn-sm        { padding: 4px 10px; font-size: 12px; }
+
+  /* ── Totals Bar ───────────────────────────────────────────── */
+  .totals-bar {
+    display: flex;
+    gap: 24px;
+    padding: 16px 20px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-top: 20px;
+  }
+  .total-item  { display: flex; align-items: center; gap: 8px; }
+  .total-value { font-size: 18px; font-weight: 700; }
+  .total-label { font-size: 12px; color: var(--text-muted); }
+
+  /* ── Project Detail ───────────────────────────────────────── */
+  .detail-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .back-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    transition: all var(--transition);
+  }
+  .back-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
+
+  .detail-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 20px;
+  }
+  @media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+  .panel-header {
+    padding: 14px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .panel-body { padding: 0; max-height: 500px; overflow-y: auto; }
+
+  /* Task list */
+  .task-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    transition: background var(--transition);
+  }
+  .task-item:last-child { border-bottom: none; }
+  .task-item:hover      { background: var(--bg-card-hover); }
+  .task-item.indented    { padding-left: 40px; }
+  .task-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+  .task-info { flex: 1; min-width: 0; }
+  .task-title { font-weight: 500; }
+  .task-meta {
+    display: flex;
+    gap: 10px;
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+
+  /* Agent cards */
+  .agent-card {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    transition: background var(--transition);
+  }
+  .agent-card:last-child { border-bottom: none; }
+  .agent-card:hover      { background: var(--bg-card-hover); }
+  .agent-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .agent-type {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .agent-type-claude { background: rgba(168,85,247,0.15); color: var(--purple); }
+  .agent-type-pi     { background: rgba(59,130,246,0.15);  color: var(--blue);   }
+  .agent-type-codex  { background: rgba(34,197,94,0.15);   color: var(--green);  }
+  .agent-status { font-size: 11px; font-weight: 500; }
+  .agent-status-implementing { color: var(--blue);      }
+  .agent-status-idle         { color: var(--text-muted); }
+  .agent-status-stuck        { color: var(--yellow);     }
+  .agent-detail { font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
+  .agent-stats {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    margin-bottom: 8px;
+  }
+  .agent-actions { display: flex; gap: 6px; }
+
+  /* Merge queue */
+  .merge-queue-section { margin-top: 20px; }
+  .merge-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .merge-item:last-child { border-bottom: none; }
+  .merge-branch {
+    font-family: var(--font-mono);
+    color: var(--purple);
+    font-size: 12px;
+  }
+
+  /* Event log */
+  .event-log {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+  .event-log .panel-body { max-height: 300px; }
+  .event-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 18px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .event-item:last-child { border-bottom: none; }
+  .event-time {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    white-space: nowrap;
+    font-size: 11px;
+    margin-top: 1px;
+  }
+  .event-icon { font-size: 13px; flex-shrink: 0; }
+  .event-desc { color: var(--text-secondary); }
+  .event-desc.type-task  { color: var(--blue);   }
+  .event-desc.type-agent { color: var(--purple); }
+  .event-desc.type-error { color: var(--red);    }
+  .event-desc.type-merge { color: var(--green);  }
+
+  /* ── Metrics View ─────────────────────────────────────────── */
+  .metrics-filters { display: flex; gap: 6px; margin-bottom: 20px; }
+  .filter-btn {
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition);
+  }
+  .filter-btn:hover  { color: var(--text-primary); border-color: var(--text-muted); }
+  .filter-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .metric-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+  }
+  .metric-card-title {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+  }
+  .metric-card-value { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
+  .metric-card-sub   { font-size: 12px; color: var(--text-secondary); }
+
+  /* Bar chart */
+  .bar-chart {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    margin-bottom: 24px;
+  }
+  .bar-chart-title { font-size: 14px; font-weight: 600; margin-bottom: 16px; }
+  .bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .bar-label {
+    width: 100px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    text-align: right;
+    flex-shrink: 0;
+  }
+  .bar-track {
+    flex: 1;
+    height: 28px;
+    background: var(--bg-input);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.5s ease;
+    display: flex;
+    align-items: center;
+    padding-left: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    min-width: fit-content;
+  }
+  .bar-fill-claude { background: var(--purple); }
+  .bar-fill-pi     { background: var(--blue);   }
+  .bar-fill-codex  { background: var(--green);  }
+
+  .task-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .task-stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    text-align: center;
+  }
+  .task-stat-value { font-size: 32px; font-weight: 700; }
+  .task-stat-label { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+  .duration-table {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+  .duration-table table { width: 100%; border-collapse: collapse; }
+  .duration-table th {
+    padding: 12px 18px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+  }
+  .duration-table td {
+    padding: 10px 18px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+  }
+  .duration-table tr:last-child td { border-bottom: none; }
+  .duration-table tr:hover td     { background: var(--bg-card-hover); }
+
+  /* ── Scrollbar ────────────────────────────────────────────── */
+  ::-webkit-scrollbar       { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--bg-input); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+  /* ── Empty State ──────────────────────────────────────────── */
+  .empty-state      { text-align: center; padding: 60px 20px; color: var(--text-muted); }
+  .empty-state-icon { font-size: 40px; margin-bottom: 12px; }
+  .empty-state-text { font-size: 14px; }
+</style>
+</head>
+<body>
+
+<!-- ── Navbar ── -->
+<nav class="navbar">
+  <div class="navbar-brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+    </svg>
+    Foreman
+  </div>
+  <div class="navbar-links">
+    <button class="nav-link active" data-view="projects" onclick="navigate('projects')">Projects</button>
+    <button class="nav-link" data-view="metrics" onclick="navigate('metrics')">Metrics</button>
+  </div>
+  <div class="conn-status">
+    <div class="conn-dot" id="connDot"></div>
+    <span id="connLabel">Disconnected</span>
+  </div>
+</nav>
+
+<!-- ── Main ── -->
+<div class="main">
+
+  <!-- View: Projects Overview -->
+  <div id="view-projects" class="view active">
+    <div class="section-header">
+      <div>
+        <div class="section-title">Projects</div>
+        <div class="section-subtitle">Active orchestration sessions</div>
+      </div>
+    </div>
+    <div class="project-grid" id="projectGrid"></div>
+    <div class="totals-bar" id="totalsBar" style="display:none">
+      <div class="total-item">
+        <div>
+          <div class="total-value" id="totalAgents">0</div>
+          <div class="total-label">Active Agents</div>
+        </div>
+      </div>
+      <div class="total-item">
+        <div>
+          <div class="total-value" id="totalCostToday">$0.00</div>
+          <div class="total-label">Cost Today</div>
+        </div>
+      </div>
+      <div class="total-item">
+        <div>
+          <div class="total-value" id="totalCompletion">0%</div>
+          <div class="total-label">Overall Completion</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- View: Project Detail -->
+  <div id="view-detail" class="view">
+    <div class="detail-header">
+      <button class="back-btn" onclick="navigate('projects')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m0 0l7 7m-7-7l7-7"/></svg>
+        Back
+      </button>
+      <div>
+        <div class="section-title" id="detailTitle">Project</div>
+        <div class="section-subtitle" id="detailSubtitle"></div>
+      </div>
+    </div>
+
+    <div class="detail-grid">
+      <!-- Task Graph -->
+      <div class="panel">
+        <div class="panel-header">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+          Task Graph
+        </div>
+        <div class="panel-body" id="taskList"></div>
+      </div>
+
+      <!-- Agent Activity + Merge Queue -->
+      <div>
+        <div class="panel" style="margin-bottom:20px">
+          <div class="panel-header">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+            Active Agents
+          </div>
+          <div class="panel-body" id="agentList"></div>
+        </div>
+        <div class="panel merge-queue-section">
+          <div class="panel-header">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 009 9"/></svg>
+            Merge Queue
+          </div>
+          <div class="panel-body" id="mergeQueue"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Event Log -->
+    <div class="event-log">
+      <div class="panel-header">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+        Event Log
+      </div>
+      <div class="panel-body" id="eventLog"></div>
+    </div>
+  </div>
+
+  <!-- View: Metrics -->
+  <div id="view-metrics" class="view">
+    <div class="section-header">
+      <div>
+        <div class="section-title">Metrics</div>
+        <div class="section-subtitle">Cost, performance, and task analytics</div>
+      </div>
+    </div>
+    <div class="metrics-filters">
+      <button class="filter-btn active" onclick="setMetricsFilter('today', this)">Today</button>
+      <button class="filter-btn" onclick="setMetricsFilter('week', this)">This Week</button>
+      <button class="filter-btn" onclick="setMetricsFilter('all', this)">All Time</button>
+    </div>
+    <div class="metrics-grid" id="metricsCards"></div>
+    <div class="section-title" style="font-size:16px;margin-bottom:16px">Task Status</div>
+    <div class="task-stats-grid" id="taskStatsGrid"></div>
+    <div class="bar-chart">
+      <div class="bar-chart-title">Cost by Runtime</div>
+      <div id="costChart"></div>
+    </div>
+    <div class="duration-table">
+      <table>
+        <thead><tr><th>Runtime</th><th>Avg Duration</th><th>Tasks Completed</th><th>Cost / Task</th></tr></thead>
+        <tbody id="durationTable"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════
+   Foreman Dashboard — Client Application
+
+   All dynamic content is escaped via esc() which uses
+   textContent-based sanitization. Data originates from the
+   local Foreman API server (same origin, trusted).
+   ════════════════════════════════════════════════════════════════ */
+
+const API_BASE = '';
+let ws = null;
+let wsRetryDelay = 1000;
+let currentView = 'projects';
+let currentProjectId = null;
+let projects = [];
+let projectDetail = null;
+let metricsData = null;
+let metricsFilter = 'today';
+let agentTimers = {};
+
+// ── Formatting Helpers ──────────────────────────────────────
+
+function fmtCurrency(dollars) {
+  return '$' + (dollars || 0).toFixed(2);
+}
+
+function fmtTokens(n) {
+  if (!n) return '0';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+  return String(n);
+}
+
+function fmtDuration(sec) {
+  if (!sec || sec < 0) return '0s';
+  var h = Math.floor(sec / 3600);
+  var m = Math.floor((sec % 3600) / 60);
+  var s = Math.floor(sec % 60);
+  if (h > 0) return h + 'h ' + m + 'm';
+  if (m > 0) return m + 'm ' + s + 's';
+  return s + 's';
+}
+
+function fmtTime(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleTimeString('en-US', {
+    hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
+
+/** Escape HTML entities using DOM textContent (safe against XSS) */
+function esc(str) {
+  var d = document.createElement('div');
+  d.textContent = str || '';
+  return d.innerHTML;
+}
+
+// ── DOM Builder Helpers ─────────────────────────────────────
+// These use safe DOM APIs instead of innerHTML for user-facing data.
+
+function setText(el, text) {
+  el.textContent = text;
+}
+
+function buildEl(tag, attrs, children) {
+  var el = document.createElement(tag);
+  if (attrs) {
+    Object.keys(attrs).forEach(function(k) {
+      if (k === 'className') el.className = attrs[k];
+      else if (k === 'style') el.style.cssText = attrs[k];
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2).toLowerCase(), attrs[k]);
+      else el.setAttribute(k, attrs[k]);
+    });
+  }
+  if (typeof children === 'string') el.textContent = children;
+  else if (Array.isArray(children)) children.forEach(function(c) { if (c) el.appendChild(c); });
+  return el;
+}
+
+// ── Navigation ──────────────────────────────────────────────
+
+function navigate(view, projectId) {
+  currentView = view;
+  currentProjectId = projectId || null;
+
+  document.querySelectorAll('.view').forEach(function(v) { v.classList.remove('active'); });
+  document.querySelectorAll('.nav-link').forEach(function(l) { l.classList.remove('active'); });
+
+  if (view === 'projects') {
+    document.getElementById('view-projects').classList.add('active');
+    document.querySelector('[data-view="projects"]').classList.add('active');
+    location.hash = '#projects';
+    fetchProjects();
+  } else if (view === 'detail' && projectId) {
+    document.getElementById('view-detail').classList.add('active');
+    document.querySelector('[data-view="projects"]').classList.add('active');
+    location.hash = '#project/' + encodeURIComponent(projectId);
+    fetchProjectDetail(projectId);
+  } else if (view === 'metrics') {
+    document.getElementById('view-metrics').classList.add('active');
+    document.querySelector('[data-view="metrics"]').classList.add('active');
+    location.hash = '#metrics';
+    fetchMetrics();
+  }
+}
+
+function handleHashChange() {
+  var hash = location.hash || '#projects';
+  if (hash.startsWith('#project/')) {
+    navigate('detail', decodeURIComponent(hash.slice(9)));
+  } else if (hash === '#metrics') {
+    navigate('metrics');
+  } else {
+    navigate('projects');
+  }
+}
+
+// ── API ─────────────────────────────────────────────────────
+
+function apiFetch(path) {
+  return fetch(API_BASE + path).then(function(res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).catch(function(err) {
+    console.warn('API fetch failed:', path, err);
+    return null;
+  });
+}
+
+function fetchProjects() {
+  apiFetch('/api/projects').then(function(data) {
+    if (data) {
+      projects = Array.isArray(data) ? data : (data.projects || []);
+      renderProjects();
+    }
+  });
+}
+
+function fetchProjectDetail(id) {
+  apiFetch('/api/projects/' + encodeURIComponent(id)).then(function(data) {
+    if (data) {
+      projectDetail = data;
+      renderDetail();
+    }
+  });
+}
+
+function fetchMetrics() {
+  apiFetch('/api/metrics?range=' + encodeURIComponent(metricsFilter)).then(function(data) {
+    if (data) {
+      metricsData = data;
+      renderMetrics();
+    }
+  });
+}
+
+function agentAction(projectId, agentId, action) {
+  fetch(API_BASE + '/api/projects/' + encodeURIComponent(projectId) + '/agents/' + encodeURIComponent(agentId) + '/' + encodeURIComponent(action), { method: 'POST' })
+    .catch(function(err) { console.warn('Agent action failed:', err); });
+}
+
+function projectAction(projectId, action) {
+  fetch(API_BASE + '/api/projects/' + encodeURIComponent(projectId) + '/' + encodeURIComponent(action), { method: 'POST' })
+    .then(function() { fetchProjects(); })
+    .catch(function(err) { console.warn('Project action failed:', err); });
+}
+
+// ── Render: Projects Overview ───────────────────────────────
+
+function renderProjects() {
+  var grid = document.getElementById('projectGrid');
+  var totals = document.getElementById('totalsBar');
+
+  // Clear previous content
+  grid.textContent = '';
+
+  if (!projects.length) {
+    var empty = buildEl('div', { className: 'empty-state' }, [
+      buildEl('div', { className: 'empty-state-icon' }, '\u2699'),
+      buildEl('div', { className: 'empty-state-text' }, 'No projects yet. Start a foreman session to see projects here.')
+    ]);
+    grid.appendChild(empty);
+    totals.style.display = 'none';
+    return;
+  }
+
+  var sumAgents = 0, sumCost = 0, sumDone = 0, sumTotal = 0;
+
+  projects.forEach(function(p) {
+    var done = p.tasks_completed || 0;
+    var total = p.tasks_total || 1;
+    var pct = Math.round((done / total) * 100);
+    var agents = p.active_agents || 0;
+    var cost = p.cost || 0;
+    var status = p.status || 'active';
+    var eta = p.eta || '--';
+
+    sumAgents += agents;
+    sumCost += cost;
+    sumDone += done;
+    sumTotal += total;
+
+    var badgeCls = status === 'active' ? 'badge-active' : status === 'paused' ? 'badge-paused' : 'badge-completed';
+    var toggleLabel = status === 'paused' ? 'Resume' : 'Pause';
+    var toggleAction = status === 'paused' ? 'resume' : 'pause';
+
+    var card = buildEl('div', { className: 'project-card' });
+
+    // Header
+    var header = buildEl('div', { className: 'card-header' }, [
+      buildEl('div', { className: 'card-title' }, p.name || ''),
+      buildEl('span', { className: 'badge ' + badgeCls }, status)
+    ]);
+    card.appendChild(header);
+
+    // Progress
+    var progSection = buildEl('div', { className: 'progress-section' });
+    var progLabel = buildEl('div', { className: 'progress-label' }, [
+      buildEl('span', null, 'Progress'),
+      buildEl('span', null, done + '/' + total + ' tasks (' + pct + '%)')
+    ]);
+    var progBar = buildEl('div', { className: 'progress-bar' });
+    var progFill = buildEl('div', { className: 'progress-fill', style: 'width:' + pct + '%' });
+    progBar.appendChild(progFill);
+    progSection.appendChild(progLabel);
+    progSection.appendChild(progBar);
+    card.appendChild(progSection);
+
+    // Stats
+    var stats = buildEl('div', { className: 'card-stats' });
+
+    var agentStat = buildEl('div', { className: 'stat-item' });
+    var agentVal = buildEl('div', { className: 'stat-value' });
+    agentVal.appendChild(document.createTextNode(agents + ' '));
+    if (agents > 0) agentVal.appendChild(buildEl('span', { className: 'pulse-indicator' }));
+    agentStat.appendChild(agentVal);
+    agentStat.appendChild(buildEl('div', { className: 'stat-label' }, 'Agents'));
+    stats.appendChild(agentStat);
+
+    var costStat = buildEl('div', { className: 'stat-item' }, [
+      buildEl('div', { className: 'stat-value' }, fmtCurrency(cost)),
+      buildEl('div', { className: 'stat-label' }, 'Cost')
+    ]);
+    stats.appendChild(costStat);
+
+    var etaStat = buildEl('div', { className: 'stat-item' }, [
+      buildEl('div', { className: 'stat-value' }, String(eta)),
+      buildEl('div', { className: 'stat-label' }, 'ETA')
+    ]);
+    stats.appendChild(etaStat);
+    card.appendChild(stats);
+
+    // Actions
+    var actions = buildEl('div', { className: 'card-actions' });
+    var viewBtn = buildEl('button', {
+      className: 'btn btn-primary btn-sm',
+      onClick: (function(pid) { return function() { navigate('detail', pid); }; })(p.id)
+    }, 'View');
+    var toggleBtn = buildEl('button', {
+      className: 'btn btn-warning btn-sm',
+      onClick: (function(pid, act) { return function() { projectAction(pid, act); }; })(p.id, toggleAction)
+    }, toggleLabel);
+    actions.appendChild(viewBtn);
+    actions.appendChild(toggleBtn);
+    card.appendChild(actions);
+
+    grid.appendChild(card);
+  });
+
+  setText(document.getElementById('totalAgents'), String(sumAgents));
+  setText(document.getElementById('totalCostToday'), fmtCurrency(sumCost));
+  setText(document.getElementById('totalCompletion'),
+    (sumTotal > 0 ? Math.round((sumDone / sumTotal) * 100) : 0) + '%');
+  totals.style.display = 'flex';
+}
+
+// ── Render: Project Detail ──────────────────────────────────
+
+function renderDetail() {
+  if (!projectDetail) return;
+  var p = projectDetail;
+  setText(document.getElementById('detailTitle'), p.name || 'Project');
+  setText(document.getElementById('detailSubtitle'),
+    (p.status || 'active') + ' \u2022 ' + (p.tasks_completed || 0) + '/' + (p.tasks_total || 0) + ' tasks');
+
+  renderTasks(p.tasks || []);
+  renderAgents(p.agents || []);
+  renderMergeQueue(p.merge_queue || []);
+  renderEvents(p.events || []);
+}
+
+function taskIconText(status) {
+  switch (status) {
+    case 'completed':   return { icon: '\u2705', color: 'var(--green)' };
+    case 'in-progress': return { icon: '\uD83D\uDD04', color: 'var(--blue)' };
+    case 'blocked':     return { icon: '\u23F3', color: 'var(--yellow)' };
+    case 'failed':      return { icon: '\u274C', color: 'var(--red)' };
+    default:            return { icon: '\u25CB', color: 'var(--text-muted)' };
+  }
+}
+
+function renderTasks(tasks) {
+  var el = document.getElementById('taskList');
+  el.textContent = '';
+
+  if (!tasks.length) {
+    el.appendChild(buildEl('div', { className: 'empty-state', style: 'padding:40px' }, [
+      buildEl('div', { className: 'empty-state-text' }, 'No tasks')
+    ]));
+    return;
+  }
+
+  tasks.forEach(function(t) {
+    var indent = t.blocked_by && t.blocked_by.length ? ' indented' : '';
+    var iconInfo = taskIconText(t.status);
+
+    var item = buildEl('div', { className: 'task-item' + indent });
+
+    var icon = buildEl('span', { className: 'task-icon', style: 'color:' + iconInfo.color }, iconInfo.icon);
+    item.appendChild(icon);
+
+    var info = buildEl('div', { className: 'task-info' });
+    info.appendChild(buildEl('div', { className: 'task-title' }, t.title || ''));
+
+    var meta = buildEl('div', { className: 'task-meta' });
+    if (t.bead_id) meta.appendChild(buildEl('span', null, t.bead_id));
+    if (t.agent) meta.appendChild(buildEl('span', null, '\u2192 ' + t.agent));
+    if (t.blocked_by && t.blocked_by.length) meta.appendChild(buildEl('span', null, 'blocked by: ' + t.blocked_by.join(', ')));
+    info.appendChild(meta);
+
+    item.appendChild(info);
+    el.appendChild(item);
+  });
+}
+
+function renderAgents(agents) {
+  var el = document.getElementById('agentList');
+  Object.keys(agentTimers).forEach(function(k) { clearInterval(agentTimers[k]); });
+  agentTimers = {};
+  el.textContent = '';
+
+  if (!agents.length) {
+    el.appendChild(buildEl('div', { className: 'empty-state', style: 'padding:40px' }, [
+      buildEl('div', { className: 'empty-state-text' }, 'No active agents')
+    ]));
+    return;
+  }
+
+  agents.forEach(function(a) {
+    var typeCls = a.type === 'claude' ? 'agent-type-claude' : a.type === 'pi' ? 'agent-type-pi' : 'agent-type-codex';
+    var statusCls = a.status === 'implementing' ? 'agent-status-implementing' : a.status === 'stuck' ? 'agent-status-stuck' : 'agent-status-idle';
+    var typeNames = { claude: 'Claude Code', pi: 'Pi', codex: 'Codex' };
+    var typeName = typeNames[a.type] || a.type || 'Agent';
+
+    var card = buildEl('div', { className: 'agent-card' });
+
+    var hdr = buildEl('div', { className: 'agent-header' }, [
+      buildEl('span', { className: 'agent-type ' + typeCls }, typeName),
+      buildEl('span', { className: 'agent-status ' + statusCls }, a.status || 'idle')
+    ]);
+    card.appendChild(hdr);
+
+    card.appendChild(buildEl('div', { className: 'agent-detail' }, a.current_task || 'No task assigned'));
+
+    var timerSpan = buildEl('span', { id: 'timer-' + a.id }, fmtDuration(a.runtime || 0));
+    var statsRow = buildEl('div', { className: 'agent-stats' }, [
+      timerSpan,
+      buildEl('span', null, fmtTokens(a.tokens) + ' tokens'),
+      buildEl('span', null, fmtCurrency(a.cost))
+    ]);
+    card.appendChild(statsRow);
+
+    var actionsRow = buildEl('div', { className: 'agent-actions' });
+    actionsRow.appendChild(buildEl('button', {
+      className: 'btn btn-sm',
+      onClick: (function(pid, aid) { return function() { agentAction(pid, aid, 'peek'); }; })(currentProjectId, a.id)
+    }, 'Peek'));
+    actionsRow.appendChild(buildEl('button', {
+      className: 'btn btn-sm',
+      onClick: (function(pid, aid) { return function() { agentAction(pid, aid, 'steer'); }; })(currentProjectId, a.id)
+    }, 'Steer'));
+    actionsRow.appendChild(buildEl('button', {
+      className: 'btn btn-danger btn-sm',
+      onClick: (function(pid, aid) { return function() { agentAction(pid, aid, 'kill'); }; })(currentProjectId, a.id)
+    }, 'Kill'));
+    card.appendChild(actionsRow);
+
+    el.appendChild(card);
+
+    // Auto-updating runtime timer
+    if (a.started_at && a.status === 'implementing') {
+      var t0 = new Date(a.started_at).getTime();
+      agentTimers[a.id] = setInterval(function() {
+        var span = document.getElementById('timer-' + a.id);
+        if (span) span.textContent = fmtDuration((Date.now() - t0) / 1000);
+      }, 1000);
+    }
+  });
+}
+
+function renderMergeQueue(queue) {
+  var el = document.getElementById('mergeQueue');
+  el.textContent = '';
+  if (!queue.length) {
+    el.appendChild(buildEl('div', { className: 'empty-state', style: 'padding:30px' }, [
+      buildEl('div', { className: 'empty-state-text', style: 'font-size:12px' }, 'Merge queue empty')
+    ]));
+    return;
+  }
+  queue.forEach(function(item, i) {
+    var row = buildEl('div', { className: 'merge-item' }, [
+      buildEl('span', null, '#' + (i + 1) + ' ' + (item.task || item.title || '')),
+      buildEl('span', { className: 'merge-branch' }, item.branch || '')
+    ]);
+    el.appendChild(row);
+  });
+}
+
+function eventTypeClass(t) {
+  return { task: 'type-task', agent: 'type-agent', error: 'type-error', merge: 'type-merge' }[t] || '';
+}
+function eventIconChar(t) {
+  return { task: '\uD83D\uDCCB', agent: '\uD83E\uDD16', error: '\u26A0', merge: '\uD83D\uDD00' }[t] || '\u2022';
+}
+
+function buildEventItem(e) {
+  return buildEl('div', { className: 'event-item' }, [
+    buildEl('span', { className: 'event-time' }, fmtTime(e.timestamp)),
+    buildEl('span', { className: 'event-icon' }, eventIconChar(e.type)),
+    buildEl('span', { className: 'event-desc ' + eventTypeClass(e.type) }, e.description || '')
+  ]);
+}
+
+function renderEvents(events) {
+  var el = document.getElementById('eventLog');
+  el.textContent = '';
+  if (!events.length) {
+    el.appendChild(buildEl('div', { className: 'empty-state', style: 'padding:30px' }, [
+      buildEl('div', { className: 'empty-state-text', style: 'font-size:12px' }, 'No events yet')
+    ]));
+    return;
+  }
+  var sorted = events.slice().sort(function(a, b) { return new Date(b.timestamp) - new Date(a.timestamp); });
+  sorted.forEach(function(e) {
+    el.appendChild(buildEventItem(e));
+  });
+}
+
+// ── Render: Metrics ─────────────────────────────────────────
+
+function setMetricsFilter(filter, btn) {
+  metricsFilter = filter;
+  document.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  fetchMetrics();
+}
+
+function renderMetrics() {
+  if (!metricsData) return;
+  var m = metricsData;
+
+  // Cost summary cards
+  var cardsEl = document.getElementById('metricsCards');
+  cardsEl.textContent = '';
+  var cards = [
+    { title: 'Total Cost',  value: fmtCurrency(m.total_cost || 0),  sub: 'Across all runtimes' },
+    { title: 'Claude Code', value: fmtCurrency(m.cost_claude || 0), sub: (m.tasks_claude || 0) + ' tasks' },
+    { title: 'Pi',          value: fmtCurrency(m.cost_pi || 0),     sub: (m.tasks_pi || 0) + ' tasks' },
+    { title: 'Codex',       value: fmtCurrency(m.cost_codex || 0),  sub: (m.tasks_codex || 0) + ' tasks' },
+  ];
+  cards.forEach(function(c) {
+    cardsEl.appendChild(buildEl('div', { className: 'metric-card' }, [
+      buildEl('div', { className: 'metric-card-title' }, c.title),
+      buildEl('div', { className: 'metric-card-value' }, c.value),
+      buildEl('div', { className: 'metric-card-sub' }, c.sub)
+    ]));
+  });
+
+  // Task status counts
+  var statsEl = document.getElementById('taskStatsGrid');
+  statsEl.textContent = '';
+  var stats = [
+    { label: 'Completed',   value: m.tasks_completed || 0,   color: 'var(--green)'  },
+    { label: 'In Progress', value: m.tasks_in_progress || 0, color: 'var(--blue)'   },
+    { label: 'Blocked',     value: m.tasks_blocked || 0,     color: 'var(--yellow)' },
+    { label: 'Failed',      value: m.tasks_failed || 0,      color: 'var(--red)'    },
+  ];
+  stats.forEach(function(s) {
+    statsEl.appendChild(buildEl('div', { className: 'task-stat-card' }, [
+      buildEl('div', { className: 'task-stat-value', style: 'color:' + s.color }, String(s.value)),
+      buildEl('div', { className: 'task-stat-label' }, s.label)
+    ]));
+  });
+
+  // CSS bar chart
+  var chartEl = document.getElementById('costChart');
+  chartEl.textContent = '';
+  var maxCost = Math.max(m.cost_claude || 0, m.cost_pi || 0, m.cost_codex || 0, 0.01);
+  var bars = [
+    { label: 'Claude Code', value: m.cost_claude || 0, cls: 'bar-fill-claude' },
+    { label: 'Pi',          value: m.cost_pi || 0,     cls: 'bar-fill-pi'     },
+    { label: 'Codex',       value: m.cost_codex || 0,  cls: 'bar-fill-codex'  },
+  ];
+  bars.forEach(function(b) {
+    var pct = Math.max((b.value / maxCost) * 100, 3);
+    var fill = buildEl('div', { className: 'bar-fill ' + b.cls, style: 'width:' + pct + '%' }, fmtCurrency(b.value));
+    var track = buildEl('div', { className: 'bar-track' }, [fill]);
+    chartEl.appendChild(buildEl('div', { className: 'bar-row' }, [
+      buildEl('div', { className: 'bar-label' }, b.label),
+      track
+    ]));
+  });
+
+  // Duration table
+  var tableEl = document.getElementById('durationTable');
+  tableEl.textContent = '';
+  var runtimes = [
+    { name: 'Claude Code', avg: m.avg_duration_claude, tasks: m.tasks_claude, cpt: m.cost_per_task_claude },
+    { name: 'Pi',          avg: m.avg_duration_pi,     tasks: m.tasks_pi,     cpt: m.cost_per_task_pi     },
+    { name: 'Codex',       avg: m.avg_duration_codex,  tasks: m.tasks_codex,  cpt: m.cost_per_task_codex  },
+  ];
+  runtimes.forEach(function(r) {
+    var tr = document.createElement('tr');
+    var td1 = buildEl('td', null, r.name);
+    var td2 = buildEl('td', { style: 'font-family:var(--font-mono)' }, fmtDuration(r.avg || 0));
+    var td3 = buildEl('td', null, String(r.tasks || 0));
+    var td4 = buildEl('td', { style: 'font-family:var(--font-mono)' }, fmtCurrency(r.cpt || 0));
+    tr.appendChild(td1);
+    tr.appendChild(td2);
+    tr.appendChild(td3);
+    tr.appendChild(td4);
+    tableEl.appendChild(tr);
+  });
+}
+
+// ── WebSocket ───────────────────────────────────────────────
+
+function connectWS() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var url = proto + '//' + location.host + '/ws';
+
+  try { ws = new WebSocket(url); }
+  catch (e) { console.warn('WS failed:', e); scheduleReconnect(); return; }
+
+  ws.onopen = function() {
+    wsRetryDelay = 1000;
+    document.getElementById('connDot').classList.add('connected');
+    setText(document.getElementById('connLabel'), 'Connected');
+  };
+
+  ws.onclose = function() {
+    document.getElementById('connDot').classList.remove('connected');
+    setText(document.getElementById('connLabel'), 'Disconnected');
+    scheduleReconnect();
+  };
+
+  ws.onerror = function() { ws.close(); };
+
+  ws.onmessage = function(evt) {
+    try { handleWSMessage(JSON.parse(evt.data)); }
+    catch (e) { console.warn('Bad WS msg:', e); }
+  };
+}
+
+function scheduleReconnect() {
+  setTimeout(function() {
+    wsRetryDelay = Math.min(wsRetryDelay * 2, 30000);
+    connectWS();
+  }, wsRetryDelay);
+}
+
+function handleWSMessage(msg) {
+  var type = msg.type || msg.event;
+  switch (type) {
+    case 'project_update':
+    case 'projects_changed':
+      if (currentView === 'projects') fetchProjects();
+      if (currentView === 'detail' && currentProjectId) fetchProjectDetail(currentProjectId);
+      break;
+    case 'task_update':
+      if (currentView === 'detail' && msg.project_id === currentProjectId) fetchProjectDetail(currentProjectId);
+      if (currentView === 'projects') fetchProjects();
+      break;
+    case 'agent_update':
+      if (currentView === 'detail' && msg.project_id === currentProjectId) fetchProjectDetail(currentProjectId);
+      break;
+    case 'event':
+      if (currentView === 'detail' && msg.project_id === currentProjectId && msg.event_data) {
+        var log = document.getElementById('eventLog');
+        var empty = log.querySelector('.empty-state');
+        if (empty) log.textContent = '';
+        log.prepend(buildEventItem(msg.event_data));
+      }
+      break;
+    case 'metrics_update':
+      if (currentView === 'metrics') fetchMetrics();
+      break;
+    default:
+      if (currentView === 'projects') fetchProjects();
+  }
+}
+
+// ── Init ────────────────────────────────────────────────────
+
+window.addEventListener('hashchange', handleHashChange);
+document.addEventListener('DOMContentLoaded', function() {
+  handleHashChange();
+  connectWS();
+});
+</script>
+</body>
+</html>
