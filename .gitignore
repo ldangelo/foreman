@@ -6,3 +6,6 @@ dist/
 
 # Dolt database files (added by bd init)
 .dolt/
+
+# TRD Implementation State
+.trd-state/
