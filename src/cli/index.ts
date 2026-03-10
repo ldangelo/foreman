@@ -6,6 +6,7 @@ import { planCommand } from "./commands/plan.js";
 import { runCommand } from "./commands/run.js";
 import { statusCommand } from "./commands/status.js";
 import { mergeCommand } from "./commands/merge.js";
+import { monitorCommand } from "./commands/monitor.js";
 import { dashboardCommand } from "./commands/dashboard.js";
 
 const program = new Command();
@@ -20,6 +21,7 @@ program.addCommand(planCommand);
 program.addCommand(runCommand);
 program.addCommand(statusCommand);
 program.addCommand(mergeCommand);
+program.addCommand(monitorCommand);
 program.addCommand(dashboardCommand);
 
 program.parse();

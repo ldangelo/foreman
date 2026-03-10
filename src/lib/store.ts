@@ -22,7 +22,7 @@ export interface Run {
   agent_type: "claude-code" | "pi" | "codex";
   session_key: string | null;
   worktree_path: string | null;
-  status: "pending" | "running" | "completed" | "failed" | "stuck";
+  status: "pending" | "running" | "completed" | "failed" | "stuck" | "merged" | "conflict" | "test-failed";
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -45,7 +45,10 @@ export type EventType =
   | "fail"
   | "merge"
   | "stuck"
-  | "restart";
+  | "restart"
+  | "recover"
+  | "conflict"
+  | "test-fail";
 
 export interface Event {
   id: string;
@@ -257,6 +260,30 @@ export class ForemanStore {
         "SELECT * FROM runs WHERE status IN ('pending', 'running') ORDER BY created_at DESC"
       )
       .all() as Run[];
+  }
+
+  getRunsByStatus(status: Run["status"], projectId?: string): Run[] {
+    if (projectId) {
+      return this.db
+        .prepare(
+          "SELECT * FROM runs WHERE project_id = ? AND status = ? ORDER BY created_at DESC"
+        )
+        .all(projectId, status) as Run[];
+    }
+    return this.db
+      .prepare("SELECT * FROM runs WHERE status = ? ORDER BY created_at DESC")
+      .all(status) as Run[];
+  }
+
+  getRunEvents(runId: string, eventType?: EventType): Event[] {
+    if (eventType) {
+      return this.db
+        .prepare("SELECT * FROM events WHERE run_id = ? AND event_type = ? ORDER BY created_at DESC")
+        .all(runId, eventType) as Event[];
+    }
+    return this.db
+      .prepare("SELECT * FROM events WHERE run_id = ? ORDER BY created_at DESC")
+      .all(runId) as Event[];
   }
 
   // ── Costs ───────────────────────────────────────────────────────────
