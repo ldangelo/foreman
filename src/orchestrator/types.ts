@@ -5,13 +5,29 @@ export type RuntimeSelection = "claude-code" | "pi" | "codex";
 // ── Decomposition types ─────────────────────────────────────────────────
 
 export type TaskComplexity = "low" | "medium" | "high";
+export type IssueType = "task" | "spike" | "test";
+export type Priority = "critical" | "high" | "medium" | "low";
 
 export interface TaskPlan {
   title: string;
   description: string;
-  priority: "critical" | "high" | "medium" | "low";
+  type: IssueType;
+  priority: Priority;
   dependencies: string[]; // titles of other tasks this depends on
   estimatedComplexity: TaskComplexity;
+}
+
+export interface StoryPlan {
+  title: string;
+  description: string;
+  priority: Priority;
+  tasks: TaskPlan[];
+}
+
+export interface SprintPlan {
+  title: string;
+  goal: string;
+  stories: StoryPlan[];
 }
 
 export interface DecompositionPlan {
@@ -19,7 +35,7 @@ export interface DecompositionPlan {
     title: string;
     description: string;
   };
-  tasks: TaskPlan[];
+  sprints: SprintPlan[];
 }
 
 export interface BeadInfo {

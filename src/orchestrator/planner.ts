@@ -3,6 +3,8 @@ import type { DecompositionPlan } from "./types.js";
 
 export interface ExecutionResult {
   epicBeadId: string;
+  sprintBeadIds: string[];
+  storyBeadIds: string[];
   taskBeadIds: string[];
 }
 
@@ -21,10 +23,36 @@ function toBeadsPriority(priority: string): string {
 }
 
 /**
- * Execute a decomposition plan by creating beads in the project.
+ * Map our hierarchy/issue types to valid bd types.
  *
- * Creates an epic bead, then child task beads with parent references
- * and inter-task dependencies.
+ * bd supports: bug | feature | task | epic | chore | decision
+ * Our types:   epic | sprint | story | task | spike | test
+ *
+ * We map unsupported types to the closest bd type and preserve
+ * the semantic type via a label (e.g., "kind:sprint").
+ */
+function toBeadsType(type: string): string {
+  switch (type) {
+    case "epic": return "epic";
+    case "sprint": return "epic";     // sprint is a sub-epic container
+    case "story": return "feature";   // story maps to feature
+    case "task": return "task";
+    case "spike": return "chore";     // spike is research/investigation
+    case "test": return "task";       // test tasks are still tasks
+    default: return "task";
+  }
+}
+
+/**
+ * Execute a decomposition plan by creating the full bead hierarchy:
+ * epic → sprint → story → task/spike/test
+ *
+ * Since bd only supports a limited set of types (bug|feature|task|epic|chore|decision),
+ * we map our hierarchy types to valid bd types and use labels to preserve semantics:
+ *   sprint → epic + label "kind:sprint"
+ *   story  → feature + label "kind:story"
+ *   spike  → chore + label "kind:spike"
+ *   test   → task + label "kind:test"
  */
 export async function executePlan(
   plan: DecompositionPlan,
@@ -37,36 +65,69 @@ export async function executePlan(
     description: plan.epic.description,
   });
 
-  // 2. Create task beads as children of the epic
-  // Map task title → bead ID for dependency resolution
-  const titleToId = new Map<string, string>();
+  const sprintBeadIds: string[] = [];
+  const storyBeadIds: string[] = [];
   const taskBeadIds: string[] = [];
 
-  for (const task of plan.tasks) {
-    const taskBead: Bead = await beads.create(task.title, {
-      type: "task",
-      priority: toBeadsPriority(task.priority),
+  // Map task title → bead ID for cross-story dependency resolution
+  const titleToId = new Map<string, string>();
+
+  // 2. Create sprint → story → task hierarchy
+  for (const sprint of plan.sprints) {
+    const sprintBead: Bead = await beads.create(sprint.title, {
+      type: toBeadsType("sprint"),
+      priority: "P1",
       parent: epicBead.id,
-      description: task.description,
-      labels: [`complexity:${task.estimatedComplexity}`],
+      description: sprint.goal,
+      labels: ["kind:sprint"],
     });
+    sprintBeadIds.push(sprintBead.id);
 
-    titleToId.set(task.title, taskBead.id);
-    taskBeadIds.push(taskBead.id);
-  }
+    for (const story of sprint.stories) {
+      const storyBead: Bead = await beads.create(story.title, {
+        type: toBeadsType("story"),
+        priority: toBeadsPriority(story.priority),
+        parent: sprintBead.id,
+        description: story.description,
+        labels: ["kind:story"],
+      });
+      storyBeadIds.push(storyBead.id);
 
-  // 3. Wire up dependencies
-  for (const task of plan.tasks) {
-    const taskId = titleToId.get(task.title);
-    if (!taskId) continue;
+      for (const task of story.tasks) {
+        const labels = [`complexity:${task.estimatedComplexity}`];
+        if (task.type !== "task") {
+          labels.push(`kind:${task.type}`);
+        }
 
-    for (const depTitle of task.dependencies) {
-      const depId = titleToId.get(depTitle);
-      if (depId) {
-        await beads.addDependency(taskId, depId);
+        const taskBead: Bead = await beads.create(task.title, {
+          type: toBeadsType(task.type),
+          priority: toBeadsPriority(task.priority),
+          parent: storyBead.id,
+          description: task.description,
+          labels,
+        });
+        titleToId.set(task.title, taskBead.id);
+        taskBeadIds.push(taskBead.id);
       }
     }
   }
 
-  return { epicBeadId: epicBead.id, taskBeadIds };
+  // 3. Wire up dependencies across all tasks
+  for (const sprint of plan.sprints) {
+    for (const story of sprint.stories) {
+      for (const task of story.tasks) {
+        const taskId = titleToId.get(task.title);
+        if (!taskId) continue;
+
+        for (const depTitle of task.dependencies) {
+          const depId = titleToId.get(depTitle);
+          if (depId) {
+            await beads.addDependency(taskId, depId);
+          }
+        }
+      }
+    }
+  }
+
+  return { epicBeadId: epicBead.id, sprintBeadIds, storyBeadIds, taskBeadIds };
 }

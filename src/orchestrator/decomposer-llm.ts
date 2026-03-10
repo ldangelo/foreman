@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import type { DecompositionPlan, TaskPlan } from "./types.js";
+import type { DecompositionPlan, SprintPlan, StoryPlan, TaskPlan } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -10,7 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * LLM-powered TRD decomposer.
  *
  * Sends the TRD content to Claude Code with a structured decomposition prompt.
- * Returns a validated DecompositionPlan with tasks, dependencies, and complexity.
+ * Returns a validated DecompositionPlan with epic → sprint → story → task hierarchy.
  */
 export async function decomposePrdWithLlm(
   trdContent: string,
@@ -25,15 +25,17 @@ export async function decomposePrdWithLlm(
 
   // Build the system instruction
   const systemPrompt = [
-    "You are a senior technical lead decomposing a TRD into development tasks.",
+    "You are a senior technical lead decomposing a TRD into a hierarchical work breakdown.",
     "Respond with ONLY valid JSON matching the schema in the prompt.",
     "No markdown fences, no explanation, no commentary — just the JSON object.",
-    "The JSON must have an 'epic' object (title + description) and a 'tasks' array.",
-    "Each task needs: title, description, priority, estimatedComplexity, dependencies (array of task titles).",
+    "The JSON must have an 'epic' object (title + description) and a 'sprints' array.",
+    "Each sprint has: title, goal, stories array.",
+    "Each story has: title, description, priority, tasks array.",
+    "Each task has: title, description, type (task|spike|test), priority, estimatedComplexity, dependencies.",
+    "The hierarchy is: epic → sprints → stories → tasks.",
   ].join(" ");
 
   // Call Claude Code in non-interactive mode
-  // Use stdin pipe for large prompts (TRDs can exceed OS arg limits)
   const claudePath = findClaude();
   const args = [
     "--permission-mode", "bypassPermissions",
@@ -127,7 +129,7 @@ function parseResponse(raw: string): DecompositionPlan {
 }
 
 /**
- * Validate the decomposition plan structure and constraints.
+ * Validate the decomposition plan hierarchy.
  */
 function validatePlan(plan: DecompositionPlan): void {
   if (!plan.epic?.title) {
@@ -136,55 +138,83 @@ function validatePlan(plan: DecompositionPlan): void {
   if (!plan.epic?.description) {
     throw new Error("Plan missing epic.description");
   }
-  if (!Array.isArray(plan.tasks)) {
-    throw new Error("Plan missing tasks array");
+  if (!Array.isArray(plan.sprints)) {
+    throw new Error("Plan missing sprints array");
   }
-  if (plan.tasks.length === 0) {
-    throw new Error("Plan has zero tasks — TRD may be too vague or empty");
+  if (plan.sprints.length === 0) {
+    throw new Error("Plan has zero sprints — TRD may be too vague or empty");
   }
 
   const validPriorities = new Set(["critical", "high", "medium", "low"]);
   const validComplexities = new Set(["low", "medium", "high"]);
-  const taskTitles = new Set(plan.tasks.map((t) => t.title));
+  const validTypes = new Set(["task", "spike", "test"]);
 
-  for (const task of plan.tasks) {
-    if (!task.title) {
-      throw new Error("Task missing title");
-    }
-    if (!task.description) {
-      throw new Error(`Task "${task.title}" missing description`);
-    }
-    if (!validPriorities.has(task.priority)) {
-      // Fix invalid priority silently
-      task.priority = "medium";
-    }
-    if (!validComplexities.has(task.estimatedComplexity)) {
-      task.estimatedComplexity = "medium";
-    }
-    if (!Array.isArray(task.dependencies)) {
-      task.dependencies = [];
-    }
-
-    // Validate dependency references exist
-    task.dependencies = task.dependencies.filter((dep) => {
-      if (!taskTitles.has(dep)) {
-        // Silently drop invalid dependency references
-        return false;
+  // Collect all task titles for dependency validation
+  const allTaskTitles = new Set<string>();
+  for (const sprint of plan.sprints) {
+    for (const story of sprint.stories) {
+      for (const task of story.tasks) {
+        allTaskTitles.add(task.title);
       }
-      return true;
-    });
-
-    // Strip acceptanceCriteria (not in our type, but LLM may include it)
-    delete (task as unknown as Record<string, unknown>).acceptanceCriteria;
+    }
   }
 
-  // Detect circular dependencies
-  detectCycles(plan.tasks);
+  for (const sprint of plan.sprints) {
+    if (!sprint.title) throw new Error("Sprint missing title");
+    if (!sprint.goal) sprint.goal = sprint.title;
+    if (!Array.isArray(sprint.stories)) {
+      throw new Error(`Sprint "${sprint.title}" missing stories array`);
+    }
+
+    for (const story of sprint.stories) {
+      validateStory(story, allTaskTitles, validPriorities, validComplexities, validTypes);
+    }
+  }
+
+  // Detect circular dependencies across all tasks
+  const allTasks: TaskPlan[] = [];
+  for (const sprint of plan.sprints) {
+    for (const story of sprint.stories) {
+      allTasks.push(...story.tasks);
+    }
+  }
+  detectCycles(allTasks);
+}
+
+function validateStory(
+  story: StoryPlan,
+  allTaskTitles: Set<string>,
+  validPriorities: Set<string>,
+  validComplexities: Set<string>,
+  validTypes: Set<string>,
+): void {
+  if (!story.title) throw new Error("Story missing title");
+  if (!story.description) story.description = story.title;
+  if (!validPriorities.has(story.priority)) {
+    story.priority = "medium";
+  }
+  if (!Array.isArray(story.tasks)) {
+    throw new Error(`Story "${story.title}" missing tasks array`);
+  }
+
+  for (const task of story.tasks) {
+    if (!task.title) throw new Error("Task missing title");
+    if (!task.description) throw new Error(`Task "${task.title}" missing description`);
+    if (!validTypes.has(task.type)) task.type = "task";
+    if (!validPriorities.has(task.priority)) task.priority = "medium";
+    if (!validComplexities.has(task.estimatedComplexity)) task.estimatedComplexity = "medium";
+    if (!Array.isArray(task.dependencies)) task.dependencies = [];
+
+    // Validate dependency references exist
+    task.dependencies = task.dependencies.filter((dep) => allTaskTitles.has(dep));
+
+    // Strip extra fields the LLM may include
+    delete (task as unknown as Record<string, unknown>).acceptanceCriteria;
+  }
 }
 
 /**
  * Detect circular dependencies via DFS.
- * Throws if a cycle is found.
  */
 function detectCycles(tasks: TaskPlan[]): void {
   const taskMap = new Map(tasks.map((t) => [t.title, t]));

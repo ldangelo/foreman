@@ -1,13 +1,15 @@
-import type { DecompositionPlan, TaskPlan, TaskComplexity } from "./types.js";
+import type { DecompositionPlan, SprintPlan, StoryPlan, TaskPlan, TaskComplexity, IssueType } from "./types.js";
 
 /**
  * Heuristic PRD decomposer.
  *
- * Extracts structure from a markdown PRD by looking for:
- * - H1/H2 headers as epic title and section boundaries
- * - Task lists (- [ ] items) as explicit tasks
- * - Numbered lists as ordered steps
- * - Ordering-based dependency inference
+ * Extracts structure from a markdown PRD/TRD by looking for:
+ * - H1 as epic title
+ * - H2 sections as stories (grouped into a single sprint)
+ * - Task lists (- [ ] items) or numbered lists as tasks within stories
+ * - Ordering-based dependency inference within each story
+ *
+ * Produces: epic → sprint → story → task hierarchy.
  */
 export async function decomposePrd(
   prdContent: string,
@@ -17,17 +19,52 @@ export async function decomposePrd(
 
   const epicTitle = extractEpicTitle(lines);
   const epicDescription = extractEpicDescription(lines);
-  const tasks = extractTasks(lines);
+  const stories = extractStories(lines);
 
-  if (tasks.length === 0) {
+  if (stories.length === 0) {
     throw new Error(
       "No tasks found in PRD. Expected task lists (- [ ] items), numbered lists, or ## sections with content.",
     );
   }
 
+  // Group stories into sprints heuristically:
+  // - Stories with critical/high priority go into Sprint 1 (Foundation)
+  // - Remaining go into Sprint 2 (Implementation)
+  const sprint1Stories: StoryPlan[] = [];
+  const sprint2Stories: StoryPlan[] = [];
+
+  for (const story of stories) {
+    if (story.priority === "critical" || story.priority === "high") {
+      sprint1Stories.push(story);
+    } else {
+      sprint2Stories.push(story);
+    }
+  }
+
+  // If everything ended up in one bucket, just use one sprint
+  const sprints: SprintPlan[] = [];
+  if (sprint1Stories.length > 0 && sprint2Stories.length > 0) {
+    sprints.push({
+      title: "Sprint 1: Foundation",
+      goal: "Core infrastructure and high-priority features",
+      stories: sprint1Stories,
+    });
+    sprints.push({
+      title: "Sprint 2: Implementation",
+      goal: "Secondary features and refinements",
+      stories: sprint2Stories,
+    });
+  } else {
+    sprints.push({
+      title: "Sprint 1: Implementation",
+      goal: "All planned work items",
+      stories: stories,
+    });
+  }
+
   return {
     epic: { title: epicTitle, description: epicDescription },
-    tasks,
+    sprints,
   };
 }
 
@@ -38,7 +75,6 @@ function extractEpicTitle(lines: string[]): string {
     const h1 = line.match(/^#\s+(.+)/);
     if (h1) return h1[1].trim();
   }
-  // Fallback: first non-empty line
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed) return trimmed;
@@ -47,7 +83,6 @@ function extractEpicTitle(lines: string[]): string {
 }
 
 function extractEpicDescription(lines: string[]): string {
-  // Grab text between the H1 and the first H2
   let started = false;
   const descLines: string[] = [];
 
@@ -64,51 +99,126 @@ function extractEpicDescription(lines: string[]): string {
   return desc || "No description provided.";
 }
 
-function extractTasks(lines: string[]): TaskPlan[] {
-  const tasks: TaskPlan[] = [];
+/**
+ * Extract stories from H2 sections.
+ * Tasks within each section become the story's tasks.
+ * If no H2 sections exist, creates a single story from all tasks.
+ */
+function extractStories(lines: string[]): StoryPlan[] {
+  const sections = extractSections(lines);
 
-  // Pass 1: Extract checklist items (- [ ] ...)
-  const checklistTasks = extractChecklistTasks(lines);
-
-  // Pass 2: Extract numbered list items (1. ...)
-  const numberedTasks = extractNumberedTasks(lines);
-
-  // Pass 3: Extract H2 sections as tasks (if no checklist/numbered items found within them)
-  const sectionTasks = extractSectionTasks(lines);
-
-  // Prefer checklist items; fall back to numbered; fall back to sections
-  if (checklistTasks.length > 0) {
-    tasks.push(...checklistTasks);
-  } else if (numberedTasks.length > 0) {
-    tasks.push(...numberedTasks);
-  } else {
-    tasks.push(...sectionTasks);
+  if (sections.length === 0) {
+    // No H2 sections — try to extract tasks from the whole document
+    const tasks = extractTasksFromLines(lines);
+    if (tasks.length === 0) return [];
+    return [{
+      title: "Implementation",
+      description: "Tasks extracted from document",
+      priority: tasks[0].priority,
+      tasks,
+    }];
   }
 
-  // Infer dependencies from ordering: each task depends on the previous one
-  inferSequentialDependencies(tasks);
+  const stories: StoryPlan[] = [];
+  for (const section of sections) {
+    // Skip non-task sections
+    const skip = /^(overview|introduction|summary|background|goals|scope|references|appendix)/i;
+    if (skip.test(section.title)) continue;
 
-  return tasks;
+    const tasks = extractTasksFromLines(section.bodyLines);
+    if (tasks.length === 0) {
+      // Section has content but no explicit tasks — make the section itself a single task
+      const bodyText = section.bodyLines.join("\n").trim();
+      if (!bodyText) continue;
+      tasks.push({
+        title: section.title,
+        description: bodyText,
+        type: inferIssueType(section.title),
+        priority: inferPriority(section.title, 0),
+        dependencies: [],
+        estimatedComplexity: inferComplexity(section.title, bodyText),
+      });
+    }
+
+    const storyPriority = tasks.length > 0
+      ? tasks.reduce((highest, t) => priorityRank(t.priority) < priorityRank(highest) ? t.priority : highest, tasks[0].priority)
+      : "medium" as const;
+
+    stories.push({
+      title: section.title,
+      description: section.bodyLines.join("\n").trim() || `Story: ${section.title}`,
+      priority: storyPriority,
+      tasks,
+    });
+  }
+
+  return stories;
+}
+
+interface Section {
+  title: string;
+  bodyLines: string[];
+}
+
+function extractSections(lines: string[]): Section[] {
+  const sections: Section[] = [];
+  let currentTitle = "";
+  let bodyLines: string[] = [];
+
+  const flush = () => {
+    if (currentTitle) {
+      sections.push({ title: currentTitle, bodyLines: [...bodyLines] });
+    }
+  };
+
+  for (const line of lines) {
+    const h2 = line.match(/^##\s+(.+)/);
+    if (h2) {
+      flush();
+      currentTitle = h2[1].trim();
+      bodyLines = [];
+      continue;
+    }
+    if (/^#\s+/.test(line)) continue; // skip H1
+    if (currentTitle) bodyLines.push(line);
+  }
+  flush();
+
+  return sections;
+}
+
+/**
+ * Extract tasks from a set of lines (checklist items, numbered items).
+ */
+function extractTasksFromLines(lines: string[]): TaskPlan[] {
+  // Try checklist first, then numbered
+  const checklist = extractChecklistTasks(lines);
+  if (checklist.length > 0) {
+    inferSequentialDependencies(checklist);
+    return checklist;
+  }
+
+  const numbered = extractNumberedTasks(lines);
+  if (numbered.length > 0) {
+    inferSequentialDependencies(numbered);
+    return numbered;
+  }
+
+  return [];
 }
 
 function extractChecklistTasks(lines: string[]): TaskPlan[] {
   const tasks: TaskPlan[] = [];
-  let currentSection = "";
 
   for (let i = 0; i < lines.length; i++) {
-    const sectionMatch = lines[i].match(/^##\s+(.+)/);
-    if (sectionMatch) {
-      currentSection = sectionMatch[1].trim();
-      continue;
-    }
-
     const checkMatch = lines[i].match(/^[-*]\s+\[[ x]\]\s+(.+)/i);
     if (checkMatch) {
       const title = checkMatch[1].trim();
       const description = collectIndentedDescription(lines, i + 1);
       tasks.push({
         title,
-        description: description || `Task from section: ${currentSection || "root"}`,
+        description: description || title,
+        type: inferIssueType(title),
         priority: inferPriority(title, tasks.length),
         dependencies: [],
         estimatedComplexity: inferComplexity(title, description),
@@ -121,22 +231,16 @@ function extractChecklistTasks(lines: string[]): TaskPlan[] {
 
 function extractNumberedTasks(lines: string[]): TaskPlan[] {
   const tasks: TaskPlan[] = [];
-  let currentSection = "";
 
   for (let i = 0; i < lines.length; i++) {
-    const sectionMatch = lines[i].match(/^##\s+(.+)/);
-    if (sectionMatch) {
-      currentSection = sectionMatch[1].trim();
-      continue;
-    }
-
     const numMatch = lines[i].match(/^\d+\.\s+(.+)/);
     if (numMatch) {
       const title = numMatch[1].trim();
       const description = collectIndentedDescription(lines, i + 1);
       tasks.push({
         title,
-        description: description || `Step from section: ${currentSection || "root"}`,
+        description: description || title,
+        type: inferIssueType(title),
         priority: inferPriority(title, tasks.length),
         dependencies: [],
         estimatedComplexity: inferComplexity(title, description),
@@ -147,53 +251,12 @@ function extractNumberedTasks(lines: string[]): TaskPlan[] {
   return tasks;
 }
 
-function extractSectionTasks(lines: string[]): TaskPlan[] {
-  const tasks: TaskPlan[] = [];
-  let currentTitle = "";
-  const bodyLines: string[] = [];
-
-  const flushSection = () => {
-    if (!currentTitle) return;
-    // Skip non-task sections
-    const skip = /^(overview|introduction|summary|background|goals|scope|references|appendix)/i;
-    if (skip.test(currentTitle)) return;
-
-    const description = bodyLines.join("\n").trim();
-    if (!description) return;
-
-    tasks.push({
-      title: currentTitle,
-      description,
-      priority: inferPriority(currentTitle, tasks.length),
-      dependencies: [],
-      estimatedComplexity: inferComplexity(currentTitle, description),
-    });
-  };
-
-  for (const line of lines) {
-    const h2 = line.match(/^##\s+(.+)/);
-    if (h2) {
-      flushSection();
-      currentTitle = h2[1].trim();
-      bodyLines.length = 0;
-      continue;
-    }
-    // Skip H1 and H3+ for section body
-    if (/^#+\s+/.test(line)) continue;
-    bodyLines.push(line);
-  }
-  flushSection();
-
-  return tasks;
-}
-
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 function collectIndentedDescription(lines: string[], startIndex: number): string {
   const desc: string[] = [];
   for (let i = startIndex; i < lines.length; i++) {
     const line = lines[i];
-    // Stop at next list item, header, or blank line after content
     if (/^[-*]\s+\[[ x]\]/i.test(line)) break;
     if (/^\d+\.\s+/.test(line)) break;
     if (/^##?\s+/.test(line)) break;
@@ -204,22 +267,34 @@ function collectIndentedDescription(lines: string[], startIndex: number): string
   return desc.join(" ");
 }
 
+function inferIssueType(title: string): IssueType {
+  const lower = title.toLowerCase();
+  if (lower.includes("spike") || lower.includes("research") || lower.includes("investigate")) {
+    return "spike";
+  }
+  if (lower.includes("e2e test") || lower.includes("integration test") || lower.includes("load test") || lower.includes("test suite")) {
+    return "test";
+  }
+  return "task";
+}
+
 function inferPriority(
   title: string,
   index: number,
 ): TaskPlan["priority"] {
   const lower = title.toLowerCase();
+  // Keyword matches take precedence over index heuristic
   if (lower.includes("critical") || lower.includes("security") || lower.includes("auth")) {
     return "critical";
   }
   if (lower.includes("core") || lower.includes("database") || lower.includes("schema")) {
     return "high";
   }
-  // Earlier tasks tend to be foundational
-  if (index < 2) return "high";
   if (lower.includes("test") || lower.includes("doc") || lower.includes("deploy")) {
     return "low";
   }
+  // Earlier tasks tend to be foundational
+  if (index < 2) return "high";
   return "medium";
 }
 
@@ -236,9 +311,18 @@ function inferComplexity(title: string, description: string): TaskComplexity {
   return "medium";
 }
 
+function priorityRank(p: string): number {
+  switch (p) {
+    case "critical": return 0;
+    case "high": return 1;
+    case "medium": return 2;
+    case "low": return 3;
+    default: return 2;
+  }
+}
+
 function inferSequentialDependencies(tasks: TaskPlan[]): void {
   for (let i = 1; i < tasks.length; i++) {
-    // Each task depends on the one before it (simple sequential chain)
     tasks[i].dependencies.push(tasks[i - 1].title);
   }
 }

@@ -32,76 +32,177 @@ function makeMockBeads() {
   return { client: client as unknown as BeadsClient, createCalls, depCalls };
 }
 
-const planWithTasks: DecompositionPlan = {
+const hierarchicalPlan: DecompositionPlan = {
   epic: { title: "Auth Epic", description: "Full auth system" },
-  tasks: [
+  sprints: [
     {
-      title: "Create DB schema",
-      description: "Design tables",
-      priority: "high",
-      dependencies: [],
-      estimatedComplexity: "low",
-    },
-    {
-      title: "Implement API",
-      description: "REST endpoints",
-      priority: "medium",
-      dependencies: ["Create DB schema"],
-      estimatedComplexity: "medium",
+      title: "Sprint 1: Foundation",
+      goal: "Database and core auth",
+      stories: [
+        {
+          title: "As a developer, I can persist user data",
+          description: "Database foundation",
+          priority: "critical",
+          tasks: [
+            {
+              title: "Create DB schema",
+              description: "Design tables",
+              type: "task",
+              priority: "high",
+              dependencies: [],
+              estimatedComplexity: "low",
+            },
+          ],
+        },
+        {
+          title: "As a user, I can register",
+          description: "Registration flow",
+          priority: "high",
+          tasks: [
+            {
+              title: "Implement API",
+              description: "REST endpoints",
+              type: "task",
+              priority: "medium",
+              dependencies: ["Create DB schema"],
+              estimatedComplexity: "medium",
+            },
+            {
+              title: "Spike on OAuth providers",
+              description: "Research OAuth options",
+              type: "spike",
+              priority: "medium",
+              dependencies: [],
+              estimatedComplexity: "low",
+            },
+          ],
+        },
+      ],
     },
   ],
 };
 
 describe("executePlan", () => {
-  it("creates epic bead first with type epic", async () => {
+  it("creates full hierarchy: epic → sprint → story → task", async () => {
     const { client } = makeMockBeads();
-    await executePlan(planWithTasks, client);
+    await executePlan(hierarchicalPlan, client);
 
-    expect(client.create).toHaveBeenCalledTimes(3); // 1 epic + 2 tasks
-    const firstCall = (client.create as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(firstCall[0]).toBe("Auth Epic");
-    expect(firstCall[1]).toMatchObject({ type: "epic" });
+    // 1 epic + 1 sprint + 2 stories + 3 tasks = 7 creates
+    expect(client.create).toHaveBeenCalledTimes(7);
+
+    const calls = (client.create as ReturnType<typeof vi.fn>).mock.calls;
+
+    // Epic (beads-001)
+    expect(calls[0][0]).toBe("Auth Epic");
+    expect(calls[0][1]).toMatchObject({ type: "epic" });
+
+    // Sprint (beads-002) → mapped to bd type "epic" with label "kind:sprint"
+    expect(calls[1][0]).toBe("Sprint 1: Foundation");
+    expect(calls[1][1]).toMatchObject({ type: "epic", parent: "beads-001" });
+    expect(calls[1][1].labels).toContain("kind:sprint");
+
+    // Story 1 (beads-003) → mapped to bd type "feature" with label "kind:story"
+    expect(calls[2][0]).toBe("As a developer, I can persist user data");
+    expect(calls[2][1]).toMatchObject({ type: "feature", parent: "beads-002" });
+    expect(calls[2][1].labels).toContain("kind:story");
+
+    // Task 1 (beads-004), parent = story 1
+    expect(calls[3][0]).toBe("Create DB schema");
+    expect(calls[3][1]).toMatchObject({ type: "task", parent: "beads-003" });
+
+    // Story 2 (beads-005), parent = sprint
+    expect(calls[4][0]).toBe("As a user, I can register");
+    expect(calls[4][1]).toMatchObject({ type: "feature", parent: "beads-002" });
+
+    // Task 2 (beads-006), parent = story 2
+    expect(calls[5][0]).toBe("Implement API");
+    expect(calls[5][1]).toMatchObject({ type: "task", parent: "beads-005" });
+
+    // Spike (beads-007) → mapped to bd type "chore" with label "kind:spike"
+    expect(calls[6][0]).toBe("Spike on OAuth providers");
+    expect(calls[6][1]).toMatchObject({ type: "chore", parent: "beads-005" });
+    expect(calls[6][1].labels).toContain("kind:spike");
   });
 
-  it("creates child beads with parent reference to epic", async () => {
+  it("sets up cross-story dependencies via addDependency", async () => {
     const { client } = makeMockBeads();
-    await executePlan(planWithTasks, client);
+    await executePlan(hierarchicalPlan, client);
 
-    // Epic gets beads-001, so children should reference it
-    const createMock = client.create as ReturnType<typeof vi.fn>;
-    const secondCall = createMock.mock.calls[1];
-    expect(secondCall[1]).toMatchObject({ parent: "beads-001" });
-    const thirdCall = createMock.mock.calls[2];
-    expect(thirdCall[1]).toMatchObject({ parent: "beads-001" });
+    // "Implement API" (beads-006) depends on "Create DB schema" (beads-004)
+    expect(client.addDependency).toHaveBeenCalledWith("beads-006", "beads-004");
   });
 
-  it("sets up dependencies via addDependency", async () => {
+  it("returns all bead IDs organized by level", async () => {
     const { client } = makeMockBeads();
-    await executePlan(planWithTasks, client);
-
-    // "Implement API" (beads-003) depends on "Create DB schema" (beads-002)
-    expect(client.addDependency).toHaveBeenCalledWith("beads-003", "beads-002");
-  });
-
-  it("returns epicBeadId and all taskBeadIds", async () => {
-    const { client } = makeMockBeads();
-    const result = await executePlan(planWithTasks, client);
+    const result = await executePlan(hierarchicalPlan, client);
 
     expect(result.epicBeadId).toBe("beads-001");
-    expect(result.taskBeadIds).toEqual(["beads-002", "beads-003"]);
+    expect(result.sprintBeadIds).toEqual(["beads-002"]);
+    expect(result.storyBeadIds).toEqual(["beads-003", "beads-005"]);
+    expect(result.taskBeadIds).toEqual(["beads-004", "beads-006", "beads-007"]);
   });
 
-  it("handles plan with zero tasks (only epic created)", async () => {
+  it("handles plan with empty sprints (only epic created)", async () => {
     const { client } = makeMockBeads();
     const emptyPlan: DecompositionPlan = {
-      epic: { title: "Empty Epic", description: "No tasks" },
-      tasks: [],
+      epic: { title: "Empty Epic", description: "No work" },
+      sprints: [],
     };
     const result = await executePlan(emptyPlan, client);
 
     expect(client.create).toHaveBeenCalledTimes(1);
     expect(result.epicBeadId).toBe("beads-001");
+    expect(result.sprintBeadIds).toEqual([]);
+    expect(result.storyBeadIds).toEqual([]);
     expect(result.taskBeadIds).toEqual([]);
     expect(client.addDependency).not.toHaveBeenCalled();
+  });
+
+  it("maps spike type to chore with kind:spike label", async () => {
+    const { client, createCalls } = makeMockBeads();
+    await executePlan(hierarchicalPlan, client);
+
+    const spikeBead = createCalls.find((c) => c.title === "Spike on OAuth providers");
+    expect(spikeBead?.opts.type).toBe("chore");
+    expect(spikeBead?.opts.labels).toContain("kind:spike");
+  });
+
+  it("maps priorities correctly to P0-P3", async () => {
+    const plan: DecompositionPlan = {
+      epic: { title: "Priority Test", description: "Test priority mapping" },
+      sprints: [{
+        title: "Sprint 1",
+        goal: "Test",
+        stories: [{
+          title: "Story",
+          description: "Story desc",
+          priority: "critical",
+          tasks: [
+            { title: "Critical task", description: "d", type: "task", priority: "critical", dependencies: [], estimatedComplexity: "low" },
+            { title: "High task", description: "d", type: "task", priority: "high", dependencies: [], estimatedComplexity: "low" },
+            { title: "Medium task", description: "d", type: "task", priority: "medium", dependencies: [], estimatedComplexity: "low" },
+            { title: "Low task", description: "d", type: "task", priority: "low", dependencies: [], estimatedComplexity: "low" },
+          ],
+        }],
+      }],
+    };
+
+    const { createCalls, client } = makeMockBeads();
+    await executePlan(plan, client);
+
+    const taskCalls = createCalls.filter((c) => c.opts.type === "task");
+    expect(taskCalls[0].opts.priority).toBe("P0");
+    expect(taskCalls[1].opts.priority).toBe("P1");
+    expect(taskCalls[2].opts.priority).toBe("P2");
+    expect(taskCalls[3].opts.priority).toBe("P3");
+  });
+
+  it("does not add kind label for regular tasks", async () => {
+    const { client, createCalls } = makeMockBeads();
+    await executePlan(hierarchicalPlan, client);
+
+    const taskBead = createCalls.find((c) => c.title === "Create DB schema");
+    expect(taskBead?.opts.labels).not.toContain("kind:task");
+    expect(taskBead?.opts.labels).toContain("complexity:low");
   });
 });

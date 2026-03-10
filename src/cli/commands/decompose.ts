@@ -9,7 +9,7 @@ import { BeadsClient } from "../../lib/beads.js";
 import type { DecompositionPlan, TaskPlan } from "../../orchestrator/types.js";
 
 export const decomposeCommand = new Command("decompose")
-  .description("Decompose a TRD into beads task hierarchy")
+  .description("Decompose a TRD into beads hierarchy (epic → sprint → story → task)")
   .argument("<trd>", "Path to TRD file")
   .option("--no-auto", "Prompt for confirmation before creating beads")
   .option("--dry-run", "Show the plan without creating beads")
@@ -38,7 +38,7 @@ export const decomposeCommand = new Command("decompose")
 
     // Decompose
     const mode = opts.llm ? "LLM" : "heuristic";
-    console.log(chalk.bold(`Decomposing TRD into tasks... ${chalk.dim(`(${mode} mode)`)}`));
+    console.log(chalk.bold(`Decomposing TRD into hierarchy... ${chalk.dim(`(${mode} mode)`)}`));
     let plan: DecompositionPlan;
     try {
       if (opts.llm) {
@@ -70,14 +70,14 @@ export const decomposeCommand = new Command("decompose")
     }
 
     // Execute
-    console.log(chalk.bold("\nCreating beads..."));
+    console.log(chalk.bold("\nCreating beads hierarchy..."));
     const beads = new BeadsClient(process.cwd());
     try {
       const result = await executePlan(plan, beads);
       console.log(chalk.green(`\nEpic created: ${result.epicBeadId}`));
-      console.log(
-        chalk.green(`Tasks created: ${result.taskBeadIds.length} beads`),
-      );
+      console.log(chalk.green(`Sprints created: ${result.sprintBeadIds.length}`));
+      console.log(chalk.green(`Stories created: ${result.storyBeadIds.length}`));
+      console.log(chalk.green(`Tasks created: ${result.taskBeadIds.length}`));
       for (const id of result.taskBeadIds) {
         console.log(chalk.dim(`  - ${id}`));
       }
@@ -92,31 +92,42 @@ export const decomposeCommand = new Command("decompose")
 function printPlan(plan: DecompositionPlan): void {
   console.log(chalk.bold.cyan(`\nEpic: ${plan.epic.title}`));
   console.log(chalk.dim(plan.epic.description));
-  console.log(chalk.bold(`\nTasks (${plan.tasks.length}):`));
 
-  for (let i = 0; i < plan.tasks.length; i++) {
-    const task = plan.tasks[i];
-    const num = `${i + 1}.`.padStart(3);
-    const complexity = complexityBadge(task.estimatedComplexity);
-    const priority = priorityBadge(task.priority);
+  let totalTasks = 0;
+  for (const sprint of plan.sprints) {
+    for (const story of sprint.stories) {
+      totalTasks += story.tasks.length;
+    }
+  }
 
-    console.log(`${num} ${priority} ${complexity} ${task.title}`);
-    if (task.description) {
-      const desc =
-        task.description.length > 80
-          ? task.description.slice(0, 77) + "..."
-          : task.description;
-      console.log(chalk.dim(`      ${desc}`));
+  console.log(chalk.bold(`\n${plan.sprints.length} sprint(s), ${totalTasks} task(s):\n`));
+
+  for (const sprint of plan.sprints) {
+    console.log(chalk.bold.magenta(`  ${sprint.title}`));
+    console.log(chalk.dim(`  Goal: ${sprint.goal}`));
+
+    for (const story of sprint.stories) {
+      const priority = priorityBadge(story.priority);
+      console.log(`\n    ${priority} ${chalk.bold(story.title)}`);
+
+      for (let i = 0; i < story.tasks.length; i++) {
+        const task = story.tasks[i];
+        const complexity = complexityBadge(task.estimatedComplexity);
+        const typeBadge = task.type !== "task" ? chalk.cyan(` [${task.type}]`) : "";
+
+        console.log(`      ${complexity} ${task.title}${typeBadge}`);
+        if (task.dependencies.length > 0) {
+          console.log(
+            chalk.dim(`         deps: ${task.dependencies.join(", ")}`),
+          );
+        }
+      }
     }
-    if (task.dependencies.length > 0) {
-      console.log(
-        chalk.dim(`      deps: ${task.dependencies.join(", ")}`),
-      );
-    }
+    console.log();
   }
 }
 
-function priorityBadge(p: TaskPlan["priority"]): string {
+function priorityBadge(p: string): string {
   switch (p) {
     case "critical":
       return chalk.bgRed.white(" CRIT ");
@@ -126,6 +137,8 @@ function priorityBadge(p: TaskPlan["priority"]): string {
       return chalk.bgBlue.white(" MED  ");
     case "low":
       return chalk.bgGray.white(" LOW  ");
+    default:
+      return chalk.dim(" ???  ");
   }
 }
 
