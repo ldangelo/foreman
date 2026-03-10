@@ -7,6 +7,20 @@ export interface ExecutionResult {
 }
 
 /**
+ * Map word priorities to beads P0-P4 format.
+ * Beads CLI expects: P0 (highest) through P4 (lowest).
+ */
+function toBeadsPriority(priority: string): string {
+  switch (priority.toLowerCase()) {
+    case "critical": return "P0";
+    case "high": return "P1";
+    case "medium": return "P2";
+    case "low": return "P3";
+    default: return "P2";
+  }
+}
+
+/**
  * Execute a decomposition plan by creating beads in the project.
  *
  * Creates an epic bead, then child task beads with parent references
@@ -19,7 +33,7 @@ export async function executePlan(
   // 1. Create the epic bead
   const epicBead: Bead = await beads.create(plan.epic.title, {
     type: "epic",
-    priority: "high",
+    priority: "P1",
     description: plan.epic.description,
   });
 
@@ -31,7 +45,7 @@ export async function executePlan(
   for (const task of plan.tasks) {
     const taskBead: Bead = await beads.create(task.title, {
       type: "task",
-      priority: task.priority,
+      priority: toBeadsPriority(task.priority),
       parent: epicBead.id,
       description: task.description,
       labels: [`complexity:${task.estimatedComplexity}`],

@@ -130,7 +130,7 @@ export const planCommand = new Command("plan")
         const epicTitle = `Plan: ${productDescription.slice(0, 80)}${productDescription.length > 80 ? "..." : ""}`;
         const epic = await beads.create(epicTitle, {
           type: "epic",
-          priority: "high",
+          priority: "P1",
           description: `Planning pipeline for: ${productDescription.slice(0, 200)}`,
         });
         console.log(
@@ -143,7 +143,7 @@ export const planCommand = new Command("plan")
           const step = steps[i];
           const child = await beads.create(step.name, {
             type: "task",
-            priority: "high",
+            priority: "P1",
             parent: epic.id,
             description: `${step.command} ${step.input}`,
           });
