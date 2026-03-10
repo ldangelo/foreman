@@ -108,8 +108,20 @@ export class Dispatcher {
           branchName,
         }, run.id);
 
-        // TODO: Spawn the actual agent session via OpenClaw
-        // e.g. await openclaw.sessionsSpawn({ runtime, worktreePath, agentsMd })
+        // 5. Spawn the coding agent
+        const sessionKey = await this.spawnAgent(
+          runtime,
+          worktreePath,
+          beadInfo,
+          run.id,
+        );
+
+        // Update run with session key
+        this.store.updateRun(run.id, {
+          session_key: sessionKey,
+          status: "running",
+          started_at: new Date().toISOString(),
+        });
 
         dispatched.push({
           beadId: bead.id,
@@ -161,6 +173,89 @@ export class Dispatcher {
   generateAgentInstructions(bead: BeadInfo, worktreePath: string): string {
     const runtime = this.selectRuntime(bead);
     return workerAgentMd(bead, worktreePath, runtime);
+  }
+
+  // ── Agent Spawning ─────────────────────────────────────────────────────
+
+  /**
+   * Spawn a coding agent in the given worktree.
+   * Uses Claude Code CLI in --print mode (non-interactive).
+   * Returns a session identifier for tracking.
+   */
+  private async spawnAgent(
+    runtime: RuntimeSelection,
+    worktreePath: string,
+    bead: BeadInfo,
+    runId: string,
+  ): Promise<string> {
+    const { execFile } = await import("node:child_process");
+
+    const task = [
+      `Read AGENTS.md and implement the task described.`,
+      `Use bd to track your progress.`,
+      `When completely finished:`,
+      `  bd close ${bead.id} --reason "Completed"`,
+      `  git add -A`,
+      `  git commit -m "${bead.title} (${bead.id})"`,
+      `  git push -u origin foreman/${bead.id}`,
+      ``,
+      `When completely finished, run this command to notify:`,
+      `openclaw system event --text "Foreman: ${bead.title} (${bead.id}) completed" --mode now`,
+    ].join("\n");
+
+    if (runtime === "claude-code") {
+      const claudePath =
+        process.env.CLAUDE_PATH || "/opt/homebrew/bin/claude";
+
+      // Spawn Claude Code in background (non-blocking)
+      const child = execFile(
+        claudePath,
+        ["--permission-mode", "bypassPermissions", "--print", task],
+        {
+          cwd: worktreePath,
+          timeout: 1_800_000, // 30 minute timeout
+          maxBuffer: 10 * 1024 * 1024,
+          env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
+        },
+      );
+
+      // Detach — don't wait for completion
+      child.unref();
+
+      return `foreman:${runtime}:${runId}:pid-${child.pid}`;
+    } else if (runtime === "pi") {
+      const child = execFile(
+        "pi",
+        [task],
+        {
+          cwd: worktreePath,
+          timeout: 1_800_000,
+          maxBuffer: 10 * 1024 * 1024,
+          env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
+        },
+      );
+
+      child.unref();
+
+      return `foreman:${runtime}:${runId}:pid-${child.pid}`;
+    } else if (runtime === "codex") {
+      const child = execFile(
+        "codex",
+        ["exec", "--full-auto", task],
+        {
+          cwd: worktreePath,
+          timeout: 1_800_000,
+          maxBuffer: 10 * 1024 * 1024,
+          env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
+        },
+      );
+
+      child.unref();
+
+      return `foreman:${runtime}:${runId}:pid-${child.pid}`;
+    }
+
+    throw new Error(`Unknown runtime: ${runtime}`);
   }
 
   // ── Private helpers ───────────────────────────────────────────────────

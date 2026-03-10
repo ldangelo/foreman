@@ -4,6 +4,7 @@ import ora from "ora";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { ForemanStore } from "../../lib/store.js";
 
 export const initCommand = new Command("init")
   .description("Initialize foreman in a project")
@@ -46,9 +47,16 @@ export const initCommand = new Command("init")
       console.log(chalk.dim("Beads workspace already exists, skipping init"));
     }
 
-    // TODO: Register project in state store
-    // import { registerProject } from '../../lib/store.js';
-    // await registerProject({ name: projectName, path: projectDir });
+    // Register project in state store
+    const store = new ForemanStore();
+    const existing = store.getProjectByPath(projectDir);
+    if (existing) {
+      console.log(chalk.dim(`Project already registered (${existing.id})`));
+    } else {
+      const project = store.registerProject(projectName, projectDir);
+      console.log(chalk.dim(`Registered in store: ${project.id}`));
+    }
+    store.close();
 
     console.log();
     console.log(chalk.green("Foreman initialized successfully!"));

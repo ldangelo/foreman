@@ -191,17 +191,9 @@ async function executeEnsembleStep(
   runtime: string,
   outputDir: string,
 ): Promise<void> {
-  // TODO: Replace with OpenClaw sessions_spawn when integrated
-  //
-  // The ideal flow:
-  //   sessions_spawn({
-  //     runtime: "acp",
-  //     task: `Run ${step.command} with this input: ${step.input}. Save output to ${outputDir}/`,
-  //     cwd: process.cwd(),
-  //     mode: "run",
-  //   })
-  //
-  // For now, execute via Claude Code CLI directly
+  // Execute via Claude Code CLI with Ensemble slash commands
+  // Alternative: Use OpenClaw sessions_spawn with runtime: "acp" for
+  // isolated execution if preferred
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
   const execFileAsync = promisify(execFile);
