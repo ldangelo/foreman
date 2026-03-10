@@ -34,7 +34,7 @@ function toBeadsPriority(priority: string): string {
 function toBeadsType(type: string): string {
   switch (type) {
     case "epic": return "epic";
-    case "sprint": return "epic";     // sprint is a sub-epic container
+    case "sprint": return "feature";  // sprint is a container; feature allows deps on stories/tasks
     case "story": return "feature";   // story maps to feature
     case "task": return "task";
     case "spike": return "chore";     // spike is research/investigation
@@ -112,7 +112,17 @@ export async function executePlan(
     }
   }
 
-  // 3. Wire up dependencies across all tasks
+  // 3. Wire up cross-task dependencies
+  const depErrors: string[] = [];
+
+  async function safeDep(childId: string, parentId: string, context: string): Promise<void> {
+    try {
+      await beads.addDependency(childId, parentId);
+    } catch (err: any) {
+      depErrors.push(`${context}: ${childId} → ${parentId}: ${err.message}`);
+    }
+  }
+
   for (const sprint of plan.sprints) {
     for (const story of sprint.stories) {
       for (const task of story.tasks) {
@@ -122,11 +132,22 @@ export async function executePlan(
         for (const depTitle of task.dependencies) {
           const depId = titleToId.get(depTitle);
           if (depId) {
-            await beads.addDependency(taskId, depId);
+            await safeDep(taskId, depId, `task "${task.title}" depends on "${depTitle}"`);
           }
         }
       }
     }
+  }
+
+  // Note: We do NOT add explicit container dependencies (story→task, sprint→story).
+  // bd automatically creates implicit parent-child dependencies where children
+  // depend on their parent. Adding explicit reverse deps would create circular
+  // dependencies and deadlock everything. The parent-child relationship already
+  // ensures bd auto-closes containers when all children close.
+
+  if (depErrors.length > 0) {
+    const summary = depErrors.map((e) => `  - ${e}`).join("\n");
+    throw new Error(`${depErrors.length} dependency error(s):\n${summary}`);
   }
 
   return { epicBeadId: epicBead.id, sprintBeadIds, storyBeadIds, taskBeadIds };

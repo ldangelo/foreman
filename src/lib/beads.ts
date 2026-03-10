@@ -57,8 +57,10 @@ export async function execBd(
     return JSON.parse(trimmed);
   } catch (err: any) {
     // execFile rejects with code, stderr on non-zero exit
-    const stderr = err.stderr?.trim() ?? err.message;
-    throw new Error(`bd ${args[0]} failed: ${stderr}`);
+    const stderr = err.stderr?.trim() ?? "";
+    const stdout = err.stdout?.trim() ?? "";
+    const detail = stderr || stdout || err.message;
+    throw new Error(`bd ${finalArgs.join(" ")} failed: ${detail}`);
   }
 }
 

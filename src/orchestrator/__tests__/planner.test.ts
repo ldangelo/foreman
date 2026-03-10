@@ -96,9 +96,9 @@ describe("executePlan", () => {
     expect(calls[0][0]).toBe("Auth Epic");
     expect(calls[0][1]).toMatchObject({ type: "epic" });
 
-    // Sprint (beads-002) → mapped to bd type "epic" with label "kind:sprint"
+    // Sprint (beads-002) → mapped to bd type "feature" with label "kind:sprint"
     expect(calls[1][0]).toBe("Sprint 1: Foundation");
-    expect(calls[1][1]).toMatchObject({ type: "epic", parent: "beads-001" });
+    expect(calls[1][1]).toMatchObject({ type: "feature", parent: "beads-001" });
     expect(calls[1][1].labels).toContain("kind:sprint");
 
     // Story 1 (beads-003) → mapped to bd type "feature" with label "kind:story"
@@ -130,6 +130,23 @@ describe("executePlan", () => {
 
     // "Implement API" (beads-006) depends on "Create DB schema" (beads-004)
     expect(client.addDependency).toHaveBeenCalledWith("beads-006", "beads-004");
+  });
+
+  it("does not add container dependencies (bd parent-child handles it)", async () => {
+    const { client, depCalls } = makeMockBeads();
+    await executePlan(hierarchicalPlan, client);
+
+    // Only cross-task deps should exist, no container deps.
+    // "Implement API" (beads-006) depends on "Create DB schema" (beads-004)
+    expect(depCalls).toContainEqual({ childId: "beads-006", parentId: "beads-004" });
+
+    // No container should appear as childId (containers = epic, sprint, stories)
+    const containerIds = ["beads-001", "beads-002", "beads-003", "beads-005"];
+    for (const id of containerIds) {
+      expect(depCalls).not.toContainEqual(
+        expect.objectContaining({ childId: id }),
+      );
+    }
   });
 
   it("returns all bead IDs organized by level", async () => {
