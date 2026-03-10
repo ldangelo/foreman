@@ -1,0 +1,25 @@
+#!/usr/bin/env node
+
+import { Command } from "commander";
+import { initCommand } from "./commands/init.js";
+import { planCommand } from "./commands/plan.js";
+import { runCommand } from "./commands/run.js";
+import { statusCommand } from "./commands/status.js";
+import { mergeCommand } from "./commands/merge.js";
+import { dashboardCommand } from "./commands/dashboard.js";
+
+const program = new Command();
+
+program
+  .name("foreman")
+  .description("Multi-agent coding orchestrator built on Beads")
+  .version("0.1.0");
+
+program.addCommand(initCommand);
+program.addCommand(planCommand);
+program.addCommand(runCommand);
+program.addCommand(statusCommand);
+program.addCommand(mergeCommand);
+program.addCommand(dashboardCommand);
+
+program.parse();
