@@ -51,6 +51,22 @@ export interface DispatchResult {
   activeAgents: number;
 }
 
+// ── Plan step types ───────────────────────────────────────────────────
+
+export interface PlanStepDefinition {
+  name: string;
+  command: string;
+  description: string;
+  input: string;
+}
+
+export interface PlanStepDispatched {
+  beadId: string;
+  title: string;
+  runId: string;
+  sessionKey: string;
+}
+
 // ── Monitor types ──────────────────────────────────────────────────────
 
 export interface MonitorReport {

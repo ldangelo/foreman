@@ -1,7 +1,12 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { readFileSync, existsSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve } from "node:path";
+
+import { BeadsClient } from "../../lib/beads.js";
+import { ForemanStore } from "../../lib/store.js";
+import { Dispatcher } from "../../orchestrator/dispatcher.js";
+import type { PlanStepDefinition } from "../../orchestrator/types.js";
 
 export const planCommand = new Command("plan")
   .description(
@@ -42,6 +47,7 @@ export const planCommand = new Command("plan")
       },
     ) => {
       const outputDir = resolve(opts.outputDir);
+      const projectPath = resolve(".");
 
       // Determine input
       let productDescription: string;
@@ -53,179 +59,238 @@ export const planCommand = new Command("plan")
         productDescription = description;
       }
 
-      // Define the pipeline
-      const pipeline: PipelineStep[] = [];
+      // Initialize clients
+      const store = new ForemanStore();
+      const beads = new BeadsClient(projectPath);
+      const dispatcher = new Dispatcher(beads, store, projectPath);
 
-      if (opts.fromPrd) {
-        // Skip PRD steps, start from existing PRD
-        const prdPath = resolve(opts.fromPrd);
-        if (!existsSync(prdPath)) {
-          console.error(chalk.red(`PRD file not found: ${prdPath}`));
-          process.exitCode = 1;
-          return;
-        }
-        console.log(chalk.dim(`Using existing PRD: ${prdPath}\n`));
-      } else {
-        pipeline.push({
-          name: "Create PRD",
-          command: "/ensemble:create-prd",
-          description:
-            "Analyze product description, define users, goals, and requirements",
-          input: productDescription,
-        });
-        pipeline.push({
-          name: "Refine PRD",
-          command: "/ensemble:refine-prd",
-          description:
-            "Review and strengthen acceptance criteria, edge cases, constraints",
-          input: `Review and refine the PRD in ${outputDir}`,
-        });
-      }
-
-      if (!opts.prdOnly) {
-        pipeline.push({
-          name: "Create TRD",
-          command: "/ensemble:create-trd",
-          description:
-            "Translate PRD into technical architecture, task breakdown, sprint planning",
-          input: opts.fromPrd
-            ? resolve(opts.fromPrd)
-            : `${outputDir}/PRD.md`,
-        });
-        pipeline.push({
-          name: "Refine TRD",
-          command: "/ensemble:refine-trd",
-          description:
-            "Review technical decisions, validate task dependencies, refine estimates",
-          input: `Review and refine the TRD in ${outputDir}`,
-        });
-      }
-
-      // Display pipeline
-      console.log(chalk.bold.cyan("\n🔧 Foreman Planning Pipeline\n"));
-      console.log(
-        chalk.dim(
-          `Runtime: ${opts.runtime} | Output: ${outputDir}\n`,
-        ),
-      );
-
-      for (let i = 0; i < pipeline.length; i++) {
-        const step = pipeline[i];
-        const num = `${i + 1}`.padStart(2);
-        console.log(
-          `  ${chalk.bold(`${num}.`)} ${chalk.cyan(step.name)} ${chalk.dim(`(${step.command})`)}`,
-        );
-        console.log(chalk.dim(`      ${step.description}`));
-      }
-
-      if (opts.dryRun) {
-        console.log(
-          chalk.yellow("\n--dry-run: Pipeline not executed."),
-        );
-        console.log(
-          chalk.dim(
-            "\nTo execute, remove --dry-run. Each step spawns a Claude Code agent",
-          ),
-        );
-        console.log(
-          chalk.dim(
-            "via OpenClaw sessions_spawn with the Ensemble slash commands.",
-          ),
-        );
-        return;
-      }
-
-      console.log(chalk.bold("\n▶ Starting pipeline...\n"));
-
-      // Execute pipeline steps sequentially
-      for (let i = 0; i < pipeline.length; i++) {
-        const step = pipeline[i];
-        console.log(
-          chalk.bold(
-            `\n[${i + 1}/${pipeline.length}] ${step.name}...`,
-          ),
-        );
-
-        try {
-          await executeEnsembleStep(step, opts.runtime, outputDir);
-          console.log(chalk.green(`  ✓ ${step.name} complete`));
-        } catch (err: any) {
+      try {
+        // Ensure project is registered
+        const project = store.getProjectByPath(projectPath);
+        if (!project) {
           console.error(
-            chalk.red(`  ✗ ${step.name} failed: ${err.message}`),
-          );
-          console.log(
-            chalk.yellow(
-              "\nPipeline paused. Fix the issue and re-run with --from-prd if needed.",
+            chalk.red(
+              "No project registered for this directory. Run 'foreman init' first.",
             ),
           );
           process.exitCode = 1;
           return;
         }
-      }
 
-      console.log(chalk.bold.green("\n✓ Planning pipeline complete!"));
-      console.log(chalk.dim(`\nOutputs in: ${outputDir}`));
-      if (!opts.prdOnly) {
-        console.log(
-          chalk.dim(
-            `\nNext step: foreman decompose ${outputDir}/TRD.md`,
-          ),
+        // Validate --from-prd path
+        if (opts.fromPrd) {
+          const prdPath = resolve(opts.fromPrd);
+          if (!existsSync(prdPath)) {
+            console.error(chalk.red(`PRD file not found: ${prdPath}`));
+            process.exitCode = 1;
+            return;
+          }
+          console.log(chalk.dim(`Using existing PRD: ${prdPath}\n`));
+        }
+
+        // Build pipeline step definitions
+        const steps = buildPipelineSteps(
+          productDescription,
+          outputDir,
+          opts.fromPrd,
+          opts.prdOnly,
         );
+
+        // Display pipeline
+        console.log(chalk.bold.cyan("\n Planning Pipeline\n"));
+        console.log(
+          chalk.dim(`Runtime: ${opts.runtime} | Output: ${outputDir}\n`),
+        );
+        for (let i = 0; i < steps.length; i++) {
+          const step = steps[i];
+          const num = `${i + 1}`.padStart(2);
+          console.log(
+            `  ${chalk.bold(`${num}.`)} ${chalk.cyan(step.name)} ${chalk.dim(`(${step.command})`)}`,
+          );
+          console.log(chalk.dim(`      ${step.description}`));
+        }
+
+        if (opts.dryRun) {
+          console.log(
+            chalk.yellow("\n--dry-run: Pipeline not executed."),
+          );
+          console.log(
+            chalk.dim(
+              "\nWhen run without --dry-run, Foreman will:",
+            ),
+          );
+          console.log(chalk.dim("  1. Create an epic bead with child beads (sequential dependencies)"));
+          console.log(chalk.dim("  2. Dispatch each step via Claude Code + Ensemble"));
+          console.log(chalk.dim("  3. Track progress in SQLite + dashboard"));
+          console.log(chalk.dim("  4. Suggest 'foreman decompose' on completion"));
+          return;
+        }
+
+        // Create epic bead
+        const epicTitle = `Plan: ${productDescription.slice(0, 80)}${productDescription.length > 80 ? "..." : ""}`;
+        const epic = await beads.create(epicTitle, {
+          type: "epic",
+          priority: "high",
+          description: `Planning pipeline for: ${productDescription.slice(0, 200)}`,
+        });
+        console.log(
+          chalk.dim(`\nEpic bead: ${epic.id} — ${epicTitle}`),
+        );
+
+        // Create child beads with sequential dependencies
+        const beadIds: string[] = [];
+        for (let i = 0; i < steps.length; i++) {
+          const step = steps[i];
+          const child = await beads.create(step.name, {
+            type: "task",
+            priority: "high",
+            parent: epic.id,
+            description: `${step.command} ${step.input}`,
+          });
+
+          // Add dependency on the previous bead (sequential chain)
+          if (i > 0) {
+            await beads.addDependency(child.id, beadIds[i - 1]);
+          }
+
+          beadIds.push(child.id);
+          console.log(
+            chalk.dim(
+              `  Bead ${child.id}: ${step.name}${i > 0 ? ` (depends on ${beadIds[i - 1]})` : " (ready)"}`,
+            ),
+          );
+        }
+
+        // Sequential dispatch loop
+        console.log(chalk.bold("\n Starting pipeline...\n"));
+        const beadIdSet = new Set(beadIds);
+        let completedCount = 0;
+
+        while (completedCount < beadIds.length) {
+          // Find ready beads that belong to our epic
+          const readyBeads = await beads.ready();
+          const epicReady = readyBeads.filter((b) => beadIdSet.has(b.id));
+
+          if (epicReady.length === 0) {
+            // No ready beads yet — poll until one becomes ready
+            await sleep(10_000);
+            continue;
+          }
+
+          for (const readyBead of epicReady) {
+            const stepIndex = beadIds.indexOf(readyBead.id);
+            const step = steps[stepIndex];
+            console.log(
+              chalk.bold(
+                `\n[${completedCount + 1}/${beadIds.length}] ${step.name}...`,
+              ),
+            );
+
+            try {
+              const result = await dispatcher.dispatchPlanStep(
+                project.id,
+                {
+                  id: readyBead.id,
+                  title: readyBead.title,
+                  type: readyBead.type,
+                  priority: readyBead.priority,
+                },
+                step.command,
+                step.input,
+                outputDir,
+              );
+
+              // Close the bead on success
+              await beads.close(readyBead.id, "Completed");
+              console.log(
+                chalk.green(
+                  `  ${step.name} complete (run: ${result.runId})`,
+                ),
+              );
+              completedCount++;
+            } catch (err: unknown) {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error(
+                chalk.red(`  ${step.name} failed: ${message}`),
+              );
+              console.log(
+                chalk.yellow(
+                  "\nPipeline paused. Fix the issue and re-run with --from-prd if needed.",
+                ),
+              );
+              process.exitCode = 1;
+              return;
+            }
+          }
+        }
+
+        // All done — close the epic
+        await beads.close(epic.id, "All planning steps completed");
+        console.log(chalk.bold.green("\n Planning pipeline complete!"));
+        console.log(chalk.dim(`\nOutputs in: ${outputDir}`));
+        console.log(chalk.dim(`Epic: ${epic.id}`));
+        if (!opts.prdOnly) {
+          console.log(
+            chalk.dim(
+              `\nNext step: foreman decompose ${outputDir}/TRD.md`,
+            ),
+          );
+        }
+      } finally {
+        store.close();
       }
     },
   );
 
-// ── Types ───────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────
 
-interface PipelineStep {
-  name: string;
-  command: string;
-  description: string;
-  input: string;
+function buildPipelineSteps(
+  productDescription: string,
+  outputDir: string,
+  fromPrd: string | undefined,
+  prdOnly: boolean | undefined,
+): PlanStepDefinition[] {
+  const steps: PlanStepDefinition[] = [];
+
+  if (!fromPrd) {
+    steps.push({
+      name: "Create PRD",
+      command: "/ensemble:create-prd",
+      description:
+        "Analyze product description, define users, goals, and requirements",
+      input: productDescription,
+    });
+    steps.push({
+      name: "Refine PRD",
+      command: "/ensemble:refine-prd",
+      description:
+        "Review and strengthen acceptance criteria, edge cases, constraints",
+      input: `Review and refine the PRD in ${outputDir}`,
+    });
+  }
+
+  if (!prdOnly) {
+    steps.push({
+      name: "Create TRD",
+      command: "/ensemble:create-trd",
+      description:
+        "Translate PRD into technical architecture, task breakdown, sprint planning",
+      input: fromPrd
+        ? resolve(fromPrd)
+        : `${outputDir}/PRD.md`,
+    });
+    steps.push({
+      name: "Refine TRD",
+      command: "/ensemble:refine-trd",
+      description:
+        "Review technical decisions, validate task dependencies, refine estimates",
+      input: `Review and refine the TRD in ${outputDir}`,
+    });
+  }
+
+  return steps;
 }
 
-// ── Ensemble Execution ──────────────────────────────────────────────────
-
-async function executeEnsembleStep(
-  step: PipelineStep,
-  runtime: string,
-  outputDir: string,
-): Promise<void> {
-  // Execute via Claude Code CLI with Ensemble slash commands
-  // Alternative: Use OpenClaw sessions_spawn with runtime: "acp" for
-  // isolated execution if preferred
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const execFileAsync = promisify(execFile);
-
-  const claudePath =
-    process.env.CLAUDE_PATH || "/opt/homebrew/bin/claude";
-  const prompt = `${step.command} ${step.input}\n\nSave all outputs to the ${outputDir}/ directory.`;
-
-  try {
-    await execFileAsync(
-      claudePath,
-      [
-        "--permission-mode",
-        "bypassPermissions",
-        "--print",
-        prompt,
-      ],
-      {
-        cwd: process.cwd(),
-        timeout: 600_000, // 10 minute timeout per step
-        maxBuffer: 10 * 1024 * 1024,
-      },
-    );
-  } catch (err: any) {
-    if (err.killed) {
-      throw new Error("Timed out after 10 minutes");
-    }
-    // Claude Code may exit with non-zero but still produce output
-    if (err.stderr && !err.stdout) {
-      throw new Error(err.stderr);
-    }
-    // If it produced stdout, consider it a success
-    console.log(chalk.dim("  (completed with warnings)"));
-  }
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

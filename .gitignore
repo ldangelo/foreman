@@ -3,3 +3,6 @@ dist/
 .foreman/
 *.db
 .env
+
+# Dolt database files (added by bd init)
+.dolt/

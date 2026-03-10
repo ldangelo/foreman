@@ -11,6 +11,7 @@ import type {
   DispatchedTask,
   SkippedTask,
   RuntimeSelection,
+  PlanStepDispatched,
 } from "./types.js";
 
 // ── Dispatcher ──────────────────────────────────────────────────────────
@@ -145,6 +146,111 @@ export class Dispatcher {
       dispatched,
       skipped,
       activeAgents: activeRuns.length + dispatched.length,
+    };
+  }
+
+  /**
+   * Dispatch a planning step (PRD/TRD) without creating a worktree.
+   * Runs Claude Code synchronously and waits for completion.
+   */
+  async dispatchPlanStep(
+    projectId: string,
+    bead: BeadInfo,
+    ensembleCommand: string,
+    input: string,
+    outputDir: string,
+  ): Promise<PlanStepDispatched> {
+    // 1. Record run in store
+    const run = this.store.createRun(projectId, bead.id, "claude-code");
+
+    // 2. Log dispatch event
+    this.store.logEvent(projectId, "dispatch", {
+      beadId: bead.id,
+      title: bead.title,
+      ensembleCommand,
+      outputDir,
+      type: "plan-step",
+    }, run.id);
+
+    // 3. Build the prompt
+    const prompt = `${ensembleCommand} ${input}\n\nSave all outputs to the ${outputDir}/ directory.`;
+
+    // 4. Spawn Claude Code synchronously (blocking — plan steps are sequential)
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+
+    const claudePath = process.env.CLAUDE_PATH || "/opt/homebrew/bin/claude";
+
+    const sessionKey = `foreman:plan:${run.id}`;
+    this.store.updateRun(run.id, {
+      session_key: sessionKey,
+      status: "running",
+      started_at: new Date().toISOString(),
+    });
+
+    try {
+      await execFileAsync(
+        claudePath,
+        ["--permission-mode", "bypassPermissions", "--print", prompt],
+        {
+          cwd: this.projectPath,
+          timeout: 600_000, // 10 minute timeout per step
+          maxBuffer: 10 * 1024 * 1024,
+          env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
+        },
+      );
+
+      this.store.updateRun(run.id, {
+        status: "completed",
+        completed_at: new Date().toISOString(),
+      });
+      this.store.logEvent(projectId, "complete", {
+        beadId: bead.id,
+        title: bead.title,
+      }, run.id);
+    } catch (err: unknown) {
+      const error = err as { killed?: boolean; stderr?: string; stdout?: string; message?: string };
+      if (error.killed) {
+        this.store.updateRun(run.id, {
+          status: "failed",
+          completed_at: new Date().toISOString(),
+        });
+        this.store.logEvent(projectId, "fail", {
+          beadId: bead.id,
+          reason: "Timed out after 10 minutes",
+        }, run.id);
+        throw new Error("Timed out after 10 minutes");
+      }
+      // Claude Code may exit non-zero but still produce output
+      if (error.stderr && !error.stdout) {
+        this.store.updateRun(run.id, {
+          status: "failed",
+          completed_at: new Date().toISOString(),
+        });
+        this.store.logEvent(projectId, "fail", {
+          beadId: bead.id,
+          reason: error.stderr,
+        }, run.id);
+        throw new Error(error.stderr);
+      }
+      // Had stdout — treat as success with warnings
+      this.store.updateRun(run.id, {
+        status: "completed",
+        completed_at: new Date().toISOString(),
+      });
+      this.store.logEvent(projectId, "complete", {
+        beadId: bead.id,
+        title: bead.title,
+        warnings: true,
+      }, run.id);
+    }
+
+    return {
+      beadId: bead.id,
+      title: bead.title,
+      runId: run.id,
+      sessionKey,
     };
   }
 
