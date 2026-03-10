@@ -33,10 +33,26 @@ export const statusCommand = new Command("status")
     }
 
     const total = beads.length;
-    const ready = beads.filter((b) => b.status === "ready").length;
-    const inProgress = beads.filter((b) => b.status === "in-progress").length;
-    const completed = beads.filter((b) => b.status === "completed").length;
-    const blocked = beads.filter((b) => b.status === "blocked").length;
+    const inProgress = beads.filter((b) => b.status === "in_progress").length;
+    const completed = beads.filter((b) => b.status === "closed").length;
+
+    // "ready" and "blocked" are computed from dependencies, not stored as status
+    let ready = 0;
+    let blocked = 0;
+    try {
+      const readyOutput = execFileSync("bd", ["ready", "--json", "-n", "0"], {
+        stdio: ["pipe", "pipe", "pipe"],
+        encoding: "utf-8",
+      });
+      ready = JSON.parse(readyOutput).length;
+    } catch { /* bd ready may fail if no issues exist */ }
+    try {
+      const blockedOutput = execFileSync("bd", ["blocked", "--json"], {
+        stdio: ["pipe", "pipe", "pipe"],
+        encoding: "utf-8",
+      });
+      blocked = JSON.parse(blockedOutput).length;
+    } catch { /* bd blocked may fail if no issues exist */ }
 
     console.log(chalk.bold("Tasks"));
     console.log(`  Total:       ${chalk.white(total)}`);
