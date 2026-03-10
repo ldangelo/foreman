@@ -63,6 +63,13 @@ Given the TRD below, produce a JSON hierarchy following this strict structure:
 7. **3-8 stories per sprint**: Fewer than 3 means stories are too large. More than 8 means the sprint is overloaded.
 8. **2-6 tasks per story**: Fewer than 2 means the story is a single task. More than 6 means the story should be split.
 
+## Output Rules (CRITICAL)
+
+- Your ENTIRE response must be a single JSON object. Start with `{` and end with `}`.
+- Do NOT include any text before or after the JSON. No explanations, no markdown fences.
+- Keep descriptions to ONE concise sentence each. This is critical to fit within output limits.
+- Aim for 40-80 total tasks across all sprints. Do NOT create hundreds of micro-tasks.
+
 ## Priority Guide
 
 - **critical**: Core functionality that everything else depends on (auth, data model, config)

@@ -26,13 +26,13 @@ export async function decomposePrdWithLlm(
   // Build the system instruction
   const systemPrompt = [
     "You are a senior technical lead decomposing a TRD into a hierarchical work breakdown.",
-    "Respond with ONLY valid JSON matching the schema in the prompt.",
-    "No markdown fences, no explanation, no commentary — just the JSON object.",
+    "CRITICAL: Your ENTIRE response must be a single JSON object. No text before or after.",
+    "Do NOT explain your thinking. Do NOT say 'here is the JSON'. Start with { and end with }.",
     "The JSON must have an 'epic' object (title + description) and a 'sprints' array.",
     "Each sprint has: title, goal, stories array.",
     "Each story has: title, description, priority, tasks array.",
     "Each task has: title, description, type (task|spike|test), priority, estimatedComplexity, dependencies.",
-    "The hierarchy is: epic → sprints → stories → tasks.",
+    "Keep descriptions concise (1 sentence). This keeps the JSON compact.",
   ].join(" ");
 
   // Call Claude Code in non-interactive mode
@@ -41,6 +41,7 @@ export async function decomposePrdWithLlm(
     "--permission-mode", "bypassPermissions",
     "--print",
     "--output-format", "text",
+    "--max-turns", "1",
     ...(model ? ["--model", model] : []),
     "--system-prompt", systemPrompt,
     "-", // read prompt from stdin
@@ -102,6 +103,7 @@ function findClaude(): string {
 
 /**
  * Parse the LLM response, stripping markdown fences if present.
+ * Attempts to repair truncated JSON if the response was cut off.
  */
 function parseResponse(raw: string): DecompositionPlan {
   // Strip markdown code fences
@@ -111,7 +113,7 @@ function parseResponse(raw: string): DecompositionPlan {
     json = fenceMatch[1];
   }
 
-  // Try to find the JSON object if there's extra text
+  // Try to find the JSON object if there's extra text before it
   if (!json.trim().startsWith("{")) {
     const objStart = json.indexOf("{");
     if (objStart >= 0) {
@@ -119,13 +121,132 @@ function parseResponse(raw: string): DecompositionPlan {
     }
   }
 
+  // Trim any trailing text after the JSON (e.g., "Note: ..." after the closing brace)
+  json = json.trim();
+
+  // First attempt: parse as-is
   try {
     return JSON.parse(json);
+  } catch {
+    // noop — try repair
+  }
+
+  // Second attempt: repair truncated JSON
+  const repaired = repairTruncatedJson(json);
+  try {
+    return JSON.parse(repaired);
   } catch (err) {
     throw new Error(
-      `Failed to parse LLM response as JSON: ${err instanceof Error ? err.message : String(err)}\n\nRaw response:\n${raw.slice(0, 500)}`,
+      `Failed to parse LLM response as JSON: ${err instanceof Error ? err.message : String(err)}\n\nRaw response (first 500 chars):\n${raw.slice(0, 500)}`,
     );
   }
+}
+
+/**
+ * Attempt to repair truncated JSON by closing open brackets/braces.
+ * Works by tracking the nesting stack and appending missing closers.
+ */
+function repairTruncatedJson(json: string): string {
+  // Find the last valid position by scanning for unclosed structures
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < json.length; i++) {
+    const ch = json[i];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (ch === "{") stack.push("}");
+    else if (ch === "[") stack.push("]");
+    else if (ch === "}" || ch === "]") stack.pop();
+  }
+
+  if (stack.length === 0) return json; // Already balanced
+
+  // Truncate to the last complete value boundary
+  // Find the last comma, closing bracket, or colon that indicates a complete value
+  let truncateAt = json.length;
+
+  // Walk back to find a safe truncation point (last complete key-value pair)
+  if (inString) {
+    // We're inside an unclosed string — find the opening quote and remove from there
+    const lastQuote = json.lastIndexOf('"');
+    if (lastQuote >= 0) {
+      truncateAt = lastQuote;
+      // Also remove the key if we're in a key:value pair
+      const beforeQuote = json.slice(0, truncateAt).trimEnd();
+      if (beforeQuote.endsWith(",")) {
+        truncateAt = beforeQuote.length - 1;
+      } else if (beforeQuote.endsWith(":")) {
+        // Remove the entire key:"... fragment
+        const keyStart = json.lastIndexOf('"', truncateAt - 2);
+        if (keyStart >= 0) {
+          truncateAt = keyStart;
+          const beforeKey = json.slice(0, truncateAt).trimEnd();
+          if (beforeKey.endsWith(",")) {
+            truncateAt = beforeKey.length - 1;
+          }
+        }
+      }
+    }
+  } else {
+    // Not in a string — find the last complete element
+    const trimmed = json.trimEnd();
+    const lastChar = trimmed[trimmed.length - 1];
+    if (lastChar !== "}" && lastChar !== "]" && lastChar !== '"' &&
+        lastChar !== "e" && lastChar !== "l" && // true/false/null endings
+        !/\d/.test(lastChar)) {
+      // Last char isn't a complete value — find the last comma
+      const lastComma = trimmed.lastIndexOf(",");
+      if (lastComma >= 0) {
+        truncateAt = lastComma;
+      }
+    }
+  }
+
+  // Rebuild the stack for the truncated portion
+  let result = json.slice(0, truncateAt);
+  const repairStack: string[] = [];
+  inString = false;
+  escaped = false;
+
+  for (let i = 0; i < result.length; i++) {
+    const ch = result[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\") { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") repairStack.push("}");
+    else if (ch === "[") repairStack.push("]");
+    else if (ch === "}" || ch === "]") repairStack.pop();
+  }
+
+  // Remove any trailing comma before closing
+  result = result.trimEnd();
+  if (result.endsWith(",")) {
+    result = result.slice(0, -1);
+  }
+
+  // Close all open structures
+  result += repairStack.reverse().join("");
+
+  return result;
 }
 
 /**
