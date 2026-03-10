@@ -3,6 +3,7 @@ import chalk from "chalk";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { decomposePrd } from "../../orchestrator/decomposer.js";
+import { decomposePrdWithLlm } from "../../orchestrator/decomposer-llm.js";
 import { executePlan } from "../../orchestrator/planner.js";
 import { BeadsClient } from "../../lib/beads.js";
 import type { DecompositionPlan, TaskPlan } from "../../orchestrator/types.js";
@@ -12,7 +13,9 @@ export const decomposeCommand = new Command("decompose")
   .argument("<trd>", "Path to TRD file")
   .option("--auto", "Skip confirmation and create beads immediately")
   .option("--dry-run", "Show the plan without creating beads")
-  .action(async (trd: string, opts: { auto?: boolean; dryRun?: boolean }) => {
+  .option("--llm", "Use LLM-powered decomposition (sends TRD to Claude)")
+  .option("--model <model>", "Model to use for LLM decomposition")
+  .action(async (trd: string, opts: { auto?: boolean; dryRun?: boolean; llm?: boolean; model?: string }) => {
     let content: string;
 
     // Check if it's a file path
@@ -34,10 +37,15 @@ export const decomposeCommand = new Command("decompose")
     );
 
     // Decompose
-    console.log(chalk.bold("Decomposing TRD into tasks..."));
+    const mode = opts.llm ? "LLM" : "heuristic";
+    console.log(chalk.bold(`Decomposing TRD into tasks... ${chalk.dim(`(${mode} mode)`)}`));
     let plan: DecompositionPlan;
     try {
-      plan = await decomposePrd(content, process.cwd());
+      if (opts.llm) {
+        plan = await decomposePrdWithLlm(content, opts.model);
+      } else {
+        plan = await decomposePrd(content, process.cwd());
+      }
     } catch (err: any) {
       console.error(chalk.red(`Decomposition failed: ${err.message}`));
       process.exitCode = 1;

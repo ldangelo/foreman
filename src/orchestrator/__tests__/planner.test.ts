@@ -58,7 +58,7 @@ describe("executePlan", () => {
     await executePlan(planWithTasks, client);
 
     expect(client.create).toHaveBeenCalledTimes(3); // 1 epic + 2 tasks
-    const firstCall = client.create.mock.calls[0];
+    const firstCall = (client.create as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(firstCall[0]).toBe("Auth Epic");
     expect(firstCall[1]).toMatchObject({ type: "epic" });
   });
@@ -68,9 +68,10 @@ describe("executePlan", () => {
     await executePlan(planWithTasks, client);
 
     // Epic gets beads-001, so children should reference it
-    const secondCall = client.create.mock.calls[1];
+    const createMock = client.create as ReturnType<typeof vi.fn>;
+    const secondCall = createMock.mock.calls[1];
     expect(secondCall[1]).toMatchObject({ parent: "beads-001" });
-    const thirdCall = client.create.mock.calls[2];
+    const thirdCall = createMock.mock.calls[2];
     expect(thirdCall[1]).toMatchObject({ parent: "beads-001" });
   });
 

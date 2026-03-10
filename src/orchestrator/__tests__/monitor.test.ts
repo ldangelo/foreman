@@ -23,7 +23,7 @@ function makeMocks() {
     getActiveRuns: vi.fn(() => [] as Run[]),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
-    getRunEvents: vi.fn(() => []),
+    getRunEvents: vi.fn((): any[] => []),
   };
   const beads = {
     show: vi.fn(async () => ({ status: "open" })),
@@ -85,8 +85,8 @@ describe("Monitor", () => {
       const activeRun = makeRun({ id: "run-active", bead_id: "beads-active" });
 
       store.getActiveRuns.mockReturnValue([completedRun, stuckRun, activeRun]);
-      beads.show.mockImplementation(async (id: string) => {
-        if (id === "beads-done") return { status: "closed" };
+      beads.show.mockImplementation(async (...args: any[]) => {
+        if (args[0] === "beads-done") return { status: "closed" };
         return { status: "open" };
       });
 
@@ -104,7 +104,7 @@ describe("Monitor", () => {
       const { store, monitor } = makeMocks();
       const run = makeRun();
       // Simulate 3 prior recovery events (already at max)
-      store.getRunEvents.mockReturnValue([{}, {}, {}]);
+      store.getRunEvents.mockReturnValue([{} as any, {} as any, {} as any]);
 
       const result = await monitor.recoverStuck(run, 3);
 
