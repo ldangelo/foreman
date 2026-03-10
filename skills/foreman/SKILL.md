@@ -76,11 +76,15 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts plan --prd-only "Build a 
 npx tsx ~/Development/Fortium/foreman/src/cli/index.ts plan --dry-run "Build something"
 ```
 
-Runs the Ensemble pipeline sequentially:
+Creates an **epic bead** with 4 child beads (sequential dependencies). Each step dispatches
+through the dispatcher with full tracking in SQLite:
 1. `/ensemble:create-prd` — Analyze description, define requirements
 2. `/ensemble:refine-prd` — Strengthen acceptance criteria, edge cases
 3. `/ensemble:create-trd` — Technical architecture, task breakdown, sprint planning
 4. `/ensemble:refine-trd` — Validate decisions, refine estimates
+
+The dispatch loop automatically waits for each step to complete before unblocking the next.
+All steps visible in the dashboard alongside coding agents.
 
 ### 3. Decompose (TRD → Beads)
 

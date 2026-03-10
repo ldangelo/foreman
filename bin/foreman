@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Foreman — Multi-agent coding orchestrator
+# Wrapper that runs the TypeScript CLI via tsx
+
+FOREMAN_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)"
+export PATH="/opt/homebrew/bin:$PATH"
+
+exec "$FOREMAN_DIR/node_modules/.bin/tsx" "$FOREMAN_DIR/src/cli/index.ts" "$@"

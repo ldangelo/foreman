@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "foreman": "dist/cli/index.js"
+    "foreman": "bin/foreman"
   },
   "scripts": {
     "build": "tsc",
@@ -41,5 +41,8 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
