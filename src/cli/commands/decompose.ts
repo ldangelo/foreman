@@ -11,9 +11,9 @@ import type { DecompositionPlan, TaskPlan } from "../../orchestrator/types.js";
 export const decomposeCommand = new Command("decompose")
   .description("Decompose a TRD into beads task hierarchy")
   .argument("<trd>", "Path to TRD file")
-  .option("--auto", "Skip confirmation and create beads immediately")
+  .option("--no-auto", "Prompt for confirmation before creating beads")
   .option("--dry-run", "Show the plan without creating beads")
-  .option("--llm", "Use LLM-powered decomposition (sends TRD to Claude)")
+  .option("--no-llm", "Use heuristic decomposition instead of LLM")
   .option("--model <model>", "Model to use for LLM decomposition")
   .action(async (trd: string, opts: { auto?: boolean; dryRun?: boolean; llm?: boolean; model?: string }) => {
     let content: string;
