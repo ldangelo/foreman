@@ -3,6 +3,7 @@
 import { Command } from "commander";
 import { initCommand } from "./commands/init.js";
 import { planCommand } from "./commands/plan.js";
+import { decomposeCommand } from "./commands/decompose.js";
 import { runCommand } from "./commands/run.js";
 import { statusCommand } from "./commands/status.js";
 import { mergeCommand } from "./commands/merge.js";
@@ -18,6 +19,7 @@ program
 
 program.addCommand(initCommand);
 program.addCommand(planCommand);
+program.addCommand(decomposeCommand);
 program.addCommand(runCommand);
 program.addCommand(statusCommand);
 program.addCommand(mergeCommand);
