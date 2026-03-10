@@ -123,6 +123,7 @@ export async function executePlan(
     }
   }
 
+  const depPromises: Promise<void>[] = [];
   for (const sprint of plan.sprints) {
     for (const story of sprint.stories) {
       for (const task of story.tasks) {
@@ -132,12 +133,13 @@ export async function executePlan(
         for (const depTitle of task.dependencies) {
           const depId = titleToId.get(depTitle);
           if (depId) {
-            await safeDep(taskId, depId, `task "${task.title}" depends on "${depTitle}"`);
+            depPromises.push(safeDep(taskId, depId, `task "${task.title}" depends on "${depTitle}"`));
           }
         }
       }
     }
   }
+  await Promise.all(depPromises);
 
   // Note: We do NOT add explicit container dependencies (story→task, sprint→story).
   // bd automatically creates implicit parent-child dependencies where children

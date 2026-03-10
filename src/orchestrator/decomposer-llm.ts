@@ -113,16 +113,15 @@ function parseResponse(raw: string): DecompositionPlan {
     json = fenceMatch[1];
   }
 
+  json = json.trim();
+
   // Try to find the JSON object if there's extra text before it
-  if (!json.trim().startsWith("{")) {
+  if (!json.startsWith("{")) {
     const objStart = json.indexOf("{");
     if (objStart >= 0) {
       json = json.slice(objStart);
     }
   }
-
-  // Trim any trailing text after the JSON (e.g., "Note: ..." after the closing brace)
-  json = json.trim();
 
   // First attempt: parse as-is
   try {
@@ -143,53 +142,44 @@ function parseResponse(raw: string): DecompositionPlan {
 }
 
 /**
- * Attempt to repair truncated JSON by closing open brackets/braces.
- * Works by tracking the nesting stack and appending missing closers.
+ * Scan a JSON string and return the nesting stack and string state.
  */
-function repairTruncatedJson(json: string): string {
-  // Find the last valid position by scanning for unclosed structures
+function scanJsonNesting(str: string): { stack: string[]; inString: boolean } {
   const stack: string[] = [];
   let inString = false;
   let escaped = false;
 
-  for (let i = 0; i < json.length; i++) {
-    const ch = json[i];
-
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\") { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
     if (inString) continue;
-
     if (ch === "{") stack.push("}");
     else if (ch === "[") stack.push("]");
     else if (ch === "}" || ch === "]") stack.pop();
   }
 
+  return { stack, inString };
+}
+
+/**
+ * Attempt to repair truncated JSON by closing open brackets/braces.
+ * Works by tracking the nesting stack and appending missing closers.
+ */
+function repairTruncatedJson(json: string): string {
+  const { stack, inString } = scanJsonNesting(json);
+
   if (stack.length === 0) return json; // Already balanced
 
-  // Truncate to the last complete value boundary
-  // Find the last comma, closing bracket, or colon that indicates a complete value
+  // Find a safe truncation point (last complete value boundary)
   let truncateAt = json.length;
 
-  // Walk back to find a safe truncation point (last complete key-value pair)
   if (inString) {
-    // We're inside an unclosed string — find the opening quote and remove from there
+    // Inside an unclosed string — find the opening quote and remove from there
     const lastQuote = json.lastIndexOf('"');
     if (lastQuote >= 0) {
       truncateAt = lastQuote;
-      // Also remove the key if we're in a key:value pair
       const beforeQuote = json.slice(0, truncateAt).trimEnd();
       if (beforeQuote.endsWith(",")) {
         truncateAt = beforeQuote.length - 1;
@@ -206,13 +196,11 @@ function repairTruncatedJson(json: string): string {
       }
     }
   } else {
-    // Not in a string — find the last complete element
     const trimmed = json.trimEnd();
     const lastChar = trimmed[trimmed.length - 1];
     if (lastChar !== "}" && lastChar !== "]" && lastChar !== '"' &&
         lastChar !== "e" && lastChar !== "l" && // true/false/null endings
         !/\d/.test(lastChar)) {
-      // Last char isn't a complete value — find the last comma
       const lastComma = trimmed.lastIndexOf(",");
       if (lastComma >= 0) {
         truncateAt = lastComma;
@@ -220,32 +208,15 @@ function repairTruncatedJson(json: string): string {
     }
   }
 
-  // Rebuild the stack for the truncated portion
-  let result = json.slice(0, truncateAt);
-  const repairStack: string[] = [];
-  inString = false;
-  escaped = false;
+  // Re-scan only the truncated portion to get the correct closing stack
+  let result = json.slice(0, truncateAt).trimEnd();
+  const { stack: repairStack } = scanJsonNesting(result);
 
-  for (let i = 0; i < result.length; i++) {
-    const ch = result[i];
-    if (escaped) { escaped = false; continue; }
-    if (ch === "\\") { escaped = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === "{") repairStack.push("}");
-    else if (ch === "[") repairStack.push("]");
-    else if (ch === "}" || ch === "]") repairStack.pop();
-  }
-
-  // Remove any trailing comma before closing
-  result = result.trimEnd();
   if (result.endsWith(",")) {
     result = result.slice(0, -1);
   }
 
-  // Close all open structures
   result += repairStack.reverse().join("");
-
   return result;
 }
 
