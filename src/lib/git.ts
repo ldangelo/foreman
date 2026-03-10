@@ -49,21 +49,30 @@ export async function getRepoRoot(path: string): Promise<string> {
 }
 
 /**
+ * Get the current branch name.
+ */
+export async function getCurrentBranch(repoPath: string): Promise<string> {
+  return git(["rev-parse", "--abbrev-ref", "HEAD"], repoPath);
+}
+
+/**
  * Create a worktree for a bead.
  *
  * - Branch: foreman/<beadId>
  * - Location: <repoPath>/.foreman-worktrees/<beadId>
+ * - Base: current branch (auto-detected if not specified)
  */
 export async function createWorktree(
   repoPath: string,
   beadId: string,
-  baseBranch = "main",
+  baseBranch?: string,
 ): Promise<{ worktreePath: string; branchName: string }> {
+  const base = baseBranch ?? await getCurrentBranch(repoPath);
   const branchName = `foreman/${beadId}`;
   const worktreePath = join(repoPath, ".foreman-worktrees", beadId);
 
   await git(
-    ["worktree", "add", "-b", branchName, worktreePath, baseBranch],
+    ["worktree", "add", "-b", branchName, worktreePath, base],
     repoPath,
   );
 
@@ -126,8 +135,9 @@ export async function listWorktrees(
 export async function mergeWorktree(
   repoPath: string,
   branchName: string,
-  targetBranch = "main",
+  targetBranch?: string,
 ): Promise<MergeResult> {
+  targetBranch ??= await getCurrentBranch(repoPath);
   // Checkout target branch
   await git(["checkout", targetBranch], repoPath);
 
