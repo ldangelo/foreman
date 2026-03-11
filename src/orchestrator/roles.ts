@@ -22,7 +22,7 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
   explorer: {
     role: "explorer",
     model: "claude-haiku-4-5-20251001",
-    maxTurns: 15,
+    maxTurns: 30,
     reportFile: "EXPLORER_REPORT.md",
   },
   developer: {
