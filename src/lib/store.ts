@@ -71,6 +71,7 @@ export interface RunProgress {
   tokensOut: number;
   lastToolCall: string | null;  // most recent tool name
   lastActivity: string;         // ISO timestamp
+  currentPhase?: string;        // Pipeline phase: "explorer" | "developer" | "qa" | "reviewer" | "finalize"
 }
 
 export interface Metrics {

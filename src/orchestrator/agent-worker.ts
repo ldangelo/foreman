@@ -9,13 +9,24 @@
  * Usage: tsx agent-worker.ts <config-file>
  */
 
-import { readFileSync, unlinkSync } from "node:fs";
+import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
+import {
+  ROLE_CONFIGS,
+  explorerPrompt,
+  developerPrompt,
+  qaPrompt,
+  reviewerPrompt,
+  parseVerdict,
+  extractIssues,
+} from "./roles.js";
+import type { AgentRole } from "./types.js";
 
 // ── Config ───────────────────────────────────────────────────────────────
 
@@ -83,26 +94,12 @@ async function main(): Promise<void> {
   // Build clean env for SDK
   const env: Record<string, string | undefined> = { ...process.env };
 
-  // ── Team mode: run lead agent that orchestrates sub-agents ──────────
+  // ── Pipeline mode: run each phase as a separate SDK session ─────────
   if (pipeline) {
-    const { leadPrompt } = await import("./lead-prompt.js");
-
-    const teamPrompt = leadPrompt({
-      beadId,
-      beadTitle,
-      beadDescription: config.beadDescription ?? "(no description)",
-      skipExplore: config.skipExplore,
-      skipReview: config.skipReview,
-    });
-
-    log(`Starting lead agent for ${beadId} [${model}] with team orchestration`);
-    await appendFile(logFile, `\n[foreman-worker] Lead agent starting with team mode\n`);
-
-    // Run the lead as a single SDK session — it spawns sub-agents via Agent tool
-    // Fall through to the standard single-agent mode below with the team prompt
-    config.prompt = teamPrompt;
-    // Don't override model — let the dispatcher's model selection stand
-    // The lead prompt tells it to use Agent tool for sub-agents
+    await runPipeline(config, store, logFile);
+    store.close();
+    log(`Pipeline worker exiting for ${beadId}`);
+    return;
   }
 
   // ── Single-agent mode: run a single SDK query ───────────────────────
@@ -295,6 +292,328 @@ async function main(): Promise<void> {
 
   store.close();
   log(`Worker exiting for ${beadId}`);
+}
+
+// ── Pipeline orchestration ───────────────────────────────────────────────
+
+interface PhaseResult {
+  success: boolean;
+  costUsd: number;
+  turns: number;
+  error?: string;
+}
+
+/**
+ * Run a single pipeline phase as a separate SDK session.
+ */
+async function runPhase(
+  role: Exclude<AgentRole, "lead" | "worker">,
+  prompt: string,
+  config: WorkerConfig,
+  progress: RunProgress,
+  logFile: string,
+  store: ForemanStore,
+): Promise<PhaseResult> {
+  const roleConfig = ROLE_CONFIGS[role];
+  progress.currentPhase = role;
+  store.updateRunProgress(config.runId, progress);
+
+  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxTurns=${roleConfig.maxTurns})\n`);
+  log(`[${role.toUpperCase()}] Starting phase for ${config.beadId}`);
+
+  const env: Record<string, string | undefined> = { ...config.env };
+
+  try {
+    let phaseResult: SDKResultSuccess | SDKResultError | undefined;
+
+    for await (const message of query({
+      prompt,
+      options: {
+        cwd: config.worktreePath,
+        model: roleConfig.model as any,
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        maxTurns: roleConfig.maxTurns,
+        env,
+        persistSession: false,
+      },
+    })) {
+      await logMessage(logFile, message);
+      progress.lastActivity = new Date().toISOString();
+
+      if (message.type === "assistant") {
+        progress.turns++;
+        const toolUses = message.message.content.filter(
+          (b: { type: string }) => b.type === "tool_use",
+        ) as Array<{ type: "tool_use"; name: string; input: Record<string, unknown> }>;
+
+        for (const tool of toolUses) {
+          progress.toolCalls++;
+          progress.toolBreakdown[tool.name] = (progress.toolBreakdown[tool.name] ?? 0) + 1;
+          progress.lastToolCall = tool.name;
+
+          if ((tool.name === "Write" || tool.name === "Edit") && tool.input?.file_path) {
+            const filePath = String(tool.input.file_path);
+            if (!progress.filesChanged.includes(filePath)) {
+              progress.filesChanged.push(filePath);
+            }
+          }
+        }
+        store.updateRunProgress(config.runId, progress);
+      }
+
+      if (message.type === "result") {
+        phaseResult = message as SDKResultSuccess | SDKResultError;
+      }
+    }
+
+    if (phaseResult) {
+      progress.costUsd += phaseResult.total_cost_usd;
+      progress.tokensIn += phaseResult.usage.input_tokens;
+      progress.tokensOut += phaseResult.usage.output_tokens;
+      store.updateRunProgress(config.runId, progress);
+
+      if (phaseResult.subtype === "success") {
+        log(`[${role.toUpperCase()}] Completed (${phaseResult.num_turns} turns, $${phaseResult.total_cost_usd.toFixed(4)})`);
+        await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] COMPLETED ($${phaseResult.total_cost_usd.toFixed(4)})\n`);
+        return { success: true, costUsd: phaseResult.total_cost_usd, turns: phaseResult.num_turns };
+      } else {
+        const errResult = phaseResult as SDKResultError;
+        const reason = errResult.errors?.join("; ") ?? errResult.subtype;
+        log(`[${role.toUpperCase()}] Failed: ${reason.slice(0, 200)}`);
+        await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] FAILED: ${reason}\n`);
+        return { success: false, costUsd: phaseResult.total_cost_usd, turns: phaseResult.num_turns, error: reason };
+      }
+    }
+
+    log(`[${role.toUpperCase()}] SDK ended without result`);
+    return { success: false, costUsd: 0, turns: 0, error: "SDK stream ended without result" };
+  } catch (err: unknown) {
+    const reason = err instanceof Error ? err.message : String(err);
+    const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
+    log(`[${role.toUpperCase()}] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason.slice(0, 200)}`);
+    await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] ERROR: ${reason}\n`);
+    return { success: false, costUsd: 0, turns: 0, error: reason };
+  }
+}
+
+function readReport(worktreePath: string, filename: string): string | null {
+  const p = join(worktreePath, filename);
+  try { return readFileSync(p, "utf-8"); } catch { return null; }
+}
+
+/**
+ * Run git finalization: add, commit, push, and close the bead.
+ * Uses execFileSync for safety — no shell interpolation.
+ */
+async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
+  const { beadId, beadTitle, worktreePath } = config;
+  const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: 30_000 };
+
+  try {
+    execFileSync("git", ["add", "-A"], opts);
+    execFileSync("git", ["commit", "-m", `${beadTitle} (${beadId})`], opts);
+    log(`[FINALIZE] Committed`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("nothing to commit")) {
+      log(`[FINALIZE] Nothing to commit`);
+    } else {
+      log(`[FINALIZE] Commit failed: ${msg.slice(0, 200)}`);
+      await appendFile(logFile, `[FINALIZE] Commit error: ${msg}\n`);
+    }
+  }
+
+  try {
+    execFileSync("git", ["push", "-u", "origin", `foreman/${beadId}`], opts);
+    log(`[FINALIZE] Pushed to origin`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[FINALIZE] Push failed: ${msg.slice(0, 200)}`);
+    await appendFile(logFile, `[FINALIZE] Push error: ${msg}\n`);
+  }
+
+  try {
+    execFileSync("bd", ["close", beadId, "--reason", "Completed via pipeline"], opts);
+    log(`[FINALIZE] Closed bead ${beadId}`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[FINALIZE] bd close failed: ${msg.slice(0, 200)}`);
+    await appendFile(logFile, `[FINALIZE] bd close error: ${msg}\n`);
+  }
+}
+
+const MAX_DEV_RETRIES = 2;
+
+/**
+ * Run the full pipeline: Explorer → Developer ⇄ QA → Reviewer → Finalize.
+ * Each phase is a separate SDK session. TypeScript orchestrates the loop.
+ */
+async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string): Promise<void> {
+  const { runId, projectId, beadId, beadTitle, worktreePath } = config;
+  const description = config.beadDescription ?? "(no description)";
+
+  const progress: RunProgress = {
+    toolCalls: 0,
+    toolBreakdown: {},
+    filesChanged: [],
+    turns: 0,
+    costUsd: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    lastToolCall: null,
+    lastActivity: new Date().toISOString(),
+    currentPhase: "explorer",
+  };
+
+  log(`Pipeline starting for ${beadId} [phases: ${config.skipExplore ? "skip-explore" : "explore"} → dev → qa → ${config.skipReview ? "skip-review" : "review"} → finalize]`);
+  await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n`);
+
+  // ── Phase 1: Explorer ──────────────────────────────────────────────
+  if (!config.skipExplore) {
+    const result = await runPhase("explorer", explorerPrompt(beadId, beadTitle, description), config, progress, logFile, store);
+    if (!result.success) {
+      await markStuck(store, runId, projectId, beadId, beadTitle, progress, "explorer", result.error ?? "Explorer failed");
+      return;
+    }
+    store.logEvent(projectId, "complete", { beadId, phase: "explorer", costUsd: result.costUsd }, runId);
+  }
+
+  const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
+
+  // ── Phase 2-3: Developer ⇄ QA loop ────────────────────────────────
+  let devRetries = 0;
+  let feedbackContext: string | undefined;
+  let qaVerdict: "pass" | "fail" | "unknown" = "unknown";
+
+  while (devRetries <= MAX_DEV_RETRIES) {
+    // Developer
+    const devResult = await runPhase(
+      "developer",
+      developerPrompt(beadId, beadTitle, description, hasExplorerReport, feedbackContext),
+      config, progress, logFile, store,
+    );
+    if (!devResult.success) {
+      await markStuck(store, runId, projectId, beadId, beadTitle, progress, "developer", devResult.error ?? "Developer failed");
+      return;
+    }
+    store.logEvent(projectId, "complete", { beadId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
+
+    // QA
+    const qaResult = await runPhase("qa", qaPrompt(beadId, beadTitle), config, progress, logFile, store);
+    if (!qaResult.success) {
+      await markStuck(store, runId, projectId, beadId, beadTitle, progress, "qa", qaResult.error ?? "QA failed");
+      return;
+    }
+    store.logEvent(projectId, "complete", { beadId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
+
+    const qaReport = readReport(worktreePath, "QA_REPORT.md");
+    qaVerdict = qaReport ? parseVerdict(qaReport) : "unknown";
+
+    if (qaVerdict === "pass" || qaVerdict === "unknown") {
+      log(`[QA] Verdict: ${qaVerdict} — proceeding to ${config.skipReview ? "finalize" : "review"}`);
+      break;
+    }
+
+    // QA failed — retry developer with feedback
+    feedbackContext = qaReport ? extractIssues(qaReport) : "(QA failed but no report written)";
+    devRetries++;
+    if (devRetries <= MAX_DEV_RETRIES) {
+      log(`[QA] FAIL — sending back to Developer (retry ${devRetries}/${MAX_DEV_RETRIES})`);
+      await appendFile(logFile, `\n[PIPELINE] QA failed, retrying developer (${devRetries}/${MAX_DEV_RETRIES})\n`);
+    } else {
+      log(`[QA] FAIL — max retries exhausted, proceeding with current state`);
+      await appendFile(logFile, `\n[PIPELINE] QA failed after ${MAX_DEV_RETRIES} retries, proceeding anyway\n`);
+    }
+  }
+
+  // ── Phase 4: Reviewer ──────────────────────────────────────────────
+  if (!config.skipReview) {
+    const reviewResult = await runPhase("reviewer", reviewerPrompt(beadId, beadTitle, description), config, progress, logFile, store);
+    if (!reviewResult.success) {
+      await markStuck(store, runId, projectId, beadId, beadTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed");
+      return;
+    }
+    store.logEvent(projectId, "complete", { beadId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
+
+    const reviewReport = readReport(worktreePath, "REVIEW.md");
+    const reviewVerdict = reviewReport ? parseVerdict(reviewReport) : "unknown";
+
+    if (reviewVerdict === "fail" && devRetries < MAX_DEV_RETRIES) {
+      const reviewFeedback = reviewReport ? extractIssues(reviewReport) : "(Review failed but no issues listed)";
+      log(`[REVIEW] FAIL — sending back to Developer with review feedback`);
+      await appendFile(logFile, `\n[PIPELINE] Review failed, retrying developer with review feedback\n`);
+      devRetries++;
+
+      // One more dev → QA cycle
+      const devResult = await runPhase(
+        "developer",
+        developerPrompt(beadId, beadTitle, description, hasExplorerReport, reviewFeedback),
+        config, progress, logFile, store,
+      );
+      if (devResult.success) {
+        store.logEvent(projectId, "complete", { beadId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-fail" }, runId);
+
+        const qaResult = await runPhase("qa", qaPrompt(beadId, beadTitle), config, progress, logFile, store);
+        if (qaResult.success) {
+          store.logEvent(projectId, "complete", { beadId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-fail" }, runId);
+        }
+      }
+    } else if (reviewVerdict === "fail") {
+      log(`[REVIEW] FAIL — max retries exhausted, finalizing with current state`);
+    } else {
+      log(`[REVIEW] Verdict: ${reviewVerdict}`);
+    }
+  }
+
+  // ── Phase 5: Finalize ──────────────────────────────────────────────
+  progress.currentPhase = "finalize";
+  store.updateRunProgress(runId, progress);
+  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: FINALIZE]\n`);
+
+  await finalize(config, logFile);
+
+  const now = new Date().toISOString();
+  store.updateRun(runId, { status: "completed", completed_at: now });
+  store.logEvent(projectId, "complete", {
+    beadId,
+    title: beadTitle,
+    costUsd: progress.costUsd,
+    numTurns: progress.turns,
+    toolCalls: progress.toolCalls,
+    filesChanged: progress.filesChanged.length,
+    phases: config.skipExplore ? "dev→qa→review→finalize" : "explore→dev→qa→review→finalize",
+    devRetries,
+    qaVerdict,
+  }, runId);
+
+  log(`PIPELINE COMPLETED for ${beadId} (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
+  await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
+}
+
+async function markStuck(
+  store: ForemanStore,
+  runId: string,
+  projectId: string,
+  beadId: string,
+  beadTitle: string,
+  progress: RunProgress,
+  phase: string,
+  reason: string,
+): Promise<void> {
+  const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
+  const now = new Date().toISOString();
+  store.updateRunProgress(runId, progress);
+  store.updateRun(runId, { status: isRateLimit ? "stuck" : "failed", completed_at: now });
+  store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
+    beadId,
+    title: beadTitle,
+    phase,
+    reason,
+    costUsd: progress.costUsd,
+    rateLimit: isRateLimit,
+  }, runId);
+  store.close();
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
