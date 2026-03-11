@@ -121,7 +121,7 @@ export const planCommand = new Command("plan")
           );
           console.log(chalk.dim("  1. Create an epic bead with child beads (sequential dependencies)"));
           console.log(chalk.dim("  2. Dispatch each step via Claude Code + Ensemble"));
-          console.log(chalk.dim("  3. Track progress in SQLite + dashboard"));
+          console.log(chalk.dim("  3. Track progress in SQLite"));
           console.log(chalk.dim("  4. Suggest 'foreman decompose' on completion"));
           return;
         }
