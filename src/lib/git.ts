@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 
 const execFileAsync = promisify(execFile);
 
@@ -71,10 +72,32 @@ export async function createWorktree(
   const branchName = `foreman/${beadId}`;
   const worktreePath = join(repoPath, ".foreman-worktrees", beadId);
 
-  await git(
-    ["worktree", "add", "-b", branchName, worktreePath, base],
-    repoPath,
-  );
+  // If worktree already exists (e.g. from a failed previous run), reuse it
+  if (existsSync(worktreePath)) {
+    // Update the branch to the latest base so it picks up new code
+    try {
+      await git(["rebase", base], worktreePath);
+    } catch {
+      // Rebase may fail if there are conflicts — that's OK, use as-is
+    }
+    return { worktreePath, branchName };
+  }
+
+  // Branch may exist without a worktree (worktree was cleaned up but branch wasn't)
+  try {
+    await git(
+      ["worktree", "add", "-b", branchName, worktreePath, base],
+      repoPath,
+    );
+  } catch (err: unknown) {
+    const msg = (err as Error).message ?? "";
+    if (msg.includes("already exists")) {
+      // Branch exists — create worktree using existing branch
+      await git(["worktree", "add", worktreePath, branchName], repoPath);
+    } else {
+      throw err;
+    }
+  }
 
   return { worktreePath, branchName };
 }
