@@ -84,25 +84,36 @@ export const statusCommand = new Command("status")
             : chalk.bgMagenta.white(` ${run.agent_type} `);
           console.log(`  ${badge} ${run.bead_id} — ${run.status} (${elapsed}m)`);
 
-          // Show pipeline sub-agent details from progress
+          // Show agent progress details
           if (run.progress) {
             try {
               const progress: RunProgress = JSON.parse(run.progress);
+              const details: string[] = [];
+              if (progress.turns > 0) details.push(`${progress.turns} turns`);
+              if (progress.toolCalls > 0) details.push(`${progress.toolCalls} tools`);
+              if (progress.filesChanged.length > 0) details.push(`${progress.filesChanged.length} files`);
+
+              // Show current activity
+              const lastTool = progress.lastToolCall ?? "starting";
               const phase = parsePipelinePhase(progress.lastToolCall);
               if (phase) {
                 const phaseColors: Record<string, (s: string) => string> = {
-                  explorer: chalk.cyan,
-                  developer: chalk.green,
-                  qa: chalk.yellow,
-                  reviewer: chalk.magenta,
-                  finalize: chalk.blue,
+                  explorer: chalk.cyan, developer: chalk.green,
+                  qa: chalk.yellow, reviewer: chalk.magenta, finalize: chalk.blue,
                 };
                 const colorFn = phaseColors[phase.name] ?? chalk.white;
                 const retryTag = phase.retry ? chalk.dim(` (retry ${phase.retry})`) : "";
-                console.log(`    ${chalk.dim("└")} Phase: ${colorFn(phase.name)}${retryTag}  ${chalk.dim(`${progress.turns} turns, ${progress.toolCalls} tools`)}`);
+                console.log(`    ${chalk.dim("└")} Phase: ${colorFn(phase.name)}${retryTag}  ${chalk.dim(details.join(", "))}`);
+              } else if (details.length > 0) {
+                // Team mode or single agent — show last tool and stats
+                const agentCount = progress.toolBreakdown["Agent"] ?? 0;
+                const activity = agentCount > 0
+                  ? `${agentCount} sub-agent(s) spawned`
+                  : `last: ${lastTool}`;
+                console.log(`    ${chalk.dim("└")} ${chalk.dim(activity)}  ${chalk.dim(details.join(", "))}`);
               }
               if (progress.costUsd > 0) {
-                console.log(`    ${chalk.dim(" ")} Cost:  ${chalk.yellow(`$${progress.costUsd.toFixed(4)}`)}`);
+                console.log(`    ${chalk.dim("  ")} Cost:  ${chalk.yellow(`$${progress.costUsd.toFixed(4)}`)}`);
               }
             } catch { /* ignore malformed progress */ }
           }
