@@ -9,6 +9,8 @@ import { statusCommand } from "./commands/status.js";
 import { mergeCommand } from "./commands/merge.js";
 import { monitorCommand } from "./commands/monitor.js";
 import { dashboardCommand } from "./commands/dashboard.js";
+import { resetCommand } from "./commands/reset.js";
+import { attachCommand } from "./commands/attach.js";
 
 const program = new Command();
 
@@ -25,5 +27,7 @@ program.addCommand(statusCommand);
 program.addCommand(mergeCommand);
 program.addCommand(monitorCommand);
 program.addCommand(dashboardCommand);
+program.addCommand(resetCommand);
+program.addCommand(attachCommand);
 
 program.parse();

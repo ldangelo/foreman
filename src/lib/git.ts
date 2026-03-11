@@ -129,6 +129,22 @@ export async function listWorktrees(
 }
 
 /**
+ * Delete a local branch. Does not fail if the branch doesn't exist.
+ */
+export async function deleteBranch(
+  repoPath: string,
+  branchName: string,
+): Promise<void> {
+  try {
+    await git(["branch", "-D", branchName], repoPath);
+  } catch (err: unknown) {
+    const msg = (err as Error).message ?? "";
+    if (msg.includes("not found")) return; // already deleted
+    throw err;
+  }
+}
+
+/**
  * Merge a branch into the target branch.
  * Returns success status and any conflicting file paths.
  */

@@ -1,6 +1,10 @@
 // ── Orchestrator types ───────────────────────────────────────────────────
 
-export type RuntimeSelection = "claude-code" | "pi" | "codex";
+export type RuntimeSelection = "claude-code";
+
+export type ModelSelection = "claude-opus-4-6" | "claude-sonnet-4-6" | "claude-haiku-4-5-20251001";
+
+export type AgentRole = "lead" | "explorer" | "developer" | "qa" | "reviewer" | "worker";
 
 // ── Decomposition types ─────────────────────────────────────────────────
 
@@ -50,6 +54,7 @@ export interface DispatchedTask {
   beadId: string;
   title: string;
   runtime: RuntimeSelection;
+  model: ModelSelection;
   worktreePath: string;
   runId: string;
   branchName: string;
@@ -64,7 +69,17 @@ export interface SkippedTask {
 export interface DispatchResult {
   dispatched: DispatchedTask[];
   skipped: SkippedTask[];
+  resumed: ResumedTask[];
   activeAgents: number;
+}
+
+export interface ResumedTask {
+  beadId: string;
+  title: string;
+  model: ModelSelection;
+  runId: string;
+  sessionId: string;
+  previousStatus: string;
 }
 
 // ── Plan step types ───────────────────────────────────────────────────

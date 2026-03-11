@@ -104,6 +104,35 @@ describe("ForemanStore", () => {
     });
   });
 
+  describe("getRunsForBead", () => {
+    it("returns runs for a bead sorted by created_at DESC", () => {
+      const project = store.registerProject("p", "/p");
+      const run1 = store.createRun(project.id, "bd-abc", "claude-sonnet-4-6", "/wt1");
+      store.updateRun(run1.id, { status: "completed" });
+      const run2 = store.createRun(project.id, "bd-abc", "claude-opus-4-6", "/wt1");
+
+      const runs = store.getRunsForBead("bd-abc", project.id);
+      expect(runs).toHaveLength(2);
+      // Most recent first
+      expect(runs[0].id).toBe(run2.id);
+      expect(runs[1].id).toBe(run1.id);
+    });
+
+    it("filters by project when projectId given", () => {
+      const p1 = store.registerProject("p1", "/p1");
+      const p2 = store.registerProject("p2", "/p2");
+      store.createRun(p1.id, "bd-abc", "claude-code", "/wt1");
+      store.createRun(p2.id, "bd-abc", "claude-code", "/wt2");
+
+      expect(store.getRunsForBead("bd-abc", p1.id)).toHaveLength(1);
+      expect(store.getRunsForBead("bd-abc")).toHaveLength(2);
+    });
+
+    it("returns empty array when no runs exist", () => {
+      expect(store.getRunsForBead("bd-nonexistent")).toEqual([]);
+    });
+  });
+
   // ── Costs ─────────────────────────────────────────────────────────
 
   describe("costs", () => {

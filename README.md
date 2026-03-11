@@ -10,10 +10,11 @@ You already have AI coding agents (Claude Code, Pi, Codex). What you don't have 
 
 - **Work decomposition** — PRD → TRD → beads (structured, dependency-aware tasks)
 - **Git isolation** — each agent gets its own worktree (zero conflicts)
-- **Runtime selection** — Claude Code for complex work, Pi for quick tasks, Codex when needed
+- **Model selection** — Opus for complex refactors, Sonnet for features, Haiku for config tweaks
 - **Progress tracking** — every task, agent, and cost tracked in SQLite + Beads
 - **Merge management** — automated merge, test, and cleanup when agents finish
 - **Real-time dashboard** — see all projects and agents at a glance
+- **OpenTelemetry** — native OTEL tracing for LangSmith, Grafana, Datadog, etc.
 
 ## Architecture
 
@@ -33,11 +34,15 @@ You already have AI coding agents (Claude Code, Pi, Codex). What you don't have 
 └────────────────────┬────────────────────────────────┘
         ┌────────────┼────────────┐
    ┌────┴────┐ ┌────┴────┐ ┌────┴────┐
-   │Claude   │ │  Pi     │ │ Codex   │
-   │Code     │ │         │ │         │
+   │ Opus    │ │ Sonnet  │ │ Haiku   │
+   │(complex)│ │(default)│ │ (light) │
    │worktree/│ │worktree/│ │worktree/│
    │bd-a1b2  │ │bd-c3d4  │ │bd-e5f6  │
    └─────────┘ └─────────┘ └─────────┘
+         ↓ OpenTelemetry (optional)
+   ┌─────────────────────────────┐
+   │ LangSmith / Grafana / etc. │
+   └─────────────────────────────┘
 ```
 
 ## Prerequisites
@@ -112,16 +117,22 @@ foreman decompose docs/TRD.md --auto    # Skip confirmation
 Dispatch AI coding agents to ready tasks.
 
 ```bash
-foreman run                    # Dispatch to all ready tasks
-foreman run --max-agents 3     # Limit concurrent agents
-foreman run --runtime pi       # Force a specific runtime
-foreman run --dry-run          # Preview without dispatching
+foreman run                              # Dispatch to all ready tasks
+foreman run --max-agents 3               # Limit concurrent agents
+foreman run --model claude-opus-4-6      # Force all agents to use Opus
+foreman run --dry-run                    # Preview without dispatching
+foreman run --no-watch                   # Exit immediately after dispatch
+foreman run --telemetry                  # Enable OpenTelemetry tracing
+foreman run --ralph                      # Ralph Wiggum loop (serial task processing)
 ```
 
 Each agent gets:
 - Its own git worktree (branch: `foreman/<bead-id>`)
 - An AGENTS.md with task instructions
 - Beads CLI for status updates
+- Shared `.beads/` database (symlinked from main repo)
+
+After dispatching, Foreman enters **watch mode** — polling agent status every 5 seconds with a live-updating display. Ctrl+C detaches without killing agents. Use `--no-watch` to skip.
 
 ### `foreman monitor`
 Check agent progress and detect stuck agents.
@@ -162,13 +173,64 @@ Three views:
 - **Project Detail** — task graph, agent activity, merge queue, event log
 - **Metrics** — cost breakdown by runtime, task stats, token trends
 
-## Runtime Selection
+## Model Selection
 
-| Runtime | Best For | Auto-selected when title contains |
-|---------|----------|----------------------------------|
-| **pi** | Tests, docs, small fixes, simple CRUD | `test`, `doc`, `fix` |
-| **claude-code** | Complex features, refactoring, architecture | `refactor`, `architect`, `design` |
-| **codex** | When OpenAI models preferred | Manual only (`--runtime codex`) |
+All agents run via Claude Code. The model is automatically selected based on task complexity:
+
+| Model | Best For | Auto-selected when title/description contains |
+|-------|----------|-----------------------------------------------|
+| **claude-opus-4-6** | Complex refactoring, architecture, migrations | `refactor`, `architect`, `design`, `complex`, `migrate`, `overhaul` |
+| **claude-sonnet-4-6** | Default for features, tests, fixes, implementation | Everything else |
+| **claude-haiku-4-5** | Config tweaks, typos, version bumps, README updates | `typo`, `rename`, `config`, `bump version`, `update readme` |
+
+Override for all agents with `--model`:
+```bash
+foreman run --model claude-opus-4-6    # Force Opus for everything
+```
+
+## Observability (OpenTelemetry)
+
+Foreman leverages Claude Code's native OpenTelemetry support to export per-agent traces, token usage, and cost data to any OTEL-compatible backend.
+
+### Setup
+
+1. Configure your OTEL collector endpoint:
+
+```bash
+# LangSmith
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://api.smith.langchain.com/otel
+export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=your-langsmith-key"
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+
+# Or Grafana Cloud, Datadog, SigNoz, etc.
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+```
+
+2. Run with telemetry enabled:
+
+```bash
+foreman run --telemetry
+```
+
+### What gets exported
+
+Each spawned agent emits:
+
+**Events** (via OTEL logs):
+- `claude_code.api_request` — every LLM call (model, cost, duration, tokens)
+- `claude_code.tool_result` — tool executions (name, success, duration)
+- `claude_code.user_prompt` — prompt submissions
+
+**Metrics**:
+- `claude_code.cost.usage` — session cost in USD
+- `claude_code.token.usage` — tokens by type (input, output, cache)
+- `claude_code.active_time.total` — active session time
+
+**Resource attributes** (for filtering/grouping):
+- `foreman.bead_id` — the task being worked on
+- `foreman.run_id` — the foreman run ID
+- `foreman.model` — the Claude model used
 
 ## Configuration
 
