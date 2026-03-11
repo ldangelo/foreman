@@ -613,6 +613,15 @@ async function markStuck(
     costUsd: progress.costUsd,
     rateLimit: isRateLimit,
   }, runId);
+
+  // Reset bead back to open so it appears in bd ready for retry
+  try {
+    execFileSync("bd", ["update", beadId, "--status=open"], { stdio: "pipe", timeout: 10_000 });
+    log(`Reset bead ${beadId} back to open`);
+  } catch {
+    log(`Warning: could not reset bead ${beadId} to open`);
+  }
+
   store.close();
 }
 
