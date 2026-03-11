@@ -19,7 +19,7 @@ export interface Run {
   id: string;
   project_id: string;
   bead_id: string;
-  agent_type: "claude-code" | "pi" | "codex";
+  agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
   status: "pending" | "running" | "completed" | "failed" | "stuck" | "merged" | "conflict" | "test-failed";

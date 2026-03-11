@@ -5,23 +5,28 @@ import { spawnSync } from "node:child_process";
 
 import { BeadsClient } from "../../lib/beads.js";
 import { ForemanStore } from "../../lib/store.js";
+import type { Run } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
-import type { RuntimeSelection } from "../../orchestrator/types.js";
+import type { ModelSelection } from "../../orchestrator/types.js";
 
 export const runCommand = new Command("run")
   .description("Dispatch ready tasks to agents")
   .option("--max-agents <n>", "Maximum concurrent agents", "5")
-  .option("--runtime <type>", "Force a specific runtime (claude-code, pi, codex)")
+  .option("--model <model>", "Force a specific model (claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5-20251001)")
   .option("--dry-run", "Show what would be dispatched without doing it")
+  .option("--no-watch", "Exit immediately after dispatching (don't monitor agents)")
+  .option("--telemetry", "Enable OpenTelemetry tracing on spawned agents (requires OTEL_* env vars)")
   .option("--ralph", "Run in Ralph Wiggum loop: pick tasks from bd ready until none remain")
   .option("--max-iterations <n>", "Max Ralph loop iterations (default: unlimited)", "0")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
-    const runtime = opts.runtime as RuntimeSelection | undefined;
+    const model = opts.model as ModelSelection | undefined;
     const dryRun = opts.dryRun as boolean | undefined;
     const ralph = opts.ralph as boolean | undefined;
     const maxIterations = parseInt(opts.maxIterations, 10);
+    const watch = opts.watch as boolean;
+    const telemetry = opts.telemetry as boolean | undefined;
 
     if (ralph) {
       setupRalphLoop(maxIterations);
@@ -40,8 +45,9 @@ export const runCommand = new Command("run")
 
       const result = await dispatcher.dispatch({
         maxAgents,
-        runtime,
+        model,
         dryRun,
+        telemetry,
       });
 
       // Print dispatched tasks
@@ -49,7 +55,7 @@ export const runCommand = new Command("run")
         console.log(chalk.green.bold(`Dispatched ${result.dispatched.length} task(s):\n`));
         for (const task of result.dispatched) {
           console.log(`  ${chalk.cyan(task.beadId)} ${task.title}`);
-          console.log(`    Runtime:  ${chalk.magenta(task.runtime)}`);
+          console.log(`    Model:    ${chalk.magenta(task.model)}`);
           console.log(`    Branch:   ${task.branchName}`);
           console.log(`    Worktree: ${task.worktreePath}`);
           console.log(`    Run ID:   ${task.runId}`);
@@ -70,6 +76,12 @@ export const runCommand = new Command("run")
 
       console.log(chalk.bold(`Active agents: ${result.activeAgents}/${maxAgents}`));
 
+      // Watch mode: poll agent status until all finish
+      if (watch && !dryRun && result.dispatched.length > 0) {
+        const runIds = result.dispatched.map((t) => t.runId);
+        await watchRuns(store, runIds);
+      }
+
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -77,6 +89,106 @@ export const runCommand = new Command("run")
       process.exit(1);
     }
   });
+
+// ── Watch / Progress ─────────────────────────────────────────────────────
+
+const STATUS_ICON: Record<string, string> = {
+  pending: chalk.dim("○"),
+  running: chalk.blue("●"),
+  completed: chalk.green("✓"),
+  failed: chalk.red("✗"),
+  stuck: chalk.yellow("⚠"),
+  merged: chalk.green("⊕"),
+  conflict: chalk.red("⊘"),
+  "test-failed": chalk.red("⊘"),
+};
+
+function elapsed(since: string | null): string {
+  if (!since) return "—";
+  const ms = Date.now() - new Date(since).getTime();
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${s % 60}s`;
+  return `${Math.floor(m / 60)}h${m % 60}m`;
+}
+
+async function watchRuns(store: ForemanStore, runIds: string[]): Promise<void> {
+  console.log(chalk.dim("\nWatching agent progress (Ctrl+C to detach)...\n"));
+
+  const POLL_MS = 5_000;
+  let interrupted = false;
+
+  const onSigint = () => {
+    interrupted = true;
+    console.log(chalk.dim("\n\nDetached — agents continue in background."));
+    console.log(chalk.dim("Check status: foreman monitor\n"));
+  };
+  process.on("SIGINT", onSigint);
+
+  try {
+    while (!interrupted) {
+      const runs = runIds
+        .map((id) => store.getRun(id))
+        .filter((r): r is Run => r !== null);
+
+      if (runs.length === 0) break;
+
+      // Clear previous output and redraw
+      const lines: string[] = [];
+      let allDone = true;
+
+      for (const run of runs) {
+        const icon = STATUS_ICON[run.status] ?? chalk.dim("?");
+
+        const time = run.status === "running" || run.status === "pending"
+          ? chalk.dim(elapsed(run.started_at ?? run.created_at))
+          : chalk.dim(elapsed(run.started_at));
+
+        const logHint = run.status === "failed"
+          ? chalk.dim(` logs:~/.foreman/logs/${run.id}.log`)
+          : "";
+
+        lines.push(
+          `  ${icon} ${chalk.cyan(run.bead_id)} ${chalk.dim(`[${run.agent_type}]`)} ${time}${logHint}`,
+        );
+
+        if (run.status === "pending" || run.status === "running") {
+          allDone = false;
+        }
+      }
+
+      // Move cursor up and overwrite (clear previous table)
+      if (lines.length > 0) {
+        process.stdout.write(`\r\x1b[K${chalk.bold("Agent status:")}\n`);
+        for (const line of lines) {
+          process.stdout.write(`\x1b[K${line}\n`);
+        }
+        // Move cursor back up for next refresh
+        process.stdout.write(`\x1b[${lines.length + 1}A`);
+      }
+
+      if (allDone) {
+        // Final render (move down past the table)
+        process.stdout.write(`\n${"\n".repeat(lines.length)}`);
+        const completed = runs.filter((r) => r.status === "completed").length;
+        const failed = runs.filter(
+          (r) => r.status === "failed" || r.status === "test-failed",
+        ).length;
+        console.log(
+          chalk.bold(
+            `\nAll agents finished: ${chalk.green(`${completed} completed`)}, ${chalk.red(`${failed} failed`)}`,
+          ),
+        );
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    }
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+  }
+}
 
 /**
  * Set up a Ralph Wiggum loop that iterates over bd ready tasks.

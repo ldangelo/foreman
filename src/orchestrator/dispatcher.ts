@@ -1,5 +1,7 @@
-import { writeFile } from "node:fs/promises";
+import { writeFile, rm, symlink, stat, mkdir, appendFile } from "node:fs/promises";
 import { join } from "node:path";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage, SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 
 import type { BeadsClient, Bead } from "../lib/beads.js";
 import type { ForemanStore } from "../lib/store.js";
@@ -11,6 +13,7 @@ import type {
   DispatchedTask,
   SkippedTask,
   RuntimeSelection,
+  ModelSelection,
   PlanStepDispatched,
 } from "./types.js";
 
@@ -29,7 +32,9 @@ export class Dispatcher {
   async dispatch(opts?: {
     maxAgents?: number;
     runtime?: RuntimeSelection;
+    model?: ModelSelection;
     dryRun?: boolean;
+    telemetry?: boolean;
     projectId?: string;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
@@ -67,13 +72,15 @@ export class Dispatcher {
       }
 
       const beadInfo = beadToInfo(bead);
-      const runtime = opts?.runtime ?? this.selectRuntime(beadInfo);
+      const runtime: RuntimeSelection = "claude-code";
+      const model = opts?.model ?? this.selectModel(beadInfo);
 
       if (opts?.dryRun) {
         dispatched.push({
           beadId: bead.id,
           title: bead.title,
           runtime,
+          model,
           worktreePath: join(this.projectPath, ".foreman-worktrees", bead.id),
           runId: "(dry-run)",
           branchName: `foreman/${bead.id}`,
@@ -88,40 +95,40 @@ export class Dispatcher {
           bead.id,
         );
 
-        // 2. Write AGENTS.md in the worktree
-        const agentsMd = workerAgentMd(beadInfo, worktreePath, runtime);
+        // 2. Symlink .beads/ from main repo so agents share the same database
+        await linkBeadsDir(this.projectPath, worktreePath);
+
+        // 3. Write AGENTS.md in the worktree
+        const agentsMd = workerAgentMd(beadInfo, worktreePath, model);
         await writeFile(join(worktreePath, "AGENTS.md"), agentsMd, "utf-8");
 
-        // 3. Record run in store
+        // 4. Record run in store
         const run = this.store.createRun(
           projectId,
           bead.id,
-          runtime,
+          model,
           worktreePath,
         );
 
-        // 4. Log dispatch event
+        // 5. Log dispatch event
         this.store.logEvent(projectId, "dispatch", {
           beadId: bead.id,
           title: bead.title,
-          runtime,
+          model,
           worktreePath,
           branchName,
         }, run.id);
 
-        // 5. Mark bead as in_progress before spawning agent
-        try {
-          await this.beads.update(bead.id, { status: "in_progress" });
-        } catch {
-          // Non-fatal: agent can still work even if status update fails
-        }
+        // 6. Mark bead as in_progress before spawning agent
+        await this.beads.update(bead.id, { status: "in_progress" });
 
-        // 6. Spawn the coding agent
+        // 7. Spawn the coding agent via SDK
         const sessionKey = await this.spawnAgent(
-          runtime,
+          model,
           worktreePath,
           beadInfo,
           run.id,
+          opts?.telemetry,
         );
 
         // Update run with session key
@@ -135,6 +142,7 @@ export class Dispatcher {
           beadId: bead.id,
           title: bead.title,
           runtime,
+          model,
           worktreePath,
           runId: run.id,
           branchName,
@@ -158,7 +166,7 @@ export class Dispatcher {
 
   /**
    * Dispatch a planning step (PRD/TRD) without creating a worktree.
-   * Runs Claude Code synchronously and waits for completion.
+   * Runs Claude Code via SDK and waits for completion.
    */
   async dispatchPlanStep(
     projectId: string,
@@ -182,13 +190,6 @@ export class Dispatcher {
     // 3. Build the prompt
     const prompt = `${ensembleCommand} ${input}\n\nSave all outputs to the ${outputDir}/ directory.`;
 
-    // 4. Spawn Claude Code synchronously (blocking — plan steps are sequential)
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const execFileAsync = promisify(execFile);
-
-    const claudePath = process.env.CLAUDE_PATH || "/opt/homebrew/bin/claude";
-
     const sessionKey = `foreman:plan:${run.id}`;
     this.store.updateRun(run.id, {
       session_key: sessionKey,
@@ -196,61 +197,70 @@ export class Dispatcher {
       started_at: new Date().toISOString(),
     });
 
-    try {
-      await execFileAsync(
-        claudePath,
-        ["--permission-mode", "bypassPermissions", "--print", prompt],
-        {
-          cwd: this.projectPath,
-          timeout: 600_000, // 10 minute timeout per step
-          maxBuffer: 10 * 1024 * 1024,
-          env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
-        },
-      );
+    // 4. Build env with telemetry tags
+    const env = buildCleanEnv();
 
-      this.store.updateRun(run.id, {
-        status: "completed",
-        completed_at: new Date().toISOString(),
-      });
-      this.store.logEvent(projectId, "complete", {
-        beadId: bead.id,
-        title: bead.title,
-      }, run.id);
+    try {
+      let resultMsg: SDKResultSuccess | SDKResultError | undefined;
+
+      for await (const message of query({
+        prompt,
+        options: {
+          cwd: this.projectPath,
+          model: "claude-sonnet-4-6",
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
+          maxTurns: 50,
+          env,
+          persistSession: false,
+        },
+      })) {
+        if (message.type === "result") {
+          resultMsg = message as SDKResultSuccess | SDKResultError;
+        }
+      }
+
+      if (resultMsg && resultMsg.subtype === "success") {
+        this.store.updateRun(run.id, {
+          status: "completed",
+          completed_at: new Date().toISOString(),
+        });
+        this.store.logEvent(projectId, "complete", {
+          beadId: bead.id,
+          title: bead.title,
+          costUsd: resultMsg.total_cost_usd,
+          numTurns: resultMsg.num_turns,
+          durationMs: resultMsg.duration_ms,
+        }, run.id);
+      } else if (resultMsg) {
+        const errResult = resultMsg as SDKResultError;
+        const reason = errResult.errors?.join("; ") ?? errResult.subtype;
+        this.store.updateRun(run.id, {
+          status: "failed",
+          completed_at: new Date().toISOString(),
+        });
+        this.store.logEvent(projectId, "fail", {
+          beadId: bead.id,
+          reason,
+          costUsd: errResult.total_cost_usd,
+        }, run.id);
+        throw new Error(reason);
+      }
     } catch (err: unknown) {
-      const error = err as { killed?: boolean; stderr?: string; stdout?: string; message?: string };
-      if (error.killed) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Only update if not already updated by the result handler above
+      const currentRun = this.store.getRun(run.id);
+      if (currentRun?.status === "running") {
         this.store.updateRun(run.id, {
           status: "failed",
           completed_at: new Date().toISOString(),
         });
         this.store.logEvent(projectId, "fail", {
           beadId: bead.id,
-          reason: "Timed out after 10 minutes",
+          reason: message,
         }, run.id);
-        throw new Error("Timed out after 10 minutes");
       }
-      // Claude Code may exit non-zero but still produce output
-      if (error.stderr && !error.stdout) {
-        this.store.updateRun(run.id, {
-          status: "failed",
-          completed_at: new Date().toISOString(),
-        });
-        this.store.logEvent(projectId, "fail", {
-          beadId: bead.id,
-          reason: error.stderr,
-        }, run.id);
-        throw new Error(error.stderr);
-      }
-      // Had stdout — treat as success with warnings
-      this.store.updateRun(run.id, {
-        status: "completed",
-        completed_at: new Date().toISOString(),
-      });
-      this.store.logEvent(projectId, "complete", {
-        beadId: bead.id,
-        title: bead.title,
-        warnings: true,
-      }, run.id);
+      throw err;
     }
 
     return {
@@ -262,48 +272,56 @@ export class Dispatcher {
   }
 
   /**
-   * Simple heuristic to pick a runtime based on task title keywords.
+   * Pick a Claude model based on task complexity signals.
+   *
+   * - Opus: refactor, architect, design, complex, multi-step features
+   * - Sonnet: default for most implementation tasks
+   * - Haiku: simple config, docs-only, typo fixes
    */
-  selectRuntime(task: BeadInfo): RuntimeSelection {
-    const title = task.title.toLowerCase();
+  selectModel(task: BeadInfo): ModelSelection {
+    const text = `${task.title} ${task.description ?? ""}`.toLowerCase();
 
-    const lightweight = ["test", "doc", "fix"];
-    if (lightweight.some((kw) => title.includes(kw))) {
-      return "pi";
+    const heavy = ["refactor", "architect", "design", "complex", "migrate", "overhaul"];
+    if (heavy.some((kw) => text.includes(kw))) {
+      return "claude-opus-4-6";
     }
 
-    const heavy = ["refactor", "architect", "design", "complex"];
-    if (heavy.some((kw) => title.includes(kw))) {
-      return "claude-code";
+    const light = ["typo", "rename", "config", "bump version", "update readme"];
+    if (light.some((kw) => text.includes(kw))) {
+      return "claude-haiku-4-5-20251001";
     }
 
-    return "claude-code";
+    return "claude-sonnet-4-6";
   }
 
   /**
    * Build the AGENTS.md content for a bead (exposed for testing).
    */
   generateAgentInstructions(bead: BeadInfo, worktreePath: string): string {
-    const runtime = this.selectRuntime(bead);
-    return workerAgentMd(bead, worktreePath, runtime);
+    const model = this.selectModel(bead);
+    return workerAgentMd(bead, worktreePath, model);
   }
 
   // ── Agent Spawning ─────────────────────────────────────────────────────
 
   /**
-   * Spawn a coding agent in the given worktree.
-   * Uses Claude Code CLI in --print mode (non-interactive).
-   * Returns a session identifier for tracking.
+   * Spawn a coding agent in the given worktree using the Claude Agent SDK.
+   *
+   * The SDK runs Claude Code as a library — no subprocess, no stdio pipes,
+   * no shell execution. Structured messages stream via an async generator.
+   *
+   * The agent runs in a background Promise so dispatch returns immediately.
+   * Progress and completion are logged to ~/.foreman/logs/<runId>.log and
+   * the store is updated as events arrive.
    */
   private async spawnAgent(
-    runtime: RuntimeSelection,
+    model: ModelSelection,
     worktreePath: string,
     bead: BeadInfo,
     runId: string,
+    telemetry?: boolean,
   ): Promise<string> {
-    const { execFile } = await import("node:child_process");
-
-    const task = [
+    const prompt = [
       `Read AGENTS.md and implement the task described.`,
       `Use bd to track your progress.`,
       `When completely finished:`,
@@ -313,80 +331,131 @@ export class Dispatcher {
       `  git push -u origin foreman/${bead.id}`,
     ].join("\n");
 
-    // Build a clean env that allows nested Claude sessions.
-    // CLAUDECODE=1 prevents spawning Claude inside a Claude session.
-    const cleanEnv: Record<string, string | undefined> = { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` };
-    delete cleanEnv.CLAUDECODE;
+    // Build a clean env that allows nested Claude sessions
+    const env = buildCleanEnv();
 
-    const runtimeArgs: Record<string, { cmd: string; args: string[] }> = {
-      "claude-code": {
-        cmd: process.env.CLAUDE_PATH || "/opt/homebrew/bin/claude",
-        args: ["--permission-mode", "bypassPermissions", "--print", task],
-      },
-      "pi": {
-        cmd: "pi",
-        args: [task],
-      },
-      "codex": {
-        cmd: "codex",
-        args: ["exec", "--full-auto", task],
-      },
-    };
-
-    const config = runtimeArgs[runtime];
-    if (!config) {
-      throw new Error(`Unknown runtime: ${runtime}`);
+    // Tag agent spans with bead/run metadata for OTEL/LangSmith
+    if (telemetry) {
+      env.CLAUDE_CODE_ENABLE_TELEMETRY = "1";
+      env.OTEL_RESOURCE_ATTRIBUTES = [
+        process.env.OTEL_RESOURCE_ATTRIBUTES,
+        `foreman.bead_id=${bead.id}`,
+        `foreman.run_id=${runId}`,
+        `foreman.model=${model}`,
+      ].filter(Boolean).join(",");
     }
 
-    const child = execFile(
-      config.cmd,
-      config.args,
-      {
-        cwd: worktreePath,
-        timeout: 1_800_000, // 30 minute timeout
-        maxBuffer: 10 * 1024 * 1024,
-        env: cleanEnv,
-      },
-    );
+    // Create log directory
+    const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
+    await mkdir(logDir, { recursive: true });
+    const logFile = join(logDir, `${runId}.log`);
 
-    // Capture agent completion/failure for store updates
-    child.on("exit", (code) => {
+    const header = [
+      `[foreman] Agent spawn at ${new Date().toISOString()}`,
+      `  bead:      ${bead.id} — ${bead.title}`,
+      `  model:     ${model}`,
+      `  run:       ${runId}`,
+      `  worktree:  ${worktreePath}`,
+      `  method:    Claude Agent SDK (query)`,
+      "─".repeat(80),
+      "",
+    ].join("\n");
+    await appendFile(logFile, header);
+
+    log(`Spawning agent for ${bead.id} [${model}] in ${worktreePath}`);
+    log(`  method: Claude Agent SDK`);
+
+    const projectId = this.resolveProjectId();
+    const sessionKey = `foreman:sdk:${model}:${runId}`;
+
+    // Launch the SDK query in a background Promise — don't await.
+    // The async generator is consumed in the background, updating the store
+    // and log file as messages arrive.
+    const agentPromise = (async () => {
+      let numTurns = 0;
+      let costUsd = 0;
+      let sessionId = "";
+
       try {
-        if (code === 0) {
-          this.store.updateRun(runId, {
-            status: "completed",
-            completed_at: new Date().toISOString(),
-          });
-        } else {
-          this.store.updateRun(runId, {
-            status: "failed",
-            completed_at: new Date().toISOString(),
-          });
+        for await (const message of query({
+          prompt,
+          options: {
+            cwd: worktreePath,
+            model,
+            permissionMode: "bypassPermissions",
+            allowDangerouslySkipPermissions: true,
+            env,
+            persistSession: true,
+          },
+        })) {
+          await logMessage(logFile, message);
+
+          // Track session ID from first message
+          if ("session_id" in message && message.session_id && !sessionId) {
+            sessionId = message.session_id;
+            this.store.updateRun(runId, {
+              session_key: `foreman:sdk:${model}:${runId}:session-${sessionId}`,
+            });
+            log(`  Agent ${bead.id} session: ${sessionId}`);
+          }
+
+          // Handle completion
+          if (message.type === "result") {
+            const result = message as SDKResultSuccess | SDKResultError;
+            numTurns = result.num_turns;
+            costUsd = result.total_cost_usd;
+            const now = new Date().toISOString();
+
+            if (result.subtype === "success") {
+              this.store.updateRun(runId, { status: "completed", completed_at: now });
+              this.store.logEvent(projectId, "complete", {
+                beadId: bead.id,
+                title: bead.title,
+                costUsd,
+                numTurns,
+                durationMs: result.duration_ms,
+                sessionId,
+              }, runId);
+              log(`Agent for ${bead.id} completed (${numTurns} turns, $${costUsd.toFixed(4)})`);
+            } else {
+              const errResult = result as SDKResultError;
+              const reason = errResult.errors?.join("; ") ?? errResult.subtype;
+              this.store.updateRun(runId, { status: "failed", completed_at: now });
+              this.store.logEvent(projectId, "fail", {
+                beadId: bead.id,
+                reason,
+                costUsd,
+                numTurns,
+                durationMs: result.duration_ms,
+                sessionId,
+              }, runId);
+              log(`Agent for ${bead.id} FAILED (${errResult.subtype}): ${reason.slice(0, 300)}`);
+            }
+          }
         }
-      } catch {
-        // Store may be closed if foreman exited — ignore
-      }
-    });
-
-    child.on("error", (err) => {
-      try {
-        this.store.updateRun(runId, {
-          status: "failed",
-          completed_at: new Date().toISOString(),
-        });
-        this.store.logEvent(this.resolveProjectId(), "fail", {
+      } catch (err: unknown) {
+        const reason = err instanceof Error ? err.message : String(err);
+        const now = new Date().toISOString();
+        this.store.updateRun(runId, { status: "failed", completed_at: now });
+        this.store.logEvent(projectId, "fail", {
           beadId: bead.id,
-          reason: err.message,
+          reason,
+          costUsd,
+          numTurns,
+          sessionId,
         }, runId);
-      } catch {
-        // Store may be closed — ignore
+        log(`Agent for ${bead.id} ERROR: ${reason}`);
+        await appendFile(logFile, `\n[foreman] ERROR: ${reason}\n`);
       }
+    })();
+
+    // Don't await — let the agent run in the background.
+    // Catch unhandled rejections so they don't crash foreman.
+    agentPromise.catch((err) => {
+      log(`Agent for ${bead.id} unhandled rejection: ${err instanceof Error ? err.message : String(err)}`);
     });
 
-    // Detach — don't wait for completion
-    child.unref();
-
-    return `foreman:${runtime}:${runId}:pid-${child.pid}`;
+    return sessionKey;
   }
 
   // ── Private helpers ───────────────────────────────────────────────────
@@ -403,6 +472,84 @@ export class Dispatcher {
 }
 
 // ── Utility ─────────────────────────────────────────────────────────────
+
+/**
+ * Replace the worktree's .beads/ directory with a symlink to the main repo's
+ * .beads/ so agents share the same Dolt database and issue tracker.
+ */
+async function linkBeadsDir(
+  projectPath: string,
+  worktreePath: string,
+): Promise<void> {
+  const mainBeads = join(projectPath, ".beads");
+  const wtBeads = join(worktreePath, ".beads");
+
+  // Only link if main repo has .beads/
+  try {
+    await stat(mainBeads);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return; // No .beads/ in main repo — nothing to link
+    throw err; // Permission error, etc. — don't swallow
+  }
+
+  // Remove the git-checked-out .beads/ in the worktree and replace with symlink
+  // rm force:true handles ENOENT, but will still throw on permission errors
+  await rm(wtBeads, { recursive: true, force: true });
+  await symlink(mainBeads, wtBeads);
+}
+
+/**
+ * Build a clean env for agent sessions.
+ * Removes CLAUDECODE to allow nested Claude sessions.
+ */
+function buildCleanEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    PATH: `/opt/homebrew/bin:${process.env.PATH}`,
+  };
+  delete env.CLAUDECODE;
+  return env;
+}
+
+/**
+ * Append an SDK message summary to the log file.
+ * Only logs meaningful events — skips partial/streaming noise.
+ */
+async function logMessage(logFile: string, message: SDKMessage): Promise<void> {
+  const ts = new Date().toISOString().slice(11, 23);
+
+  switch (message.type) {
+    case "assistant": {
+      // Log tool use summaries from assistant messages
+      const toolUses = message.message.content
+        .filter((b: { type: string }): b is { type: "tool_use"; name: string; id: string } => b.type === "tool_use")
+        .map((b: { name: string }) => b.name);
+      if (toolUses.length > 0) {
+        await appendFile(logFile, `[${ts}] assistant: tools=[${toolUses.join(", ")}]\n`);
+      }
+      break;
+    }
+    case "result": {
+      const r = message as SDKResultSuccess | SDKResultError;
+      await appendFile(logFile, `[${ts}] result: subtype=${r.subtype} turns=${r.num_turns} cost=$${r.total_cost_usd.toFixed(4)} duration=${r.duration_ms}ms\n`);
+      if (r.subtype === "success") {
+        await appendFile(logFile, `[${ts}] output: ${(r as SDKResultSuccess).result.slice(0, 500)}\n`);
+      } else {
+        await appendFile(logFile, `[${ts}] errors: ${(r as SDKResultError).errors?.join("; ") ?? "unknown"}\n`);
+      }
+      break;
+    }
+    default:
+      // Skip system, partial, streaming, etc. — too noisy for log files
+      break;
+  }
+}
+
+function log(msg: string): void {
+  const ts = new Date().toISOString().slice(11, 23);
+  console.error(`[foreman ${ts}] ${msg}`);
+}
 
 function beadToInfo(bead: Bead): BeadInfo {
   return {

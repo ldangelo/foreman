@@ -1,4 +1,4 @@
-import type { BeadInfo, RuntimeSelection } from "./types.js";
+import type { BeadInfo, ModelSelection } from "./types.js";
 
 /**
  * Generate the AGENTS.md content placed in each worker worktree.
@@ -6,7 +6,7 @@ import type { BeadInfo, RuntimeSelection } from "./types.js";
 export function workerAgentMd(
   bead: BeadInfo,
   worktreePath: string,
-  runtime: RuntimeSelection,
+  model: ModelSelection,
 ): string {
   const description = bead.description ?? "(no description provided)";
 
@@ -16,7 +16,7 @@ export function workerAgentMd(
 **Bead ID:** ${bead.id}
 **Title:** ${bead.title}
 **Description:** ${description}
-**Runtime:** ${runtime}
+**Model:** ${model}
 **Worktree:** ${worktreePath}
 
 ## Instructions
