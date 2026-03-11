@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import { ForemanStore } from "../../lib/store.js";
+import { ForemanStore, type RunProgress } from "../../lib/store.js";
 
 interface Bead {
   id: string;
@@ -74,15 +74,38 @@ export const statusCommand = new Command("status")
         console.log(chalk.dim("  (no agents running)"));
       } else {
         for (const run of activeRuns) {
-          const elapsed = run.started_at 
+          const elapsed = run.started_at
             ? Math.round((Date.now() - new Date(run.started_at).getTime()) / 60000)
             : 0;
-          const badge = run.agent_type === "claude-code" 
+          const badge = run.agent_type === "claude-code"
             ? chalk.bgBlue.white(` ${run.agent_type} `)
             : run.agent_type === "pi"
             ? chalk.bgGreen.white(` ${run.agent_type} `)
             : chalk.bgMagenta.white(` ${run.agent_type} `);
           console.log(`  ${badge} ${run.bead_id} — ${run.status} (${elapsed}m)`);
+
+          // Show pipeline sub-agent details from progress
+          if (run.progress) {
+            try {
+              const progress: RunProgress = JSON.parse(run.progress);
+              const phase = parsePipelinePhase(progress.lastToolCall);
+              if (phase) {
+                const phaseColors: Record<string, (s: string) => string> = {
+                  explorer: chalk.cyan,
+                  developer: chalk.green,
+                  qa: chalk.yellow,
+                  reviewer: chalk.magenta,
+                  finalize: chalk.blue,
+                };
+                const colorFn = phaseColors[phase.name] ?? chalk.white;
+                const retryTag = phase.retry ? chalk.dim(` (retry ${phase.retry})`) : "";
+                console.log(`    ${chalk.dim("└")} Phase: ${colorFn(phase.name)}${retryTag}  ${chalk.dim(`${progress.turns} turns, ${progress.toolCalls} tools`)}`);
+              }
+              if (progress.costUsd > 0) {
+                console.log(`    ${chalk.dim(" ")} Cost:  ${chalk.yellow(`$${progress.costUsd.toFixed(4)}`)}`);
+              }
+            } catch { /* ignore malformed progress */ }
+          }
         }
       }
 
@@ -100,3 +123,18 @@ export const statusCommand = new Command("status")
     
     store.close();
   });
+
+/**
+ * Parse pipeline phase from progress.lastToolCall.
+ * Pipeline sets values like "explorer:start", "developer:start (retry 1)", "qa:start".
+ * Non-pipeline agents use tool names like "Bash", "Read" — returns null for those.
+ */
+function parsePipelinePhase(lastToolCall: string | null): { name: string; retry?: number } | null {
+  if (!lastToolCall) return null;
+  const match = lastToolCall.match(/^(explorer|developer|qa|reviewer|finalize):(\S+)(?: \(retry (\d+)\))?$/);
+  if (!match) return null;
+  return {
+    name: match[1],
+    retry: match[3] ? parseInt(match[3], 10) : undefined,
+  };
+}
