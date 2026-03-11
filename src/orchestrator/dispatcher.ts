@@ -1,10 +1,12 @@
-import { writeFile, rm, symlink, stat, mkdir, appendFile } from "node:fs/promises";
-import { join } from "node:path";
+import { writeFile, rm, symlink, stat, mkdir } from "node:fs/promises";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { SDKMessage, SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 
 import type { BeadsClient, Bead } from "../lib/beads.js";
-import type { ForemanStore, RunProgress } from "../lib/store.js";
+import type { ForemanStore } from "../lib/store.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
 import type {
@@ -322,7 +324,9 @@ export class Dispatcher {
     });
 
     // 4. Build env with telemetry tags
-    const env = buildCleanEnv();
+    const env: Record<string, string | undefined> = { ...process.env };
+    delete env.CLAUDECODE;
+    env.PATH = `/opt/homebrew/bin:${env.PATH}`;
 
     try {
       let resultMsg: SDKResultSuccess | SDKResultError | undefined;
@@ -429,14 +433,12 @@ export class Dispatcher {
   // ── Agent Spawning ─────────────────────────────────────────────────────
 
   /**
-   * Spawn a coding agent in the given worktree using the Claude Agent SDK.
+   * Spawn a coding agent as a detached worker process.
    *
-   * The SDK runs Claude Code as a library — no subprocess, no stdio pipes,
-   * no shell execution. Structured messages stream via an async generator.
-   *
-   * The agent runs in a background Promise so dispatch returns immediately.
-   * Progress and completion are logged to ~/.foreman/logs/<runId>.log and
-   * the store is updated as events arrive.
+   * Writes a WorkerConfig JSON file and spawns `agent-worker.ts` as a
+   * detached child process that survives the parent foreman process exiting.
+   * The worker runs the SDK `query()` loop independently and updates the
+   * SQLite store with progress/completion.
    */
   private async spawnAgent(
     model: ModelSelection,
@@ -455,226 +457,20 @@ export class Dispatcher {
       `  git push -u origin foreman/${bead.id}`,
     ].join("\n");
 
-    // Build a clean env that allows nested Claude sessions
-    const env = buildCleanEnv();
-
-    // Tag agent spans with bead/run metadata for OTEL/LangSmith
-    if (telemetry) {
-      env.CLAUDE_CODE_ENABLE_TELEMETRY = "1";
-      env.OTEL_RESOURCE_ATTRIBUTES = [
-        process.env.OTEL_RESOURCE_ATTRIBUTES,
-        `foreman.bead_id=${bead.id}`,
-        `foreman.run_id=${runId}`,
-        `foreman.model=${model}`,
-      ].filter(Boolean).join(",");
-    }
-
-    // Create log directory
-    const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
-    await mkdir(logDir, { recursive: true });
-    const logFile = join(logDir, `${runId}.log`);
-
-    const header = [
-      `[foreman] Agent spawn at ${new Date().toISOString()}`,
-      `  bead:      ${bead.id} — ${bead.title}`,
-      `  model:     ${model}`,
-      `  run:       ${runId}`,
-      `  worktree:  ${worktreePath}`,
-      `  method:    Claude Agent SDK (query)`,
-      "─".repeat(80),
-      "",
-    ].join("\n");
-    await appendFile(logFile, header);
-
-    log(`Spawning agent for ${bead.id} [${model}] in ${worktreePath}`);
-    log(`  method: Claude Agent SDK`);
-
-    const projectId = this.resolveProjectId();
+    const env = buildWorkerEnv(telemetry, bead.id, runId, model);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
 
-    // Launch the SDK query in a background Promise — don't await.
-    // The async generator is consumed in the background, updating the store
-    // progress and log file as messages arrive.
-    const agentPromise = (async () => {
-      let sessionId = "";
-      let resultHandled = false; // Guard against post-result errors overwriting status
+    log(`Spawning detached worker for ${bead.id} [${model}] in ${worktreePath}`);
 
-      // Live progress tracking — updated on every SDK message
-      const progress: RunProgress = {
-        toolCalls: 0,
-        toolBreakdown: {},
-        filesChanged: [],
-        turns: 0,
-        costUsd: 0,
-        tokensIn: 0,
-        tokensOut: 0,
-        lastToolCall: null,
-        lastActivity: new Date().toISOString(),
-      };
-
-      // Throttle progress writes to avoid hammering SQLite on every message
-      let progressDirty = false;
-      const flushProgress = () => {
-        if (progressDirty) {
-          this.store.updateRunProgress(runId, progress);
-          progressDirty = false;
-        }
-      };
-      const progressTimer = setInterval(flushProgress, 2_000);
-      progressTimer.unref();
-
-      try {
-        for await (const message of query({
-          prompt,
-          options: {
-            cwd: worktreePath,
-            model,
-            permissionMode: "bypassPermissions",
-            allowDangerouslySkipPermissions: true,
-            env,
-            persistSession: true,
-          },
-        })) {
-          await logMessage(logFile, message);
-          progress.lastActivity = new Date().toISOString();
-
-          // Track session ID from first message
-          if ("session_id" in message && message.session_id && !sessionId) {
-            sessionId = message.session_id;
-            this.store.updateRun(runId, {
-              session_key: `foreman:sdk:${model}:${runId}:session-${sessionId}`,
-            });
-            log(`  Agent ${bead.id} session: ${sessionId}`);
-          }
-
-          // Track tool usage from assistant messages
-          if (message.type === "assistant") {
-            progress.turns++;
-            const toolUses = message.message.content.filter(
-              (b: { type: string }) => b.type === "tool_use",
-            ) as Array<{ type: "tool_use"; name: string; input: Record<string, unknown> }>;
-
-            for (const tool of toolUses) {
-              progress.toolCalls++;
-              progress.toolBreakdown[tool.name] = (progress.toolBreakdown[tool.name] ?? 0) + 1;
-              progress.lastToolCall = tool.name;
-
-              // Track files changed via Write/Edit tools
-              if ((tool.name === "Write" || tool.name === "Edit") && tool.input?.file_path) {
-                const filePath = String(tool.input.file_path);
-                if (!progress.filesChanged.includes(filePath)) {
-                  progress.filesChanged.push(filePath);
-                }
-              }
-            }
-            progressDirty = true;
-          }
-
-          // Handle completion
-          if (message.type === "result") {
-            const result = message as SDKResultSuccess | SDKResultError;
-            progress.turns = result.num_turns;
-            progress.costUsd = result.total_cost_usd;
-            progress.tokensIn = result.usage.input_tokens;
-            progress.tokensOut = result.usage.output_tokens;
-            const now = new Date().toISOString();
-
-            // Final progress flush
-            clearInterval(progressTimer);
-            this.store.updateRunProgress(runId, progress);
-            resultHandled = true;
-
-            if (result.subtype === "success") {
-              this.store.updateRun(runId, { status: "completed", completed_at: now });
-              this.store.logEvent(projectId, "complete", {
-                beadId: bead.id,
-                title: bead.title,
-                costUsd: progress.costUsd,
-                numTurns: progress.turns,
-                toolCalls: progress.toolCalls,
-                filesChanged: progress.filesChanged.length,
-                durationMs: result.duration_ms,
-                sessionId,
-              }, runId);
-              log(`Agent for ${bead.id} completed (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
-            } else {
-              const errResult = result as SDKResultError;
-              const reason = errResult.errors?.join("; ") ?? errResult.subtype;
-
-              // Detect rate limit errors
-              const isRateLimit = reason.includes("hit your limit")
-                || reason.includes("rate limit")
-                || errResult.subtype === "error_max_budget_usd";
-
-              this.store.updateRun(runId, {
-                status: isRateLimit ? "stuck" : "failed",
-                completed_at: now,
-              });
-              this.store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
-                beadId: bead.id,
-                reason,
-                costUsd: progress.costUsd,
-                numTurns: progress.turns,
-                toolCalls: progress.toolCalls,
-                durationMs: result.duration_ms,
-                sessionId,
-                rateLimit: isRateLimit,
-              }, runId);
-              if (isRateLimit) {
-                log(`Agent for ${bead.id} RATE LIMITED after ${progress.turns} turns ($${progress.costUsd.toFixed(4)}) — can resume later`);
-              } else {
-                log(`Agent for ${bead.id} FAILED (${errResult.subtype}): ${reason.slice(0, 300)}`);
-              }
-            }
-          }
-        }
-      } catch (err: unknown) {
-        clearInterval(progressTimer);
-        this.store.updateRunProgress(runId, progress);
-        const reason = err instanceof Error ? err.message : String(err);
-        const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
-
-        // Don't overwrite a successful result with a post-exit error.
-        // The SDK sometimes throws after yielding subtype=success when the
-        // process exits with code 1 (e.g. rate limit hit after completion).
-        if (resultHandled) {
-          log(`Agent for ${bead.id} post-result error (ignored — already ${isRateLimit ? "rate limited" : "completed"}): ${reason.slice(0, 200)}`);
-          await appendFile(logFile, `\n[foreman] Post-result error (ignored): ${reason}\n`);
-          return;
-        }
-
-        const now = new Date().toISOString();
-
-        if (isRateLimit) {
-          // Rate limited before completing — mark as stuck so it can be resumed
-          this.store.updateRun(runId, { status: "stuck", completed_at: now });
-          this.store.logEvent(projectId, "stuck", {
-            beadId: bead.id,
-            reason,
-            costUsd: progress.costUsd,
-            numTurns: progress.turns,
-            rateLimit: true,
-          }, runId);
-          log(`Agent for ${bead.id} RATE LIMITED mid-work (${progress.turns} turns, $${progress.costUsd.toFixed(4)}) — can resume later`);
-          await appendFile(logFile, `\n[foreman] RATE LIMITED: ${reason}\n`);
-        } else {
-          this.store.updateRun(runId, { status: "failed", completed_at: now });
-          this.store.logEvent(projectId, "fail", {
-            beadId: bead.id,
-            reason,
-            costUsd: progress.costUsd,
-            numTurns: progress.turns,
-          }, runId);
-          log(`Agent for ${bead.id} ERROR: ${reason}`);
-          await appendFile(logFile, `\n[foreman] ERROR: ${reason}\n`);
-        }
-      }
-    })();
-
-    // Don't await — let the agent run in the background.
-    // Catch unhandled rejections so they don't crash foreman.
-    agentPromise.catch((err) => {
-      log(`Agent for ${bead.id} unhandled rejection: ${err instanceof Error ? err.message : String(err)}`);
+    await spawnWorkerProcess({
+      runId,
+      projectId: this.resolveProjectId(),
+      beadId: bead.id,
+      beadTitle: bead.title,
+      model,
+      worktreePath,
+      prompt,
+      env,
     });
 
     return sessionKey;
@@ -683,8 +479,8 @@ export class Dispatcher {
   // ── Session Resume ───────────────────────────────────────────────────
 
   /**
-   * Resume a previously started agent session via the SDK's `resume` option.
-   * Continues the agent's conversation from where it left off.
+   * Resume a previously started agent session via a detached worker process.
+   * The worker uses the SDK's `resume` option to continue the conversation.
    */
   private async resumeAgent(
     model: ModelSelection,
@@ -694,40 +490,6 @@ export class Dispatcher {
     sdkSessionId: string,
     telemetry?: boolean,
   ): Promise<string> {
-    const env = buildCleanEnv();
-
-    if (telemetry) {
-      env.CLAUDE_CODE_ENABLE_TELEMETRY = "1";
-      env.OTEL_RESOURCE_ATTRIBUTES = [
-        process.env.OTEL_RESOURCE_ATTRIBUTES,
-        `foreman.bead_id=${bead.id}`,
-        `foreman.run_id=${runId}`,
-        `foreman.model=${model}`,
-      ].filter(Boolean).join(",");
-    }
-
-    const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
-    await mkdir(logDir, { recursive: true });
-    const logFile = join(logDir, `${runId}.log`);
-
-    const header = [
-      `[foreman] Agent RESUME at ${new Date().toISOString()}`,
-      `  bead:      ${bead.id} — ${bead.title}`,
-      `  model:     ${model}`,
-      `  run:       ${runId}`,
-      `  session:   ${sdkSessionId}`,
-      `  worktree:  ${worktreePath}`,
-      "─".repeat(80),
-      "",
-    ].join("\n");
-    await appendFile(logFile, header);
-
-    log(`Resuming agent for ${bead.id} [${model}] session=${sdkSessionId}`);
-
-    const projectId = this.resolveProjectId();
-    const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;
-
-    // The resume prompt tells the agent to continue where it left off
     const resumePrompt = [
       `You were previously working on this task but were interrupted (likely by a rate limit).`,
       `Continue where you left off. Check your progress so far and complete the remaining work.`,
@@ -738,142 +500,21 @@ export class Dispatcher {
       `  git push -u origin foreman/${bead.id}`,
     ].join("\n");
 
-    const agentPromise = (async () => {
-      let resultHandled = false;
+    const env = buildWorkerEnv(telemetry, bead.id, runId, model);
+    const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;
 
-      const progress: RunProgress = {
-        toolCalls: 0,
-        toolBreakdown: {},
-        filesChanged: [],
-        turns: 0,
-        costUsd: 0,
-        tokensIn: 0,
-        tokensOut: 0,
-        lastToolCall: null,
-        lastActivity: new Date().toISOString(),
-      };
+    log(`Resuming detached worker for ${bead.id} [${model}] session=${sdkSessionId}`);
 
-      let progressDirty = false;
-      const flushProgress = () => {
-        if (progressDirty) {
-          this.store.updateRunProgress(runId, progress);
-          progressDirty = false;
-        }
-      };
-      const progressTimer = setInterval(flushProgress, 2_000);
-      progressTimer.unref();
-
-      try {
-        for await (const message of query({
-          prompt: resumePrompt,
-          options: {
-            cwd: worktreePath,
-            model,
-            permissionMode: "bypassPermissions",
-            allowDangerouslySkipPermissions: true,
-            env,
-            resume: sdkSessionId,
-            persistSession: true,
-          },
-        })) {
-          await logMessage(logFile, message);
-          progress.lastActivity = new Date().toISOString();
-
-          if (message.type === "assistant") {
-            progress.turns++;
-            const toolUses = message.message.content.filter(
-              (b: { type: string }) => b.type === "tool_use",
-            ) as Array<{ type: "tool_use"; name: string; input: Record<string, unknown> }>;
-
-            for (const tool of toolUses) {
-              progress.toolCalls++;
-              progress.toolBreakdown[tool.name] = (progress.toolBreakdown[tool.name] ?? 0) + 1;
-              progress.lastToolCall = tool.name;
-
-              if ((tool.name === "Write" || tool.name === "Edit") && tool.input?.file_path) {
-                const filePath = String(tool.input.file_path);
-                if (!progress.filesChanged.includes(filePath)) {
-                  progress.filesChanged.push(filePath);
-                }
-              }
-            }
-            progressDirty = true;
-          }
-
-          if (message.type === "result") {
-            const result = message as SDKResultSuccess | SDKResultError;
-            progress.turns = result.num_turns;
-            progress.costUsd = result.total_cost_usd;
-            progress.tokensIn = result.usage.input_tokens;
-            progress.tokensOut = result.usage.output_tokens;
-            const now = new Date().toISOString();
-
-            clearInterval(progressTimer);
-            this.store.updateRunProgress(runId, progress);
-            resultHandled = true;
-
-            if (result.subtype === "success") {
-              this.store.updateRun(runId, { status: "completed", completed_at: now });
-              this.store.logEvent(projectId, "complete", {
-                beadId: bead.id,
-                costUsd: progress.costUsd,
-                numTurns: progress.turns,
-                toolCalls: progress.toolCalls,
-                filesChanged: progress.filesChanged.length,
-                durationMs: result.duration_ms,
-                resumed: true,
-              }, runId);
-              log(`Agent for ${bead.id} completed after resume (${progress.turns} turns, $${progress.costUsd.toFixed(4)})`);
-            } else {
-              const errResult = result as SDKResultError;
-              const reason = errResult.errors?.join("; ") ?? errResult.subtype;
-              const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
-
-              this.store.updateRun(runId, {
-                status: isRateLimit ? "stuck" : "failed",
-                completed_at: now,
-              });
-              this.store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
-                beadId: bead.id,
-                reason,
-                costUsd: progress.costUsd,
-                rateLimit: isRateLimit,
-                resumed: true,
-              }, runId);
-              log(`Agent for ${bead.id} ${isRateLimit ? "RATE LIMITED again" : "FAILED"} after resume: ${reason.slice(0, 300)}`);
-            }
-          }
-        }
-      } catch (err: unknown) {
-        clearInterval(progressTimer);
-        this.store.updateRunProgress(runId, progress);
-        const reason = err instanceof Error ? err.message : String(err);
-        const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
-
-        if (resultHandled) {
-          log(`Agent for ${bead.id} post-result error after resume (ignored): ${reason.slice(0, 200)}`);
-          return;
-        }
-
-        const now = new Date().toISOString();
-        this.store.updateRun(runId, {
-          status: isRateLimit ? "stuck" : "failed",
-          completed_at: now,
-        });
-        this.store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
-          beadId: bead.id,
-          reason,
-          costUsd: progress.costUsd,
-          rateLimit: isRateLimit,
-          resumed: true,
-        }, runId);
-        log(`Agent for ${bead.id} ${isRateLimit ? "RATE LIMITED" : "ERROR"} during resume: ${reason.slice(0, 200)}`);
-        await appendFile(logFile, `\n[foreman] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason}\n`);
-      }
-    })();
-
-    agentPromise.catch((err) => {
-      log(`Agent for ${bead.id} unhandled rejection during resume: ${err instanceof Error ? err.message : String(err)}`);
+    await spawnWorkerProcess({
+      runId,
+      projectId: this.resolveProjectId(),
+      beadId: bead.id,
+      beadTitle: bead.title,
+      model,
+      worktreePath,
+      prompt: resumePrompt,
+      env,
+      resume: sdkSessionId,
     });
 
     return sessionKey;
@@ -920,51 +561,81 @@ async function linkBeadsDir(
   await symlink(mainBeads, wtBeads);
 }
 
-/**
- * Build a clean env for agent sessions.
- * Removes CLAUDECODE to allow nested Claude sessions.
- */
-function buildCleanEnv(): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = {
-    ...process.env,
-    PATH: `/opt/homebrew/bin:${process.env.PATH}`,
-  };
-  delete env.CLAUDECODE;
-  return env;
+// ── Worker Config (must match agent-worker.ts interface) ────────────────
+
+interface WorkerConfig {
+  runId: string;
+  projectId: string;
+  beadId: string;
+  beadTitle: string;
+  model: string;
+  worktreePath: string;
+  prompt: string;
+  env: Record<string, string>;
+  resume?: string;
 }
 
 /**
- * Append an SDK message summary to the log file.
- * Only logs meaningful events — skips partial/streaming noise.
+ * Spawn agent-worker.ts as a fully detached child process.
+ *
+ * Writes config to a temp JSON file, spawns tsx with detached: true,
+ * then unrefs the child so the foreman process can exit freely.
+ * The worker updates SQLite with progress/completion independently.
  */
-async function logMessage(logFile: string, message: SDKMessage): Promise<void> {
-  const ts = new Date().toISOString().slice(11, 23);
+async function spawnWorkerProcess(config: WorkerConfig): Promise<void> {
+  // Write config to temp file (worker reads + deletes it)
+  const configDir = join(process.env.HOME ?? "/tmp", ".foreman", "tmp");
+  await mkdir(configDir, { recursive: true });
+  const configPath = join(configDir, `worker-${config.runId}.json`);
+  await writeFile(configPath, JSON.stringify(config), "utf-8");
 
-  switch (message.type) {
-    case "assistant": {
-      // Log tool use summaries from assistant messages
-      const toolUses = message.message.content
-        .filter((b: { type: string }): b is { type: "tool_use"; name: string; id: string } => b.type === "tool_use")
-        .map((b: { name: string }) => b.name);
-      if (toolUses.length > 0) {
-        await appendFile(logFile, `[${ts}] assistant: tools=[${toolUses.join(", ")}]\n`);
-      }
-      break;
+  // Resolve paths to tsx and worker script
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const projectRoot = join(__dirname, "..", "..");
+  const tsxBin = join(projectRoot, "node_modules", ".bin", "tsx");
+  const workerScript = join(__dirname, "agent-worker.ts");
+
+  const child = spawn(tsxBin, [workerScript, configPath], {
+    detached: true,
+    stdio: "ignore",
+    cwd: config.worktreePath,
+    env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
+  });
+
+  child.unref();
+  log(`  Worker pid=${child.pid} for ${config.beadId}`);
+}
+
+/**
+ * Build a clean env record (string values only) for worker config.
+ * Removes CLAUDECODE to allow nested Claude sessions.
+ */
+function buildWorkerEnv(
+  telemetry: boolean | undefined,
+  beadId: string,
+  runId: string,
+  model: string,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && key !== "CLAUDECODE") {
+      env[key] = value;
     }
-    case "result": {
-      const r = message as SDKResultSuccess | SDKResultError;
-      await appendFile(logFile, `[${ts}] result: subtype=${r.subtype} turns=${r.num_turns} cost=$${r.total_cost_usd.toFixed(4)} duration=${r.duration_ms}ms\n`);
-      if (r.subtype === "success") {
-        await appendFile(logFile, `[${ts}] output: ${(r as SDKResultSuccess).result.slice(0, 500)}\n`);
-      } else {
-        await appendFile(logFile, `[${ts}] errors: ${(r as SDKResultError).errors?.join("; ") ?? "unknown"}\n`);
-      }
-      break;
-    }
-    default:
-      // Skip system, partial, streaming, etc. — too noisy for log files
-      break;
   }
+  env.PATH = `/opt/homebrew/bin:${env.PATH ?? ""}`;
+
+  if (telemetry) {
+    env.CLAUDE_CODE_ENABLE_TELEMETRY = "1";
+    env.OTEL_RESOURCE_ATTRIBUTES = [
+      process.env.OTEL_RESOURCE_ATTRIBUTES,
+      `foreman.bead_id=${beadId}`,
+      `foreman.run_id=${runId}`,
+      `foreman.model=${model}`,
+    ].filter(Boolean).join(",");
+  }
+
+  return env;
 }
 
 function log(msg: string): void {

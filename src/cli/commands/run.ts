@@ -92,43 +92,63 @@ export const runCommand = new Command("run")
         console.log(chalk.yellow("(dry run — no changes will be made)\n"));
       }
 
-      const result = await dispatcher.dispatch({
-        maxAgents,
-        model,
-        dryRun,
-        telemetry,
-      });
+      // Dispatch loop: dispatch a batch, watch until done, then check for more work.
+      // Exits when no new tasks are dispatched (all work complete or all remaining blocked).
+      let iteration = 0;
+      while (true) {
+        iteration++;
+        if (iteration > 1) {
+          console.log(chalk.bold(`\n── Batch ${iteration} ──────────────────────────────────\n`));
+        }
 
-      // Print dispatched tasks
-      if (result.dispatched.length > 0) {
-        console.log(chalk.green.bold(`Dispatched ${result.dispatched.length} task(s):\n`));
-        for (const task of result.dispatched) {
-          console.log(`  ${chalk.cyan(task.beadId)} ${task.title}`);
-          console.log(`    Model:    ${chalk.magenta(task.model)}`);
-          console.log(`    Branch:   ${task.branchName}`);
-          console.log(`    Worktree: ${task.worktreePath}`);
-          console.log(`    Run ID:   ${task.runId}`);
+        const result = await dispatcher.dispatch({
+          maxAgents,
+          model,
+          dryRun,
+          telemetry,
+        });
+
+        // Print dispatched tasks
+        if (result.dispatched.length > 0) {
+          console.log(chalk.green.bold(`Dispatched ${result.dispatched.length} task(s):\n`));
+          for (const task of result.dispatched) {
+            console.log(`  ${chalk.cyan(task.beadId)} ${task.title}`);
+            console.log(`    Model:    ${chalk.magenta(task.model)}`);
+            console.log(`    Branch:   ${task.branchName}`);
+            console.log(`    Worktree: ${task.worktreePath}`);
+            console.log(`    Run ID:   ${task.runId}`);
+            console.log();
+          }
+        } else {
+          console.log(chalk.yellow("No tasks dispatched."));
+        }
+
+        // Print skipped tasks
+        if (result.skipped.length > 0) {
+          console.log(chalk.dim(`Skipped ${result.skipped.length} task(s):`));
+          for (const task of result.skipped) {
+            console.log(`  ${chalk.dim(task.beadId)} ${chalk.dim(task.title)} — ${task.reason}`);
+          }
           console.log();
         }
-      } else {
-        console.log(chalk.yellow("No tasks dispatched."));
-      }
 
-      // Print skipped tasks
-      if (result.skipped.length > 0) {
-        console.log(chalk.dim(`Skipped ${result.skipped.length} task(s):`));
-        for (const task of result.skipped) {
-          console.log(`  ${chalk.dim(task.beadId)} ${chalk.dim(task.title)} — ${task.reason}`);
+        console.log(chalk.bold(`Active agents: ${result.activeAgents}/${maxAgents}`));
+
+        // Nothing dispatched — all work is done (or blocked/dry-run)
+        if (result.dispatched.length === 0 || dryRun) {
+          break;
         }
-        console.log();
-      }
 
-      console.log(chalk.bold(`Active agents: ${result.activeAgents}/${maxAgents}`));
+        // Watch mode: wait for this batch to finish, then loop to check for more
+        if (watch) {
+          const runIds = result.dispatched.map((t) => t.runId);
+          await watchRunsInk(store, runIds);
+          // After batch completes, loop back to dispatch the next batch
+          continue;
+        }
 
-      // Watch mode: poll agent status until all finish
-      if (watch && !dryRun && result.dispatched.length > 0) {
-        const runIds = result.dispatched.map((t) => t.runId);
-        await watchRunsInk(store, runIds);
+        // No-watch mode: dispatch once and exit
+        break;
       }
 
       store.close();
