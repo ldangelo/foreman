@@ -20,10 +20,17 @@ export const mergeCommand = new Command("merge")
 
       console.log(chalk.bold("Running refinery on completed work...\n"));
 
+      const project = store.getProjectByPath(projectPath);
+      if (!project) {
+        console.error(chalk.red("No project registered. Run 'foreman init' first."));
+        process.exit(1);
+      }
+
       const report = await refinery.mergeCompleted({
         targetBranch: opts.targetBranch,
         runTests: opts.tests, // commander inverts --no-tests to opts.tests = false
         testCommand: opts.testCommand,
+        projectId: project.id,
       });
 
       // Merged

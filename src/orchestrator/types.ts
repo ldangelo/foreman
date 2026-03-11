@@ -134,3 +134,15 @@ export interface MergeReport {
   conflicts: ConflictRun[];
   testFailures: FailedRun[];
 }
+
+export interface CreatedPr {
+  runId: string;
+  beadId: string;
+  branchName: string;
+  prUrl: string;
+}
+
+export interface PrReport {
+  created: CreatedPr[];
+  failed: FailedRun[];
+}
