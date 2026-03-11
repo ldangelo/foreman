@@ -202,14 +202,11 @@ async function watchRuns(store: ForemanStore, runIds: string[]): Promise<void> {
 
   const POLL_MS = 3_000;
   let interrupted = false;
-  let prevLineCount = 0;
+  // Total lines written (header + content) that need to be overwritten on refresh
+  let linesWritten = 0;
 
   const onSigint = () => {
     interrupted = true;
-    // Move past the table before printing
-    if (prevLineCount > 0) {
-      process.stdout.write(`\n${"\n".repeat(prevLineCount)}`);
-    }
     console.log(chalk.dim("\n\nDetached — agents continue in background."));
     console.log(chalk.dim("Check status: foreman monitor\n"));
   };
@@ -261,41 +258,43 @@ async function watchRuns(store: ForemanStore, runIds: string[]): Promise<void> {
       }
 
       // Summary line
-      lines.push("");
       lines.push(
         chalk.dim(`  Total: ${totalTools} tool calls, $${totalCost.toFixed(3)}`),
       );
 
-      // Move cursor up and overwrite (clear previous table)
-      if (prevLineCount > 0) {
-        process.stdout.write(`\x1b[${prevLineCount + 1}A`);
+      // Move cursor up to overwrite previous output
+      if (linesWritten > 0) {
+        process.stdout.write(`\x1b[${linesWritten}A`);
       }
 
-      process.stdout.write(`\r\x1b[K${chalk.bold("Agent status:")}\n`);
+      // Write header + all lines, clearing each line first
+      process.stdout.write(`\x1b[K${chalk.bold("Agent status:")}\n`);
       for (const line of lines) {
         process.stdout.write(`\x1b[K${line}\n`);
       }
-      prevLineCount = lines.length;
 
-      // Move cursor back up for next refresh
-      process.stdout.write(`\x1b[${lines.length + 1}A`);
+      // 1 for header + lines.length for content
+      linesWritten = 1 + lines.length;
 
       if (allDone) {
-        // Final render — move down past the table
-        process.stdout.write(`\n${"\n".repeat(lines.length)}`);
         const completed = runs.filter((r) => r.status === "completed").length;
         const failed = runs.filter(
           (r) => r.status === "failed" || r.status === "test-failed",
         ).length;
+        const stuck = runs.filter((r) => r.status === "stuck").length;
 
-        console.log(
-          chalk.bold(
-            `\nAll agents finished: ${chalk.green(`${completed} completed`)}, ${chalk.red(`${failed} failed`)}`,
-          ),
-        );
-        console.log(
-          chalk.dim(`  ${totalTools} tool calls, $${totalCost.toFixed(3)} total cost`),
-        );
+        const parts = [
+          chalk.green(`${completed} completed`),
+          failed > 0 ? chalk.red(`${failed} failed`) : null,
+          stuck > 0 ? chalk.yellow(`${stuck} rate-limited`) : null,
+        ].filter(Boolean).join(", ");
+
+        console.log(chalk.bold(`\nDone: ${parts}`));
+        console.log(chalk.dim(`  ${totalTools} tool calls, $${totalCost.toFixed(3)} total cost`));
+
+        if (stuck > 0) {
+          console.log(chalk.yellow(`\n  Run 'foreman run --resume' after rate limit resets to continue.`));
+        }
         break;
       }
 
