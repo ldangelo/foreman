@@ -22,6 +22,7 @@ export const runCommand = new Command("run")
   .option("--no-pipeline", "Skip the explorer/qa/reviewer pipeline — run as single worker agent")
   .option("--skip-explore", "Skip the explorer phase in the pipeline")
   .option("--skip-review", "Skip the reviewer phase in the pipeline")
+  .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
   .option("--ralph", "Run in Ralph Wiggum loop: pick tasks from bd ready until none remain")
   .option("--max-iterations <n>", "Max Ralph loop iterations (default: unlimited)", "0")
   .action(async (opts) => {
@@ -37,6 +38,7 @@ export const runCommand = new Command("run")
     const pipeline = opts.pipeline as boolean;  // --no-pipeline sets to false
     const skipExplore = opts.skipExplore as boolean | undefined;
     const skipReview = opts.skipReview as boolean | undefined;
+    const beadFilter = opts.bead as string | undefined;
 
     if (ralph) {
       setupRalphLoop(maxIterations);
@@ -115,6 +117,7 @@ export const runCommand = new Command("run")
           pipeline,
           skipExplore,
           skipReview,
+          beadId: beadFilter,
         });
 
         // Print dispatched tasks

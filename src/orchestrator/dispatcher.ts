@@ -1,4 +1,4 @@
-import { writeFile, rm, symlink, stat, mkdir } from "node:fs/promises";
+import { writeFile, rm, symlink, stat, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -42,6 +42,7 @@ export class Dispatcher {
     pipeline?: boolean;
     skipExplore?: boolean;
     skipReview?: boolean;
+    beadId?: string;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = opts?.projectId ?? this.resolveProjectId();
@@ -50,7 +51,21 @@ export class Dispatcher {
     const activeRuns = this.store.getActiveRuns(projectId);
     const available = Math.max(0, maxAgents - activeRuns.length);
 
-    const readyBeads = await this.beads.ready();
+    let readyBeads = await this.beads.ready();
+
+    // Filter to a specific bead if requested
+    if (opts?.beadId) {
+      const target = readyBeads.find((b) => b.id === opts.beadId);
+      if (!target) {
+        return {
+          dispatched: [],
+          skipped: [{ beadId: opts.beadId, title: opts.beadId, reason: "Not found in ready beads" }],
+          resumed: [],
+          activeAgents: activeRuns.length,
+        };
+      }
+      readyBeads = [target];
+    }
 
     const dispatched: DispatchedTask[] = [];
     const skipped: SkippedTask[] = [];
@@ -618,11 +633,21 @@ async function spawnWorkerProcess(config: WorkerConfig): Promise<void> {
   const tsxBin = join(projectRoot, "node_modules", ".bin", "tsx");
   const workerScript = join(__dirname, "agent-worker.ts");
 
+  // Log worker stdout/stderr to files for debugging
+  const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
+  await mkdir(logDir, { recursive: true });
+  const outFd = await open(join(logDir, `${config.runId}.out`), "w");
+  const errFd = await open(join(logDir, `${config.runId}.err`), "w");
+
+  // Strip CLAUDECODE env var so the worker can spawn its own Claude SDK session
+  const spawnEnv: Record<string, string | undefined> = { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` };
+  delete spawnEnv.CLAUDECODE;
+
   const child = spawn(tsxBin, [workerScript, configPath], {
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", outFd.fd, errFd.fd],
     cwd: config.worktreePath,
-    env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
+    env: spawnEnv,
   });
 
   child.unref();
