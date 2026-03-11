@@ -307,12 +307,12 @@ export class ForemanStore {
     if (projectId) {
       return this.db
         .prepare(
-          "SELECT * FROM runs WHERE project_id = ? AND bead_id = ? ORDER BY created_at DESC"
+          "SELECT * FROM runs WHERE project_id = ? AND bead_id = ? ORDER BY created_at DESC, rowid DESC"
         )
         .all(projectId, beadId) as Run[];
     }
     return this.db
-      .prepare("SELECT * FROM runs WHERE bead_id = ? ORDER BY created_at DESC")
+      .prepare("SELECT * FROM runs WHERE bead_id = ? ORDER BY created_at DESC, rowid DESC")
       .all(beadId) as Run[];
   }
 
