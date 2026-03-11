@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "server",
-  "dolt_database": "foreman",
-  "project_id": "ac6cdccf-1c0b-40df-af8c-959e5271330b"
-}
