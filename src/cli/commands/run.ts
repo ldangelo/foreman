@@ -1,7 +1,5 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 
 import { BeadsClient } from "../../lib/beads.js";
 import { ForemanStore } from "../../lib/store.js";
@@ -23,27 +21,18 @@ export const runCommand = new Command("run")
   .option("--skip-explore", "Skip the explorer phase in the pipeline")
   .option("--skip-review", "Skip the reviewer phase in the pipeline")
   .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
-  .option("--ralph", "Run in Ralph Wiggum loop: pick tasks from bd ready until none remain")
-  .option("--max-iterations <n>", "Max Ralph loop iterations (default: unlimited)", "0")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
     const dryRun = opts.dryRun as boolean | undefined;
     const resume = opts.resume as boolean | undefined;
     const resumeFailed = opts.resumeFailed as boolean | undefined;
-    const ralph = opts.ralph as boolean | undefined;
-    const maxIterations = parseInt(opts.maxIterations, 10);
     const watch = opts.watch as boolean;
     const telemetry = opts.telemetry as boolean | undefined;
     const pipeline = opts.pipeline as boolean;  // --no-pipeline sets to false
     const skipExplore = opts.skipExplore as boolean | undefined;
     const skipReview = opts.skipReview as boolean | undefined;
     const beadFilter = opts.bead as string | undefined;
-
-    if (ralph) {
-      setupRalphLoop(maxIterations);
-      return;
-    }
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
@@ -171,88 +160,3 @@ export const runCommand = new Command("run")
     }
   });
 
-/**
- * Set up a Ralph Wiggum loop that iterates over bd ready tasks.
- *
- * Creates the .claude/ralph-loop.local.md state file with a prompt that
- * instructs Claude to pick the next ready task, implement it, and close it.
- * The ralph-loop plugin's stop hook handles re-feeding the prompt each iteration.
- * The loop terminates when bd ready returns 0 tasks and the agent outputs
- * <promise>NO TASKS REMAINING</promise>.
- */
-function setupRalphLoop(maxIterations: number): void {
-  const completionPromise = "NO TASKS REMAINING";
-  const startedAt = new Date().toISOString();
-  const sessionId = process.env.CLAUDE_CODE_SESSION_ID ?? "";
-
-  const prompt = `You are a foreman agent working through a beads task backlog.
-
-## Instructions
-
-1. Run \`bd ready --type task -n 1\` and \`bd ready --type chore -n 1\` to find the highest priority ready task
-2. If NO tasks are returned, output <promise>${completionPromise}</promise> and stop
-3. Pick the task and run \`bd update <id> --status=in_progress\`
-4. Run \`bd show <id>\` to read the full description and dependencies
-5. Implement the task:
-   - Read relevant existing code first
-   - Write the implementation with unit tests
-   - Run the test suite to verify
-6. When the task passes tests:
-   - \`git add <files>\` (only files you changed)
-   - \`git commit -m "<task title> (<task id>)"\`
-   - \`bd close <id> --reason="Implemented and tested"\`
-7. Done — the loop will feed this prompt again for the next task
-
-## Rules
-
-- Work on exactly ONE task per iteration
-- Do NOT skip tasks or mark them done without implementing them
-- If a task is blocked or impossible, close it with \`bd close <id> --reason="Blocked: <explanation>"\` and move to the next
-- Keep commits focused — one commit per task
-- Only output <promise>${completionPromise}</promise> when \`bd ready\` genuinely returns zero tasks`;
-
-  const stateContent = `---
-active: true
-iteration: 1
-session_id: ${sessionId}
-max_iterations: ${maxIterations}
-completion_promise: "${completionPromise}"
-started_at: "${startedAt}"
----
-
-${prompt}
-`;
-
-  mkdirSync(".claude", { recursive: true });
-  writeFileSync(".claude/ralph-loop.local.md", stateContent, "utf-8");
-
-  console.log(chalk.bold("🔄 Ralph Wiggum loop activated!\n"));
-  console.log(`  Mode:               ${chalk.cyan("bd ready → implement → close → repeat")}`);
-  console.log(`  Max iterations:     ${chalk.yellow(maxIterations > 0 ? String(maxIterations) : "unlimited")}`);
-  console.log(`  Completion promise: ${chalk.green(completionPromise)}`);
-  console.log(`  State file:         ${chalk.dim(".claude/ralph-loop.local.md")}\n`);
-  console.log(chalk.dim("The stop hook will keep feeding the prompt until bd ready returns 0 tasks."));
-  console.log(chalk.dim("Monitor progress: bd stats\n"));
-
-  // Find Claude CLI
-  const claudePath = process.env.CLAUDE_PATH || "/opt/homebrew/bin/claude";
-
-  // Spawn Claude interactively with the prompt.
-  // The ralph-loop stop hook intercepts session exit and re-feeds the prompt.
-  // stdio: "inherit" gives Claude full terminal control (interactive mode).
-  // Strip CLAUDECODE env var to allow spawning Claude from within a Claude session
-  const cleanEnv: Record<string, string | undefined> = { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` };
-  delete cleanEnv.CLAUDECODE;
-
-  const result = spawnSync(claudePath, [
-    "--permission-mode", "bypassPermissions",
-    prompt,
-  ], {
-    cwd: process.cwd(),
-    stdio: "inherit",
-    env: cleanEnv,
-  });
-
-  // Exit with Claude's exit code
-  process.exit(result.status ?? 0);
-}
