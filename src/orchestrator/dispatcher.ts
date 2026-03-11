@@ -1,4 +1,4 @@
-import { writeFile, rm, symlink, stat, mkdir, open } from "node:fs/promises";
+import { writeFile, rm, symlink, stat, mkdir, open, lstat, readlink, unlink } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -588,9 +588,25 @@ async function linkBeadsDir(
     throw err; // Permission error, etc. — don't swallow
   }
 
-  // Remove the git-checked-out .beads/ in the worktree and replace with symlink
-  // rm force:true handles ENOENT, but will still throw on permission errors
-  await rm(wtBeads, { recursive: true, force: true });
+  // Check if already a correct symlink — skip if so
+  try {
+    const st = await lstat(wtBeads);
+    if (st.isSymbolicLink()) {
+      const target = await readlink(wtBeads);
+      if (target === mainBeads) return; // Already correctly linked
+      // Wrong target — remove the symlink (not recursive!) and re-create
+      await unlink(wtBeads);
+      await symlink(mainBeads, wtBeads);
+      return;
+    }
+    // It's a real directory (git-checked-out .beads/) — safe to rm
+    await rm(wtBeads, { recursive: true, force: true });
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") throw err;
+    // Doesn't exist — that's fine, we'll create the symlink below
+  }
+
   await symlink(mainBeads, wtBeads);
 }
 
