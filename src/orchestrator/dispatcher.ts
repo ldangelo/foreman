@@ -12,6 +12,7 @@ import type {
   DispatchResult,
   DispatchedTask,
   SkippedTask,
+  ResumedTask,
   RuntimeSelection,
   ModelSelection,
   PlanStepDispatched,
@@ -160,7 +161,130 @@ export class Dispatcher {
     return {
       dispatched,
       skipped,
+      resumed: [],
       activeAgents: activeRuns.length + dispatched.length,
+    };
+  }
+
+  /**
+   * Resume stuck/failed runs from previous dispatches.
+   *
+   * Finds runs in "stuck" or "failed" status, extracts their SDK session IDs,
+   * and resumes them via the SDK's `resume` option. This continues the agent's
+   * conversation from where it left off (e.g. after a rate limit).
+   */
+  async resumeRuns(opts?: {
+    maxAgents?: number;
+    model?: ModelSelection;
+    telemetry?: boolean;
+    statuses?: Array<"stuck" | "failed">;
+  }): Promise<DispatchResult> {
+    const maxAgents = opts?.maxAgents ?? 5;
+    const projectId = this.resolveProjectId();
+    const statuses = opts?.statuses ?? ["stuck"];
+
+    // Find resumable runs
+    const resumableRuns = statuses.flatMap(
+      (s) => this.store.getRunsByStatus(s, projectId),
+    );
+
+    const activeRuns = this.store.getActiveRuns(projectId);
+    const available = Math.max(0, maxAgents - activeRuns.length);
+
+    const resumed: ResumedTask[] = [];
+    const skipped: SkippedTask[] = [];
+
+    for (const run of resumableRuns) {
+      if (resumed.length >= available) {
+        skipped.push({
+          beadId: run.bead_id,
+          title: run.bead_id,
+          reason: `Agent limit reached (${maxAgents})`,
+        });
+        continue;
+      }
+
+      // Extract SDK session ID from session_key
+      // Format: foreman:sdk:<model>:<runId>:session-<sessionId>
+      const sessionId = extractSessionId(run.session_key);
+      if (!sessionId) {
+        skipped.push({
+          beadId: run.bead_id,
+          title: run.bead_id,
+          reason: "No SDK session ID found — cannot resume (was this a CLI-spawned run?)",
+        });
+        continue;
+      }
+
+      // Check worktree still exists
+      if (!run.worktree_path) {
+        skipped.push({
+          beadId: run.bead_id,
+          title: run.bead_id,
+          reason: "No worktree path — cannot resume",
+        });
+        continue;
+      }
+
+      const model = (opts?.model ?? run.agent_type) as ModelSelection;
+      const previousStatus = run.status;
+
+      log(`Resuming agent for ${run.bead_id} [${model}] session=${sessionId}`);
+
+      // Create a new run record for the resumed attempt
+      const newRun = this.store.createRun(
+        projectId,
+        run.bead_id,
+        model,
+        run.worktree_path,
+      );
+
+      // Log resume event
+      this.store.logEvent(projectId, "restart", {
+        beadId: run.bead_id,
+        model,
+        previousRunId: run.id,
+        previousStatus,
+        sessionId,
+      }, newRun.id);
+
+      // Mark old run as restarted
+      this.store.updateRun(run.id, {
+        status: "failed",
+        completed_at: new Date().toISOString(),
+      });
+
+      // Spawn the resumed agent
+      const sessionKey = await this.resumeAgent(
+        model,
+        run.worktree_path,
+        { id: run.bead_id, title: run.bead_id },
+        newRun.id,
+        sessionId,
+        opts?.telemetry,
+      );
+
+      this.store.updateRun(newRun.id, {
+        session_key: sessionKey,
+        status: "running",
+        started_at: new Date().toISOString(),
+      });
+
+      resumed.push({
+        beadId: run.bead_id,
+        title: run.bead_id,
+        model,
+        runId: newRun.id,
+        sessionId,
+        previousStatus,
+      });
+    }
+
+    return {
+      dispatched: [],
+      skipped,
+      resumed,
+      activeAgents: activeRuns.length + resumed.length,
     };
   }
 
@@ -556,6 +680,205 @@ export class Dispatcher {
     return sessionKey;
   }
 
+  // ── Session Resume ───────────────────────────────────────────────────
+
+  /**
+   * Resume a previously started agent session via the SDK's `resume` option.
+   * Continues the agent's conversation from where it left off.
+   */
+  private async resumeAgent(
+    model: ModelSelection,
+    worktreePath: string,
+    bead: BeadInfo,
+    runId: string,
+    sdkSessionId: string,
+    telemetry?: boolean,
+  ): Promise<string> {
+    const env = buildCleanEnv();
+
+    if (telemetry) {
+      env.CLAUDE_CODE_ENABLE_TELEMETRY = "1";
+      env.OTEL_RESOURCE_ATTRIBUTES = [
+        process.env.OTEL_RESOURCE_ATTRIBUTES,
+        `foreman.bead_id=${bead.id}`,
+        `foreman.run_id=${runId}`,
+        `foreman.model=${model}`,
+      ].filter(Boolean).join(",");
+    }
+
+    const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
+    await mkdir(logDir, { recursive: true });
+    const logFile = join(logDir, `${runId}.log`);
+
+    const header = [
+      `[foreman] Agent RESUME at ${new Date().toISOString()}`,
+      `  bead:      ${bead.id} — ${bead.title}`,
+      `  model:     ${model}`,
+      `  run:       ${runId}`,
+      `  session:   ${sdkSessionId}`,
+      `  worktree:  ${worktreePath}`,
+      "─".repeat(80),
+      "",
+    ].join("\n");
+    await appendFile(logFile, header);
+
+    log(`Resuming agent for ${bead.id} [${model}] session=${sdkSessionId}`);
+
+    const projectId = this.resolveProjectId();
+    const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;
+
+    // The resume prompt tells the agent to continue where it left off
+    const resumePrompt = [
+      `You were previously working on this task but were interrupted (likely by a rate limit).`,
+      `Continue where you left off. Check your progress so far and complete the remaining work.`,
+      `When completely finished:`,
+      `  bd close ${bead.id} --reason "Completed"`,
+      `  git add -A`,
+      `  git commit -m "${bead.title} (${bead.id})"`,
+      `  git push -u origin foreman/${bead.id}`,
+    ].join("\n");
+
+    const agentPromise = (async () => {
+      let resultHandled = false;
+
+      const progress: RunProgress = {
+        toolCalls: 0,
+        toolBreakdown: {},
+        filesChanged: [],
+        turns: 0,
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        lastToolCall: null,
+        lastActivity: new Date().toISOString(),
+      };
+
+      let progressDirty = false;
+      const flushProgress = () => {
+        if (progressDirty) {
+          this.store.updateRunProgress(runId, progress);
+          progressDirty = false;
+        }
+      };
+      const progressTimer = setInterval(flushProgress, 2_000);
+      progressTimer.unref();
+
+      try {
+        for await (const message of query({
+          prompt: resumePrompt,
+          options: {
+            cwd: worktreePath,
+            model,
+            permissionMode: "bypassPermissions",
+            allowDangerouslySkipPermissions: true,
+            env,
+            resume: sdkSessionId,
+            persistSession: true,
+          },
+        })) {
+          await logMessage(logFile, message);
+          progress.lastActivity = new Date().toISOString();
+
+          if (message.type === "assistant") {
+            progress.turns++;
+            const toolUses = message.message.content.filter(
+              (b: { type: string }) => b.type === "tool_use",
+            ) as Array<{ type: "tool_use"; name: string; input: Record<string, unknown> }>;
+
+            for (const tool of toolUses) {
+              progress.toolCalls++;
+              progress.toolBreakdown[tool.name] = (progress.toolBreakdown[tool.name] ?? 0) + 1;
+              progress.lastToolCall = tool.name;
+
+              if ((tool.name === "Write" || tool.name === "Edit") && tool.input?.file_path) {
+                const filePath = String(tool.input.file_path);
+                if (!progress.filesChanged.includes(filePath)) {
+                  progress.filesChanged.push(filePath);
+                }
+              }
+            }
+            progressDirty = true;
+          }
+
+          if (message.type === "result") {
+            const result = message as SDKResultSuccess | SDKResultError;
+            progress.turns = result.num_turns;
+            progress.costUsd = result.total_cost_usd;
+            progress.tokensIn = result.usage.input_tokens;
+            progress.tokensOut = result.usage.output_tokens;
+            const now = new Date().toISOString();
+
+            clearInterval(progressTimer);
+            this.store.updateRunProgress(runId, progress);
+            resultHandled = true;
+
+            if (result.subtype === "success") {
+              this.store.updateRun(runId, { status: "completed", completed_at: now });
+              this.store.logEvent(projectId, "complete", {
+                beadId: bead.id,
+                costUsd: progress.costUsd,
+                numTurns: progress.turns,
+                toolCalls: progress.toolCalls,
+                filesChanged: progress.filesChanged.length,
+                durationMs: result.duration_ms,
+                resumed: true,
+              }, runId);
+              log(`Agent for ${bead.id} completed after resume (${progress.turns} turns, $${progress.costUsd.toFixed(4)})`);
+            } else {
+              const errResult = result as SDKResultError;
+              const reason = errResult.errors?.join("; ") ?? errResult.subtype;
+              const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
+
+              this.store.updateRun(runId, {
+                status: isRateLimit ? "stuck" : "failed",
+                completed_at: now,
+              });
+              this.store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
+                beadId: bead.id,
+                reason,
+                costUsd: progress.costUsd,
+                rateLimit: isRateLimit,
+                resumed: true,
+              }, runId);
+              log(`Agent for ${bead.id} ${isRateLimit ? "RATE LIMITED again" : "FAILED"} after resume: ${reason.slice(0, 300)}`);
+            }
+          }
+        }
+      } catch (err: unknown) {
+        clearInterval(progressTimer);
+        this.store.updateRunProgress(runId, progress);
+        const reason = err instanceof Error ? err.message : String(err);
+        const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
+
+        if (resultHandled) {
+          log(`Agent for ${bead.id} post-result error after resume (ignored): ${reason.slice(0, 200)}`);
+          return;
+        }
+
+        const now = new Date().toISOString();
+        this.store.updateRun(runId, {
+          status: isRateLimit ? "stuck" : "failed",
+          completed_at: now,
+        });
+        this.store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
+          beadId: bead.id,
+          reason,
+          costUsd: progress.costUsd,
+          rateLimit: isRateLimit,
+          resumed: true,
+        }, runId);
+        log(`Agent for ${bead.id} ${isRateLimit ? "RATE LIMITED" : "ERROR"} during resume: ${reason.slice(0, 200)}`);
+        await appendFile(logFile, `\n[foreman] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason}\n`);
+      }
+    })();
+
+    agentPromise.catch((err) => {
+      log(`Agent for ${bead.id} unhandled rejection during resume: ${err instanceof Error ? err.message : String(err)}`);
+    });
+
+    return sessionKey;
+  }
+
   // ── Private helpers ───────────────────────────────────────────────────
 
   private resolveProjectId(): string {
@@ -647,6 +970,16 @@ async function logMessage(logFile: string, message: SDKMessage): Promise<void> {
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 23);
   console.error(`[foreman ${ts}] ${msg}`);
+}
+
+/**
+ * Extract the SDK session ID from a foreman session key.
+ * Format: foreman:sdk:<model>:<runId>:session-<sessionId>
+ */
+function extractSessionId(sessionKey: string | null): string | null {
+  if (!sessionKey) return null;
+  const m = sessionKey.match(/session-(.+)$/);
+  return m ? m[1] : null;
 }
 
 function beadToInfo(bead: Bead): BeadInfo {

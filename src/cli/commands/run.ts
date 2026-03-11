@@ -17,12 +17,16 @@ export const runCommand = new Command("run")
   .option("--dry-run", "Show what would be dispatched without doing it")
   .option("--no-watch", "Exit immediately after dispatching (don't monitor agents)")
   .option("--telemetry", "Enable OpenTelemetry tracing on spawned agents (requires OTEL_* env vars)")
+  .option("--resume", "Resume stuck/rate-limited runs from a previous dispatch")
+  .option("--resume-failed", "Also resume failed runs (not just stuck/rate-limited)")
   .option("--ralph", "Run in Ralph Wiggum loop: pick tasks from bd ready until none remain")
   .option("--max-iterations <n>", "Max Ralph loop iterations (default: unlimited)", "0")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
     const dryRun = opts.dryRun as boolean | undefined;
+    const resume = opts.resume as boolean | undefined;
+    const resumeFailed = opts.resumeFailed as boolean | undefined;
     const ralph = opts.ralph as boolean | undefined;
     const maxIterations = parseInt(opts.maxIterations, 10);
     const watch = opts.watch as boolean;
@@ -38,6 +42,51 @@ export const runCommand = new Command("run")
       const beads = new BeadsClient(projectPath);
       const store = new ForemanStore();
       const dispatcher = new Dispatcher(beads, store, projectPath);
+
+      // Resume mode: pick up stuck/failed runs from a previous dispatch
+      if (resume || resumeFailed) {
+        const statuses: Array<"stuck" | "failed"> = resumeFailed
+          ? ["stuck", "failed"]
+          : ["stuck"];
+
+        const result = await dispatcher.resumeRuns({
+          maxAgents,
+          model,
+          telemetry,
+          statuses,
+        });
+
+        if (result.resumed.length > 0) {
+          console.log(chalk.green.bold(`Resumed ${result.resumed.length} agent(s):\n`));
+          for (const task of result.resumed) {
+            console.log(`  ${chalk.cyan(task.beadId)} (was ${chalk.yellow(task.previousStatus)})`);
+            console.log(`    Model:    ${chalk.magenta(task.model)}`);
+            console.log(`    Session:  ${chalk.dim(task.sessionId)}`);
+            console.log(`    Run ID:   ${task.runId}`);
+            console.log();
+          }
+        } else {
+          console.log(chalk.yellow("No runs to resume."));
+        }
+
+        if (result.skipped.length > 0) {
+          console.log(chalk.dim(`Skipped ${result.skipped.length} run(s):`));
+          for (const task of result.skipped) {
+            console.log(`  ${chalk.dim(task.beadId)} — ${task.reason}`);
+          }
+          console.log();
+        }
+
+        console.log(chalk.bold(`Active agents: ${result.activeAgents}/${maxAgents}`));
+
+        if (watch && result.resumed.length > 0) {
+          const runIds = result.resumed.map((t) => t.runId);
+          await watchRuns(store, runIds);
+        }
+
+        store.close();
+        return;
+      }
 
       if (dryRun) {
         console.log(chalk.yellow("(dry run — no changes will be made)\n"));

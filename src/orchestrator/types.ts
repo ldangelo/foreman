@@ -67,7 +67,17 @@ export interface SkippedTask {
 export interface DispatchResult {
   dispatched: DispatchedTask[];
   skipped: SkippedTask[];
+  resumed: ResumedTask[];
   activeAgents: number;
+}
+
+export interface ResumedTask {
+  beadId: string;
+  title: string;
+  model: ModelSelection;
+  runId: string;
+  sessionId: string;
+  previousStatus: string;
 }
 
 // ── Plan step types ───────────────────────────────────────────────────
