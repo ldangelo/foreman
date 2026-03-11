@@ -109,7 +109,14 @@ export class Dispatcher {
           branchName,
         }, run.id);
 
-        // 5. Spawn the coding agent
+        // 5. Mark bead as in_progress before spawning agent
+        try {
+          await this.beads.update(bead.id, { status: "in_progress" });
+        } catch {
+          // Non-fatal: agent can still work even if status update fails
+        }
+
+        // 6. Spawn the coding agent
         const sessionKey = await this.spawnAgent(
           runtime,
           worktreePath,
@@ -304,64 +311,82 @@ export class Dispatcher {
       `  git add -A`,
       `  git commit -m "${bead.title} (${bead.id})"`,
       `  git push -u origin foreman/${bead.id}`,
-      ``,
-      `When completely finished, run this command to notify:`,
-      `openclaw system event --text "Foreman: ${bead.title} (${bead.id}) completed" --mode now`,
     ].join("\n");
 
-    if (runtime === "claude-code") {
-      const claudePath =
-        process.env.CLAUDE_PATH || "/opt/homebrew/bin/claude";
+    // Build a clean env that allows nested Claude sessions.
+    // CLAUDECODE=1 prevents spawning Claude inside a Claude session.
+    const cleanEnv: Record<string, string | undefined> = { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` };
+    delete cleanEnv.CLAUDECODE;
 
-      // Spawn Claude Code in background (non-blocking)
-      const child = execFile(
-        claudePath,
-        ["--permission-mode", "bypassPermissions", "--print", task],
-        {
-          cwd: worktreePath,
-          timeout: 1_800_000, // 30 minute timeout
-          maxBuffer: 10 * 1024 * 1024,
-          env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
-        },
-      );
+    const runtimeArgs: Record<string, { cmd: string; args: string[] }> = {
+      "claude-code": {
+        cmd: process.env.CLAUDE_PATH || "/opt/homebrew/bin/claude",
+        args: ["--permission-mode", "bypassPermissions", "--print", task],
+      },
+      "pi": {
+        cmd: "pi",
+        args: [task],
+      },
+      "codex": {
+        cmd: "codex",
+        args: ["exec", "--full-auto", task],
+      },
+    };
 
-      // Detach — don't wait for completion
-      child.unref();
-
-      return `foreman:${runtime}:${runId}:pid-${child.pid}`;
-    } else if (runtime === "pi") {
-      const child = execFile(
-        "pi",
-        [task],
-        {
-          cwd: worktreePath,
-          timeout: 1_800_000,
-          maxBuffer: 10 * 1024 * 1024,
-          env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
-        },
-      );
-
-      child.unref();
-
-      return `foreman:${runtime}:${runId}:pid-${child.pid}`;
-    } else if (runtime === "codex") {
-      const child = execFile(
-        "codex",
-        ["exec", "--full-auto", task],
-        {
-          cwd: worktreePath,
-          timeout: 1_800_000,
-          maxBuffer: 10 * 1024 * 1024,
-          env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
-        },
-      );
-
-      child.unref();
-
-      return `foreman:${runtime}:${runId}:pid-${child.pid}`;
+    const config = runtimeArgs[runtime];
+    if (!config) {
+      throw new Error(`Unknown runtime: ${runtime}`);
     }
 
-    throw new Error(`Unknown runtime: ${runtime}`);
+    const child = execFile(
+      config.cmd,
+      config.args,
+      {
+        cwd: worktreePath,
+        timeout: 1_800_000, // 30 minute timeout
+        maxBuffer: 10 * 1024 * 1024,
+        env: cleanEnv,
+      },
+    );
+
+    // Capture agent completion/failure for store updates
+    child.on("exit", (code) => {
+      try {
+        if (code === 0) {
+          this.store.updateRun(runId, {
+            status: "completed",
+            completed_at: new Date().toISOString(),
+          });
+        } else {
+          this.store.updateRun(runId, {
+            status: "failed",
+            completed_at: new Date().toISOString(),
+          });
+        }
+      } catch {
+        // Store may be closed if foreman exited — ignore
+      }
+    });
+
+    child.on("error", (err) => {
+      try {
+        this.store.updateRun(runId, {
+          status: "failed",
+          completed_at: new Date().toISOString(),
+        });
+        this.store.logEvent(this.resolveProjectId(), "fail", {
+          beadId: bead.id,
+          reason: err.message,
+        }, runId);
+      } catch {
+        // Store may be closed — ignore
+      }
+    });
+
+    // Detach — don't wait for completion
+    child.unref();
+
+    return `foreman:${runtime}:${runId}:pid-${child.pid}`;
   }
 
   // ── Private helpers ───────────────────────────────────────────────────

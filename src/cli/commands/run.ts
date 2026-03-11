@@ -147,13 +147,17 @@ ${prompt}
   // Spawn Claude interactively with the prompt.
   // The ralph-loop stop hook intercepts session exit and re-feeds the prompt.
   // stdio: "inherit" gives Claude full terminal control (interactive mode).
+  // Strip CLAUDECODE env var to allow spawning Claude from within a Claude session
+  const cleanEnv: Record<string, string | undefined> = { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` };
+  delete cleanEnv.CLAUDECODE;
+
   const result = spawnSync(claudePath, [
     "--permission-mode", "bypassPermissions",
     prompt,
   ], {
     cwd: process.cwd(),
     stdio: "inherit",
-    env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
+    env: cleanEnv,
   });
 
   // Exit with Claude's exit code
