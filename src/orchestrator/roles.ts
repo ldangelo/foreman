@@ -218,9 +218,11 @@ One paragraph assessment.
 
 ## Rules
 - **DO NOT modify any files** — you are read-only, only write REVIEW.md
-- Be fair but thorough — PASS means ready to ship
-- Only mark FAIL for genuine bugs or missing requirements, not style preferences
-- A PASS with WARNINGs is acceptable — WARNINGs are tracked but don't block
+- Be fair but thorough — PASS means ready to ship with no remaining issues
+- Mark **FAIL** for any CRITICAL or WARNING issues that should be fixed
+- Mark **PASS** only when there are no actionable issues remaining
+- NOTEs are informational only and don't affect the verdict
+- Any issue that can reasonably be fixed by the Developer should be a WARNING, not a NOTE
 `;
 }
 
@@ -246,4 +248,13 @@ export function extractIssues(reportContent: string): string {
   const issuesMatch = reportContent.match(/## Issues\n([\s\S]*?)(?=\n## |$)/);
   if (!issuesMatch) return "(no specific issues listed)";
   return issuesMatch[1].trim();
+}
+
+/**
+ * Check if a report has actionable issues (CRITICAL, WARNING, or NOTE).
+ */
+export function hasActionableIssues(reportContent: string): boolean {
+  const issues = extractIssues(reportContent);
+  if (issues === "(no specific issues listed)") return false;
+  return /\*\*\[(CRITICAL|WARNING|NOTE)\]\*\*/i.test(issues);
 }

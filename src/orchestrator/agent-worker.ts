@@ -25,6 +25,7 @@ import {
   reviewerPrompt,
   parseVerdict,
   extractIssues,
+  hasActionableIssues,
 } from "./roles.js";
 import type { AgentRole } from "./types.js";
 
@@ -539,30 +540,33 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     const reviewReport = readReport(worktreePath, "REVIEW.md");
     const reviewVerdict = reviewReport ? parseVerdict(reviewReport) : "unknown";
 
-    if (reviewVerdict === "fail" && devRetries < MAX_DEV_RETRIES) {
+    const hasIssues = reviewReport ? hasActionableIssues(reviewReport) : false;
+
+    if ((reviewVerdict === "fail" || (reviewVerdict === "pass" && hasIssues)) && devRetries < MAX_DEV_RETRIES) {
       const reviewFeedback = reviewReport ? extractIssues(reviewReport) : "(Review failed but no issues listed)";
-      log(`[REVIEW] FAIL — sending back to Developer with review feedback`);
-      await appendFile(logFile, `\n[PIPELINE] Review failed, retrying developer with review feedback\n`);
+      const reason = reviewVerdict === "fail" ? "FAIL" : "PASS with issues";
+      log(`[REVIEW] ${reason} — sending back to Developer with review feedback`);
+      await appendFile(logFile, `\n[PIPELINE] Review ${reason}, retrying developer with review feedback\n`);
       devRetries++;
 
-      // One more dev → QA cycle
+      // One more dev → QA cycle to address review feedback
       const devResult = await runPhase(
         "developer",
         developerPrompt(beadId, beadTitle, description, hasExplorerReport, reviewFeedback),
         config, progress, logFile, store,
       );
       if (devResult.success) {
-        store.logEvent(projectId, "complete", { beadId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-fail" }, runId);
+        store.logEvent(projectId, "complete", { beadId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
 
         const qaResult = await runPhase("qa", qaPrompt(beadId, beadTitle), config, progress, logFile, store);
         if (qaResult.success) {
-          store.logEvent(projectId, "complete", { beadId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-fail" }, runId);
+          store.logEvent(projectId, "complete", { beadId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
         }
       }
     } else if (reviewVerdict === "fail") {
       log(`[REVIEW] FAIL — max retries exhausted, finalizing with current state`);
     } else {
-      log(`[REVIEW] Verdict: ${reviewVerdict}`);
+      log(`[REVIEW] Verdict: ${reviewVerdict} (no actionable issues)`);
     }
   }
 
