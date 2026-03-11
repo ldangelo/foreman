@@ -1,14 +1,10 @@
-import React from "react";
-import { render, Box, Text } from "ink";
-import Spinner from "ink-spinner";
+import chalk from "chalk";
 
 import type { ForemanStore, Run, RunProgress } from "../lib/store.js";
 
-const { createElement: h } = React;
-
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-function elapsed(since: string | null): string {
+export function elapsed(since: string | null): string {
   if (!since) return "—";
   const ms = Date.now() - new Date(since).getTime();
   const s = Math.floor(ms / 1000);
@@ -18,31 +14,20 @@ function elapsed(since: string | null): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
-function shortModel(model: string): string {
+export function shortModel(model: string): string {
   return model
     .replace("claude-", "")
     .replace("-20251001", "");
 }
 
-function shortPath(path: string): string {
-  // Show just the filename, not the full path
+export function shortPath(path: string): string {
   const parts = path.split("/");
   return parts[parts.length - 1] ?? path;
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  pending: "gray",
-  running: "blue",
-  completed: "green",
-  failed: "red",
-  stuck: "yellow",
-  merged: "green",
-  conflict: "red",
-  "test-failed": "red",
-};
-
 const STATUS_ICONS: Record<string, string> = {
   pending: "○",
+  running: "●",
   completed: "✓",
   failed: "✗",
   stuck: "⚠",
@@ -51,182 +36,92 @@ const STATUS_ICONS: Record<string, string> = {
   "test-failed": "⊘",
 };
 
-// ── Components ───────────────────────────────────────────────────────────
-
-/** Renders "━━━━━━━━" style horizontal rule */
-function Rule({ width = 60 }: { width?: number }): React.ReactElement {
-  return h(Text, { dimColor: true }, "━".repeat(width));
-}
-
-/** Single labeled value: "  Label  value" */
-function Field({ label, value, valueColor }: {
-  label: string;
-  value: string;
-  valueColor?: string;
-}): React.ReactElement {
-  return h(Box, { gap: 1 },
-    h(Text, { dimColor: true }, `  ${label.padEnd(10)}`),
-    h(Text, { color: valueColor }, value),
-  );
-}
-
-/** Tool breakdown: shows top tools as mini bar chart */
-function ToolBreakdown({ progress }: { progress: RunProgress }): React.ReactElement {
-  const sorted = Object.entries(progress.toolBreakdown)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, 5);
-
-  if (sorted.length === 0) return h(Text, { dimColor: true }, "  none yet");
-
-  const max = sorted[0][1];
-
-  return h(Box, { flexDirection: "column" },
-    ...sorted.map(([name, count]) => {
-      const barLen = Math.max(1, Math.round((count / max) * 15));
-      const bar = "█".repeat(barLen);
-      return h(Box, { key: name, gap: 1 },
-        h(Text, { dimColor: true }, `  ${name.padEnd(8)}`),
-        h(Text, { color: "cyan" }, bar),
-        h(Text, { dimColor: true }, ` ${count}`),
-      );
-    }),
-  );
-}
-
-/** Files changed list (compact) */
-function FilesChanged({ files }: { files: string[] }): React.ReactElement {
-  if (files.length === 0) {
-    return h(Text, { dimColor: true }, "  none");
+function statusColor(status: string, text: string): string {
+  switch (status) {
+    case "pending":    return chalk.gray(text);
+    case "running":    return chalk.blue(text);
+    case "completed":  return chalk.green(text);
+    case "failed":     return chalk.red(text);
+    case "stuck":      return chalk.yellow(text);
+    case "merged":     return chalk.green(text);
+    case "conflict":   return chalk.red(text);
+    case "test-failed": return chalk.red(text);
+    default:           return chalk.gray(text);
   }
-
-  // Show up to 5 files, then "+N more"
-  const shown = files.slice(0, 5);
-  const remaining = files.length - shown.length;
-
-  return h(Box, { flexDirection: "column" },
-    ...shown.map((f) =>
-      h(Text, { key: f, color: "yellow" }, `  ${shortPath(f)}`),
-    ),
-    remaining > 0
-      ? h(Text, { dimColor: true }, `  +${remaining} more`)
-      : null,
-  );
 }
 
-/** Full agent card with all details */
-function AgentCard({ run, progress }: {
-  run: Run;
-  progress: RunProgress | null;
-}): React.ReactElement {
-  const color = STATUS_COLORS[run.status] ?? "gray";
+const RULE = chalk.dim("━".repeat(60));
+
+// ── Display functions ─────────────────────────────────────────────────────
+
+export function renderAgentCard(run: Run, progress: RunProgress | null): string {
+  const icon = STATUS_ICONS[run.status] ?? "?";
   const isRunning = run.status === "running";
   const isPending = run.status === "pending";
   const time = isRunning || isPending
     ? elapsed(run.started_at ?? run.created_at)
     : elapsed(run.started_at);
 
-  // Header: icon + bead ID + status
-  const header = h(Box, { gap: 1 },
-    isRunning
-      ? h(Text, { color }, h(Spinner, { type: "dots" }))
-      : h(Text, { color }, STATUS_ICONS[run.status] ?? "?"),
-    h(Text, { bold: true, color: "cyan" }, run.bead_id),
-    h(Text, { color, bold: true }, run.status.toUpperCase()),
-    h(Text, { dimColor: true }, time),
-  );
+  const lines: string[] = [];
 
-  // If pending or no progress yet, show minimal card
+  // Header: icon + bead ID + status + elapsed time
+  lines.push(
+    `${statusColor(run.status, icon)} ${chalk.cyan.bold(run.bead_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}`,
+  );
+  lines.push(`  ${chalk.dim("Model     ")} ${chalk.magenta(shortModel(run.agent_type))}`);
+
   if (isPending || !progress || progress.toolCalls === 0) {
-    return h(Box, { flexDirection: "column", marginBottom: 1 },
-      header,
-      h(Field, { label: "Model", value: shortModel(run.agent_type), valueColor: "magenta" }),
-      isRunning
-        ? h(Box, { marginLeft: 2, gap: 1 },
-            h(Text, { dimColor: true }, "Initializing"),
-            h(Text, { dimColor: true }, h(Spinner, { type: "simpleDots" })),
-          )
-        : null,
-    );
+    if (isRunning) {
+      lines.push(`  ${chalk.dim("Initializing...")}`);
+    }
+    return lines.join("\n");
   }
 
   // Full card with progress
-  return h(Box, { flexDirection: "column", marginBottom: 1 },
-    header,
-    h(Field, { label: "Model", value: shortModel(run.agent_type), valueColor: "magenta" }),
-    h(Field, { label: "Cost", value: `$${progress.costUsd.toFixed(4)}`, valueColor: "green" }),
-    h(Field, { label: "Turns", value: String(progress.turns) }),
-    h(Box, { gap: 1 },
-      h(Text, { dimColor: true }, `  ${"Tools".padEnd(10)}`),
-      h(Text, null, String(progress.toolCalls)),
-      progress.lastToolCall
-        ? h(Text, { dimColor: true }, `(last: ${progress.lastToolCall})`)
-        : null,
-    ),
-    h(ToolBreakdown, { progress }),
-    h(Box, { gap: 1 },
-      h(Text, { dimColor: true }, `  ${"Files".padEnd(10)}`),
-      h(Text, { color: "yellow" }, String(progress.filesChanged.length)),
-    ),
-    progress.filesChanged.length > 0
-      ? h(FilesChanged, { files: progress.filesChanged })
-      : null,
-    // Failed run: show log hint
-    run.status === "failed"
-      ? h(Text, { dimColor: true }, `  Logs      ~/.foreman/logs/${run.id}.log`)
-      : null,
-  );
+  lines.push(`  ${chalk.dim("Cost      ")} ${chalk.green("$" + progress.costUsd.toFixed(4))}`);
+  lines.push(`  ${chalk.dim("Turns     ")} ${progress.turns}`);
+
+  const lastTool = progress.lastToolCall
+    ? chalk.dim(` (last: ${progress.lastToolCall})`)
+    : "";
+  lines.push(`  ${chalk.dim("Tools     ")} ${progress.toolCalls}${lastTool}`);
+
+  // Tool breakdown (top 5 as mini bar chart)
+  const sorted = Object.entries(progress.toolBreakdown)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 5);
+
+  if (sorted.length > 0) {
+    const max = sorted[0][1];
+    for (const [name, count] of sorted) {
+      const barLen = Math.max(1, Math.round((count / max) * 15));
+      const bar = chalk.cyan("█".repeat(barLen));
+      lines.push(`  ${chalk.dim(name.padEnd(8))} ${bar} ${chalk.dim(String(count))}`);
+    }
+  }
+
+  // Files changed
+  lines.push(`  ${chalk.dim("Files     ")} ${chalk.yellow(String(progress.filesChanged.length))}`);
+  const shown = progress.filesChanged.slice(0, 5);
+  const remaining = progress.filesChanged.length - shown.length;
+  for (const f of shown) {
+    lines.push(`  ${chalk.yellow(shortPath(f))}`);
+  }
+  if (remaining > 0) {
+    lines.push(`  ${chalk.dim(`+${remaining} more`)}`);
+  }
+
+  // Failed run: show log hint
+  if (run.status === "failed") {
+    lines.push(`  ${chalk.dim(`Logs      ~/.foreman/logs/${run.id}.log`)}`);
+  }
+
+  return lines.join("\n");
 }
 
-/** Summary footer bar */
-function SummaryBar({ totalCost, totalTools, totalFiles, runCount }: {
-  totalCost: number;
-  totalTools: number;
-  totalFiles: number;
-  runCount: number;
-}): React.ReactElement {
-  return h(Box, { gap: 2 },
-    h(Text, { dimColor: true }, `${runCount} agents`),
-    h(Text, null, `${totalTools} tool calls`),
-    h(Text, { color: "yellow" }, `${totalFiles} files`),
-    h(Text, { color: "green" }, `$${totalCost.toFixed(4)}`),
-  );
-}
+// ── State polling ────────────────────────────────────────────────────────
 
-/** Completion banner */
-function DoneBanner({ completedCount, failedCount, stuckCount, totalTools, totalCost }: {
-  completedCount: number;
-  failedCount: number;
-  stuckCount: number;
-  totalTools: number;
-  totalCost: number;
-}): React.ReactElement {
-  return h(Box, { flexDirection: "column", marginTop: 1 },
-    h(Rule, null),
-    h(Box, { gap: 1, marginTop: 0 },
-      h(Text, { bold: true }, "Done:"),
-      h(Text, { color: "green" }, `${completedCount} completed`),
-      failedCount > 0 ? h(Text, { color: "red" }, `${failedCount} failed`) : null,
-      stuckCount > 0 ? h(Text, { color: "yellow" }, `${stuckCount} rate-limited`) : null,
-    ),
-    h(Text, { dimColor: true },
-      `  ${totalTools} tool calls, $${totalCost.toFixed(4)} total cost`,
-    ),
-    stuckCount > 0
-      ? h(Text, { color: "yellow" },
-          "  Run 'foreman run --resume' after rate limit resets to continue.",
-        )
-      : null,
-  );
-}
-
-// ── Main App ─────────────────────────────────────────────────────────────
-
-interface WatchAppProps {
-  store: ForemanStore;
-  runIds: string[];
-}
-
-interface WatchAppState {
+export interface WatchState {
   runs: Array<{ run: Run; progress: RunProgress | null }>;
   allDone: boolean;
   totalCost: number;
@@ -237,20 +132,7 @@ interface WatchAppState {
   stuckCount: number;
 }
 
-function useWatchState(store: ForemanStore, runIds: string[]): WatchAppState {
-  const [state, setState] = React.useState<WatchAppState>(() => poll(store, runIds));
-
-  React.useEffect(() => {
-    const interval = setInterval(() => {
-      setState(poll(store, runIds));
-    }, 3_000);
-    return () => clearInterval(interval);
-  }, [store, runIds]);
-
-  return state;
-}
-
-function poll(store: ForemanStore, runIds: string[]): WatchAppState {
+export function poll(store: ForemanStore, runIds: string[]): WatchState {
   const entries: Array<{ run: Run; progress: RunProgress | null }> = [];
   let totalCost = 0;
   let totalTools = 0;
@@ -284,72 +166,85 @@ function poll(store: ForemanStore, runIds: string[]): WatchAppState {
   return { runs: entries, allDone, totalCost, totalTools, totalFiles, completedCount, failedCount, stuckCount };
 }
 
-function WatchApp({ store, runIds }: WatchAppProps): React.ReactElement {
-  const state = useWatchState(store, runIds);
-  const { runs, allDone, totalCost, totalTools, totalFiles, completedCount, failedCount, stuckCount } = state;
-
-  if (runs.length === 0) {
-    return h(Text, { dimColor: true }, "No runs found.");
+export function renderWatchDisplay(state: WatchState, showDetachHint = true): string {
+  if (state.runs.length === 0) {
+    return chalk.dim("No runs found.");
   }
 
-  return h(Box, { flexDirection: "column" },
-    // Header
-    h(Box, { gap: 1 },
-      h(Text, { bold: true }, "Foreman"),
-      h(Text, { dimColor: true }, "— agent monitor"),
-      !allDone
-        ? h(Text, { dimColor: true }, "(Ctrl+C to detach)")
-        : null,
-    ),
-    h(Rule, null),
+  const lines: string[] = [];
 
-    // Agent cards
-    ...runs.map(({ run, progress }) =>
-      h(AgentCard, { key: run.id, run, progress }),
-    ),
+  // Header
+  const detachHint = showDetachHint && !state.allDone
+    ? `  ${chalk.dim("(Ctrl+C to detach)")}`
+    : "";
+  lines.push(`${chalk.bold("Foreman")} ${chalk.dim("— agent monitor")}${detachHint}`);
+  lines.push(RULE);
 
-    // Summary bar
-    h(Rule, null),
-    h(SummaryBar, { totalCost, totalTools, totalFiles, runCount: runs.length }),
+  // Agent cards
+  for (const { run, progress } of state.runs) {
+    lines.push(renderAgentCard(run, progress));
+    lines.push("");
+  }
 
-    // Completion banner
-    allDone
-      ? h(DoneBanner, { completedCount, failedCount, stuckCount, totalTools, totalCost })
-      : null,
+  // Summary bar
+  lines.push(RULE);
+  lines.push(
+    `${chalk.dim(String(state.runs.length) + " agents")}  ` +
+    `${state.totalTools} tool calls  ` +
+    `${chalk.yellow(String(state.totalFiles) + " files")}  ` +
+    `${chalk.green("$" + state.totalCost.toFixed(4))}`,
   );
+
+  // Completion banner
+  if (state.allDone) {
+    lines.push(RULE);
+    const parts = [
+      chalk.bold("Done:"),
+      chalk.green(`${state.completedCount} completed`),
+    ];
+    if (state.failedCount > 0) parts.push(chalk.red(`${state.failedCount} failed`));
+    if (state.stuckCount > 0) parts.push(chalk.yellow(`${state.stuckCount} rate-limited`));
+    lines.push(parts.join("  "));
+    lines.push(chalk.dim(`  ${state.totalTools} tool calls, $${state.totalCost.toFixed(4)} total cost`));
+    if (state.stuckCount > 0) {
+      lines.push(chalk.yellow("  Run 'foreman run --resume' after rate limit resets to continue."));
+    }
+  }
+
+  return lines.join("\n");
 }
 
 // ── Public API ────────────────────────────────────────────────────────────
 
 export async function watchRunsInk(store: ForemanStore, runIds: string[]): Promise<void> {
-  const { unmount } = render(
-    h(WatchApp, { store, runIds }),
-    { exitOnCtrlC: false },
-  );
-
+  const POLL_MS = 3_000;
   let detached = false;
+
   const onSigint = () => {
     if (detached) return; // Prevent double-fire
     detached = true;
-    unmount();
-    console.log("\n  Detached — agents continue in background (detached workers).");
+    process.stdout.write("\n");
+    console.log("  Detached — agents continue in background (detached workers).");
     console.log("  Check status:  foreman monitor");
     console.log("  Attach to run: foreman attach <run-id>\n");
   };
   process.on("SIGINT", onSigint);
 
-  // Poll until done or user detaches with Ctrl+C
-  const POLL_MS = 3_000;
-  while (!detached) {
-    const state = poll(store, runIds);
-    if (state.runs.length === 0 || state.allDone) {
-      // Give Ink one last render cycle
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      unmount();
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-  }
+  try {
+    while (!detached) {
+      const state = poll(store, runIds);
 
-  process.removeListener("SIGINT", onSigint);
+      // Clear screen and render current state (single write to avoid flicker)
+      const display = renderWatchDisplay(state, true);
+      process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
+
+      if (state.runs.length === 0 || state.allDone) {
+        break;
+      }
+
+      await new Promise<void>((resolve) => setTimeout(resolve, POLL_MS));
+    }
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+  }
 }
