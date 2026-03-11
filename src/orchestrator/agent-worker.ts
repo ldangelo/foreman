@@ -83,56 +83,26 @@ async function main(): Promise<void> {
   // Build clean env for SDK
   const env: Record<string, string | undefined> = { ...process.env };
 
-  // ── Pipeline mode: run the multi-phase pipeline ─────────────────────
+  // ── Team mode: run lead agent that orchestrates sub-agents ──────────
   if (pipeline) {
-    const { runPipeline } = await import("./pipeline.js");
-    const pipelineProgress: RunProgress = {
-      toolCalls: 0,
-      toolBreakdown: {},
-      filesChanged: [],
-      turns: 0,
-      costUsd: 0,
-      tokensIn: 0,
-      tokensOut: 0,
-      lastToolCall: null,
-      lastActivity: new Date().toISOString(),
-    };
+    const { leadPrompt } = await import("./lead-prompt.js");
 
-    try {
-      await runPipeline(
-        {
-          runId,
-          projectId,
-          beadId,
-          beadTitle,
-          beadDescription: config.beadDescription ?? "(no description)",
-          model: model as any,
-          worktreePath,
-          env,
-          logFile,
-          skipExplore: config.skipExplore,
-          skipReview: config.skipReview,
-        },
-        store,
-        pipelineProgress,
-      );
-    } catch (err: unknown) {
-      const reason = err instanceof Error ? err.message : String(err);
-      log(`Pipeline error: ${reason}`);
-      await appendFile(logFile, `\n[foreman-worker] Pipeline error: ${reason}\n`);
-      const now = new Date().toISOString();
-      store.updateRun(runId, { status: "failed", completed_at: now });
-      store.logEvent(projectId, "fail", {
-        beadId,
-        reason,
-        costUsd: pipelineProgress.costUsd,
-        pipeline: true,
-      }, runId);
-    }
+    const teamPrompt = leadPrompt({
+      beadId,
+      beadTitle,
+      beadDescription: config.beadDescription ?? "(no description)",
+      skipExplore: config.skipExplore,
+      skipReview: config.skipReview,
+    });
 
-    store.close();
-    log(`Pipeline worker exiting for ${beadId}`);
-    return;
+    log(`Starting lead agent for ${beadId} [${model}] with team orchestration`);
+    await appendFile(logFile, `\n[foreman-worker] Lead agent starting with team mode\n`);
+
+    // Run the lead as a single SDK session — it spawns sub-agents via Agent tool
+    // Fall through to the standard single-agent mode below with the team prompt
+    config.prompt = teamPrompt;
+    // Don't override model — let the dispatcher's model selection stand
+    // The lead prompt tells it to use Agent tool for sub-agents
   }
 
   // ── Single-agent mode: run a single SDK query ───────────────────────

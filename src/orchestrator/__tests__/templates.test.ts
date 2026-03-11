@@ -24,12 +24,13 @@ describe("workerAgentMd", () => {
     expect(md).toContain("Add JWT-based authentication");
   });
 
-  it("describes the pipeline phases", () => {
+  it("describes the agent team roles", () => {
     const md = workerAgentMd(fakeBead, "/tmp/wt", "claude-sonnet-4-6");
     expect(md).toContain("Explorer");
     expect(md).toContain("Developer");
     expect(md).toContain("QA");
     expect(md).toContain("Reviewer");
+    expect(md).toContain("Agent Team");
   });
 
   it("produces valid non-empty output for all models", () => {

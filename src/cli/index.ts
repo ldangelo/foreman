@@ -7,8 +7,8 @@ import { decomposeCommand } from "./commands/decompose.js";
 import { runCommand } from "./commands/run.js";
 import { statusCommand } from "./commands/status.js";
 import { mergeCommand } from "./commands/merge.js";
+import { prCommand } from "./commands/pr.js";
 import { monitorCommand } from "./commands/monitor.js";
-import { dashboardCommand } from "./commands/dashboard.js";
 import { resetCommand } from "./commands/reset.js";
 import { attachCommand } from "./commands/attach.js";
 
@@ -25,8 +25,8 @@ program.addCommand(decomposeCommand);
 program.addCommand(runCommand);
 program.addCommand(statusCommand);
 program.addCommand(mergeCommand);
+program.addCommand(prCommand);
 program.addCommand(monitorCommand);
-program.addCommand(dashboardCommand);
 program.addCommand(resetCommand);
 program.addCommand(attachCommand);
 

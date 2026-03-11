@@ -22,7 +22,7 @@ export interface Run {
   agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
-  status: "pending" | "running" | "completed" | "failed" | "stuck" | "merged" | "conflict" | "test-failed";
+  status: "pending" | "running" | "completed" | "failed" | "stuck" | "merged" | "conflict" | "test-failed" | "pr-created";
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -49,7 +49,8 @@ export type EventType =
   | "restart"
   | "recover"
   | "conflict"
-  | "test-fail";
+  | "test-fail"
+  | "pr-created";
 
 export interface Event {
   id: string;

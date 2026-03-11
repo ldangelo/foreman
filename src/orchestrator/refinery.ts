@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import type { ForemanStore } from "../lib/store.js";
 import type { BeadsClient } from "../lib/beads.js";
 import { mergeWorktree, removeWorktree } from "../lib/git.js";
-import type { MergeReport, MergedRun, ConflictRun, FailedRun } from "./types.js";
+import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -12,6 +12,14 @@ const execFileAsync = promisify(execFile);
 
 async function git(args: string[], cwd: string): Promise<string> {
   const { stdout } = await execFileAsync("git", args, {
+    cwd,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  return stdout.trim();
+}
+
+async function gh(args: string[], cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("gh", args, {
     cwd,
     maxBuffer: 10 * 1024 * 1024,
   });
@@ -226,5 +234,112 @@ export class Refinery {
       );
       return false;
     }
+  }
+
+  /**
+   * Find all completed runs and create PRs for their branches.
+   * Pushes branches to origin and uses `gh pr create`.
+   */
+  async createPRs(opts?: {
+    baseBranch?: string;
+    draft?: boolean;
+    projectId?: string;
+  }): Promise<PrReport> {
+    const baseBranch = opts?.baseBranch ?? "main";
+    const draft = opts?.draft ?? false;
+
+    const completedRuns = this.store.getRunsByStatus("completed", opts?.projectId);
+
+    const created: CreatedPr[] = [];
+    const failed: FailedRun[] = [];
+
+    for (const run of completedRuns) {
+      const branchName = `foreman/${run.bead_id}`;
+
+      try {
+        // Push branch to origin
+        await git(["push", "-u", "origin", branchName], this.projectPath);
+
+        // Build PR title and body
+        const title = `${run.bead_id}: ${branchName.replace("foreman/", "")}`;
+
+        // Try to get bead info for a better title/body
+        let beadTitle = run.bead_id;
+        let beadDescription = "";
+        try {
+          const beadInfo = await this.beads.show(run.bead_id);
+          if (beadInfo) {
+            beadTitle = beadInfo.title ?? run.bead_id;
+            beadDescription = beadInfo.description ?? "";
+          }
+        } catch {
+          // Non-fatal — use defaults
+        }
+
+        // Get commit log for the PR body
+        let commitLog = "";
+        try {
+          commitLog = await git(
+            ["log", `${baseBranch}..${branchName}`, "--oneline"],
+            this.projectPath,
+          );
+        } catch {
+          // Non-fatal
+        }
+
+        const prTitle = `${beadTitle} (${run.bead_id})`;
+        const body = [
+          "## Summary",
+          beadDescription || `Agent work for ${run.bead_id}`,
+          "",
+          "## Commits",
+          commitLog ? `\`\`\`\n${commitLog}\n\`\`\`` : "(no commits)",
+          "",
+          `Foreman run: \`${run.id}\``,
+        ].join("\n");
+
+        // Create PR via gh CLI
+        const ghArgs = [
+          "pr", "create",
+          "--base", baseBranch,
+          "--head", branchName,
+          "--title", prTitle,
+          "--body", body,
+        ];
+        if (draft) ghArgs.push("--draft");
+
+        const prUrl = await gh(ghArgs, this.projectPath);
+
+        this.store.updateRun(run.id, { status: "pr-created" });
+        this.store.logEvent(
+          run.project_id,
+          "pr-created",
+          { beadId: run.bead_id, branchName, baseBranch, prUrl, draft },
+          run.id,
+        );
+        created.push({
+          runId: run.id,
+          beadId: run.bead_id,
+          branchName,
+          prUrl,
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.store.logEvent(
+          run.project_id,
+          "fail",
+          { beadId: run.bead_id, branchName, error: message },
+          run.id,
+        );
+        failed.push({
+          runId: run.id,
+          beadId: run.bead_id,
+          branchName,
+          error: message,
+        });
+      }
+    }
+
+    return { created, failed };
   }
 }
