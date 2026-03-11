@@ -651,6 +651,11 @@ async function spawnWorkerProcess(config: WorkerConfig): Promise<void> {
   });
 
   child.unref();
+
+  // Close parent's file handles — child process has inherited its own copies of the fds
+  await outFd.close();
+  await errFd.close();
+
   log(`  Worker pid=${child.pid} for ${config.beadId}`);
 }
 
