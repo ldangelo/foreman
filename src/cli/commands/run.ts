@@ -5,10 +5,10 @@ import { spawnSync } from "node:child_process";
 
 import { BeadsClient } from "../../lib/beads.js";
 import { ForemanStore } from "../../lib/store.js";
-import type { Run, RunProgress } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
+import { watchRunsInk } from "../watch-ui.js";
 
 export const runCommand = new Command("run")
   .description("Dispatch ready tasks to agents")
@@ -81,7 +81,7 @@ export const runCommand = new Command("run")
 
         if (watch && result.resumed.length > 0) {
           const runIds = result.resumed.map((t) => t.runId);
-          await watchRuns(store, runIds);
+          await watchRunsInk(store, runIds);
         }
 
         store.close();
@@ -128,7 +128,7 @@ export const runCommand = new Command("run")
       // Watch mode: poll agent status until all finish
       if (watch && !dryRun && result.dispatched.length > 0) {
         const runIds = result.dispatched.map((t) => t.runId);
-        await watchRuns(store, runIds);
+        await watchRunsInk(store, runIds);
       }
 
       store.close();
@@ -138,172 +138,6 @@ export const runCommand = new Command("run")
       process.exit(1);
     }
   });
-
-// ── Watch / Progress ─────────────────────────────────────────────────────
-
-const STATUS_ICON: Record<string, string> = {
-  pending: chalk.dim("○"),
-  running: chalk.blue("●"),
-  completed: chalk.green("✓"),
-  failed: chalk.red("✗"),
-  stuck: chalk.yellow("⚠"),
-  merged: chalk.green("⊕"),
-  conflict: chalk.red("⊘"),
-  "test-failed": chalk.red("⊘"),
-};
-
-function elapsed(since: string | null): string {
-  if (!since) return "—";
-  const ms = Date.now() - new Date(since).getTime();
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m${s % 60}s`;
-  return `${Math.floor(m / 60)}h${m % 60}m`;
-}
-
-function formatProgress(progress: RunProgress | null): string {
-  if (!progress || progress.toolCalls === 0) return chalk.dim("starting...");
-
-  const parts: string[] = [];
-
-  // Tool calls with top tools
-  parts.push(chalk.white(`${progress.toolCalls} tools`));
-
-  // Top 3 tools breakdown
-  const topTools = Object.entries(progress.toolBreakdown)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, 3)
-    .map(([name, count]) => `${name}:${count}`);
-  if (topTools.length > 0) {
-    parts.push(chalk.dim(`(${topTools.join(" ")})`));
-  }
-
-  // Files changed
-  if (progress.filesChanged.length > 0) {
-    parts.push(chalk.yellow(`${progress.filesChanged.length} files`));
-  }
-
-  // Cost
-  if (progress.costUsd > 0) {
-    parts.push(chalk.green(`$${progress.costUsd.toFixed(3)}`));
-  }
-
-  // Last tool
-  if (progress.lastToolCall) {
-    parts.push(chalk.dim(`→ ${progress.lastToolCall}`));
-  }
-
-  return parts.join(" ");
-}
-
-async function watchRuns(store: ForemanStore, runIds: string[]): Promise<void> {
-  console.log(chalk.dim("\nWatching agent progress (Ctrl+C to detach)...\n"));
-
-  const POLL_MS = 3_000;
-  let interrupted = false;
-  // Total lines written (header + content) that need to be overwritten on refresh
-  let linesWritten = 0;
-
-  const onSigint = () => {
-    interrupted = true;
-    console.log(chalk.dim("\n\nDetached — agents continue in background."));
-    console.log(chalk.dim("Check status: foreman monitor\n"));
-  };
-  process.on("SIGINT", onSigint);
-
-  try {
-    while (!interrupted) {
-      const runs = runIds
-        .map((id) => store.getRun(id))
-        .filter((r): r is Run => r !== null);
-
-      if (runs.length === 0) break;
-
-      const lines: string[] = [];
-      let allDone = true;
-      let totalCost = 0;
-      let totalTools = 0;
-
-      for (const run of runs) {
-        const icon = STATUS_ICON[run.status] ?? chalk.dim("?");
-        const progress = store.getRunProgress(run.id);
-
-        if (progress) {
-          totalCost += progress.costUsd;
-          totalTools += progress.toolCalls;
-        }
-
-        const time = run.status === "running" || run.status === "pending"
-          ? chalk.dim(elapsed(run.started_at ?? run.created_at))
-          : chalk.dim(elapsed(run.started_at));
-
-        const logHint = run.status === "failed"
-          ? chalk.dim(` logs:~/.foreman/logs/${run.id}.log`)
-          : "";
-
-        // Line 1: status + bead + model + elapsed
-        lines.push(
-          `  ${icon} ${chalk.cyan(run.bead_id)} ${chalk.dim(`[${run.agent_type}]`)} ${time}${logHint}`,
-        );
-
-        // Line 2: progress details (indented under agent)
-        if (run.status === "running" || run.status === "completed") {
-          lines.push(`    ${formatProgress(progress)}`);
-        }
-
-        if (run.status === "pending" || run.status === "running") {
-          allDone = false;
-        }
-      }
-
-      // Summary line
-      lines.push(
-        chalk.dim(`  Total: ${totalTools} tool calls, $${totalCost.toFixed(3)}`),
-      );
-
-      // Move cursor up to overwrite previous output
-      if (linesWritten > 0) {
-        process.stdout.write(`\x1b[${linesWritten}A`);
-      }
-
-      // Write header + all lines, clearing each line first
-      process.stdout.write(`\x1b[K${chalk.bold("Agent status:")}\n`);
-      for (const line of lines) {
-        process.stdout.write(`\x1b[K${line}\n`);
-      }
-
-      // 1 for header + lines.length for content
-      linesWritten = 1 + lines.length;
-
-      if (allDone) {
-        const completed = runs.filter((r) => r.status === "completed").length;
-        const failed = runs.filter(
-          (r) => r.status === "failed" || r.status === "test-failed",
-        ).length;
-        const stuck = runs.filter((r) => r.status === "stuck").length;
-
-        const parts = [
-          chalk.green(`${completed} completed`),
-          failed > 0 ? chalk.red(`${failed} failed`) : null,
-          stuck > 0 ? chalk.yellow(`${stuck} rate-limited`) : null,
-        ].filter(Boolean).join(", ");
-
-        console.log(chalk.bold(`\nDone: ${parts}`));
-        console.log(chalk.dim(`  ${totalTools} tool calls, $${totalCost.toFixed(3)} total cost`));
-
-        if (stuck > 0) {
-          console.log(chalk.yellow(`\n  Run 'foreman run --resume' after rate limit resets to continue.`));
-        }
-        break;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-    }
-  } finally {
-    process.removeListener("SIGINT", onSigint);
-  }
-}
 
 /**
  * Set up a Ralph Wiggum loop that iterates over bd ready tasks.
