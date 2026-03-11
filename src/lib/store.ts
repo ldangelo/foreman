@@ -26,6 +26,7 @@ export interface Run {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+  progress: string | null;
 }
 
 export interface Cost {
@@ -57,6 +58,18 @@ export interface Event {
   event_type: EventType;
   details: string | null;
   created_at: string;
+}
+
+export interface RunProgress {
+  toolCalls: number;
+  toolBreakdown: Record<string, number>; // e.g. { Read: 12, Edit: 5, Bash: 3 }
+  filesChanged: string[];
+  turns: number;
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  lastToolCall: string | null;  // most recent tool name
+  lastActivity: string;         // ISO timestamp
 }
 
 export interface Metrics {
@@ -114,6 +127,11 @@ CREATE TABLE IF NOT EXISTS events (
 );
 `;
 
+// Add progress column to runs table if not present (migration)
+const MIGRATIONS = [
+  `ALTER TABLE runs ADD COLUMN progress TEXT DEFAULT NULL`,
+];
+
 // ── Store ───────────────────────────────────────────────────────────────
 
 export class ForemanStore {
@@ -127,6 +145,15 @@ export class ForemanStore {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.exec(SCHEMA);
+
+    // Run idempotent migrations
+    for (const sql of MIGRATIONS) {
+      try {
+        this.db.exec(sql);
+      } catch {
+        // Column/table already exists — safe to ignore
+      }
+    }
   }
 
   close(): void {
@@ -215,6 +242,7 @@ export class ForemanStore {
       started_at: null,
       completed_at: null,
       created_at: now,
+      progress: null,
     };
     this.db
       .prepare(
@@ -284,6 +312,22 @@ export class ForemanStore {
     return this.db
       .prepare("SELECT * FROM events WHERE run_id = ? ORDER BY created_at DESC")
       .all(runId) as Event[];
+  }
+
+  // ── Progress ─────────────────────────────────────────────────────────
+
+  updateRunProgress(runId: string, progress: RunProgress): void {
+    this.db
+      .prepare("UPDATE runs SET progress = ? WHERE id = ?")
+      .run(JSON.stringify(progress), runId);
+  }
+
+  getRunProgress(runId: string): RunProgress | null {
+    const row = this.db
+      .prepare("SELECT progress FROM runs WHERE id = ?")
+      .get(runId) as { progress: string | null } | undefined;
+    if (!row?.progress) return null;
+    return JSON.parse(row.progress) as RunProgress;
   }
 
   // ── Costs ───────────────────────────────────────────────────────────

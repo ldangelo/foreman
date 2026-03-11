@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 
 import { BeadsClient } from "../../lib/beads.js";
 import { ForemanStore } from "../../lib/store.js";
-import type { Run } from "../../lib/store.js";
+import type { Run, RunProgress } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
@@ -113,14 +113,54 @@ function elapsed(since: string | null): string {
   return `${Math.floor(m / 60)}h${m % 60}m`;
 }
 
+function formatProgress(progress: RunProgress | null): string {
+  if (!progress || progress.toolCalls === 0) return chalk.dim("starting...");
+
+  const parts: string[] = [];
+
+  // Tool calls with top tools
+  parts.push(chalk.white(`${progress.toolCalls} tools`));
+
+  // Top 3 tools breakdown
+  const topTools = Object.entries(progress.toolBreakdown)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 3)
+    .map(([name, count]) => `${name}:${count}`);
+  if (topTools.length > 0) {
+    parts.push(chalk.dim(`(${topTools.join(" ")})`));
+  }
+
+  // Files changed
+  if (progress.filesChanged.length > 0) {
+    parts.push(chalk.yellow(`${progress.filesChanged.length} files`));
+  }
+
+  // Cost
+  if (progress.costUsd > 0) {
+    parts.push(chalk.green(`$${progress.costUsd.toFixed(3)}`));
+  }
+
+  // Last tool
+  if (progress.lastToolCall) {
+    parts.push(chalk.dim(`→ ${progress.lastToolCall}`));
+  }
+
+  return parts.join(" ");
+}
+
 async function watchRuns(store: ForemanStore, runIds: string[]): Promise<void> {
   console.log(chalk.dim("\nWatching agent progress (Ctrl+C to detach)...\n"));
 
-  const POLL_MS = 5_000;
+  const POLL_MS = 3_000;
   let interrupted = false;
+  let prevLineCount = 0;
 
   const onSigint = () => {
     interrupted = true;
+    // Move past the table before printing
+    if (prevLineCount > 0) {
+      process.stdout.write(`\n${"\n".repeat(prevLineCount)}`);
+    }
     console.log(chalk.dim("\n\nDetached — agents continue in background."));
     console.log(chalk.dim("Check status: foreman monitor\n"));
   };
@@ -134,12 +174,19 @@ async function watchRuns(store: ForemanStore, runIds: string[]): Promise<void> {
 
       if (runs.length === 0) break;
 
-      // Clear previous output and redraw
       const lines: string[] = [];
       let allDone = true;
+      let totalCost = 0;
+      let totalTools = 0;
 
       for (const run of runs) {
         const icon = STATUS_ICON[run.status] ?? chalk.dim("?");
+        const progress = store.getRunProgress(run.id);
+
+        if (progress) {
+          totalCost += progress.costUsd;
+          totalTools += progress.toolCalls;
+        }
 
         const time = run.status === "running" || run.status === "pending"
           ? chalk.dim(elapsed(run.started_at ?? run.created_at))
@@ -149,36 +196,56 @@ async function watchRuns(store: ForemanStore, runIds: string[]): Promise<void> {
           ? chalk.dim(` logs:~/.foreman/logs/${run.id}.log`)
           : "";
 
+        // Line 1: status + bead + model + elapsed
         lines.push(
           `  ${icon} ${chalk.cyan(run.bead_id)} ${chalk.dim(`[${run.agent_type}]`)} ${time}${logHint}`,
         );
+
+        // Line 2: progress details (indented under agent)
+        if (run.status === "running" || run.status === "completed") {
+          lines.push(`    ${formatProgress(progress)}`);
+        }
 
         if (run.status === "pending" || run.status === "running") {
           allDone = false;
         }
       }
 
+      // Summary line
+      lines.push("");
+      lines.push(
+        chalk.dim(`  Total: ${totalTools} tool calls, $${totalCost.toFixed(3)}`),
+      );
+
       // Move cursor up and overwrite (clear previous table)
-      if (lines.length > 0) {
-        process.stdout.write(`\r\x1b[K${chalk.bold("Agent status:")}\n`);
-        for (const line of lines) {
-          process.stdout.write(`\x1b[K${line}\n`);
-        }
-        // Move cursor back up for next refresh
-        process.stdout.write(`\x1b[${lines.length + 1}A`);
+      if (prevLineCount > 0) {
+        process.stdout.write(`\x1b[${prevLineCount + 1}A`);
       }
 
+      process.stdout.write(`\r\x1b[K${chalk.bold("Agent status:")}\n`);
+      for (const line of lines) {
+        process.stdout.write(`\x1b[K${line}\n`);
+      }
+      prevLineCount = lines.length;
+
+      // Move cursor back up for next refresh
+      process.stdout.write(`\x1b[${lines.length + 1}A`);
+
       if (allDone) {
-        // Final render (move down past the table)
+        // Final render — move down past the table
         process.stdout.write(`\n${"\n".repeat(lines.length)}`);
         const completed = runs.filter((r) => r.status === "completed").length;
         const failed = runs.filter(
           (r) => r.status === "failed" || r.status === "test-failed",
         ).length;
+
         console.log(
           chalk.bold(
             `\nAll agents finished: ${chalk.green(`${completed} completed`)}, ${chalk.red(`${failed} failed`)}`,
           ),
+        );
+        console.log(
+          chalk.dim(`  ${totalTools} tool calls, $${totalCost.toFixed(3)} total cost`),
         );
         break;
       }

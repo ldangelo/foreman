@@ -14,6 +14,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     started_at: new Date().toISOString(),
     completed_at: null,
     created_at: new Date().toISOString(),
+    progress: null,
     ...overrides,
   };
 }

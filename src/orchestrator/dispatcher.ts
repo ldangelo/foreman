@@ -4,7 +4,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 
 import type { BeadsClient, Bead } from "../lib/beads.js";
-import type { ForemanStore } from "../lib/store.js";
+import type { ForemanStore, RunProgress } from "../lib/store.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
 import type {
@@ -370,11 +370,34 @@ export class Dispatcher {
 
     // Launch the SDK query in a background Promise — don't await.
     // The async generator is consumed in the background, updating the store
-    // and log file as messages arrive.
+    // progress and log file as messages arrive.
     const agentPromise = (async () => {
-      let numTurns = 0;
-      let costUsd = 0;
       let sessionId = "";
+      let resultHandled = false; // Guard against post-result errors overwriting status
+
+      // Live progress tracking — updated on every SDK message
+      const progress: RunProgress = {
+        toolCalls: 0,
+        toolBreakdown: {},
+        filesChanged: [],
+        turns: 0,
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        lastToolCall: null,
+        lastActivity: new Date().toISOString(),
+      };
+
+      // Throttle progress writes to avoid hammering SQLite on every message
+      let progressDirty = false;
+      const flushProgress = () => {
+        if (progressDirty) {
+          this.store.updateRunProgress(runId, progress);
+          progressDirty = false;
+        }
+      };
+      const progressTimer = setInterval(flushProgress, 2_000);
+      progressTimer.unref();
 
       try {
         for await (const message of query({
@@ -389,6 +412,7 @@ export class Dispatcher {
           },
         })) {
           await logMessage(logFile, message);
+          progress.lastActivity = new Date().toISOString();
 
           // Track session ID from first message
           if ("session_id" in message && message.session_id && !sessionId) {
@@ -399,53 +423,127 @@ export class Dispatcher {
             log(`  Agent ${bead.id} session: ${sessionId}`);
           }
 
+          // Track tool usage from assistant messages
+          if (message.type === "assistant") {
+            progress.turns++;
+            const toolUses = message.message.content.filter(
+              (b: { type: string }) => b.type === "tool_use",
+            ) as Array<{ type: "tool_use"; name: string; input: Record<string, unknown> }>;
+
+            for (const tool of toolUses) {
+              progress.toolCalls++;
+              progress.toolBreakdown[tool.name] = (progress.toolBreakdown[tool.name] ?? 0) + 1;
+              progress.lastToolCall = tool.name;
+
+              // Track files changed via Write/Edit tools
+              if ((tool.name === "Write" || tool.name === "Edit") && tool.input?.file_path) {
+                const filePath = String(tool.input.file_path);
+                if (!progress.filesChanged.includes(filePath)) {
+                  progress.filesChanged.push(filePath);
+                }
+              }
+            }
+            progressDirty = true;
+          }
+
           // Handle completion
           if (message.type === "result") {
             const result = message as SDKResultSuccess | SDKResultError;
-            numTurns = result.num_turns;
-            costUsd = result.total_cost_usd;
+            progress.turns = result.num_turns;
+            progress.costUsd = result.total_cost_usd;
+            progress.tokensIn = result.usage.input_tokens;
+            progress.tokensOut = result.usage.output_tokens;
             const now = new Date().toISOString();
+
+            // Final progress flush
+            clearInterval(progressTimer);
+            this.store.updateRunProgress(runId, progress);
+            resultHandled = true;
 
             if (result.subtype === "success") {
               this.store.updateRun(runId, { status: "completed", completed_at: now });
               this.store.logEvent(projectId, "complete", {
                 beadId: bead.id,
                 title: bead.title,
-                costUsd,
-                numTurns,
+                costUsd: progress.costUsd,
+                numTurns: progress.turns,
+                toolCalls: progress.toolCalls,
+                filesChanged: progress.filesChanged.length,
                 durationMs: result.duration_ms,
                 sessionId,
               }, runId);
-              log(`Agent for ${bead.id} completed (${numTurns} turns, $${costUsd.toFixed(4)})`);
+              log(`Agent for ${bead.id} completed (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
             } else {
               const errResult = result as SDKResultError;
               const reason = errResult.errors?.join("; ") ?? errResult.subtype;
-              this.store.updateRun(runId, { status: "failed", completed_at: now });
-              this.store.logEvent(projectId, "fail", {
+
+              // Detect rate limit errors
+              const isRateLimit = reason.includes("hit your limit")
+                || reason.includes("rate limit")
+                || errResult.subtype === "error_max_budget_usd";
+
+              this.store.updateRun(runId, {
+                status: isRateLimit ? "stuck" : "failed",
+                completed_at: now,
+              });
+              this.store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
                 beadId: bead.id,
                 reason,
-                costUsd,
-                numTurns,
+                costUsd: progress.costUsd,
+                numTurns: progress.turns,
+                toolCalls: progress.toolCalls,
                 durationMs: result.duration_ms,
                 sessionId,
+                rateLimit: isRateLimit,
               }, runId);
-              log(`Agent for ${bead.id} FAILED (${errResult.subtype}): ${reason.slice(0, 300)}`);
+              if (isRateLimit) {
+                log(`Agent for ${bead.id} RATE LIMITED after ${progress.turns} turns ($${progress.costUsd.toFixed(4)}) — can resume later`);
+              } else {
+                log(`Agent for ${bead.id} FAILED (${errResult.subtype}): ${reason.slice(0, 300)}`);
+              }
             }
           }
         }
       } catch (err: unknown) {
+        clearInterval(progressTimer);
+        this.store.updateRunProgress(runId, progress);
         const reason = err instanceof Error ? err.message : String(err);
+        const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
+
+        // Don't overwrite a successful result with a post-exit error.
+        // The SDK sometimes throws after yielding subtype=success when the
+        // process exits with code 1 (e.g. rate limit hit after completion).
+        if (resultHandled) {
+          log(`Agent for ${bead.id} post-result error (ignored — already ${isRateLimit ? "rate limited" : "completed"}): ${reason.slice(0, 200)}`);
+          await appendFile(logFile, `\n[foreman] Post-result error (ignored): ${reason}\n`);
+          return;
+        }
+
         const now = new Date().toISOString();
-        this.store.updateRun(runId, { status: "failed", completed_at: now });
-        this.store.logEvent(projectId, "fail", {
-          beadId: bead.id,
-          reason,
-          costUsd,
-          numTurns,
-          sessionId,
-        }, runId);
-        log(`Agent for ${bead.id} ERROR: ${reason}`);
-        await appendFile(logFile, `\n[foreman] ERROR: ${reason}\n`);
+
+        if (isRateLimit) {
+          // Rate limited before completing — mark as stuck so it can be resumed
+          this.store.updateRun(runId, { status: "stuck", completed_at: now });
+          this.store.logEvent(projectId, "stuck", {
+            beadId: bead.id,
+            reason,
+            costUsd: progress.costUsd,
+            numTurns: progress.turns,
+            rateLimit: true,
+          }, runId);
+          log(`Agent for ${bead.id} RATE LIMITED mid-work (${progress.turns} turns, $${progress.costUsd.toFixed(4)}) — can resume later`);
+          await appendFile(logFile, `\n[foreman] RATE LIMITED: ${reason}\n`);
+        } else {
+          this.store.updateRun(runId, { status: "failed", completed_at: now });
+          this.store.logEvent(projectId, "fail", {
+            beadId: bead.id,
+            reason,
+            costUsd: progress.costUsd,
+            numTurns: progress.turns,
+          }, runId);
+          log(`Agent for ${bead.id} ERROR: ${reason}`);
+          await appendFile(logFile, `\n[foreman] ERROR: ${reason}\n`);
+        }
       }
     })();
 
