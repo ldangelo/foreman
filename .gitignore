@@ -9,3 +9,6 @@ dist/
 
 # TRD Implementation State
 .trd-state/
+
+# Foreman worktrees
+.foreman-worktrees/
