@@ -19,6 +19,9 @@ export const runCommand = new Command("run")
   .option("--telemetry", "Enable OpenTelemetry tracing on spawned agents (requires OTEL_* env vars)")
   .option("--resume", "Resume stuck/rate-limited runs from a previous dispatch")
   .option("--resume-failed", "Also resume failed runs (not just stuck/rate-limited)")
+  .option("--no-pipeline", "Skip the explorer/qa/reviewer pipeline — run as single worker agent")
+  .option("--skip-explore", "Skip the explorer phase in the pipeline")
+  .option("--skip-review", "Skip the reviewer phase in the pipeline")
   .option("--ralph", "Run in Ralph Wiggum loop: pick tasks from bd ready until none remain")
   .option("--max-iterations <n>", "Max Ralph loop iterations (default: unlimited)", "0")
   .action(async (opts) => {
@@ -31,6 +34,9 @@ export const runCommand = new Command("run")
     const maxIterations = parseInt(opts.maxIterations, 10);
     const watch = opts.watch as boolean;
     const telemetry = opts.telemetry as boolean | undefined;
+    const pipeline = opts.pipeline as boolean;  // --no-pipeline sets to false
+    const skipExplore = opts.skipExplore as boolean | undefined;
+    const skipReview = opts.skipReview as boolean | undefined;
 
     if (ralph) {
       setupRalphLoop(maxIterations);
@@ -106,6 +112,9 @@ export const runCommand = new Command("run")
           model,
           dryRun,
           telemetry,
+          pipeline,
+          skipExplore,
+          skipReview,
         });
 
         // Print dispatched tasks

@@ -24,11 +24,15 @@ interface WorkerConfig {
   projectId: string;
   beadId: string;
   beadTitle: string;
+  beadDescription?: string;
   model: string;
   worktreePath: string;
   prompt: string;
   env: Record<string, string>;
   resume?: string;  // SDK session ID to resume
+  pipeline?: boolean;  // Run as lead pipeline (explorer → developer → qa → reviewer)
+  skipExplore?: boolean;
+  skipReview?: boolean;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────
@@ -44,28 +48,29 @@ async function main(): Promise<void> {
   const config: WorkerConfig = JSON.parse(readFileSync(configPath, "utf-8"));
   try { unlinkSync(configPath); } catch { /* already deleted */ }
 
-  const { runId, projectId, beadId, beadTitle, model, worktreePath, prompt, resume } = config;
+  const { runId, projectId, beadId, beadTitle, model, worktreePath, prompt, resume, pipeline } = config;
 
   // Set up logging
   const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
   await mkdir(logDir, { recursive: true });
   const logFile = join(logDir, `${runId}.log`);
 
+  const mode = pipeline ? "pipeline" : (resume ? "resume" : "worker");
   const header = [
-    `[foreman-worker] Agent ${resume ? "RESUME" : "spawn"} at ${new Date().toISOString()}`,
+    `[foreman-worker] Agent ${mode.toUpperCase()} at ${new Date().toISOString()}`,
     `  bead:      ${beadId} — ${beadTitle}`,
     `  model:     ${model}`,
     `  run:       ${runId}`,
     `  worktree:  ${worktreePath}`,
     `  pid:       ${process.pid}`,
-    `  method:    Claude Agent SDK (detached worker)`,
+    `  method:    ${pipeline ? "Pipeline (explorer→developer→qa→reviewer)" : "Claude Agent SDK (detached worker)"}`,
     resume ? `  resume:    ${resume}` : null,
     "─".repeat(80),
     "",
   ].filter(Boolean).join("\n");
   await appendFile(logFile, header);
 
-  log(`Worker started for ${beadId} [${model}] pid=${process.pid}`);
+  log(`Worker started for ${beadId} [${model}] pid=${process.pid} mode=${mode}`);
 
   // Open store connection
   const store = new ForemanStore();
@@ -78,6 +83,59 @@ async function main(): Promise<void> {
   // Build clean env for SDK
   const env: Record<string, string | undefined> = { ...process.env };
 
+  // ── Pipeline mode: run the multi-phase pipeline ─────────────────────
+  if (pipeline) {
+    const { runPipeline } = await import("./pipeline.js");
+    const pipelineProgress: RunProgress = {
+      toolCalls: 0,
+      toolBreakdown: {},
+      filesChanged: [],
+      turns: 0,
+      costUsd: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      lastToolCall: null,
+      lastActivity: new Date().toISOString(),
+    };
+
+    try {
+      await runPipeline(
+        {
+          runId,
+          projectId,
+          beadId,
+          beadTitle,
+          beadDescription: config.beadDescription ?? "(no description)",
+          model: model as any,
+          worktreePath,
+          env,
+          logFile,
+          skipExplore: config.skipExplore,
+          skipReview: config.skipReview,
+        },
+        store,
+        pipelineProgress,
+      );
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log(`Pipeline error: ${reason}`);
+      await appendFile(logFile, `\n[foreman-worker] Pipeline error: ${reason}\n`);
+      const now = new Date().toISOString();
+      store.updateRun(runId, { status: "failed", completed_at: now });
+      store.logEvent(projectId, "fail", {
+        beadId,
+        reason,
+        costUsd: pipelineProgress.costUsd,
+        pipeline: true,
+      }, runId);
+    }
+
+    store.close();
+    log(`Pipeline worker exiting for ${beadId}`);
+    return;
+  }
+
+  // ── Single-agent mode: run a single SDK query ───────────────────────
   let sessionId = resume ?? "";
   let resultHandled = false;
 

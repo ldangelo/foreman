@@ -39,6 +39,9 @@ export class Dispatcher {
     dryRun?: boolean;
     telemetry?: boolean;
     projectId?: string;
+    pipeline?: boolean;
+    skipExplore?: boolean;
+    skipReview?: boolean;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = opts?.projectId ?? this.resolveProjectId();
@@ -125,13 +128,18 @@ export class Dispatcher {
         // 6. Mark bead as in_progress before spawning agent
         await this.beads.update(bead.id, { status: "in_progress" });
 
-        // 7. Spawn the coding agent via SDK
+        // 7. Spawn the coding agent
         const sessionKey = await this.spawnAgent(
           model,
           worktreePath,
           beadInfo,
           run.id,
           opts?.telemetry,
+          {
+            pipeline: opts?.pipeline,
+            skipExplore: opts?.skipExplore,
+            skipReview: opts?.skipReview,
+          },
         );
 
         // Update run with session key
@@ -446,6 +454,11 @@ export class Dispatcher {
     bead: BeadInfo,
     runId: string,
     telemetry?: boolean,
+    pipelineOpts?: {
+      pipeline?: boolean;
+      skipExplore?: boolean;
+      skipReview?: boolean;
+    },
   ): Promise<string> {
     const prompt = [
       `Read AGENTS.md and implement the task described.`,
@@ -459,18 +472,23 @@ export class Dispatcher {
 
     const env = buildWorkerEnv(telemetry, bead.id, runId, model);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
+    const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
-    log(`Spawning detached worker for ${bead.id} [${model}] in ${worktreePath}`);
+    log(`Spawning detached ${usePipeline ? "pipeline" : "worker"} for ${bead.id} [${model}] in ${worktreePath}`);
 
     await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
       beadId: bead.id,
       beadTitle: bead.title,
+      beadDescription: bead.description,
       model,
       worktreePath,
       prompt,
       env,
+      pipeline: usePipeline,
+      skipExplore: pipelineOpts?.skipExplore,
+      skipReview: pipelineOpts?.skipReview,
     });
 
     return sessionKey;
@@ -568,11 +586,15 @@ interface WorkerConfig {
   projectId: string;
   beadId: string;
   beadTitle: string;
+  beadDescription?: string;
   model: string;
   worktreePath: string;
   prompt: string;
   env: Record<string, string>;
   resume?: string;
+  pipeline?: boolean;
+  skipExplore?: boolean;
+  skipReview?: boolean;
 }
 
 /**

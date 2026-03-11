@@ -14,14 +14,22 @@ describe("workerAgentMd", () => {
     expect(md).toContain("beads-abc123");
   });
 
-  it("contains bd close command with bead ID", () => {
+  it("contains the bead title", () => {
     const md = workerAgentMd(fakeBead, "/tmp/wt", "claude-sonnet-4-6");
-    expect(md).toContain("bd close beads-abc123");
+    expect(md).toContain("Implement auth module");
   });
 
-  it("contains git push to the correct branch", () => {
+  it("contains the bead description", () => {
     const md = workerAgentMd(fakeBead, "/tmp/wt", "claude-sonnet-4-6");
-    expect(md).toContain("git push -u origin foreman/beads-abc123");
+    expect(md).toContain("Add JWT-based authentication");
+  });
+
+  it("describes the pipeline phases", () => {
+    const md = workerAgentMd(fakeBead, "/tmp/wt", "claude-sonnet-4-6");
+    expect(md).toContain("Explorer");
+    expect(md).toContain("Developer");
+    expect(md).toContain("QA");
+    expect(md).toContain("Reviewer");
   });
 
   it("produces valid non-empty output for all models", () => {

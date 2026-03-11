@@ -4,6 +4,8 @@ export type RuntimeSelection = "claude-code";
 
 export type ModelSelection = "claude-opus-4-6" | "claude-sonnet-4-6" | "claude-haiku-4-5-20251001";
 
+export type AgentRole = "lead" | "explorer" | "developer" | "qa" | "reviewer" | "worker";
+
 // ── Decomposition types ─────────────────────────────────────────────────
 
 export type TaskComplexity = "low" | "medium" | "high";
