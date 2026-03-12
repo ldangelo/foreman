@@ -193,6 +193,168 @@ describe("ForemanStore", () => {
     });
   });
 
+  // ── Messaging ─────────────────────────────────────────────────────
+
+  describe("messaging", () => {
+    it("sends and retrieves a message", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code");
+
+      const msg = store.sendMessage(run.id, "explorer", "developer", "Ready", "Explorer done.");
+      expect(msg.id).toBeDefined();
+      expect(msg.sender_agent_type).toBe("explorer");
+      expect(msg.recipient_agent_type).toBe("developer");
+      expect(msg.subject).toBe("Ready");
+      expect(msg.body).toBe("Explorer done.");
+      expect(msg.read).toBe(0);
+      expect(msg.deleted_at).toBeNull();
+
+      const messages = store.getMessages(run.id, "developer");
+      expect(messages).toHaveLength(1);
+      expect(messages[0].id).toBe(msg.id);
+    });
+
+    it("markMessageRead returns true when message exists, false otherwise", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code");
+
+      const msg = store.sendMessage(run.id, "explorer", "developer", "Hi", "body");
+      expect(store.markMessageRead(msg.id)).toBe(true);
+      expect(store.markMessageRead("non-existent-id")).toBe(false);
+    });
+
+    it("filters unread messages only", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code");
+
+      const m1 = store.sendMessage(run.id, "explorer", "developer", "First", "body 1");
+      const m2 = store.sendMessage(run.id, "qa", "developer", "Second", "body 2");
+
+      store.markMessageRead(m1.id);
+
+      const unread = store.getMessages(run.id, "developer", true);
+      expect(unread).toHaveLength(1);
+      expect(unread[0].id).toBe(m2.id);
+
+      const all = store.getMessages(run.id, "developer", false);
+      expect(all).toHaveLength(2);
+    });
+
+    it("marks all messages for an agent read", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code");
+
+      store.sendMessage(run.id, "explorer", "developer", "A", "body");
+      store.sendMessage(run.id, "qa", "developer", "B", "body");
+      store.sendMessage(run.id, "developer", "qa", "C", "body"); // to qa, not developer
+
+      store.markAllMessagesRead(run.id, "developer");
+
+      const unread = store.getMessages(run.id, "developer", true);
+      expect(unread).toHaveLength(0);
+
+      // qa message unaffected
+      const qaUnread = store.getMessages(run.id, "qa", true);
+      expect(qaUnread).toHaveLength(1);
+    });
+
+    it("soft-deletes a message", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code");
+
+      const msg = store.sendMessage(run.id, "explorer", "developer", "Delete me", "body");
+      const deleted = store.deleteMessage(msg.id);
+      expect(deleted).toBe(true);
+
+      const messages = store.getMessages(run.id, "developer");
+      expect(messages).toHaveLength(0);
+
+      // Raw record still exists with deleted_at set
+      const raw = store.getMessage(msg.id);
+      expect(raw).not.toBeNull();
+      expect(raw!.deleted_at).not.toBeNull();
+    });
+
+    it("deleteMessage returns false for a non-existent message id", () => {
+      expect(store.deleteMessage("non-existent-id")).toBe(false);
+    });
+
+    it("scopes messages by run_id", () => {
+      const project = store.registerProject("p", "/p");
+      const run1 = store.createRun(project.id, "sd-1", "claude-code");
+      const run2 = store.createRun(project.id, "sd-2", "claude-code");
+
+      store.sendMessage(run1.id, "explorer", "developer", "Run 1", "body");
+      store.sendMessage(run2.id, "explorer", "developer", "Run 2", "body");
+
+      expect(store.getMessages(run1.id, "developer")).toHaveLength(1);
+      expect(store.getMessages(run2.id, "developer")).toHaveLength(1);
+    });
+
+    it("getAllMessages returns all non-deleted messages for a run", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code");
+
+      store.sendMessage(run.id, "explorer", "developer", "A", "body");
+      const m2 = store.sendMessage(run.id, "developer", "qa", "B", "body");
+      store.sendMessage(run.id, "qa", "developer", "C", "body");
+      store.deleteMessage(m2.id);
+
+      const all = store.getAllMessages(run.id);
+      expect(all).toHaveLength(2);
+      expect(all.map((m) => m.subject)).toEqual(["A", "C"]);
+    });
+
+    it("getMessage returns single message by id", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code");
+
+      const msg = store.sendMessage(run.id, "explorer", "developer", "Hi", "body");
+      const fetched = store.getMessage(msg.id);
+      expect(fetched).toEqual(msg);
+      expect(store.getMessage("nonexistent")).toBeNull();
+    });
+
+    it("orders messages by created_at ASC", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code");
+
+      store.sendMessage(run.id, "explorer", "developer", "First", "body1");
+      store.sendMessage(run.id, "qa", "developer", "Second", "body2");
+      store.sendMessage(run.id, "lead", "developer", "Third", "body3");
+
+      const messages = store.getMessages(run.id, "developer");
+      expect(messages[0].subject).toBe("First");
+      expect(messages[1].subject).toBe("Second");
+      expect(messages[2].subject).toBe("Third");
+    });
+  });
+
+  // ── Migration guard ───────────────────────────────────────────────
+
+  describe("migration guard — messages survive store re-open", () => {
+    it("does NOT drop the messages table when the store is re-opened", () => {
+      // This guards against the regression where DROP TABLE IF EXISTS messages
+      // was run unconditionally on every constructor call, wiping all messages.
+      const dbPath = join(tmpDir, "reopen-test.db");
+
+      // Open store #1, send a message, close it
+      const store1 = new ForemanStore(dbPath);
+      const project = store1.registerProject("reopen-project", "/reopen");
+      const run = store1.createRun(project.id, "sd-reopen", "claude-code");
+      store1.sendMessage(run.id, "explorer", "developer", "Persisted", "body");
+      store1.close();
+
+      // Open store #2 against the same DB — message must still be there
+      const store2 = new ForemanStore(dbPath);
+      const messages = store2.getMessages(run.id, "developer");
+      store2.close();
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0].subject).toBe("Persisted");
+    });
+  });
+
   // ── Metrics ───────────────────────────────────────────────────────
 
   describe("metrics", () => {

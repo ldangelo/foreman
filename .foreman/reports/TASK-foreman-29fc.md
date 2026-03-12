@@ -1,11 +1,11 @@
 # Agent Task
 
 ## Task Details
-**Seed ID:** foreman-cc6f
-**Title:** Agent observability: dashboard command with live TUI
+**Seed ID:** foreman-3527
+**Title:** Inter-agent messaging system (SQLite mail)
 **Description:** (no description provided)
 **Model:** claude-sonnet-4-6
-**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-cc6f
+**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-3527
 
 ## Agent Team
 This task is handled by an Engineering Lead agent that orchestrates a team:

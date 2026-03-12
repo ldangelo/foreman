@@ -1,28 +1,26 @@
-# Code Review: Task groups for batch coordination
+# Code Review: Inter-agent messaging system (SQLite mail)
 
 ## Verdict: FAIL
 
 ## Summary
-
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation is well-structured and covers the core requirements: a `messages` table in SQLite, `ForemanStore` messaging methods, a `MailClient` wrapper, and comprehensive tests. However, there is a critical data-loss bug in the migration approach: `DROP TABLE IF EXISTS messages` is placed in the MIGRATIONS array without any versioning guard, causing it to execute and destroy all message data on every store construction. The rest of the code — schema design, API surface, test coverage, and the `MailClient` abstraction — is solid.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[CRITICAL]** `src/lib/store.ts:177` — `DROP TABLE IF EXISTS messages` in the MIGRATIONS array runs every time the `ForemanStore` constructor is called. Unlike the other migrations (`ALTER TABLE ADD COLUMN`, `RENAME COLUMN`) which are idempotent via failure (they throw on re-execution, are caught, and skipped), `DROP TABLE IF EXISTS` never throws — it silently succeeds on every run. This means all messages are deleted and the table recreated empty every time any component opens the store. The fix is to guard this migration: either add a `schema_migrations` tracking table (the proper solution), or move the drop/recreate into a one-time check using a user_version pragma (e.g., `PRAGMA user_version`) that gates execution.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[WARNING]** `src/lib/store.ts:530,538,551` — Message queries use `ORDER BY created_at ASC` without a secondary sort key. Unlike run queries elsewhere in the file that use `ORDER BY created_at DESC, rowid DESC`, messages have no tiebreaker. If two messages are inserted within the same millisecond (e.g., during fast test runs or concurrent agents), ordering is non-deterministic. Adding `, rowid ASC` as a tiebreaker would make ordering stable.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
+- **[WARNING]** `src/lib/store.ts:480-598` — `getMessage()`, `markMessageRead()`, and `deleteMessage()` perform no input validation and do not signal whether the operation found a record. If a caller passes an invalid `messageId`, the UPDATE silently affects 0 rows and the caller has no way to detect the failure. This is acceptable for internal tooling but `getMessage()` at least returns `null` for not-found, while the mutating methods give no feedback. Consider returning a boolean or the affected row count so callers can distinguish "no-op due to bad ID" from success.
 
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
+- **[NOTE]** `src/lib/store.ts:570-574` — `markAllMessagesRead` skips already-deleted messages (`AND deleted_at IS NULL`). This is correct behavior (no need to mark deleted messages read), but it is different from how a typical email client would behave. The behavior is fine; it just deserves a comment explaining the intent since it looks like an oversight without one.
 
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/lib/mail.ts:159` — The `allRunMessages` test in `mail.test.ts` has `devMail.delete(msg.id)` where `msg` was sent by `leadMail` to `explorer` — a message `developer` neither sent nor received. The `deleteMessage` implementation has no ownership check, so any agent with the message ID can soft-delete any message in the run. This is likely acceptable for an internal system, but it is worth documenting that `delete()` in `MailClient` is not scoped to the caller's own messages.
 
 ## Positive Notes
-
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- The decision to separate `MESSAGES_SCHEMA` from the main `SCHEMA` constant is the right architectural call — applying it post-migrations is the correct ordering. The approach would be correct if only the migration guard were fixed.
+- The `Message` interface uses `read: number` (SQLite integer) at the store layer and `MailClient` converts it to `read: boolean` at the API layer. This is the right abstraction boundary.
+- Run scoping is enforced consistently at the SQL level via `run_id` predicates; agents cannot accidentally read messages across runs.
+- Test coverage is comprehensive: run isolation, agent isolation, soft delete, unread filtering, ordering, and `formatInbox` formatting are all directly tested.
+- The `MailClient` wrapper is clean — it adds a developer-friendly API (`from`/`to` instead of `sender_agent_type`/`recipient_agent_type`, `boolean` read status, `Date` objects) without leaking store internals.
+- Parameterized queries throughout; no string interpolation of user-supplied values in SQL.

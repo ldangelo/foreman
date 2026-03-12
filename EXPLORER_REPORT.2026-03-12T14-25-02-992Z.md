@@ -1,165 +1,288 @@
-# Explorer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Explorer Report: Inter-agent messaging system (SQLite mail)
 
 ## Summary
-The codebase uses `maxTurns` to limit SDK query execution in the agent orchestration pipeline. This needs to be replaced with `maxBudgetUsd` to enforce budget-based limits instead of turn-based limits. The change affects the role configurations, phase execution, and logging.
+Foreman currently uses **file-based communication** for inter-agent coordination: the Lead agent spawns sub-agents (Explorer, Developer, QA, Reviewer) and they exchange information via markdown report files (EXPLORER_REPORT.md, DEVELOPER_REPORT.md, QA_REPORT.md, REVIEW.md). This task requires building a **structured SQLite-backed messaging system** that allows agents to send and receive direct messages, creating a more flexible and trackable communication infrastructure alongside (or replacing) the report file approach.
 
 ## Relevant Files
 
-### 1. **src/orchestrator/roles.ts** (lines 13-46)
-- **Purpose**: Defines role configurations for the specialization pipeline (explorer, developer, qa, reviewer)
+### 1. **src/lib/store.ts** (lines 1-350+)
+- **Purpose**: Central SQLite database interface for Foreman state management
 - **Current State**:
-  - `RoleConfig` interface has `maxTurns: number` property (line 16)
-  - `ROLE_CONFIGS` object defines maxTurns for each phase:
-    - explorer: 30 turns
-    - developer: 80 turns
-    - qa: 30 turns
-    - reviewer: 20 turns
-- **Relevance**: Primary file that needs modification - interface definition and config values
+  - Manages `projects`, `runs`, `costs`, and `events` tables
+  - Uses `better-sqlite3` driver (already in dependencies)
+  - Has migration system for schema updates
+  - No messaging tables or methods currently exist
+- **Relevance**: This is where the messaging tables and APIs will be added
 
-### 2. **src/orchestrator/agent-worker.ts** (lines 310-399)
-- **Purpose**: Standalone worker process that runs individual SDK query calls for each pipeline phase
+### 2. **src/orchestrator/agent-worker.ts** (lines 1-600+)
+- **Purpose**: Standalone worker process that executes a single agent session (via SDK query)
 - **Current State**:
-  - Line 322: Logs `maxTurns=${roleConfig.maxTurns}` when starting a phase
-  - Line 337: Passes `maxTurns: roleConfig.maxTurns` to the SDK `query()` options
-  - Line 225: Already handles `error_max_budget_usd` error subtype (future-ready)
-- **Relevance**: Needs to replace logging and pass maxBudgetUsd to query() options instead
+  - Spawned as detached child process by dispatcher
+  - Reads WorkerConfig from JSON file, runs SDK query, updates store with progress
+  - Logs to file and tracks tool usage, tokens, costs
+  - Lines 158-243: Main SDK query loop that processes messages
+- **Relevance**: Agent workers will need to send/receive messages from the mail system
 
-### 3. **src/orchestrator/dispatcher.ts** (line 361)
-- **Purpose**: Dispatches beads to agents, handles one-off planning steps
+### 3. **src/orchestrator/dispatcher.ts** (lines 1-400+)
+- **Purpose**: Dispatches work to agents, manages worktrees, coordinates agent spawning
 - **Current State**:
-  - Line 361: Uses `maxTurns: 50` for `dispatchPlanStep()` SDK query
-- **Relevance**: Secondary location needing update for consistency with phase limits
+  - Creates workers for ready seeds
+  - Resumes stuck/failed agents via SDK session resumption
+  - Tracks active agent count and manages concurrency
+  - No inter-agent coordination logic (beyond file-based reports)
+- **Relevance**: The dispatcher may need to initialize message queue state per run
+
+### 4. **src/orchestrator/roles.ts** (lines 1-283)
+- **Purpose**: Agent role definitions, prompts, and report parsing
+- **Current State**:
+  - Defines 4 roles: explorer, developer, qa, reviewer
+  - Each role has ROLE_CONFIGS with model, budget, and report file
+  - Includes prompt templates for each role
+  - Has utility functions to parse verdicts and issues from reports
+- **Relevance**: Role definitions may need messaging capabilities; prompts may need instructions for message-based communication
+
+### 5. **src/orchestrator/lead-prompt.ts** (lines 1-199)
+- **Purpose**: Generates the prompt for the Engineering Lead orchestration session
+- **Current State**:
+  - Lead spawns sub-agents using the Agent tool
+  - Sub-agents run sequentially: Explorer → Developer ⇄ QA → Reviewer
+  - Current communication: Lead reads report files between phases
+  - Lines 184-190: Checks for report files to determine phase completion
+- **Relevance**: Lead prompt may need to guide agents on sending/checking messages instead of just writing reports
+
+### 6. **src/orchestrator/types.ts** (lines 1-152)
+- **Purpose**: TypeScript type definitions for orchestrator
+- **Current State**:
+  - Defines RunProgress, EventType, DecompositionPlan structures
+  - Event types: dispatch, claim, complete, fail, merge, stuck, restart, recover, conflict, test-fail, pr-created
+  - No message-related types
+- **Relevance**: Will need new types for Message, Mailbox, MessageQueue
 
 ## Architecture & Patterns
 
-### Pipeline Orchestration Pattern
-- **Sequential phases**: Explorer → Developer ⇄ QA → Reviewer → Finalize
-- **Phase execution**: Each phase runs as a separate `query()` call with its own config
-- **Error handling**: Already recognizes `error_max_budget_usd` error subtype (agent-worker.ts:225)
-- **Naming convention**: `roleConfig.maxTurns` → should become `roleConfig.maxBudgetUsd`
+### Current Communication Model
+1. **File-based (primary)**: Agents write markdown reports; Lead reads them to coordinate
+2. **Event logs (secondary)**: store.logEvent() tracks high-level events (dispatch, complete, fail)
+3. **Progress tracking**: store.updateRunProgress() tracks agent metrics in JSON
+4. **Sequential execution**: Lead orchestrates phases sequentially, reading reports between phases
 
-### SDK Integration
-- The Anthropic Claude Agent SDK supports `maxBudgetUsd?: number` in query options (confirmed in sdk.d.ts)
-- Budget limits are enforced by the SDK during query execution
-- Error subtype `error_max_budget_usd` is already handled by the error detection logic
+### SQLite Integration Pattern
+- **Database**: `~/.foreman/foreman.db` (configurable)
+- **Schema management**: Uses CREATE TABLE IF NOT EXISTS in SCHEMA constant, migrations in MIGRATIONS array
+- **Pragmas**: WAL mode (concurrent writes), foreign_keys enabled
+- **Prepared statements**: All SQL uses parameterized queries for safety
+- **Interfaces**: Separate interfaces for each table entity (Project, Run, Cost, Event)
 
-### Role Config Structure
-```typescript
-export interface RoleConfig {
-  role: AgentRole;
-  model: ModelSelection;
-  maxTurns: number;              // ← Change to maxBudgetUsd: number
-  reportFile: string;
-}
-```
+### Agent Execution Pattern
+1. Dispatcher creates WorkerConfig JSON file
+2. Spawns detached child process: `tsx agent-worker.ts <config-file>`
+3. Worker reads config, runs SDK query(), logs to file
+4. Worker updates store with progress/completion
+5. Lead reads report files to understand completion state
+
+### Multi-Agent Coordination (Current)
+- Lead agent is a single Claude session
+- Uses Agent tool to spawn sub-agents in same worktree
+- Sub-agents write reports to shared worktree
+- Lead reads reports sequentially between phases
+- No real-time notifications or direct agent-to-agent communication
 
 ## Dependencies
 
-### What Uses maxTurns
-1. **agent-worker.ts**:
-   - Imports `ROLE_CONFIGS` from roles.ts
-   - Calls `roleConfig.maxTurns` in `runPhase()` function
-   - Passes value to SDK `query()` options
+### What Imports Store
+- `dispatcher.ts`: Creates/updates runs, logs events
+- `agent-worker.ts`: Updates run progress, logs events, queries run state
+- `refinery.ts`: Queries completed runs for merging
+- `monitor.ts`: Queries run status
+- All CLI commands: Check project/run state
 
-2. **dispatcher.ts**:
-   - Hard-coded `maxTurns: 50` in `dispatchPlanStep()`
-   - No import from roles.ts (independent configuration)
+### What Imports Agent Roles
+- `lead-prompt.ts`: Uses ROLE_CONFIGS to generate team workflow
+- `dispatcher.ts`: May reference ROLE_CONFIGS for configuration
+- Test files: Verify role prompt generation
 
-3. **roles.ts**:
-   - Defines the canonical values for all phases
-   - No external dependencies on the property name
+### Messaging System Dependencies
+- Will depend on `store.ts` for database access
+- Will be imported by `agent-worker.ts` to send/check messages
+- Will be used by `lead-prompt.ts` to guide agents on messaging
+- May integrate with `dispatcher.ts` for mailbox initialization
 
-### SDK API Contract
-- The SDK's `query()` function accepts `maxBudgetUsd?: number` parameter
-- When a query exceeds budget, SDK returns error with `subtype: "error_max_budget_usd"`
-- No backwards compatibility issues - this is a parameter replacement
+### External Dependencies Already Present
+- `better-sqlite3`: SQLite driver (already in package.json)
+- `@anthropic-ai/claude-agent-sdk`: SDK for agent execution
+- `chalk`: Terminal colors
+- `commander`: CLI parsing
 
 ## Existing Tests
 
-### Test Files
-1. **src/orchestrator/__tests__/roles.test.ts**
-   - Tests ROLE_CONFIGS structure (all roles defined, models correct)
-   - Tests prompt templates (context injection, read-only instructions)
-   - Tests verdict/issue parsing from reports
-   - **Status**: Tests focus on config existence, not specific maxTurns values
-   - **Impact**: Tests will likely pass after renaming property (no assertions on maxTurns specifically)
+### 1. **src/lib/__tests__/store.test.ts**
+- Tests ForemanStore methods: createRun, updateRun, getRunsByStatus, etc.
+- Tests migrations and schema creation
+- **Impact**: New messaging methods in store will need test coverage
 
-2. **src/orchestrator/__tests__/agent-worker.test.ts**
-   - Tests worker process initialization and logging
-   - Tests config file handling and deletion
-   - **Status**: No assertions on maxTurns values
-   - **Impact**: Will need to verify logging format still works with maxBudgetUsd
+### 2. **src/orchestrator/__tests__/agent-worker-team.test.ts**
+- Tests lead prompt generation for team mode
+- Tests that config.prompt is replaced with lead prompt
+- Tests role inclusion/skipping (skipExplore, skipReview)
+- **Impact**: May need tests for message-aware prompts
 
-### Test Coverage of Limits
-- No tests directly assert maxTurns values
-- No tests verify budget enforcement
-- New tests may be beneficial to ensure budget limits work correctly
+### 3. **src/orchestrator/__tests__/lead-prompt.test.ts**
+- Tests lead prompt structure and content
+- Verifies team workflow sections are included
+- **Impact**: Messaging instructions should be verified in lead prompt tests
+
+### 4. **src/orchestrator/__tests__/agent-worker.test.ts**
+- Tests worker config handling, logging setup
+- Tests progress tracking and event logging
+- **Impact**: May need tests for message sending/receiving
+
+### 5. **src/lib/__tests__/seeds.test.ts**
+- Tests seed/beads operations
+- Not directly relevant to messaging
 
 ## Recommended Approach
 
-### Phase 1: Update Role Configurations
-1. Update `RoleConfig` interface in roles.ts:
-   - Rename `maxTurns: number` → `maxBudgetUsd: number`
+### Phase 1: Database Schema & Core Message Store API
+1. **Add messaging tables** to SCHEMA in store.ts:
+   - `mailboxes`: One per agent in a run (id, run_id, agent_id, created_at)
+   - `messages`: Sender, recipient, subject, body, read status, timestamps (id, mailbox_id_sender, mailbox_id_recipient, sender_agent_type, recipient_agent_type, subject, body, read, created_at)
+   - Consider indexing on (run_id, recipient_agent_type) and (run_id, sender_agent_type, read) for efficient queries
 
-2. Update `ROLE_CONFIGS` values with reasonable budget estimates:
-   - Need to estimate per-model costs based on token usage
-   - Suggested starting points (requires validation):
-     - **explorer** (haiku, 30 turns): $0.50-$1.00 USD
-     - **developer** (sonnet, 80 turns): $5.00-$10.00 USD
-     - **qa** (sonnet, 30 turns): $2.00-$4.00 USD
-     - **reviewer** (sonnet, 20 turns): $1.50-$3.00 USD
-   - Also update **dispatchPlanStep** budget in dispatcher.ts (currently maxTurns: 50)
+2. **Add migration** for the new tables in MIGRATIONS array
 
-### Phase 2: Update Phase Execution in agent-worker.ts
-1. Update `runPhase()` function:
-   - Line 322: Change log format to show `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - Line 337: Pass `maxBudgetUsd: roleConfig.maxBudgetUsd` instead of `maxTurns`
+3. **Create message interfaces** in store.ts:
+   - `Mailbox`: id, run_id, agent_type, created_at
+   - `Message`: id, sender_mailbox_id, recipient_mailbox_id, sender_agent_type, recipient_agent_type, subject, body, read, created_at, deleted_at (soft delete)
 
-2. Verify error handling:
-   - Line 225 already checks for `error_max_budget_usd` — keep as-is
+4. **Implement ForemanStore methods**:
+   - `sendMessage(runId, senderType, recipientType, subject, body): Message`
+   - `getMessages(runId, agentType, unreadOnly?): Message[]`
+   - `markMessageRead(messageId): void`
+   - `deleteMessage(messageId): void` (soft delete)
+   - `getMailbox(runId, agentType): Mailbox | null`
 
-### Phase 3: Update Dispatcher Planning
-1. In dispatcher.ts `dispatchPlanStep()`:
-   - Replace `maxTurns: 50` with appropriate `maxBudgetUsd` value (suggest $3.00-$5.00)
+### Phase 2: Agent Worker Integration
+1. **Create a messaging module** `src/lib/mail.ts`:
+   - Exports `class MailClient` wrapping store methods
+   - Methods: sendMessage(), getMessages(), markRead()
+   - Handles serialization/deserialization of message bodies
 
-### Phase 4: Update Tests & Documentation
-1. roles.test.ts:
-   - Update any hardcoded expectations if tests fail
-   - Consider adding assertions for budget values being positive numbers
+2. **Integrate into agent-worker.ts**:
+   - Import MailClient in worker process
+   - After each turn, check for new messages: `mailClient.getMessages(runId, currentRole, unreadOnly=true)`
+   - If messages exist, include them in the next SDK prompt or tool execution
+   - Provide agents a method to send messages via a tool or instruction
 
-2. agent-worker.test.ts:
-   - Verify logging format with new maxBudgetUsd parameter
-   - Check that log output still contains relevant budget information
+3. **Update agent prompts** in roles.ts to include:
+   - Instruction to check for messages at the start
+   - How to send messages (if implementing as a tool or via store method)
+   - Message format expectations
+
+### Phase 3: Lead Coordination Enhancement
+1. **Update lead-prompt.ts**:
+   - Include message-checking instructions in sub-agent prompts
+   - Lead should have a summary of recent messages to understand agent coordination
+   - Lead can send "checkpoint" messages to guide agents
+
+2. **Consider task-list coordination**:
+   - Agents could check a task list for current phase
+   - Messages could provide immediate feedback (not just reports)
+   - Potential for asynchronous coordination instead of sequential
+
+### Phase 4: Testing & Documentation
+1. **Add store tests** for new messaging methods
+2. **Add integration tests** showing message flow through agent execution
+3. **Update AGENTS.md** with messaging guidelines for multi-agent teams
+4. **Add type documentation** for Message interfaces
 
 ## Potential Pitfalls & Edge Cases
 
-1. **Budget Estimation Accuracy**
-   - Turn counts are discrete (explorer: 30) but budgets must be estimated
-   - Per-model costs vary (Haiku cheaper than Sonnet than Opus)
-   - May need to adjust budgets based on real usage data
+### 1. **Message Ordering & Timing**
+- If multiple agents send messages simultaneously, order matters for coordination
+- Consider using `created_at` timestamps with tie-breaking (ID)
+- **Risk**: Race conditions if not careful with concurrent writes
+- **Mitigation**: Use SQLite's transactions and WAL mode (already enabled)
 
-2. **Error Handling Clarity**
-   - Error message when budget exceeded may be different from turn limits
-   - Current code checks `error_max_budget_usd` — verify message consistency
+### 2. **Message Persistence vs. Cleanup**
+- Messages could accumulate over time, bloating the database
+- Decide: Archive after read? Keep for audit trail? Soft delete with retention policy?
+- **Risk**: Database size growth
+- **Mitigation**: Implement message retention policy, periodic cleanup task
 
-3. **Logging Clarity**
-   - Phase startup logs currently show `maxTurns=30`
-   - Should show `maxBudgetUsd=$X.XX` for clarity
+### 3. **Agent Identity in Messages**
+- How do agents identify themselves? By role (explorer, developer, qa, reviewer)?
+- What if same role runs multiple times? Need run_id scoping
+- **Risk**: Messages sent to wrong agent instance
+- **Mitigation**: Always scope by (run_id, agent_type) tuple; consider run instance IDs
 
-4. **Backwards Compatibility**
-   - Existing stored run data uses turns in progress tracking (agent-worker.ts line 196)
-   - Budget limits don't track in progress.turns — separate concerns
-   - No data migration needed (turns are tracked separately from limits)
+### 4. **Message Format Standardization**
+- Free-form text? JSON structure? Markdown?
+- Need to be agent-compatible (they parse and generate messages)
+- **Risk**: Agents misunderstand message format
+- **Mitigation**: Define strict message format in types; include examples in prompts
 
-5. **Dispersion Across Files**
-   - dispatcher.ts has a hard-coded maxTurns value (50) separate from roles.ts
-   - Consider whether plan steps should use same budget as phases or different
+### 5. **Blocking Behavior**
+- Should an agent wait for a response? Timeout? Retry?
+- File-based reports are synchronous (write then wait for read)
+- Messages are asynchronous (might not be read immediately)
+- **Risk**: Agents get stuck waiting for messages that never come
+- **Mitigation**: Implement timeout mechanism; define fallback behavior
+
+### 6. **Lead Responsiveness**
+- Currently lead reads reports sequentially after spawning each agent
+- With messaging, lead needs to respond to agent messages quickly
+- **Risk**: Agents stuck waiting for lead feedback
+- **Mitigation**: Consider message polling loop in lead session or scheduled polling
+
+### 7. **Backward Compatibility**
+- Existing agent prompts expect file-based reports
+- New messaging system must coexist with (or gracefully replace) file-based approach
+- **Risk**: Partial migration breaks agent coordination
+- **Mitigation**: Support both systems during transition; phase out gradually
+
+### 8. **Message Privacy & Scoping**
+- Should agents see messages intended for other agents?
+- Should lead see all messages or just summary?
+- **Risk**: Agents access messages out of scope
+- **Mitigation**: Implement fine-grained access control in mail.ts queries
 
 ## Next Steps for Developer
 
-1. Research typical costs per phase from production data (if available)
-2. Update roles.ts with maxBudgetUsd values (start conservative)
-3. Update agent-worker.ts runPhase() logging and query options
-4. Update dispatcher.ts dispatchPlanStep() budget
-5. Run tests to verify no regressions
-6. Monitor first few runs with new budgets to validate appropriateness
+1. **Database Schema Design** — Finalize message table structure with consideration for:
+   - Query patterns (efficient lookup by run_id + agent_type)
+   - Soft deletes vs. hard deletes
+   - Retention policies
+   - Indexes for performance
+
+2. **Implement Store Methods** — Add ForemanStore messaging methods to store.ts
+
+3. **Create MailClient** — Implement src/lib/mail.ts with high-level message API
+
+4. **Integration** — Wire messaging into agent-worker.ts execution loop
+
+5. **Agent Prompt Updates** — Update roles.ts prompts to include messaging guidance
+
+6. **Tests** — Write comprehensive tests for messaging system at all layers
+
+7. **Documentation** — Update AGENTS.md and add code comments explaining message flow
+
+## Architecture Diagram (Proposed)
+
+```
+Agent Worker Process 1 (Explorer)
+  └─ MailClient.sendMessage("developer", "Ready to implement")
+     └─ ForemanStore.sendMessage()
+        └─ SQLite messages table
+
+Lead Agent Session
+  └─ Polls mailboxes for all agents
+     └─ Reads recent messages
+        └─ ForemanStore.getMessages()
+           └─ SQLite messages table
+
+Agent Worker Process 2 (Developer)
+  └─ MailClient.getMessages("developer")
+     └─ Checks for explorer feedback
+        └─ ForemanStore.getMessages()
+           └─ SQLite messages table
+```
