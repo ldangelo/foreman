@@ -256,6 +256,11 @@ export class Refinery {
   async resolveConflict(
     runId: string,
     strategy: "theirs" | "abort",
+    opts?: {
+      targetBranch?: string;
+      runTests?: boolean;
+      testCommand?: string;
+    },
   ): Promise<boolean> {
     const run = this.store.getRun(runId);
     if (!run) throw new Error(`Run ${runId} not found`);
@@ -277,30 +282,20 @@ export class Refinery {
     }
 
     // strategy === 'theirs' — attempt merge with -X theirs
+    const targetBranch = opts?.targetBranch ?? "main";
+    const runTests = opts?.runTests ?? true;
+    const testCommand = opts?.testCommand ?? "npm test";
+
     try {
-      await git(["checkout", "main"], this.projectPath);
+      await git(["checkout", targetBranch], this.projectPath);
       await git(["merge", branchName, "--no-ff", "-X", "theirs"], this.projectPath);
-
-      if (run.worktree_path) {
-        try {
-          await removeWorktree(this.projectPath, run.worktree_path);
-        } catch {
-          // Non-fatal
-        }
-      }
-
-      this.store.updateRun(run.id, {
-        status: "merged",
-        completed_at: new Date().toISOString(),
-      });
-      this.store.logEvent(
-        run.project_id,
-        "merge",
-        { seedId: run.seed_id, branchName, strategy: "theirs" },
-        run.id,
-      );
-      return true;
     } catch (err: unknown) {
+      // Merge failed — abort to leave repo in a clean state
+      try {
+        await git(["merge", "--abort"], this.projectPath);
+      } catch {
+        // merge --abort may fail if there is nothing to abort
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.store.updateRun(run.id, {
         status: "failed",
@@ -314,6 +309,48 @@ export class Refinery {
       );
       return false;
     }
+
+    // Merge succeeded — optionally run tests (Tier 2 safety gate)
+    if (runTests) {
+      const testResult = await runTestCommand(testCommand, this.projectPath);
+
+      if (!testResult.ok) {
+        // Revert the merge
+        await git(["reset", "--hard", "HEAD~1"], this.projectPath);
+
+        this.store.updateRun(run.id, {
+          status: "test-failed",
+          completed_at: new Date().toISOString(),
+        });
+        this.store.logEvent(
+          run.project_id,
+          "test-fail",
+          { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
+          run.id,
+        );
+        return false;
+      }
+    }
+
+    if (run.worktree_path) {
+      try {
+        await removeWorktree(this.projectPath, run.worktree_path);
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    this.store.updateRun(run.id, {
+      status: "merged",
+      completed_at: new Date().toISOString(),
+    });
+    this.store.logEvent(
+      run.project_id,
+      "merge",
+      { seedId: run.seed_id, branchName, strategy: "theirs", targetBranch },
+      run.id,
+    );
+    return true;
   }
 
   /**

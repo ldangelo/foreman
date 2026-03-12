@@ -13,6 +13,8 @@ export const mergeCommand = new Command("merge")
   .option("--test-command <cmd>", "Test command to run", "npm test")
   .option("--seed <id>", "Merge a single seed by ID")
   .option("--list", "List seeds ready to merge (no merge performed)")
+  .option("--resolve <runId>", "Resolve a conflicting run by ID")
+  .option("--strategy <strategy>", "Conflict resolution strategy: theirs|abort")
   .action(async (opts) => {
     try {
       const projectPath = await getRepoRoot(process.cwd());
@@ -24,6 +26,60 @@ export const mergeCommand = new Command("merge")
       if (!project) {
         console.error(chalk.red("No project registered. Run 'foreman init' first."));
         process.exit(1);
+      }
+
+      // --resolve mode: resolve a conflicting run
+      if (opts.resolve) {
+        if (!opts.strategy) {
+          console.error(chalk.red("Error: --strategy <theirs|abort> is required when using --resolve"));
+          store.close();
+          process.exit(1);
+        }
+
+        const strategy = opts.strategy as string;
+        if (strategy !== "theirs" && strategy !== "abort") {
+          console.error(chalk.red(`Error: Invalid strategy '${strategy}'. Must be 'theirs' or 'abort'.`));
+          store.close();
+          process.exit(1);
+        }
+
+        const runId = opts.resolve as string;
+        const run = store.getRun(runId);
+        if (!run) {
+          console.error(chalk.red(`Error: Run '${runId}' not found.`));
+          store.close();
+          process.exit(1);
+        }
+
+        if (run.status !== "conflict") {
+          console.error(
+            chalk.red(
+              `Error: Run '${runId}' is not in conflict state (current status: '${run.status}'). Only runs with status 'conflict' can be resolved.`,
+            ),
+          );
+          store.close();
+          process.exit(1);
+        }
+
+        const branchName = `foreman/${run.seed_id}`;
+        console.log(chalk.bold(`Resolving conflict for ${chalk.cyan(run.seed_id)} (${branchName}) with strategy: ${chalk.yellow(strategy)}\n`));
+
+        const success = await refinery.resolveConflict(runId, strategy as "theirs" | "abort", {
+          targetBranch: opts.targetBranch,
+          runTests: opts.tests, // commander inverts --no-tests to opts.tests = false
+          testCommand: opts.testCommand,
+        });
+
+        if (success) {
+          console.log(chalk.green.bold(`✓ Conflict resolved — ${run.seed_id} merged successfully.`));
+        } else if (strategy === "abort") {
+          console.log(chalk.yellow(`Merge aborted — ${run.seed_id} marked as failed.`));
+        } else {
+          console.log(chalk.red(`✗ Failed to resolve conflict for ${run.seed_id} — marked as failed.`));
+        }
+
+        store.close();
+        return;
       }
 
       // --list: show completed runs and exit
