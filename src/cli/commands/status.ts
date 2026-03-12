@@ -77,6 +77,14 @@ function renderStatus(): void {
   const store = new ForemanStore();
   const project = store.getProjectByPath(resolve("."));
 
+  // Show failed/stuck run counts from SQLite
+  if (project) {
+    const failedCount = store.getRunsByStatus("failed", project.id).length;
+    const stuckCount = store.getRunsByStatus("stuck", project.id).length;
+    if (failedCount > 0) console.log(`  Failed:      ${chalk.red(failedCount)}`);
+    if (stuckCount > 0) console.log(`  Stuck:       ${chalk.red(stuckCount)}`);
+  }
+
   console.log();
   console.log(chalk.bold("Active Agents"));
 
