@@ -54,7 +54,52 @@ const RULE = chalk.dim("━".repeat(60));
 
 // ── Display functions ─────────────────────────────────────────────────────
 
-export function renderAgentCard(run: Run, progress: RunProgress | null): string {
+/**
+ * Render a single-line summary card for a collapsed agent.
+ * Shows: indicator, status icon, seed ID, status, elapsed, model, and key
+ * progress metrics on one line.
+ */
+export function renderAgentCardSummary(run: Run, progress: RunProgress | null, index?: number): string {
+  const icon = STATUS_ICONS[run.status] ?? "?";
+  const isRunning = run.status === "running";
+  const isPending = run.status === "pending";
+  const time = isRunning || isPending
+    ? elapsed(run.started_at ?? run.created_at)
+    : elapsed(run.started_at);
+
+  const expandIndicator = chalk.dim("▶");
+  const indexPrefix = index !== undefined ? chalk.dim(`${index + 1}.`) + " " : "";
+
+  let line = `${indexPrefix}${expandIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}  ${chalk.magenta(shortModel(run.agent_type))}`;
+
+  if (progress && progress.toolCalls > 0) {
+    const activity = progress.currentPhase
+      ? chalk.dim(`[${progress.currentPhase}]`)
+      : progress.lastToolCall
+      ? chalk.dim(`last: ${progress.lastToolCall}`)
+      : "";
+
+    if (activity) line += `  ${activity}`;
+    line += `  ${chalk.green("$" + progress.costUsd.toFixed(4))}`;
+    line += `  ${chalk.dim(progress.turns + "t " + progress.toolCalls + " tools")}`;
+  } else if (isRunning) {
+    line += `  ${chalk.dim("Initializing...")}`;
+  }
+
+  return line;
+}
+
+/**
+ * Render an agent card.
+ * @param isExpanded - When false, delegates to the compact summary view.
+ * @param index - Zero-based position in the run list; shown as a 1-based
+ *   numeric prefix so users can press the matching key to toggle.
+ */
+export function renderAgentCard(run: Run, progress: RunProgress | null, isExpanded = true, index?: number): string {
+  if (!isExpanded) {
+    return renderAgentCardSummary(run, progress, index);
+  }
+
   const icon = STATUS_ICONS[run.status] ?? "?";
   const isRunning = run.status === "running";
   const isPending = run.status === "pending";
@@ -64,9 +109,11 @@ export function renderAgentCard(run: Run, progress: RunProgress | null): string 
 
   const lines: string[] = [];
 
-  // Header: icon + seed ID + status + elapsed time
+  // Header: collapse indicator + index prefix + icon + seed ID + status + elapsed
+  const collapseIndicator = chalk.dim("▼");
+  const indexPrefix = index !== undefined ? chalk.dim(`${index + 1}.`) + " " : "";
   lines.push(
-    `${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}`,
+    `${indexPrefix}${collapseIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}`,
   );
   lines.push(`  ${chalk.dim("Model     ")} ${chalk.magenta(shortModel(run.agent_type))}`);
 
@@ -80,6 +127,19 @@ export function renderAgentCard(run: Run, progress: RunProgress | null): string 
   // Full card with progress
   lines.push(`  ${chalk.dim("Cost      ")} ${chalk.green("$" + progress.costUsd.toFixed(4))}`);
   lines.push(`  ${chalk.dim("Turns     ")} ${progress.turns}`);
+
+  // Show pipeline phase if available (colour-coded by role)
+  if (progress.currentPhase) {
+    const phaseColors: Record<string, (s: string) => string> = {
+      explorer:  chalk.cyan,
+      developer: chalk.green,
+      qa:        chalk.yellow,
+      reviewer:  chalk.magenta,
+      finalize:  chalk.blue,
+    };
+    const colorFn = phaseColors[progress.currentPhase] ?? chalk.white;
+    lines.push(`  ${chalk.dim("Phase     ")} ${colorFn(progress.currentPhase)}`);
+  }
 
   const lastTool = progress.lastToolCall
     ? chalk.dim(` (last: ${progress.lastToolCall})`)
@@ -166,23 +226,51 @@ export function poll(store: ForemanStore, runIds: string[]): WatchState {
   return { runs: entries, allDone, totalCost, totalTools, totalFiles, completedCount, failedCount, stuckCount };
 }
 
-export function renderWatchDisplay(state: WatchState, showDetachHint = true): string {
+/**
+ * Render the full watch display.
+ *
+ * @param showDetachHint - Show the "Ctrl+C to detach" hint (true in interactive
+ *   watch mode, false in non-interactive contexts like `foreman status`).
+ * @param expandedRunIds - When provided (i.e. not undefined), the function is
+ *   running in interactive mode: each run is rendered collapsed or expanded
+ *   based on whether its ID is in the set, and toggle key-binding hints are
+ *   shown.  When omitted (undefined), all runs are rendered expanded and no
+ *   key-binding hints are shown — safe for non-interactive output.
+ */
+export function renderWatchDisplay(state: WatchState, showDetachHint = true, expandedRunIds?: Set<string>): string {
   if (state.runs.length === 0) {
     return chalk.dim("No runs found.");
   }
 
   const lines: string[] = [];
 
-  // Header
-  const detachHint = showDetachHint && !state.allDone
-    ? `  ${chalk.dim("(Ctrl+C to detach)")}`
-    : "";
+  // Header — build hint string incrementally
+  let detachHint = "";
+  if (showDetachHint && !state.allDone) {
+    const hintParts: string[] = [chalk.dim("Ctrl+C to detach")];
+    // Toggle hints are only meaningful when we're in interactive mode
+    // (i.e. expandedRunIds is provided).
+    if (expandedRunIds !== undefined) {
+      hintParts.push(chalk.dim("'a' toggle all"));
+      // Only show numeric-index hint when there are multiple agents to index.
+      if (state.runs.length > 1) {
+        hintParts.push(chalk.dim("1-9 toggle agent"));
+      }
+    }
+    detachHint = `  (${hintParts.join(" | ")})`;
+  }
   lines.push(`${chalk.bold("Foreman")} ${chalk.dim("— agent monitor")}${detachHint}`);
   lines.push(RULE);
 
   // Agent cards
-  for (const { run, progress } of state.runs) {
-    lines.push(renderAgentCard(run, progress));
+  for (let i = 0; i < state.runs.length; i++) {
+    const { run, progress } = state.runs[i];
+    // When expandedRunIds is provided: use the set to determine expansion.
+    // When undefined (non-interactive / legacy): always expand.
+    const isExpanded = expandedRunIds ? expandedRunIds.has(run.id) : true;
+    // Show numeric index prefix only when there are multiple agents.
+    const index = state.runs.length > 1 ? i : undefined;
+    lines.push(renderAgentCard(run, progress, isExpanded, index));
     lines.push("");
   }
 
@@ -216,9 +304,26 @@ export function renderWatchDisplay(state: WatchState, showDetachHint = true): st
 
 // ── Public API ────────────────────────────────────────────────────────────
 
-export async function watchRunsInk(store: ForemanStore, runIds: string[]): Promise<void> {
+export interface WatchResult {
+  detached: boolean;
+}
+
+export async function watchRunsInk(store: ForemanStore, runIds: string[]): Promise<WatchResult> {
   const POLL_MS = 3_000;
   let detached = false;
+  // All runs start collapsed; users press 'a' or a digit to expand.
+  const expandedRunIds = new Set<string>();
+  let lastState: WatchState | null = null;
+  // Resolved to interrupt the poll sleep early (e.g. on key press or detach).
+  let sleepResolve: (() => void) | null = null;
+
+  /** Re-render the current state immediately without waiting for next poll. */
+  const renderNow = () => {
+    if (lastState) {
+      const display = renderWatchDisplay(lastState, true, expandedRunIds);
+      process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
+    }
+  };
 
   const onSigint = () => {
     if (detached) return; // Prevent double-fire
@@ -227,24 +332,98 @@ export async function watchRunsInk(store: ForemanStore, runIds: string[]): Promi
     console.log("  Detached — agents continue in background (detached workers).");
     console.log("  Check status:  foreman monitor");
     console.log("  Attach to run: foreman attach <run-id>\n");
+    // Wake up the sleep immediately so the loop exits
+    if (sleepResolve) sleepResolve();
   };
   process.on("SIGINT", onSigint);
+
+  // Set up keyboard input for expand/collapse toggle
+  let stdinRawMode = false;
+
+  const handleKeyInput = (key: string) => {
+    if (key === "\u0003") {
+      // Ctrl+C in raw mode — signal the process so onSigint fires.
+      // process.kill() is more semantically correct than process.emit("SIGINT")
+      // and avoids a TypeScript type cast.
+      process.kill(process.pid, "SIGINT");
+      return;
+    }
+
+    let stateChanged = false;
+
+    if (key === "a" || key === "A") {
+      // Toggle all: if any expanded, collapse all; otherwise expand all.
+      if (expandedRunIds.size > 0) {
+        expandedRunIds.clear();
+      } else if (lastState) {
+        for (const { run } of lastState.runs) {
+          expandedRunIds.add(run.id);
+        }
+      }
+      stateChanged = true;
+    } else if (/^[1-9]$/.test(key) && lastState) {
+      const idx = parseInt(key, 10) - 1;
+      const entry = lastState.runs[idx];
+      if (entry) {
+        if (expandedRunIds.has(entry.run.id)) {
+          expandedRunIds.delete(entry.run.id);
+        } else {
+          expandedRunIds.add(entry.run.id);
+        }
+        stateChanged = true;
+      }
+    }
+
+    if (stateChanged) {
+      // Provide immediate visual feedback — do not wait for the next poll cycle.
+      renderNow();
+      // Also wake the poll sleep so the next full poll+render fires promptly.
+      if (sleepResolve) sleepResolve();
+    }
+  };
+
+  if (process.stdin.isTTY) {
+    try {
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", handleKeyInput);
+      stdinRawMode = true;
+    } catch {
+      // stdin may not support raw mode in some environments; continue without it
+    }
+  }
 
   try {
     while (!detached) {
       const state = poll(store, runIds);
+      lastState = state;
 
       // Clear screen and render current state (single write to avoid flicker)
-      const display = renderWatchDisplay(state, true);
+      const display = renderWatchDisplay(state, true, expandedRunIds);
       process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
 
       if (state.runs.length === 0 || state.allDone) {
         break;
       }
 
-      await new Promise<void>((resolve) => setTimeout(resolve, POLL_MS));
+      await new Promise<void>((resolve) => {
+        sleepResolve = resolve;
+        setTimeout(resolve, POLL_MS);
+      });
+      sleepResolve = null;
     }
   } finally {
     process.removeListener("SIGINT", onSigint);
+    if (stdinRawMode && process.stdin.isTTY) {
+      try {
+        process.stdin.removeListener("data", handleKeyInput);
+        process.stdin.setRawMode(false);
+        process.stdin.pause();
+      } catch {
+        // ignore cleanup errors
+      }
+    }
   }
+  return { detached };
 }

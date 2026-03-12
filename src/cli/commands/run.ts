@@ -6,7 +6,7 @@ import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
-import { watchRunsInk } from "../watch-ui.js";
+import { watchRunsInk, type WatchResult } from "../watch-ui.js";
 
 export const runCommand = new Command("run")
   .description("Dispatch ready tasks to agents")
@@ -78,7 +78,11 @@ export const runCommand = new Command("run")
 
         if (watch && result.resumed.length > 0) {
           const runIds = result.resumed.map((t) => t.runId);
-          await watchRunsInk(store, runIds);
+          const { detached } = await watchRunsInk(store, runIds);
+          if (detached) {
+            store.close();
+            return;
+          }
         }
 
         store.close();
@@ -143,7 +147,10 @@ export const runCommand = new Command("run")
         // Watch mode: wait for this batch to finish, then loop to check for more
         if (watch) {
           const runIds = result.dispatched.map((t) => t.runId);
-          await watchRunsInk(store, runIds);
+          const { detached } = await watchRunsInk(store, runIds);
+          if (detached) {
+            break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
+          }
           // After batch completes, loop back to dispatch the next batch
           continue;
         }
