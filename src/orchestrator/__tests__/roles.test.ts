@@ -29,8 +29,8 @@ describe("ROLE_CONFIGS", () => {
     expect(ROLE_CONFIGS.explorer.reportFile).toBe("EXPLORER_REPORT.md");
   });
 
-  it("developer has no report file (produces code)", () => {
-    expect(ROLE_CONFIGS.developer.reportFile).toBeNull();
+  it("developer produces DEVELOPER_REPORT.md", () => {
+    expect(ROLE_CONFIGS.developer.reportFile).toBe("DEVELOPER_REPORT.md");
   });
 });
 

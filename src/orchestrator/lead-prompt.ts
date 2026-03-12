@@ -4,7 +4,7 @@
  * The lead is a single Claude session that orchestrates a team of sub-agents
  * (Explorer, Developer, QA, Reviewer) using Claude Code's built-in Agent tool.
  * Sub-agents work collaboratively in the same worktree, communicating via
- * report files (EXPLORER_REPORT.md, QA_REPORT.md, REVIEW.md).
+ * report files (EXPLORER_REPORT.md, DEVELOPER_REPORT.md, QA_REPORT.md, REVIEW.md).
  */
 
 export interface LeadPromptOptions {
@@ -108,7 +108,7 @@ You are the **Engineering Lead** orchestrating a team of specialized agents to i
 ## Your Team
 You have 4 specialized sub-agents you can spawn using the **Agent tool**:
 1. **Explorer** — reads the codebase, produces EXPLORER_REPORT.md (read-only)
-2. **Developer** — implements changes and writes tests (read-write)
+2. **Developer** — implements changes and writes tests, produces DEVELOPER_REPORT.md (read-write)
 3. **QA** — runs tests, verifies correctness, produces QA_REPORT.md (read-write)
 4. **Reviewer** — independent code review, produces REVIEW.md (read-only)
 
@@ -138,9 +138,10 @@ Rules:
 - Write tests for new functionality
 - DO NOT commit, push, or close the bead — the lead handles that
 - DO NOT run the full test suite — the QA agent handles that
+- After implementation, write DEVELOPER_REPORT.md summarizing: approach, files changed, tests added, decisions, and known limitations
 \`\`\`
 
-After the Developer finishes, review what was changed (check git diff).
+After the Developer finishes, read DEVELOPER_REPORT.md and review what was changed (check git diff).
 
 ### 3. QA (Read-Write)
 Spawn a sub-agent to verify the implementation. Give it this prompt:

@@ -9,7 +9,7 @@
  * Usage: tsx agent-worker.ts <config-file>
  */
 
-import { readFileSync, unlinkSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, existsSync, renameSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -404,6 +404,25 @@ function readReport(worktreePath: string, filename: string): string | null {
 }
 
 /**
+ * Rotate a report file before a phase overwrites it.
+ * Renames e.g. REVIEW.md → REVIEW.2026-03-12T19-40-24.md
+ * so previous reports are preserved for debugging.
+ */
+function rotateReport(worktreePath: string, filename: string): void {
+  const p = join(worktreePath, filename);
+  if (!existsSync(p)) return;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const ext = filename.endsWith(".md") ? ".md" : "";
+  const base = ext ? filename.slice(0, -3) : filename;
+  const rotated = join(worktreePath, `${base}.${stamp}${ext}`);
+  try {
+    renameSync(p, rotated);
+  } catch {
+    // Non-fatal — report will just be overwritten
+  }
+}
+
+/**
  * Run git finalization: add, commit, push, and close the bead.
  * Uses execFileSync for safety — no shell interpolation.
  */
@@ -411,37 +430,65 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   const { beadId, beadTitle, worktreePath } = config;
   const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: 30_000 };
 
+  const report: string[] = [
+    `# Finalize Report: ${beadTitle}`,
+    "",
+    `## Bead: ${beadId}`,
+    `## Timestamp: ${new Date().toISOString()}`,
+    "",
+  ];
+
+  // Commit
+  let commitHash = "(none)";
   try {
     execFileSync("git", ["add", "-A"], opts);
     execFileSync("git", ["commit", "-m", `${beadTitle} (${beadId})`], opts);
-    log(`[FINALIZE] Committed`);
+    commitHash = execFileSync("git", ["rev-parse", "--short", "HEAD"], opts).toString().trim();
+    log(`[FINALIZE] Committed ${commitHash}`);
+    report.push(`## Commit`, `- Status: SUCCESS`, `- Hash: ${commitHash}`, "");
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("nothing to commit")) {
       log(`[FINALIZE] Nothing to commit`);
+      report.push(`## Commit`, `- Status: SKIPPED (nothing to commit)`, "");
     } else {
       log(`[FINALIZE] Commit failed: ${msg.slice(0, 200)}`);
       await appendFile(logFile, `[FINALIZE] Commit error: ${msg}\n`);
+      report.push(`## Commit`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
     }
   }
 
+  // Push
   try {
     execFileSync("git", ["push", "-u", "origin", `foreman/${beadId}`], opts);
     log(`[FINALIZE] Pushed to origin`);
+    report.push(`## Push`, `- Status: SUCCESS`, `- Branch: foreman/${beadId}`, "");
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`[FINALIZE] Push failed: ${msg.slice(0, 200)}`);
     await appendFile(logFile, `[FINALIZE] Push error: ${msg}\n`);
+    report.push(`## Push`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
   }
 
+  // Close seed
   try {
     const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
     execFileSync(sdPath, ["close", beadId, "--reason", "Completed via pipeline"], opts);
     log(`[FINALIZE] Closed seed ${beadId}`);
+    report.push(`## Seed Close`, `- Status: SUCCESS`, "");
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`[FINALIZE] sd close failed: ${msg.slice(0, 200)}`);
     await appendFile(logFile, `[FINALIZE] sd close error: ${msg}\n`);
+    report.push(`## Seed Close`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
+  }
+
+  // Write finalize report
+  try {
+    rotateReport(worktreePath, "FINALIZE_REPORT.md");
+    writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), report.join("\n"));
+  } catch {
+    // Non-fatal — finalize report is for debugging
   }
 }
 
@@ -473,6 +520,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
   // ── Phase 1: Explorer ──────────────────────────────────────────────
   if (!config.skipExplore) {
+    rotateReport(worktreePath, "EXPLORER_REPORT.md");
     const result = await runPhase("explorer", explorerPrompt(beadId, beadTitle, description), config, progress, logFile, store);
     if (!result.success) {
       await markStuck(store, runId, projectId, beadId, beadTitle, progress, "explorer", result.error ?? "Explorer failed");
@@ -490,6 +538,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
   while (devRetries <= MAX_DEV_RETRIES) {
     // Developer
+    rotateReport(worktreePath, "DEVELOPER_REPORT.md");
     const devResult = await runPhase(
       "developer",
       developerPrompt(beadId, beadTitle, description, hasExplorerReport, feedbackContext),
@@ -502,6 +551,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     store.logEvent(projectId, "complete", { beadId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
 
     // QA
+    rotateReport(worktreePath, "QA_REPORT.md");
     const qaResult = await runPhase("qa", qaPrompt(beadId, beadTitle), config, progress, logFile, store);
     if (!qaResult.success) {
       await markStuck(store, runId, projectId, beadId, beadTitle, progress, "qa", qaResult.error ?? "QA failed");
@@ -531,6 +581,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
   // ── Phase 4: Reviewer ──────────────────────────────────────────────
   if (!config.skipReview) {
+    rotateReport(worktreePath, "REVIEW.md");
     const reviewResult = await runPhase("reviewer", reviewerPrompt(beadId, beadTitle, description), config, progress, logFile, store);
     if (!reviewResult.success) {
       await markStuck(store, runId, projectId, beadId, beadTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed");
@@ -551,6 +602,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       devRetries++;
 
       // One more dev → QA cycle to address review feedback
+      rotateReport(worktreePath, "DEVELOPER_REPORT.md");
       const devResult = await runPhase(
         "developer",
         developerPrompt(beadId, beadTitle, description, hasExplorerReport, reviewFeedback),
@@ -559,6 +611,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       if (devResult.success) {
         store.logEvent(projectId, "complete", { beadId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
 
+        rotateReport(worktreePath, "QA_REPORT.md");
         const qaResult = await runPhase("qa", qaPrompt(beadId, beadTitle), config, progress, logFile, store);
         if (qaResult.success) {
           store.logEvent(projectId, "complete", { beadId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);

@@ -14,8 +14,8 @@ export interface RoleConfig {
   role: AgentRole;
   model: ModelSelection;
   maxTurns: number;
-  /** Report file this role produces (null for developer which produces code) */
-  reportFile: string | null;
+  /** Report file this role produces */
+  reportFile: string;
 }
 
 export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleConfig> = {
@@ -29,7 +29,7 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
     role: "developer",
     model: "claude-sonnet-4-6",
     maxTurns: 80,
-    reportFile: null,
+    reportFile: "DEVELOPER_REPORT.md",
   },
   qa: {
     role: "qa",
@@ -132,6 +132,28 @@ ${explorerInstructions}
 - **DO NOT** commit, push, or close the bead — the pipeline handles that
 - **DO NOT** run the full test suite — the QA agent handles that
 - If blocked, write a note to BLOCKED.md explaining why
+
+## Developer Report
+After implementation, write **DEVELOPER_REPORT.md** summarizing your work:
+
+\`\`\`markdown
+# Developer Report: ${beadTitle}
+
+## Approach
+- Brief description of the implementation strategy
+
+## Files Changed
+- path/to/file.ts — what was changed and why
+
+## Tests Added/Modified
+- path/to/test.ts — what's covered
+
+## Decisions & Trade-offs
+- Any design decisions made and their rationale
+
+## Known Limitations
+- Anything deferred or not fully addressed
+\`\`\`
 `;
 }
 
