@@ -1,165 +1,319 @@
-# Explorer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Explorer Report: Event-driven status refresh via agent worker notifications
 
-## Summary
-The codebase uses `maxTurns` to limit SDK query execution in the agent orchestration pipeline. This needs to be replaced with `maxBudgetUsd` to enforce budget-based limits instead of turn-based limits. The change affects the role configurations, phase execution, and logging.
+## Executive Summary
+
+The current system uses **polling** to detect status changes: workers write to SQLite, and the CLI/orchestrator polls the database every 3 seconds. The task requires implementing an **event-driven** notification system where workers actively notify the orchestrator when status changes occur, eliminating polling latency and reducing database load.
+
+---
 
 ## Relevant Files
 
-### 1. **src/orchestrator/roles.ts** (lines 13-46)
-- **Purpose**: Defines role configurations for the specialization pipeline (explorer, developer, qa, reviewer)
-- **Current State**:
-  - `RoleConfig` interface has `maxTurns: number` property (line 16)
-  - `ROLE_CONFIGS` object defines maxTurns for each phase:
-    - explorer: 30 turns
-    - developer: 80 turns
-    - qa: 30 turns
-    - reviewer: 20 turns
-- **Relevance**: Primary file that needs modification - interface definition and config values
+### Core Architecture
+- **`src/orchestrator/dispatcher.ts`** (lines 460-636)
+  - Spawns detached agent worker processes via `spawnWorkerProcess()`
+  - Manages WorkerConfig (JSON passed to spawned process)
+  - Currently no bidirectional communication with workers after spawn
 
-### 2. **src/orchestrator/agent-worker.ts** (lines 310-399)
-- **Purpose**: Standalone worker process that runs individual SDK query calls for each pipeline phase
-- **Current State**:
-  - Line 322: Logs `maxTurns=${roleConfig.maxTurns}` when starting a phase
-  - Line 337: Passes `maxTurns: roleConfig.maxTurns` to the SDK `query()` options
-  - Line 225: Already handles `error_max_budget_usd` error subtype (future-ready)
-- **Relevance**: Needs to replace logging and pass maxBudgetUsd to query() options instead
+- **`src/orchestrator/agent-worker.ts`** (lines 1-250+)
+  - Standalone process spawned detached by dispatcher
+  - Runs SDK query() loop and updates SQLite store directly
+  - Updates progress every 2 seconds via `flushProgress()` timer
+  - Writes to store: `updateRun()`, `updateRunProgress()`, `logEvent()`
+  - No current mechanism to notify parent orchestrator
 
-### 3. **src/orchestrator/dispatcher.ts** (line 361)
-- **Purpose**: Dispatches beads to agents, handles one-off planning steps
-- **Current State**:
-  - Line 361: Uses `maxTurns: 50` for `dispatchPlanStep()` SDK query
-- **Relevance**: Secondary location needing update for consistency with phase limits
+- **`src/lib/store.ts`** (lines 1-450+)
+  - SQLite database with tables: projects, runs, costs, events
+  - `updateRun()`, `updateRunProgress()`, `logEvent()` methods
+  - `getActiveRuns()`, `getRunProgress()`, `getRunsByStatus()`
+  - Events table: stores dispatch, complete, fail, stuck, merge, etc. events
+  - Progress stored as JSON string in `runs.progress` column
+
+### Status Monitoring
+- **`src/cli/watch-ui.ts`** (lines 311-429)
+  - `watchRunsInk()` function polls every 3 seconds (line 312: `POLL_MS = 3_000`)
+  - `poll()` function (line 195) reads from store for each runId
+  - Synchronous store queries in tight loop
+  - No event-driven updates — must wait for next poll cycle
+
+- **`src/orchestrator/monitor.ts`** (lines 15-92)
+  - `checkAll()` periodically checks active runs
+  - Detects completion via seed status or timeout
+  - Updates store when status transitions detected
+  - Also uses polling approach (no event listener)
+
+### CLI Commands
+- **`src/cli/commands/run.ts`** (lines 96-160)
+  - Dispatcher loop with watch mode (lines 148-150)
+  - Calls `watchRunsInk(store, runIds)` after each dispatch
+  - Exits when `allDone` or no new tasks dispatched
+  - Passes store reference to watch UI
+
+### Tests (Reference for Patterns)
+- **`src/orchestrator/__tests__/dispatcher.test.ts`** — model selection tests
+- **`src/cli/__tests__/watch-ui.test.ts`** — watch display rendering tests
+- **`src/lib/__tests__/store.test.ts`** — SQLite CRUD operations
+
+---
 
 ## Architecture & Patterns
 
-### Pipeline Orchestration Pattern
-- **Sequential phases**: Explorer → Developer ⇄ QA → Reviewer → Finalize
-- **Phase execution**: Each phase runs as a separate `query()` call with its own config
-- **Error handling**: Already recognizes `error_max_budget_usd` error subtype (agent-worker.ts:225)
-- **Naming convention**: `roleConfig.maxTurns` → should become `roleConfig.maxBudgetUsd`
-
-### SDK Integration
-- The Anthropic Claude Agent SDK supports `maxBudgetUsd?: number` in query options (confirmed in sdk.d.ts)
-- Budget limits are enforced by the SDK during query execution
-- Error subtype `error_max_budget_usd` is already handled by the error detection logic
-
-### Role Config Structure
-```typescript
-export interface RoleConfig {
-  role: AgentRole;
-  model: ModelSelection;
-  maxTurns: number;              // ← Change to maxBudgetUsd: number
-  reportFile: string;
-}
+### Current Data Flow (Polling-based)
 ```
+Worker Process              SQLite Store           CLI Watch
+─────────────────          ──────────────         ────────────
+agent-worker.ts            ~/.foreman/foreman.db  watch-ui.ts
+    │                              │                   │
+    ├─ query() loop               │                   │
+    ├─ updates progress           │                   │
+    ├─ flushProgress() every 2s   │                   │
+    └─ updateRun() / logEvent()   │                   │
+         │                         │                   │
+         └────────────────────────>│                   │
+                              reads every 3s <────────┘
+```
+
+### Key Observations
+1. **Detached worker isolation**: Workers spawn with `detached: true` (line 623), surviving parent exit
+2. **Direct SQLite writes**: Workers have full store connection; no notification mechanism
+3. **Polling overhead**:
+   - Watch mode polls every 3 seconds (wasteful between SDK message batches)
+   - Monitor checks active runs periodically
+   - Each poll hits database even when no changes
+4. **No bidirectional IPC**: Workers and orchestrator communicate only via SQLite
+5. **Progress flushing**: Workers buffer progress changes and flush every 2 seconds (line 129)
+
+### Storage Patterns
+- **Run status**: stored in `runs.status` column (enum: pending|running|completed|failed|stuck|merged|conflict|test-failed|pr-created)
+- **Progress tracking**: stored as JSON string in `runs.progress` column (RunProgress interface)
+- **Event logging**: separate `events` table with `event_type` and JSON `details`
+- **Atomicity**: SQLite WAL mode with foreign keys enabled (lines 148-149)
+
+### Session Management
+- Session ID generated by SDK and stored in `runs.session_key` (format: `foreman:sdk:<model>:<runId>:session-<sessionId>`)
+- Used to resume stuck/rate-limited agents (see `dispatcher.resumeRuns()`)
+
+---
 
 ## Dependencies
 
-### What Uses maxTurns
-1. **agent-worker.ts**:
-   - Imports `ROLE_CONFIGS` from roles.ts
-   - Calls `roleConfig.maxTurns` in `runPhase()` function
-   - Passes value to SDK `query()` options
+### Internal Dependencies
+- `src/lib/store.ts` — ALL modules depend on this for persistence
+- `src/lib/seeds.ts` — Dispatcher uses to query ready tasks
+- `src/lib/git.ts` — Worktree creation/management
+- `@anthropic-ai/claude-agent-sdk` — SDK query() for agents
 
-2. **dispatcher.ts**:
-   - Hard-coded `maxTurns: 50` in `dispatchPlanStep()`
-   - No import from roles.ts (independent configuration)
+### External Dependencies
+- `better-sqlite3` — Synchronous database access
+- `child_process.spawn()` — Detached process spawning
+- `Node.js fs/promises` — File operations (config JSON, logs)
+- `chalk` — CLI color formatting
 
-3. **roles.ts**:
-   - Defines the canonical values for all phases
-   - No external dependencies on the property name
+### Impact Analysis
+- **store.ts** is the critical bottleneck: all status changes funnel through SQLite writes
+- **Notification system must integrate with existing store** to maintain single source of truth
+- **Watch-ui.ts** will benefit from event-driven updates but polling fallback can remain for compatibility
+- **Agent-worker.ts** is the source of truth; must be modified to emit notifications
 
-### SDK API Contract
-- The SDK's `query()` function accepts `maxBudgetUsd?: number` parameter
-- When a query exceeds budget, SDK returns error with `subtype: "error_max_budget_usd"`
-- No backwards compatibility issues - this is a parameter replacement
+---
 
 ## Existing Tests
 
-### Test Files
-1. **src/orchestrator/__tests__/roles.test.ts**
-   - Tests ROLE_CONFIGS structure (all roles defined, models correct)
-   - Tests prompt templates (context injection, read-only instructions)
-   - Tests verdict/issue parsing from reports
-   - **Status**: Tests focus on config existence, not specific maxTurns values
-   - **Impact**: Tests will likely pass after renaming property (no assertions on maxTurns specifically)
+### Test Coverage by Module
+- **dispatcher.test.ts**: Model selection logic (basic unit tests)
+- **watch-ui.test.ts**: Display rendering (no polling/event handling tests)
+- **store.test.ts**: SQLite CRUD operations
+- **agent-worker.test.ts**: Worker config parsing and pipeline execution
+- **monitor.test.ts**: Status checking and recovery logic
 
-2. **src/orchestrator/__tests__/agent-worker.test.ts**
-   - Tests worker process initialization and logging
-   - Tests config file handling and deletion
-   - **Status**: No assertions on maxTurns values
-   - **Impact**: Will need to verify logging format still works with maxBudgetUsd
+### Test Patterns
+- Vitest with mocks for external dependencies
+- Store mocking in tests (no real SQLite)
+- CLI tests mock stdin/stdout
 
-### Test Coverage of Limits
-- No tests directly assert maxTurns values
-- No tests verify budget enforcement
-- New tests may be beneficial to ensure budget limits work correctly
+### Coverage Gaps
+- **No integration tests** for worker→store→CLI flow
+- **No event-driven notification tests** (will need to add)
+- **No IPC/notification mechanism tests** (will need to implement)
+
+---
 
 ## Recommended Approach
 
-### Phase 1: Update Role Configurations
-1. Update `RoleConfig` interface in roles.ts:
-   - Rename `maxTurns: number` → `maxBudgetUsd: number`
+### Implementation Strategy
 
-2. Update `ROLE_CONFIGS` values with reasonable budget estimates:
-   - Need to estimate per-model costs based on token usage
-   - Suggested starting points (requires validation):
-     - **explorer** (haiku, 30 turns): $0.50-$1.00 USD
-     - **developer** (sonnet, 80 turns): $5.00-$10.00 USD
-     - **qa** (sonnet, 30 turns): $2.00-$4.00 USD
-     - **reviewer** (sonnet, 20 turns): $1.50-$3.00 USD
-   - Also update **dispatchPlanStep** budget in dispatcher.ts (currently maxTurns: 50)
+#### Phase 1: Create Notification Infrastructure
+1. **Define notification types** (extends current RunProgress, Run status types)
+   - `WorkerStatusNotification` — run status changed (pending→running→completed/failed)
+   - `WorkerProgressNotification` — progress updated (turns, tools, cost)
+   - `WorkerErrorNotification` — critical error occurred
 
-### Phase 2: Update Phase Execution in agent-worker.ts
-1. Update `runPhase()` function:
-   - Line 322: Change log format to show `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - Line 337: Pass `maxBudgetUsd: roleConfig.maxBudgetUsd` instead of `maxTurns`
+2. **Create event emitter/listener pattern**
+   - Use Node.js `EventEmitter` (built-in, no dependencies)
+   - Centralized `NotificationBus` class in `src/orchestrator/notification-bus.ts`
+   - Methods: `emit(notification)`, `on(event, handler)`, `once(event, handler)`
+   - Optional: filesystem-based queue for persistence across runs
 
-2. Verify error handling:
-   - Line 225 already checks for `error_max_budget_usd` — keep as-is
+3. **Communication mechanism** (choose ONE):
+   - **Option A (Recommended)**: HTTP POST to local endpoint
+     - Worker POSTs to `http://localhost:FOREMAN_NOTIFY_PORT/notify`
+     - Orchestrator (dispatcher) runs HTTP server listening on that port
+     - Pros: Works with detached workers, survives process restarts, simple
+     - Cons: Requires additional HTTP server setup
 
-### Phase 3: Update Dispatcher Planning
-1. In dispatcher.ts `dispatchPlanStep()`:
-   - Replace `maxTurns: 50` with appropriate `maxBudgetUsd` value (suggest $3.00-$5.00)
+   - **Option B**: Named pipes (IPC) or Unix sockets
+     - Worker connects to FIFO and sends JSON messages
+     - Orchestrator reads from named pipe
+     - Pros: No HTTP overhead
+     - Cons: Complex cleanup, platform-specific, doesn't work well with detached processes
 
-### Phase 4: Update Tests & Documentation
-1. roles.test.ts:
-   - Update any hardcoded expectations if tests fail
-   - Consider adding assertions for budget values being positive numbers
+   - **Option C**: Durable queue (file-based or message broker)
+     - Worker appends to queue file or sends to broker
+     - Orchestrator polls queue
+     - Pros: Survives restarts, durable
+     - Cons: Adds external dependency
 
-2. agent-worker.test.ts:
-   - Verify logging format with new maxBudgetUsd parameter
-   - Check that log output still contains relevant budget information
+#### Phase 2: Integrate Worker Notifications
+1. **Modify agent-worker.ts**:
+   - After each `updateRun()` call, emit notification
+   - After each `updateRunProgress()` call, emit progress notification
+   - After each `logEvent()` call, emit event notification
+   - Pass notification endpoint via env var or config
 
-## Potential Pitfalls & Edge Cases
+2. **Create NotificationClient in agent-worker.ts**:
+   - Handles notification sending (HTTP POST, queue append, etc.)
+   - Retries on failure (don't block worker if notify fails)
+   - Lightweight — doesn't depend on store
 
-1. **Budget Estimation Accuracy**
-   - Turn counts are discrete (explorer: 30) but budgets must be estimated
-   - Per-model costs vary (Haiku cheaper than Sonnet than Opus)
-   - May need to adjust budgets based on real usage data
+#### Phase 3: Connect Orchestrator Listener
+1. **Modify dispatcher.ts**:
+   - Start notification listener before dispatching agents
+   - Listen for worker notifications
+   - Update store as before (for persistence)
+   - Broadcast to listeners (watch-ui, dashboard)
 
-2. **Error Handling Clarity**
-   - Error message when budget exceeded may be different from turn limits
-   - Current code checks `error_max_budget_usd` — verify message consistency
+2. **Create NotificationServer in src/orchestrator/notification-server.ts**:
+   - HTTP endpoint to receive notifications
+   - Routes: POST /notify, GET /health
+   - Validates runId/projectId to prevent spoofing
+   - Forwards to NotificationBus
 
-3. **Logging Clarity**
-   - Phase startup logs currently show `maxTurns=30`
-   - Should show `maxBudgetUsd=$X.XX` for clarity
+#### Phase 4: Update Consumers (watch-ui, monitor)
+1. **Enhance watch-ui.ts**:
+   - Add event listener in addition to polling
+   - Render immediately on event (instead of waiting 3 seconds)
+   - Keep polling as fallback
+   - No breaking changes to external API
 
-4. **Backwards Compatibility**
-   - Existing stored run data uses turns in progress tracking (agent-worker.ts line 196)
-   - Budget limits don't track in progress.turns — separate concerns
-   - No data migration needed (turns are tracked separately from limits)
+2. **Update monitor.ts**:
+   - Listen for completion events instead of checking periodically
+   - Still performs periodic checks as fallback
+   - Faster stuck detection
 
-5. **Dispersion Across Files**
-   - dispatcher.ts has a hard-coded maxTurns value (50) separate from roles.ts
-   - Consider whether plan steps should use same budget as phases or different
+#### Phase 5: Testing
+1. **Unit tests**: NotificationBus, NotificationServer
+2. **Integration tests**: Worker→Server→Listener flow
+3. **E2E tests**: Full dispatch→notify→watch update cycle
 
-## Next Steps for Developer
+---
 
-1. Research typical costs per phase from production data (if available)
-2. Update roles.ts with maxBudgetUsd values (start conservative)
-3. Update agent-worker.ts runPhase() logging and query options
-4. Update dispatcher.ts dispatchPlanStep() budget
-5. Run tests to verify no regressions
-6. Monitor first few runs with new budgets to validate appropriateness
+## Potential Pitfalls & Mitigations
+
+### Pitfall 1: Notification Loss
+- **Problem**: Detached worker dies before notification sent
+- **Mitigation**: Store continues as source of truth; polling fallback detects stuck workers
+
+### Pitfall 2: Double Events
+- **Problem**: Notification arrives + polling detects same change
+- **Mitigation**: Listener deduplicates by (runId, status, timestamp)
+
+### Pitfall 3: Port Conflicts
+- **Problem**: Multiple foreman instances need different notification ports
+- **Mitigation**: Use port discovery (OS assigns available port) or config file
+
+### Pitfall 4: Worker Crashes Before Notification
+- **Problem**: Worker fails silently, notification never sent
+- **Mitigation**: Monitor detects stuck via timeout, polling fallback always works
+
+### Pitfall 5: Notification Ordering
+- **Problem**: Rapid status changes arrive out-of-order
+- **Mitigation**: Include sequence number in notification, listener reorders if needed
+
+### Pitfall 6: Platform Compatibility
+- **Problem**: Named pipes not available on Windows
+- **Mitigation**: Use HTTP endpoint (platform-agnostic) for communication
+
+---
+
+## Key Implementation Details
+
+### Configuration/Environment Variables Needed
+- `FOREMAN_NOTIFY_HOST` — localhost (required for worker)
+- `FOREMAN_NOTIFY_PORT` — discovered port (passed to worker config)
+- `FOREMAN_NOTIFY_ENABLED` — feature flag (default: true)
+
+### Modified Files Summary
+1. `src/orchestrator/agent-worker.ts` — Add notification emissions
+2. `src/orchestrator/dispatcher.ts` — Start notification server, pass config to worker
+3. `src/orchestrator/notification-bus.ts` — NEW: EventEmitter wrapper
+4. `src/orchestrator/notification-server.ts` — NEW: HTTP endpoint
+5. `src/cli/watch-ui.ts` — Subscribe to events (non-breaking)
+6. `src/orchestrator/monitor.ts` — Subscribe to events (non-breaking)
+7. `src/lib/store.ts` — UNCHANGED (backward compatible)
+8. Tests — Add coverage for notification flow
+
+### Type Extensions Needed
+```typescript
+// New types in src/orchestrator/types.ts
+interface WorkerStatusNotification {
+  type: "status";
+  runId: string;
+  status: Run["status"];
+  timestamp: string;
+  details?: Record<string, unknown>;
+}
+
+interface WorkerProgressNotification {
+  type: "progress";
+  runId: string;
+  progress: RunProgress;
+  timestamp: string;
+}
+```
+
+---
+
+## Testing Strategy
+
+### Unit Tests
+- NotificationBus: emit/on/once/off methods
+- NotificationServer: HTTP endpoint handling, validation
+- NotificationClient: retry logic, error handling
+
+### Integration Tests
+- Mock worker sends notification → server receives → bus emits
+- Full flow: dispatch → worker spawns → notification sent → bus listeners called
+- Multiple workers sending concurrent notifications
+
+### E2E Tests
+- Real foreman run with event listener
+- Verify watch-ui receives events and updates display
+- Verify monitor detects completion via event
+
+### Test Coverage Goals
+- Unit tests: 100% of notification code
+- Integration: cover main flows (status change, progress update, error)
+- E2E: at least one full run cycle with events enabled
+
+---
+
+## Summary
+
+The implementation should:
+1. **Minimize disruption** — Keep polling as fallback, events are optional enhancement
+2. **Use built-in Node.js APIs** — EventEmitter, HTTP (no new dependencies)
+3. **Maintain SQLite as source of truth** — Events are notifications, not state
+4. **Support detached workers** — Use HTTP or file-based notification (not named pipes)
+5. **Test thoroughly** — Unit, integration, and E2E coverage for notification paths
+6. **Add observability** — Log notification sends/receives for debugging
+
+This enables real-time updates in watch mode, faster stuck detection, and lays groundwork for future dashboard WebSocket support.

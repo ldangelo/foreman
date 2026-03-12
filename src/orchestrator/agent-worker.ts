@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, unlinkSync, existsSync, renameSync } from 
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { request as httpRequest } from "node:http";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 import { ForemanStore } from "../lib/store.js";
@@ -27,7 +28,53 @@ import {
   extractIssues,
   hasActionableIssues,
 } from "./roles.js";
-import type { AgentRole } from "./types.js";
+import type { AgentRole, WorkerNotification } from "./types.js";
+
+// ── Notification Client ───────────────────────────────────────────────────
+
+/**
+ * Lightweight HTTP client that POSTs worker notifications to the
+ * NotificationServer running in the parent foreman process.
+ *
+ * Fire-and-forget: errors are silently swallowed so a dead/missing server
+ * never blocks or crashes the worker. The polling fallback handles updates
+ * whenever the server isn't reachable.
+ */
+class NotificationClient {
+  constructor(private notifyUrl: string | undefined) {}
+
+  /** Send a notification. Non-blocking — errors are silently ignored. */
+  send(notification: WorkerNotification): void {
+    if (!this.notifyUrl) return;
+    try {
+      const body = JSON.stringify(notification);
+      const url = new URL("/notify", this.notifyUrl);
+      const req = httpRequest(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          },
+          // Aggressive timeout — worker must not block on notification delivery
+          timeout: 500,
+        },
+        (res) => {
+          // Drain the response body so the socket can be reused
+          res.resume();
+        },
+      );
+      req.on("error", () => { /* silently ignore */ });
+      req.on("timeout", () => { req.destroy(); });
+      req.end(body);
+    } catch {
+      // Silently ignore any synchronous errors (e.g. invalid URL)
+    }
+  }
+}
 
 // ── Config ───────────────────────────────────────────────────────────────
 
@@ -92,12 +139,15 @@ async function main(): Promise<void> {
     process.env[key] = value;
   }
 
+  // Create notification client using FOREMAN_NOTIFY_URL (set in env above if provided by dispatcher)
+  const notifyClient = new NotificationClient(process.env.FOREMAN_NOTIFY_URL);
+
   // Build clean env for SDK
   const env: Record<string, string | undefined> = { ...process.env };
 
   // ── Pipeline mode: run each phase as a separate SDK session ─────────
   if (pipeline) {
-    await runPipeline(config, store, logFile);
+    await runPipeline(config, store, logFile, notifyClient);
     store.close();
     log(`Pipeline worker exiting for ${seedId}`);
     return;
@@ -155,6 +205,12 @@ async function main(): Promise<void> {
           },
         };
 
+    // NOTE: Single-agent (non-pipeline) mode emits only terminal status notifications
+    // (completed, failed, stuck) — not progress notifications after each assistant turn.
+    // Pipeline mode (runPhase) emits a progress notification after every assistant turn.
+    // The asymmetry is intentional: single-agent progress is already flushed to SQLite
+    // every 2 s via the flushProgress() timer, so the live-UI benefit is preserved via
+    // polling fallback. Aligning the two paths is deferred to a follow-up task.
     for await (const message of query(queryOpts)) {
       await logMessage(logFile, message);
       progress.lastActivity = new Date().toISOString();
@@ -205,6 +261,7 @@ async function main(): Promise<void> {
 
         if (result.subtype === "success") {
           store.updateRun(runId, { status: "completed", completed_at: now });
+          notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
           store.logEvent(projectId, "complete", {
             seedId,
             title: seedTitle,
@@ -224,10 +281,12 @@ async function main(): Promise<void> {
             || reason.includes("rate limit")
             || errResult.subtype === "error_max_budget_usd";
 
+          const finalStatus = isRateLimit ? "stuck" : "failed";
           store.updateRun(runId, {
-            status: isRateLimit ? "stuck" : "failed",
+            status: finalStatus,
             completed_at: now,
           });
+          notifyClient.send({ type: "status", runId, status: finalStatus, timestamp: now, details: { reason } });
           store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
             seedId,
             reason,
@@ -248,6 +307,7 @@ async function main(): Promise<void> {
       store.updateRunProgress(runId, progress);
       const now = new Date().toISOString();
       store.updateRun(runId, { status: "stuck", completed_at: now });
+      notifyClient.send({ type: "status", runId, status: "stuck", timestamp: now });
       store.logEvent(projectId, "stuck", {
         seedId,
         reason: "SDK generator ended without result (connection drop or silent rate limit)",
@@ -274,10 +334,12 @@ async function main(): Promise<void> {
     }
 
     const now = new Date().toISOString();
+    const catchStatus = isRateLimit ? "stuck" : "failed";
     store.updateRun(runId, {
-      status: isRateLimit ? "stuck" : "failed",
+      status: catchStatus,
       completed_at: now,
     });
+    notifyClient.send({ type: "status", runId, status: catchStatus, timestamp: now, details: { reason } });
     store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
       seedId,
       reason,
@@ -314,6 +376,7 @@ async function runPhase(
   progress: RunProgress,
   logFile: string,
   store: ForemanStore,
+  notifyClient: NotificationClient,
 ): Promise<PhaseResult> {
   const roleConfig = ROLE_CONFIGS[role];
   progress.currentPhase = role;
@@ -361,6 +424,12 @@ async function runPhase(
           }
         }
         store.updateRunProgress(config.runId, progress);
+        notifyClient.send({
+          type: "progress",
+          runId: config.runId,
+          progress: { ...progress },
+          timestamp: new Date().toISOString(),
+        });
       }
 
       if (message.type === "result") {
@@ -498,7 +567,7 @@ const MAX_DEV_RETRIES = 2;
  * Run the full pipeline: Explorer → Developer ⇄ QA → Reviewer → Finalize.
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
-async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string): Promise<void> {
+async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string, notifyClient: NotificationClient): Promise<void> {
   const { runId, projectId, seedId, seedTitle, worktreePath } = config;
   const description = config.seedDescription ?? "(no description)";
 
@@ -521,9 +590,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   // ── Phase 1: Explorer ──────────────────────────────────────────────
   if (!config.skipExplore) {
     rotateReport(worktreePath, "EXPLORER_REPORT.md");
-    const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
+    const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store, notifyClient);
     if (!result.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed");
+      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed", notifyClient);
       return;
     }
     store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
@@ -542,19 +611,19 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     const devResult = await runPhase(
       "developer",
       developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext),
-      config, progress, logFile, store,
+      config, progress, logFile, store, notifyClient,
     );
     if (!devResult.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed");
+      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed", notifyClient);
       return;
     }
     store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
 
     // QA
     rotateReport(worktreePath, "QA_REPORT.md");
-    const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
+    const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
     if (!qaResult.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed");
+      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed", notifyClient);
       return;
     }
     store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
@@ -582,9 +651,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   // ── Phase 4: Reviewer ──────────────────────────────────────────────
   if (!config.skipReview) {
     rotateReport(worktreePath, "REVIEW.md");
-    const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
+    const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store, notifyClient);
     if (!reviewResult.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed");
+      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed", notifyClient);
       return;
     }
     store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
@@ -606,13 +675,13 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       const devResult = await runPhase(
         "developer",
         developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback),
-        config, progress, logFile, store,
+        config, progress, logFile, store, notifyClient,
       );
       if (devResult.success) {
         store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
 
         rotateReport(worktreePath, "QA_REPORT.md");
-        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
+        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
         if (qaResult.success) {
           store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
         }
@@ -633,6 +702,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
   const now = new Date().toISOString();
   store.updateRun(runId, { status: "completed", completed_at: now });
+  notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
   store.logEvent(projectId, "complete", {
     seedId,
     title: seedTitle,
@@ -658,11 +728,14 @@ async function markStuck(
   progress: RunProgress,
   phase: string,
   reason: string,
+  notifyClient?: NotificationClient,
 ): Promise<void> {
   const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
   const now = new Date().toISOString();
+  const stuckStatus = isRateLimit ? "stuck" : "failed";
   store.updateRunProgress(runId, progress);
-  store.updateRun(runId, { status: isRateLimit ? "stuck" : "failed", completed_at: now });
+  store.updateRun(runId, { status: stuckStatus, completed_at: now });
+  notifyClient?.send({ type: "status", runId, status: stuckStatus, timestamp: now, details: { phase, reason } });
   store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
     seedId,
     title: seedTitle,

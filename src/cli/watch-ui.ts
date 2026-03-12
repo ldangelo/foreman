@@ -1,6 +1,7 @@
 import chalk from "chalk";
 
 import type { ForemanStore, Run, RunProgress } from "../lib/store.js";
+import type { NotificationBus } from "../orchestrator/notification-bus.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -308,7 +309,15 @@ export interface WatchResult {
   detached: boolean;
 }
 
-export async function watchRunsInk(store: ForemanStore, runIds: string[]): Promise<WatchResult> {
+export async function watchRunsInk(
+  store: ForemanStore,
+  runIds: string[],
+  opts?: {
+    /** Optional notification bus — when provided, status/progress events wake
+     *  the poll immediately instead of waiting for the next 3-second cycle. */
+    notificationBus?: NotificationBus;
+  },
+): Promise<WatchResult> {
   const POLL_MS = 3_000;
   let detached = false;
   // All runs start collapsed; users press 'a' or a digit to expand.
@@ -336,6 +345,19 @@ export async function watchRunsInk(store: ForemanStore, runIds: string[]): Promi
     if (sleepResolve) sleepResolve();
   };
   process.on("SIGINT", onSigint);
+
+  // Subscribe to worker notifications to wake the poll early.
+  // When a worker reports a status or progress change for one of our watched
+  // runs, we interrupt the 3-second sleep so the UI refreshes immediately.
+  const watchedRunIds = new Set(runIds);
+  const onNotification = () => {
+    if (sleepResolve) sleepResolve();
+  };
+  if (opts?.notificationBus) {
+    for (const runId of watchedRunIds) {
+      opts.notificationBus.onRunNotification(runId, onNotification);
+    }
+  }
 
   // Set up keyboard input for expand/collapse toggle
   let stdinRawMode = false;
@@ -415,6 +437,12 @@ export async function watchRunsInk(store: ForemanStore, runIds: string[]): Promi
     }
   } finally {
     process.removeListener("SIGINT", onSigint);
+    // Unsubscribe from notification bus to avoid listener leaks
+    if (opts?.notificationBus) {
+      for (const runId of watchedRunIds) {
+        opts.notificationBus.offRunNotification(runId, onNotification);
+      }
+    }
     if (stdinRawMode && process.stdin.isTTY) {
       try {
         process.stdin.removeListener("data", handleKeyInput);

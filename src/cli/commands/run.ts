@@ -7,6 +7,8 @@ import { getRepoRoot } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk, type WatchResult } from "../watch-ui.js";
+import { NotificationServer } from "../../orchestrator/notification-server.js";
+import { notificationBus } from "../../orchestrator/notification-bus.js";
 
 export const runCommand = new Command("run")
   .description("Dispatch ready tasks to agents")
@@ -34,6 +36,23 @@ export const runCommand = new Command("run")
     const skipReview = opts.skipReview as boolean | undefined;
     const seedFilter = opts.seed as string | undefined;
 
+    // Start notification server so workers can POST status updates immediately
+    // instead of waiting for the next poll cycle. Stopped in the finally block.
+    //
+    // NOTE: The `monitor` command (src/orchestrator/monitor.ts) is NOT wired to
+    // notificationBus yet — it still uses its own polling-only loop. Wiring it
+    // would speed up stuck detection but requires refactoring monitor's external
+    // API. Deferred to a follow-up task.
+    const notifyServer = new NotificationServer(notificationBus);
+    let notifyUrl: string | undefined;
+    try {
+      await notifyServer.start();
+      notifyUrl = notifyServer.url;
+    } catch {
+      // Non-fatal — notification server is an enhancement; polling still works
+      notifyUrl = undefined;
+    }
+
     try {
       const projectPath = await getRepoRoot(process.cwd());
       const seeds = new SeedsClient(projectPath);
@@ -51,6 +70,7 @@ export const runCommand = new Command("run")
           model,
           telemetry,
           statuses,
+          notifyUrl,
         });
 
         if (result.resumed.length > 0) {
@@ -78,7 +98,7 @@ export const runCommand = new Command("run")
 
         if (watch && result.resumed.length > 0) {
           const runIds = result.resumed.map((t) => t.runId);
-          const { detached } = await watchRunsInk(store, runIds);
+          const { detached } = await watchRunsInk(store, runIds, { notificationBus });
           if (detached) {
             store.close();
             return;
@@ -111,6 +131,7 @@ export const runCommand = new Command("run")
           skipExplore,
           skipReview,
           seedId: seedFilter,
+          notifyUrl,
         });
 
         // Print dispatched tasks
@@ -147,7 +168,7 @@ export const runCommand = new Command("run")
         // Watch mode: wait for this batch to finish, then loop to check for more
         if (watch) {
           const runIds = result.dispatched.map((t) => t.runId);
-          const { detached } = await watchRunsInk(store, runIds);
+          const { detached } = await watchRunsInk(store, runIds, { notificationBus });
           if (detached) {
             break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
           }
@@ -164,6 +185,9 @@ export const runCommand = new Command("run")
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Error: ${message}`));
       process.exit(1);
+    } finally {
+      // Stop the notification server regardless of how the command exits
+      await notifyServer.stop().catch(() => { /* ignore cleanup errors */ });
     }
   });
 
