@@ -1,28 +1,26 @@
-# Code Review: Task groups for batch coordination
+# Code Review: PageRank-based task prioritization for sd ready
 
-## Verdict: FAIL
+## Verdict: PASS
 
 ## Summary
 
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation is clean, well-structured, and correctly satisfies the requirement. A new `pagerank.ts` module encapsulates all scoring logic with four exported functions covering the full pipeline: reverse-map construction, direct dependent lookup, BFS transitive closure, and priority boosting. Integration into `dispatcher.ts` is minimal and appropriately guarded — the graph fetch is skipped when a specific `seedId` is targeted, errors are caught and fall back gracefully to the original ready order, and the sort is applied correctly before the dispatch loop. The 28 unit tests cover all meaningful combinations of graph topologies, edge types, and priority values. No security issues exist. One minor logic subtlety in `getTransitiveDependents` is worth documenting below, but it is functionally correct.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[NOTE]** `src/orchestrator/pagerank.ts:95-96` — The BFS starts its queue with `[...exclude]` (the direct dependents) and the visited set is pre-seeded with both `seedId` and all `exclude` entries. This design is correct but subtly non-obvious: the function is computing "nodes reachable from the direct dependents that are not themselves direct dependents." If `exclude` is passed as an empty set (or a caller omits it), the BFS starts with an empty queue and immediately returns `[]`, which is the right behavior for a seed with no direct dependents. This is verified by test coverage, but the JSDoc comment could be clearer that `exclude` serves the dual role of both the BFS starting frontier and the exclusion filter.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[NOTE]** `src/orchestrator/dispatcher.ts:77-79` — The fallback error is logged via `log()`, which routes to `console.error`. This is consistent with the rest of the file's logging style and appropriate for a non-fatal degradation, but callers (e.g. `foreman run`) have no way to surface this warning to the user in the terminal output. If the graph becomes persistently unavailable, users won't know that PageRank ordering is silently disabled. This is a minor observability gap and can be addressed in a follow-up.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
-
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
-
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/orchestrator/pagerank.ts:124` — `priorityBoost` accepts `string | undefined` and the `Seed` interface declares `priority: string` (not `string | undefined`). The broader signature is defensive and harmless, but it slightly mismatches the interface. No actionable impact.
 
 ## Positive Notes
 
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- Excellent separation of concerns: all scoring logic lives in `pagerank.ts` and is independently unit-testable; `dispatcher.ts` only contains the integration glue.
+- The BFS cycle guard (`visited` set) is present and correct, protecting against malformed dependency graphs even though they should not occur in practice.
+- Only `"blocks"` edges are counted — `"parent"` edges are correctly filtered, consistent with `sd ready` semantics as documented in the project memory.
+- The sort in `dispatcher.ts` copies the array (`[...readySeeds]`) before sorting, avoiding mutation of the original `readySeeds` reference prior to the `seedId` filter check below it.
+- Tie-breaking by priority field after impact score is a sensible fallback that respects the user's explicit priority assignments.
+- Test coverage is thorough: diamond dependency deduplication, multi-level chains, mixed edge types, empty graphs, and all priority values are all exercised.
+- The scoring is skipped entirely when `opts.seedId` is set, avoiding a pointless graph fetch for single-seed dispatch.
+- QA confirmed all 28 new tests pass with zero regressions in the existing suite.
