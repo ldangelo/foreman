@@ -131,6 +131,22 @@ export const statusCommand = new Command("status")
         console.log(chalk.bold("Costs"));
         console.log(`  Total: ${chalk.yellow(`$${metrics.totalCost.toFixed(2)}`)}`);
         console.log(`  Tokens: ${chalk.dim(`${(metrics.totalTokens / 1000).toFixed(1)}k`)}`);
+
+        if (metrics.costByPhase.length > 0) {
+          console.log();
+          console.log(chalk.bold("  By Phase"));
+          for (const p of metrics.costByPhase) {
+            console.log(`    ${p.phase.padEnd(10)} ${chalk.yellow(`$${p.total_cost.toFixed(4)}`)}  ${chalk.dim(`${(p.total_tokens / 1000).toFixed(1)}k tokens`)}`);
+          }
+        }
+
+        if (metrics.costByAgentAndPhase.length > 0) {
+          console.log();
+          console.log(chalk.bold("  By Agent & Phase"));
+          for (const row of metrics.costByAgentAndPhase) {
+            console.log(`    ${row.agent_type.padEnd(20)} ${row.phase.padEnd(10)} ${chalk.yellow(`$${row.total_cost.toFixed(4)}`)}`);
+          }
+        }
       }
     } else {
       console.log(chalk.dim("  (project not registered — run 'foreman init')"));

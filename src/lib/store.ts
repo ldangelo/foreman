@@ -72,6 +72,32 @@ export interface RunProgress {
   lastToolCall: string | null;  // most recent tool name
   lastActivity: string;         // ISO timestamp
   currentPhase?: string;        // Pipeline phase: "explorer" | "developer" | "qa" | "reviewer" | "finalize"
+  phaseCosts?: Record<string, number>; // phase -> costUsd accumulator
+}
+
+export interface PhaseCostRecord {
+  id: string;
+  run_id: string;
+  phase: string;
+  agent_type: string;
+  tokens_in: number;
+  tokens_out: number;
+  cache_read: number;
+  estimated_cost: number;
+  recorded_at: string;
+}
+
+export interface CostByPhase {
+  phase: string;
+  total_cost: number;
+  total_tokens: number;
+}
+
+export interface CostByAgentAndPhase {
+  agent_type: string;
+  phase: string;
+  total_cost: number;
+  total_tokens: number;
 }
 
 export interface Metrics {
@@ -79,6 +105,8 @@ export interface Metrics {
   totalTokens: number;
   tasksByStatus: Record<string, number>;
   costByRuntime: Array<{ run_id: string; cost: number; duration_seconds: number | null }>;
+  costByPhase: CostByPhase[];
+  costByAgentAndPhase: CostByAgentAndPhase[];
 }
 
 // ── Schema migration ────────────────────────────────────────────────────
@@ -126,6 +154,21 @@ CREATE TABLE IF NOT EXISTS events (
   details TEXT,
   created_at TEXT,
   FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+CREATE TABLE IF NOT EXISTS phase_costs (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  -- NOTE: DEFAULT '' (empty string) is used instead of NULL for backward compatibility.
+  -- The application always passes a non-empty agent_type value.
+  agent_type TEXT NOT NULL DEFAULT '',
+  tokens_in INTEGER DEFAULT 0,
+  tokens_out INTEGER DEFAULT 0,
+  cache_read INTEGER DEFAULT 0,
+  estimated_cost REAL DEFAULT 0.0,
+  recorded_at TEXT,
+  FOREIGN KEY (run_id) REFERENCES runs(id)
 );
 `;
 
@@ -391,6 +434,80 @@ export class ForemanStore {
     return this.db.prepare("SELECT * FROM costs ORDER BY recorded_at DESC").all() as Cost[];
   }
 
+  recordPhaseCost(
+    runId: string,
+    phase: string,
+    agentType: string,
+    tokensIn: number,
+    tokensOut: number,
+    cacheRead: number,
+    estimatedCost: number
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO phase_costs (id, run_id, phase, agent_type, tokens_in, tokens_out, cache_read, estimated_cost, recorded_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(randomUUID(), runId, phase, agentType, tokensIn, tokensOut, cacheRead, estimatedCost, new Date().toISOString());
+  }
+
+  getCostsByPhase(projectId?: string, since?: string): CostByPhase[] {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (projectId) {
+      conditions.push("r.project_id = ?");
+      params.push(projectId);
+    }
+    if (since) {
+      conditions.push("pc.recorded_at >= ?");
+      params.push(since);
+    }
+    const where = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+    return this.db
+      .prepare(
+        `SELECT pc.phase,
+                COALESCE(SUM(pc.estimated_cost), 0) as total_cost,
+                COALESCE(SUM(pc.tokens_in + pc.tokens_out), 0) as total_tokens
+         FROM phase_costs pc
+         JOIN runs r ON pc.run_id = r.id
+         ${where}
+         GROUP BY pc.phase
+         ORDER BY total_cost DESC`
+      )
+      .all(...params) as CostByPhase[];
+  }
+
+  getCostsByAgentAndPhase(projectId?: string, since?: string): CostByAgentAndPhase[] {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (projectId) {
+      conditions.push("r.project_id = ?");
+      params.push(projectId);
+    }
+    if (since) {
+      conditions.push("pc.recorded_at >= ?");
+      params.push(since);
+    }
+    const where = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+    return this.db
+      .prepare(
+        `SELECT pc.agent_type,
+                pc.phase,
+                COALESCE(SUM(pc.estimated_cost), 0) as total_cost,
+                COALESCE(SUM(pc.tokens_in + pc.tokens_out), 0) as total_tokens
+         FROM phase_costs pc
+         JOIN runs r ON pc.run_id = r.id
+         ${where}
+         GROUP BY pc.agent_type, pc.phase
+         ORDER BY total_cost DESC`
+      )
+      .all(...params) as CostByAgentAndPhase[];
+  }
+
   // ── Events ──────────────────────────────────────────────────────────
 
   logEvent(
@@ -448,6 +565,11 @@ export class ForemanStore {
       ? `WHERE ${costConditions.join(" AND ")}`
       : "";
 
+    // NOTE: totalCost/totalTokens come from the `costs` table (run-level),
+    // while costByPhase/costByAgentAndPhase come from the `phase_costs` table.
+    // The two tables are populated independently. When `since` filtering is used,
+    // both filter on `recorded_at`, which is written at nearly the same time,
+    // but they remain separate accounting sources.
     const totals = this.db
       .prepare(
         `SELECT COALESCE(SUM(c.estimated_cost), 0) as totalCost,
@@ -498,11 +620,19 @@ export class ForemanStore {
       )
       .all(...runParams) as Metrics["costByRuntime"];
 
+    // Cost by phase
+    const costByPhase = this.getCostsByPhase(projectId, since);
+
+    // Cost by agent and phase
+    const costByAgentAndPhase = this.getCostsByAgentAndPhase(projectId, since);
+
     return {
       totalCost: totals.totalCost,
       totalTokens: totals.totalTokens,
       tasksByStatus,
       costByRuntime,
+      costByPhase,
+      costByAgentAndPhase,
     };
   }
 }

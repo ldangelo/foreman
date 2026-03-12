@@ -1,34 +1,40 @@
-# Developer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Developer Report: Cost tracking with per-agent and per-phase breakdowns
 
 ## Approach
 
-This iteration addressed the two NOTE-level feedback items from the previous review cycle. The core `maxTurns → maxBudgetUsd` migration was already complete; this pass tightens two remaining rough edges:
+The core implementation was already in place from a prior iteration. This pass addressed the feedback from the code review ([NOTE]-level issues):
 
-1. Extract the inline `3.00` magic number in `dispatcher.ts` to a named constant, matching the pattern used by `ROLE_CONFIGS`.
-2. Strengthen the budget regression tests in `roles.test.ts` by pinning absolute USD values for `developer` and `reviewer`, so accidental budget reductions are caught.
+1. **Failed QA phase costs were silently dropped** — the QA phase consumes real tokens even when it fails. Fixed by recording `recordPhaseCost` before calling `markStuck` or returning early.
+2. **Architectural seam in `getMetrics()`** — documented via code comment that `totalCost`/`totalTokens` come from the `costs` table while phase breakdowns come from `phase_costs`, and both filter on `recorded_at` independently.
+3. **`agent_type TEXT NOT NULL DEFAULT ''`** — added a comment in the schema explaining the empty-string default is intentional for backward compatibility; the application always supplies a non-empty value.
+4. **Missing foreign-key enforcement test** — added a test confirming that `recordPhaseCost` with a non-existent `run_id` throws (since `PRAGMA foreign_keys = ON` is set at store construction).
 
 ## Files Changed
 
-- **src/orchestrator/dispatcher.ts** — Added `PLAN_STEP_MAX_BUDGET_USD = 3.00` constant above the `Dispatcher` class and replaced the inline literal `maxBudgetUsd: 3.00` with `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`. This mirrors how `ROLE_CONFIGS` centralises phase budgets, making future adjustments easy to find and change.
+- `src/orchestrator/agent-worker.ts` — Fixed two QA phase cost recording locations:
+  - In the primary dev-QA loop (line ~564): records `phase_costs` and updates `progress.phaseCosts` regardless of `qaResult.success`, then calls `markStuck`/returns only on failure.
+  - In the review-feedback branch (line ~636): same pattern — records cost unconditionally, emits the `complete` event only on success.
 
-- **src/orchestrator/__tests__/roles.test.ts** — Added two new pinned-value tests:
-  - `"developer budget is $5.00"` — asserts `ROLE_CONFIGS.developer.maxBudgetUsd === 5.00`
-  - `"reviewer budget is $2.00"` — asserts `ROLE_CONFIGS.reviewer.maxBudgetUsd === 2.00`
+- `src/lib/store.ts` — Added two code comments:
+  - In the `phase_costs` schema: explains the `DEFAULT ''` choice.
+  - In `getMetrics()`: documents the architectural seam between the `costs` and `phase_costs` tables when `since` filtering is used.
 
-  These supplement the existing relative ordering test (`explorer < developer`) with absolute guard rails that catch regression if any budget is accidentally halved or zeroed.
+- `src/lib/__tests__/store-metrics.test.ts` — Added one new test:
+  - `recordPhaseCost throws on non-existent runId (foreign key enforced)` — verifies SQLite foreign key enforcement is active.
 
 ## Tests Added/Modified
 
-- **src/orchestrator/__tests__/roles.test.ts**
-  - Added `"developer budget is $5.00"` — pins the developer role's exact budget
-  - Added `"reviewer budget is $2.00"` — pins the reviewer role's exact budget
+- `src/lib/__tests__/store-metrics.test.ts`:
+  - Added: `recordPhaseCost throws on non-existent runId (foreign key enforced)` — covers the previously untested foreign-key behavior.
+  - All 10 tests in the file pass.
 
 ## Decisions & Trade-offs
 
-- **Which roles to pin**: Chose `developer` (the most expensive phase, most likely to be accidentally changed) and `reviewer` (a meaningfully different value from `developer`). `explorer` and `qa` are implicitly covered by the ordering test (`explorer < developer`) and the "all positive" guard.
-- **Constant scope**: `PLAN_STEP_MAX_BUDGET_USD` is module-scoped (not exported) since it is only used inside `dispatcher.ts`. If other modules ever need it, it can be exported at that point.
-- **No changes to budget values**: The values (`developer: 5.00`, `reviewer: 2.00`, plan step: `3.00`) are intentionally preserved from the previous iteration to keep this pass focused on code quality only.
+- **Cost recorded before markStuck**: Recording the cost and updating `progress.phaseCosts` before calling `markStuck` ensures the progress snapshot stored by `markStuck` includes the partial QA cost in `phaseCosts`. This is the most accurate representation.
+- **Guard `costUsd > 0`**: Phase cost recording is guarded by `qaResult.costUsd > 0` to avoid inserting zero-cost rows when the SDK stream ended without returning a result (those return `costUsd: 0`).
+- **Schema comment over migration**: The `agent_type DEFAULT ''` is only a style concern; altering a NOT NULL column in SQLite requires a full table rebuild. A comment is the appropriate fix.
 
 ## Known Limitations
 
-- Budget values are estimates based on expected token usage; real-world calibration should happen after a few pipeline runs with production workloads.
+- The `getMetrics()` architectural seam (separate `costs` and `phase_costs` tables filtered independently) is documented but not resolved. A future consolidation could unify them, but that would be a larger breaking schema change.
+- Cache-read tokens (`cache_read`) are recorded as `0` for all phases because the SDK does not currently expose per-phase cache token counts separately.

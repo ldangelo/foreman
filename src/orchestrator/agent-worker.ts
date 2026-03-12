@@ -301,6 +301,8 @@ interface PhaseResult {
   success: boolean;
   costUsd: number;
   turns: number;
+  tokensIn: number;
+  tokensOut: number;
   error?: string;
 }
 
@@ -377,24 +379,24 @@ async function runPhase(
       if (phaseResult.subtype === "success") {
         log(`[${role.toUpperCase()}] Completed (${phaseResult.num_turns} turns, $${phaseResult.total_cost_usd.toFixed(4)})`);
         await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] COMPLETED ($${phaseResult.total_cost_usd.toFixed(4)})\n`);
-        return { success: true, costUsd: phaseResult.total_cost_usd, turns: phaseResult.num_turns };
+        return { success: true, costUsd: phaseResult.total_cost_usd, turns: phaseResult.num_turns, tokensIn: phaseResult.usage.input_tokens, tokensOut: phaseResult.usage.output_tokens };
       } else {
         const errResult = phaseResult as SDKResultError;
         const reason = errResult.errors?.join("; ") ?? errResult.subtype;
         log(`[${role.toUpperCase()}] Failed: ${reason.slice(0, 200)}`);
         await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] FAILED: ${reason}\n`);
-        return { success: false, costUsd: phaseResult.total_cost_usd, turns: phaseResult.num_turns, error: reason };
+        return { success: false, costUsd: phaseResult.total_cost_usd, turns: phaseResult.num_turns, tokensIn: phaseResult.usage.input_tokens, tokensOut: phaseResult.usage.output_tokens, error: reason };
       }
     }
 
     log(`[${role.toUpperCase()}] SDK ended without result`);
-    return { success: false, costUsd: 0, turns: 0, error: "SDK stream ended without result" };
+    return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: "SDK stream ended without result" };
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
     const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
     log(`[${role.toUpperCase()}] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason.slice(0, 200)}`);
     await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] ERROR: ${reason}\n`);
-    return { success: false, costUsd: 0, turns: 0, error: reason };
+    return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: reason };
   }
 }
 
@@ -527,6 +529,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       return;
     }
     store.logEvent(projectId, "complete", { beadId, phase: "explorer", costUsd: result.costUsd }, runId);
+    store.recordPhaseCost(runId, "explorer", ROLE_CONFIGS.explorer.model, result.tokensIn, result.tokensOut, 0, result.costUsd);
+    progress.phaseCosts = { ...progress.phaseCosts, explorer: (progress.phaseCosts?.explorer ?? 0) + result.costUsd };
+    store.updateRunProgress(runId, progress);
   }
 
   const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
@@ -549,10 +554,19 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       return;
     }
     store.logEvent(projectId, "complete", { beadId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
+    store.recordPhaseCost(runId, "developer", ROLE_CONFIGS.developer.model, devResult.tokensIn, devResult.tokensOut, 0, devResult.costUsd);
+    progress.phaseCosts = { ...progress.phaseCosts, developer: (progress.phaseCosts?.developer ?? 0) + devResult.costUsd };
+    store.updateRunProgress(runId, progress);
 
     // QA
     rotateReport(worktreePath, "QA_REPORT.md");
     const qaResult = await runPhase("qa", qaPrompt(beadId, beadTitle), config, progress, logFile, store);
+    // Record phase cost regardless of success — the QA phase consumed real tokens even on failure.
+    if (qaResult.costUsd > 0) {
+      store.recordPhaseCost(runId, "qa", ROLE_CONFIGS.qa.model, qaResult.tokensIn, qaResult.tokensOut, 0, qaResult.costUsd);
+      progress.phaseCosts = { ...progress.phaseCosts, qa: (progress.phaseCosts?.qa ?? 0) + qaResult.costUsd };
+      store.updateRunProgress(runId, progress);
+    }
     if (!qaResult.success) {
       await markStuck(store, runId, projectId, beadId, beadTitle, progress, "qa", qaResult.error ?? "QA failed");
       return;
@@ -588,6 +602,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       return;
     }
     store.logEvent(projectId, "complete", { beadId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
+    store.recordPhaseCost(runId, "reviewer", ROLE_CONFIGS.reviewer.model, reviewResult.tokensIn, reviewResult.tokensOut, 0, reviewResult.costUsd);
+    progress.phaseCosts = { ...progress.phaseCosts, reviewer: (progress.phaseCosts?.reviewer ?? 0) + reviewResult.costUsd };
+    store.updateRunProgress(runId, progress);
 
     const reviewReport = readReport(worktreePath, "REVIEW.md");
     const reviewVerdict = reviewReport ? parseVerdict(reviewReport) : "unknown";
@@ -610,9 +627,18 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       );
       if (devResult.success) {
         store.logEvent(projectId, "complete", { beadId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
+        store.recordPhaseCost(runId, "developer", ROLE_CONFIGS.developer.model, devResult.tokensIn, devResult.tokensOut, 0, devResult.costUsd);
+        progress.phaseCosts = { ...progress.phaseCosts, developer: (progress.phaseCosts?.developer ?? 0) + devResult.costUsd };
+        store.updateRunProgress(runId, progress);
 
         rotateReport(worktreePath, "QA_REPORT.md");
         const qaResult = await runPhase("qa", qaPrompt(beadId, beadTitle), config, progress, logFile, store);
+        // Record phase cost regardless of success — the QA phase consumed real tokens even on failure.
+        if (qaResult.costUsd > 0) {
+          store.recordPhaseCost(runId, "qa", ROLE_CONFIGS.qa.model, qaResult.tokensIn, qaResult.tokensOut, 0, qaResult.costUsd);
+          progress.phaseCosts = { ...progress.phaseCosts, qa: (progress.phaseCosts?.qa ?? 0) + qaResult.costUsd };
+          store.updateRunProgress(runId, progress);
+        }
         if (qaResult.success) {
           store.logEvent(projectId, "complete", { beadId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
         }

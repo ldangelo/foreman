@@ -93,4 +93,93 @@ describe("ForemanStore — metrics queries", () => {
     expect(metrics.tasksByStatus).toEqual({});
     expect(metrics.costByRuntime).toEqual([]);
   });
+
+  it("getCostsByPhase returns aggregated costs per phase", () => {
+    const project = store.registerProject("p", "/p");
+    const r1 = store.createRun(project.id, "bd-1", "claude-sonnet-4-5");
+    const r2 = store.createRun(project.id, "bd-2", "claude-sonnet-4-5");
+
+    store.recordPhaseCost(r1.id, "explorer", "claude-sonnet-4-5", 1000, 500, 0, 0.05);
+    store.recordPhaseCost(r1.id, "developer", "claude-sonnet-4-5", 2000, 1000, 0, 0.10);
+    store.recordPhaseCost(r1.id, "qa", "claude-sonnet-4-5", 500, 200, 0, 0.03);
+    store.recordPhaseCost(r2.id, "developer", "claude-sonnet-4-5", 1000, 500, 0, 0.06);
+
+    const byPhase = store.getCostsByPhase(project.id);
+
+    expect(byPhase).toHaveLength(3);
+    const developerRow = byPhase.find((r) => r.phase === "developer");
+    expect(developerRow).toBeDefined();
+    expect(developerRow!.total_cost).toBeCloseTo(0.16);
+    expect(developerRow!.total_tokens).toBe(4500); // (2000+1000) + (1000+500)
+
+    const explorerRow = byPhase.find((r) => r.phase === "explorer");
+    expect(explorerRow!.total_cost).toBeCloseTo(0.05);
+
+    const qaRow = byPhase.find((r) => r.phase === "qa");
+    expect(qaRow!.total_cost).toBeCloseTo(0.03);
+  });
+
+  it("getCostsByPhase with date filter", () => {
+    const project = store.registerProject("p2", "/p2");
+    const run = store.createRun(project.id, "bd-1", "claude-sonnet-4-5");
+
+    store.recordPhaseCost(run.id, "explorer", "claude-sonnet-4-5", 1000, 500, 0, 0.05);
+
+    const future = "2099-01-01T00:00:00Z";
+    expect(store.getCostsByPhase(project.id, future)).toHaveLength(0);
+
+    const past = "2000-01-01T00:00:00Z";
+    expect(store.getCostsByPhase(project.id, past)).toHaveLength(1);
+  });
+
+  it("getCostsByAgentAndPhase returns 2D breakdown", () => {
+    const project = store.registerProject("p3", "/p3");
+    const r1 = store.createRun(project.id, "bd-1", "claude-sonnet-4-5");
+    const r2 = store.createRun(project.id, "bd-2", "claude-opus-4-5");
+
+    store.recordPhaseCost(r1.id, "explorer", "claude-sonnet-4-5", 1000, 500, 0, 0.05);
+    store.recordPhaseCost(r1.id, "developer", "claude-sonnet-4-5", 2000, 1000, 0, 0.10);
+    store.recordPhaseCost(r2.id, "explorer", "claude-opus-4-5", 500, 200, 0, 0.08);
+
+    const breakdown = store.getCostsByAgentAndPhase(project.id);
+
+    expect(breakdown).toHaveLength(3);
+    const sonnetDev = breakdown.find((r) => r.agent_type === "claude-sonnet-4-5" && r.phase === "developer");
+    expect(sonnetDev).toBeDefined();
+    expect(sonnetDev!.total_cost).toBeCloseTo(0.10);
+
+    const opusExpl = breakdown.find((r) => r.agent_type === "claude-opus-4-5" && r.phase === "explorer");
+    expect(opusExpl).toBeDefined();
+    expect(opusExpl!.total_cost).toBeCloseTo(0.08);
+  });
+
+  it("getMetrics includes costByPhase and costByAgentAndPhase", () => {
+    const project = store.registerProject("p4", "/p4");
+    const run = store.createRun(project.id, "bd-1", "claude-sonnet-4-5");
+
+    store.recordPhaseCost(run.id, "explorer", "claude-sonnet-4-5", 1000, 500, 0, 0.05);
+    store.recordPhaseCost(run.id, "developer", "claude-sonnet-4-5", 2000, 1000, 0, 0.10);
+
+    const metrics = store.getMetrics(project.id);
+
+    expect(metrics.costByPhase).toHaveLength(2);
+    expect(metrics.costByAgentAndPhase).toHaveLength(2);
+    expect(metrics.costByPhase.find((r) => r.phase === "developer")?.total_cost).toBeCloseTo(0.10);
+  });
+
+  it("empty project returns empty phase cost arrays", () => {
+    const project = store.registerProject("empty2", "/empty2");
+    const metrics = store.getMetrics(project.id);
+
+    expect(metrics.costByPhase).toEqual([]);
+    expect(metrics.costByAgentAndPhase).toEqual([]);
+  });
+
+  it("recordPhaseCost throws on non-existent runId (foreign key enforced)", () => {
+    // The store opens with `PRAGMA foreign_keys = ON`, so inserting a phase_cost
+    // record that references a non-existent run_id must raise a constraint error.
+    expect(() =>
+      store.recordPhaseCost("nonexistent-run-id", "explorer", "claude-sonnet-4-5", 100, 50, 0, 0.01)
+    ).toThrow();
+  });
 });

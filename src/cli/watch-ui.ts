@@ -79,6 +79,23 @@ export function renderAgentCard(run: Run, progress: RunProgress | null): string 
 
   // Full card with progress
   lines.push(`  ${chalk.dim("Cost      ")} ${chalk.green("$" + progress.costUsd.toFixed(4))}`);
+
+  // Phase cost breakdown
+  if (progress.phaseCosts && Object.keys(progress.phaseCosts).length > 0) {
+    const phaseNames: Array<[string, string]> = [
+      ["explorer", "expl"],
+      ["developer", "dev"],
+      ["qa", "qa"],
+      ["reviewer", "rev"],
+    ];
+    const parts = phaseNames
+      .filter(([phase]) => (progress.phaseCosts![phase] ?? 0) > 0)
+      .map(([phase, abbr]) => `${chalk.dim(abbr + ":")}${chalk.green("$" + progress.phaseCosts![phase].toFixed(3))}`);
+    if (parts.length > 0) {
+      lines.push(`  ${chalk.dim("By Phase  ")} ${parts.join(chalk.dim("  "))}`);
+    }
+  }
+
   lines.push(`  ${chalk.dim("Turns     ")} ${progress.turns}`);
 
   const lastTool = progress.lastToolCall

@@ -1,62 +1,70 @@
-# QA Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# QA Report: Cost tracking with per-agent and per-phase breakdowns
 
 ## Verdict: PASS
 
 ## Test Results
-- Test suite: 230 passed, 9 failed (all failures are pre-existing infrastructure issues, not related to this change)
-- New tests added: 3 (added by Developer in roles.test.ts)
+- Test suite (worktree): 236 passed, 9 failed (20 files run)
+- Test suite (root repo — canonical): 250 passed, 0 failed (21 files run)
+- New tests added: 6 (all in `src/lib/__tests__/store-metrics.test.ts`)
 
-## Analysis of Failures
+### Core feature tests (all pass)
+| Test File | Tests | Result |
+|-----------|-------|--------|
+| `store-metrics.test.ts` | 10 | ✅ PASS |
+| `store.test.ts` | 18 | ✅ PASS |
+| `watch-ui.test.ts` | 49 | ✅ PASS |
+| `status-display.test.ts` | 23 | ✅ PASS |
+| `agent-worker-team.test.ts` | 13 | ✅ PASS |
 
-All 9 test failures are pre-existing infrastructure issues caused by the worktree environment lacking a `tsx` binary in its local `node_modules/.bin/`. The worktree's `node_modules` directory is empty — it has no installed packages. Tests that spawn `tsx` as a child process fail with `ENOENT`.
-
-Affected test files (all pre-existing failures, unrelated to this change):
-- `src/orchestrator/__tests__/agent-worker.test.ts` — 2 failed (tsx ENOENT)
-- `src/cli/__tests__/commands.test.ts` — 4 failed (tsx ENOENT)
-- `src/orchestrator/__tests__/worker-spawn.test.ts` — 1 failed (tsx ENOENT)
-- `src/orchestrator/__tests__/detached-spawn.test.ts` — 2 failed (tsx ENOENT)
-
-Verification: Running the same tests from the main project directory (which has full node_modules) yields all tests passing with 0 failures (confirmed by stashing and running on main: 234 passed).
-
-## Implementation Review
-
-The change is complete and correct across all three files:
-
-1. **`src/orchestrator/roles.ts`** — `RoleConfig` interface renamed `maxTurns: number` → `maxBudgetUsd: number`. Budget values set:
-   - explorer (haiku): $1.00
-   - developer (sonnet): $5.00
-   - qa (sonnet): $3.00
-   - reviewer (sonnet): $2.00
-
-2. **`src/orchestrator/agent-worker.ts`** — `runPhase()` function updated:
-   - Log format changed from `maxTurns=${roleConfig.maxTurns}` to `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - SDK query options changed from `maxTurns: roleConfig.maxTurns` to `maxBudgetUsd: roleConfig.maxBudgetUsd`
-
-3. **`src/orchestrator/dispatcher.ts`** — `dispatchPlanStep()` updated:
-   - Added constant `PLAN_STEP_MAX_BUDGET_USD = 3.00` at the top
-   - Changed `maxTurns: 50` to `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`
-
-4. **TypeScript compilation** — `npx tsc --noEmit` passes with zero errors.
-
-5. **No remaining `maxTurns` references** — a `grep` over the src/ directory confirms no production code retains the old property name. The only `maxTurns` occurrences are in the new negative-assertion test (`all role configs have no maxTurns property`).
-
-## Tests Added by Developer
-
-The developer added 3 new tests to `src/orchestrator/__tests__/roles.test.ts` (all pass):
-- `all roles have positive maxBudgetUsd values` — verifies all configs have `maxBudgetUsd > 0`
-- `explorer has lower budget than developer (haiku vs sonnet)` — verifies cost-tiering logic ($1.00 < $5.00)
-- `developer budget is $5.00` — explicit value assertion
-- `reviewer budget is $2.00` — explicit value assertion
-- `all role configs have no maxTurns property` — negative assertion ensuring old property is fully removed
-
-Total tests in roles.test.ts: 23 (all pass).
+### TypeScript compilation
+- `npx tsc --noEmit` exits with code 0 — no type errors
 
 ## Issues Found
 
-None related to the task implementation.
+### Pre-existing worktree infrastructure failures (NOT related to this task)
+The following 9 test failures all occur because the worktree has no `node_modules/` directory, so the `tsx` binary does not exist at the path these tests expect:
 
-Pre-existing: worktree node_modules is empty (tsx binary missing), causing 9 tests to fail when run from the worktree directory. These same tests pass on the main project directory. This is an environment setup issue, not a code defect.
+- `agent-worker.test.ts` — 2 failures (`ENOENT: .../foreman-071f/node_modules/.bin/tsx`)
+- `detached-spawn.test.ts` — 2 failures (same ENOENT)
+- `worker-spawn.test.ts` — 1 failure (`tsx binary exists in node_modules` assertion)
+
+**These same tests all pass when run from the root repository** (which has `node_modules`). The failures are a structural worktree limitation, not regressions introduced by this task.
+
+### No regressions found
+- All tests that exercise the new code pass
+- No existing passing tests were broken by the changes
+
+## New Tests Added (6 tests in `store-metrics.test.ts`)
+
+1. **`getCostsByPhase returns aggregated costs per phase`** — verifies phase-level aggregation across multiple runs
+2. **`getCostsByPhase with date filter`** — confirms the `since` date filter is applied correctly
+3. **`getCostsByAgentAndPhase returns 2D breakdown`** — verifies the agent×phase matrix query
+4. **`getMetrics includes costByPhase and costByAgentAndPhase`** — verifies `getMetrics()` integrates the new fields
+5. **`empty project returns empty phase cost arrays`** — edge case: no phase costs
+6. **`recordPhaseCost throws on non-existent runId (foreign key enforced)`** — verifies `PRAGMA foreign_keys = ON` is active and the FK constraint catches bad inserts
+
+## Implementation Correctness
+
+Reviewed the key implementation paths:
+
+1. **Schema** — `phase_costs` table created with `FOREIGN KEY (run_id) REFERENCES runs(id)` and all required columns. Table is created idempotently (`IF NOT EXISTS`).
+
+2. **`recordPhaseCost()`** — correctly inserts with a `randomUUID()` primary key and current ISO timestamp.
+
+3. **`getCostsByPhase()` / `getCostsByAgentAndPhase()`** — SQL queries use `COALESCE(SUM(...), 0)`, JOIN to `runs` for `project_id` scoping, and parameterized `since` filtering. Correct.
+
+4. **`getMetrics()`** — delegates to the two new methods and includes `costByPhase` / `costByAgentAndPhase` in the returned `Metrics` object.
+
+5. **`agent-worker.ts`** — Phase costs are recorded after every phase completion:
+   - Explorer, developer, reviewer: recorded unconditionally after success
+   - QA: recorded when `costUsd > 0` regardless of `success` (correctly handles QA failures that consumed tokens)
+   - The `progress.phaseCosts` accumulator is updated and `store.updateRunProgress()` is called so live watch UI reflects current phase costs
+
+6. **`RunProgress.phaseCosts`** — New optional field `Record<string, number>` accumulates phase costs in memory for live display
+
+7. **`watch-ui.ts`** — Renders per-phase cost breakdown row only when `phaseCosts` is non-empty and has non-zero values. Correct.
+
+8. **`status.ts`** — Displays `costByPhase` and `costByAgentAndPhase` sections only when non-empty. Correct.
 
 ## Files Modified
-
-- No test files modified by QA (developer-added tests were already correct and all pass)
+- None — no test fixes were required; all new tests passed on first run

@@ -1,165 +1,348 @@
-# Explorer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Explorer Report: Cost tracking with per-agent and per-phase breakdowns
 
 ## Summary
-The codebase uses `maxTurns` to limit SDK query execution in the agent orchestration pipeline. This needs to be replaced with `maxBudgetUsd` to enforce budget-based limits instead of turn-based limits. The change affects the role configurations, phase execution, and logging.
+The task is to add cost tracking that breaks down expenses by both **agent** (model/runtime used) and **phase** (explorer, developer, qa, reviewer) in the pipeline. Currently, costs are tracked at the run level only, with phase costs logged in event details. This report outlines what needs to be changed to support structured per-agent and per-phase cost analytics.
 
 ## Relevant Files
 
-### 1. **src/orchestrator/roles.ts** (lines 13-46)
-- **Purpose**: Defines role configurations for the specialization pipeline (explorer, developer, qa, reviewer)
-- **Current State**:
-  - `RoleConfig` interface has `maxTurns: number` property (line 16)
-  - `ROLE_CONFIGS` object defines maxTurns for each phase:
-    - explorer: 30 turns
-    - developer: 80 turns
-    - qa: 30 turns
-    - reviewer: 20 turns
-- **Relevance**: Primary file that needs modification - interface definition and config values
+### Core Stores & Models
+1. **src/lib/store.ts** (lines 32-40, 348-392)
+   - **Purpose**: SQLite state store with Cost, Run, and Metrics interfaces
+   - **Current State**:
+     - `Cost` interface: `{id, run_id, tokens_in, tokens_out, cache_read, estimated_cost, recorded_at}`
+     - `costs` table stores costs linked to `run_id` only (no phase column)
+     - `recordCost()` method: inserts cost record without phase info
+     - `getCosts()` method: queries costs with optional project/date filtering
+     - `getMetrics()` method: aggregates cost by runtime via JOIN with runs
+   - **Gap**: No schema support for per-phase costs; no query methods for phase-based aggregation
+   - **Relevance**: Primary file needing schema migration and new query methods
 
-### 2. **src/orchestrator/agent-worker.ts** (lines 310-399)
-- **Purpose**: Standalone worker process that runs individual SDK query calls for each pipeline phase
-- **Current State**:
-  - Line 322: Logs `maxTurns=${roleConfig.maxTurns}` when starting a phase
-  - Line 337: Passes `maxTurns: roleConfig.maxTurns` to the SDK `query()` options
-  - Line 225: Already handles `error_max_budget_usd` error subtype (future-ready)
-- **Relevance**: Needs to replace logging and pass maxBudgetUsd to query() options instead
+2. **src/lib/__tests__/store-metrics.test.ts**
+   - **Purpose**: Tests for metrics queries
+   - **Current State**:
+     - Tests `getCosts()` with project/date filtering
+     - Tests `costByRuntime` aggregation
+     - Tests `getMetrics()` empty state
+   - **Gap**: No tests for per-phase costs or agent+phase 2D breakdown
+   - **Relevance**: Will need new test cases for phase-based metrics
 
-### 3. **src/orchestrator/dispatcher.ts** (line 361)
-- **Purpose**: Dispatches beads to agents, handles one-off planning steps
-- **Current State**:
-  - Line 361: Uses `maxTurns: 50` for `dispatchPlanStep()` SDK query
-- **Relevance**: Secondary location needing update for consistency with phase limits
+### Orchestration & Phase Execution
+3. **src/orchestrator/agent-worker.ts** (lines 300-399, 501-600)
+   - **Purpose**: Runs the full pipeline with sequential phases
+   - **Current State**:
+     - `PhaseResult` interface has `{success, costUsd, turns, error}`
+     - Each phase accumulates costs: `progress.costUsd += phaseResult.total_cost_usd`
+     - Phase completion logged: `store.logEvent(projectId, "complete", { beadId, phase: "explorer", costUsd: result.costUsd }, runId)`
+     - `RunProgress` interface includes `currentPhase?: string` field
+     - Costs are summed but not broken down per phase in the database
+   - **Gap**: Cost data exists per-phase but isn't persisted to database in structured format
+   - **Relevance**: Needs to record per-phase costs to database for later querying
+
+4. **src/orchestrator/roles.ts** (lines 13-46)
+   - **Purpose**: Defines role configurations with model, budget, and report file
+   - **Current State**:
+     - `ROLE_CONFIGS` defines config for: explorer, developer, qa, reviewer
+     - Each has `model`, `maxBudgetUsd`, `reportFile`
+     - Phases run in `runPhase()` via agent-worker.ts
+   - **Relevance**: Phase names and models are defined here; useful reference for phase list
+
+### CLI & Display
+5. **src/cli/watch-ui.ts** (lines 57-100)
+   - **Purpose**: Renders agent progress cards for terminal display
+   - **Current State**:
+     - Shows cost (total), turns, tool calls, tool breakdown for active agents
+     - Displays via `renderAgentCard()` function
+     - Uses `RunProgress.costUsd` (aggregate cost)
+   - **Gap**: No phase-level cost breakdown in display
+   - **Relevance**: Will need to add phase cost display
+
+6. **src/cli/commands/status.ts** (lines 60-100)
+   - **Purpose**: Shows project status and active agent details
+   - **Current State**:
+     - Displays active agents with elapsed time, status
+     - Shows progress: turns, tools, files, cost
+     - Parses `RunProgress` from `run.progress` column
+   - **Gap**: No per-phase cost reporting
+   - **Relevance**: Will display phase cost breakdown
+
+### Type Definitions
+7. **src/orchestrator/types.ts** (lines 1-149)
+   - **Purpose**: Defines orchestration types
+   - **Current State**:
+     - `RunProgress` interface (referenced from store.ts) has: `costUsd, tokensIn, tokensOut, currentPhase`
+     - No per-phase cost fields
+   - **Relevance**: RunProgress may need extended fields for per-phase costs
 
 ## Architecture & Patterns
 
-### Pipeline Orchestration Pattern
-- **Sequential phases**: Explorer → Developer ⇄ QA → Reviewer → Finalize
-- **Phase execution**: Each phase runs as a separate `query()` call with its own config
-- **Error handling**: Already recognizes `error_max_budget_usd` error subtype (agent-worker.ts:225)
-- **Naming convention**: `roleConfig.maxTurns` → should become `roleConfig.maxBudgetUsd`
-
-### SDK Integration
-- The Anthropic Claude Agent SDK supports `maxBudgetUsd?: number` in query options (confirmed in sdk.d.ts)
-- Budget limits are enforced by the SDK during query execution
-- Error subtype `error_max_budget_usd` is already handled by the error detection logic
-
-### Role Config Structure
-```typescript
-export interface RoleConfig {
-  role: AgentRole;
-  model: ModelSelection;
-  maxTurns: number;              // ← Change to maxBudgetUsd: number
-  reportFile: string;
-}
+### Cost Tracking Flow
 ```
+Pipeline Phase (explorer|developer|qa|reviewer)
+  ↓
+runPhase() executes SDK query() with budget limit
+  ↓
+SDK returns result with: total_cost_usd, usage.input_tokens, usage.output_tokens
+  ↓
+Accumulated into progress: progress.costUsd += result.total_cost_usd
+  ↓
+Phase completion logged: store.logEvent(..., { phase, costUsd }, runId)
+  ↓
+Database: Event stored with phase+cost in JSON details
+  ✗ Database: No structured phase_cost record
+```
+
+### Current Cost Aggregation Patterns
+- **Per-Run**: All run costs summed via `getCosts()` JOIN with project
+- **Per-Runtime/Agent**: Costs grouped by `run.agent_type` in `getMetrics()`
+- **Per-Phase**: Only in event logs; no database aggregation
+
+### Phase Lifecycle
+- Phases run sequentially: Explorer → Dev → QA → Reviewer
+- Dev ⇄ QA may loop if QA fails (up to MAX_DEV_RETRIES=2)
+- Each phase gets its own SDK session with `maxBudgetUsd` limit
+- Phase costs are accumulated into single `progress.costUsd` for the entire run
+- After completion, phase info is logged but not in costs table
 
 ## Dependencies
 
-### What Uses maxTurns
-1. **agent-worker.ts**:
-   - Imports `ROLE_CONFIGS` from roles.ts
-   - Calls `roleConfig.maxTurns` in `runPhase()` function
-   - Passes value to SDK `query()` options
+### What Needs Phase Cost Data
+1. **Dashboard/Metrics API** (future):
+   - Will query: `getCostsByPhase(projectId)` → `{explorer: $X, developer: $Y, ...}`
+   - Will query: `getCostsByAgentAndPhase(projectId)` → 2D breakdown
+   - Will query: `getCostsByAgent(projectId)` → already exists via JOIN
 
-2. **dispatcher.ts**:
-   - Hard-coded `maxTurns: 50` in `dispatchPlanStep()`
-   - No import from roles.ts (independent configuration)
+2. **CLI Status Display**:
+   - `src/cli/commands/status.ts` will call new methods to show phase costs
+   - `src/cli/watch-ui.ts` will render per-phase cost cards
 
-3. **roles.ts**:
-   - Defines the canonical values for all phases
-   - No external dependencies on the property name
+3. **Agent Worker**:
+   - `src/orchestrator/agent-worker.ts` `runPhase()` must record costs to database
+   - Currently only logs to events; needs to call `recordCost()` with phase info
 
-### SDK API Contract
-- The SDK's `query()` function accepts `maxBudgetUsd?: number` parameter
-- When a query exceeds budget, SDK returns error with `subtype: "error_max_budget_usd"`
-- No backwards compatibility issues - this is a parameter replacement
+### What Phase Cost Data Depends On
+1. **Database Schema**:
+   - Existing `costs` table must be extended or new table created
+   - `run_id` (foreign key to runs)
+   - `phase` (string: explorer|developer|qa|reviewer)
+   - Other cost fields: tokens_in, tokens_out, estimated_cost
+
+2. **Existing Interfaces**:
+   - `RunProgress`: Already tracks `currentPhase`
+   - `Cost`: Minimal interface; can extend or create new struct
+   - `Metrics`: Will gain new fields for phase-based aggregations
 
 ## Existing Tests
 
 ### Test Files
-1. **src/orchestrator/__tests__/roles.test.ts**
-   - Tests ROLE_CONFIGS structure (all roles defined, models correct)
-   - Tests prompt templates (context injection, read-only instructions)
-   - Tests verdict/issue parsing from reports
-   - **Status**: Tests focus on config existence, not specific maxTurns values
-   - **Impact**: Tests will likely pass after renaming property (no assertions on maxTurns specifically)
+1. **src/lib/__tests__/store-metrics.test.ts**
+   - Tests `getCosts()` with project/date filtering ✓
+   - Tests cost aggregation by runtime via join ✓
+   - Tests `getRunsByStatus()` filtering ✓
+   - Tests `getMetrics()` empty state ✓
+   - **Missing**: Tests for per-phase cost queries, agent+phase combinations
 
-2. **src/orchestrator/__tests__/agent-worker.test.ts**
-   - Tests worker process initialization and logging
-   - Tests config file handling and deletion
-   - **Status**: No assertions on maxTurns values
-   - **Impact**: Will need to verify logging format still works with maxBudgetUsd
+2. **src/lib/__tests__/store.test.ts**
+   - Tests `recordCost()` basic functionality ✓
+   - Tests `getCosts()` with date filters ✓
+   - Tests cost accumulation in metrics ✓
+   - **Missing**: Per-phase cost tests
 
-### Test Coverage of Limits
-- No tests directly assert maxTurns values
-- No tests verify budget enforcement
-- New tests may be beneficial to ensure budget limits work correctly
+3. **src/orchestrator/__tests__/agent-worker-team.test.ts**
+   - Tests pipeline execution with cost tracking
+   - May test cost accumulation in `progress.costUsd`
+   - **Status**: Likely needs updates to verify phase costs are recorded
 
 ## Recommended Approach
 
-### Phase 1: Update Role Configurations
-1. Update `RoleConfig` interface in roles.ts:
-   - Rename `maxTurns: number` → `maxBudgetUsd: number`
+### Phase 1: Schema Extension (Database Backward Compatibility)
+1. Add new `phase_costs` table to support per-phase granularity:
+   ```sql
+   CREATE TABLE IF NOT EXISTS phase_costs (
+     id TEXT PRIMARY KEY,
+     run_id TEXT NOT NULL,
+     phase TEXT NOT NULL,  -- 'explorer'|'developer'|'qa'|'reviewer'
+     tokens_in INTEGER DEFAULT 0,
+     tokens_out INTEGER DEFAULT 0,
+     cache_read INTEGER DEFAULT 0,
+     estimated_cost REAL DEFAULT 0.0,
+     recorded_at TEXT,
+     FOREIGN KEY (run_id) REFERENCES runs(id)
+   );
+   ```
+2. **Alternative**: Extend `costs` table with `phase` column (allows consolidation)
+3. Add migration to create table safely (idempotent, no errors if exists)
 
-2. Update `ROLE_CONFIGS` values with reasonable budget estimates:
-   - Need to estimate per-model costs based on token usage
-   - Suggested starting points (requires validation):
-     - **explorer** (haiku, 30 turns): $0.50-$1.00 USD
-     - **developer** (sonnet, 80 turns): $5.00-$10.00 USD
-     - **qa** (sonnet, 30 turns): $2.00-$4.00 USD
-     - **reviewer** (sonnet, 20 turns): $1.50-$3.00 USD
-   - Also update **dispatchPlanStep** budget in dispatcher.ts (currently maxTurns: 50)
+### Phase 2: Store Methods (src/lib/store.ts)
+1. Extend `Cost` interface with optional `phase` field:
+   ```typescript
+   export interface Cost {
+     id: string;
+     run_id: string;
+     phase?: string;  // 'explorer'|'developer'|'qa'|'reviewer'
+     tokens_in: number;
+     tokens_out: number;
+     cache_read: number;
+     estimated_cost: number;
+     recorded_at: string;
+   }
+   ```
 
-### Phase 2: Update Phase Execution in agent-worker.ts
-1. Update `runPhase()` function:
-   - Line 322: Change log format to show `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - Line 337: Pass `maxBudgetUsd: roleConfig.maxBudgetUsd` instead of `maxTurns`
+2. Add new method `recordPhaseCost()`:
+   ```typescript
+   recordPhaseCost(
+     runId: string,
+     phase: string,
+     tokensIn: number,
+     tokensOut: number,
+     cacheRead: number,
+     estimatedCost: number
+   ): void
+   ```
 
-2. Verify error handling:
-   - Line 225 already checks for `error_max_budget_usd` — keep as-is
+3. Add query methods for aggregation:
+   ```typescript
+   // Cost by phase only
+   getCostsByPhase(projectId?: string, since?: string):
+     Array<{phase: string; totalCost: number; totalTokens: number}>
 
-### Phase 3: Update Dispatcher Planning
-1. In dispatcher.ts `dispatchPlanStep()`:
-   - Replace `maxTurns: 50` with appropriate `maxBudgetUsd` value (suggest $3.00-$5.00)
+   // Cost by agent (runtime) - already have via getMetrics()
 
-### Phase 4: Update Tests & Documentation
-1. roles.test.ts:
-   - Update any hardcoded expectations if tests fail
-   - Consider adding assertions for budget values being positive numbers
+   // Cost by agent + phase (2D breakdown)
+   getCostsByAgentAndPhase(projectId?: string, since?: string):
+     Array<{agent_type: string; phase: string; cost: number; tokens: number}>
+   ```
 
-2. agent-worker.test.ts:
-   - Verify logging format with new maxBudgetUsd parameter
-   - Check that log output still contains relevant budget information
+4. Extend `Metrics` interface:
+   ```typescript
+   export interface Metrics {
+     totalCost: number;
+     totalTokens: number;
+     tasksByStatus: Record<string, number>;
+     costByRuntime: Array<{run_id: string; cost: number; ...}>;
+     costByPhase?: Array<{phase: string; cost: number}>; // NEW
+     costByAgentAndPhase?: Array<{agent_type: string; phase: string; cost: number}>; // NEW
+   }
+   ```
+
+### Phase 3: Persist Phase Costs (src/orchestrator/agent-worker.ts)
+1. In `runPhase()` function (around line 372-375 where costs are accumulated):
+   ```typescript
+   // After accumulating into progress.costUsd
+   store.recordPhaseCost(
+     config.runId,
+     role,  // phase name
+     phaseResult.usage.input_tokens,
+     phaseResult.usage.output_tokens,
+     0,     // cache_read (if available from SDK)
+     phaseResult.total_cost_usd
+   );
+   ```
+
+2. Ensure `progress.currentPhase` is set before executing phase (already done at line 319)
+
+3. Consider updating `PhaseResult` interface to include phase info if needed
+
+### Phase 4: Display in CLI (src/cli/watch-ui.ts & status.ts)
+1. In `renderAgentCard()`, add phase cost breakdown if available:
+   ```typescript
+   // Parse phase costs from progress or store query
+   // Display as: explorer: $X.XX | dev: $Y.YY | qa: $Z.ZZ | review: $W.WW
+   ```
+
+2. In `status.ts`, add metrics section with:
+   - Cost by phase (total)
+   - Cost by agent/model (already shown)
+   - Cost by agent+phase (if available)
+
+### Phase 5: Test Coverage
+1. Add tests to `store-metrics.test.ts`:
+   - `getCostsByPhase()` returns correct phase totals
+   - `getCostsByAgentAndPhase()` returns 2D breakdown
+   - Date filtering works with phase costs
+   - Empty project returns empty arrays
+
+2. Update agent-worker tests:
+   - Verify `recordPhaseCost()` is called after each phase
+   - Verify costs are attributed to correct phases
+
+3. Integration test:
+   - Run full pipeline, verify all phase costs recorded and queryable
 
 ## Potential Pitfalls & Edge Cases
 
-1. **Budget Estimation Accuracy**
-   - Turn counts are discrete (explorer: 30) but budgets must be estimated
-   - Per-model costs vary (Haiku cheaper than Sonnet than Opus)
-   - May need to adjust budgets based on real usage data
+### 1. Data Model Conflict
+- **Issue**: Existing `costs` table is linked to runs, not phases
+- **Solution**: Create separate `phase_costs` table to avoid breaking existing queries
+- **Alternative**: Add optional `phase` column to `costs` (simpler, requires migration)
 
-2. **Error Handling Clarity**
-   - Error message when budget exceeded may be different from turn limits
-   - Current code checks `error_max_budget_usd` — verify message consistency
+### 2. Developer ⇄ QA Loop Retries
+- **Issue**: Developer phase may run multiple times; which "developer" cost to report?
+- **Solution**: Record all developer phase costs separately (phase_costs allows multiple records per run)
+- **Dashboard**: Aggregate by phase or show all occurrences
 
-3. **Logging Clarity**
-   - Phase startup logs currently show `maxTurns=30`
-   - Should show `maxBudgetUsd=$X.XX` for clarity
+### 3. Phase Cost Persistence Timing
+- **Issue**: Costs must be recorded after `phaseResult` is available
+- **Solution**: Call `recordPhaseCost()` in `runPhase()` after line 372 (already have full result)
+- **Watch**: Pipeline may fail between phase completion and cost recording (unlikely but possible)
 
-4. **Backwards Compatibility**
-   - Existing stored run data uses turns in progress tracking (agent-worker.ts line 196)
-   - Budget limits don't track in progress.turns — separate concerns
-   - No data migration needed (turns are tracked separately from limits)
+### 4. RunProgress currentPhase Tracking
+- **Issue**: `progress.currentPhase` is a string, not structured
+- **Solution**: Could extend RunProgress with per-phase costs, but not required for database persistence
+- **Recommendation**: Keep simple for now; aggregate at query time, not progress update time
 
-5. **Dispersion Across Files**
-   - dispatcher.ts has a hard-coded maxTurns value (50) separate from roles.ts
-   - Consider whether plan steps should use same budget as phases or different
+### 5. Cache Read Tokens
+- **Issue**: Phase result may not include `cache_read` data (optional in SDK)
+- **Solution**: Pass 0 or extract from result if available; doesn't block feature
+
+### 6. Backward Compatibility
+- **Issue**: Existing runs have no phase cost records
+- **Solution**: Dashboard must handle missing phase costs gracefully; aggregate from event logs if needed
+- **Migration**: Can backfill from event logs if needed (non-blocking)
+
+### 7. Phase Names Consistency
+- **Issue**: Phase names hardcoded as "explorer"|"developer"|"qa"|"reviewer"
+- **Solution**: Define as const in `roles.ts` or types, reference in agent-worker.ts and queries
+- **Watch**: Ensure dashboard filters/grouping use same phase names
 
 ## Next Steps for Developer
 
-1. Research typical costs per phase from production data (if available)
-2. Update roles.ts with maxBudgetUsd values (start conservative)
-3. Update agent-worker.ts runPhase() logging and query options
-4. Update dispatcher.ts dispatchPlanStep() budget
-5. Run tests to verify no regressions
-6. Monitor first few runs with new budgets to validate appropriateness
+1. **Choose schema approach**: Extend `costs` table with `phase` column OR create new `phase_costs` table
+   - `phase` column: Simpler, fewer queries, backward-incompatible schema
+   - New table: Safer, more explicit, requires JOINs for aggregation
+
+2. **Implement schema migration**: Add CREATE TABLE or ALTER TABLE in store.ts MIGRATIONS array
+
+3. **Implement store methods**:
+   - `recordPhaseCost()` to insert per-phase costs
+   - `getCostsByPhase()` to aggregate by phase
+   - `getCostsByAgentAndPhase()` for 2D breakdown
+   - Update `getMetrics()` to include phase aggregations
+
+4. **Integrate with agent-worker**:
+   - Call `recordPhaseCost()` after each `runPhase()` completes
+   - Ensure phase name is passed correctly
+
+5. **Update CLI displays**:
+   - `watch-ui.ts`: Add phase cost breakdown to agent card
+   - `status.ts`: Add metrics section for phase costs
+
+6. **Write comprehensive tests**:
+   - Store metrics tests for phase cost queries
+   - Agent worker tests to verify costs are recorded
+   - Integration test with full pipeline
+
+7. **Consider dashboard enhancements**:
+   - Add cost breakdown charts by phase
+   - Add agent+phase matrix visualization
+   - Track cost trends over time
+
+## Summary Table
+
+| File | Change | Impact |
+|------|--------|--------|
+| `src/lib/store.ts` | Add phase_costs table, new query methods | Core feature |
+| `src/orchestrator/agent-worker.ts` | Call recordPhaseCost() per phase | Data collection |
+| `src/cli/watch-ui.ts` | Display phase cost breakdown | User visibility |
+| `src/cli/commands/status.ts` | Add phase metrics section | User visibility |
+| `src/lib/__tests__/store-metrics.test.ts` | Test phase cost queries | Quality assurance |
+| `src/orchestrator/__tests__/agent-worker*.ts` | Verify phase cost recording | Quality assurance |
