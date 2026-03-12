@@ -3,7 +3,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { ForemanStore } from "../../lib/store.js";
 
 export const initCommand = new Command("init")
@@ -17,34 +17,35 @@ export const initCommand = new Command("init")
       chalk.bold(`Initializing foreman project: ${chalk.cyan(projectName)}`),
     );
 
-    // Check if bd (beads) is installed
+    // Check if sd (seeds) is installed
+    const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
     try {
-      execFileSync("bd", ["--version"], { stdio: "pipe" });
+      execFileSync(sdPath, ["--version"], { stdio: "pipe" });
     } catch {
       console.error(
-        chalk.red("Error: bd (beads) CLI is not installed or not in PATH."),
+        chalk.red("Error: sd (seeds) CLI is not installed."),
       );
       console.error(
-        chalk.dim("Install beads first: https://github.com/beads-project/bd"),
+        chalk.dim("Install: bun install -g @os-eco/seeds-cli"),
       );
       process.exit(1);
     }
 
-    // Initialize beads if .beads doesn't exist
-    if (!existsSync(".beads")) {
-      const spinner = ora("Initializing beads workspace...").start();
+    // Initialize seeds if .seeds doesn't exist
+    if (!existsSync(".seeds")) {
+      const spinner = ora("Initializing seeds workspace...").start();
       try {
-        execFileSync("bd", ["init"], { stdio: "pipe" });
-        spinner.succeed("Beads workspace initialized");
+        execFileSync(sdPath, ["init"], { stdio: "pipe" });
+        spinner.succeed("Seeds workspace initialized");
       } catch (e) {
-        spinner.fail("Failed to initialize beads workspace");
+        spinner.fail("Failed to initialize seeds workspace");
         console.error(
           chalk.red(e instanceof Error ? e.message : String(e)),
         );
         process.exit(1);
       }
     } else {
-      console.log(chalk.dim("Beads workspace already exists, skipping init"));
+      console.log(chalk.dim("Seeds workspace already exists, skipping init"));
     }
 
     // Register project in state store

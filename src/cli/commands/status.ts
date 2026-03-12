@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { ForemanStore, type RunProgress } from "../../lib/store.js";
 
 interface Bead {
@@ -11,48 +11,49 @@ interface Bead {
 }
 
 export const statusCommand = new Command("status")
-  .description("Show project status from beads + sqlite")
+  .description("Show project status from seeds + sqlite")
   .action(async () => {
     console.log(chalk.bold("Project Status\n"));
 
-    // Fetch bead list
-    let beads: Bead[] = [];
+    // Fetch seed list
+    const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
+    let seeds: Bead[] = [];
     try {
-      const output = execFileSync("bd", ["list", "--json"], {
+      const output = execFileSync(sdPath, ["list", "--json"], {
         stdio: ["pipe", "pipe", "pipe"],
         encoding: "utf-8",
       });
-      beads = JSON.parse(output);
+      seeds = JSON.parse(output);
     } catch {
       console.error(
         chalk.red(
-          "Failed to read beads. Is this a foreman project? Run 'foreman init' first.",
+          "Failed to read seeds. Is this a foreman project? Run 'foreman init' first.",
         ),
       );
       process.exit(1);
     }
 
-    const total = beads.length;
-    const inProgress = beads.filter((b) => b.status === "in_progress").length;
-    const completed = beads.filter((b) => b.status === "closed").length;
+    const total = seeds.length;
+    const inProgress = seeds.filter((b) => b.status === "in_progress").length;
+    const completed = seeds.filter((b) => b.status === "closed").length;
 
     // "ready" and "blocked" are computed from dependencies, not stored as status
     let ready = 0;
     let blocked = 0;
     try {
-      const readyOutput = execFileSync("bd", ["ready", "--json", "-n", "0"], {
+      const readyOutput = execFileSync(sdPath, ["ready", "--json", "-n", "0"], {
         stdio: ["pipe", "pipe", "pipe"],
         encoding: "utf-8",
       });
       ready = JSON.parse(readyOutput).length;
-    } catch { /* bd ready may fail if no issues exist */ }
+    } catch { /* sd ready may fail if no issues exist */ }
     try {
-      const blockedOutput = execFileSync("bd", ["blocked", "--json"], {
+      const blockedOutput = execFileSync(sdPath, ["blocked", "--json"], {
         stdio: ["pipe", "pipe", "pipe"],
         encoding: "utf-8",
       });
       blocked = JSON.parse(blockedOutput).length;
-    } catch { /* bd blocked may fail if no issues exist */ }
+    } catch { /* sd blocked may fail if no issues exist */ }
 
     console.log(chalk.bold("Tasks"));
     console.log(`  Total:       ${chalk.white(total)}`);

@@ -7,7 +7,7 @@ import { getRepoRoot } from "../../lib/git.js";
 import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
 
 export const resetCommand = new Command("reset")
-  .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
+  .description("Reset failed/stuck runs: kill agents, remove worktrees, reset seeds to open")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
   .option("--dry-run", "Show what would be reset without doing it")
   .action(async (opts) => {
@@ -158,7 +158,7 @@ export const resetCommand = new Command("reset")
         console.log(`  Worktrees removed:  ${worktreesRemoved}`);
         console.log(`  Branches deleted:   ${branchesDeleted}`);
         console.log(`  Runs marked failed: ${runsMarkedFailed}`);
-        console.log(`  Beads reset:        ${beadsReset}`);
+        console.log(`  Seeds reset:        ${beadsReset}`);
       }
 
       if (errors.length > 0) {

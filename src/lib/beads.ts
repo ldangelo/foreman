@@ -5,11 +5,11 @@ import { join } from "node:path";
 
 const execFileAsync = promisify(execFile);
 
-const BD_PATH = join(
+const SD_PATH = join(
   process.env.HOME ?? "~",
-  ".local",
+  ".bun",
   "bin",
-  "bd",
+  "sd",
 );
 
 // ── Interfaces ──────────────────────────────────────────────────────────
@@ -42,13 +42,13 @@ export interface BeadGraph {
 
 // ── Low-level helper ────────────────────────────────────────────────────
 
-export async function execBd(
+export async function execSd(
   args: string[],
   cwd?: string,
 ): Promise<any> {
   const finalArgs = [...args, "--json"];
   try {
-    const { stdout } = await execFileAsync(BD_PATH, finalArgs, {
+    const { stdout } = await execFileAsync(SD_PATH, finalArgs, {
       cwd,
       maxBuffer: 10 * 1024 * 1024,
     });
@@ -60,9 +60,12 @@ export async function execBd(
     const stderr = err.stderr?.trim() ?? "";
     const stdout = err.stdout?.trim() ?? "";
     const detail = stderr || stdout || err.message;
-    throw new Error(`bd ${finalArgs.join(" ")} failed: ${detail}`);
+    throw new Error(`sd ${finalArgs.join(" ")} failed: ${detail}`);
   }
 }
+
+/** @deprecated Use execSd instead */
+export const execBd = execSd;
 
 // ── Client ──────────────────────────────────────────────────────────────
 
@@ -73,34 +76,32 @@ export class BeadsClient {
     this.projectPath = projectPath;
   }
 
-  /** Verify that the bd binary is reachable. */
-  async ensureBdInstalled(): Promise<void> {
+  /** Verify that the sd binary is reachable. */
+  async ensureSdInstalled(): Promise<void> {
     try {
-      await access(BD_PATH);
+      await access(SD_PATH);
     } catch {
       throw new Error(
-        `bd (beads) CLI not found at ${BD_PATH}. ` +
-          `Install it or set a symlink so foreman can manage beads.`,
+        `sd (seeds) CLI not found at ${SD_PATH}. ` +
+          `Install via: bun install -g @os-eco/seeds-cli`,
       );
     }
   }
 
-  /** Check whether .beads/ exists in the project. */
+  /** Check whether .seeds/ exists in the project. */
   async isInitialized(): Promise<boolean> {
     try {
-      await access(join(this.projectPath, ".beads"));
+      await access(join(this.projectPath, ".seeds"));
       return true;
     } catch {
       return false;
     }
   }
 
-  /** Run `bd init`, optionally with a prefix. */
-  async init(prefix?: string): Promise<void> {
-    await this.ensureBdInstalled();
-    const args = ["init"];
-    if (prefix) args.push("--prefix", prefix);
-    await execBd(args, this.projectPath);
+  /** Run `sd init`. */
+  async init(): Promise<void> {
+    await this.ensureSdInstalled();
+    await execSd(["init"], this.projectPath);
   }
 
   /** Create a new bead (task/epic/bug). */
@@ -115,17 +116,12 @@ export class BeadsClient {
     },
   ): Promise<Bead> {
     await this.requireInit();
-    const args = ["create", title];
+    const args = ["create", "--title", title];
     if (opts?.type) args.push("--type", opts.type);
     if (opts?.priority) args.push("--priority", opts.priority);
-    if (opts?.parent) args.push("--parent", opts.parent);
     if (opts?.description) args.push("--description", opts.description);
-    if (opts?.labels) {
-      for (const label of opts.labels) {
-        args.push("--label", label);
-      }
-    }
-    return (await execBd(args, this.projectPath)) as Bead;
+    if (opts?.labels) args.push("--labels", opts.labels.join(","));
+    return (await execSd(args, this.projectPath)) as Bead;
   }
 
   /** List beads with optional filters. */
@@ -139,19 +135,19 @@ export class BeadsClient {
     if (opts?.status) args.push("--status", opts.status);
     if (opts?.assignee) args.push("--assignee", opts.assignee);
     if (opts?.type) args.push("--type", opts.type);
-    return ((await execBd(args, this.projectPath)) as Bead[]) ?? [];
+    return ((await execSd(args, this.projectPath)) as Bead[]) ?? [];
   }
 
   /** Return tasks whose blockers are all resolved. */
   async ready(): Promise<Bead[]> {
     await this.requireInit();
-    return ((await execBd(["ready"], this.projectPath)) as Bead[]) ?? [];
+    return ((await execSd(["ready"], this.projectPath)) as Bead[]) ?? [];
   }
 
   /** Show full detail for one bead. */
   async show(id: string): Promise<BeadDetail> {
     await this.requireInit();
-    return (await execBd(["show", id], this.projectPath)) as BeadDetail;
+    return (await execSd(["show", id], this.projectPath)) as BeadDetail;
   }
 
   /** Update fields on a bead. */
@@ -174,7 +170,7 @@ export class BeadsClient {
     if (opts.assignee) args.push("--assignee", opts.assignee);
     if (opts.description) args.push("--description", opts.description);
     if (opts.notes) args.push("--notes", opts.notes);
-    await execBd(args, this.projectPath);
+    await execSd(args, this.projectPath);
   }
 
   /** Close a bead, optionally with a reason. */
@@ -182,13 +178,13 @@ export class BeadsClient {
     await this.requireInit();
     const args = ["close", id];
     if (reason) args.push("--reason", reason);
-    await execBd(args, this.projectPath);
+    await execSd(args, this.projectPath);
   }
 
   /** Declare a dependency: childId depends on parentId. */
   async addDependency(childId: string, parentId: string): Promise<void> {
     await this.requireInit();
-    await execBd(["dep", "add", childId, parentId], this.projectPath);
+    await execSd(["dep", "add", childId, parentId], this.projectPath);
   }
 
   /** Get the dependency graph, optionally scoped to an epic. */
@@ -196,22 +192,22 @@ export class BeadsClient {
     await this.requireInit();
     const args = ["graph"];
     if (epicId) args.push(epicId);
-    return (await execBd(args, this.projectPath)) as BeadGraph;
+    return (await execSd(args, this.projectPath)) as BeadGraph;
   }
 
   /** Trigger bead compaction. */
   async compact(): Promise<void> {
     await this.requireInit();
-    await execBd(["compact"], this.projectPath);
+    await execSd(["compact"], this.projectPath);
   }
 
   // ── Private helpers ─────────────────────────────────────────────────
 
   private async requireInit(): Promise<void> {
-    await this.ensureBdInstalled();
+    await this.ensureSdInstalled();
     if (!(await this.isInitialized())) {
       throw new Error(
-        `Beads not initialised in ${this.projectPath}. Run 'foreman init' first.`,
+        `Seeds not initialised in ${this.projectPath}. Run 'foreman init' first.`,
       );
     }
   }

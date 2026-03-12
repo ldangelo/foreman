@@ -435,12 +435,13 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   }
 
   try {
-    execFileSync("bd", ["close", beadId, "--reason", "Completed via pipeline"], opts);
-    log(`[FINALIZE] Closed bead ${beadId}`);
+    const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
+    execFileSync(sdPath, ["close", beadId, "--reason", "Completed via pipeline"], opts);
+    log(`[FINALIZE] Closed seed ${beadId}`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`[FINALIZE] bd close failed: ${msg.slice(0, 200)}`);
-    await appendFile(logFile, `[FINALIZE] bd close error: ${msg}\n`);
+    log(`[FINALIZE] sd close failed: ${msg.slice(0, 200)}`);
+    await appendFile(logFile, `[FINALIZE] sd close error: ${msg}\n`);
   }
 }
 
@@ -618,9 +619,10 @@ async function markStuck(
     rateLimit: isRateLimit,
   }, runId);
 
-  // Reset bead back to open so it appears in bd ready for retry
+  // Reset seed back to open so it appears in sd ready for retry
+  const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
   try {
-    execFileSync("bd", ["update", beadId, "--status=open"], { stdio: "pipe", timeout: 10_000 });
+    execFileSync(sdPath, ["update", beadId, "--status", "open"], { stdio: "pipe", timeout: 10_000 });
     log(`Reset bead ${beadId} back to open`);
   } catch {
     log(`Warning: could not reset bead ${beadId} to open`);

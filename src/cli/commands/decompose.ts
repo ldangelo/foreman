@@ -9,10 +9,10 @@ import { BeadsClient } from "../../lib/beads.js";
 import type { DecompositionPlan, TaskPlan } from "../../orchestrator/types.js";
 
 export const decomposeCommand = new Command("decompose")
-  .description("Decompose a TRD into beads hierarchy (epic → sprint → story → task)")
+  .description("Decompose a TRD into seeds hierarchy (epic → sprint → story → task)")
   .argument("<trd>", "Path to TRD file")
-  .option("--no-auto", "Prompt for confirmation before creating beads")
-  .option("--dry-run", "Show the plan without creating beads")
+  .option("--no-auto", "Prompt for confirmation before creating seeds")
+  .option("--dry-run", "Show the plan without creating seeds")
   .option("--no-llm", "Use heuristic decomposition instead of LLM")
   .option("--model <model>", "Model to use for LLM decomposition")
   .action(async (trd: string, opts: { auto?: boolean; dryRun?: boolean; llm?: boolean; model?: string }) => {
@@ -56,13 +56,13 @@ export const decomposeCommand = new Command("decompose")
     printPlan(plan);
 
     if (opts.dryRun) {
-      console.log(chalk.yellow("\n--dry-run: No beads created."));
+      console.log(chalk.yellow("\n--dry-run: No seeds created."));
       return;
     }
 
     // Confirmation gate
     if (!opts.auto) {
-      const ok = await confirm("Create these beads?");
+      const ok = await confirm("Create these seeds?");
       if (!ok) {
         console.log(chalk.yellow("Aborted."));
         return;
@@ -70,10 +70,10 @@ export const decomposeCommand = new Command("decompose")
     }
 
     // Execute
-    console.log(chalk.bold("\nCreating beads hierarchy..."));
-    const beads = new BeadsClient(process.cwd());
+    console.log(chalk.bold("\nCreating seeds hierarchy..."));
+    const seeds = new BeadsClient(process.cwd());
     try {
-      const result = await executePlan(plan, beads);
+      const result = await executePlan(plan, seeds);
       console.log(chalk.green(`\nEpic created: ${result.epicBeadId}`));
       console.log(chalk.green(`Sprints created: ${result.sprintBeadIds.length}`));
       console.log(chalk.green(`Stories created: ${result.storyBeadIds.length}`));
@@ -82,7 +82,7 @@ export const decomposeCommand = new Command("decompose")
         console.log(chalk.dim(`  - ${id}`));
       }
     } catch (err: any) {
-      console.error(chalk.red(`Failed to create beads: ${err.message}`));
+      console.error(chalk.red(`Failed to create seeds: ${err.message}`));
       process.exitCode = 1;
     }
   });

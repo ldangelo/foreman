@@ -9,10 +9,10 @@ export interface ExecutionResult {
 }
 
 /**
- * Map word priorities to beads P0-P4 format.
- * Beads CLI expects: P0 (highest) through P4 (lowest).
+ * Map word priorities to seeds P0-P4 format.
+ * Seeds CLI expects: P0 (highest) through P4 (lowest).
  */
-function toBeadsPriority(priority: string): string {
+function toSeedsPriority(priority: string): string {
   switch (priority.toLowerCase()) {
     case "critical": return "P0";
     case "high": return "P1";
@@ -23,15 +23,15 @@ function toBeadsPriority(priority: string): string {
 }
 
 /**
- * Map our hierarchy/issue types to valid bd types.
+ * Map our hierarchy/issue types to valid sd types.
  *
- * bd supports: bug | feature | task | epic | chore | decision
+ * sd supports: bug | feature | task | epic | chore | decision
  * Our types:   epic | sprint | story | task | spike | test
  *
- * We map unsupported types to the closest bd type and preserve
+ * We map unsupported types to the closest sd type and preserve
  * the semantic type via a label (e.g., "kind:sprint").
  */
-function toBeadsType(type: string): string {
+function toSeedsType(type: string): string {
   switch (type) {
     case "epic": return "epic";
     case "sprint": return "feature";  // sprint is a container; feature allows deps on stories/tasks
@@ -44,11 +44,11 @@ function toBeadsType(type: string): string {
 }
 
 /**
- * Execute a decomposition plan by creating the full bead hierarchy:
+ * Execute a decomposition plan by creating the full seed hierarchy:
  * epic → sprint → story → task/spike/test
  *
- * Since bd only supports a limited set of types (bug|feature|task|epic|chore|decision),
- * we map our hierarchy types to valid bd types and use labels to preserve semantics:
+ * Since sd only supports a limited set of types (bug|feature|task|epic|chore|decision),
+ * we map our hierarchy types to valid sd types and use labels to preserve semantics:
  *   sprint → epic + label "kind:sprint"
  *   story  → feature + label "kind:story"
  *   spike  → chore + label "kind:spike"
@@ -75,7 +75,7 @@ export async function executePlan(
   // 2. Create sprint → story → task hierarchy
   for (const sprint of plan.sprints) {
     const sprintBead: Bead = await beads.create(sprint.title, {
-      type: toBeadsType("sprint"),
+      type: toSeedsType("sprint"),
       priority: "P1",
       parent: epicBead.id,
       description: sprint.goal,
@@ -85,8 +85,8 @@ export async function executePlan(
 
     for (const story of sprint.stories) {
       const storyBead: Bead = await beads.create(story.title, {
-        type: toBeadsType("story"),
-        priority: toBeadsPriority(story.priority),
+        type: toSeedsType("story"),
+        priority: toSeedsPriority(story.priority),
         parent: sprintBead.id,
         description: story.description,
         labels: ["kind:story"],
@@ -100,8 +100,8 @@ export async function executePlan(
         }
 
         const taskBead: Bead = await beads.create(task.title, {
-          type: toBeadsType(task.type),
-          priority: toBeadsPriority(task.priority),
+          type: toSeedsType(task.type),
+          priority: toSeedsPriority(task.priority),
           parent: storyBead.id,
           description: task.description,
           labels,
@@ -142,10 +142,10 @@ export async function executePlan(
   await Promise.all(depPromises);
 
   // Note: We do NOT add explicit container dependencies (story→task, sprint→story).
-  // bd automatically creates implicit parent-child dependencies where children
+  // sd automatically creates implicit parent-child dependencies where children
   // depend on their parent. Adding explicit reverse deps would create circular
   // dependencies and deadlock everything. The parent-child relationship already
-  // ensures bd auto-closes containers when all children close.
+  // ensures sd auto-closes containers when all children close.
 
   if (depErrors.length > 0) {
     const summary = depErrors.map((e) => `  - ${e}`).join("\n");

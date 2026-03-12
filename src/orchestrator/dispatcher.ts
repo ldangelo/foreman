@@ -1,4 +1,4 @@
-import { writeFile, rm, symlink, stat, mkdir, open, lstat, readlink, unlink } from "node:fs/promises";
+import { writeFile, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -59,7 +59,7 @@ export class Dispatcher {
       if (!target) {
         return {
           dispatched: [],
-          skipped: [{ beadId: opts.beadId, title: opts.beadId, reason: "Not found in ready beads" }],
+          skipped: [{ beadId: opts.beadId, title: opts.beadId, reason: "Not found in ready seeds" }],
           resumed: [],
           activeAgents: activeRuns.length,
         };
@@ -116,10 +116,7 @@ export class Dispatcher {
           bead.id,
         );
 
-        // 2. Symlink .beads/ from main repo so agents share the same database
-        await linkBeadsDir(this.projectPath, worktreePath);
-
-        // 3. Write AGENTS.md in the worktree
+        // 2. Write AGENTS.md in the worktree (seeds is git-tracked, no symlink needed)
         const agentsMd = workerAgentMd(beadInfo, worktreePath, model);
         await writeFile(join(worktreePath, "AGENTS.md"), agentsMd, "utf-8");
 
@@ -477,9 +474,9 @@ export class Dispatcher {
   ): Promise<string> {
     const prompt = [
       `Read AGENTS.md and implement the task described.`,
-      `Use bd to track your progress.`,
+      `Use sd (seeds) to track your progress.`,
       `When completely finished:`,
-      `  bd close ${bead.id} --reason "Completed"`,
+      `  sd close ${bead.id} --reason "Completed"`,
       `  git add -A`,
       `  git commit -m "${bead.title} (${bead.id})"`,
       `  git push -u origin foreman/${bead.id}`,
@@ -527,7 +524,7 @@ export class Dispatcher {
       `You were previously working on this task but were interrupted (likely by a rate limit).`,
       `Continue where you left off. Check your progress so far and complete the remaining work.`,
       `When completely finished:`,
-      `  bd close ${bead.id} --reason "Completed"`,
+      `  sd close ${bead.id} --reason "Completed"`,
       `  git add -A`,
       `  git commit -m "${bead.title} (${bead.id})"`,
       `  git push -u origin foreman/${bead.id}`,
@@ -567,48 +564,6 @@ export class Dispatcher {
 }
 
 // ── Utility ─────────────────────────────────────────────────────────────
-
-/**
- * Replace the worktree's .beads/ directory with a symlink to the main repo's
- * .beads/ so agents share the same Dolt database and issue tracker.
- */
-async function linkBeadsDir(
-  projectPath: string,
-  worktreePath: string,
-): Promise<void> {
-  const mainBeads = join(projectPath, ".beads");
-  const wtBeads = join(worktreePath, ".beads");
-
-  // Only link if main repo has .beads/
-  try {
-    await stat(mainBeads);
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return; // No .beads/ in main repo — nothing to link
-    throw err; // Permission error, etc. — don't swallow
-  }
-
-  // Check if already a correct symlink — skip if so
-  try {
-    const st = await lstat(wtBeads);
-    if (st.isSymbolicLink()) {
-      const target = await readlink(wtBeads);
-      if (target === mainBeads) return; // Already correctly linked
-      // Wrong target — remove the symlink (not recursive!) and re-create
-      await unlink(wtBeads);
-      await symlink(mainBeads, wtBeads);
-      return;
-    }
-    // It's a real directory (git-checked-out .beads/) — safe to rm
-    await rm(wtBeads, { recursive: true, force: true });
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") throw err;
-    // Doesn't exist — that's fine, we'll create the symlink below
-  }
-
-  await symlink(mainBeads, wtBeads);
-}
 
 // ── Worker Config (must match agent-worker.ts interface) ────────────────
 

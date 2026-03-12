@@ -18,7 +18,7 @@ git log main..foreman/{{BEAD_ID}} --oneline
 ```
 
 Quick review checklist:
-- Does the implementation match the bead description?
+- Does the implementation match the seed description?
 - Are tests included?
 - Any obviously problematic changes?
 
@@ -40,7 +40,7 @@ git merge --no-ff foreman/{{BEAD_ID}} -m "Merge: {{TITLE}} ({{BEAD_ID}})"
 **If merge succeeds + tests pass:**
 ```bash
 git push origin main
-bd close {{BEAD_ID}} --reason "Merged and tested"
+sd close {{BEAD_ID}} --reason "Merged and tested"
 ```
 
 **If merge has conflicts:**
@@ -49,23 +49,23 @@ bd close {{BEAD_ID}} --reason "Merged and tested"
 - For non-trivial conflicts, document them and skip this branch:
   ```bash
   git merge --abort
-  bd update {{BEAD_ID}} --notes "Merge conflict in: [files]. Needs manual resolution."
+  sd update {{BEAD_ID}} --notes "Merge conflict in: [files]. Needs manual resolution."
   ```
 
 **If tests fail after merge:**
 ```bash
 git revert HEAD --no-edit
 git push origin main
-bd update {{BEAD_ID}} --notes "Tests failed after merge: [summary]. Reverted."
+sd update {{BEAD_ID}} --notes "Tests failed after merge: [summary]. Reverted."
 ```
 
 ## Rules
 
-- Merge in dependency order — check bead dependencies before merging
+- Merge in dependency order — check seed dependencies before merging
 - Never force-push to main
 - Always run the test suite after each merge
 - If more than 2 branches conflict with each other, stop and report — human should decide merge order
-- Document everything in bead notes for traceability
+- Document everything in seed notes for traceability
 
 ## Clean Up
 
