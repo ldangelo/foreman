@@ -27,6 +27,8 @@ import {
   extractIssues,
   hasActionableIssues,
 } from "./roles.js";
+import { createMailServer } from "./mcp-mail-server.js";
+import type { MailServerHandle } from "./mcp-mail-server.js";
 import type { AgentRole } from "./types.js";
 
 // ── Config ───────────────────────────────────────────────────────────────
@@ -314,6 +316,7 @@ async function runPhase(
   progress: RunProgress,
   logFile: string,
   store: ForemanStore,
+  mailServer?: MailServerHandle,
 ): Promise<PhaseResult> {
   const roleConfig = ROLE_CONFIGS[role];
   progress.currentPhase = role;
@@ -323,6 +326,11 @@ async function runPhase(
   log(`[${role.toUpperCase()}] Starting phase for ${config.seedId}`);
 
   const env: Record<string, string | undefined> = { ...config.env };
+
+  // Build MCP servers config if mail server is provided
+  const mcpServers = mailServer
+    ? { "agent-mail": mailServer.mcpConfig }
+    : undefined;
 
   try {
     let phaseResult: SDKResultSuccess | SDKResultError | undefined;
@@ -335,6 +343,7 @@ async function runPhase(
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         maxBudgetUsd: roleConfig.maxBudgetUsd,
+        ...(mcpServers && { mcpServers }),
         env,
         persistSession: false,
       },
@@ -518,15 +527,22 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   log(`Pipeline starting for ${seedId} [phases: ${config.skipExplore ? "skip-explore" : "explore"} → dev → qa → ${config.skipReview ? "skip-review" : "review"} → finalize]`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n`);
 
+  // ── Create MCP mail server for inter-agent communication ─────────────
+  const mailServer = createMailServer();
+  await appendFile(logFile, `[foreman-worker] MCP Agent Mail server created (in-process)\n`);
+  log(`MCP Agent Mail server ready for ${seedId}`);
+
   // ── Phase 1: Explorer ──────────────────────────────────────────────
   if (!config.skipExplore) {
     rotateReport(worktreePath, "EXPLORER_REPORT.md");
-    const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
+    const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store, mailServer);
     if (!result.success) {
       await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed");
       return;
     }
     store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
+    // Log any messages sent by Explorer
+    logMailActivity(logFile, "explorer", mailServer);
   }
 
   const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
@@ -542,22 +558,24 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     const devResult = await runPhase(
       "developer",
       developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext),
-      config, progress, logFile, store,
+      config, progress, logFile, store, mailServer,
     );
     if (!devResult.success) {
       await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed");
       return;
     }
     store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
+    logMailActivity(logFile, "developer", mailServer);
 
     // QA
     rotateReport(worktreePath, "QA_REPORT.md");
-    const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
+    const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, mailServer);
     if (!qaResult.success) {
       await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed");
       return;
     }
     store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
+    logMailActivity(logFile, "qa", mailServer);
 
     const qaReport = readReport(worktreePath, "QA_REPORT.md");
     qaVerdict = qaReport ? parseVerdict(qaReport) : "unknown";
@@ -582,12 +600,13 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   // ── Phase 4: Reviewer ──────────────────────────────────────────────
   if (!config.skipReview) {
     rotateReport(worktreePath, "REVIEW.md");
-    const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
+    const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store, mailServer);
     if (!reviewResult.success) {
       await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed");
       return;
     }
     store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
+    logMailActivity(logFile, "reviewer", mailServer);
 
     const reviewReport = readReport(worktreePath, "REVIEW.md");
     const reviewVerdict = reviewReport ? parseVerdict(reviewReport) : "unknown";
@@ -606,15 +625,17 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       const devResult = await runPhase(
         "developer",
         developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback),
-        config, progress, logFile, store,
+        config, progress, logFile, store, mailServer,
       );
       if (devResult.success) {
         store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
+        logMailActivity(logFile, "developer", mailServer);
 
         rotateReport(worktreePath, "QA_REPORT.md");
-        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
+        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, mailServer);
         if (qaResult.success) {
           store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
+          logMailActivity(logFile, "qa", mailServer);
         }
       }
     } else if (reviewVerdict === "fail") {
@@ -682,6 +703,23 @@ async function markStuck(
   }
 
   store.close();
+}
+
+// ── Mail logging ─────────────────────────────────────────────────────────
+
+/**
+ * Log a summary of messages in a role's inbox to the log file.
+ * Called after each phase completes to capture inter-agent mail activity.
+ */
+function logMailActivity(logFile: string, role: string, mailServer: MailServerHandle): void {
+  const messages = mailServer.getMessages(role);
+  if (messages.length === 0) return;
+  const summary = messages
+    .map((m) => `  [mail] ${m.from} → ${m.to}: ${m.subject}`)
+    .join("\n");
+  appendFile(logFile, `[MAIL] Messages in ${role} inbox (${messages.length}):\n${summary}\n`).catch(() => {
+    // Non-fatal logging failure
+  });
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
