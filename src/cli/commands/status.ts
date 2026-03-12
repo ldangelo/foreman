@@ -19,7 +19,7 @@ export const statusCommand = new Command("status")
     const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
     let seeds: Bead[] = [];
     try {
-      const output = execFileSync(sdPath, ["list", "--json"], {
+      const output = execFileSync(sdPath, ["list", "--json", "--limit", "0"], {
         stdio: ["pipe", "pipe", "pipe"],
         encoding: "utf-8",
       });
@@ -34,9 +34,20 @@ export const statusCommand = new Command("status")
       process.exit(1);
     }
 
-    const total = seeds.length;
     const inProgress = seeds.filter((b) => b.status === "in_progress").length;
-    const completed = seeds.filter((b) => b.status === "closed").length;
+
+    // sd list excludes closed issues by default — fetch them separately
+    let completed = 0;
+    try {
+      const closedOutput = execFileSync(sdPath, ["list", "--status=closed", "--json", "--limit", "0"], {
+        stdio: ["pipe", "pipe", "pipe"],
+        encoding: "utf-8",
+      });
+      const closedParsed = JSON.parse(closedOutput);
+      completed = (closedParsed.issues ?? closedParsed ?? []).length;
+    } catch { /* no closed issues */ }
+
+    const total = seeds.length + completed;
 
     // "ready" and "blocked" are computed from dependencies, not stored as status
     let ready = 0;
