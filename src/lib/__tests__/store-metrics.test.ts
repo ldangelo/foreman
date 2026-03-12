@@ -92,5 +92,191 @@ describe("ForemanStore — metrics queries", () => {
     expect(metrics.totalTokens).toBe(0);
     expect(metrics.tasksByStatus).toEqual({});
     expect(metrics.costByRuntime).toEqual([]);
+    expect(metrics.costByPhase).toBeUndefined();
+    expect(metrics.agentCostBreakdown).toBeUndefined();
+  });
+
+  it("getCostBreakdown returns empty records for runs without phase data", () => {
+    const project = store.registerProject("p", "/p");
+    const run = store.createRun(project.id, "seed-1", "claude-code");
+
+    // No progress set yet
+    const breakdown = store.getCostBreakdown(run.id);
+    expect(breakdown.byPhase).toEqual({});
+    expect(breakdown.byAgent).toEqual({});
+  });
+
+  it("getCostBreakdown returns empty records for runs with progress but no phase data", () => {
+    const project = store.registerProject("p", "/p");
+    const run = store.createRun(project.id, "seed-1", "claude-code");
+
+    // Progress without costByPhase (backwards compat — single-agent mode)
+    store.updateRunProgress(run.id, {
+      toolCalls: 5,
+      toolBreakdown: { Read: 5 },
+      filesChanged: [],
+      turns: 3,
+      costUsd: 0.05,
+      tokensIn: 1000,
+      tokensOut: 500,
+      lastToolCall: "Read",
+      lastActivity: new Date().toISOString(),
+    });
+
+    const breakdown = store.getCostBreakdown(run.id);
+    expect(breakdown.byPhase).toEqual({});
+    expect(breakdown.byAgent).toEqual({});
+  });
+
+  it("getCostBreakdown returns correct phase and agent costs", () => {
+    const project = store.registerProject("p", "/p");
+    const run = store.createRun(project.id, "seed-1", "pipeline");
+
+    store.updateRunProgress(run.id, {
+      toolCalls: 10,
+      toolBreakdown: { Read: 10 },
+      filesChanged: ["src/foo.ts"],
+      turns: 8,
+      costUsd: 0.30,
+      tokensIn: 5000,
+      tokensOut: 2000,
+      lastToolCall: "Edit",
+      lastActivity: new Date().toISOString(),
+      currentPhase: "developer",
+      costByPhase: {
+        explorer: 0.05,
+        developer: 0.20,
+        qa: 0.05,
+      },
+      agentByPhase: {
+        explorer: "claude-haiku-4-5",
+        developer: "claude-sonnet-4-6",
+        qa: "claude-sonnet-4-6",
+      },
+    });
+
+    const breakdown = store.getCostBreakdown(run.id);
+    expect(breakdown.byPhase.explorer).toBeCloseTo(0.05);
+    expect(breakdown.byPhase.developer).toBeCloseTo(0.20);
+    expect(breakdown.byPhase.qa).toBeCloseTo(0.05);
+
+    // claude-haiku-4-5 = 0.05, claude-sonnet-4-6 = 0.20 + 0.05 = 0.25
+    expect(breakdown.byAgent["claude-haiku-4-5"]).toBeCloseTo(0.05);
+    expect(breakdown.byAgent["claude-sonnet-4-6"]).toBeCloseTo(0.25);
+  });
+
+  it("getPhaseMetrics aggregates phase costs across multiple runs", () => {
+    const project = store.registerProject("p", "/p");
+
+    const run1 = store.createRun(project.id, "seed-1", "pipeline");
+    store.updateRunProgress(run1.id, {
+      toolCalls: 5,
+      toolBreakdown: {},
+      filesChanged: [],
+      turns: 4,
+      costUsd: 0.25,
+      tokensIn: 3000,
+      tokensOut: 1000,
+      lastToolCall: null,
+      lastActivity: new Date().toISOString(),
+      costByPhase: { explorer: 0.05, developer: 0.15, qa: 0.05 },
+      agentByPhase: {
+        explorer: "claude-haiku-4-5",
+        developer: "claude-sonnet-4-6",
+        qa: "claude-sonnet-4-6",
+      },
+    });
+
+    const run2 = store.createRun(project.id, "seed-2", "pipeline");
+    store.updateRunProgress(run2.id, {
+      toolCalls: 8,
+      toolBreakdown: {},
+      filesChanged: [],
+      turns: 6,
+      costUsd: 0.40,
+      tokensIn: 5000,
+      tokensOut: 2000,
+      lastToolCall: null,
+      lastActivity: new Date().toISOString(),
+      costByPhase: { explorer: 0.10, developer: 0.25, qa: 0.05 },
+      agentByPhase: {
+        explorer: "claude-haiku-4-5",
+        developer: "claude-sonnet-4-6",
+        qa: "claude-sonnet-4-6",
+      },
+    });
+
+    const phaseMetrics = store.getPhaseMetrics(project.id);
+
+    expect(phaseMetrics.totalByPhase.explorer).toBeCloseTo(0.15);
+    expect(phaseMetrics.totalByPhase.developer).toBeCloseTo(0.40);
+    expect(phaseMetrics.totalByPhase.qa).toBeCloseTo(0.10);
+
+    expect(phaseMetrics.runsByPhase.explorer).toBe(2);
+    expect(phaseMetrics.runsByPhase.developer).toBe(2);
+    expect(phaseMetrics.runsByPhase.qa).toBe(2);
+
+    // haiku: 0.05 + 0.10 = 0.15; sonnet: (0.15+0.05) + (0.25+0.05) = 0.50
+    expect(phaseMetrics.totalByAgent["claude-haiku-4-5"]).toBeCloseTo(0.15);
+    expect(phaseMetrics.totalByAgent["claude-sonnet-4-6"]).toBeCloseTo(0.50);
+  });
+
+  it("getMetrics includes costByPhase and agentCostBreakdown when phase data exists", () => {
+    const project = store.registerProject("p", "/p");
+    const run = store.createRun(project.id, "seed-1", "pipeline");
+
+    store.recordCost(run.id, 5000, 2000, 0, 0.30);
+
+    store.updateRunProgress(run.id, {
+      toolCalls: 10,
+      toolBreakdown: {},
+      filesChanged: [],
+      turns: 8,
+      costUsd: 0.30,
+      tokensIn: 5000,
+      tokensOut: 2000,
+      lastToolCall: null,
+      lastActivity: new Date().toISOString(),
+      costByPhase: { explorer: 0.05, developer: 0.20, qa: 0.05 },
+      agentByPhase: {
+        explorer: "claude-haiku-4-5",
+        developer: "claude-sonnet-4-6",
+        qa: "claude-sonnet-4-6",
+      },
+    });
+
+    const metrics = store.getMetrics(project.id);
+
+    expect(metrics.totalCost).toBeCloseTo(0.30);
+    expect(metrics.costByPhase).toBeDefined();
+    expect(metrics.costByPhase!.explorer).toBeCloseTo(0.05);
+    expect(metrics.costByPhase!.developer).toBeCloseTo(0.20);
+    expect(metrics.agentCostBreakdown).toBeDefined();
+    expect(metrics.agentCostBreakdown!["claude-haiku-4-5"]).toBeCloseTo(0.05);
+    expect(metrics.agentCostBreakdown!["claude-sonnet-4-6"]).toBeCloseTo(0.25);
+  });
+
+  it("getMetrics omits costByPhase/agentCostBreakdown for runs without phase data", () => {
+    const project = store.registerProject("p", "/p");
+    const run = store.createRun(project.id, "seed-1", "claude-code");
+    store.recordCost(run.id, 1000, 500, 0, 0.05);
+
+    // Set progress without phase info (single-agent mode)
+    store.updateRunProgress(run.id, {
+      toolCalls: 3,
+      toolBreakdown: {},
+      filesChanged: [],
+      turns: 2,
+      costUsd: 0.05,
+      tokensIn: 1000,
+      tokensOut: 500,
+      lastToolCall: null,
+      lastActivity: new Date().toISOString(),
+    });
+
+    const metrics = store.getMetrics(project.id);
+    expect(metrics.totalCost).toBeCloseTo(0.05);
+    expect(metrics.costByPhase).toBeUndefined();
+    expect(metrics.agentCostBreakdown).toBeUndefined();
   });
 });

@@ -126,6 +126,26 @@ export function renderAgentCard(run: Run, progress: RunProgress | null, isExpand
 
   // Full card with progress
   lines.push(`  ${chalk.dim("Cost      ")} ${chalk.green("$" + progress.costUsd.toFixed(4))}`);
+
+  // Per-phase cost breakdown (pipeline mode only)
+  if (progress.costByPhase && Object.keys(progress.costByPhase).length > 0) {
+    const phaseOrder = ["explorer", "developer", "qa", "reviewer"];
+    const phases = Object.entries(progress.costByPhase)
+      .sort(([a], [b]) => {
+        const ai = phaseOrder.indexOf(a);
+        const bi = phaseOrder.indexOf(b);
+        if (ai === -1 && bi === -1) return a.localeCompare(b);
+        if (ai === -1) return 1;
+        if (bi === -1) return -1;
+        return ai - bi;
+      });
+    for (const [phase, cost] of phases) {
+      const agent = progress.agentByPhase?.[phase];
+      const agentHint = agent ? chalk.dim(` (${shortModel(agent)})`) : "";
+      lines.push(`  ${chalk.dim("  " + phase.padEnd(10))} ${chalk.dim("$" + cost.toFixed(4))}${agentHint}`);
+    }
+  }
+
   lines.push(`  ${chalk.dim("Turns     ")} ${progress.turns}`);
 
   // Show pipeline phase if available (colour-coded by role)

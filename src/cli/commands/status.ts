@@ -147,6 +147,33 @@ function renderStatus(): void {
       console.log(chalk.bold("Costs"));
       console.log(`  Total: ${chalk.yellow(`$${metrics.totalCost.toFixed(2)}`)}`);
       console.log(`  Tokens: ${chalk.dim(`${(metrics.totalTokens / 1000).toFixed(1)}k`)}`);
+
+      // Per-phase cost breakdown
+      if (metrics.costByPhase && Object.keys(metrics.costByPhase).length > 0) {
+        console.log(`  ${chalk.dim("By phase:")}`);
+        const phaseOrder = ["explorer", "developer", "qa", "reviewer"];
+        const phases = Object.entries(metrics.costByPhase)
+          .sort(([a], [b]) => {
+            const ai = phaseOrder.indexOf(a);
+            const bi = phaseOrder.indexOf(b);
+            if (ai === -1 && bi === -1) return a.localeCompare(b);
+            if (ai === -1) return 1;
+            if (bi === -1) return -1;
+            return ai - bi;
+          });
+        for (const [phase, cost] of phases) {
+          console.log(`    ${phase.padEnd(12)} ${chalk.yellow(`$${cost.toFixed(4)}`)}`);
+        }
+      }
+
+      // Per-agent/model cost breakdown
+      if (metrics.agentCostBreakdown && Object.keys(metrics.agentCostBreakdown).length > 0) {
+        console.log(`  ${chalk.dim("By model:")}`);
+        const sorted = Object.entries(metrics.agentCostBreakdown).sort(([, a], [, b]) => b - a);
+        for (const [model, cost] of sorted) {
+          console.log(`    ${model.padEnd(32)} ${chalk.yellow(`$${cost.toFixed(4)}`)}`);
+        }
+      }
     }
   } else {
     console.log(chalk.dim("  (project not registered — run 'foreman init')"));

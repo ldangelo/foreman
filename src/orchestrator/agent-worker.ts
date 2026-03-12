@@ -372,6 +372,13 @@ async function runPhase(
       progress.costUsd += phaseResult.total_cost_usd;
       progress.tokensIn += phaseResult.usage.input_tokens;
       progress.tokensOut += phaseResult.usage.output_tokens;
+
+      // Record per-phase cost breakdown
+      progress.costByPhase ??= {};
+      progress.costByPhase[role] = (progress.costByPhase[role] ?? 0) + phaseResult.total_cost_usd;
+      progress.agentByPhase ??= {};
+      progress.agentByPhase[role] = roleConfig.model;
+
       store.updateRunProgress(config.runId, progress);
 
       if (phaseResult.subtype === "success") {
