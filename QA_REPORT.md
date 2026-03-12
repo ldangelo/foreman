@@ -1,62 +1,56 @@
-# QA Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# QA Report: Agent observability: dashboard command with live TUI
 
 ## Verdict: PASS
 
 ## Test Results
-- Test suite: 230 passed, 9 failed (all failures are pre-existing infrastructure issues, not related to this change)
-- New tests added: 3 (added by Developer in roles.test.ts)
+- Test suite: 267 passed + 37 new dashboard tests = 304 passing tests (after fix)
+- Pre-existing failures: 9 (unrelated to this change — tsx binary missing in worktree, detached-spawn infrastructure issues)
+- New tests added: 37 (src/cli/__tests__/dashboard.test.ts — all pass)
+- TypeScript: No type errors (tsc --noEmit clean)
 
-## Analysis of Failures
+## Implementation Summary
 
-All 9 test failures are pre-existing infrastructure issues caused by the worktree environment lacking a `tsx` binary in its local `node_modules/.bin/`. The worktree's `node_modules` directory is empty — it has no installed packages. Tests that spawn `tsx` as a child process fail with `ENOENT`.
+Three new files were added and one existing file was modified:
 
-Affected test files (all pre-existing failures, unrelated to this change):
-- `src/orchestrator/__tests__/agent-worker.test.ts` — 2 failed (tsx ENOENT)
-- `src/cli/__tests__/commands.test.ts` — 4 failed (tsx ENOENT)
-- `src/orchestrator/__tests__/worker-spawn.test.ts` — 1 failed (tsx ENOENT)
-- `src/orchestrator/__tests__/detached-spawn.test.ts` — 2 failed (tsx ENOENT)
+1. **src/cli/commands/dashboard.ts** — CLI command registration using Commander.js. Accepts `--project`, `--interval`, `--no-auto-update`, and `--all` flags. Properly validates interval, gracefully degrades to global view when project not found.
 
-Verification: Running the same tests from the main project directory (which has full node_modules) yields all tests passing with 0 failures (confirmed by stashing and running on main: 234 passed).
+2. **src/cli/dashboard-ui.ts** — Core TUI logic with:
+   - `DashboardState` interface
+   - `renderDashboard()` — Full dashboard renderer (header, active agents, recent agents, event log, summary bar)
+   - `renderEventLog()` — Recent events with icons, elapsed time, and bead ID extraction
+   - `renderAgentsList()` — Delegates to existing `renderAgentCard()` from watch-ui.ts
+   - `pollDashboard()` — Queries store for active/completed/failed runs, merges and deduplicates, aggregates metrics
+   - `runDashboard()` — Polling loop with SIGINT handling, supports both live and single-render modes
 
-## Implementation Review
+3. **src/cli/__tests__/dashboard.test.ts** — 37 tests covering: `renderEventLog`, `renderAgentsList`, `renderDashboard`, and `pollDashboard`.
 
-The change is complete and correct across all three files:
-
-1. **`src/orchestrator/roles.ts`** — `RoleConfig` interface renamed `maxTurns: number` → `maxBudgetUsd: number`. Budget values set:
-   - explorer (haiku): $1.00
-   - developer (sonnet): $5.00
-   - qa (sonnet): $3.00
-   - reviewer (sonnet): $2.00
-
-2. **`src/orchestrator/agent-worker.ts`** — `runPhase()` function updated:
-   - Log format changed from `maxTurns=${roleConfig.maxTurns}` to `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - SDK query options changed from `maxTurns: roleConfig.maxTurns` to `maxBudgetUsd: roleConfig.maxBudgetUsd`
-
-3. **`src/orchestrator/dispatcher.ts`** — `dispatchPlanStep()` updated:
-   - Added constant `PLAN_STEP_MAX_BUDGET_USD = 3.00` at the top
-   - Changed `maxTurns: 50` to `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`
-
-4. **TypeScript compilation** — `npx tsc --noEmit` passes with zero errors.
-
-5. **No remaining `maxTurns` references** — a `grep` over the src/ directory confirms no production code retains the old property name. The only `maxTurns` occurrences are in the new negative-assertion test (`all role configs have no maxTurns property`).
-
-## Tests Added by Developer
-
-The developer added 3 new tests to `src/orchestrator/__tests__/roles.test.ts` (all pass):
-- `all roles have positive maxBudgetUsd values` — verifies all configs have `maxBudgetUsd > 0`
-- `explorer has lower budget than developer (haiku vs sonnet)` — verifies cost-tiering logic ($1.00 < $5.00)
-- `developer budget is $5.00` — explicit value assertion
-- `reviewer budget is $2.00` — explicit value assertion
-- `all role configs have no maxTurns property` — negative assertion ensuring old property is fully removed
-
-Total tests in roles.test.ts: 23 (all pass).
+4. **src/cli/index.ts** — Dashboard command imported and registered.
 
 ## Issues Found
 
-None related to the task implementation.
+### Minor Issue Fixed: commands.test.ts not updated for new command
+- `src/cli/__tests__/commands.test.ts` had a test titled "shows all 7 commands" that explicitly asserted `expect(output).not.toContain("dashboard")`. The dashboard command is now the 8th command, so this assertion would fail if tsx was available.
+- **Fix applied**: Updated test title to "shows all 8 commands", added "dashboard" to the expected command list, removed the `not.toContain("dashboard")` assertion.
+- Note: This test was already failing due to tsx binary ENOENT (pre-existing worktree infrastructure issue) so no regression was introduced.
 
-Pre-existing: worktree node_modules is empty (tsx binary missing), causing 9 tests to fail when run from the worktree directory. These same tests pass on the main project directory. This is an environment setup issue, not a code defect.
+### Pre-existing Failures (not caused by this change)
+All 9 pre-existing failures confirmed present on both `main` and on this branch before the dashboard changes:
+- `src/cli/__tests__/commands.test.ts` (4 failures) — tsx binary not in worktree node_modules
+- `src/orchestrator/__tests__/worker-spawn.test.ts` (1 failure) — tsx binary missing
+- `src/orchestrator/__tests__/agent-worker.test.ts` (2 failures) — tsx binary missing
+- `src/orchestrator/__tests__/detached-spawn.test.ts` (2 failures) — tsx binary missing + detach test failure
+
+## Edge Cases Verified by Tests
+
+- Empty runs list shows "no agents running" message
+- Empty events list shows "no events yet" message and no "Recent Events" header
+- Deduplication of runs that appear in both active and completed query results
+- `test-failed` status counted in failedCount
+- Ctrl+C hint hidden when no active agents, hidden when showDetachHint=false
+- Project null case (global view)
+- Cost/tool/file metric aggregation across multiple runs
+- Event limit parameter respected
+- `updatedAt` set to current time
 
 ## Files Modified
-
-- No test files modified by QA (developer-added tests were already correct and all pass)
+- `src/cli/__tests__/commands.test.ts` — Updated --help test to expect 8 commands including "dashboard"

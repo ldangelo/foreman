@@ -11,6 +11,7 @@ import { prCommand } from "./commands/pr.js";
 import { monitorCommand } from "./commands/monitor.js";
 import { resetCommand } from "./commands/reset.js";
 import { attachCommand } from "./commands/attach.js";
+import { dashboardCommand } from "./commands/dashboard.js";
 
 const program = new Command();
 
@@ -29,5 +30,6 @@ program.addCommand(prCommand);
 program.addCommand(monitorCommand);
 program.addCommand(resetCommand);
 program.addCommand(attachCommand);
+program.addCommand(dashboardCommand);
 
 program.parse();

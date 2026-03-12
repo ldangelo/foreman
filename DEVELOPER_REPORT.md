@@ -1,34 +1,55 @@
-# Developer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Developer Report: Agent observability: dashboard command with live TUI
 
 ## Approach
 
-This iteration addressed the two NOTE-level feedback items from the previous review cycle. The core `maxTurns → maxBudgetUsd` migration was already complete; this pass tightens two remaining rough edges:
+Implemented a `foreman dashboard` command that provides a live, polling-based TUI dashboard for observing agent status across a project. The implementation follows the existing `watch-ui.ts` pattern (ANSI escape code clearing + polling loop) and reuses the existing `renderAgentCard()` helper.
 
-1. Extract the inline `3.00` magic number in `dispatcher.ts` to a named constant, matching the pattern used by `ROLE_CONFIGS`.
-2. Strengthen the budget regression tests in `roles.test.ts` by pinning absolute USD values for `developer` and `reviewer`, so accidental budget reductions are caught.
+Key design decisions:
+- Separated UI rendering logic into `dashboard-ui.ts` (parallel to `watch-ui.ts`) to keep command files thin
+- The dashboard shows ALL runs for a project (active + recent completed/failed), not just specific run IDs
+- Includes a recent events log pulled from the store's events table
+- Supports `--all` flag for cross-project view and `--no-auto-update` for single-render/testing mode
 
 ## Files Changed
 
-- **src/orchestrator/dispatcher.ts** — Added `PLAN_STEP_MAX_BUDGET_USD = 3.00` constant above the `Dispatcher` class and replaced the inline literal `maxBudgetUsd: 3.00` with `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`. This mirrors how `ROLE_CONFIGS` centralises phase budgets, making future adjustments easy to find and change.
+- **src/cli/dashboard-ui.ts** (new) — Core TUI rendering + polling logic
+  - `DashboardState` interface with project, runs, summary metrics, events
+  - `renderDashboard()` — composes header, active agents, recent agents, events, summary bar
+  - `renderEventLog()` — formats recent events with icons, type, bead ID, elapsed time
+  - `renderAgentsList()` — wraps existing `renderAgentCard()` for a list of runs
+  - `pollDashboard()` — queries store for active + recent runs, aggregates metrics, fetches events
+  - `runDashboard()` — main polling loop with SIGINT handling (Ctrl+C to exit gracefully)
 
-- **src/orchestrator/__tests__/roles.test.ts** — Added two new pinned-value tests:
-  - `"developer budget is $5.00"` — asserts `ROLE_CONFIGS.developer.maxBudgetUsd === 5.00`
-  - `"reviewer budget is $2.00"` — asserts `ROLE_CONFIGS.reviewer.maxBudgetUsd === 2.00`
+- **src/cli/commands/dashboard.ts** (new) — Commander command definition
+  - Options: `--project <path>`, `--interval <ms>`, `--no-auto-update`, `--all`
+  - Resolves project via `getProjectByPath()` from current directory or `--project` flag
+  - Gracefully degrades to global view with a warning if project not registered
 
-  These supplement the existing relative ordering test (`explorer < developer`) with absolute guard rails that catch regression if any budget is accidentally halved or zeroed.
+- **src/cli/index.ts** (modified) — Added import and registration of `dashboardCommand`
 
 ## Tests Added/Modified
 
-- **src/orchestrator/__tests__/roles.test.ts**
-  - Added `"developer budget is $5.00"` — pins the developer role's exact budget
-  - Added `"reviewer budget is $2.00"` — pins the reviewer role's exact budget
+- **src/cli/__tests__/dashboard.test.ts** (new) — 37 tests covering:
+  - `renderEventLog()` — empty state, event type display, bead ID extraction, limit parameter, elapsed time
+  - `renderAgentsList()` — empty state, multiple runs, status display, cost from progress
+  - `renderDashboard()` — header, section visibility (Active/Recent Agents, Events), summary bar counts/cost/tools, Ctrl+C hint logic
+  - `pollDashboard()` — project fetch, metric aggregation, run deduplication, count calculations (running/pending/completed/failed/stuck), events inclusion, timestamp accuracy
 
 ## Decisions & Trade-offs
 
-- **Which roles to pin**: Chose `developer` (the most expensive phase, most likely to be accidentally changed) and `reviewer` (a meaningfully different value from `developer`). `explorer` and `qa` are implicitly covered by the ordering test (`explorer < developer`) and the "all positive" guard.
-- **Constant scope**: `PLAN_STEP_MAX_BUDGET_USD` is module-scoped (not exported) since it is only used inside `dispatcher.ts`. If other modules ever need it, it can be exported at that point.
-- **No changes to budget values**: The values (`developer: 5.00`, `reviewer: 2.00`, plan step: `3.00`) are intentionally preserved from the previous iteration to keep this pass focused on code quality only.
+1. **Reused `renderAgentCard()`** from `watch-ui.ts` instead of building a new card renderer — keeps consistent visuals with `foreman run --watch`.
+
+2. **ANSI polling vs Ink/React** — Followed the existing `watchRunsInk` pattern (ANSI escape codes + poll loop) rather than introducing Ink React components. This keeps the implementation simple and consistent with the rest of the codebase. Ink is available as a dependency but not yet used anywhere.
+
+3. **Show active + recent runs** — Unlike `watchRunsInk` which only shows specific run IDs, the dashboard fetches all active runs + last 5 completed + last 3 failed for the project, giving a holistic view.
+
+4. **`--no-auto-update` flag** — Renders once without the clear-screen loop. Used by tests and useful for piping output or scripting.
+
+5. **Graceful degradation when project not found** — Shows a warning and falls back to global view rather than hard-failing. Matches UX patterns of other foreman commands.
 
 ## Known Limitations
 
-- Budget values are estimates based on expected token usage; real-world calibration should happen after a few pipeline runs with production workloads.
+- No scrolling: with many concurrent agents, cards may overflow the terminal height. Terminal scrollback works but live updates overwrite. Future: implement terminal height detection and truncation.
+- No keyboard interaction: pressing keys other than Ctrl+C has no effect. Future: use Ink for interactive mode (tabs, scroll, etc.).
+- Events show project-level events only; there's no drill-down to per-run event history in the TUI.
+- `--all` global view fetches runs without a project filter, which may be slow if many runs are in the database.
