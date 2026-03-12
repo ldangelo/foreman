@@ -1,11 +1,11 @@
 # Agent Task
 
 ## Task Details
-**Bead ID:** foreman-fe78
-**Title:** Replace maxTurns with maxBudgetUsd for pipeline phase limits
+**Seed ID:** foreman-e8c0
+**Title:** Skill mining from past agent sessions
 **Description:** (no description provided)
 **Model:** claude-sonnet-4-6
-**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-fe78
+**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-e8c0
 
 ## Agent Team
 This task is handled by an Engineering Lead agent that orchestrates a team:

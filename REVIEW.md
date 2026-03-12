@@ -1,28 +1,29 @@
-# Code Review: Task groups for batch coordination
+# Code Review: Skill mining from past agent sessions
 
-## Verdict: FAIL
+## Verdict: PASS
 
 ## Summary
 
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation delivers a clean Phase 1 skill-mining feature: a `ReportAnalyzer` class that scans worktree report files, extracts structural metrics, and identifies recurring patterns (skills), surfaced through a new `foreman mine-skills` CLI command. The code is well-organized, follows existing codebase patterns faithfully, adds no new dependencies, handles error/edge cases gracefully, and is covered by a solid suite of 38 unit tests. There are a few minor issues worth addressing in a follow-up: an unused variable, a double-read in `extractSkills`, and a weak test assertion — none of which affect correctness or the verdict.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[NOTE]** `src/orchestrator/report-analyzer.ts:348` — `const lower = content.toLowerCase()` is assigned but then used only via `.includes()` at lines 354–355, while the earlier `/## verdict:/i` and `/\bverdict[:\s]+/i` regexes already use the `i` flag directly on `content`. The variable is not harmful, but it adds noise. Could be inlined or removed.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[NOTE]** `src/orchestrator/report-analyzer.ts:401–405` — `extractSkills()` reads each report file from disk a second time (`readFileSync(report.filePath, ...)`) even though the content was already parsed during `parseReport()`. At the current scale this is harmless, but it creates unnecessary I/O and will slow things down as report counts grow. Storing raw content on `ParsedReport` (or passing it through) would eliminate the redundant reads. This is a future optimization, not a blocker.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
+- **[NOTE]** `src/orchestrator/__tests__/report-analyzer.test.ts:307–311` — The `calculateCompleteness` test for a fully complete explorer report asserts `score > 0.5` rather than the more precise `score >= 0.8` (or `toBe(1.0)`). `EXPLORER_REPORT_PASS` includes all 5 expected explorer sections (`Relevant Files`, `Architecture`, `Dependencies`, `Existing Tests`, `Recommended Approach`), so the score should be `1.0`. The looser assertion would pass even if the scoring were badly broken.
 
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
-
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/orchestrator/report-analyzer.ts:377` — The completeness fallback for `unknown` role returns `0.5` (described as "neutral"). This is a reasonable design choice, but it silently inflates `averageCompleteness` when unrecognized report files are scanned. A comment explaining the rationale would help future readers.
 
 ## Positive Notes
 
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- New interfaces in `src/orchestrator/types.ts` (`ReportSection`, `ParsedReport`, `Skill`, `SkillMiningResult`) are clean, well-documented, and logically grouped in a dedicated section without touching existing types.
+- `listReportFiles()` correctly handles the dual naming convention (plain and timestamped) via prefix matching, and `detectRole()` / `extractTimestamp()` are concise and correct.
+- `extractSections()` uses the standard heading-to-heading regex approach that matches the rest of the codebase; boundary handling (last section to EOF) is correct.
+- `extractSkills()` skill patterns are carefully scoped to structural quality indicators (code blocks, line refs, section presence, pitfall language) rather than fragile word frequency counts — exactly what the Explorer report recommended to avoid false positives.
+- Confidence scoring (`min(frequency/10, 1.0)`) explicitly accounts for the small-sample-size problem noted in the Explorer report.
+- `mine-skills.ts` CLI command follows the established pattern (Commander option parsing, chalk formatting, `resolve` for path normalization); the `--save` flag for JSON export is a nice addition.
+- `renderTable()` produces a rich, color-coded output with category grouping and a bar chart for section frequency — well above the minimum viable output.
+- The test file uses temp-directory fixtures (`createTmpProject` + `rmSync` in `afterEach`) ensuring isolation and no leftover state between tests.
+- Zero new npm dependencies introduced.

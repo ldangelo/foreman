@@ -1,34 +1,29 @@
-# Developer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Developer Report: Skill mining from past agent sessions
 
 ## Approach
 
-This iteration addressed the two NOTE-level feedback items from the previous review cycle. The core `maxTurns → maxBudgetUsd` migration was already complete; this pass tightens two remaining rough edges:
-
-1. Extract the inline `3.00` magic number in `dispatcher.ts` to a named constant, matching the pattern used by `ROLE_CONFIGS`.
-2. Strengthen the budget regression tests in `roles.test.ts` by pinning absolute USD values for `developer` and `reviewer`, so accidental budget reductions are caught.
+This iteration addresses four code-quality notes raised by the Reviewer in the previous cycle. No new features were added — the changes are targeted cleanups and robustness improvements to the existing `report-analyzer.ts` implementation.
 
 ## Files Changed
 
-- **src/orchestrator/dispatcher.ts** — Added `PLAN_STEP_MAX_BUDGET_USD = 3.00` constant above the `Dispatcher` class and replaced the inline literal `maxBudgetUsd: 3.00` with `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`. This mirrors how `ROLE_CONFIGS` centralises phase budgets, making future adjustments easy to find and change.
+- `src/orchestrator/types.ts` — Added `rawContent: string` field to `ParsedReport` interface to cache file content at parse time, enabling downstream consumers to avoid redundant disk reads.
 
-- **src/orchestrator/__tests__/roles.test.ts** — Added two new pinned-value tests:
-  - `"developer budget is $5.00"` — asserts `ROLE_CONFIGS.developer.maxBudgetUsd === 5.00`
-  - `"reviewer budget is $2.00"` — asserts `ROLE_CONFIGS.reviewer.maxBudgetUsd === 2.00`
-
-  These supplement the existing relative ordering test (`explorer < developer`) with absolute guard rails that catch regression if any budget is accidentally halved or zeroed.
+- `src/orchestrator/report-analyzer.ts` — Four targeted fixes:
+  1. **Removed unused `lower` variable** in `parseVerdict()`. The `.includes("**pass**")` / `.includes("**fail**")` checks now use case-insensitive regex (`/\*\*pass\*\*/i`) matching the same style as all other verdict patterns in the method.
+  2. **Eliminated double file reads in `extractSkills()`**. Now reads `report.rawContent` (cached during `parseReport()`) instead of calling `readFileSync(report.filePath, …)` a second time per report per skill pattern.
+  3. **Stored `rawContent` in `parseReport()`** return value so the cached content is available to `extractSkills()`.
+  4. **Added explanatory comment** to the `unknown` role `0.5` fallback in `calculateCompleteness()`, explaining that the neutral value is intentional to avoid biasing `averageCompleteness` in either direction for unrecognized files.
 
 ## Tests Added/Modified
 
-- **src/orchestrator/__tests__/roles.test.ts**
-  - Added `"developer budget is $5.00"` — pins the developer role's exact budget
-  - Added `"reviewer budget is $2.00"` — pins the reviewer role's exact budget
+- `src/orchestrator/__tests__/report-analyzer.test.ts` — Tightened the `calculateCompleteness` assertion for a fully complete explorer report from `toBeGreaterThan(0.5)` to `toBe(1.0)`. `EXPLORER_REPORT_PASS` contains all five expected explorer sections (`Relevant Files`, `Architecture`, `Dependencies`, `Existing Tests`, `Recommended Approach`), so the score should always be exactly `1.0`.
 
 ## Decisions & Trade-offs
 
-- **Which roles to pin**: Chose `developer` (the most expensive phase, most likely to be accidentally changed) and `reviewer` (a meaningfully different value from `developer`). `explorer` and `qa` are implicitly covered by the ordering test (`explorer < developer`) and the "all positive" guard.
-- **Constant scope**: `PLAN_STEP_MAX_BUDGET_USD` is module-scoped (not exported) since it is only used inside `dispatcher.ts`. If other modules ever need it, it can be exported at that point.
-- **No changes to budget values**: The values (`developer: 5.00`, `reviewer: 2.00`, plan step: `3.00`) are intentionally preserved from the previous iteration to keep this pass focused on code quality only.
+- **`rawContent` on `ParsedReport` vs passing content separately**: Adding `rawContent` to the struct is a minor memory trade-off (each report's text is held in memory until `analyze()` returns), but this is negligible at realistic report counts and keeps the API clean. An alternative (passing content as a separate parameter to `extractSkills`) would require a more complex internal API.
+
+- **Regex for `**pass**` detection**: Changed from `lower.includes("**pass**")` to `/\*\*pass\*\*/i`. The behavior is identical for well-formed markdown; using regex with the `i` flag is consistent with every other pattern in the method and makes the intent more explicit.
 
 ## Known Limitations
 
-- Budget values are estimates based on expected token usage; real-world calibration should happen after a few pipeline runs with production workloads.
+- The `rawContent` field is not filtered or truncated — for very large report files this holds the entire content in memory. This is acceptable for markdown reports which are typically small (< 50 KB).

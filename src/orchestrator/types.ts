@@ -149,3 +149,50 @@ export interface PrReport {
   created: CreatedPr[];
   failed: FailedRun[];
 }
+
+// ── Skill mining types ─────────────────────────────────────────────────
+
+export interface ReportSection {
+  name: string;
+  content: string;
+  lineCount: number;
+  hasCodeBlocks: boolean;
+}
+
+export interface ParsedReport {
+  filePath: string;
+  role: "explorer" | "developer" | "qa" | "reviewer" | "unknown";
+  timestamp: string | null;
+  seedId: string | null;
+  sections: ReportSection[];
+  verdict: "pass" | "fail" | "unknown";
+  issueCount: { critical: number; warning: number; note: number };
+  completenessScore: number;  // 0-1 based on expected sections present
+  lineCount: number;
+  /** Raw file content — cached to avoid redundant disk reads in extractSkills(). */
+  rawContent: string;
+}
+
+export interface Skill {
+  id: string;
+  name: string;
+  category: "exploration" | "implementation" | "testing" | "review";
+  description: string;
+  pattern: string;       // The actual technique/phrase/structure
+  frequency: number;     // How many reports contain this pattern
+  successRate: number;   // Percentage of reports with this pattern that passed downstream
+  sourceReports: string[];  // Filenames that contain this pattern
+  confidence: number;    // 0-1, based on sample size
+}
+
+export interface SkillMiningResult {
+  projectPath: string;
+  scannedAt: string;
+  reportCount: number;
+  roleBreakdown: Record<string, number>;
+  verdictDistribution: { pass: number; fail: number; unknown: number };
+  averageCompleteness: number;
+  sectionFrequency: Array<{ section: string; count: number; percentage: number }>;
+  skills: Skill[];
+  reports: ParsedReport[];
+}
