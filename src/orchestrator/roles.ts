@@ -7,6 +7,7 @@
  */
 
 import type { AgentRole, ModelSelection } from "./types.js";
+import type { AgentMemory } from "../lib/store.js";
 
 // ── Role config ─────────────────────────────────────────────────────────
 
@@ -45,13 +46,63 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
   },
 };
 
+// ── Memory context formatting ────────────────────────────────────────────
+
+/**
+ * Format an AgentMemory object into a prompt section.
+ * Returns an empty string if the memory has no relevant content.
+ */
+export function formatMemoryContext(memory: AgentMemory): string {
+  const lines: string[] = [];
+
+  if (memory.episodes.length > 0) {
+    lines.push("## Past Learnings from Similar Tasks");
+    lines.push("");
+    for (const ep of memory.episodes) {
+      const status = ep.outcome === "success" ? "✅" : "❌";
+      lines.push(`${status} **${ep.task_title}** (role: ${ep.role}, cost: $${ep.cost_usd.toFixed(4)})`);
+      if (ep.key_learnings) {
+        lines.push(`   ${ep.key_learnings.slice(0, 300)}`);
+      }
+    }
+    lines.push("");
+  }
+
+  if (memory.patterns.length > 0) {
+    lines.push("## Patterns That Have Worked in This Codebase");
+    lines.push("");
+    for (const p of memory.patterns) {
+      const total = p.success_count + p.failure_count;
+      const rate = total > 0 ? Math.round((p.success_count / total) * 100) : 0;
+      lines.push(`- **[${p.pattern_type}]** ${p.pattern_description} (success rate: ${rate}%, seen ${total}× total)`);
+    }
+    lines.push("");
+  }
+
+  if (memory.skills.length > 0) {
+    lines.push("## Applicable Skills");
+    lines.push("");
+    for (const s of memory.skills) {
+      lines.push(`- **${s.skill_name}** (confidence: ${s.confidence_score}%): ${s.skill_description}`);
+    }
+    lines.push("");
+  }
+
+  return lines.length > 0 ? lines.join("\n") : "";
+}
+
 // ── Prompt templates ────────────────────────────────────────────────────
 
-export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string): string {
+export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string, memory?: AgentMemory): string {
+  const memorySection = memory ? formatMemoryContext(memory) : "";
+  const memoryBlock = memorySection
+    ? `\n## Cross-Session Memory\n${memorySection}\n`
+    : "";
+
   return `# Explorer Agent
 
 You are an **Explorer** — your job is to understand the codebase before implementation begins.
-
+${memoryBlock}
 ## Task
 **Seed:** ${seedId} — ${seedTitle}
 **Description:** ${seedDescription}
@@ -101,6 +152,7 @@ export function developerPrompt(
   seedDescription: string,
   hasExplorerReport: boolean,
   feedbackContext?: string,
+  memory?: AgentMemory,
 ): string {
   const explorerInstructions = hasExplorerReport
     ? `2. Read **EXPLORER_REPORT.md** for codebase context and recommended approach`
@@ -110,10 +162,15 @@ export function developerPrompt(
     ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${feedbackContext}\n`
     : "";
 
+  const memorySection = memory ? formatMemoryContext(memory) : "";
+  const memoryBlock = memorySection
+    ? `\n## Cross-Session Memory\n${memorySection}\n`
+    : "";
+
   return `# Developer Agent
 
 You are a **Developer** — your job is to implement the task.
-${feedbackSection}
+${feedbackSection}${memoryBlock}
 ## Task
 **Seed:** ${seedId} — ${seedTitle}
 **Description:** ${seedDescription}

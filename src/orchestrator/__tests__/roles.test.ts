@@ -7,7 +7,9 @@ import {
   reviewerPrompt,
   parseVerdict,
   extractIssues,
+  formatMemoryContext,
 } from "../roles.js";
+import type { AgentMemory } from "../../lib/store.js";
 
 describe("ROLE_CONFIGS", () => {
   it("has configs for all sub-agent roles", () => {
@@ -119,6 +121,99 @@ describe("parseVerdict", () => {
 
   it("returns unknown for empty content", () => {
     expect(parseVerdict("")).toBe("unknown");
+  });
+});
+
+describe("formatMemoryContext", () => {
+  const emptyMemory: AgentMemory = { episodes: [], patterns: [], skills: [] };
+
+  it("returns empty string for empty memory", () => {
+    expect(formatMemoryContext(emptyMemory)).toBe("");
+  });
+
+  it("includes episode summary with outcome icon", () => {
+    const memory: AgentMemory = {
+      episodes: [{
+        id: "ep1", run_id: null, project_id: "p1", seed_id: "sd-1",
+        task_title: "Fix auth", task_description: null, role: "developer",
+        outcome: "success", duration_ms: 5000, cost_usd: 0.05,
+        key_learnings: "Used JWT strategy", created_at: "2026-01-01",
+      }],
+      patterns: [],
+      skills: [],
+    };
+    const result = formatMemoryContext(memory);
+    expect(result).toContain("✅");
+    expect(result).toContain("Fix auth");
+    expect(result).toContain("Used JWT strategy");
+    expect(result).toContain("Past Learnings");
+  });
+
+  it("uses ❌ icon for failure episodes", () => {
+    const memory: AgentMemory = {
+      episodes: [{
+        id: "ep1", run_id: null, project_id: "p1", seed_id: "sd-1",
+        task_title: "Task", task_description: null, role: "qa",
+        outcome: "failure", duration_ms: null, cost_usd: 0.01,
+        key_learnings: null, created_at: "2026-01-01",
+      }],
+      patterns: [],
+      skills: [],
+    };
+    expect(formatMemoryContext(memory)).toContain("❌");
+  });
+
+  it("includes patterns with success rate", () => {
+    const memory: AgentMemory = {
+      episodes: [],
+      patterns: [{
+        id: "p1", project_id: "proj", pattern_type: "naming",
+        pattern_description: "Use kebab-case", success_count: 3, failure_count: 1,
+        first_seen: "2026-01-01", last_used: "2026-01-02", created_at: "2026-01-01",
+      }],
+      skills: [],
+    };
+    const result = formatMemoryContext(memory);
+    expect(result).toContain("Patterns That Have Worked");
+    expect(result).toContain("Use kebab-case");
+    expect(result).toContain("75%");
+  });
+
+  it("includes skills with confidence score", () => {
+    const memory: AgentMemory = {
+      episodes: [],
+      patterns: [],
+      skills: [{
+        id: "s1", project_id: "proj", skill_name: "TS generics",
+        skill_description: "Use generics for reuse", applicable_to_roles: '["developer"]',
+        success_examples: null, confidence_score: 85, created_at: "2026-01-01",
+      }],
+    };
+    const result = formatMemoryContext(memory);
+    expect(result).toContain("Applicable Skills");
+    expect(result).toContain("TS generics");
+    expect(result).toContain("85%");
+  });
+
+  it("injects memory into explorerPrompt when provided", () => {
+    const memory: AgentMemory = {
+      episodes: [{
+        id: "e1", run_id: null, project_id: "p", seed_id: "s",
+        task_title: "Past task", task_description: null, role: "explorer",
+        outcome: "success", duration_ms: null, cost_usd: 0.01,
+        key_learnings: "Found relevant files", created_at: "2026-01-01",
+      }],
+      patterns: [],
+      skills: [],
+    };
+    const prompt = explorerPrompt("sd-1", "New task", "description", memory);
+    expect(prompt).toContain("Cross-Session Memory");
+    expect(prompt).toContain("Past task");
+  });
+
+  it("omits memory block in developerPrompt when undefined", () => {
+    const prompt = developerPrompt("sd-1", "Task", "desc", true, undefined, undefined);
+    expect(prompt).not.toContain("Cross-Session Memory");
   });
 });
 

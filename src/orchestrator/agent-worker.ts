@@ -16,7 +16,7 @@ import { execFileSync } from "node:child_process";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 import { ForemanStore } from "../lib/store.js";
-import type { RunProgress } from "../lib/store.js";
+import type { RunProgress, AgentMemory } from "../lib/store.js";
 import {
   ROLE_CONFIGS,
   explorerPrompt,
@@ -301,6 +301,7 @@ interface PhaseResult {
   success: boolean;
   costUsd: number;
   turns: number;
+  durationMs: number;
   error?: string;
 }
 
@@ -323,6 +324,7 @@ async function runPhase(
   log(`[${role.toUpperCase()}] Starting phase for ${config.seedId}`);
 
   const env: Record<string, string | undefined> = { ...config.env };
+  const phaseStartMs = Date.now();
 
   try {
     let phaseResult: SDKResultSuccess | SDKResultError | undefined;
@@ -375,26 +377,28 @@ async function runPhase(
       store.updateRunProgress(config.runId, progress);
 
       if (phaseResult.subtype === "success") {
+        const durationMs = Date.now() - phaseStartMs;
         log(`[${role.toUpperCase()}] Completed (${phaseResult.num_turns} turns, $${phaseResult.total_cost_usd.toFixed(4)})`);
         await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] COMPLETED ($${phaseResult.total_cost_usd.toFixed(4)})\n`);
-        return { success: true, costUsd: phaseResult.total_cost_usd, turns: phaseResult.num_turns };
+        return { success: true, costUsd: phaseResult.total_cost_usd, turns: phaseResult.num_turns, durationMs };
       } else {
+        const durationMs = Date.now() - phaseStartMs;
         const errResult = phaseResult as SDKResultError;
         const reason = errResult.errors?.join("; ") ?? errResult.subtype;
         log(`[${role.toUpperCase()}] Failed: ${reason.slice(0, 200)}`);
         await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] FAILED: ${reason}\n`);
-        return { success: false, costUsd: phaseResult.total_cost_usd, turns: phaseResult.num_turns, error: reason };
+        return { success: false, costUsd: phaseResult.total_cost_usd, turns: phaseResult.num_turns, durationMs, error: reason };
       }
     }
 
     log(`[${role.toUpperCase()}] SDK ended without result`);
-    return { success: false, costUsd: 0, turns: 0, error: "SDK stream ended without result" };
+    return { success: false, costUsd: 0, turns: 0, durationMs: Date.now() - phaseStartMs, error: "SDK stream ended without result" };
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
     const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
     log(`[${role.toUpperCase()}] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason.slice(0, 200)}`);
     await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] ERROR: ${reason}\n`);
-    return { success: false, costUsd: 0, turns: 0, error: reason };
+    return { success: false, costUsd: 0, turns: 0, durationMs: Date.now() - phaseStartMs, error: reason };
   }
 }
 
@@ -495,6 +499,21 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
 const MAX_DEV_RETRIES = 2;
 
 /**
+ * Extract a concise learning summary from a report file.
+ * Grabs the first meaningful content (up to 500 chars) as key learnings.
+ */
+function extractKeyLearnings(reportContent: string): string {
+  // Try to extract the summary/approach section first
+  const summaryMatch = reportContent.match(/##\s*(?:Summary|Approach|Test Results)\n([\s\S]*?)(?=\n##|$)/i);
+  if (summaryMatch) {
+    return summaryMatch[1].trim().slice(0, 500);
+  }
+  // Fallback: first 500 chars of the report (skip the heading)
+  const withoutHeading = reportContent.replace(/^#[^\n]+\n/, "").trim();
+  return withoutHeading.slice(0, 500);
+}
+
+/**
  * Run the full pipeline: Explorer → Developer ⇄ QA → Reviewer → Finalize.
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
@@ -518,14 +537,30 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   log(`Pipeline starting for ${seedId} [phases: ${config.skipExplore ? "skip-explore" : "explore"} → dev → qa → ${config.skipReview ? "skip-review" : "review"} → finalize]`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n`);
 
+  // ── Query cross-session memory ─────────────────────────────────────
+  let memory: AgentMemory | undefined;
+  try {
+    memory = store.queryMemory(projectId, seedId);
+    const hasMemory = memory.episodes.length > 0 || memory.patterns.length > 0 || memory.skills.length > 0;
+    log(`Memory: ${memory.episodes.length} episodes, ${memory.patterns.length} patterns, ${memory.skills.length} skills`);
+    if (!hasMemory) memory = undefined; // Don't inject empty memory
+  } catch {
+    // Memory query failure is non-fatal — proceed without memory
+    memory = undefined;
+  }
+
   // ── Phase 1: Explorer ──────────────────────────────────────────────
   if (!config.skipExplore) {
     rotateReport(worktreePath, "EXPLORER_REPORT.md");
-    const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
+    const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description, memory), config, progress, logFile, store);
     if (!result.success) {
+      store.storeEpisode(projectId, runId, seedId, seedTitle, description, "explorer", "failure", result.costUsd, result.durationMs, result.error);
       await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed");
       return;
     }
+    const explorerReport = readReport(worktreePath, "EXPLORER_REPORT.md");
+    const explorerLearnings = explorerReport ? extractKeyLearnings(explorerReport) : undefined;
+    store.storeEpisode(projectId, runId, seedId, seedTitle, description, "explorer", "success", result.costUsd, result.durationMs, explorerLearnings);
     store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
   }
 
@@ -541,19 +576,24 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     rotateReport(worktreePath, "DEVELOPER_REPORT.md");
     const devResult = await runPhase(
       "developer",
-      developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext),
+      developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext, memory),
       config, progress, logFile, store,
     );
     if (!devResult.success) {
+      store.storeEpisode(projectId, runId, seedId, seedTitle, description, "developer", "failure", devResult.costUsd, devResult.durationMs, devResult.error);
       await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed");
       return;
     }
+    const devReport = readReport(worktreePath, "DEVELOPER_REPORT.md");
+    const devLearnings = devReport ? extractKeyLearnings(devReport) : undefined;
+    store.storeEpisode(projectId, runId, seedId, seedTitle, description, "developer", "success", devResult.costUsd, devResult.durationMs, devLearnings);
     store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
 
     // QA
     rotateReport(worktreePath, "QA_REPORT.md");
     const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
     if (!qaResult.success) {
+      store.storeEpisode(projectId, runId, seedId, seedTitle, description, "qa", "failure", qaResult.costUsd, qaResult.durationMs, qaResult.error);
       await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed");
       return;
     }
@@ -561,6 +601,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
     const qaReport = readReport(worktreePath, "QA_REPORT.md");
     qaVerdict = qaReport ? parseVerdict(qaReport) : "unknown";
+    const qaLearnings = qaReport ? extractKeyLearnings(qaReport) : undefined;
+    store.storeEpisode(projectId, runId, seedId, seedTitle, description, "qa", qaVerdict === "fail" ? "failure" : "success", qaResult.costUsd, qaResult.durationMs, qaLearnings);
 
     if (qaVerdict === "pass" || qaVerdict === "unknown") {
       log(`[QA] Verdict: ${qaVerdict} — proceeding to ${config.skipReview ? "finalize" : "review"}`);
@@ -584,6 +626,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     rotateReport(worktreePath, "REVIEW.md");
     const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
     if (!reviewResult.success) {
+      store.storeEpisode(projectId, runId, seedId, seedTitle, description, "reviewer", "failure", reviewResult.costUsd, reviewResult.durationMs, reviewResult.error);
       await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed");
       return;
     }
@@ -591,6 +634,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
     const reviewReport = readReport(worktreePath, "REVIEW.md");
     const reviewVerdict = reviewReport ? parseVerdict(reviewReport) : "unknown";
+    const reviewLearnings = reviewReport ? extractKeyLearnings(reviewReport) : undefined;
+    store.storeEpisode(projectId, runId, seedId, seedTitle, description, "reviewer", reviewVerdict === "fail" ? "failure" : "success", reviewResult.costUsd, reviewResult.durationMs, reviewLearnings);
 
     const hasIssues = reviewReport ? hasActionableIssues(reviewReport) : false;
 
@@ -605,17 +650,26 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
       const devResult = await runPhase(
         "developer",
-        developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback),
+        developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback, memory),
         config, progress, logFile, store,
       );
       if (devResult.success) {
+        const retryDevReport = readReport(worktreePath, "DEVELOPER_REPORT.md");
+        const retryDevLearnings = retryDevReport ? extractKeyLearnings(retryDevReport) : undefined;
+        store.storeEpisode(projectId, runId, seedId, seedTitle, description, "developer", "success", devResult.costUsd, devResult.durationMs, retryDevLearnings);
         store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
 
         rotateReport(worktreePath, "QA_REPORT.md");
         const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
+        const retryQaReport = readReport(worktreePath, "QA_REPORT.md");
+        const retryQaVerdict = retryQaReport ? parseVerdict(retryQaReport) : "unknown";
+        const retryQaLearnings = retryQaReport ? extractKeyLearnings(retryQaReport) : undefined;
+        store.storeEpisode(projectId, runId, seedId, seedTitle, description, "qa", retryQaVerdict === "fail" ? "failure" : "success", qaResult.costUsd, qaResult.durationMs, retryQaLearnings);
         if (qaResult.success) {
           store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
         }
+      } else {
+        store.storeEpisode(projectId, runId, seedId, seedTitle, description, "developer", "failure", devResult.costUsd, devResult.durationMs, devResult.error);
       }
     } else if (reviewVerdict === "fail") {
       log(`[REVIEW] FAIL — max retries exhausted, finalizing with current state`);

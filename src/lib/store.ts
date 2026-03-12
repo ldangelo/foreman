@@ -81,6 +81,52 @@ export interface Metrics {
   costByRuntime: Array<{ run_id: string; cost: number; duration_seconds: number | null }>;
 }
 
+// ── Memory interfaces ───────────────────────────────────────────────────
+
+export interface Episode {
+  id: string;
+  run_id: string | null;
+  project_id: string;
+  seed_id: string;
+  task_title: string;
+  task_description: string | null;
+  role: string;
+  outcome: "success" | "failure";
+  duration_ms: number | null;
+  cost_usd: number;
+  key_learnings: string | null;
+  created_at: string;
+}
+
+export interface Pattern {
+  id: string;
+  project_id: string;
+  pattern_type: string;
+  pattern_description: string;
+  success_count: number;
+  failure_count: number;
+  first_seen: string;
+  last_used: string;
+  created_at: string;
+}
+
+export interface Skill {
+  id: string;
+  project_id: string;
+  skill_name: string;
+  skill_description: string;
+  applicable_to_roles: string; // JSON array string
+  success_examples: string | null; // JSON string
+  confidence_score: number;
+  created_at: string;
+}
+
+export interface AgentMemory {
+  episodes: Episode[];
+  patterns: Pattern[];
+  skills: Skill[];
+}
+
 // ── Schema migration ────────────────────────────────────────────────────
 
 const SCHEMA = `
@@ -127,6 +173,53 @@ CREATE TABLE IF NOT EXISTS events (
   created_at TEXT,
   FOREIGN KEY (project_id) REFERENCES projects(id)
 );
+
+CREATE TABLE IF NOT EXISTS episodes (
+  id TEXT PRIMARY KEY,
+  run_id TEXT,
+  project_id TEXT NOT NULL,
+  seed_id TEXT NOT NULL,
+  task_title TEXT NOT NULL,
+  task_description TEXT,
+  role TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  duration_ms INTEGER,
+  cost_usd REAL DEFAULT 0.0,
+  key_learnings TEXT,
+  created_at TEXT,
+  FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+CREATE TABLE IF NOT EXISTS patterns (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  pattern_type TEXT NOT NULL,
+  pattern_description TEXT NOT NULL,
+  success_count INTEGER DEFAULT 0,
+  failure_count INTEGER DEFAULT 0,
+  first_seen TEXT,
+  last_used TEXT,
+  created_at TEXT,
+  FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  skill_description TEXT NOT NULL,
+  applicable_to_roles TEXT DEFAULT '[]',
+  success_examples TEXT,
+  confidence_score REAL DEFAULT 0,
+  created_at TEXT,
+  FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+-- Indices for memory table queries (episodes accumulate over time)
+CREATE INDEX IF NOT EXISTS idx_episodes_project_created ON episodes(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_episodes_seed_role ON episodes(project_id, seed_id, role);
+CREATE INDEX IF NOT EXISTS idx_patterns_project_success ON patterns(project_id, success_count);
+CREATE INDEX IF NOT EXISTS idx_skills_project_confidence ON skills(project_id, confidence_score);
 `;
 
 // Add progress column to runs table if not present (migration)
@@ -505,5 +598,190 @@ export class ForemanStore {
       tasksByStatus,
       costByRuntime,
     };
+  }
+
+  // ── Memory: Episodes ─────────────────────────────────────────────────
+
+  storeEpisode(
+    projectId: string,
+    runId: string | null,
+    seedId: string,
+    taskTitle: string,
+    taskDescription: string | null,
+    role: string,
+    outcome: "success" | "failure",
+    costUsd: number,
+    durationMs?: number,
+    keyLearnings?: string,
+  ): Episode {
+    const now = new Date().toISOString();
+    const episode: Episode = {
+      id: randomUUID(),
+      run_id: runId,
+      project_id: projectId,
+      seed_id: seedId,
+      task_title: taskTitle,
+      task_description: taskDescription ?? null,
+      role,
+      outcome,
+      duration_ms: durationMs ?? null,
+      cost_usd: costUsd,
+      key_learnings: keyLearnings ?? null,
+      created_at: now,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO episodes (id, run_id, project_id, seed_id, task_title, task_description, role, outcome, duration_ms, cost_usd, key_learnings, created_at)
+         VALUES (@id, @run_id, @project_id, @seed_id, @task_title, @task_description, @role, @outcome, @duration_ms, @cost_usd, @key_learnings, @created_at)`,
+      )
+      .run(episode);
+    return episode;
+  }
+
+  getRelevantEpisodes(
+    projectId: string,
+    seedId?: string,
+    role?: string,
+    limit = 5,
+  ): Episode[] {
+    const conditions: string[] = ["project_id = ?"];
+    const params: unknown[] = [projectId];
+    if (seedId) {
+      conditions.push("seed_id = ?");
+      params.push(seedId);
+    }
+    if (role) {
+      conditions.push("role = ?");
+      params.push(role);
+    }
+    params.push(limit);
+    return this.db
+      .prepare(
+        `SELECT * FROM episodes WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+      )
+      .all(...params) as Episode[];
+  }
+
+  // ── Memory: Patterns ─────────────────────────────────────────────────
+
+  storePattern(
+    projectId: string,
+    patternType: string,
+    patternDescription: string,
+    outcome: "success" | "failure",
+  ): Pattern {
+    const now = new Date().toISOString();
+    // Upsert: increment counts on existing pattern, insert if new
+    const existing = this.db
+      .prepare(
+        `SELECT * FROM patterns WHERE project_id = ? AND pattern_type = ? AND pattern_description = ?`,
+      )
+      .get(projectId, patternType, patternDescription) as Pattern | undefined;
+
+    if (existing) {
+      if (outcome === "success") {
+        this.db
+          .prepare(`UPDATE patterns SET success_count = success_count + 1, last_used = ? WHERE id = ?`)
+          .run(now, existing.id);
+      } else {
+        this.db
+          .prepare(`UPDATE patterns SET failure_count = failure_count + 1, last_used = ? WHERE id = ?`)
+          .run(now, existing.id);
+      }
+      return this.db
+        .prepare(`SELECT * FROM patterns WHERE id = ?`)
+        .get(existing.id) as Pattern;
+    }
+
+    const pattern: Pattern = {
+      id: randomUUID(),
+      project_id: projectId,
+      pattern_type: patternType,
+      pattern_description: patternDescription,
+      success_count: outcome === "success" ? 1 : 0,
+      failure_count: outcome === "failure" ? 1 : 0,
+      first_seen: now,
+      last_used: now,
+      created_at: now,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO patterns (id, project_id, pattern_type, pattern_description, success_count, failure_count, first_seen, last_used, created_at)
+         VALUES (@id, @project_id, @pattern_type, @pattern_description, @success_count, @failure_count, @first_seen, @last_used, @created_at)`,
+      )
+      .run(pattern);
+    return pattern;
+  }
+
+  getPatterns(projectId: string, patternType?: string, minSuccessCount = 0): Pattern[] {
+    if (patternType) {
+      return this.db
+        .prepare(
+          `SELECT * FROM patterns WHERE project_id = ? AND pattern_type = ? AND success_count >= ? ORDER BY success_count DESC`,
+        )
+        .all(projectId, patternType, minSuccessCount) as Pattern[];
+    }
+    return this.db
+      .prepare(
+        `SELECT * FROM patterns WHERE project_id = ? AND success_count >= ? ORDER BY success_count DESC`,
+      )
+      .all(projectId, minSuccessCount) as Pattern[];
+  }
+
+  // ── Memory: Skills ───────────────────────────────────────────────────
+
+  storeSkill(
+    projectId: string,
+    skillName: string,
+    skillDescription: string,
+    roles: string[],
+    successExamples?: string[],
+    confidence = 50,
+  ): Skill {
+    const now = new Date().toISOString();
+    const skill: Skill = {
+      id: randomUUID(),
+      project_id: projectId,
+      skill_name: skillName,
+      skill_description: skillDescription,
+      applicable_to_roles: JSON.stringify(roles),
+      success_examples: successExamples ? JSON.stringify(successExamples) : null,
+      confidence_score: confidence,
+      created_at: now,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO skills (id, project_id, skill_name, skill_description, applicable_to_roles, success_examples, confidence_score, created_at)
+         VALUES (@id, @project_id, @skill_name, @skill_description, @applicable_to_roles, @success_examples, @confidence_score, @created_at)`,
+      )
+      .run(skill);
+    return skill;
+  }
+
+  getSkills(projectId: string, role?: string): Skill[] {
+    if (role) {
+      // Safe: role comes from the AgentRole union type ("lead"|"explorer"|"developer"|"qa"|"reviewer"|"worker"),
+      // none of which contain SQL LIKE wildcard characters (% or _). Do not pass user-controlled strings here.
+      return this.db
+        .prepare(
+          `SELECT * FROM skills WHERE project_id = ? AND applicable_to_roles LIKE ? ORDER BY confidence_score DESC`,
+        )
+        .all(projectId, `%"${role}"%`) as Skill[];
+    }
+    return this.db
+      .prepare(
+        `SELECT * FROM skills WHERE project_id = ? ORDER BY confidence_score DESC`,
+      )
+      .all(projectId) as Skill[];
+  }
+
+  // ── Memory: Combined query ───────────────────────────────────────────
+
+  queryMemory(projectId: string, seedId?: string, role?: string): AgentMemory {
+    const episodes = this.getRelevantEpisodes(projectId, seedId, role, 5);
+    // Only surface patterns confirmed successful at least once
+    const patterns = this.getPatterns(projectId, undefined, 1);
+    const skills = this.getSkills(projectId, role);
+    return { episodes, patterns, skills };
   }
 }

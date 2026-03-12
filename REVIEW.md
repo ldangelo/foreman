@@ -1,28 +1,31 @@
-# Code Review: Task groups for batch coordination
+# Code Review: Integrate CASS Memory System for cross-session agent learning
 
-## Verdict: FAIL
+## Verdict: PASS
 
 ## Summary
 
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The CASS Memory integration is well-implemented and architecturally sound. The three-layer memory schema (episodes, patterns, skills) is added cleanly to the existing SQLite store with proper migrations. Memory capture is wired throughout the pipeline in `runPipeline()`, prompt injection is guarded against empty memory, and all new store methods use parameterized queries. The implementation is backward compatible and non-fatal on memory query failure. Two issues are noted below: a minor episode duplication for the QA success path, and an incomplete episode capture in the review-triggered developer retry — both are low-severity and non-blocking given the additive, non-critical nature of the memory system.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[NOTE]** `src/orchestrator/agent-worker.ts:600,605` — The QA success path stores the QA episode twice for the same run. `store.logEvent` is called at line 600 (before the verdict is known), then `store.storeEpisode` is called at line 605 after `parseVerdict`. On a QA success this results in one episode row — correct. However on a QA failure the episode is also stored at line 605 (`qaVerdict === "fail" ? "failure" : "success"`) and then the loop continues back to run Developer again, which will run a new QA phase and store another episode for the same retry cycle. This is by design but may accumulate episode rows faster than expected for seeds with many retries. Not a correctness bug, just worth being aware of.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[NOTE]** `src/orchestrator/agent-worker.ts:663-666` — In the review-triggered retry block, the QA phase result after review feedback does not call `store.storeEpisode()` for QA (only `store.logEvent`), and a failed developer retry in that block has no `storeEpisode` call at all. This is asymmetric with the main dev/QA loop, meaning review-retry learnings are partially missing from memory. Since episodes are supplementary context (not correctness-critical), this is a minor gap rather than a bug.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
+- **[NOTE]** `src/lib/store.ts:759` — `getSkills` uses a LIKE query with the role name interpolated into the pattern: `` `%"${role}"%` ``. Role values come from the `AgentRole` union type (`"lead" | "explorer" | "developer" | "qa" | "reviewer" | "worker"`), none of which contain SQL LIKE wildcard characters (`%` or `_`), so this is safe in practice. If the role parameter were ever sourced from user input, this would be a SQL injection risk. Worth a comment noting the assumption.
 
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
+- **[NOTE]** `src/lib/store.ts` — No SQL indices are created on the new memory tables despite the Explorer report specifically calling them out as important for query performance (`project_id`, `seed_id`, `role`, `created_at`). For small datasets this won't matter, but as episodes accumulate the `getRelevantEpisodes` query will do a full table scan. Consider adding `CREATE INDEX IF NOT EXISTS` statements in the schema for `episodes(project_id, created_at)` and `patterns(project_id, success_count)`.
 
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/orchestrator/roles.ts:10` — `Episode` and `Pattern` are imported but `Episode` is not directly used in `roles.ts` (it's used via `AgentMemory.episodes` which is typed as `Episode[]` from the `AgentMemory` interface). The `Pattern` import is similarly only used implicitly. TypeScript may not flag this since the types flow through `AgentMemory`, but the imports could be trimmed to just `AgentMemory`.
 
 ## Positive Notes
 
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- All new SQL queries use parameterized statements — no injection risk in the store methods.
+- Memory query failure is wrapped in a try/catch and is non-fatal — existing runs are not affected.
+- The guard `if (!hasMemory) memory = undefined` prevents injecting empty memory blocks into prompts, which is the correct behavior.
+- `storePattern` implements a proper read-modify-write upsert for counting, keeping the patterns table from growing unboundedly.
+- `queryMemory` enforces project isolation for all three memory types — cross-project contamination is not possible.
+- `extractKeyLearnings` gracefully handles missing sections and has a sensible fallback to the report body.
+- Test coverage is thorough: 23 store tests cover all edge cases for episodes, patterns, skills, and `queryMemory`; 15 roles tests cover `formatMemoryContext` and both updated prompt functions.
+- TypeScript compiles cleanly and the `durationMs` extension to `PhaseResult` is clean.
+- The implementation correctly limits `queryMemory` patterns to `minSuccessCount >= 1`, avoiding untested pattern suggestions.

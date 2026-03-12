@@ -193,6 +193,192 @@ describe("ForemanStore", () => {
     });
   });
 
+  // ── Memory: Episodes ──────────────────────────────────────────────
+
+  describe("episodes", () => {
+    it("stores and retrieves an episode", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-abc", "pipeline");
+
+      const ep = store.storeEpisode(
+        project.id, run.id, "sd-abc", "Fix auth", "JWT refresh",
+        "developer", "success", 0.05, 30000, "Used JWT strategy",
+      );
+
+      expect(ep.project_id).toBe(project.id);
+      expect(ep.role).toBe("developer");
+      expect(ep.outcome).toBe("success");
+      expect(ep.cost_usd).toBe(0.05);
+      expect(ep.key_learnings).toBe("Used JWT strategy");
+    });
+
+    it("retrieves relevant episodes filtered by project", () => {
+      const p1 = store.registerProject("p1", "/p1");
+      const p2 = store.registerProject("p2", "/p2");
+
+      store.storeEpisode(p1.id, null, "sd-1", "Task A", null, "explorer", "success", 0.01);
+      store.storeEpisode(p1.id, null, "sd-2", "Task B", null, "developer", "failure", 0.02);
+      store.storeEpisode(p2.id, null, "sd-3", "Task C", null, "explorer", "success", 0.01);
+
+      expect(store.getRelevantEpisodes(p1.id)).toHaveLength(2);
+      expect(store.getRelevantEpisodes(p2.id)).toHaveLength(1);
+    });
+
+    it("filters episodes by role", () => {
+      const project = store.registerProject("p", "/p");
+      store.storeEpisode(project.id, null, "sd-1", "T1", null, "explorer", "success", 0.01);
+      store.storeEpisode(project.id, null, "sd-1", "T1", null, "developer", "success", 0.02);
+      store.storeEpisode(project.id, null, "sd-1", "T1", null, "qa", "success", 0.02);
+
+      expect(store.getRelevantEpisodes(project.id, undefined, "developer")).toHaveLength(1);
+      expect(store.getRelevantEpisodes(project.id, undefined, "explorer")).toHaveLength(1);
+    });
+
+    it("respects limit parameter", () => {
+      const project = store.registerProject("p", "/p");
+      for (let i = 0; i < 10; i++) {
+        store.storeEpisode(project.id, null, `sd-${i}`, `Task ${i}`, null, "developer", "success", 0.01);
+      }
+      expect(store.getRelevantEpisodes(project.id, undefined, undefined, 3)).toHaveLength(3);
+    });
+
+    it("stores episode without optional fields", () => {
+      const project = store.registerProject("p", "/p");
+      const ep = store.storeEpisode(project.id, null, "sd-1", "Task", null, "qa", "failure", 0);
+      expect(ep.run_id).toBeNull();
+      expect(ep.duration_ms).toBeNull();
+      expect(ep.key_learnings).toBeNull();
+    });
+  });
+
+  // ── Memory: Patterns ──────────────────────────────────────────────
+
+  describe("patterns", () => {
+    it("stores a new pattern", () => {
+      const project = store.registerProject("p", "/p");
+      const pattern = store.storePattern(project.id, "file-naming", "Use kebab-case for files", "success");
+      expect(pattern.success_count).toBe(1);
+      expect(pattern.failure_count).toBe(0);
+    });
+
+    it("increments success_count on duplicate upsert", () => {
+      const project = store.registerProject("p", "/p");
+      store.storePattern(project.id, "style", "Use 2-space indent", "success");
+      store.storePattern(project.id, "style", "Use 2-space indent", "success");
+      const patterns = store.getPatterns(project.id);
+      expect(patterns).toHaveLength(1);
+      expect(patterns[0].success_count).toBe(2);
+    });
+
+    it("increments failure_count on failure upsert", () => {
+      const project = store.registerProject("p", "/p");
+      store.storePattern(project.id, "style", "Use tabs", "failure");
+      store.storePattern(project.id, "style", "Use tabs", "failure");
+      const patterns = store.getPatterns(project.id, undefined, 0);
+      expect(patterns[0].failure_count).toBe(2);
+      expect(patterns[0].success_count).toBe(0);
+    });
+
+    it("filters by minSuccessCount", () => {
+      const project = store.registerProject("p", "/p");
+      store.storePattern(project.id, "a", "Pattern A", "success");
+      store.storePattern(project.id, "b", "Pattern B", "failure");
+
+      expect(store.getPatterns(project.id, undefined, 1)).toHaveLength(1);
+      expect(store.getPatterns(project.id, undefined, 0)).toHaveLength(2);
+    });
+
+    it("filters by patternType", () => {
+      const project = store.registerProject("p", "/p");
+      store.storePattern(project.id, "naming", "kebab-case", "success");
+      store.storePattern(project.id, "style", "2-space", "success");
+
+      expect(store.getPatterns(project.id, "naming")).toHaveLength(1);
+      expect(store.getPatterns(project.id, "style")).toHaveLength(1);
+      expect(store.getPatterns(project.id)).toHaveLength(2);
+    });
+  });
+
+  // ── Memory: Skills ────────────────────────────────────────────────
+
+  describe("skills", () => {
+    it("stores and retrieves a skill", () => {
+      const project = store.registerProject("p", "/p");
+      const skill = store.storeSkill(
+        project.id, "TypeScript generics", "Use generics for reusable types",
+        ["developer", "reviewer"], ["Used in store.ts"], 80,
+      );
+      expect(skill.skill_name).toBe("TypeScript generics");
+      expect(skill.confidence_score).toBe(80);
+    });
+
+    it("filters skills by role", () => {
+      const project = store.registerProject("p", "/p");
+      store.storeSkill(project.id, "Skill A", "For devs", ["developer"], undefined, 70);
+      store.storeSkill(project.id, "Skill B", "For QA", ["qa"], undefined, 60);
+      store.storeSkill(project.id, "Skill C", "For all", ["developer", "qa"], undefined, 90);
+
+      const devSkills = store.getSkills(project.id, "developer");
+      expect(devSkills).toHaveLength(2);
+      expect(devSkills.map((s) => s.skill_name).sort()).toEqual(["Skill A", "Skill C"].sort());
+
+      const qaSkills = store.getSkills(project.id, "qa");
+      expect(qaSkills).toHaveLength(2);
+    });
+
+    it("returns all skills when no role given", () => {
+      const project = store.registerProject("p", "/p");
+      store.storeSkill(project.id, "S1", "desc", ["developer"]);
+      store.storeSkill(project.id, "S2", "desc", ["qa"]);
+      expect(store.getSkills(project.id)).toHaveLength(2);
+    });
+
+    it("orders skills by confidence_score descending", () => {
+      const project = store.registerProject("p", "/p");
+      store.storeSkill(project.id, "Low", "desc", ["developer"], undefined, 30);
+      store.storeSkill(project.id, "High", "desc", ["developer"], undefined, 90);
+      store.storeSkill(project.id, "Med", "desc", ["developer"], undefined, 60);
+
+      const skills = store.getSkills(project.id, "developer");
+      expect(skills[0].skill_name).toBe("High");
+      expect(skills[2].skill_name).toBe("Low");
+    });
+  });
+
+  // ── Memory: queryMemory ───────────────────────────────────────────
+
+  describe("queryMemory", () => {
+    it("returns combined episodes, patterns, skills", () => {
+      const project = store.registerProject("p", "/p");
+
+      store.storeEpisode(project.id, null, "sd-1", "T1", null, "developer", "success", 0.01);
+      store.storePattern(project.id, "naming", "kebab-case", "success");
+      store.storeSkill(project.id, "TS generics", "desc", ["developer"], undefined, 80);
+
+      const memory = store.queryMemory(project.id);
+      expect(memory.episodes).toHaveLength(1);
+      expect(memory.patterns).toHaveLength(1);
+      expect(memory.skills).toHaveLength(1);
+    });
+
+    it("excludes patterns with zero success_count", () => {
+      const project = store.registerProject("p", "/p");
+      store.storePattern(project.id, "bad", "Only failures", "failure");
+      store.storePattern(project.id, "good", "At least one success", "success");
+
+      const memory = store.queryMemory(project.id);
+      expect(memory.patterns).toHaveLength(1);
+      expect(memory.patterns[0].pattern_description).toBe("At least one success");
+    });
+
+    it("returns empty memory for unknown project", () => {
+      const memory = store.queryMemory("nonexistent-project");
+      expect(memory.episodes).toHaveLength(0);
+      expect(memory.patterns).toHaveLength(0);
+      expect(memory.skills).toHaveLength(0);
+    });
+  });
+
   // ── Metrics ───────────────────────────────────────────────────────
 
   describe("metrics", () => {
