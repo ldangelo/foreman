@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 
 import type { ForemanStore } from "../lib/store.js";
 import type { BeadsClient } from "../lib/beads.js";
-import { mergeWorktree, removeWorktree } from "../lib/git.js";
+import { mergeWorktreeWithTiers, removeWorktree } from "../lib/git.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -73,21 +73,15 @@ export class Refinery {
       const branchName = `foreman/${run.bead_id}`;
 
       try {
-        const result = await mergeWorktree(this.projectPath, branchName, targetBranch);
+        const result = await mergeWorktreeWithTiers(this.projectPath, branchName, targetBranch);
 
         if (!result.success) {
-          // Merge conflicts — abort the merge to leave repo clean for next attempt
-          try {
-            await git(["merge", "--abort"], this.projectPath);
-          } catch {
-            // merge --abort may fail if already clean
-          }
-
+          // All tiers exhausted (tier 4) — requires manual intervention
           this.store.updateRun(run.id, { status: "conflict" });
           this.store.logEvent(
             run.project_id,
             "conflict",
-            { beadId: run.bead_id, branchName, conflictFiles: result.conflicts },
+            { beadId: run.bead_id, branchName, conflictFiles: result.conflicts, tier: result.tier, strategy: result.strategy },
             run.id,
           );
           conflicts.push({
@@ -95,11 +89,12 @@ export class Refinery {
             beadId: run.bead_id,
             branchName,
             conflictFiles: result.conflicts ?? [],
+            requiresManualReview: true,
           });
           continue;
         }
 
-        // Merge succeeded — optionally run tests
+        // Merge succeeded (via some tier) — optionally run tests
         if (runTests) {
           const testResult = await runTestCommand(testCommand, this.projectPath);
 
@@ -140,13 +135,15 @@ export class Refinery {
         this.store.logEvent(
           run.project_id,
           "merge",
-          { beadId: run.bead_id, branchName, targetBranch },
+          { beadId: run.bead_id, branchName, targetBranch, tier: result.tier, strategy: result.strategy },
           run.id,
         );
         merged.push({
           runId: run.id,
           beadId: run.bead_id,
           branchName,
+          tier: result.tier,
+          strategy: result.strategy,
         });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, existsSync, writeFileSync, mkdirSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, existsSync, writeFileSync, readFileSync, mkdirSync, rmSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -8,6 +8,7 @@ import {
   removeWorktree,
   listWorktrees,
   mergeWorktree,
+  mergeWorktreeWithTiers,
   getRepoRoot,
 } from "../git.js";
 
@@ -127,6 +128,100 @@ describe("git worktree manager", () => {
 
     // Clean up the failed merge state
     execFileSync("git", ["merge", "--abort"], { cwd: repo });
+  });
+
+  it("mergeWorktree with ours strategy resolves conflicts preferring main", async () => {
+    const repo = makeTempRepo();
+    tempDirs.push(repo);
+
+    const { worktreePath, branchName } = await createWorktree(repo, "bead-ours");
+
+    // Modify README.md in the worktree (agent changes)
+    writeFileSync(join(worktreePath, "README.md"), "# agent change\n");
+    execFileSync("git", ["add", "README.md"], { cwd: worktreePath });
+    execFileSync("git", ["commit", "-m", "agent edit"], { cwd: worktreePath });
+
+    // Modify the same file on main (main changes)
+    writeFileSync(join(repo, "README.md"), "# main change\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "main edit"], { cwd: repo });
+
+    // Merge with 'ours' strategy — should succeed, preferring main's content
+    const result = await mergeWorktree(repo, branchName, "main", "ours");
+
+    expect(result.success).toBe(true);
+
+    // Verify main's version was kept
+    const content = readFileSync(join(repo, "README.md"), "utf8");
+    expect(content).toBe("# main change\n");
+  });
+
+  it("mergeWorktree with theirs strategy resolves conflicts preferring agent", async () => {
+    const repo = makeTempRepo();
+    tempDirs.push(repo);
+
+    const { worktreePath, branchName } = await createWorktree(repo, "bead-theirs");
+
+    // Modify README.md in the worktree (agent changes)
+    writeFileSync(join(worktreePath, "README.md"), "# agent change\n");
+    execFileSync("git", ["add", "README.md"], { cwd: worktreePath });
+    execFileSync("git", ["commit", "-m", "agent edit"], { cwd: worktreePath });
+
+    // Modify the same file on main (main changes)
+    writeFileSync(join(repo, "README.md"), "# main change\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "main edit"], { cwd: repo });
+
+    // Merge with 'theirs' strategy — should succeed, preferring agent's content
+    const result = await mergeWorktree(repo, branchName, "main", "theirs");
+
+    expect(result.success).toBe(true);
+
+    // Verify agent's version was kept
+    const content = readFileSync(join(repo, "README.md"), "utf8");
+    expect(content).toBe("# agent change\n");
+  });
+
+  it("mergeWorktreeWithTiers succeeds at tier 1 for clean merge", async () => {
+    const repo = makeTempRepo();
+    tempDirs.push(repo);
+
+    const { worktreePath, branchName } = await createWorktree(repo, "bead-tier1");
+
+    // Add a new file — no conflict possible
+    writeFileSync(join(worktreePath, "newfile.txt"), "new content\n");
+    execFileSync("git", ["add", "newfile.txt"], { cwd: worktreePath });
+    execFileSync("git", ["commit", "-m", "add new file"], { cwd: worktreePath });
+
+    const result = await mergeWorktreeWithTiers(repo, branchName, "main");
+
+    expect(result.success).toBe(true);
+    expect(result.tier).toBe(1);
+    expect(result.strategy).toBe("recursive");
+    expect(existsSync(join(repo, "newfile.txt"))).toBe(true);
+  });
+
+  it("mergeWorktreeWithTiers escalates to tier 3 for conflicts", async () => {
+    const repo = makeTempRepo();
+    tempDirs.push(repo);
+
+    const { worktreePath, branchName } = await createWorktree(repo, "bead-tier3");
+
+    // Create conflicting README changes
+    writeFileSync(join(worktreePath, "README.md"), "# agent change\n");
+    execFileSync("git", ["add", "README.md"], { cwd: worktreePath });
+    execFileSync("git", ["commit", "-m", "agent edit"], { cwd: worktreePath });
+
+    writeFileSync(join(repo, "README.md"), "# main change\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "main edit"], { cwd: repo });
+
+    const result = await mergeWorktreeWithTiers(repo, branchName, "main");
+
+    // Tier 1 should fail (conflict), tier 2 or 3 should succeed
+    expect(result.success).toBe(true);
+    expect(result.tier).toBeGreaterThan(1);
+    expect(result.tier).toBeLessThanOrEqual(3);
   });
 
   it("getRepoRoot finds root from subdirectory", async () => {

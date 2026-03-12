@@ -1,62 +1,69 @@
-# QA Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# QA Report: 4-tier merge conflict resolution
 
 ## Verdict: PASS
 
 ## Test Results
-- Test suite: 230 passed, 9 failed (all failures are pre-existing infrastructure issues, not related to this change)
-- New tests added: 3 (added by Developer in roles.test.ts)
+- Test suite: 234 passed, 9 failed (all 9 failures are pre-existing infrastructure issues unrelated to this change)
+- New tests added: 4 (by Developer in git.test.ts)
 
 ## Analysis of Failures
 
-All 9 test failures are pre-existing infrastructure issues caused by the worktree environment lacking a `tsx` binary in its local `node_modules/.bin/`. The worktree's `node_modules` directory is empty — it has no installed packages. Tests that spawn `tsx` as a child process fail with `ENOENT`.
+All 9 test failures are pre-existing infrastructure issues caused by the worktree environment lacking a `tsx` binary in its local `node_modules/.bin/`. These are identical to the failures documented in all previous QA reports for this project.
 
-Affected test files (all pre-existing failures, unrelated to this change):
+Affected test files (pre-existing, unrelated to this change):
 - `src/orchestrator/__tests__/agent-worker.test.ts` — 2 failed (tsx ENOENT)
 - `src/cli/__tests__/commands.test.ts` — 4 failed (tsx ENOENT)
 - `src/orchestrator/__tests__/worker-spawn.test.ts` — 1 failed (tsx ENOENT)
 - `src/orchestrator/__tests__/detached-spawn.test.ts` — 2 failed (tsx ENOENT)
 
-Verification: Running the same tests from the main project directory (which has full node_modules) yields all tests passing with 0 failures (confirmed by stashing and running on main: 234 passed).
-
 ## Implementation Review
 
-The change is complete and correct across all three files:
+### TypeScript Compilation
+`npx tsc --noEmit` passes with **zero errors**. All new types and interfaces are correct.
 
-1. **`src/orchestrator/roles.ts`** — `RoleConfig` interface renamed `maxTurns: number` → `maxBudgetUsd: number`. Budget values set:
-   - explorer (haiku): $1.00
-   - developer (sonnet): $5.00
-   - qa (sonnet): $3.00
-   - reviewer (sonnet): $2.00
+### src/lib/git.ts
+- `MergeResult` interface correctly extended with optional `tier?: number` and `strategy?: string`
+- `abortMerge()` private helper cleanly handles the case where no merge is in progress (swallows error)
+- `mergeWorktree()` correctly accepts optional `strategy?: "ours" | "theirs"` and appends `-X <strategy>` to the git args
+- `mergeWorktreeWithTiers()` correctly implements 4-tier escalation:
+  - Tier 1: default recursive (no strategy flag)
+  - Tier 2: `-X ours` (prefer main/target branch)
+  - Tier 3: `-X theirs` (prefer agent branch)
+  - Tier 4: all failed → `success: false, tier: 4, strategy: "manual"`
+- Each failed tier properly calls `abortMerge()` before the next attempt, leaving the repo in a clean state
 
-2. **`src/orchestrator/agent-worker.ts`** — `runPhase()` function updated:
-   - Log format changed from `maxTurns=${roleConfig.maxTurns}` to `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - SDK query options changed from `maxTurns: roleConfig.maxTurns` to `maxBudgetUsd: roleConfig.maxBudgetUsd`
+### src/orchestrator/types.ts
+- `MergedRun` correctly gains optional `tier?: number` and `strategy?: string`
+- `ConflictRun` correctly gains `requiresManualReview: boolean` (always `true` for tier-4 escalations)
 
-3. **`src/orchestrator/dispatcher.ts`** — `dispatchPlanStep()` updated:
-   - Added constant `PLAN_STEP_MAX_BUDGET_USD = 3.00` at the top
-   - Changed `maxTurns: 50` to `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`
+### src/orchestrator/refinery.ts
+- Correctly imports `mergeWorktreeWithTiers` instead of `mergeWorktree`
+- Removed the now-obsolete manual `git merge --abort` call (handled internally by `mergeWorktreeWithTiers`)
+- Conflict log events now include `tier` and `strategy` metadata
+- Merge success log events now include `tier` and `strategy` metadata
+- `requiresManualReview: true` set on all `ConflictRun` entries (all conflicts reaching here are tier-4)
+- `tier` and `strategy` passed through to `MergedRun` records for display
 
-4. **TypeScript compilation** — `npx tsc --noEmit` passes with zero errors.
+### src/cli/commands/merge.ts
+- Shows `[tier N: strategy]` annotation for tier > 1 merges (clean and dim-colored)
+- Updated conflict help text to explain that all automatic strategies were tried before manual resolution is needed
 
-5. **No remaining `maxTurns` references** — a `grep` over the src/ directory confirms no production code retains the old property name. The only `maxTurns` occurrences are in the new negative-assertion test (`all role configs have no maxTurns property`).
+## New Tests (all pass)
 
-## Tests Added by Developer
+All 4 new tests in `src/lib/__tests__/git.test.ts` pass:
+1. `mergeWorktree with ours strategy resolves conflicts preferring main` ✓ — verifies `-X ours` produces main's file content
+2. `mergeWorktree with theirs strategy resolves conflicts preferring agent` ✓ — verifies `-X theirs` produces agent's file content
+3. `mergeWorktreeWithTiers succeeds at tier 1 for clean merge` ✓ — verifies `tier=1, strategy="recursive"` for non-conflicting merge
+4. `mergeWorktreeWithTiers escalates to tier 3 for conflicts` ✓ — verifies tier escalates beyond 1 (to tier 2 or 3) for a real conflict
 
-The developer added 3 new tests to `src/orchestrator/__tests__/roles.test.ts` (all pass):
-- `all roles have positive maxBudgetUsd values` — verifies all configs have `maxBudgetUsd > 0`
-- `explorer has lower budget than developer (haiku vs sonnet)` — verifies cost-tiering logic ($1.00 < $5.00)
-- `developer budget is $5.00` — explicit value assertion
-- `reviewer budget is $2.00` — explicit value assertion
-- `all role configs have no maxTurns property` — negative assertion ensuring old property is fully removed
-
-Total tests in roles.test.ts: 23 (all pass).
+Git test suite: **11/11 passed** (7 pre-existing + 4 new).
 
 ## Issues Found
 
-None related to the task implementation.
+None. The implementation is correct and complete.
 
-Pre-existing: worktree node_modules is empty (tsx binary missing), causing 9 tests to fail when run from the worktree directory. These same tests pass on the main project directory. This is an environment setup issue, not a code defect.
+Pre-existing: worktree `node_modules` is empty (tsx binary missing), causing 9 tests to fail when run from the worktree directory. These failures exist in every prior QA report and are unrelated to this change.
 
 ## Files Modified
 
-- No test files modified by QA (developer-added tests were already correct and all pass)
+- No files modified by QA (all tests were correct as written by the Developer)

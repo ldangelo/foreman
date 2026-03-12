@@ -17,6 +17,8 @@ export interface Worktree {
 export interface MergeResult {
   success: boolean;
   conflicts?: string[];
+  tier?: number;
+  strategy?: string;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -168,20 +170,38 @@ export async function deleteBranch(
 }
 
 /**
- * Merge a branch into the target branch.
+ * Abort any in-progress merge. Does not fail if no merge is in progress.
+ */
+async function abortMerge(repoPath: string): Promise<void> {
+  try {
+    await git(["merge", "--abort"], repoPath);
+  } catch {
+    // No merge in progress — ignore
+  }
+}
+
+/**
+ * Attempt a single merge with an optional strategy option (-X ours / -X theirs).
+ * Caller must ensure the target branch is already checked out.
  * Returns success status and any conflicting file paths.
  */
 export async function mergeWorktree(
   repoPath: string,
   branchName: string,
   targetBranch?: string,
+  strategy?: "ours" | "theirs",
 ): Promise<MergeResult> {
   targetBranch ??= await getCurrentBranch(repoPath);
   // Checkout target branch
   await git(["checkout", targetBranch], repoPath);
 
+  const args = ["merge", branchName, "--no-ff"];
+  if (strategy) {
+    args.push("-X", strategy);
+  }
+
   try {
-    await git(["merge", branchName, "--no-ff"], repoPath);
+    await git(args, repoPath);
     return { success: true };
   } catch (err: any) {
     const message: string = err.message ?? "";
@@ -197,4 +217,58 @@ export async function mergeWorktree(
     // Re-throw for unexpected errors
     throw err;
   }
+}
+
+/**
+ * Attempt to merge a branch using a 4-tier escalating strategy:
+ *
+ * - Tier 1 (recursive): Default git merge — auto-resolves simple conflicts
+ * - Tier 2 (ours):      `-X ours`   — prefer target-branch (main) changes on conflict
+ * - Tier 3 (theirs):    `-X theirs` — prefer agent-branch changes on conflict
+ * - Tier 4 (manual):    All automatic strategies failed; requires human intervention
+ *
+ * After each failed attempt the in-progress merge is aborted so the repo is
+ * left clean before the next tier is tried.
+ *
+ * Returns a `MergeResult` with `tier` (1–4) and `strategy` describing the
+ * outcome. `success: false` with `tier: 4` means manual intervention is needed.
+ */
+export async function mergeWorktreeWithTiers(
+  repoPath: string,
+  branchName: string,
+  targetBranch?: string,
+): Promise<MergeResult> {
+  targetBranch ??= await getCurrentBranch(repoPath);
+
+  // Tier 1: Default recursive merge
+  const tier1 = await mergeWorktree(repoPath, branchName, targetBranch);
+  if (tier1.success) {
+    return { success: true, tier: 1, strategy: "recursive" };
+  }
+
+  await abortMerge(repoPath);
+
+  // Tier 2: Ours strategy — prefer target-branch changes
+  const tier2 = await mergeWorktree(repoPath, branchName, targetBranch, "ours");
+  if (tier2.success) {
+    return { success: true, tier: 2, strategy: "ours" };
+  }
+
+  await abortMerge(repoPath);
+
+  // Tier 3: Theirs strategy — prefer agent-branch changes
+  const tier3 = await mergeWorktree(repoPath, branchName, targetBranch, "theirs");
+  if (tier3.success) {
+    return { success: true, tier: 3, strategy: "theirs" };
+  }
+
+  await abortMerge(repoPath);
+
+  // Tier 4: All automatic strategies exhausted — manual intervention required
+  return {
+    success: false,
+    tier: 4,
+    strategy: "manual",
+    conflicts: tier3.conflicts,
+  };
 }

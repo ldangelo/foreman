@@ -37,7 +37,8 @@ export const mergeCommand = new Command("merge")
       if (report.merged.length > 0) {
         console.log(chalk.green.bold(`Merged ${report.merged.length} task(s):\n`));
         for (const m of report.merged) {
-          console.log(`  ${chalk.cyan(m.beadId)} ${m.branchName}`);
+          const tierInfo = m.tier && m.tier > 1 ? chalk.dim(` [tier ${m.tier}: ${m.strategy}]`) : "";
+          console.log(`  ${chalk.cyan(m.beadId)} ${m.branchName}${tierInfo}`);
         }
         console.log();
       }
@@ -53,7 +54,10 @@ export const mergeCommand = new Command("merge")
         }
         console.log();
         console.log(
-          chalk.dim("  Resolve with: foreman merge --resolve <runId> --strategy theirs|abort"),
+          chalk.dim("  All automatic resolution strategies (recursive, ours, theirs) were exhausted."),
+        );
+        console.log(
+          chalk.dim("  Resolve manually with: foreman merge --resolve <runId> --strategy theirs|abort"),
         );
         console.log();
       }

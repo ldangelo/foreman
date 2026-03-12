@@ -113,6 +113,8 @@ export interface MergedRun {
   runId: string;
   beadId: string;
   branchName: string;
+  tier?: number;
+  strategy?: string;
 }
 
 export interface ConflictRun {
@@ -120,6 +122,7 @@ export interface ConflictRun {
   beadId: string;
   branchName: string;
   conflictFiles: string[];
+  requiresManualReview: boolean;
 }
 
 export interface FailedRun {
