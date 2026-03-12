@@ -1,28 +1,29 @@
-# Code Review: Task groups for batch coordination
+# Code Review: Add 'foreman seed' command for natural-language issue creation
 
 ## Verdict: FAIL
 
 ## Summary
 
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation is well-structured and follows existing codebase patterns closely. The command skeleton, Claude integration, JSON repair logic, and two-pass dependency wiring are all solid. However there are two WARNING-level bugs: the `--parent` option is silently ignored because `SeedsClient.create()` accepts `parent` in its opts but never passes it to the `sd` CLI args, and unresolved cross-issue dependencies are silently dropped with no user notification. There are also minor issues around partial-failure handling and a `--no-llm` description redundancy worth noting.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[WARNING]** `src/lib/seeds.ts:144-150` — `SeedsClient.create()` accepts `opts.parent` in its type signature but never appends `--parent` to the `sd create` args. The `seed.ts` command passes `parent: opts.parent` at line 149, but the parent relationship is silently discarded. Every seed created with `--parent` will be a top-level issue instead of a child. The fix is to add `if (opts?.parent) args.push("--parent", opts.parent);` in `seeds.ts` (or at minimum document that `parent` is not yet wired).
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[WARNING]** `src/cli/commands/seed.ts:163-168` — When an LLM-returned dependency title does not exactly match the title of another issue in the same batch (e.g. minor wording difference, truncation), the dependency is silently dropped. The user sees "Created 5 seed(s)" but the dependency graph is incomplete with no indication of which deps were lost. A warning message should be emitted for each unresolved dependency title.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
+- **[NOTE]** `src/cli/commands/seed.ts:86-87` — In `--no-llm` mode, when `inputText.length > 200`, `title` is the first 200 characters and `description` is the full text (including those same first 200 characters). The description field thus duplicates the title prefix. This is a minor UX issue; `description` could be set to `inputText.slice(200)` or the full text is acceptable depending on how `sd` renders the fields.
 
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
+- **[NOTE]** `src/cli/commands/seed.ts:144-178` — If seed creation fails partway through (e.g., issue 3 of 5 fails), the seeds created so far are left in an unlinked orphan state with no rollback and no list of already-created IDs in the error output. Printing `createdSeeds` on partial failure would help users clean up.
 
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/cli/commands/seed.ts:329-350` — `findClaude()` augments `PATH` with `/opt/homebrew/bin` inside the `execFileSync` env (line 246) but the final `which claude` fallback at line 345 runs without that augmented PATH. If Claude is installed in Homebrew and not in the shell's default PATH, the `which` fallback would fail even though the Homebrew candidate at line 330 would have worked — but that path is only tried if it passes the `test -x` check. The inconsistency is low-risk but worth noting.
 
 ## Positive Notes
 
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- The two-pass approach (create all seeds first, then add dependencies) correctly handles forward-references and avoids ordering issues.
+- `parseLlmResponse()` and `repairTruncatedJson()` are robust: they strip markdown fences, handle leading non-JSON text, and attempt JSON repair on truncated responses — consistent with the pattern in `decomposer-llm.ts`.
+- `normaliseIssue()` provides sensible defaults (`"task"`, `"P2"`) and validates both type and priority against allowlists, preventing invalid values from reaching `sd`.
+- The `--no-llm` escape hatch is a practical and well-executed addition that avoids Claude dependency for simple cases.
+- Prerequisites are checked cleanly with `ensureSdInstalled()` and `isInitialized()` before any work begins, matching the pattern in other commands.
+- Command registration, import, and the `commands.test.ts` update (7→8 commands, `findTsx()` helper) are all correct and complete.
+- TypeScript compiles cleanly; all 8 new tests pass.

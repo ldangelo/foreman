@@ -145,6 +145,7 @@ export class SeedsClient {
     const args = ["create", "--title", title];
     if (opts?.type) args.push("--type", opts.type);
     if (opts?.priority) args.push("--priority", opts.priority);
+    if (opts?.parent) args.push("--parent", opts.parent);
     if (opts?.description) args.push("--description", opts.description);
     if (opts?.labels) args.push("--labels", opts.labels.join(","));
     const result = await execSd(args, this.projectPath);

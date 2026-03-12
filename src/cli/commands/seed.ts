@@ -1,0 +1,446 @@
+import { Command } from "commander";
+import chalk from "chalk";
+import ora from "ora";
+import { readFileSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { SeedsClient } from "../../lib/seeds.js";
+
+// ── Types ────────────────────────────────────────────────────────────────
+
+interface ParsedIssue {
+  title: string;
+  description?: string;
+  type?: string;
+  priority?: string;
+  labels?: string[];
+  dependencies?: string[]; // titles of other issues in this same set
+}
+
+interface ParsedIssuesResponse {
+  issues: ParsedIssue[];
+}
+
+// ── Command ──────────────────────────────────────────────────────────────
+
+export const seedCommand = new Command("seed")
+  .description("Create seeds from natural-language description")
+  .argument("<description>", "Natural language description (or path to a file)")
+  .option("--type <type>", "Force issue type (task|bug|feature|epic|chore|decision)")
+  .option("--priority <priority>", "Force priority (P0-P4)")
+  .option("--parent <id>", "Parent seed ID")
+  .option("--dry-run", "Show what would be created without creating seeds")
+  .option("--no-llm", "Skip LLM parsing — create a single seed with the text as title")
+  .option("--model <model>", "Claude model to use for parsing")
+  .action(
+    async (
+      description: string,
+      opts: {
+        type?: string;
+        priority?: string;
+        parent?: string;
+        dryRun?: boolean;
+        llm: boolean; // false when --no-llm is passed
+        model?: string;
+      },
+    ) => {
+      const projectPath = resolve(".");
+
+      // Resolve input: file path or inline text
+      let inputText: string;
+      const resolvedPath = resolve(description);
+      if (existsSync(resolvedPath)) {
+        inputText = readFileSync(resolvedPath, "utf-8");
+        console.log(chalk.dim(`Reading description from: ${resolvedPath}`));
+      } else {
+        inputText = description;
+      }
+
+      // Initialise SeedsClient and validate prerequisites
+      const seeds = new SeedsClient(projectPath);
+
+      try {
+        await seeds.ensureSdInstalled();
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exitCode = 1;
+        return;
+      }
+
+      if (!(await seeds.isInitialized())) {
+        console.error(
+          chalk.red("Seeds not initialized in this directory. Run 'foreman init' first."),
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      // ── Parse input into structured issues ─────────────────────────────
+
+      let parsedIssues: ParsedIssue[];
+
+      if (!opts.llm) {
+        // --no-llm: create a single seed directly
+        parsedIssues = [
+          {
+            title: inputText.slice(0, 200),
+            description: inputText.length > 200 ? inputText.slice(200) : undefined,
+            type: opts.type,
+            priority: opts.priority,
+          },
+        ];
+      } else {
+        // Use Claude Code CLI to parse the natural-language description
+        const spinner = ora("Parsing description with Claude...").start();
+        try {
+          parsedIssues = await parseWithClaude(inputText, opts.model);
+          spinner.succeed(`Parsed ${parsedIssues.length} issue(s)`);
+        } catch (err) {
+          spinner.fail("Failed to parse description");
+          console.error(
+            chalk.red(err instanceof Error ? err.message : String(err)),
+          );
+          process.exitCode = 1;
+          return;
+        }
+      }
+
+      // Apply any forced overrides from CLI options
+      for (const issue of parsedIssues) {
+        if (opts.type) issue.type = opts.type;
+        if (opts.priority) issue.priority = opts.priority;
+      }
+
+      // ── Display planned seeds ──────────────────────────────────────────
+
+      console.log(chalk.bold.cyan(`\n Seeds to create:\n`));
+      for (const issue of parsedIssues) {
+        console.log(`  ${chalk.bold(issue.title)}`);
+        if (issue.description) {
+          const preview = issue.description.replace(/\n/g, " ").slice(0, 100);
+          console.log(chalk.dim(`    ${preview}${issue.description.length > 100 ? "…" : ""}`));
+        }
+        const meta: string[] = [];
+        if (issue.type) meta.push(`type: ${issue.type}`);
+        if (issue.priority) meta.push(`priority: ${issue.priority}`);
+        if (issue.labels?.length) meta.push(`labels: ${issue.labels.join(", ")}`);
+        if (issue.dependencies?.length) {
+          meta.push(`depends on: ${issue.dependencies.join(", ")}`);
+        }
+        if (meta.length) console.log(chalk.dim(`    ${meta.join(" | ")}`));
+      }
+
+      if (opts.dryRun) {
+        console.log(chalk.yellow("\n--dry-run: No seeds were created."));
+        return;
+      }
+
+      // ── Create seeds ───────────────────────────────────────────────────
+
+      const createSpinner = ora("Creating seeds...").start();
+      const createdSeeds: { id: string; title: string }[] = [];
+      const titleToId = new Map<string, string>();
+
+      try {
+        for (const issue of parsedIssues) {
+          const seed = await seeds.create(issue.title, {
+            type: issue.type,
+            priority: issue.priority,
+            parent: opts.parent,
+            description: issue.description,
+            labels: issue.labels,
+          });
+          createdSeeds.push({ id: seed.id, title: seed.title });
+          titleToId.set(issue.title, seed.id);
+          createSpinner.text = `Creating seeds… (${createdSeeds.length}/${parsedIssues.length})`;
+        }
+
+        // Add dependencies in a second pass (all seeds must exist first)
+        for (const issue of parsedIssues) {
+          if (!issue.dependencies?.length) continue;
+          const seedId = titleToId.get(issue.title);
+          if (!seedId) continue;
+          for (const depTitle of issue.dependencies) {
+            const depId = titleToId.get(depTitle);
+            if (depId) {
+              await seeds.addDependency(seedId, depId);
+            } else {
+              createSpinner.warn(
+                `Warning: dependency "${depTitle}" for "${issue.title}" was not found in the created seeds — skipped.`,
+              );
+            }
+          }
+        }
+
+        createSpinner.succeed(`Created ${createdSeeds.length} seed(s)`);
+      } catch (err) {
+        createSpinner.fail("Failed to create seeds");
+        console.error(
+          chalk.red(err instanceof Error ? err.message : String(err)),
+        );
+        if (createdSeeds.length > 0) {
+          console.error(chalk.yellow(`\nSeeds created before failure:`));
+          for (const s of createdSeeds) {
+            console.error(chalk.dim(`  ${s.id} — ${s.title}`));
+          }
+        }
+        process.exitCode = 1;
+        return;
+      }
+
+      // ── Display results ────────────────────────────────────────────────
+
+      console.log(chalk.bold.green("\n Created seeds:\n"));
+      for (const seed of createdSeeds) {
+        console.log(`  ${chalk.cyan(seed.id)} — ${seed.title}`);
+      }
+      console.log();
+      console.log(chalk.dim("Next: foreman run  — to dispatch work on ready seeds"));
+    },
+  );
+
+// ── Claude integration ────────────────────────────────────────────────────
+
+/**
+ * Call Claude Code CLI to parse a natural-language description into structured issues.
+ */
+async function parseWithClaude(
+  description: string,
+  model?: string,
+): Promise<ParsedIssue[]> {
+  const claudePath = findClaude();
+
+  const systemPrompt = [
+    "You are a project manager extracting structured issue tickets from a natural-language description.",
+    "CRITICAL: Your ENTIRE response must be a single JSON object. No text before or after.",
+    "Do NOT explain your thinking. Do NOT say 'here is the JSON'. Start with { and end with }.",
+    "The JSON must have an 'issues' array of objects.",
+    "Each issue object has these fields:",
+    "  title (string, required) — concise action-oriented title, max 80 chars",
+    "  description (string, optional) — 1-2 sentence clarification",
+    "  type (string) — one of: task, bug, feature, epic, chore, decision",
+    "  priority (string) — one of: P0, P1, P2, P3, P4",
+    "  labels (string array, optional) — semantic tags",
+    "  dependencies (string array, optional) — titles of OTHER issues in this same response that must be done first",
+    "Priority mapping: critical/blocking/urgent=P0, high=P1, medium/normal=P2 (default), low=P3, trivial/nice-to-have=P4.",
+    "Type mapping: fix/regression=bug, new capability=feature, investigation/research=chore, document/test=task, large body of work=epic, open question=decision.",
+    "Extract 1 to 20 issues. If the description is a single task, create one issue.",
+    "Keep titles concise and avoid markdown formatting in any field values.",
+  ].join(" ");
+
+  const prompt = `Extract issue tickets from this description:\n\n${description}`;
+
+  const args = [
+    "--permission-mode",
+    "bypassPermissions",
+    "--print",
+    "--output-format",
+    "text",
+    "--max-turns",
+    "1",
+    ...(model ? ["--model", model] : []),
+    "--system-prompt",
+    systemPrompt,
+    "-", // read prompt from stdin
+  ];
+
+  let stdout: string;
+  try {
+    stdout = execFileSync(claudePath, args, {
+      input: prompt,
+      encoding: "utf-8",
+      timeout: 120_000, // 2 minutes
+      maxBuffer: 5 * 1024 * 1024,
+      env: {
+        ...process.env,
+        PATH: `/opt/homebrew/bin:${process.env.PATH}`,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Claude parsing failed: ${msg}`);
+  }
+
+  const parsed = parseLlmResponse(stdout.trim());
+
+  if (!Array.isArray(parsed.issues) || parsed.issues.length === 0) {
+    throw new Error(
+      "Claude returned no issues. Try a more detailed description or use --no-llm.",
+    );
+  }
+
+  // Normalise and validate fields
+  return parsed.issues.map(normaliseIssue);
+}
+
+/**
+ * Normalise an issue from the LLM response, filling in defaults and validating fields.
+ * Exported for testing.
+ */
+export function normaliseIssue(raw: Partial<ParsedIssue>): ParsedIssue {
+  const validTypes = new Set(["task", "bug", "feature", "epic", "chore", "decision"]);
+  const validPriorities = new Set(["P0", "P1", "P2", "P3", "P4"]);
+
+  return {
+    title: String(raw.title ?? "Untitled").slice(0, 200),
+    description: raw.description ? String(raw.description) : undefined,
+    type: validTypes.has(raw.type ?? "") ? raw.type : "task",
+    priority: validPriorities.has(raw.priority ?? "") ? raw.priority : "P2",
+    labels: Array.isArray(raw.labels) ? raw.labels.map(String) : undefined,
+    dependencies: Array.isArray(raw.dependencies)
+      ? raw.dependencies.map(String)
+      : undefined,
+  };
+}
+
+/**
+ * Parse the raw LLM response, stripping markdown fences if present.
+ * Exported for testing.
+ */
+export function parseLlmResponse(raw: string): ParsedIssuesResponse {
+  let json = raw;
+
+  // Strip markdown code fences
+  const fenceMatch = raw.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (fenceMatch) {
+    json = fenceMatch[1];
+  }
+
+  json = json.trim();
+
+  // Find the JSON object if there's extra leading text
+  if (!json.startsWith("{")) {
+    const objStart = json.indexOf("{");
+    if (objStart >= 0) {
+      json = json.slice(objStart);
+    }
+  }
+
+  // First attempt: parse as-is
+  try {
+    return JSON.parse(json) as ParsedIssuesResponse;
+  } catch {
+    // fall through to repair
+  }
+
+  // Second attempt: repair truncated JSON
+  const repaired = repairTruncatedJson(json);
+  try {
+    return JSON.parse(repaired) as ParsedIssuesResponse;
+  } catch (err) {
+    throw new Error(
+      `Failed to parse LLM response as JSON: ${err instanceof Error ? err.message : String(err)}\n\nRaw response (first 500 chars):\n${raw.slice(0, 500)}`,
+    );
+  }
+}
+
+/**
+ * Locate the Claude CLI binary.
+ */
+function findClaude(): string {
+  const candidates = [
+    "/opt/homebrew/bin/claude",
+    `${process.env.HOME}/.local/bin/claude`,
+  ];
+
+  for (const path of candidates) {
+    try {
+      execFileSync("test", ["-x", path]);
+      return path;
+    } catch {
+      // not found, try next
+    }
+  }
+
+  // Fallback: search PATH (augment with Homebrew so it's consistent with execFileSync env above)
+  try {
+    return execFileSync("which", ["claude"], {
+      encoding: "utf-8",
+      env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
+    }).trim();
+  } catch {
+    throw new Error(
+      "Claude CLI not found. Install it: https://claude.ai/download",
+    );
+  }
+}
+
+// ── JSON repair utilities ────────────────────────────────────────────────
+
+function scanJsonNesting(str: string): { stack: string[]; inString: boolean } {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\") { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") stack.push("}");
+    else if (ch === "[") stack.push("]");
+    else if (ch === "}" || ch === "]") stack.pop();
+  }
+
+  return { stack, inString };
+}
+
+/** Exported for testing. */
+export function repairTruncatedJson(json: string): string {
+  const { stack, inString } = scanJsonNesting(json);
+
+  if (stack.length === 0) return json;
+
+  let truncateAt = json.length;
+
+  if (inString) {
+    const lastQuote = json.lastIndexOf('"');
+    if (lastQuote >= 0) {
+      truncateAt = lastQuote;
+      const beforeQuote = json.slice(0, truncateAt).trimEnd();
+      if (beforeQuote.endsWith(",")) {
+        truncateAt = beforeQuote.length - 1;
+      } else if (beforeQuote.endsWith(":")) {
+        // Find the key's closing and opening quotes so we can remove the
+        // entire key-value pair (e.g. `"title":"Incomplete...`).
+        const keyCloseQuote = json.lastIndexOf('"', truncateAt - 2);
+        if (keyCloseQuote >= 0) {
+          const keyOpenQuote = json.lastIndexOf('"', keyCloseQuote - 1);
+          const keyStart = keyOpenQuote >= 0 ? keyOpenQuote : keyCloseQuote;
+          truncateAt = keyStart;
+          const beforeKey = json.slice(0, truncateAt).trimEnd();
+          if (beforeKey.endsWith(",")) {
+            truncateAt = beforeKey.length - 1;
+          }
+        }
+      }
+    }
+  } else {
+    const trimmed = json.trimEnd();
+    const lastChar = trimmed[trimmed.length - 1];
+    if (
+      lastChar !== "}" &&
+      lastChar !== "]" &&
+      lastChar !== '"' &&
+      lastChar !== "e" &&
+      lastChar !== "l" &&
+      !/\d/.test(lastChar)
+    ) {
+      const lastComma = trimmed.lastIndexOf(",");
+      if (lastComma >= 0) {
+        truncateAt = lastComma;
+      }
+    }
+  }
+
+  let result = json.slice(0, truncateAt).trimEnd();
+  const { stack: repairStack } = scanJsonNesting(result);
+
+  if (result.endsWith(",")) {
+    result = result.slice(0, -1);
+  }
+
+  result += repairStack.reverse().join("");
+  return result;
+}
