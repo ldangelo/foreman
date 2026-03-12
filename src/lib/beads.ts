@@ -42,6 +42,32 @@ export interface BeadGraph {
 
 // ── Low-level helper ────────────────────────────────────────────────────
 
+/**
+ * Unwrap the sd CLI JSON envelope.
+ *
+ * sd wraps responses in `{ success, command, issues/issue/... }`.
+ * This extracts the inner data so callers get arrays/objects directly:
+ *   - `{ issues: [...] }` → returns the array
+ *   - `{ issue: {...} }`  → returns the object
+ *   - `{ success: false, error: "..." }` → throws
+ *   - Everything else (primitives, bare arrays, no envelope) → pass-through
+ */
+export function unwrapSdResponse(raw: any): any {
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return raw;
+
+  // Check for failure envelope
+  if (raw.success === false && raw.error) {
+    throw new Error(raw.error);
+  }
+
+  // Unwrap known envelope keys
+  if ("issues" in raw) return raw.issues;
+  if ("issue" in raw) return raw.issue;
+
+  // No known inner key — return the full envelope (e.g. create response)
+  return raw;
+}
+
 export async function execSd(
   args: string[],
   cwd?: string,
@@ -54,7 +80,7 @@ export async function execSd(
     });
     const trimmed = stdout.trim();
     if (!trimmed) return undefined;
-    return JSON.parse(trimmed);
+    return unwrapSdResponse(JSON.parse(trimmed));
   } catch (err: any) {
     // execFile rejects with code, stderr on non-zero exit
     const stderr = err.stderr?.trim() ?? "";
@@ -104,7 +130,7 @@ export class BeadsClient {
     await execSd(["init"], this.projectPath);
   }
 
-  /** Create a new bead (task/epic/bug). */
+  /** Create a new seed (task/epic/bug). Returns a Bead by fetching after create. */
   async create(
     title: string,
     opts?: {
@@ -121,7 +147,13 @@ export class BeadsClient {
     if (opts?.priority) args.push("--priority", opts.priority);
     if (opts?.description) args.push("--description", opts.description);
     if (opts?.labels) args.push("--labels", opts.labels.join(","));
-    return (await execSd(args, this.projectPath)) as Bead;
+    const result = await execSd(args, this.projectPath);
+    // sd create returns { success, command, id } — fetch full object
+    const id = result?.id ?? result;
+    if (typeof id === "string") {
+      return await this.show(id) as unknown as Bead;
+    }
+    return result as Bead;
   }
 
   /** List beads with optional filters. */

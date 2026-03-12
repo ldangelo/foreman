@@ -38,7 +38,7 @@ describe("leadPrompt", () => {
     const prompt = leadPrompt(baseOpts);
     expect(prompt).toContain("git commit");
     expect(prompt).toContain("git push");
-    expect(prompt).toContain("bd close");
+    expect(prompt).toContain("sd close");
   });
 
   it("includes max retry guidance", () => {

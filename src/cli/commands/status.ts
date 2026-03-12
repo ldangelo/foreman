@@ -23,7 +23,8 @@ export const statusCommand = new Command("status")
         stdio: ["pipe", "pipe", "pipe"],
         encoding: "utf-8",
       });
-      seeds = JSON.parse(output);
+      const parsed = JSON.parse(output);
+      seeds = parsed.issues ?? parsed ?? [];
     } catch {
       console.error(
         chalk.red(
@@ -41,18 +42,20 @@ export const statusCommand = new Command("status")
     let ready = 0;
     let blocked = 0;
     try {
-      const readyOutput = execFileSync(sdPath, ["ready", "--json", "-n", "0"], {
+      const readyOutput = execFileSync(sdPath, ["ready", "--json"], {
         stdio: ["pipe", "pipe", "pipe"],
         encoding: "utf-8",
       });
-      ready = JSON.parse(readyOutput).length;
+      const readyParsed = JSON.parse(readyOutput);
+      ready = (readyParsed.issues ?? readyParsed ?? []).length;
     } catch { /* sd ready may fail if no issues exist */ }
     try {
       const blockedOutput = execFileSync(sdPath, ["blocked", "--json"], {
         stdio: ["pipe", "pipe", "pipe"],
         encoding: "utf-8",
       });
-      blocked = JSON.parse(blockedOutput).length;
+      const blockedParsed = JSON.parse(blockedOutput);
+      blocked = (blockedParsed.issues ?? blockedParsed ?? []).length;
     } catch { /* sd blocked may fail if no issues exist */ }
 
     console.log(chalk.bold("Tasks"));
