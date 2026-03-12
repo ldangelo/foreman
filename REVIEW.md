@@ -1,28 +1,24 @@
-# Code Review: Task groups for batch coordination
+# Code Review: Interactive expandable agent status with summary/detail toggle
 
 ## Verdict: FAIL
 
 ## Summary
-
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation is well-structured and largely correct — `renderAgentCardSummary`, the `isExpanded` parameter on `renderAgentCard`, the `expandedRunIds` Set threading through `renderWatchDisplay`, and the stdin raw-mode keyboard handler in `watchRunsInk` are all solidly built. Backward compatibility is preserved and test coverage is thorough (73 tests, all passing). However, there is one significant UX defect: key presses have up to a 3-second delay before the visual toggle takes effect, making the feature feel broken in interactive use. For a feature whose entire purpose is interactive expand/collapse, this must be fixed before shipping.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[WARNING]** `src/cli/watch-ui.ts:276-302` — **Key presses give no immediate visual feedback.** `handleKeyInput` mutates `expandedRunIds` but the screen is only re-rendered inside the `while` loop every `POLL_MS` (3 seconds). A user pressing `a` or `1` will see no response for up to 3 seconds, making the toggle appear broken. Fix: after modifying `expandedRunIds` in `handleKeyInput`, perform an immediate re-render (re-poll and write to stdout) outside the normal poll interval. A simple approach is to resolve the current sleep early (e.g. via a flag + `setImmediate`) or to factor the render logic into a helper called from both the poll loop and the key handler.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[WARNING]** `src/cli/watch-ui.ts:213-214` / `223` — **Toggle hints are shown for single-agent runs with no visible index prefix.** When `state.runs.length === 1`, no numeric prefix is rendered on the agent card (index is `undefined`), yet the hint still says `"1-9 toggle agent"`. A user running a single-agent watch sees a key hint referencing numbers `1-9` but no numbered labels on the card to guide them. The `a` key is sufficient for a single agent; the `1-9` hint should be omitted (or the index prefix always shown) when there is only one agent.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
+- **[NOTE]** `src/cli/watch-ui.ts:279` — `process.emit("SIGINT" as any)` uses an `any` cast to work around TypeScript's process event typing. This is a common workaround but consider using `process.kill(process.pid, "SIGINT")` instead, which is more semantically correct and doesn't require a type cast.
 
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
-
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/cli/watch-ui.ts:213-214` — The toggle-key hints (`'a' toggle all | 1-9 toggle agent`) are baked into `renderWatchDisplay`'s output string whenever `showDetachHint=true && !allDone`. If `renderWatchDisplay` is ever called from a non-interactive context (e.g. `foreman status`), misleading hints will appear. Consider gating these hints behind the presence of `expandedRunIds` rather than `showDetachHint`.
 
 ## Positive Notes
-
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- Clean separation of concerns: `renderAgentCardSummary` is a pure function exported independently, making it easy to test and reuse.
+- Backward compatibility is preserved perfectly — all existing callers of `renderAgentCard` and `renderWatchDisplay` work unchanged (optional parameters with sensible defaults).
+- stdin raw-mode lifecycle is handled correctly: guarded by `isTTY`, wrapped in try/catch, and cleaned up in `finally` alongside the SIGINT listener.
+- The "toggle all" logic (collapse all if any expanded, expand all if none expanded) is intuitive and correctly uses `lastState` for the expand-all case.
+- Test coverage is excellent: 24 new tests covering summary rendering, collapsed state, mixed expand/collapse in multi-agent display, and index numbering edge cases.
+- Ctrl+C correctly emits SIGINT through the existing `onSigint` handler path even in raw mode, avoiding duplicate cleanup logic.

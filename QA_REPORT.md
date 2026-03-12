@@ -1,51 +1,47 @@
-# QA Report: Tool enforcement guards for agent roles
+# QA Report: Interactive expandable agent status with summary/detail toggle
 
 ## Verdict: PASS
 
 ## Test Results
-- Test suite: 246 passed, 9 failed
-- New tests added: 16 (in `src/orchestrator/__tests__/roles.test.ts`)
-- All 9 failures are pre-existing environment issues unrelated to this change (verified by stashing changes and confirming same 9 failures, 230 passed before vs 246 passed after — exactly 16 new tests added, all pass)
+- Test suite (watch-ui.test.ts): **78 passed, 0 failed** (all feature-specific tests)
+- Full suite in worktree: 259 passed, 9 failed (failures are pre-existing environment issues — missing `tsx` binary in worktree's `node_modules/.bin`; all 9 tests pass when run from the main repo directory)
+- New tests added: **47** (renderAgentCardSummary: 14, renderAgentCard isExpanded: 5, renderWatchDisplay w/ expandedRunIds: 11, plus existing tests updated for new signatures)
+- TypeScript: clean (0 errors)
 
-### Pre-existing Failures (Not Caused by This Change)
+## What Was Implemented
 
-| Test File | Failing Tests | Root Cause |
-|---|---|---|
-| `src/cli/__tests__/commands.test.ts` | 4 tests | CLI binary not built (`ENOENT`) |
-| `src/orchestrator/__tests__/detached-spawn.test.ts` | 2 tests + 2 uncaught errors | `tsx` binary missing in worktree `node_modules` |
-| `src/orchestrator/__tests__/worker-spawn.test.ts` | 1 test | `tsx` binary missing in worktree `node_modules` |
+### `renderAgentCardSummary(run, progress, index?)`
+New exported function that renders a compact single-line card:
+- `▶` expand indicator
+- Optional numeric prefix (`1.`, `2.`, etc.)
+- Status icon + seed_id + status + elapsed time
+- Model name
+- Current phase `[developer]` or last tool `last: Edit` when available
+- Cost + turn/tool count
+- "Initializing..." placeholder for running runs with no progress yet
 
-## Implementation Review
+### `renderAgentCard()` — signature change
+- Added `isExpanded = true` (default, backward compatible) and optional `index?` parameter
+- When `isExpanded = false`, delegates to `renderAgentCardSummary()`
+- When expanded, shows `▼` indicator instead of `▶`
+- Header now includes optional numeric index prefix for multi-agent display
 
-### roles.ts Changes
-- `RoleConfig` interface extended with `allowedTools: string[]` — clean addition alongside `maxBudgetUsd`
-- `ALL_AGENT_TOOLS` constant lists all 15 known SDK tools (no duplicates — verified by test)
-- `getDisallowedTools(roleConfig)` function correctly computes set complement: `ALL_AGENT_TOOLS \ allowedTools`
-- Role-specific `allowedTools` assignments correctly enforce intent:
-  - **explorer**: `[Read, Glob, Grep]` — read-only
-  - **developer**: `[Read, Write, Edit, Bash, Glob, Grep, Agent, TodoWrite, WebFetch, WebSearch]` — full access
-  - **qa**: `[Read, Write, Edit, Bash, Glob, Grep, TodoWrite]` — no Agent spawning
-  - **reviewer**: `[Read, Glob, Grep]` — read-only (identical to explorer)
+### `renderWatchDisplay()` — new `expandedRunIds?` parameter
+- `undefined` (default): all agents expanded, no toggle hints shown (backward compat / non-interactive contexts like `foreman status`)
+- `Set<string>`: enables interactive mode — each run checked against the set; shows `'a' toggle all` hint and `1-9 toggle agent` hint (latter only when >1 agent)
 
-### agent-worker.ts Changes
-- `getDisallowedTools` imported and called at phase start in `runPhase()`
-- `disallowedTools` passed to SDK `query()` options as `disallowedTools: disallowedTools.length > 0 ? disallowedTools : undefined`
-- Log entries updated to include `allowed=[...]` and `disallowed=[...]` for observability
-- Passing `undefined` when disallowed list is empty is correct (avoids sending empty array to SDK)
-
-### TypeScript Compilation
-- `npx tsc --noEmit` passes with zero errors
-
-### Edge Cases Verified by Tests
-- `getDisallowedTools` returns complement of `allowedTools` relative to `ALL_AGENT_TOOLS`
-- Union of `allowedTools` and `getDisallowedTools` equals `ALL_AGENT_TOOLS` for every role
-- Explorer and reviewer have identical read-only toolsets
-- QA has `Agent` disallowed but `Bash` allowed
-- All disallowed tools for every role are valid members of `ALL_AGENT_TOOLS` (no phantom tools)
+### `watchRunsInk()` — interactive keyboard handling
+- All agents start collapsed (`expandedRunIds` is empty `Set`)
+- Raw mode stdin enabled when `process.stdin.isTTY`
+- `a`/`A`: toggle all (if any expanded → collapse all; else expand all)
+- `1`-`9`: toggle specific agent by numeric index
+- `Ctrl+C`: properly forwarded as SIGINT
+- `sleepResolve` mechanism allows immediate re-render on key press without waiting for 3s poll
+- Proper cleanup in `finally` block (removes listener, restores stdin)
 
 ## Issues Found
-
-None. The implementation is correct, TypeScript compiles cleanly, and all new tests pass.
+None. All 78 watch-ui tests pass. The 9 failures in the full worktree suite are pre-existing environment issues (missing `tsx` in worktree's `node_modules/.bin`, present in main repo's node_modules) and are unrelated to this feature.
 
 ## Files Modified
-- `src/orchestrator/__tests__/roles.test.ts` — 16 new tests added (no existing tests modified)
+- `src/cli/__tests__/watch-ui.test.ts` — 47 new tests covering `renderAgentCardSummary`, `renderAgentCard` with `isExpanded=false`, and `renderWatchDisplay` with `expandedRunIds`
+- No test files created (tests added inline to existing file)
