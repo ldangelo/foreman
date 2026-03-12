@@ -3,6 +3,7 @@ import { resolve, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { DecompositionPlan, SprintPlan, StoryPlan, TaskPlan } from "./types.js";
+import { PIPELINE_TIMEOUTS, PIPELINE_BUFFERS } from "../lib/config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -52,8 +53,8 @@ export async function decomposePrdWithLlm(
     stdout = execFileSync(claudePath, args, {
       input: prompt,
       encoding: "utf-8",
-      timeout: 600_000, // 10 minutes for large TRDs
-      maxBuffer: 10 * 1024 * 1024,
+      timeout: PIPELINE_TIMEOUTS.llmDecomposeMs,
+      maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
       env: {
         ...process.env,
         PATH: `/opt/homebrew/bin:${process.env.PATH}`,

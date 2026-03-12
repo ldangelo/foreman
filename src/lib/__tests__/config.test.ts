@@ -6,6 +6,9 @@ import {
   getQaBudget,
   getReviewerBudget,
   getPlanStepBudget,
+  PIPELINE_TIMEOUTS,
+  PIPELINE_LIMITS,
+  PIPELINE_BUFFERS,
 } from "../config.js";
 
 describe("readBudgetFromEnv", () => {
@@ -121,5 +124,55 @@ describe("budget getter functions (custom env vars)", () => {
   it("getPlanStepBudget reads FOREMAN_PLAN_STEP_BUDGET_USD", () => {
     vi.stubEnv("FOREMAN_PLAN_STEP_BUDGET_USD", "5.00");
     expect(getPlanStepBudget()).toBe(5.00);
+  });
+});
+
+describe("PIPELINE_TIMEOUTS defaults", () => {
+  it("progressFlushMs defaults to 2000", () => {
+    expect(PIPELINE_TIMEOUTS.progressFlushMs).toBe(2_000);
+  });
+
+  it("gitOperationMs defaults to 30000", () => {
+    expect(PIPELINE_TIMEOUTS.gitOperationMs).toBe(30_000);
+  });
+
+  it("seedClosureMs defaults to 10000", () => {
+    expect(PIPELINE_TIMEOUTS.seedClosureMs).toBe(10_000);
+  });
+
+  it("testExecutionMs defaults to 300000", () => {
+    expect(PIPELINE_TIMEOUTS.testExecutionMs).toBe(5 * 60 * 1000);
+  });
+
+  it("llmDecomposeMs defaults to 600000", () => {
+    expect(PIPELINE_TIMEOUTS.llmDecomposeMs).toBe(600_000);
+  });
+
+  it("monitorPollMs defaults to 3000", () => {
+    expect(PIPELINE_TIMEOUTS.monitorPollMs).toBe(3_000);
+  });
+
+  it("staleRunHours defaults to 24", () => {
+    expect(PIPELINE_TIMEOUTS.staleRunHours).toBe(24);
+  });
+});
+
+describe("PIPELINE_LIMITS defaults", () => {
+  it("maxDevRetries defaults to 2", () => {
+    expect(PIPELINE_LIMITS.maxDevRetries).toBe(2);
+  });
+
+  it("maxRecoveryRetries defaults to 3", () => {
+    expect(PIPELINE_LIMITS.maxRecoveryRetries).toBe(3);
+  });
+
+  it("stuckDetectionMinutes defaults to 15", () => {
+    expect(PIPELINE_LIMITS.stuckDetectionMinutes).toBe(15);
+  });
+});
+
+describe("PIPELINE_BUFFERS defaults", () => {
+  it("maxBufferBytes defaults to 10MB", () => {
+    expect(PIPELINE_BUFFERS.maxBufferBytes).toBe(10 * 1024 * 1024);
   });
 });

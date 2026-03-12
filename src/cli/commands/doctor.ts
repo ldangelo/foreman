@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot, listWorktrees, removeWorktree } from "../../lib/git.js";
+import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -370,7 +371,7 @@ async function checkStalePendingRuns(
   }
 
   const pendingRuns = store.getRunsByStatus("pending", project.id);
-  const staleThresholdMs = 24 * 60 * 60 * 1000; // 24 hours
+  const staleThresholdMs = PIPELINE_TIMEOUTS.staleRunHours * 60 * 60 * 1000;
   const now = Date.now();
 
   const staleRuns = pendingRuns.filter((r) => {
@@ -380,9 +381,9 @@ async function checkStalePendingRuns(
 
   if (staleRuns.length === 0) {
     return {
-      name: "stale pending runs (>24h)",
+      name: `stale pending runs (>${PIPELINE_TIMEOUTS.staleRunHours}h)`,
       status: "pass",
-      message: `${pendingRuns.length} pending run(s), none older than 24h`,
+      message: `${pendingRuns.length} pending run(s), none older than ${PIPELINE_TIMEOUTS.staleRunHours}h`,
     };
   }
 
@@ -394,7 +395,7 @@ async function checkStalePendingRuns(
       });
     }
     return {
-      name: "stale pending runs (>24h)",
+      name: `stale pending runs (>${PIPELINE_TIMEOUTS.staleRunHours}h)`,
       status: "fixed",
       message: `${staleRuns.length} stale pending run(s)`,
       fixApplied: `Marked ${staleRuns.length} run(s) as failed`,
@@ -402,9 +403,9 @@ async function checkStalePendingRuns(
   }
 
   return {
-    name: "stale pending runs (>24h)",
+    name: `stale pending runs (>${PIPELINE_TIMEOUTS.staleRunHours}h)`,
     status: "warn",
-    message: `${staleRuns.length} pending run(s) older than 24h. Use --fix to mark failed.`,
+    message: `${staleRuns.length} pending run(s) older than ${PIPELINE_TIMEOUTS.staleRunHours}h. Use --fix to mark failed.`,
   };
 }
 

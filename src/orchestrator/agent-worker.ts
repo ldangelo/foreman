@@ -18,6 +18,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
+import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS } from "../lib/config.js";
 import {
   ROLE_CONFIGS,
   explorerPrompt,
@@ -182,7 +183,7 @@ async function main(): Promise<void> {
       progressDirty = false;
     }
   };
-  const progressTimer = setInterval(flushProgress, 2_000);
+  const progressTimer = setInterval(flushProgress, PIPELINE_TIMEOUTS.progressFlushMs);
   progressTimer.unref();
 
   try {
@@ -511,7 +512,7 @@ function rotateReport(worktreePath: string, filename: string): void {
  */
 async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   const { seedId, seedTitle, worktreePath } = config;
-  const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: 30_000 };
+  const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
 
   const report: string[] = [
     `# Finalize Report: ${seedTitle}`,
@@ -594,7 +595,7 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   }
 }
 
-const MAX_DEV_RETRIES = 2;
+const MAX_DEV_RETRIES = PIPELINE_LIMITS.maxDevRetries;
 
 /**
  * Run the full pipeline: Explorer → Developer ⇄ QA → Reviewer → Finalize.
@@ -781,7 +782,7 @@ async function markStuck(
   // Reset seed back to open so it appears in sd ready for retry
   const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
   try {
-    execFileSync(sdPath, ["update", seedId, "--status", "open"], { stdio: "pipe", timeout: 10_000 });
+    execFileSync(sdPath, ["update", seedId, "--status", "open"], { stdio: "pipe", timeout: PIPELINE_TIMEOUTS.seedClosureMs });
     log(`Reset seed ${seedId} back to open`);
   } catch {
     log(`Warning: could not reset seed ${seedId} to open`);

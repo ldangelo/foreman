@@ -2,6 +2,7 @@ import type { ForemanStore, Run } from "../lib/store.js";
 import type { SeedsClient } from "../lib/seeds.js";
 import { removeWorktree, createWorktree } from "../lib/git.js";
 import type { MonitorReport } from "./types.js";
+import { PIPELINE_LIMITS } from "../lib/config.js";
 
 // ── Monitor ──────────────────────────────────────────────────────────────
 
@@ -20,7 +21,7 @@ export class Monitor {
     stuckTimeoutMinutes?: number;
     projectId?: string;
   }): Promise<MonitorReport> {
-    const stuckTimeout = opts?.stuckTimeoutMinutes ?? 15;
+    const stuckTimeout = opts?.stuckTimeoutMinutes ?? PIPELINE_LIMITS.stuckDetectionMinutes;
     const activeRuns = this.store.getActiveRuns(opts?.projectId);
 
     const report: MonitorReport = {
@@ -95,7 +96,7 @@ export class Monitor {
    * Attempt to recover a stuck run by killing the worktree and re-creating it.
    * Returns true if recovered (re-queued as pending), false if max retries exceeded.
    */
-  async recoverStuck(run: Run, maxRetries = 3): Promise<boolean> {
+  async recoverStuck(run: Run, maxRetries = PIPELINE_LIMITS.maxRecoveryRetries): Promise<boolean> {
     // Count previous recovery attempts from the events log
     const recoverEvents = this.store.getRunEvents(run.id, "recover");
     const retryCount = recoverEvents.length;

@@ -2,6 +2,7 @@ import chalk from "chalk";
 
 import type { ForemanStore, Run, RunProgress } from "../lib/store.js";
 import type { NotificationBus } from "../orchestrator/notification-bus.js";
+import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -338,7 +339,7 @@ export async function watchRunsInk(
     notificationBus?: NotificationBus;
   },
 ): Promise<WatchResult> {
-  const POLL_MS = 3_000;
+  const POLL_MS = PIPELINE_TIMEOUTS.monitorPollMs;
   let detached = false;
   // All runs start collapsed; users press 'a' or a digit to expand.
   const expandedRunIds = new Set<string>();

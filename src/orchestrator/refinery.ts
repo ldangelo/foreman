@@ -7,6 +7,7 @@ import type { ForemanStore } from "../lib/store.js";
 import type { SeedsClient } from "../lib/seeds.js";
 import { mergeWorktree, removeWorktree } from "../lib/git.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
+import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -26,7 +27,7 @@ const REPORT_FILES = [
 async function git(args: string[], cwd: string): Promise<string> {
   const { stdout } = await execFileAsync("git", args, {
     cwd,
-    maxBuffer: 10 * 1024 * 1024,
+    maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
     env: { ...process.env, GIT_EDITOR: "true" },
   });
   return stdout.trim();
@@ -35,7 +36,7 @@ async function git(args: string[], cwd: string): Promise<string> {
 async function gh(args: string[], cwd: string): Promise<string> {
   const { stdout } = await execFileAsync("gh", args, {
     cwd,
-    maxBuffer: 10 * 1024 * 1024,
+    maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
   });
   return stdout.trim();
 }
@@ -45,8 +46,8 @@ async function runTestCommand(command: string, cwd: string): Promise<{ ok: boole
   try {
     const { stdout, stderr } = await execFileAsync(cmd, args, {
       cwd,
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: 5 * 60 * 1000, // 5 minute timeout for tests
+      maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+      timeout: PIPELINE_TIMEOUTS.testExecutionMs,
     });
     return { ok: true, output: (stdout + "\n" + stderr).trim() };
   } catch (err: any) {
