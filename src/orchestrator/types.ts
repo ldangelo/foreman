@@ -170,3 +170,27 @@ export interface WorkerProgressNotification {
 }
 
 export type WorkerNotification = WorkerStatusNotification | WorkerProgressNotification;
+
+// ── Doctor types ────────────────────────────────────────────────────────
+
+export type CheckStatus = "pass" | "warn" | "fail" | "fixed" | "skip";
+
+export interface CheckResult {
+  name: string;
+  status: CheckStatus;
+  message: string;
+  fixApplied?: string;
+}
+
+export interface DoctorReport {
+  system: CheckResult[];
+  repository: CheckResult[];
+  dataIntegrity: CheckResult[];
+  summary: {
+    pass: number;
+    warn: number;
+    fail: number;
+    fixed: number;
+    skip: number;
+  };
+}
