@@ -4,6 +4,30 @@ export type RuntimeSelection = "claude-code";
 
 export type ModelSelection = "claude-opus-4-6" | "claude-sonnet-4-6" | "claude-haiku-4-5-20251001";
 
+// ── Provider/Gateway types ────────────────────────────────────────────────
+
+/**
+ * Configuration for a gateway provider (e.g., z.ai, OpenRouter, self-hosted proxy).
+ *
+ * Providers override the default Anthropic API endpoint and/or API key.
+ * The SDK reads ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY from the environment,
+ * so provider configs specify how to populate those variables per-phase.
+ */
+export interface ProviderConfig {
+  /** Base URL for the API endpoint (e.g., "https://api.z.ai/anthropic").
+   *  Injected as ANTHROPIC_BASE_URL in the SDK env. */
+  baseUrl?: string;
+  /** Name of the environment variable holding the API key for this provider.
+   *  The value of that env var will be injected as ANTHROPIC_API_KEY. */
+  apiKeyEnvVar?: string;
+  /** Optional mapping from foreman model IDs to provider-specific model IDs.
+   *  e.g., { "claude-sonnet-4-6": "anthropic/claude-sonnet-4-6" } for OpenRouter */
+  modelIdMap?: Record<string, string>;
+}
+
+/** Map of provider IDs (e.g., "z-ai", "openrouter") to their configurations. */
+export type GatewayProviders = Record<string, ProviderConfig>;
+
 export type AgentRole = "lead" | "explorer" | "developer" | "qa" | "reviewer" | "worker";
 
 // ── Decomposition types ─────────────────────────────────────────────────

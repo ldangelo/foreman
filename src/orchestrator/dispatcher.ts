@@ -9,6 +9,7 @@ import type { SeedsClient, Seed } from "../lib/seeds.js";
 import type { ForemanStore } from "../lib/store.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
+import { ProviderRegistry } from "./provider-registry.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -17,6 +18,7 @@ import type {
   ResumedTask,
   RuntimeSelection,
   ModelSelection,
+  GatewayProviders,
   PlanStepDispatched,
 } from "./types.js";
 
@@ -28,11 +30,17 @@ const PLAN_STEP_MAX_BUDGET_USD = 3.00;
 // ── Dispatcher ──────────────────────────────────────────────────────────
 
 export class Dispatcher {
+  private providerRegistry: ProviderRegistry;
+
   constructor(
     private seeds: SeedsClient,
     private store: ForemanStore,
     private projectPath: string,
-  ) {}
+    providers?: GatewayProviders,
+  ) {
+    // Load provider configs from explicit config or environment variables
+    this.providerRegistry = new ProviderRegistry(providers);
+  }
 
   /**
    * Query ready seeds, create worktrees, write TASK.md, and record runs.
@@ -448,6 +456,28 @@ export class Dispatcher {
   }
 
   /**
+   * Return the configured gateway providers (for passing to worker processes).
+   */
+  getProviders(): GatewayProviders {
+    return this.providerRegistry.toJSON();
+  }
+
+  /**
+   * Select a gateway provider for the lead/initial model selection.
+   *
+   * Returns undefined to use the direct Anthropic API. Override this in a
+   * subclass to route the initial dispatch through a specific gateway provider.
+   *
+   * Note: Per-phase provider routing is configured on ROLE_CONFIGS.provider
+   * and applied automatically in agent-worker.ts runPhase().
+   */
+  protected selectProvider(_task: SeedInfo): string | undefined {
+    // Default: no provider override at the task level.
+    // Per-phase routing is handled by ROLE_CONFIGS[role].provider.
+    return undefined;
+  }
+
+  /**
    * Build the TASK.md content for a seed (exposed for testing).
    */
   generateAgentInstructions(seed: SeedInfo, worktreePath: string): string {
@@ -506,6 +536,7 @@ export class Dispatcher {
       pipeline: usePipeline,
       skipExplore: pipelineOpts?.skipExplore,
       skipReview: pipelineOpts?.skipReview,
+      providers: this.providerRegistry.toJSON(),
     });
 
     return sessionKey;
@@ -550,6 +581,7 @@ export class Dispatcher {
       prompt: resumePrompt,
       env,
       resume: sdkSessionId,
+      providers: this.providerRegistry.toJSON(),
     });
 
     return sessionKey;
@@ -586,6 +618,8 @@ interface WorkerConfig {
   pipeline?: boolean;
   skipExplore?: boolean;
   skipReview?: boolean;
+  /** Gateway provider configs for per-phase routing. */
+  providers?: GatewayProviders;
 }
 
 /**

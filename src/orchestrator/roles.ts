@@ -14,6 +14,10 @@ export interface RoleConfig {
   role: AgentRole;
   model: ModelSelection;
   maxBudgetUsd: number;
+  /** Gateway provider ID for routing this phase through a non-default endpoint.
+   *  Matches a key in GatewayProviders (e.g., "z-ai", "openrouter").
+   *  Omit to use the direct Anthropic API. */
+  provider?: string;
   /** Report file this role produces */
   reportFile: string;
 }

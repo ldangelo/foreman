@@ -1,165 +1,266 @@
-# Explorer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Explorer Report: Gateway provider routing for model selection
 
 ## Summary
-The codebase uses `maxTurns` to limit SDK query execution in the agent orchestration pipeline. This needs to be replaced with `maxBudgetUsd` to enforce budget-based limits instead of turn-based limits. The change affects the role configurations, phase execution, and logging.
+
+The foreman orchestrator currently routes all API calls through hardcoded Anthropic Claude models (Haiku, Sonnet, Opus) with keyword-based selection logic. To support gateway provider routing, we need to:
+
+1. Add a provider configuration system to allow specifying custom API endpoints (z.ai, OpenRouter, self-hosted proxies)
+2. Enable routing different pipeline phases through different providers
+3. Support per-phase provider/model selection (e.g., explorer via direct API, developer via z.ai)
+4. Add provider health checking to ensure routing targets are available
 
 ## Relevant Files
 
-### 1. **src/orchestrator/roles.ts** (lines 13-46)
-- **Purpose**: Defines role configurations for the specialization pipeline (explorer, developer, qa, reviewer)
+### 1. **src/orchestrator/types.ts** (lines 1-152)
+- **Purpose**: Type definitions for the orchestrator
 - **Current State**:
-  - `RoleConfig` interface has `maxTurns: number` property (line 16)
-  - `ROLE_CONFIGS` object defines maxTurns for each phase:
-    - explorer: 30 turns
-    - developer: 80 turns
-    - qa: 30 turns
-    - reviewer: 20 turns
-- **Relevance**: Primary file that needs modification - interface definition and config values
+  - `ModelSelection` type: hardcoded union of 3 models (lines 5)
+  - `DispatchedTask` interface: includes `model: ModelSelection` field (line 60)
+  - `ResumedTask` interface: includes `model: ModelSelection` field (line 82)
+- **Relevance**: Will need to add new types for `ProviderConfig`, `GatewayProvider`, `ModelProviderSelection`
+- **Impact**: Changes here ripple to dispatcher, roles, and agent-worker
 
-### 2. **src/orchestrator/agent-worker.ts** (lines 310-399)
-- **Purpose**: Standalone worker process that runs individual SDK query calls for each pipeline phase
+### 2. **src/orchestrator/roles.ts** (lines 13-46)
+- **Purpose**: Agent role configurations for the specialization pipeline
 - **Current State**:
-  - Line 322: Logs `maxTurns=${roleConfig.maxTurns}` when starting a phase
-  - Line 337: Passes `maxTurns: roleConfig.maxTurns` to the SDK `query()` options
-  - Line 225: Already handles `error_max_budget_usd` error subtype (future-ready)
-- **Relevance**: Needs to replace logging and pass maxBudgetUsd to query() options instead
+  - `RoleConfig` interface: specifies `model: ModelSelection` (line 15)
+  - `ROLE_CONFIGS` object hardcodes models per role:
+    - explorer: claude-haiku-4-5-20251001
+    - developer: claude-sonnet-4-6
+    - qa: claude-sonnet-4-6
+    - reviewer: claude-sonnet-4-6
+- **Relevance**: Primary location for phase-level model/provider configuration
+- **Impact**: Need to extend `RoleConfig` to include optional `provider: string` or `gatewayId: string`
 
-### 3. **src/orchestrator/dispatcher.ts** (line 361)
-- **Purpose**: Dispatches beads to agents, handles one-off planning steps
+### 3. **src/orchestrator/dispatcher.ts** (lines 434-448)
+- **Purpose**: Task routing logic that selects model and spawns agents
 - **Current State**:
-  - Line 361: Uses `maxTurns: 50` for `dispatchPlanStep()` SDK query
-- **Relevance**: Secondary location needing update for consistency with phase limits
+  - `selectModel()` method uses keyword matching on task title/description
+  - Returns hardcoded ModelSelection based on keywords (refactor→opus, typo→haiku, default→sonnet)
+  - Passes selected model to `spawnAgent()` and `resumeAgent()`
+- **Relevance**: Where provider selection logic would be applied
+- **Impact**: Need to add `selectProvider()` method or extend `selectModel()` to return provider+model pair
+
+### 4. **src/orchestrator/agent-worker.ts** (lines 310-399)
+- **Purpose**: Standalone worker that runs SDK query() calls for each phase
+- **Current State**:
+  - Line 334: Passes `model: roleConfig.model` to SDK query options
+  - Line 337: Also passes `maxBudgetUsd: roleConfig.maxBudgetUsd`
+  - Uses role config to determine model per phase
+- **Relevance**: Where provider configuration is passed to SDK
+- **Impact**: Need to handle provider/gateway configuration when calling SDK
+- **Note**: Line 225 already handles `error_max_budget_usd` error subtype
+
+### 5. **src/lib/store.ts** (lines 1-100+)
+- **Purpose**: SQLite database schema and data access for runs/projects
+- **Current State**:
+  - `Project` interface: basic project metadata (lines 9-16)
+  - `Run` interface: tracking for individual task runs (lines 18-30)
+  - No provider/gateway configuration storage
+- **Relevance**: May need to add provider config storage at project level
+- **Impact**: Minimal unless provider configs need to be persisted in the database
 
 ## Architecture & Patterns
 
-### Pipeline Orchestration Pattern
-- **Sequential phases**: Explorer → Developer ⇄ QA → Reviewer → Finalize
-- **Phase execution**: Each phase runs as a separate `query()` call with its own config
-- **Error handling**: Already recognizes `error_max_budget_usd` error subtype (agent-worker.ts:225)
-- **Naming convention**: `roleConfig.maxTurns` → should become `roleConfig.maxBudgetUsd`
-
-### SDK Integration
-- The Anthropic Claude Agent SDK supports `maxBudgetUsd?: number` in query options (confirmed in sdk.d.ts)
-- Budget limits are enforced by the SDK during query execution
-- Error subtype `error_max_budget_usd` is already handled by the error detection logic
-
-### Role Config Structure
-```typescript
-export interface RoleConfig {
-  role: AgentRole;
-  model: ModelSelection;
-  maxTurns: number;              // ← Change to maxBudgetUsd: number
-  reportFile: string;
-}
+### Current Model Selection Flow
 ```
+Task (title, description)
+  ↓
+Dispatcher.selectModel()
+  ↓
+Keyword matching (refactor/complex → opus, typo/simple → haiku, default → sonnet)
+  ↓
+ModelSelection returned ("claude-opus-4-6" | "claude-sonnet-4-6" | "claude-haiku-4-5-20251001")
+  ↓
+spawnAgent() / resumeAgent() with model parameter
+  ↓
+agent-worker.ts passes model to SDK query() options
+```
+
+### Proposed Provider Routing Pattern
+```
+Project Configuration (foreman.json or similar)
+  ├── providers:
+  │   ├── direct: { endpoint: "https://api.anthropic.com", apiKey: "sk-..." }
+  │   ├── z-ai: { endpoint: "https://api.z.ai/anthropic", apiKey: "..." }
+  │   └── openrouter: { endpoint: "https://api.openrouter.ai", apiKey: "..." }
+  └── routing:
+      ├── explorer: { provider: "direct", model: "claude-haiku-4-5-20251001" }
+      ├── developer: { provider: "z-ai", model: "claude-sonnet-4-6" }
+      ├── qa: { provider: "openrouter", model: "claude-sonnet-4-6" }
+      └── reviewer: { provider: "direct", model: "claude-sonnet-4-6" }
+
+ROLE_CONFIGS with provider routing
+  ↓
+Dispatcher loads provider config
+  ↓
+For each phase: selectProvider() + selectModel()
+  ↓
+agent-worker passes both to SDK
+```
+
+### SDK Integration Points
+- **query() function**: Accepts `model: string` parameter in options
+- **Question**: Does SDK support custom provider/endpoint configuration?
+  - Searched SDK types but didn't find explicit "provider" or "baseUrl" field
+  - May need to use environment variables or custom headers
+  - Claude Agent SDK may have provider support not visible in type stubs
 
 ## Dependencies
 
-### What Uses maxTurns
-1. **agent-worker.ts**:
+### What imports/uses model selection
+1. **dispatcher.ts** → `selectModel()` is core entry point
+   - Imports `SeedInfo` from types.ts
+   - Returns `ModelSelection` to downstream consumers
+
+2. **agent-worker.ts** → Uses model from ROLE_CONFIGS
    - Imports `ROLE_CONFIGS` from roles.ts
-   - Calls `roleConfig.maxTurns` in `runPhase()` function
-   - Passes value to SDK `query()` options
+   - Passes `roleConfig.model` to SDK
 
-2. **dispatcher.ts**:
-   - Hard-coded `maxTurns: 50` in `dispatchPlanStep()`
-   - No import from roles.ts (independent configuration)
+3. **roles.ts** → Defines role→model mapping
+   - Imports `ModelSelection` from types.ts
+   - ROLE_CONFIGS is source of truth for role defaults
 
-3. **roles.ts**:
-   - Defines the canonical values for all phases
-   - No external dependencies on the property name
+4. **types.ts** → Type definitions
+   - `ModelSelection` union
+   - `DispatchedTask`, `ResumedTask` use `model: ModelSelection`
 
-### SDK API Contract
-- The SDK's `query()` function accepts `maxBudgetUsd?: number` parameter
-- When a query exceeds budget, SDK returns error with `subtype: "error_max_budget_usd"`
-- No backwards compatibility issues - this is a parameter replacement
+### External dependencies
+- **@anthropic-ai/claude-agent-sdk**: query() function with model option
+- **better-sqlite3**: Potential storage for provider configs (via store.ts)
 
 ## Existing Tests
 
-### Test Files
-1. **src/orchestrator/__tests__/roles.test.ts**
-   - Tests ROLE_CONFIGS structure (all roles defined, models correct)
-   - Tests prompt templates (context injection, read-only instructions)
-   - Tests verdict/issue parsing from reports
-   - **Status**: Tests focus on config existence, not specific maxTurns values
-   - **Impact**: Tests will likely pass after renaming property (no assertions on maxTurns specifically)
+### 1. **src/orchestrator/__tests__/dispatcher.test.ts** (lines 17-64)
+- Tests `Dispatcher.selectModel()` method exclusively
+- Coverage:
+  - Opus selection: refactor, architect, design, migrate keywords
+  - Haiku selection: typo, config, rename, version keywords
+  - Sonnet default: general implementation tasks
+  - Case-insensitive matching
+  - Description-based complexity detection
+- **Status**: 9 test cases, all passing
+- **Impact**: New provider routing tests should be added separately; existing model tests should still pass
 
-2. **src/orchestrator/__tests__/agent-worker.test.ts**
-   - Tests worker process initialization and logging
-   - Tests config file handling and deletion
-   - **Status**: No assertions on maxTurns values
-   - **Impact**: Will need to verify logging format still works with maxBudgetUsd
+### 2. **src/orchestrator/__tests__/roles.test.ts**
+- Tests `ROLE_CONFIGS` structure and prompt generation
+- May need updates if RoleConfig interface changes
 
-### Test Coverage of Limits
-- No tests directly assert maxTurns values
-- No tests verify budget enforcement
-- New tests may be beneficial to ensure budget limits work correctly
+### 3. **src/orchestrator/__tests__/agent-worker.test.ts**
+- Tests worker initialization and config handling
+- May need updates if provider config is passed through WorkerConfig
 
 ## Recommended Approach
 
-### Phase 1: Update Role Configurations
-1. Update `RoleConfig` interface in roles.ts:
-   - Rename `maxTurns: number` → `maxBudgetUsd: number`
+### Phase 1: Define Provider Configuration Types
+1. **Add to types.ts**:
+   - `ProviderConfig` interface: endpoint, apiKey, healthCheckUrl, timeout
+   - `GatewayProvider` type: union of provider names ("direct" | "z-ai" | "openrouter" | custom)
+   - `ModelProviderSelection` interface: { provider: GatewayProvider, model: ModelSelection }
+   - Update `ROLE_CONFIGS` to use ModelProviderSelection
 
-2. Update `ROLE_CONFIGS` values with reasonable budget estimates:
-   - Need to estimate per-model costs based on token usage
-   - Suggested starting points (requires validation):
-     - **explorer** (haiku, 30 turns): $0.50-$1.00 USD
-     - **developer** (sonnet, 80 turns): $5.00-$10.00 USD
-     - **qa** (sonnet, 30 turns): $2.00-$4.00 USD
-     - **reviewer** (sonnet, 20 turns): $1.50-$3.00 USD
-   - Also update **dispatchPlanStep** budget in dispatcher.ts (currently maxTurns: 50)
+2. **Extend RoleConfig**:
+   - Add `provider?: GatewayProvider` field (optional, defaults to "direct")
+   - Update ROLE_CONFIGS values to include provider selection
 
-### Phase 2: Update Phase Execution in agent-worker.ts
-1. Update `runPhase()` function:
-   - Line 322: Change log format to show `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - Line 337: Pass `maxBudgetUsd: roleConfig.maxBudgetUsd` instead of `maxTurns`
+### Phase 2: Configuration System
+1. **Decide configuration storage**:
+   - Option A: `.foreman.json` in project root
+   - Option B: Extend existing `.seeds/config.yaml`
+   - Option C: Environment variables (FOREMAN_PROVIDERS_*)
+   - Option D: Per-project in database (store.ts)
 
-2. Verify error handling:
-   - Line 225 already checks for `error_max_budget_usd` — keep as-is
+2. **Create provider loading logic**:
+   - Load provider configs at dispatcher initialization
+   - Validate provider endpoints (health check or basic connectivity)
+   - Fallback to "direct" API if provider unavailable
 
-### Phase 3: Update Dispatcher Planning
-1. In dispatcher.ts `dispatchPlanStep()`:
-   - Replace `maxTurns: 50` with appropriate `maxBudgetUsd` value (suggest $3.00-$5.00)
+3. **Add to Dispatcher**:
+   - Constructor loads provider config
+   - Add `selectProvider()` method or extend `selectModel()` to return { provider, model }
 
-### Phase 4: Update Tests & Documentation
-1. roles.test.ts:
-   - Update any hardcoded expectations if tests fail
-   - Consider adding assertions for budget values being positive numbers
+### Phase 3: Route Through SDK
+1. **Update agent-worker.ts**:
+   - Accept provider config in WorkerConfig
+   - When calling SDK query(), pass:
+     - `model: string` (e.g., "claude-sonnet-4-6" without provider prefix)
+     - Potentially custom headers or baseUrl if SDK supports it
 
-2. agent-worker.test.ts:
-   - Verify logging format with new maxBudgetUsd parameter
-   - Check that log output still contains relevant budget information
+2. **Handle provider-specific model IDs**:
+   - Some providers may use different model identifiers
+   - May need mapping layer: { provider: "openrouter", model: "anthropic/claude-sonnet-4-6" }
+
+### Phase 4: Testing & Validation
+1. Add provider selection tests to dispatcher.test.ts
+2. Add provider config loading tests
+3. Add health check tests
+4. Manual testing with different provider configurations
 
 ## Potential Pitfalls & Edge Cases
 
-1. **Budget Estimation Accuracy**
-   - Turn counts are discrete (explorer: 30) but budgets must be estimated
-   - Per-model costs vary (Haiku cheaper than Sonnet than Opus)
-   - May need to adjust budgets based on real usage data
+1. **Provider Authentication**:
+   - API keys in config files — security risk
+   - Solution: Load from environment variables, NOT config files
+   - Encrypt keys if persisted in database
 
-2. **Error Handling Clarity**
-   - Error message when budget exceeded may be different from turn limits
-   - Current code checks `error_max_budget_usd` — verify message consistency
+2. **Provider Model Name Differences**:
+   - OpenRouter, z.ai may use different model identifiers
+   - Solution: Add mapping layer in ProviderConfig
+   - Example: `modelIdMap: { "claude-sonnet-4-6": "anthropic/claude-sonnet-4-6" }`
 
-3. **Logging Clarity**
-   - Phase startup logs currently show `maxTurns=30`
-   - Should show `maxBudgetUsd=$X.XX` for clarity
+3. **Provider Downtime/Health**:
+   - What happens if provider is unavailable?
+   - Solution: Implement health check with fallback to direct API
+   - Log provider failures for monitoring
 
-4. **Backwards Compatibility**
-   - Existing stored run data uses turns in progress tracking (agent-worker.ts line 196)
-   - Budget limits don't track in progress.turns — separate concerns
-   - No data migration needed (turns are tracked separately from limits)
+4. **Cost Tracking**:
+   - Different providers have different pricing
+   - SDK returns cost_usd which may not reflect actual cost if routed through provider
+   - Solution: Track provider metadata, adjust cost estimates if needed
 
-5. **Dispersion Across Files**
-   - dispatcher.ts has a hard-coded maxTurns value (50) separate from roles.ts
-   - Consider whether plan steps should use same budget as phases or different
+5. **SDK Compatibility**:
+   - Confirm SDK actually supports custom provider/endpoint configuration
+   - The query() function's full Options type needs investigation
+   - May need to use SDK extensions or environment variable approach
+
+6. **Backwards Compatibility**:
+   - Existing code expects `ModelSelection` (string union)
+   - Changing to `ModelProviderSelection` object breaks compatibility
+   - Solution: Keep ModelSelection but extend types to allow both, or version the interface
+
+7. **Configuration Precedence**:
+   - What if provider config exists but role config doesn't specify it?
+   - Should roles inherit from task-level provider selection?
+   - Solution: Clear precedence rules (task-level > role-level > project-level > direct)
 
 ## Next Steps for Developer
 
-1. Research typical costs per phase from production data (if available)
-2. Update roles.ts with maxBudgetUsd values (start conservative)
-3. Update agent-worker.ts runPhase() logging and query options
-4. Update dispatcher.ts dispatchPlanStep() budget
-5. Run tests to verify no regressions
-6. Monitor first few runs with new budgets to validate appropriateness
+1. **Investigate SDK Provider Support**:
+   - Read full Claude Agent SDK documentation
+   - Check if query() has baseUrl, endpoint, or provider field
+   - Look for environment variable support (ANTHROPIC_API_ENDPOINT, etc)
+
+2. **Design Configuration File Format**:
+   - Decide: `.foreman.json`, `foreman.config.ts`, or extend `.seeds/config.yaml`
+   - Document provider credential handling (env vars, secrets management)
+
+3. **Implement ProviderRegistry**:
+   - Load and validate provider configs
+   - Health check endpoints
+   - Model ID mapping
+
+4. **Update Route Passing**:
+   - Modify Dispatcher to load and apply provider routing
+   - Update WorkerConfig to include provider info
+   - Pass provider config to SDK query options
+
+5. **Write Comprehensive Tests**:
+   - Provider config loading
+   - Provider health checking
+   - Provider selection logic
+   - Fallback behavior when provider unavailable
+
+6. **Documentation**:
+   - Update README with provider configuration examples
+   - Document supported providers
+   - Add troubleshooting guide for provider connectivity issues

@@ -1,28 +1,29 @@
-# Code Review: Task groups for batch coordination
+# Code Review: Gateway provider routing for model selection
 
 ## Verdict: FAIL
 
 ## Summary
 
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation introduces a `ProviderRegistry` class that enables per-phase routing of SDK calls through different API gateway endpoints by injecting `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` environment variables. The core design is sound and backward-compatible. However, there are two bugs that would cause provider routing to silently fail in practice: a provider ID mismatch between the env loader and the documented/expected ID format, and the `resumeAgent` path in `dispatcher.ts` not propagating `providers` to the worker process.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[CRITICAL]** `src/orchestrator/provider-registry.ts:141` — Provider ID mismatch: `loadProvidersFromEnv` extracts IDs by lowercasing the raw env var segment, turning `FOREMAN_PROVIDER_Z_AI_BASE_URL` into `"z_ai"` (underscore). However, all documentation, `RoleConfig` JSDoc examples, and test fixtures consistently use `"z-ai"` (hyphen). When a user sets `FOREMAN_PROVIDER_Z_AI_BASE_URL` and configures a role with `provider: "z-ai"`, the registry lookup fails silently and routing never activates. The loader must convert underscores to hyphens (e.g., `baseUrlMatch[1].toLowerCase().replace(/_/g, "-")`) or the docs must consistently state that hyphens become underscores. The tests at lines 176/184/206 actually assert `"z_ai"`, confirming the mismatch is baked in and untested against the hyphenated form.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[WARNING]** `src/orchestrator/dispatcher.ts:574` — `resumeAgent` does not pass `providers` to `spawnWorkerProcess`. The `spawnAgent` path (line 539) correctly propagates `this.providerRegistry.toJSON()`, but the resume path omits it entirely. When a rate-limited pipeline run is resumed, provider routing will not be applied to any phase, silently falling back to the direct Anthropic API.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
+- **[WARNING]** `src/orchestrator/provider-registry.ts:112` — `toJSON()` returns a shallow copy (`{ ...this.providers }`). Each `ProviderConfig` value (including its `modelIdMap` object) is shared by reference. If a caller mutates a returned config's `modelIdMap`, the registry's internal state is corrupted. This matters because the returned object is JSON-serialised to a temp file and then read back in the worker, so in practice it won't be mutated at runtime — but the claim in the QA report that `toJSON()` "prevent[s] mutation of registry state" is inaccurate and could mislead future maintainers. A deep clone or `structuredClone` would be correct here.
 
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
+- **[NOTE]** `src/orchestrator/agent-worker.ts:136-158` — Single-agent mode (non-pipeline path) does not apply provider env overrides. The `providers` field is on `WorkerConfig` and is available, but it is never used in the non-pipeline code path. The pipeline path (via `runPhase`) is handled correctly. If provider routing is ever needed for non-pipeline single-agent runs, this will need to be added.
 
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/orchestrator/provider-registry.ts:168-179` — `applyProviderEnv` constructs a fresh `ProviderRegistry` from the serialised `GatewayProviders` on every call. For the pipeline path this means a new registry is allocated for each of the four phases. It is not a correctness issue (the registry is cheap to construct) but it is unnecessary overhead; the function could look up the config directly without instantiating a class.
+
+- **[NOTE]** `src/orchestrator/dispatcher.ts:462-474` — `selectProvider()` is a public stub that always returns `undefined`. Adding a public, uncalled method to a class increases surface area without purpose. Either remove it, or make it `protected` for subclassing, or wire it up to the task-level dispatch flow.
 
 ## Positive Notes
 
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- The environment-variable-based approach for provider credentials (storing only the *name* of the env var, not the key itself) is the right security model and is well-documented in the module header.
+- Backward compatibility is fully preserved: all existing ROLE_CONFIGS omit `provider`, and `applyProviderEnv` short-circuits cleanly when no provider is set.
+- The 33 new tests in `provider-registry.test.ts` are comprehensive, covering happy paths, missing env vars, case-insensitivity, model ID mapping, and mutation safety.
+- `resolvePhaseModel` in `agent-worker.ts` is a clean, well-placed helper that duplicates logic already on `ProviderRegistry.resolveModelId` — for pipeline phases the registry is unavailable, so this standalone function is justified.
+- The `GatewayProviders` type threaded through `WorkerConfig` serialisation to the worker process is a clean design that avoids re-reading env vars in the worker.

@@ -1,34 +1,42 @@
-# Developer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Developer Report: Gateway provider routing for model selection
 
 ## Approach
 
-This iteration addressed the two NOTE-level feedback items from the previous review cycle. The core `maxTurns → maxBudgetUsd` migration was already complete; this pass tightens two remaining rough edges:
-
-1. Extract the inline `3.00` magic number in `dispatcher.ts` to a named constant, matching the pattern used by `ROLE_CONFIGS`.
-2. Strengthen the budget regression tests in `roles.test.ts` by pinning absolute USD values for `developer` and `reviewer`, so accidental budget reductions are caught.
+Addressed all issues from the previous review, focusing on the critical provider ID mismatch and the resume path missing provider propagation, plus the two warnings and two notes.
 
 ## Files Changed
 
-- **src/orchestrator/dispatcher.ts** — Added `PLAN_STEP_MAX_BUDGET_USD = 3.00` constant above the `Dispatcher` class and replaced the inline literal `maxBudgetUsd: 3.00` with `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`. This mirrors how `ROLE_CONFIGS` centralises phase budgets, making future adjustments easy to find and change.
+- `src/orchestrator/provider-registry.ts` — Four fixes:
+  1. **[CRITICAL fix]** `loadProvidersFromEnv` now converts underscores to hyphens in provider IDs (`.replace(/_/g, "-")`). `FOREMAN_PROVIDER_Z_AI_BASE_URL` now produces provider id `"z-ai"` matching the `RoleConfig.provider: "z-ai"` convention everywhere else in the codebase.
+  2. **[WARNING fix]** `toJSON()` now returns `structuredClone(this.providers)` instead of `{ ...this.providers }` — a true deep clone that prevents callers from mutating internal registry state through shared `modelIdMap` references.
+  3. **[NOTE fix]** `applyProviderEnv` now looks up config directly instead of instantiating a full `ProviderRegistry` on each call — eliminates unnecessary overhead when called per pipeline phase.
+  4. Updated JSDoc comments to accurately document that underscores are converted to hyphens.
 
-- **src/orchestrator/__tests__/roles.test.ts** — Added two new pinned-value tests:
-  - `"developer budget is $5.00"` — asserts `ROLE_CONFIGS.developer.maxBudgetUsd === 5.00`
-  - `"reviewer budget is $2.00"` — asserts `ROLE_CONFIGS.reviewer.maxBudgetUsd === 2.00`
+- `src/orchestrator/dispatcher.ts` — Two fixes:
+  1. **[WARNING fix]** `resumeAgent` now passes `providers: this.providerRegistry.toJSON()` to `spawnWorkerProcess`, matching the `spawnAgent` path. Without this, resumed pipeline runs would silently fall back to direct Anthropic API for all phases.
+  2. **[NOTE fix]** `selectProvider` changed from `public` to `protected` — reduces surface area; it's designed for subclass override, not external callers.
 
-  These supplement the existing relative ordering test (`explorer < developer`) with absolute guard rails that catch regression if any budget is accidentally halved or zeroed.
+- `src/orchestrator/__tests__/provider-registry.test.ts` — Updated tests:
+  1. Fixed three assertions that incorrectly expected `"z_ai"` (underscore); now correctly expect `"z-ai"` (hyphen) to match the new normalization.
+  2. Added `"converts underscores to hyphens in provider ID"` test explicitly verifying the end-to-end fix.
+  3. Added `"returns a deep clone — mutating returned modelIdMap does not affect registry"` test verifying `toJSON()` deep clone correctness.
 
 ## Tests Added/Modified
 
-- **src/orchestrator/__tests__/roles.test.ts**
-  - Added `"developer budget is $5.00"` — pins the developer role's exact budget
-  - Added `"reviewer budget is $2.00"` — pins the reviewer role's exact budget
+- `src/orchestrator/__tests__/provider-registry.test.ts`
+  - Updated 3 existing assertions: `providers["z_ai"]` → `providers["z-ai"]`
+  - **New test**: `loadProvidersFromEnv` — "converts underscores to hyphens in provider ID" (verifies `FOREMAN_PROVIDER_Z_AI_BASE_URL` → `"z-ai"`, `FOREMAN_PROVIDER_MY_GATEWAY_API_KEY_VAR` → `"my-gateway"`)
+  - **New test**: `ProviderRegistry.toJSON` — "returns a deep clone" (mutates returned `modelIdMap`, verifies registry state unchanged)
+  - All 35 tests pass.
 
 ## Decisions & Trade-offs
 
-- **Which roles to pin**: Chose `developer` (the most expensive phase, most likely to be accidentally changed) and `reviewer` (a meaningfully different value from `developer`). `explorer` and `qa` are implicitly covered by the ordering test (`explorer < developer`) and the "all positive" guard.
-- **Constant scope**: `PLAN_STEP_MAX_BUDGET_USD` is module-scoped (not exported) since it is only used inside `dispatcher.ts`. If other modules ever need it, it can be exported at that point.
-- **No changes to budget values**: The values (`developer: 5.00`, `reviewer: 2.00`, plan step: `3.00`) are intentionally preserved from the previous iteration to keep this pass focused on code quality only.
+- **Underscore→hyphen in loadProvidersFromEnv**: This is a breaking change for any existing deployments that configured roles with `provider: "z_ai"` (underscore). However, all existing documentation and examples use hyphens, so the underscore form was never the intended API. The correct fix is in the loader, not in adding hyphen aliases everywhere.
+
+- **applyProviderEnv inlined logic**: The function now duplicates the `getEnvOverrides` logic rather than delegating to `ProviderRegistry`. This is a deliberate trade-off: avoid the registry instantiation overhead at the cost of a small amount of duplication. Both code paths are tested independently.
+
+- **selectProvider as protected**: This preserves the extension point for subclasses while removing it from the public API. Any existing code calling `dispatcher.selectProvider(task)` externally would break, but no such callers exist in the codebase.
 
 ## Known Limitations
 
-- Budget values are estimates based on expected token usage; real-world calibration should happen after a few pipeline runs with production workloads.
+- **[NOTE] Single-agent mode provider routing** (agent-worker.ts:136-158): The non-pipeline single-agent path still does not apply provider env overrides from `WorkerConfig.providers`. This was called out in the review as a note (not a blocker). Fixing it would require identifying which provider to use in that path — there's no per-phase `RoleConfig` in single-agent mode, so a separate mechanism would be needed. Deferred.

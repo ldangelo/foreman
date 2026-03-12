@@ -27,7 +27,8 @@ import {
   extractIssues,
   hasActionableIssues,
 } from "./roles.js";
-import type { AgentRole } from "./types.js";
+import { applyProviderEnv } from "./provider-registry.js";
+import type { AgentRole, GatewayProviders } from "./types.js";
 
 // ── Config ───────────────────────────────────────────────────────────────
 
@@ -45,6 +46,8 @@ interface WorkerConfig {
   pipeline?: boolean;  // Run as lead pipeline (explorer → developer → qa → reviewer)
   skipExplore?: boolean;
   skipReview?: boolean;
+  /** Gateway provider configs for per-phase routing. Populated by Dispatcher. */
+  providers?: GatewayProviders;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────
@@ -319,10 +322,15 @@ async function runPhase(
   progress.currentPhase = role;
   store.updateRunProgress(config.runId, progress);
 
-  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxBudgetUsd=${roleConfig.maxBudgetUsd})\n`);
-  log(`[${role.toUpperCase()}] Starting phase for ${config.seedId}`);
+  // Apply provider-specific env overrides (ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY)
+  const env = applyProviderEnv(roleConfig.provider, config.env, config.providers);
 
-  const env: Record<string, string | undefined> = { ...config.env };
+  // Resolve provider-specific model ID (e.g., OpenRouter uses "anthropic/claude-sonnet-4-6")
+  const resolvedModel = resolvePhaseModel(roleConfig.provider, roleConfig.model, config.providers);
+
+  const providerLabel = roleConfig.provider ? ` via ${roleConfig.provider}` : "";
+  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${resolvedModel}${providerLabel}, maxBudgetUsd=${roleConfig.maxBudgetUsd})\n`);
+  log(`[${role.toUpperCase()}] Starting phase for ${config.seedId}${providerLabel}`);
 
   try {
     let phaseResult: SDKResultSuccess | SDKResultError | undefined;
@@ -331,7 +339,7 @@ async function runPhase(
       prompt,
       options: {
         cwd: config.worktreePath,
-        model: roleConfig.model as any,
+        model: resolvedModel as any,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         maxBudgetUsd: roleConfig.maxBudgetUsd,
@@ -682,6 +690,23 @@ async function markStuck(
   }
 
   store.close();
+}
+
+// ── Provider helpers ──────────────────────────────────────────────────────
+
+/**
+ * Resolve the model ID to use when calling the SDK for a pipeline phase.
+ * Applies any provider-specific model ID mapping (e.g., OpenRouter prefixes).
+ */
+function resolvePhaseModel(
+  providerId: string | undefined,
+  modelId: string,
+  providers: GatewayProviders | undefined,
+): string {
+  if (!providerId || !providers) return modelId;
+  const providerConfig = providers[providerId.toLowerCase()];
+  if (!providerConfig?.modelIdMap) return modelId;
+  return providerConfig.modelIdMap[modelId] ?? modelId;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
