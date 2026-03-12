@@ -13,7 +13,7 @@ import type { AgentRole, ModelSelection } from "./types.js";
 export interface RoleConfig {
   role: AgentRole;
   model: ModelSelection;
-  maxTurns: number;
+  maxBudgetUsd: number;
   /** Report file this role produces */
   reportFile: string;
 }
@@ -22,25 +22,25 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
   explorer: {
     role: "explorer",
     model: "claude-haiku-4-5-20251001",
-    maxTurns: 30,
+    maxBudgetUsd: 1.00,
     reportFile: "EXPLORER_REPORT.md",
   },
   developer: {
     role: "developer",
     model: "claude-sonnet-4-6",
-    maxTurns: 80,
+    maxBudgetUsd: 5.00,
     reportFile: "DEVELOPER_REPORT.md",
   },
   qa: {
     role: "qa",
     model: "claude-sonnet-4-6",
-    maxTurns: 30,
+    maxBudgetUsd: 3.00,
     reportFile: "QA_REPORT.md",
   },
   reviewer: {
     role: "reviewer",
     model: "claude-sonnet-4-6",
-    maxTurns: 20,
+    maxBudgetUsd: 2.00,
     reportFile: "REVIEW.md",
   },
 };

@@ -1,164 +1,165 @@
-# Explorer Report: Ink TUI causes iTerm hanging/freezing
+# Explorer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
 
-## Issue Summary
-The Ink-based watch UI (`watchRunsInk` in `src/cli/watch-ui.ts`) causes iTerm to hang or freeze when monitoring agent runs. This occurs when `foreman run` is called with watch mode enabled (the default), which triggers the real-time status display.
+## Summary
+The codebase uses `maxTurns` to limit SDK query execution in the agent orchestration pipeline. This needs to be replaced with `maxBudgetUsd` to enforce budget-based limits instead of turn-based limits. The change affects the role configurations, phase execution, and logging.
 
 ## Relevant Files
 
-### Core Problem
-- **src/cli/watch-ui.ts** — React + Ink-based TUI component that monitors agent runs. Contains the main `watchRunsInk()` function (lines 324-355) which renders a live agent status display. Uses polling every 3 seconds to update state.
-  - `WatchApp` component (line 287) — Main rendered component with agent cards and summary
-  - `useWatchState` hook (line 240-251) — React hook that polls database every 3 seconds via `setInterval`
-  - `watchRunsInk` function (line 324-355) — Entry point that calls `render()` from Ink library and manages polling loop
+### 1. **src/orchestrator/roles.ts** (lines 13-46)
+- **Purpose**: Defines role configurations for the specialization pipeline (explorer, developer, qa, reviewer)
+- **Current State**:
+  - `RoleConfig` interface has `maxTurns: number` property (line 16)
+  - `ROLE_CONFIGS` object defines maxTurns for each phase:
+    - explorer: 30 turns
+    - developer: 80 turns
+    - qa: 30 turns
+    - reviewer: 20 turns
+- **Relevance**: Primary file that needs modification - interface definition and config values
 
-### Entry Points
-- **src/cli/commands/run.ts** (lines 146, 81) — Calls `watchRunsInk(store, runIds)` in two places:
-  - Line 81: Resume mode when `--watch` flag enabled after resuming stuck agents
-  - Line 146: Normal watch loop that dispatches batches and watches until completion
+### 2. **src/orchestrator/agent-worker.ts** (lines 310-399)
+- **Purpose**: Standalone worker process that runs individual SDK query calls for each pipeline phase
+- **Current State**:
+  - Line 322: Logs `maxTurns=${roleConfig.maxTurns}` when starting a phase
+  - Line 337: Passes `maxTurns: roleConfig.maxTurns` to the SDK `query()` options
+  - Line 225: Already handles `error_max_budget_usd` error subtype (future-ready)
+- **Relevance**: Needs to replace logging and pass maxBudgetUsd to query() options instead
 
-### Data Source
-- **src/lib/store.ts** — SQLite database queries:
-  - `getRun(id)` (line 274) — Fetches individual run by ID
-  - `getRunProgress(runId)` (line 340) — Parses progress JSON from runs table
-  - Called continuously in `poll()` function (line 253) every 3 seconds from both React hook AND manual polling loop
-
-### Alternative Implementations (Non-Ink)
-- **src/cli/commands/monitor.ts** — Plain chalk-based status display (no Ink/React). Shows simple colored output without re-renders. Uses `monitor.checkAll()` with single-pass reporting.
-- **src/cli/commands/status.ts** — Similar chalk-based status display. Shows project status, active agents, and metrics without real-time updates.
+### 3. **src/orchestrator/dispatcher.ts** (line 361)
+- **Purpose**: Dispatches beads to agents, handles one-off planning steps
+- **Current State**:
+  - Line 361: Uses `maxTurns: 50` for `dispatchPlanStep()` SDK query
+- **Relevance**: Secondary location needing update for consistency with phase limits
 
 ## Architecture & Patterns
 
-### Identified Issues
+### Pipeline Orchestration Pattern
+- **Sequential phases**: Explorer → Developer ⇄ QA → Reviewer → Finalize
+- **Phase execution**: Each phase runs as a separate `query()` call with its own config
+- **Error handling**: Already recognizes `error_max_budget_usd` error subtype (agent-worker.ts:225)
+- **Naming convention**: `roleConfig.maxTurns` → should become `roleConfig.maxBudgetUsd`
 
-#### 1. **Double Polling Pattern** (Lines 243-246 + 342-352)
-The `watchRunsInk` function has TWO concurrent polling mechanisms:
-- **React hook polling** (lines 243-246): `useEffect` with `setInterval` updating state every 3000ms
-- **Manual while loop polling** (lines 342-352): Separate polling loop also waiting 3000ms between cycles
+### SDK Integration
+- The Anthropic Claude Agent SDK supports `maxBudgetUsd?: number` in query options (confirmed in sdk.d.ts)
+- Budget limits are enforced by the SDK during query execution
+- Error subtype `error_max_budget_usd` is already handled by the error detection logic
 
-This creates a race condition where state updates may collide, causing excessive re-renders and terminal flooding.
-
+### Role Config Structure
 ```typescript
-// React hook (line 244)
-const interval = setInterval(() => {
-  setState(poll(store, runIds));
-}, 3_000);
-
-// Manual loop (line 343-351)
-while (!detached) {
-  const state = poll(store, runIds);
-  if (state.runs.length === 0 || state.allDone) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    unmount();
-    break;
-  }
-  await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+export interface RoleConfig {
+  role: AgentRole;
+  model: ModelSelection;
+  maxTurns: number;              // ← Change to maxBudgetUsd: number
+  reportFile: string;
 }
 ```
 
-#### 2. **Complex React Tree**
-The component hierarchy is deeply nested with multiple re-rendering layers:
-- `WatchApp` → maps multiple `AgentCard` components (line 307-309)
-- `AgentCard` → contains conditional rendering of multiple child components (lines 140-177)
-- `ToolBreakdown` → renders array of tool entries (lines 74-94)
-- `FilesChanged` → renders file list with conditional pagination (lines 97-114)
-
-Each poll cycle (every 3 seconds) triggers full re-evaluation of this entire tree, potentially generating large terminal escape code sequences.
-
-#### 3. **Resource Cleanup Uncertainty**
-- Line 327: `render()` called with `exitOnCtrlC: false` (non-standard exit behavior)
-- Line 334-339: Manual SIGINT handler with `unmount()` call, but `unmount()` behavior with nested render/state updates unclear
-- No explicit cleanup of the React effect's `setInterval` when `unmount()` is called
-
-#### 4. **Terminal Escape Code Overhead**
-Ink generates ANSI escape codes for colors, positioning, and clearing. With a 3-second polling interval and complex nested components rendering every poll cycle, this creates excessive terminal I/O that iTerm may struggle to handle, especially with large agent counts.
-
-#### 5. **No Fallback Mechanism**
-The watch UI is hardcoded to use Ink. No environment variable or flag to fall back to simpler chalk-based output on problematic terminals.
-
-### Existing Patterns for Reference
-
-**Non-Ink status display approach** (from `monitor.ts` and `status.ts`):
-- Uses `chalk` for coloring only (no terminal control)
-- Single-pass information gathering (no polling loops)
-- Stateless output — each invocation is independent
-- Simple to understand and debug
-
 ## Dependencies
 
-### Direct Dependencies
-- **ink@6.8.0** — React-based TUI renderer (used for watch UI only)
-- **ink-spinner@5.0.0** — Spinner component for Ink (used in watch UI)
-- **react@19.2.4** — JSX/component rendering
-- **chalk@5.6.2** — Terminal color library (used throughout, including in monitor/status commands)
+### What Uses maxTurns
+1. **agent-worker.ts**:
+   - Imports `ROLE_CONFIGS` from roles.ts
+   - Calls `roleConfig.maxTurns` in `runPhase()` function
+   - Passes value to SDK `query()` options
 
-### Data Dependencies
-- **better-sqlite3** — Database queries in `poll()` function called every 3 seconds
-- **ForemanStore** — Abstracts database access; performance depends on query efficiency
+2. **dispatcher.ts**:
+   - Hard-coded `maxTurns: 50` in `dispatchPlanStep()`
+   - No import from roles.ts (independent configuration)
 
-### Inverse Dependencies
-- **src/cli/commands/run.ts** — Only place that calls `watchRunsInk()`
-- **src/cli/index.ts** — CLI entry point that registers run command
+3. **roles.ts**:
+   - Defines the canonical values for all phases
+   - No external dependencies on the property name
+
+### SDK API Contract
+- The SDK's `query()` function accepts `maxBudgetUsd?: number` parameter
+- When a query exceeds budget, SDK returns error with `subtype: "error_max_budget_usd"`
+- No backwards compatibility issues - this is a parameter replacement
 
 ## Existing Tests
 
 ### Test Files
-- **src/cli/__tests__/status-display.test.ts** — Tests parsing logic and status display format (6KB file). Tests mirror logic from `status.ts` (non-Ink display), NOT from `watch-ui.ts`. This indicates the non-Ink status display is considered more stable/testable.
-- **src/cli/__tests__/commands.test.ts** — General command tests (not examined in detail)
+1. **src/orchestrator/__tests__/roles.test.ts**
+   - Tests ROLE_CONFIGS structure (all roles defined, models correct)
+   - Tests prompt templates (context injection, read-only instructions)
+   - Tests verdict/issue parsing from reports
+   - **Status**: Tests focus on config existence, not specific maxTurns values
+   - **Impact**: Tests will likely pass after renaming property (no assertions on maxTurns specifically)
 
-### Notable Gap
-- **No tests for watch-ui.ts** — The problematic Ink TUI component has no test coverage. This is likely because testing Ink renders is complex and terminal-dependent.
+2. **src/orchestrator/__tests__/agent-worker.test.ts**
+   - Tests worker process initialization and logging
+   - Tests config file handling and deletion
+   - **Status**: No assertions on maxTurns values
+   - **Impact**: Will need to verify logging format still works with maxBudgetUsd
+
+### Test Coverage of Limits
+- No tests directly assert maxTurns values
+- No tests verify budget enforcement
+- New tests may be beneficial to ensure budget limits work correctly
 
 ## Recommended Approach
 
-### Option 1: Replace Ink with Chalk-Based Display (Recommended)
-**Pros**: Eliminates iTerm hanging, simpler code, testable, matches existing patterns in monitor.ts/status.ts
-**Cons**: Loses real-time animation/spinner effects
+### Phase 1: Update Role Configurations
+1. Update `RoleConfig` interface in roles.ts:
+   - Rename `maxTurns: number` → `maxBudgetUsd: number`
 
-**Implementation Steps**:
-1. Refactor `watchRunsInk()` to use a simple polling loop (single, not double)
-2. Output status using `chalk` for colors and Unicode symbols (matching monitor.ts style)
-3. Clear terminal and print updated status each poll cycle (similar to `watch` command behavior)
-4. Eliminate React/Ink dependency for this component
-5. Add tests for polling logic (easier without Ink/React complications)
+2. Update `ROLE_CONFIGS` values with reasonable budget estimates:
+   - Need to estimate per-model costs based on token usage
+   - Suggested starting points (requires validation):
+     - **explorer** (haiku, 30 turns): $0.50-$1.00 USD
+     - **developer** (sonnet, 80 turns): $5.00-$10.00 USD
+     - **qa** (sonnet, 30 turns): $2.00-$4.00 USD
+     - **reviewer** (sonnet, 20 turns): $1.50-$3.00 USD
+   - Also update **dispatchPlanStep** budget in dispatcher.ts (currently maxTurns: 50)
 
-**Key files to modify**:
-- `src/cli/watch-ui.ts` — Complete rewrite using chalk instead of React+Ink
-- `src/cli/commands/run.ts` — Update import to new polling function (no behavior change needed)
+### Phase 2: Update Phase Execution in agent-worker.ts
+1. Update `runPhase()` function:
+   - Line 322: Change log format to show `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
+   - Line 337: Pass `maxBudgetUsd: roleConfig.maxBudgetUsd` instead of `maxTurns`
 
-### Option 2: Fix Double Polling + Add Fallback
-**Pros**: Preserves Ink animations, backward compatible
-**Cons**: More complex, Ink still may have terminal issues
+2. Verify error handling:
+   - Line 225 already checks for `error_max_budget_usd` — keep as-is
 
-**Implementation Steps**:
-1. Eliminate the manual while loop (lines 342-352)
-2. Keep only the React effect polling
-3. Properly manage SIGINT handler to prevent double-fire
-4. Add `--no-watch-ui` flag or `FOREMAN_NO_WATCH_UI=1` env var to fall back to chalk-based display
-5. Improve cleanup of React effect when unmounting
+### Phase 3: Update Dispatcher Planning
+1. In dispatcher.ts `dispatchPlanStep()`:
+   - Replace `maxTurns: 50` with appropriate `maxBudgetUsd` value (suggest $3.00-$5.00)
 
-### Option 3: Reduce Polling Frequency + Simplify Components
-**Pros**: Reduces terminal I/O load while keeping Ink
-**Cons**: Status updates become slower (less real-time feel)
+### Phase 4: Update Tests & Documentation
+1. roles.test.ts:
+   - Update any hardcoded expectations if tests fail
+   - Consider adding assertions for budget values being positive numbers
 
-**Implementation Steps**:
-1. Increase polling interval from 3 seconds to 5-10 seconds
-2. Remove unnecessary re-renders (memoize components)
-3. Use Ink's built-in `staticOutput` for completed agents to reduce terminal updates
+2. agent-worker.test.ts:
+   - Verify logging format with new maxBudgetUsd parameter
+   - Check that log output still contains relevant budget information
 
 ## Potential Pitfalls & Edge Cases
 
-1. **Signal Handling**: SIGINT may fire multiple times due to the double polling. Ensure robust detach logic.
+1. **Budget Estimation Accuracy**
+   - Turn counts are discrete (explorer: 30) but budgets must be estimated
+   - Per-model costs vary (Haiku cheaper than Sonnet than Opus)
+   - May need to adjust budgets based on real usage data
 
-2. **Database Lock Contention**: Each poll cycle hits SQLite. With multiple agents writing progress simultaneously, this could bottleneck. Consider caching progress data in memory between polls.
+2. **Error Handling Clarity**
+   - Error message when budget exceeded may be different from turn limits
+   - Current code checks `error_max_budget_usd` — verify message consistency
 
-3. **Large Agent Counts**: With 5-10 agents, the React component tree becomes very large. Component memoization or virtualization may be needed.
+3. **Logging Clarity**
+   - Phase startup logs currently show `maxTurns=30`
+   - Should show `maxBudgetUsd=$X.XX` for clarity
 
-4. **Terminal Resize**: Ink handles terminal resize events. Chalk-based approach needs manual handling if we switch.
+4. **Backwards Compatibility**
+   - Existing stored run data uses turns in progress tracking (agent-worker.ts line 196)
+   - Budget limits don't track in progress.turns — separate concerns
+   - No data migration needed (turns are tracked separately from limits)
 
-5. **MacOS vs Linux vs Windows**: iTerm is macOS-specific. Test chosen solution across all platforms to ensure no regressions.
+5. **Dispersion Across Files**
+   - dispatcher.ts has a hard-coded maxTurns value (50) separate from roles.ts
+   - Consider whether plan steps should use same budget as phases or different
 
-6. **Ctrl+C Handling**: Current implementation disables `exitOnCtrlC` and manages SIGINT manually. Any refactor must preserve this behavior (allowing background agents to continue).
+## Next Steps for Developer
 
-## Summary
-
-The Ink TUI causes iTerm hanging due to **double polling + complex React rendering + excessive terminal I/O**. The simplest fix is **Option 1: Replace with chalk-based display** (similar to existing monitor.ts/status.ts commands), which eliminates the architectural problems entirely. Option 2 is safer if Ink aesthetics are important, but requires careful refactoring of the polling/cleanup logic.
+1. Research typical costs per phase from production data (if available)
+2. Update roles.ts with maxBudgetUsd values (start conservative)
+3. Update agent-worker.ts runPhase() logging and query options
+4. Update dispatcher.ts dispatchPlanStep() budget
+5. Run tests to verify no regressions
+6. Monitor first few runs with new budgets to validate appropriateness

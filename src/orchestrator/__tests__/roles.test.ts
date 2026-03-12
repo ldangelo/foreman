@@ -32,6 +32,30 @@ describe("ROLE_CONFIGS", () => {
   it("developer produces DEVELOPER_REPORT.md", () => {
     expect(ROLE_CONFIGS.developer.reportFile).toBe("DEVELOPER_REPORT.md");
   });
+
+  it("all roles have positive maxBudgetUsd values", () => {
+    for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
+      expect(config.maxBudgetUsd, `${role} should have a positive budget`).toBeGreaterThan(0);
+    }
+  });
+
+  it("explorer has lower budget than developer (haiku vs sonnet)", () => {
+    expect(ROLE_CONFIGS.explorer.maxBudgetUsd).toBeLessThan(ROLE_CONFIGS.developer.maxBudgetUsd);
+  });
+
+  it("developer budget is $5.00", () => {
+    expect(ROLE_CONFIGS.developer.maxBudgetUsd).toBe(5.00);
+  });
+
+  it("reviewer budget is $2.00", () => {
+    expect(ROLE_CONFIGS.reviewer.maxBudgetUsd).toBe(2.00);
+  });
+
+  it("all role configs have no maxTurns property", () => {
+    for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
+      expect(config, `${role} should not have maxTurns`).not.toHaveProperty("maxTurns");
+    }
+  });
 });
 
 describe("prompt templates", () => {

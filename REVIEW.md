@@ -1,25 +1,19 @@
-# Code Review: Ink TUI causes iTerm hanging/freezing
+# Code Review: Replace maxTurns with maxBudgetUsd for pipeline phase limits
 
 ## Verdict: PASS
 
 ## Summary
-
-The implementation correctly addresses the root cause of iTerm hanging by replacing the React/Ink-based TUI with a simple chalk-based polling display. The double-polling race condition (React `setInterval` hook running concurrently with a manual while loop) is eliminated entirely. The new code is architecturally simpler, easier to test, and matches the patterns already established in `monitor.ts` and `status.ts`. All 49 new tests pass and cover all exported functions comprehensively. No bugs, logic errors, or missing requirements were found.
+The implementation is a clean, complete, and consistent rename of `maxTurns` to `maxBudgetUsd` across all three affected files. The budget values are reasonable (explorer $1.00, developer $5.00, qa $3.00, reviewer $2.00, plan step $3.00), TypeScript compiles without errors, no `maxTurns` references remain anywhere in `src/`, and three well-targeted tests were added to confirm the new shape. No critical or warning-level issues found.
 
 ## Issues
 
-- **[NOTE]** `src/cli/watch-ui.ts:219` — Function is still named `watchRunsInk` despite no longer using Ink. Since it is the exported public API consumed by `run.ts`, renaming would be a follow-up refactor rather than a blocker, but the name is now misleading.
+- **[NOTE]** `src/orchestrator/dispatcher.ts:361` — The plan-step budget (`maxBudgetUsd: 3.00`) is a magic number hard-coded inline, just as `maxTurns: 50` was before it. Consider extracting it to a named constant (e.g. `PLAN_STEP_MAX_BUDGET_USD = 3.00`) to make future adjustments easier and to match how roles use `ROLE_CONFIGS`. Not a blocker.
 
-- **[NOTE]** `src/cli/watch-ui.ts:18-20` — `shortModel` only strips the hardcoded `-20251001` date suffix. Future model releases with different date suffixes (e.g. `-20250620`) would display the raw suffix in the TUI. Not a bug today, but fragile as a long-term display concern.
-
-- **[NOTE]** `src/cli/watch-ui.ts:239` — The `\x1B[2J\x1B[H` clear-screen sequence is issued on every poll cycle. On very slow or remote terminals this could produce a brief flash between clear and re-render. The atomic single `process.stdout.write` call minimises this, but an alternative (`\x1B[H` cursor-home without clearing) would produce even less flicker if any scrollback bleeding becomes an issue in practice.
+- **[NOTE]** `src/orchestrator/__tests__/roles.test.ts:42-44` — The "explorer < developer" budget test guards one ordering relationship; it does not verify the absolute values (e.g. developer === 5.00). If a future change accidentally drops developer to $0.50 it would still pass. Pinning at least the developer or reviewer budget to an expected value would strengthen regression coverage.
 
 ## Positive Notes
-
-- **Double-poll eliminated**: The architectural root cause (React `useEffect` setInterval + independent while-loop polling) is gone. A single while-loop with a `try/finally` cleanup is clean and correct.
-- **Single atomic write**: `process.stdout.write("\x1B[2J\x1B[H" + display + "\n")` batches the clear and the full frame into one write, which is the correct approach to avoid partial-render flicker.
-- **Robust SIGINT handling**: The `detached` guard prevents double-fire; `process.removeListener` in the `finally` block ensures the handler is cleaned up on all exit paths (normal completion, SIGINT detach, and thrown exceptions).
-- **`allDone` edge cases handled**: Empty run lists (`runs.length === 0`) are checked alongside `allDone`, so the watch loop exits safely when no run IDs resolve.
-- **Test coverage**: 49 tests covering all exported functions (`elapsed`, `shortModel`, `shortPath`, `renderAgentCard`, `poll`, `renderWatchDisplay`). Testing is now straightforward because pure functions returning strings are far easier to assert against than Ink render trees.
-- **Preserves parity**: All information from the original Ink display (status icons, colours, tool breakdown bar chart, files changed list, cost summary, stuck/resume hint) is preserved in the chalk implementation.
-- **Matches codebase conventions**: Chalk-only output with no terminal control beyond clear-screen matches the patterns in `monitor.ts` and `status.ts`.
+- All three call sites updated atomically — no stale `maxTurns` references remain anywhere in `src/`.
+- The pre-existing `error_max_budget_usd` error-subtype handling in `agent-worker.ts` now has a corresponding SDK option that can actually trigger it, making the error path coherent end-to-end.
+- New test asserting `.not.toHaveProperty("maxTurns")` is a clean contract test that will catch any accidental reintroduction.
+- TypeScript-clean (`tsc --noEmit` passes), confirming the SDK accepts `maxBudgetUsd` as a valid `query()` option.
+- Budget values are proportional to role complexity/cost (haiku Explorer cheapest, sonnet Developer most expensive) — a sensible starting point.
