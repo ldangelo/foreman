@@ -1,28 +1,24 @@
-# Code Review: Task groups for batch coordination
+# Code Review: Extract per-phase model selection to environment variables
 
 ## Verdict: FAIL
 
 ## Summary
-
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation is clean, well-documented, and thoroughly tested. The `resolveModel` helper and `buildRoleConfigs()` function are nicely factored, and the 12 new tests cover all the important scenarios with proper env isolation via `beforeEach`/`afterEach`. However, there is one WARNING: if `FOREMAN_*_MODEL` is set to an invalid value, `buildRoleConfigs()` throws during module initialization (before `main()` even runs), crashing the worker process without updating the seed status in the store. The seed is silently left in whatever state the dispatcher set it to (likely "running"), which requires manual intervention to recover. This is a real operational hazard introduced by the new feature and should be addressed before shipping.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[WARNING]** `src/orchestrator/roles.ts:90-91` — `ROLE_CONFIGS` is initialized at module load by calling `buildRoleConfigs()`. If an env var contains an invalid model string, `resolveModel` throws, the module fails to load, and the worker process exits with an unhandled error before `main()` runs. Because the `ForemanStore` is opened inside `main()`, the run record is never updated — the seed is left in its pre-dispatch status (e.g. "running") indefinitely. Unlike `main().catch()` at line 724, module-level errors are not caught. Consider wrapping the module-level call in a try/catch that falls back to defaults with a warning, or deferring validation to the moment the phase actually runs (inside `runPhase`), so the store is available for error recording.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[NOTE]** `src/orchestrator/roles.ts:22-26` — `VALID_MODELS` duplicates the values from the `ModelSelection` union in `types.ts`. There is no compile-time guarantee they stay in sync: if a new model is added to `ModelSelection`, `VALID_MODELS` must be updated manually or the new value will be rejected at runtime. A comment referencing `types.ts` or a unit test that cross-checks the arrays would help.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
+- **[NOTE]** `src/orchestrator/agent-worker.ts:91-93` vs `src/orchestrator/roles.ts:90-91` — Worker env vars from `config.env` are applied to `process.env` *after* the module is loaded and `ROLE_CONFIGS` is already materialized. This means `FOREMAN_*_MODEL` values passed via `config.env` have no effect on model selection. This is likely intentional (model overrides are a global/system configuration, not per-run), but it is a non-obvious timing constraint worth documenting so future callers don't expect per-run model overrides to work through `config.env`.
 
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
-
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/orchestrator/__tests__/roles.test.ts:208-213` — The "env var takes precedence over hard-coded default" test (explorer overridden from haiku to opus) is functionally identical to "overrides explorer model via FOREMAN_EXPLORER_MODEL" (lines 181-187). Both set `FOREMAN_EXPLORER_MODEL` and assert the same thing. Removing the duplicate would tighten the test suite.
 
 ## Positive Notes
-
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- `resolveModel` is a well-factored, reusable helper with a clear error message that lists all valid options — excellent UX for operators.
+- Exporting `buildRoleConfigs()` separately from the module-level `ROLE_CONFIGS` constant was the right call; it makes the function independently testable without fighting module caching.
+- Test isolation with `beforeEach`/`afterEach` that saves and restores all four env vars is correct and thorough.
+- The docblock on `buildRoleConfigs()` clearly documents all four env var names and their semantics — no guesswork for operators.
+- Budget values and `reportFile` fields are correctly preserved as static properties, unaffected by model overrides; tests verify this explicitly.
+- Empty string env vars gracefully fall back to the default — good defensive behavior.

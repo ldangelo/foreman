@@ -1,51 +1,40 @@
-# QA Report: Tool enforcement guards for agent roles
+# QA Report: Extract per-phase model selection to environment variables
 
 ## Verdict: PASS
 
 ## Test Results
-- Test suite: 246 passed, 9 failed
-- New tests added: 16 (in `src/orchestrator/__tests__/roles.test.ts`)
-- All 9 failures are pre-existing environment issues unrelated to this change (verified by stashing changes and confirming same 9 failures, 230 passed before vs 246 passed after — exactly 16 new tests added, all pass)
+- Test suite: 244 passed, 9 failed (9 failures are pre-existing worktree environment issues unrelated to this task)
+- roles.test.ts: 37 passed, 0 failed (all new and existing tests pass)
+- New tests added: 24 (added in `buildRoleConfigs — environment variable overrides` and `ROLE_CONFIGS module-level fallback` describe blocks)
+- TypeScript type check: clean (0 errors)
 
-### Pre-existing Failures (Not Caused by This Change)
+## Pre-existing Failures (not caused by this task)
 
-| Test File | Failing Tests | Root Cause |
-|---|---|---|
-| `src/cli/__tests__/commands.test.ts` | 4 tests | CLI binary not built (`ENOENT`) |
-| `src/orchestrator/__tests__/detached-spawn.test.ts` | 2 tests + 2 uncaught errors | `tsx` binary missing in worktree `node_modules` |
-| `src/orchestrator/__tests__/worker-spawn.test.ts` | 1 test | `tsx` binary missing in worktree `node_modules` |
+The 9 failing tests are pre-existing and present on the unmodified branch too:
 
-## Implementation Review
+- **`src/orchestrator/__tests__/agent-worker.test.ts`** (2 failures): Tests spawn `tsx` via `node_modules/.bin/tsx` computed relative to the test file's directory. The worktree's `node_modules/` directory does not have a `.bin/tsx` symlink (only a `.vite` cache folder), so the spawn fails. These pass in the main repo where `node_modules` is fully populated.
+- **`src/cli/__tests__/commands.test.ts`** (4 failures): Same root cause — CLI binary compilation/spawn fails without a complete `node_modules`.
+- **`src/orchestrator/__tests__/detached-spawn.test.ts`** (2 failures): Same tsx ENOENT issue.
+- **`src/orchestrator/__tests__/worker-spawn.test.ts`** (1 failure): Directly asserts `existsSync(tsxBin)` which fails in the worktree.
 
-### roles.ts Changes
-- `RoleConfig` interface extended with `allowedTools: string[]` — clean addition alongside `maxBudgetUsd`
-- `ALL_AGENT_TOOLS` constant lists all 15 known SDK tools (no duplicates — verified by test)
-- `getDisallowedTools(roleConfig)` function correctly computes set complement: `ALL_AGENT_TOOLS \ allowedTools`
-- Role-specific `allowedTools` assignments correctly enforce intent:
-  - **explorer**: `[Read, Glob, Grep]` — read-only
-  - **developer**: `[Read, Write, Edit, Bash, Glob, Grep, Agent, TodoWrite, WebFetch, WebSearch]` — full access
-  - **qa**: `[Read, Write, Edit, Bash, Glob, Grep, TodoWrite]` — no Agent spawning
-  - **reviewer**: `[Read, Glob, Grep]` — read-only (identical to explorer)
-
-### agent-worker.ts Changes
-- `getDisallowedTools` imported and called at phase start in `runPhase()`
-- `disallowedTools` passed to SDK `query()` options as `disallowedTools: disallowedTools.length > 0 ? disallowedTools : undefined`
-- Log entries updated to include `allowed=[...]` and `disallowed=[...]` for observability
-- Passing `undefined` when disallowed list is empty is correct (avoids sending empty array to SDK)
-
-### TypeScript Compilation
-- `npx tsc --noEmit` passes with zero errors
-
-### Edge Cases Verified by Tests
-- `getDisallowedTools` returns complement of `allowedTools` relative to `ALL_AGENT_TOOLS`
-- Union of `allowedTools` and `getDisallowedTools` equals `ALL_AGENT_TOOLS` for every role
-- Explorer and reviewer have identical read-only toolsets
-- QA has `Agent` disallowed but `Bash` allowed
-- All disallowed tools for every role are valid members of `ALL_AGENT_TOOLS` (no phantom tools)
+Confirmed pre-existing by stashing the implementation changes and re-running: identical failures on the original code.
 
 ## Issues Found
 
-None. The implementation is correct, TypeScript compiles cleanly, and all new tests pass.
+None related to this task. The implementation is correct:
+
+- `buildRoleConfigs()` is correctly exported and reads `FOREMAN_{PHASE}_MODEL` environment variables.
+- Empty string env vars correctly fall back to defaults.
+- Invalid model values correctly throw with a descriptive error including the valid options.
+- The module-level `ROLE_CONFIGS` IIFE correctly catches validation errors, logs a warning to stderr, and falls back to hard-coded defaults — preventing module load failures from crashing the worker before it can record an error.
+- Budget values and report file names are unaffected by model overrides.
+- The comment added to `agent-worker.ts` correctly documents the known limitation that `FOREMAN_*_MODEL` env vars in `config.env` arrive too late to affect `ROLE_CONFIGS` (which is initialized at module load time).
 
 ## Files Modified
-- `src/orchestrator/__tests__/roles.test.ts` — 16 new tests added (no existing tests modified)
+
+None — all tests passed without requiring fixes.
+
+## Files Verified
+- `/Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-097e/src/orchestrator/roles.ts`
+- `/Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-097e/src/orchestrator/agent-worker.ts`
+- `/Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-097e/src/orchestrator/__tests__/roles.test.ts`

@@ -1,165 +1,153 @@
-# Explorer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Explorer Report: Extract per-phase model selection to environment variables
 
 ## Summary
-The codebase uses `maxTurns` to limit SDK query execution in the agent orchestration pipeline. This needs to be replaced with `maxBudgetUsd` to enforce budget-based limits instead of turn-based limits. The change affects the role configurations, phase execution, and logging.
+The Foreman orchestrator currently uses hard-coded model selections for each pipeline phase (explorer, developer, qa, reviewer). The task is to extract these selections to environment variables, allowing dynamic configuration without code changes.
 
 ## Relevant Files
 
-### 1. **src/orchestrator/roles.ts** (lines 13-46)
-- **Purpose**: Defines role configurations for the specialization pipeline (explorer, developer, qa, reviewer)
-- **Current State**:
-  - `RoleConfig` interface has `maxTurns: number` property (line 16)
-  - `ROLE_CONFIGS` object defines maxTurns for each phase:
-    - explorer: 30 turns
-    - developer: 80 turns
-    - qa: 30 turns
-    - reviewer: 20 turns
-- **Relevance**: Primary file that needs modification - interface definition and config values
+### `src/orchestrator/roles.ts` (PRIMARY TARGET)
+- **Lines 21-46**: `ROLE_CONFIGS` object definition
+  - Hard-coded model assignments per phase:
+    - explorer: `claude-haiku-4-5-20251001` (budget: $1.00)
+    - developer: `claude-sonnet-4-6` (budget: $5.00)
+    - qa: `claude-sonnet-4-6` (budget: $3.00)
+    - reviewer: `claude-sonnet-4-6` (budget: $2.00)
+  - Exports `RoleConfig` interface (lines 13-19) with fields: role, model, maxBudgetUsd, reportFile
+  - Currently a static record used at runtime
 
-### 2. **src/orchestrator/agent-worker.ts** (lines 310-399)
-- **Purpose**: Standalone worker process that runs individual SDK query calls for each pipeline phase
-- **Current State**:
-  - Line 322: Logs `maxTurns=${roleConfig.maxTurns}` when starting a phase
-  - Line 337: Passes `maxTurns: roleConfig.maxTurns` to the SDK `query()` options
-  - Line 225: Already handles `error_max_budget_usd` error subtype (future-ready)
-- **Relevance**: Needs to replace logging and pass maxBudgetUsd to query() options instead
+### `src/orchestrator/agent-worker.ts` (CONSUMER)
+- **Line 21**: Imports `ROLE_CONFIGS`
+- **Line 318**: `const roleConfig = ROLE_CONFIGS[role];` — retrieves config for current phase
+- **Line 334**: Uses `roleConfig.model` to select model for SDK query
+- **Line 337**: Uses `roleConfig.maxBudgetUsd` to set budget limit
+- **Lines 501-650**: `runPipeline()` function orchestrates phases sequentially (explorer → developer → qa → reviewer → finalize)
+- **Lines 310-399**: `runPhase()` function executes each phase with model/budget from `roleConfig`
 
-### 3. **src/orchestrator/dispatcher.ts** (line 361)
-- **Purpose**: Dispatches beads to agents, handles one-off planning steps
-- **Current State**:
-  - Line 361: Uses `maxTurns: 50` for `dispatchPlanStep()` SDK query
-- **Relevance**: Secondary location needing update for consistency with phase limits
+### `src/orchestrator/__tests__/roles.test.ts` (TESTS TO UPDATE)
+- **Lines 20-26**: Tests verify specific models for explorer/developer phases
+- **Lines 36-51**: Tests verify budget values are positive and within expectations
+- **Lines 54-58**: Test explicitly checks that maxTurns property does NOT exist
+
+### `src/orchestrator/types.ts`
+- **Line 5**: Defines `ModelSelection` type: `"claude-opus-4-6" | "claude-sonnet-4-6" | "claude-haiku-4-5-20251001"`
+- Used by `ROLE_CONFIGS` and throughout the codebase
 
 ## Architecture & Patterns
 
-### Pipeline Orchestration Pattern
-- **Sequential phases**: Explorer → Developer ⇄ QA → Reviewer → Finalize
-- **Phase execution**: Each phase runs as a separate `query()` call with its own config
-- **Error handling**: Already recognizes `error_max_budget_usd` error subtype (agent-worker.ts:225)
-- **Naming convention**: `roleConfig.maxTurns` → should become `roleConfig.maxBudgetUsd`
+### Current Model Selection Pattern
+1. **Static Configuration**: `ROLE_CONFIGS` is a module-level constant initialized at import time
+2. **Per-Phase Granularity**: Each phase (explorer, developer, qa, reviewer) has its own model
+3. **Pipeline Architecture**: Each phase runs as a separate SDK query() session with sequential execution
+4. **Budget Constraints**: Each phase has a `maxBudgetUsd` limit (separate from model cost)
 
-### SDK Integration
-- The Anthropic Claude Agent SDK supports `maxBudgetUsd?: number` in query options (confirmed in sdk.d.ts)
-- Budget limits are enforced by the SDK during query execution
-- Error subtype `error_max_budget_usd` is already handled by the error detection logic
+### Environment Variable Convention
+The codebase shows a pattern of using `process.env` for configuration:
+- Checked in: `dispatcher.ts`, `agent-worker.ts`, `decomposer-llm.ts`
+- Typical pattern: `process.env.HOME ?? "/tmp"` with fallback defaults
+- No centralized env config file (no .env files found in repo)
 
-### Role Config Structure
-```typescript
-export interface RoleConfig {
-  role: AgentRole;
-  model: ModelSelection;
-  maxTurns: number;              // ← Change to maxBudgetUsd: number
-  reportFile: string;
-}
-```
+### Type Safety
+The codebase uses TypeScript with strong typing:
+- `ModelSelection` type restricts to 3 valid models
+- `ROLE_CONFIGS` typed as `Record<Exclude<AgentRole, "lead" | "worker">, RoleConfig>`
+- Agent roles are union type: `"lead" | "explorer" | "developer" | "qa" | "reviewer" | "worker"`
 
 ## Dependencies
 
-### What Uses maxTurns
-1. **agent-worker.ts**:
-   - Imports `ROLE_CONFIGS` from roles.ts
-   - Calls `roleConfig.maxTurns` in `runPhase()` function
-   - Passes value to SDK `query()` options
+### Inbound Dependencies (what depends on ROLE_CONFIGS)
+1. `agent-worker.ts` — uses it to configure SDK query for each phase
+2. `roles.test.ts` — tests the configuration values
+3. `agent-worker-team.test.ts` — likely uses it indirectly through agent-worker
 
-2. **dispatcher.ts**:
-   - Hard-coded `maxTurns: 50` in `dispatchPlanStep()`
-   - No import from roles.ts (independent configuration)
-
-3. **roles.ts**:
-   - Defines the canonical values for all phases
-   - No external dependencies on the property name
-
-### SDK API Contract
-- The SDK's `query()` function accepts `maxBudgetUsd?: number` parameter
-- When a query exceeds budget, SDK returns error with `subtype: "error_max_budget_usd"`
-- No backwards compatibility issues - this is a parameter replacement
+### Outbound Dependencies (what ROLE_CONFIGS depends on)
+1. `types.ts` — imports `ModelSelection` and `AgentRole` types
+2. Module-level export (no runtime dependencies)
 
 ## Existing Tests
 
-### Test Files
-1. **src/orchestrator/__tests__/roles.test.ts**
-   - Tests ROLE_CONFIGS structure (all roles defined, models correct)
-   - Tests prompt templates (context injection, read-only instructions)
-   - Tests verdict/issue parsing from reports
-   - **Status**: Tests focus on config existence, not specific maxTurns values
-   - **Impact**: Tests will likely pass after renaming property (no assertions on maxTurns specifically)
+### Test Files Covering ROLE_CONFIGS
+1. **`src/orchestrator/__tests__/roles.test.ts`** (59 lines total)
+   - Lines 12-59: Comprehensive test suite for ROLE_CONFIGS
+   - Tests cover: config existence, model assignments, budget values, budget ordering
+   - Will need updates to test environment variable fallback behavior
 
-2. **src/orchestrator/__tests__/agent-worker.test.ts**
-   - Tests worker process initialization and logging
-   - Tests config file handling and deletion
-   - **Status**: No assertions on maxTurns values
-   - **Impact**: Will need to verify logging format still works with maxBudgetUsd
+2. **`src/orchestrator/__tests__/agent-worker.test.ts`**
+   - Tests agent-worker initialization and execution
+   - References models in test config setup (line 45: `"claude-sonnet-4-6"`)
+   - May need minor updates for env var testing
 
-### Test Coverage of Limits
-- No tests directly assert maxTurns values
-- No tests verify budget enforcement
-- New tests may be beneficial to ensure budget limits work correctly
+3. **`src/orchestrator/__tests__/agent-worker-team.test.ts`**
+   - Tests pipeline orchestration including phase execution
+   - Likely references ROLE_CONFIGS indirectly
 
 ## Recommended Approach
 
-### Phase 1: Update Role Configurations
-1. Update `RoleConfig` interface in roles.ts:
-   - Rename `maxTurns: number` → `maxBudgetUsd: number`
+### Phase 1: Environment Variable Integration
+1. **Create function to build ROLE_CONFIGS from environment variables**
+   - Location: Add to `src/orchestrator/roles.ts`
+   - Function: `function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker">, RoleConfig>`
+   - Logic:
+     - Read environment variables: `FOREMAN_EXPLORER_MODEL`, `FOREMAN_DEVELOPER_MODEL`, etc.
+     - Fall back to current hard-coded defaults if env vars not set
+     - Validate model values against `ModelSelection` type
+     - Return constructed `ROLE_CONFIGS` object
 
-2. Update `ROLE_CONFIGS` values with reasonable budget estimates:
-   - Need to estimate per-model costs based on token usage
-   - Suggested starting points (requires validation):
-     - **explorer** (haiku, 30 turns): $0.50-$1.00 USD
-     - **developer** (sonnet, 80 turns): $5.00-$10.00 USD
-     - **qa** (sonnet, 30 turns): $2.00-$4.00 USD
-     - **reviewer** (sonnet, 20 turns): $1.50-$3.00 USD
-   - Also update **dispatchPlanStep** budget in dispatcher.ts (currently maxTurns: 50)
+2. **Update ROLE_CONFIGS initialization**
+   - Replace static object with call to `buildRoleConfigs()`
+   - Keep backward compatibility with defaults
 
-### Phase 2: Update Phase Execution in agent-worker.ts
-1. Update `runPhase()` function:
-   - Line 322: Change log format to show `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - Line 337: Pass `maxBudgetUsd: roleConfig.maxBudgetUsd` instead of `maxTurns`
+3. **Environment variable naming convention**
+   - Proposed: `FOREMAN_{PHASE}_MODEL` where PHASE is uppercase (EXPLORER, DEVELOPER, QA, REVIEWER)
+   - Examples:
+     - `FOREMAN_EXPLORER_MODEL=claude-sonnet-4-6` — override explorer to use sonnet
+     - `FOREMAN_DEVELOPER_MODEL=claude-opus-4-6` — upgrade developer to opus
+     - `FOREMAN_QA_MODEL=claude-haiku-4-5-20251001` — downgrade QA to haiku
 
-2. Verify error handling:
-   - Line 225 already checks for `error_max_budget_usd` — keep as-is
+### Phase 2: Update Tests
+1. **Add tests for environment variable overrides**
+   - Test each phase model can be overridden
+   - Test invalid model values are rejected
+   - Test fallback to defaults when env vars unset
+   - Test env var takes precedence over hardcoded default
 
-### Phase 3: Update Dispatcher Planning
-1. In dispatcher.ts `dispatchPlanStep()`:
-   - Replace `maxTurns: 50` with appropriate `maxBudgetUsd` value (suggest $3.00-$5.00)
+2. **Update existing tests to remain passing**
+   - Tests that check specific model assignments should still pass with defaults
+   - May need to use `beforeEach` to set/unset env vars
 
-### Phase 4: Update Tests & Documentation
-1. roles.test.ts:
-   - Update any hardcoded expectations if tests fail
-   - Consider adding assertions for budget values being positive numbers
+3. **Test file: `src/orchestrator/__tests__/roles.test.ts`**
+   - Add new describe block: `"ROLE_CONFIGS with environment variables"`
+   - Tests should cover all 4 phases with various env var combinations
 
-2. agent-worker.test.ts:
-   - Verify logging format with new maxBudgetUsd parameter
-   - Check that log output still contains relevant budget information
+### Phase 3: Documentation (optional but recommended)
+1. Document the environment variable options in README or code comments
+2. Show examples of common configurations (performance vs cost)
 
 ## Potential Pitfalls & Edge Cases
 
-1. **Budget Estimation Accuracy**
-   - Turn counts are discrete (explorer: 30) but budgets must be estimated
-   - Per-model costs vary (Haiku cheaper than Sonnet than Opus)
-   - May need to adjust budgets based on real usage data
+1. **Type Validation**: Environment variable values must be validated against `ModelSelection` type
+   - Risk: Invalid model name from env var crashes at runtime
+   - Solution: Validate at config initialization with helpful error message
 
-2. **Error Handling Clarity**
-   - Error message when budget exceeded may be different from turn limits
-   - Current code checks `error_max_budget_usd` — verify message consistency
+2. **Test Isolation**: Tests that set env vars must restore them afterward
+   - Risk: Test pollution, one test affects another
+   - Solution: Use `beforeEach`/`afterEach` to set/restore env vars
 
-3. **Logging Clarity**
-   - Phase startup logs currently show `maxTurns=30`
-   - Should show `maxBudgetUsd=$X.XX` for clarity
+3. **Logging and Debugging**: The phase startup log (line 322 in agent-worker.ts) shows which model is in use
+   - Risk: Users may not realize they're using env-var-provided model
+   - Solution: Log message should clarify if model came from env var vs default
 
-4. **Backwards Compatibility**
-   - Existing stored run data uses turns in progress tracking (agent-worker.ts line 196)
-   - Budget limits don't track in progress.turns — separate concerns
-   - No data migration needed (turns are tracked separately from limits)
+4. **Multi-Agent Concurrency**: ROLE_CONFIGS is read at runtime during pipeline execution
+   - Risk: If env vars change between agents, inconsistent behavior
+   - Solution: Document that env vars should be stable during a run
 
-5. **Dispersion Across Files**
-   - dispatcher.ts has a hard-coded maxTurns value (50) separate from roles.ts
-   - Consider whether plan steps should use same budget as phases or different
+5. **Backward Compatibility**: Existing scripts that don't set env vars should continue working
+   - Risk: Breaking change if defaults are removed
+   - Solution: Keep hard-coded defaults as fallback (current implementation)
 
-## Next Steps for Developer
+## Implementation Notes
 
-1. Research typical costs per phase from production data (if available)
-2. Update roles.ts with maxBudgetUsd values (start conservative)
-3. Update agent-worker.ts runPhase() logging and query options
-4. Update dispatcher.ts dispatchPlanStep() budget
-5. Run tests to verify no regressions
-6. Monitor first few runs with new budgets to validate appropriateness
+- **Entry point for changes**: `src/orchestrator/roles.ts` lines 21-46
+- **No new files needed**: Integrate directly into existing roles.ts
+- **Type safety maintained**: `ModelSelection` type validates all model values
+- **Tests location**: `src/orchestrator/__tests__/roles.test.ts` (add new test suite)
+- **No configuration files needed**: Use process.env directly (matches project pattern)
