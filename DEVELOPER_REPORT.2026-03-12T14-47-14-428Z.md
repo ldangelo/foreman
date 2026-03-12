@@ -1,34 +1,42 @@
-# Developer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Developer Report: Extract per-phase model selection to environment variables
 
 ## Approach
 
-This iteration addressed the two NOTE-level feedback items from the previous review cycle. The core `maxTurns → maxBudgetUsd` migration was already complete; this pass tightens two remaining rough edges:
+This is a second-pass developer iteration addressing review feedback on an already-implemented feature. The core feature (env-var-driven model selection via `buildRoleConfigs()`) was complete. This pass focused on:
 
-1. Extract the inline `3.00` magic number in `dispatcher.ts` to a named constant, matching the pattern used by `ROLE_CONFIGS`.
-2. Strengthen the budget regression tests in `roles.test.ts` by pinning absolute USD values for `developer` and `reviewer`, so accidental budget reductions are caught.
+1. **[WARNING] Fix**: Preventing module-load crashes when an invalid model string is in an env var.
+2. **[NOTE] Fix**: Documenting the sync requirement between `VALID_MODELS` and `types.ts`.
+3. **[NOTE] Fix**: Documenting the env-var timing constraint in `agent-worker.ts`.
+4. **[NOTE] Fix**: Removing a duplicate test.
 
 ## Files Changed
 
-- **src/orchestrator/dispatcher.ts** — Added `PLAN_STEP_MAX_BUDGET_USD = 3.00` constant above the `Dispatcher` class and replaced the inline literal `maxBudgetUsd: 3.00` with `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`. This mirrors how `ROLE_CONFIGS` centralises phase budgets, making future adjustments easy to find and change.
+- `src/orchestrator/roles.ts` — Four changes:
+  1. Added `DEFAULT_MODELS` constant to DRY up the hard-coded defaults; used by both `buildRoleConfigs()` and the fallback in the IIFE.
+  2. Updated `buildRoleConfigs()` to reference `DEFAULT_MODELS` instead of string literals.
+  3. Wrapped the module-level `ROLE_CONFIGS` initialization in an IIFE with try/catch. On `buildRoleConfigs()` failure, it logs a warning to stderr and falls back to hard-coded defaults — ensuring the module always loads successfully so `main()` can open the store and record the error.
+  4. Added a comment to `VALID_MODELS` noting it must stay in sync with the `ModelSelection` union in `types.ts`.
 
-- **src/orchestrator/__tests__/roles.test.ts** — Added two new pinned-value tests:
-  - `"developer budget is $5.00"` — asserts `ROLE_CONFIGS.developer.maxBudgetUsd === 5.00`
-  - `"reviewer budget is $2.00"` — asserts `ROLE_CONFIGS.reviewer.maxBudgetUsd === 2.00`
-
-  These supplement the existing relative ordering test (`explorer < developer`) with absolute guard rails that catch regression if any budget is accidentally halved or zeroed.
+- `src/orchestrator/agent-worker.ts` — Added a comment above the `config.env` application loop explaining that `FOREMAN_*_MODEL` values supplied via `config.env` have no effect on model selection (they arrive after `ROLE_CONFIGS` is already materialised at module load time) and that per-phase model overrides must be set in the parent process environment before the worker is spawned.
 
 ## Tests Added/Modified
 
-- **src/orchestrator/__tests__/roles.test.ts**
-  - Added `"developer budget is $5.00"` — pins the developer role's exact budget
-  - Added `"reviewer budget is $2.00"` — pins the reviewer role's exact budget
+- `src/orchestrator/__tests__/roles.test.ts`:
+  - Added `vi` import from vitest (for `vi.restoreAllMocks()` in new suite).
+  - Removed duplicate test "env var takes precedence over hard-coded default" (was functionally identical to "overrides explorer model via FOREMAN_EXPLORER_MODEL").
+  - Added new `describe("ROLE_CONFIGS module-level fallback")` suite with 3 tests covering:
+    - Verifying `ROLE_CONFIGS` is always a valid object (module loaded without crashing).
+    - Verifying `buildRoleConfigs()` throws on invalid model (same logic the IIFE try-block executes).
+    - Verifying `ROLE_CONFIGS` is consistent with a fresh `buildRoleConfigs()` call when no env vars are set.
 
 ## Decisions & Trade-offs
 
-- **Which roles to pin**: Chose `developer` (the most expensive phase, most likely to be accidentally changed) and `reviewer` (a meaningfully different value from `developer`). `explorer` and `qa` are implicitly covered by the ordering test (`explorer < developer`) and the "all positive" guard.
-- **Constant scope**: `PLAN_STEP_MAX_BUDGET_USD` is module-scoped (not exported) since it is only used inside `dispatcher.ts`. If other modules ever need it, it can be exported at that point.
-- **No changes to budget values**: The values (`developer: 5.00`, `reviewer: 2.00`, plan step: `3.00`) are intentionally preserved from the previous iteration to keep this pass focused on code quality only.
+- **IIFE fallback uses `DEFAULT_MODELS` directly** (not a recursive `buildRoleConfigs()` call with env vars cleared): avoids mutation of `process.env` in a fallback path, which could have unintended side-effects in tests.
+- **Warning goes to `console.warn` (stderr)**: consistent with typical Node.js startup-warning patterns; visible in logs without crashing the process.
+- **No changes to `resolveModel()`**: it still throws on invalid input, which is the right contract for the public `buildRoleConfigs()` function (callers get a clear error). The module-level safety net is the IIFE try/catch.
+- **Timing comment in `agent-worker.ts` is documentation-only**: changing the behaviour (e.g. re-initialising `ROLE_CONFIGS` after env vars are applied) would be a larger refactor out of scope for this task.
 
 ## Known Limitations
 
-- Budget values are estimates based on expected token usage; real-world calibration should happen after a few pipeline runs with production workloads.
+- The module-level fallback silently uses defaults when an env var is invalid; the process continues and may run phases with unexpected models. A future improvement could have `runPhase()` detect and surface the fallback as a structured warning in the run record.
+- `VALID_MODELS` still requires manual maintenance in sync with `types.ts`. A unit test cross-checking the two arrays would be a stronger guarantee; deferred as it requires importing types at runtime.

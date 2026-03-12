@@ -18,32 +18,140 @@ export interface RoleConfig {
   reportFile: string;
 }
 
-export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleConfig> = {
-  explorer: {
-    role: "explorer",
-    model: "claude-haiku-4-5-20251001",
-    maxBudgetUsd: 1.00,
-    reportFile: "EXPLORER_REPORT.md",
-  },
-  developer: {
-    role: "developer",
-    model: "claude-sonnet-4-6",
-    maxBudgetUsd: 5.00,
-    reportFile: "DEVELOPER_REPORT.md",
-  },
-  qa: {
-    role: "qa",
-    model: "claude-sonnet-4-6",
-    maxBudgetUsd: 3.00,
-    reportFile: "QA_REPORT.md",
-  },
-  reviewer: {
-    role: "reviewer",
-    model: "claude-sonnet-4-6",
-    maxBudgetUsd: 2.00,
-    reportFile: "REVIEW.md",
-  },
+/**
+ * All valid model selections.
+ *
+ * NOTE: These values must stay in sync with the `ModelSelection` union in
+ * `types.ts`. If a new model is added to that union, add it here too —
+ * otherwise the new value will be rejected at runtime when read from an
+ * environment variable.
+ */
+const VALID_MODELS: readonly ModelSelection[] = [
+  "claude-opus-4-6",
+  "claude-sonnet-4-6",
+  "claude-haiku-4-5-20251001",
+];
+
+/**
+ * Resolve a model selection from an environment variable, falling back to the
+ * provided default.  Throws if the env var is set to an unrecognised value.
+ *
+ * @param envVar  Name of the environment variable (e.g. "FOREMAN_EXPLORER_MODEL")
+ * @param defaultModel  Hard-coded default used when the env var is absent
+ */
+function resolveModel(envVar: string, defaultModel: ModelSelection): ModelSelection {
+  const value = process.env[envVar];
+  if (value === undefined || value === "") {
+    return defaultModel;
+  }
+  if (!(VALID_MODELS as string[]).includes(value)) {
+    throw new Error(
+      `Invalid model "${value}" in ${envVar}. ` +
+        `Valid values are: ${VALID_MODELS.join(", ")}`,
+    );
+  }
+  return value as ModelSelection;
+}
+
+/**
+ * Hard-coded default model per phase.  Kept as a named constant so they can
+ * be used both inside `buildRoleConfigs` and as a safe fallback when the
+ * module-level initialisation catches an env-var validation error.
+ */
+const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker">, ModelSelection>> = {
+  explorer: "claude-haiku-4-5-20251001",
+  developer: "claude-sonnet-4-6",
+  qa: "claude-sonnet-4-6",
+  reviewer: "claude-sonnet-4-6",
 };
+
+/**
+ * Build the role configuration map, honouring per-phase model overrides via
+ * environment variables:
+ *
+ *   FOREMAN_EXPLORER_MODEL   — override model for the explorer phase
+ *   FOREMAN_DEVELOPER_MODEL  — override model for the developer phase
+ *   FOREMAN_QA_MODEL         — override model for the QA phase
+ *   FOREMAN_REVIEWER_MODEL   — override model for the reviewer phase
+ *
+ * Each variable accepts any value from the ModelSelection union.  When a
+ * variable is absent or empty the hard-coded default is used.
+ */
+export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker">, RoleConfig> {
+  return {
+    explorer: {
+      role: "explorer",
+      model: resolveModel("FOREMAN_EXPLORER_MODEL", DEFAULT_MODELS.explorer),
+      maxBudgetUsd: 1.00,
+      reportFile: "EXPLORER_REPORT.md",
+    },
+    developer: {
+      role: "developer",
+      model: resolveModel("FOREMAN_DEVELOPER_MODEL", DEFAULT_MODELS.developer),
+      maxBudgetUsd: 5.00,
+      reportFile: "DEVELOPER_REPORT.md",
+    },
+    qa: {
+      role: "qa",
+      model: resolveModel("FOREMAN_QA_MODEL", DEFAULT_MODELS.qa),
+      maxBudgetUsd: 3.00,
+      reportFile: "QA_REPORT.md",
+    },
+    reviewer: {
+      role: "reviewer",
+      model: resolveModel("FOREMAN_REVIEWER_MODEL", DEFAULT_MODELS.reviewer),
+      maxBudgetUsd: 2.00,
+      reportFile: "REVIEW.md",
+    },
+  };
+}
+
+/**
+ * Module-level role configuration map, built once at import time.
+ *
+ * If an environment variable contains an unrecognised model string,
+ * `buildRoleConfigs()` would throw and cause the module to fail to load
+ * entirely — crashing the worker process before `main()` has a chance to
+ * open the store and record the error.  The try/catch here prevents that:
+ * on failure it logs a warning to stderr and falls back to the hard-coded
+ * defaults so the process continues and can write a proper failure record.
+ */
+export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleConfig> = (() => {
+  try {
+    return buildRoleConfigs();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[foreman] roles: ${msg} — falling back to hard-coded defaults.`,
+    );
+    return {
+      explorer: {
+        role: "explorer",
+        model: DEFAULT_MODELS.explorer,
+        maxBudgetUsd: 1.00,
+        reportFile: "EXPLORER_REPORT.md",
+      },
+      developer: {
+        role: "developer",
+        model: DEFAULT_MODELS.developer,
+        maxBudgetUsd: 5.00,
+        reportFile: "DEVELOPER_REPORT.md",
+      },
+      qa: {
+        role: "qa",
+        model: DEFAULT_MODELS.qa,
+        maxBudgetUsd: 3.00,
+        reportFile: "QA_REPORT.md",
+      },
+      reviewer: {
+        role: "reviewer",
+        model: DEFAULT_MODELS.reviewer,
+        maxBudgetUsd: 2.00,
+        reportFile: "REVIEW.md",
+      },
+    };
+  }
+})();
 
 // ── Prompt templates ────────────────────────────────────────────────────
 

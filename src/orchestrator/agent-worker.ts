@@ -87,7 +87,13 @@ async function main(): Promise<void> {
   // Open store connection
   const store = new ForemanStore();
 
-  // Apply worker env vars
+  // Apply worker env vars.
+  // NOTE: `ROLE_CONFIGS` in roles.ts is materialised at module load time,
+  // which happens before this point.  Therefore any `FOREMAN_*_MODEL` values
+  // supplied via `config.env` have NO effect on model selection — they arrive
+  // too late.  Per-phase model overrides must be set in the *parent* process
+  // environment before the worker is spawned.  The env vars here are passed
+  // through to the SDK query() call for other purposes (e.g. API keys).
   for (const [key, value] of Object.entries(config.env)) {
     process.env[key] = value;
   }
