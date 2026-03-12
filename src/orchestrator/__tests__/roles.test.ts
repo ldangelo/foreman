@@ -59,6 +59,26 @@ describe("ROLE_CONFIGS", () => {
   });
 });
 
+describe("DCG (Destructive Command Guard) permission modes", () => {
+  it("all roles have a permissionMode configured", () => {
+    for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
+      expect(config.permissionMode, `${role} should have a permissionMode`).toBeDefined();
+    }
+  });
+
+  it("no role uses bypassPermissions", () => {
+    for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
+      expect(config.permissionMode, `${role} must not use bypassPermissions`).not.toBe("bypassPermissions");
+    }
+  });
+
+  it("all roles use a non-interactive permission mode", () => {
+    for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
+      expect(config.permissionMode, `${role} uses interactive mode`).not.toBe("default");
+    }
+  });
+});
+
 describe("prompt templates", () => {
   it("explorerPrompt includes seed context and read-only instructions", () => {
     const prompt = explorerPrompt("bd-123", "Fix auth", "JWT token refresh");

@@ -186,14 +186,16 @@ async function main(): Promise<void> {
   progressTimer.unref();
 
   try {
+    // DCG (Destructive Command Guard): use acceptEdits instead of bypassPermissions.
+    // This guards against destructive tool calls (rm -rf, DROP TABLE, etc.) while
+    // still allowing file edits and reads that agent tasks legitimately require.
     const queryOpts: Parameters<typeof query>[0] = resume
       ? {
           prompt,
           options: {
             cwd: worktreePath,
             model: model as any,
-            permissionMode: "bypassPermissions",
-            allowDangerouslySkipPermissions: true,
+            permissionMode: "acceptEdits",
             env,
             resume,
             persistSession: true,
@@ -204,8 +206,7 @@ async function main(): Promise<void> {
           options: {
             cwd: worktreePath,
             model: model as any,
-            permissionMode: "bypassPermissions",
-            allowDangerouslySkipPermissions: true,
+            permissionMode: "acceptEdits",
             env,
             persistSession: true,
           },
@@ -396,13 +397,13 @@ async function runPhase(
   try {
     let phaseResult: SDKResultSuccess | SDKResultError | undefined;
 
+    // DCG: use the role's configured permissionMode instead of blanket bypassPermissions.
     for await (const message of query({
       prompt,
       options: {
         cwd: config.worktreePath,
         model: roleConfig.model as any,
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
+        permissionMode: roleConfig.permissionMode,
         maxBudgetUsd: roleConfig.maxBudgetUsd,
         env,
         persistSession: false,

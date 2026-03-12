@@ -6,6 +6,7 @@
  * same worktree. Communication is via report files (EXPLORER_REPORT.md, etc).
  */
 
+import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRole, ModelSelection } from "./types.js";
 
 // ── Role config ─────────────────────────────────────────────────────────
@@ -14,6 +15,12 @@ export interface RoleConfig {
   role: AgentRole;
   model: ModelSelection;
   maxBudgetUsd: number;
+  /**
+   * Permission mode for DCG (Destructive Command Guard).
+   * - `"acceptEdits"`: Auto-accept file edits; guards against destructive ops
+   * - `"dontAsk"`: Deny operations that would normally prompt (most restrictive)
+   */
+  permissionMode: PermissionMode;
   /** Report file this role produces */
   reportFile: string;
 }
@@ -83,24 +90,28 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker">
       role: "explorer",
       model: resolveModel("FOREMAN_EXPLORER_MODEL", DEFAULT_MODELS.explorer),
       maxBudgetUsd: 1.00,
+      permissionMode: "acceptEdits",
       reportFile: "EXPLORER_REPORT.md",
     },
     developer: {
       role: "developer",
       model: resolveModel("FOREMAN_DEVELOPER_MODEL", DEFAULT_MODELS.developer),
       maxBudgetUsd: 5.00,
+      permissionMode: "acceptEdits",
       reportFile: "DEVELOPER_REPORT.md",
     },
     qa: {
       role: "qa",
       model: resolveModel("FOREMAN_QA_MODEL", DEFAULT_MODELS.qa),
       maxBudgetUsd: 3.00,
+      permissionMode: "acceptEdits",
       reportFile: "QA_REPORT.md",
     },
     reviewer: {
       role: "reviewer",
       model: resolveModel("FOREMAN_REVIEWER_MODEL", DEFAULT_MODELS.reviewer),
       maxBudgetUsd: 2.00,
+      permissionMode: "acceptEdits",
       reportFile: "REVIEW.md",
     },
   };
@@ -129,24 +140,28 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
         role: "explorer",
         model: DEFAULT_MODELS.explorer,
         maxBudgetUsd: 1.00,
+        permissionMode: "acceptEdits",
         reportFile: "EXPLORER_REPORT.md",
       },
       developer: {
         role: "developer",
         model: DEFAULT_MODELS.developer,
         maxBudgetUsd: 5.00,
+        permissionMode: "acceptEdits",
         reportFile: "DEVELOPER_REPORT.md",
       },
       qa: {
         role: "qa",
         model: DEFAULT_MODELS.qa,
         maxBudgetUsd: 3.00,
+        permissionMode: "acceptEdits",
         reportFile: "QA_REPORT.md",
       },
       reviewer: {
         role: "reviewer",
         model: DEFAULT_MODELS.reviewer,
         maxBudgetUsd: 2.00,
+        permissionMode: "acceptEdits",
         reportFile: "REVIEW.md",
       },
     };
