@@ -1,11 +1,11 @@
 # Agent Task
 
 ## Task Details
-**Bead ID:** foreman-fe78
-**Title:** Replace maxTurns with maxBudgetUsd for pipeline phase limits
+**Seed ID:** foreman-9b4d
+**Title:** Multi-runtime support (pluggable AgentRuntime interface)
 **Description:** (no description provided)
 **Model:** claude-sonnet-4-6
-**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-fe78
+**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-9b4d
 
 ## Agent Team
 This task is handled by an Engineering Lead agent that orchestrates a team:

@@ -13,8 +13,10 @@ import { readFileSync, writeFileSync, unlinkSync, existsSync, renameSync } from 
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
+import { createRuntime } from "./runtime.js";
+import type { AgentRuntime } from "./runtime.js";
+import type { RuntimeSelection } from "./types.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import {
@@ -45,6 +47,7 @@ interface WorkerConfig {
   pipeline?: boolean;  // Run as lead pipeline (explorer → developer → qa → reviewer)
   skipExplore?: boolean;
   skipReview?: boolean;
+  runtime?: RuntimeSelection;  // Agent runtime to use (default: "claude-code")
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────
@@ -61,6 +64,8 @@ async function main(): Promise<void> {
   try { unlinkSync(configPath); } catch { /* already deleted */ }
 
   const { runId, projectId, seedId, seedTitle, model, worktreePath, prompt, resume, pipeline } = config;
+
+  const runtime = await createRuntime(config.runtime ?? "claude-code");
 
   // Set up logging
   const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
@@ -97,7 +102,7 @@ async function main(): Promise<void> {
 
   // ── Pipeline mode: run each phase as a separate SDK session ─────────
   if (pipeline) {
-    await runPipeline(config, store, logFile);
+    await runPipeline(config, store, logFile, runtime);
     store.close();
     log(`Pipeline worker exiting for ${seedId}`);
     return;
@@ -130,7 +135,7 @@ async function main(): Promise<void> {
   progressTimer.unref();
 
   try {
-    const queryOpts: Parameters<typeof query>[0] = resume
+    const queryOpts = resume
       ? {
           prompt,
           options: {
@@ -155,7 +160,7 @@ async function main(): Promise<void> {
           },
         };
 
-    for await (const message of query(queryOpts)) {
+    for await (const message of runtime.executeQuery(queryOpts)) {
       await logMessage(logFile, message);
       progress.lastActivity = new Date().toISOString();
 
@@ -314,6 +319,7 @@ async function runPhase(
   progress: RunProgress,
   logFile: string,
   store: ForemanStore,
+  runtime: AgentRuntime,
 ): Promise<PhaseResult> {
   const roleConfig = ROLE_CONFIGS[role];
   progress.currentPhase = role;
@@ -327,7 +333,7 @@ async function runPhase(
   try {
     let phaseResult: SDKResultSuccess | SDKResultError | undefined;
 
-    for await (const message of query({
+    for await (const message of runtime.executeQuery({
       prompt,
       options: {
         cwd: config.worktreePath,
@@ -498,7 +504,7 @@ const MAX_DEV_RETRIES = 2;
  * Run the full pipeline: Explorer → Developer ⇄ QA → Reviewer → Finalize.
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
-async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string): Promise<void> {
+async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string, runtime: AgentRuntime): Promise<void> {
   const { runId, projectId, seedId, seedTitle, worktreePath } = config;
   const description = config.seedDescription ?? "(no description)";
 
@@ -521,7 +527,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   // ── Phase 1: Explorer ──────────────────────────────────────────────
   if (!config.skipExplore) {
     rotateReport(worktreePath, "EXPLORER_REPORT.md");
-    const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
+    const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store, runtime);
     if (!result.success) {
       await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed");
       return;
@@ -542,7 +548,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     const devResult = await runPhase(
       "developer",
       developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext),
-      config, progress, logFile, store,
+      config, progress, logFile, store, runtime,
     );
     if (!devResult.success) {
       await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed");
@@ -552,7 +558,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
     // QA
     rotateReport(worktreePath, "QA_REPORT.md");
-    const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
+    const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, runtime);
     if (!qaResult.success) {
       await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed");
       return;
@@ -582,7 +588,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   // ── Phase 4: Reviewer ──────────────────────────────────────────────
   if (!config.skipReview) {
     rotateReport(worktreePath, "REVIEW.md");
-    const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
+    const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store, runtime);
     if (!reviewResult.success) {
       await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed");
       return;
@@ -606,13 +612,13 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       const devResult = await runPhase(
         "developer",
         developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback),
-        config, progress, logFile, store,
+        config, progress, logFile, store, runtime,
       );
       if (devResult.success) {
         store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
 
         rotateReport(worktreePath, "QA_REPORT.md");
-        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
+        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, runtime);
         if (qaResult.success) {
           store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
         }

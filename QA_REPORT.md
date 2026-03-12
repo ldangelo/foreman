@@ -1,11 +1,12 @@
-# QA Report: Tool enforcement guards for agent roles
+# QA Report: Multi-runtime support (pluggable AgentRuntime interface)
 
 ## Verdict: PASS
 
 ## Test Results
-- Test suite: 246 passed, 9 failed
-- New tests added: 16 (in `src/orchestrator/__tests__/roles.test.ts`)
-- All 9 failures are pre-existing environment issues unrelated to this change (verified by stashing changes and confirming same 9 failures, 230 passed before vs 246 passed after — exactly 16 new tests added, all pass)
+- Test suite: 242 passed, 9 failed
+- New tests added: 12 (in `src/orchestrator/__tests__/runtime.test.ts`)
+- All 12 new runtime tests pass
+- All 9 failures are pre-existing environment issues unrelated to this change
 
 ### Pre-existing Failures (Not Caused by This Change)
 
@@ -15,37 +16,45 @@
 | `src/orchestrator/__tests__/detached-spawn.test.ts` | 2 tests + 2 uncaught errors | `tsx` binary missing in worktree `node_modules` |
 | `src/orchestrator/__tests__/worker-spawn.test.ts` | 1 test | `tsx` binary missing in worktree `node_modules` |
 
+These failures were present before this change (same infrastructure issue reported in prior QA runs).
+
 ## Implementation Review
 
-### roles.ts Changes
-- `RoleConfig` interface extended with `allowedTools: string[]` — clean addition alongside `maxBudgetUsd`
-- `ALL_AGENT_TOOLS` constant lists all 15 known SDK tools (no duplicates — verified by test)
-- `getDisallowedTools(roleConfig)` function correctly computes set complement: `ALL_AGENT_TOOLS \ allowedTools`
-- Role-specific `allowedTools` assignments correctly enforce intent:
-  - **explorer**: `[Read, Glob, Grep]` — read-only
-  - **developer**: `[Read, Write, Edit, Bash, Glob, Grep, Agent, TodoWrite, WebFetch, WebSearch]` — full access
-  - **qa**: `[Read, Write, Edit, Bash, Glob, Grep, TodoWrite]` — no Agent spawning
-  - **reviewer**: `[Read, Glob, Grep]` — read-only (identical to explorer)
+### New Files
+- **`src/orchestrator/runtime.ts`** — `AgentRuntime` interface + `AgentQueryOptions` type + `createRuntime()` async factory + `getAvailableRuntimes()` helper. Clean, well-documented.
+- **`src/orchestrator/runtime-claude-sdk.ts`** — `ClaudeSDKRuntime` class wrapping SDK `query()`. Uses `yield*` to delegate the async generator correctly.
+- **`src/orchestrator/runtime-mock.ts`** — `MockRuntime` for testing. Supports `setMessages()`, `getCapturedParams()`, `reset()`. No API calls made.
 
-### agent-worker.ts Changes
-- `getDisallowedTools` imported and called at phase start in `runPhase()`
-- `disallowedTools` passed to SDK `query()` options as `disallowedTools: disallowedTools.length > 0 ? disallowedTools : undefined`
-- Log entries updated to include `allowed=[...]` and `disallowed=[...]` for observability
-- Passing `undefined` when disallowed list is empty is correct (avoids sending empty array to SDK)
+### Modified Files
+- **`src/orchestrator/types.ts`** — `RuntimeSelection` extended from `"claude-code"` to `"claude-code" | "mock"`. Exhaustive switch remains safe.
+- **`src/orchestrator/agent-worker.ts`** — Direct `query()` import removed. Runtime created via `createRuntime()` factory at startup and passed through `runPipeline()` and `runPhase()`. All call sites updated correctly.
+- **`src/orchestrator/dispatcher.ts`** — `runtime?` field threaded through `WorkerConfig`, `spawnAgent()`, and `dispatch()`. Defaults to `"claude-code"` when not specified.
 
 ### TypeScript Compilation
-- `npx tsc --noEmit` passes with zero errors
+- `npx tsc --noEmit` passes with zero errors.
+
+### Backward Compatibility
+- `config.runtime ?? "claude-code"` default in `agent-worker.ts` ensures all existing worker configs work unchanged.
+- `opts?.runtime ?? "claude-code"` in `dispatcher.ts` similarly safe.
 
 ### Edge Cases Verified by Tests
-- `getDisallowedTools` returns complement of `allowedTools` relative to `ALL_AGENT_TOOLS`
-- Union of `allowedTools` and `getDisallowedTools` equals `ALL_AGENT_TOOLS` for every role
-- Explorer and reviewer have identical read-only toolsets
-- QA has `Agent` disallowed but `Bash` allowed
-- All disallowed tools for every role are valid members of `ALL_AGENT_TOOLS` (no phantom tools)
+- `MockRuntime` yields zero messages by default
+- `setMessages()` configures preset response messages
+- `getCapturedParams()` captures all params passed to `executeQuery()`
+- Multiple calls accumulate in captured params list
+- `reset()` clears both messages and captured params
+- Messages yielded in insertion order
+- `createRuntime("mock")` returns `MockRuntime` instance
+- `createRuntime("claude-code")` returns `ClaudeSDKRuntime` instance
+- `createRuntime("unknown-runtime")` throws descriptive error
+- `getAvailableRuntimes()` returns both runtimes, exactly 2
+
+### Known Limitation (Documented by Developer)
+- `dispatchPlanStep()` in `dispatcher.ts` still uses `query()` directly and is not covered by the runtime abstraction. This is an intentional deferral and correctly documented.
 
 ## Issues Found
 
-None. The implementation is correct, TypeScript compiles cleanly, and all new tests pass.
+None. The implementation is correct, TypeScript compiles cleanly, and all 12 new tests pass. Existing failures are pre-existing infrastructure issues in the worktree environment.
 
 ## Files Modified
-- `src/orchestrator/__tests__/roles.test.ts` — 16 new tests added (no existing tests modified)
+- `QA_REPORT.md` — this report (no source or test files required changes)

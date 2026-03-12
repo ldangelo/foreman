@@ -1,6 +1,6 @@
 // ── Orchestrator types ───────────────────────────────────────────────────
 
-export type RuntimeSelection = "claude-code";
+export type RuntimeSelection = "claude-code" | "mock";
 
 export type ModelSelection = "claude-opus-4-6" | "claude-sonnet-4-6" | "claude-haiku-4-5-20251001";
 

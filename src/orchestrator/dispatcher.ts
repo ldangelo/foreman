@@ -98,7 +98,7 @@ export class Dispatcher {
       }
 
       const seedInfo = seedToInfo(seed);
-      const runtime: RuntimeSelection = "claude-code";
+      const runtime: RuntimeSelection = opts?.runtime ?? "claude-code";
       const model = opts?.model ?? this.selectModel(seedInfo);
 
       if (opts?.dryRun) {
@@ -156,6 +156,7 @@ export class Dispatcher {
             pipeline: opts?.pipeline,
             skipExplore: opts?.skipExplore,
             skipReview: opts?.skipReview,
+            runtime: opts?.runtime,
           },
         );
 
@@ -475,6 +476,7 @@ export class Dispatcher {
       pipeline?: boolean;
       skipExplore?: boolean;
       skipReview?: boolean;
+      runtime?: RuntimeSelection;
     },
   ): Promise<string> {
     const prompt = [
@@ -506,6 +508,7 @@ export class Dispatcher {
       pipeline: usePipeline,
       skipExplore: pipelineOpts?.skipExplore,
       skipReview: pipelineOpts?.skipReview,
+      runtime: pipelineOpts?.runtime,
     });
 
     return sessionKey;
@@ -586,6 +589,7 @@ interface WorkerConfig {
   pipeline?: boolean;
   skipExplore?: boolean;
   skipReview?: boolean;
+  runtime?: RuntimeSelection;
 }
 
 /**
