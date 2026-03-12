@@ -226,6 +226,36 @@ export class Refinery {
         // Remove report files so they can't cause merge conflicts
         await this.removeReportFiles();
 
+        // Rebase branch onto current target so it picks up all prior merges.
+        // This resolves most conflicts that come from branches forked off older main.
+        // If rebase fails (real conflicts), we abort and report.
+        try {
+          await git(["rebase", targetBranch, branchName], this.projectPath);
+        } catch (rebaseErr: unknown) {
+          // Abort the failed rebase
+          try { await git(["rebase", "--abort"], this.projectPath); } catch { /* already clean */ }
+          // Return to target branch
+          try { await git(["checkout", targetBranch], this.projectPath); } catch { /* best effort */ }
+
+          const msg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+          this.store.updateRun(run.id, { status: "conflict" });
+          this.store.logEvent(
+            run.project_id,
+            "conflict",
+            { seedId: run.seed_id, branchName, error: `Rebase failed: ${msg}` },
+            run.id,
+          );
+          conflicts.push({
+            runId: run.id,
+            seedId: run.seed_id,
+            branchName,
+            conflictFiles: [],
+          });
+          continue;
+        }
+        // Rebase leaves us on the branch — return to target
+        await git(["checkout", targetBranch], this.projectPath);
+
         // Save pre-merge HEAD so we can revert merge + archive if tests fail
         const preMergeHead = await git(["rev-parse", "HEAD"], this.projectPath);
 
@@ -233,8 +263,19 @@ export class Refinery {
 
         if (!result.success) {
           const allConflicts = result.conflicts ?? [];
-          const reportConflicts = allConflicts.filter((f) => REPORT_FILES.includes(f));
-          const codeConflicts = allConflicts.filter((f) => !REPORT_FILES.includes(f));
+          const isReportFile = (f: string): boolean => {
+            // Exact match (e.g. QA_REPORT.md, TASK.md)
+            if (REPORT_FILES.includes(f)) return true;
+            // Archived reports (e.g. .foreman/reports/QA_REPORT-foreman-097e.md)
+            if (f.startsWith(".foreman/reports/")) return true;
+            // Timestamped rotated reports (e.g. REVIEW.2026-03-12T14-52-18-505Z.md)
+            if (f.endsWith(".md") && REPORT_FILES.some((r) => f.startsWith(r.replace(".md", ".")))) return true;
+            // Local settings file (per-machine, not code)
+            if (f === ".claude/settings.local.json") return true;
+            return false;
+          };
+          const reportConflicts = allConflicts.filter(isReportFile);
+          const codeConflicts = allConflicts.filter((f) => !isReportFile(f));
 
           if (codeConflicts.length > 0) {
             // Real code conflicts — abort and report
