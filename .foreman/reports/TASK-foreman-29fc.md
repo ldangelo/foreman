@@ -1,11 +1,11 @@
 # Agent Task
 
 ## Task Details
-**Seed ID:** foreman-8f3c
-**Title:** Detect and fix seed/agent state mismatches in foreman reset
+**Seed ID:** foreman-cc6f
+**Title:** Agent observability: dashboard command with live TUI
 **Description:** (no description provided)
 **Model:** claude-sonnet-4-6
-**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-8f3c
+**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-cc6f
 
 ## Agent Team
 This task is handled by an Engineering Lead agent that orchestrates a team:
