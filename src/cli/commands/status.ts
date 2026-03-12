@@ -2,7 +2,8 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
-import { ForemanStore, type RunProgress } from "../../lib/store.js";
+import { ForemanStore } from "../../lib/store.js";
+import { renderAgentCard } from "../watch-ui.js";
 
 interface Seed {
   id: string;
@@ -93,49 +94,13 @@ function renderStatus(): void {
     if (activeRuns.length === 0) {
       console.log(chalk.dim("  (no agents running)"));
     } else {
-      for (const run of activeRuns) {
-        const elapsed = run.started_at
-          ? Math.round((Date.now() - new Date(run.started_at).getTime()) / 60000)
-          : 0;
-        const badge = run.agent_type === "claude-code"
-          ? chalk.bgBlue.white(` ${run.agent_type} `)
-          : run.agent_type === "pi"
-          ? chalk.bgGreen.white(` ${run.agent_type} `)
-          : chalk.bgMagenta.white(` ${run.agent_type} `);
-        console.log(`  ${badge} ${run.seed_id} — ${run.status} (${elapsed}m)`);
-
-        // Show agent progress details
-        if (run.progress) {
-          try {
-            const progress: RunProgress = JSON.parse(run.progress);
-            const details: string[] = [];
-            if (progress.turns > 0) details.push(`${progress.turns} turns`);
-            if (progress.toolCalls > 0) details.push(`${progress.toolCalls} tools`);
-            if (progress.filesChanged.length > 0) details.push(`${progress.filesChanged.length} files`);
-
-            // Show current phase (pipeline mode) or last tool (single agent)
-            const lastTool = progress.lastToolCall ?? "starting";
-            const currentPhase = progress.currentPhase;
-            if (currentPhase) {
-              const phaseColors: Record<string, (s: string) => string> = {
-                explorer: chalk.cyan, developer: chalk.green,
-                qa: chalk.yellow, reviewer: chalk.magenta, finalize: chalk.blue,
-              };
-              const colorFn = phaseColors[currentPhase] ?? chalk.white;
-              console.log(`    ${chalk.dim("└")} Phase: ${colorFn(currentPhase)}  last: ${chalk.dim(lastTool)}  ${chalk.dim(details.join(", "))}`);
-            } else if (details.length > 0) {
-              // Team mode or single agent — show last tool and stats
-              const agentCount = progress.toolBreakdown["Agent"] ?? 0;
-              const activity = agentCount > 0
-                ? `${agentCount} sub-agent(s) spawned`
-                : `last: ${lastTool}`;
-              console.log(`    ${chalk.dim("└")} ${chalk.dim(activity)}  ${chalk.dim(details.join(", "))}`);
-            }
-            if (progress.costUsd > 0) {
-              console.log(`    ${chalk.dim("  ")} Cost:  ${chalk.yellow(`$${progress.costUsd.toFixed(4)}`)}`);
-            }
-          } catch { /* ignore malformed progress */ }
-        }
+      for (let i = 0; i < activeRuns.length; i++) {
+        const run = activeRuns[i];
+        const progress = store.getRunProgress(run.id);
+        console.log(renderAgentCard(run, progress));
+        // Separate cards with a blank line, but don't add a trailing blank
+        // after the last card (avoids a dangling empty line in single-agent output).
+        if (i < activeRuns.length - 1) console.log();
       }
     }
 

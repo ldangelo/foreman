@@ -81,6 +81,19 @@ export function renderAgentCard(run: Run, progress: RunProgress | null): string 
   lines.push(`  ${chalk.dim("Cost      ")} ${chalk.green("$" + progress.costUsd.toFixed(4))}`);
   lines.push(`  ${chalk.dim("Turns     ")} ${progress.turns}`);
 
+  // Show pipeline phase if available (colour-coded by role)
+  if (progress.currentPhase) {
+    const phaseColors: Record<string, (s: string) => string> = {
+      explorer:  chalk.cyan,
+      developer: chalk.green,
+      qa:        chalk.yellow,
+      reviewer:  chalk.magenta,
+      finalize:  chalk.blue,
+    };
+    const colorFn = phaseColors[progress.currentPhase] ?? chalk.white;
+    lines.push(`  ${chalk.dim("Phase     ")} ${colorFn(progress.currentPhase)}`);
+  }
+
   const lastTool = progress.lastToolCall
     ? chalk.dim(` (last: ${progress.lastToolCall})`)
     : "";

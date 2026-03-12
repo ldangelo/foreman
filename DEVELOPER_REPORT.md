@@ -1,34 +1,33 @@
-# Developer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Developer Report: Unify agent status display between status and run commands
 
 ## Approach
 
-This iteration addressed the two NOTE-level feedback items from the previous review cycle. The core `maxTurns → maxBudgetUsd` migration was already complete; this pass tightens two remaining rough edges:
-
-1. Extract the inline `3.00` magic number in `dispatcher.ts` to a named constant, matching the pattern used by `ROLE_CONFIGS`.
-2. Strengthen the budget regression tests in `roles.test.ts` by pinning absolute USD values for `developer` and `reviewer`, so accidental budget reductions are caught.
+Addressed three follow-up issues noted in the previous code review of the status/run display unification PR. All changes are in the worktree for seed foreman-d76c.
 
 ## Files Changed
 
-- **src/orchestrator/dispatcher.ts** — Added `PLAN_STEP_MAX_BUDGET_USD = 3.00` constant above the `Dispatcher` class and replaced the inline literal `maxBudgetUsd: 3.00` with `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`. This mirrors how `ROLE_CONFIGS` centralises phase budgets, making future adjustments easy to find and change.
+- `src/cli/watch-ui.ts` — Added `currentPhase` pipeline-phase display to `renderAgentCard` (the expanded card view). The Phase row (colour-coded by role: cyan=explorer, green=developer, yellow=qa, magenta=reviewer, blue=finalize) is inserted between the Turns and Tools rows. This mirrors what `status.ts` used to render inline before the unification, restoring the feature for multi-phase pipeline runs in both `foreman run` and `foreman status`.
 
-- **src/orchestrator/__tests__/roles.test.ts** — Added two new pinned-value tests:
-  - `"developer budget is $5.00"` — asserts `ROLE_CONFIGS.developer.maxBudgetUsd === 5.00`
-  - `"reviewer budget is $2.00"` — asserts `ROLE_CONFIGS.reviewer.maxBudgetUsd === 2.00`
+- `src/cli/commands/status.ts` — Fixed the trailing blank line cosmetic issue. The loop now only emits a separator `console.log()` between cards (not after the last one), eliminating the dangling blank line when a single agent is active.
 
-  These supplement the existing relative ordering test (`explorer < developer`) with absolute guard rails that catch regression if any budget is accidentally halved or zeroed.
+- `src/cli/__tests__/status-display.test.ts` — Replaced dead-code tests (`parsePipelinePhase` and `formatAgentActivity` re-implementations that mirrored logic removed from production) with real tests exercising the exported `renderAgentCard` function from `watch-ui.ts`. 17 tests covering: all five pipeline phases, phase omission when not set, Tools row alongside Phase row, lastToolCall annotation, tool breakdown bar chart, files changed listing, `+N more` truncation, and initializing/pending states.
 
 ## Tests Added/Modified
 
-- **src/orchestrator/__tests__/roles.test.ts**
-  - Added `"developer budget is $5.00"` — pins the developer role's exact budget
-  - Added `"reviewer budget is $2.00"` — pins the reviewer role's exact budget
+- `src/cli/__tests__/status-display.test.ts` — Full replacement. Old file re-implemented and tested `parsePipelinePhase()` and `formatAgentActivity()` (dead code no longer in production). New file directly imports and tests `renderAgentCard` from `watch-ui.ts`:
+  - `renderAgentCard — currentPhase display` (8 tests)
+  - `renderAgentCard — tool breakdown` (4 tests)
+  - `renderAgentCard — files changed` (3 tests)
+  - `renderAgentCard — pending / initializing states` (2 tests)
+
+All 17 tests pass; TypeScript compiles cleanly with `tsc --noEmit`.
 
 ## Decisions & Trade-offs
 
-- **Which roles to pin**: Chose `developer` (the most expensive phase, most likely to be accidentally changed) and `reviewer` (a meaningfully different value from `developer`). `explorer` and `qa` are implicitly covered by the ordering test (`explorer < developer`) and the "all positive" guard.
-- **Constant scope**: `PLAN_STEP_MAX_BUDGET_USD` is module-scoped (not exported) since it is only used inside `dispatcher.ts`. If other modules ever need it, it can be exported at that point.
-- **No changes to budget values**: The values (`developer: 5.00`, `reviewer: 2.00`, plan step: `3.00`) are intentionally preserved from the previous iteration to keep this pass focused on code quality only.
+- **Phase row placement**: Inserted Phase between Turns and Tools (rather than after Tools) so the most semantically important pipeline info appears near the top of the card, before the tool breakdown detail.
+- **Phase colours**: Reused the same colour scheme that `status.ts` used inline before the unification (`chalk.cyan/green/yellow/magenta/blue`), keeping visual consistency.
+- **Trailing blank line fix**: Changed the loop from an unconditional `console.log()` after every card to a conditional separator only between cards. This is the minimal change; an alternative would have been to build all card strings into an array and `join("\n\n")`, but the current approach is clearer.
 
 ## Known Limitations
 
-- Budget values are estimates based on expected token usage; real-world calibration should happen after a few pipeline runs with production workloads.
+- The worktree's `renderAgentCard` is a simpler (non-interactive) version compared to the main repo, which has expand/collapse and per-run indexing. This PR addresses issues in the worktree version only; the main repo's more advanced features are separate work.

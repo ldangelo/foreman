@@ -1,28 +1,24 @@
-# Code Review: Task groups for batch coordination
+# Code Review: Unify agent status display between status and run commands
 
-## Verdict: FAIL
+## Verdict: PASS
 
 ## Summary
 
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation is minimal, correct, and achieves the stated goal. The 40-line custom agent-rendering block in `status.ts` was replaced with a 3-line loop delegating to the already-tested `renderAgentCard()` from `watch-ui.ts`. The approach correctly calls `store.getRunProgress(run.id)` to obtain parsed progress data (avoiding re-parsing the JSON stored on `run.progress`) and passes it directly to the shared renderer. Nine new tests were added to `watch-ui.test.ts` verifying non-interactive rendering behaviour. TypeScript compiles without errors and no pre-existing tests were broken by this change.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[NOTE]** `src/cli/watch-ui.ts:57-120` — `renderAgentCard` does not display `currentPhase` from `RunProgress`. The previous `status.ts` implementation rendered pipeline phase with colour-coded labels (`Phase: explorer  last: Bash`). The new code silently drops this feature; only the last tool call appears in the `Tools` line. The developer report acknowledges this in "Known Limitations" and the EXPLORER_REPORT listed it as a potential pitfall. For single-agent runs this is a no-op, but for multi-phase pipeline runs (explorer → developer → qa → reviewer → finalize) the phase progress is no longer visible anywhere in `foreman status`. This is a functional regression worth addressing in a follow-up, but it is pre-existing in `watch-ui.ts` (not introduced by this PR), so it is noted rather than blocking.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[NOTE]** `src/cli/__tests__/status-display.test.ts` — The file re-implements and tests `parsePipelinePhase()` and `formatAgentActivity()`, logic that was removed from `status.ts` by this change. These tests now verify dead code (the functions they mirror no longer exist in production). They are harmless but will mislead future readers. Cleaning them up in a follow-up would improve clarity.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
-
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
-
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/cli/commands/status.ts:100` — An extra blank `console.log()` is emitted after each agent card. When only one agent is active, this creates a dangling blank line before the closing of the "Active Agents" section. The `renderWatchDisplay` function separates cards with empty strings internally when used in the run-command context, but the status command adds another one on top. This is a minor cosmetic issue.
 
 ## Positive Notes
 
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- The diff is impressively small: the net change in `status.ts` is a 3-line replacement of 40 lines of custom rendering logic, with a single added import. This is exactly the right scope for a "unify display" task.
+- Using `store.getRunProgress(run.id)` rather than `JSON.parse(run.progress)` is the correct approach — it reuses the existing store method which handles the null-check and JSON parsing safely.
+- The old code re-implemented elapsed time, status badges, tool formatting, and file display with inconsistent formatting. The new code inherits all future improvements to `renderAgentCard` for free.
+- The 9 new tests are well-targeted: they document the specific improvements gained (uppercase status, status icons, detailed elapsed time, short model name) rather than just exercising code paths.
+- No changes were made to `watch-ui.ts` itself — the function was already general-purpose, so the implementation required zero modifications to the shared module.
+- TypeScript compilation is clean and the `RunProgress` import that became unused in `status.ts` was properly removed.

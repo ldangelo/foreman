@@ -445,4 +445,100 @@ describe("renderWatchDisplay", () => {
     expect(output).toContain("foreman-1a");
     expect(output).toContain("foreman-2b");
   });
+
+  // ── Non-interactive mode (status command usage) ──────────────────────────
+
+  it("does not show Ctrl+C hint in non-interactive mode (showDetachHint=false)", () => {
+    const state = makeState({ allDone: false });
+    const output = renderWatchDisplay(state, false);
+    expect(output).not.toContain("Ctrl+C");
+    expect(output).not.toContain("detach");
+  });
+
+  it("shows status icons for running agent in non-interactive mode", () => {
+    const run = makeRun({ status: "running", seed_id: "foreman-aa" });
+    const state = makeState({ runs: [{ run, progress: null }], allDone: false });
+    const output = renderWatchDisplay(state, false);
+    // running status uses ● icon
+    expect(output).toContain("●");
+    expect(output).toContain("RUNNING");
+  });
+
+  it("shows uppercase status text in non-interactive mode", () => {
+    const run = makeRun({ status: "completed", seed_id: "foreman-bb" });
+    const state = makeState({
+      runs: [{ run, progress: null }],
+      allDone: true,
+      completedCount: 1,
+    });
+    const output = renderWatchDisplay(state, false);
+    expect(output).toContain("COMPLETED");
+  });
+
+  it("shows detailed elapsed time (not just minutes) in non-interactive mode", () => {
+    const run = makeRun({
+      status: "running",
+      started_at: new Date(Date.now() - 90_000).toISOString(), // 1m 30s ago
+    });
+    const state = makeState({ runs: [{ run, progress: null }], allDone: false });
+    const output = renderWatchDisplay(state, false);
+    // Should show "1m 30s" style elapsed time (not "1m" only)
+    expect(output).toMatch(/\d+m \d+s/);
+  });
+
+  it("shows short model name in non-interactive mode", () => {
+    const run = makeRun({ agent_type: "claude-sonnet-4-6", status: "running" });
+    const state = makeState({ runs: [{ run, progress: null }], allDone: false });
+    const output = renderWatchDisplay(state, false);
+    // shortModel() strips "claude-" prefix
+    expect(output).toContain("sonnet-4-6");
+    expect(output).not.toContain("claude-sonnet-4-6");
+  });
+
+  it("shows tool breakdown in non-interactive mode when progress is available", () => {
+    const run = makeRun({ status: "running" });
+    const progress = makeProgress({
+      toolBreakdown: { Bash: 10, Read: 5, Edit: 3 },
+      toolCalls: 18,
+    });
+    const state = makeState({ runs: [{ run, progress }], allDone: false });
+    const output = renderWatchDisplay(state, false);
+    expect(output).toContain("Bash");
+    expect(output).toContain("Read");
+    expect(output).toContain("Edit");
+  });
+
+  it("shows file list in non-interactive mode when progress is available", () => {
+    const run = makeRun({ status: "completed" });
+    const progress = makeProgress({ filesChanged: ["src/foo.ts", "src/bar.ts"] });
+    const state = makeState({
+      runs: [{ run, progress }],
+      allDone: true,
+      completedCount: 1,
+    });
+    const output = renderWatchDisplay(state, false);
+    expect(output).toContain("foo.ts");
+    expect(output).toContain("bar.ts");
+  });
+
+  it("shows log hint for failed run in non-interactive mode", () => {
+    const run = makeRun({ id: "run-fail-01", status: "failed" });
+    const progress = makeProgress({ toolCalls: 5 });
+    const state = makeState({
+      runs: [{ run, progress }],
+      allDone: true,
+      failedCount: 1,
+    });
+    const output = renderWatchDisplay(state, false);
+    expect(output).toContain("~/.foreman/logs/run-fail-01.log");
+  });
+
+  it("shows pending agent with status icon in non-interactive mode", () => {
+    const run = makeRun({ status: "pending" });
+    const state = makeState({ runs: [{ run, progress: null }], allDone: false });
+    const output = renderWatchDisplay(state, false);
+    // pending status uses ○ icon
+    expect(output).toContain("○");
+    expect(output).toContain("PENDING");
+  });
 });
