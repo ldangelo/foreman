@@ -1,165 +1,296 @@
-# Explorer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Explorer Report: 4-tier merge conflict resolution
 
 ## Summary
-The codebase uses `maxTurns` to limit SDK query execution in the agent orchestration pipeline. This needs to be replaced with `maxBudgetUsd` to enforce budget-based limits instead of turn-based limits. The change affects the role configurations, phase execution, and logging.
+The Foreman merge system has a 4-tier architecture for handling merge conflicts when integrating agent-completed worktree branches:
+
+1. **Tier 1 — Merge Attempt**: Low-level git merge detection in `mergeWorktree()`
+2. **Tier 2 — Conflict Handling**: Refinery orchestration in `mergeCompleted()` with conflict categorization
+3. **Tier 3 — Conflict Resolution**: `resolveConflict()` method with merge strategies
+4. **Tier 4 — CLI Interface**: User-facing merge command with conflict resolution options
+
+This report documents the current state and identifies what needs implementation.
 
 ## Relevant Files
 
-### 1. **src/orchestrator/roles.ts** (lines 13-46)
-- **Purpose**: Defines role configurations for the specialization pipeline (explorer, developer, qa, reviewer)
-- **Current State**:
-  - `RoleConfig` interface has `maxTurns: number` property (line 16)
-  - `ROLE_CONFIGS` object defines maxTurns for each phase:
-    - explorer: 30 turns
-    - developer: 80 turns
-    - qa: 30 turns
-    - reviewer: 20 turns
-- **Relevance**: Primary file that needs modification - interface definition and config values
+### 1. **src/lib/git.ts** (lines 174-200)
+- **Purpose**: Low-level git operations including merge and conflict detection
+- **Key Function**: `mergeWorktree(repoPath, branchName, targetBranch?)`
+  - Attempts `git merge --no-ff <branch>`
+  - Catches merge failure and extracts conflicting files using `git diff --name-only --diff-filter=U`
+  - Returns `{ success: boolean, conflicts?: string[] }`
+- **Current State**: Tier 1 implementation is complete
+- **Relevance**: Foundation for conflict detection
 
-### 2. **src/orchestrator/agent-worker.ts** (lines 310-399)
-- **Purpose**: Standalone worker process that runs individual SDK query calls for each pipeline phase
-- **Current State**:
-  - Line 322: Logs `maxTurns=${roleConfig.maxTurns}` when starting a phase
-  - Line 337: Passes `maxTurns: roleConfig.maxTurns` to the SDK `query()` options
-  - Line 225: Already handles `error_max_budget_usd` error subtype (future-ready)
-- **Relevance**: Needs to replace logging and pass maxBudgetUsd to query() options instead
+### 2. **src/orchestrator/refinery.ts** (lines 130-249)
+- **Purpose**: Orchestrates merge operations and handles results
+- **Key Method 1**: `mergeCompleted(opts?)` (lines 134-249)
+  - Calls `mergeWorktree()` for each completed run in dependency order
+  - Handles 3 outcome categories:
+    - **success + tests pass** → `status: "merged"` (Tier 2a)
+    - **merge conflict** → `git merge --abort`, `status: "conflict"` (Tier 2b)
+    - **tests fail** → `git reset --hard HEAD~1`, `status: "test-failed"` (Tier 2c)
+  - Logs all outcomes to store
+- **Key Method 2**: `resolveConflict(runId, strategy)` (lines 256-317)
+  - Takes a conflict run and applies a resolution strategy
+  - Supports two strategies:
+    - `"theirs"` → `git merge --no-ff -X theirs` (Tier 3a — take agent's version)
+    - `"abort"` → Mark run as `status: "failed"` (Tier 3b — give up)
+  - Currently **NOT CALLED** from anywhere
+- **Dependency Ordering**: Uses `orderByDependencies()` (lines 67-128) with Kahn's algorithm to topologically sort completed runs before merging
+- **Current State**: Tiers 2-3 implementation is complete but Tier 3 unreachable from CLI
+- **Relevance**: Core merge orchestration; resolveConflict() needs CLI wiring
 
-### 3. **src/orchestrator/dispatcher.ts** (line 361)
-- **Purpose**: Dispatches beads to agents, handles one-off planning steps
-- **Current State**:
-  - Line 361: Uses `maxTurns: 50` for `dispatchPlanStep()` SDK query
-- **Relevance**: Secondary location needing update for consistency with phase limits
+### 3. **src/cli/commands/merge.ts** (lines 9-123)
+- **Purpose**: CLI interface for merge operations
+- **Current Options** (lines 11-15):
+  - `--target-branch <branch>` — target branch for merge (default: "main")
+  - `--no-tests` — skip test suite after merge
+  - `--test-command <cmd>` — custom test command (default: "npm test")
+  - `--seed <id>` — merge single seed by ID
+  - `--list` — list completed seeds, don't merge
+- **Current Behavior**:
+  - Calls `refinery.mergeCompleted()` and categorizes results
+  - Displays merged, conflicts, and test failures with file lists
+  - **Line 93**: Help text references `foreman merge --resolve <runId> --strategy theirs|abort` — NOT IMPLEMENTED
+- **Current State**: Tier 4 options `--resolve` and `--strategy` are missing
+- **Relevance**: User-facing interface; needs implementation
+
+### 4. **src/orchestrator/types.ts** (lines 113-151)
+- **Purpose**: Type definitions for merge operations
+- **Relevant Types**:
+  - `MergedRun` (lines 115-119) — successful merge
+  - `ConflictRun` (lines 121-126) — merge conflicts detected
+  - `FailedRun` (lines 128-133) — other failures (test failures, unexpected errors)
+  - `MergeReport` (lines 135-139) — aggregated results with three arrays
+- **Current State**: All types defined
+- **Relevance**: Data contract for merge reporting
+
+### 5. **src/lib/store.ts** (line 25)
+- **Purpose**: SQLite database layer
+- **Current State**: Run status type includes `"conflict"` as a valid status value
+  ```typescript
+  status: "pending" | "running" | "completed" | "failed" | "stuck" | "merged" | "conflict" | "test-failed" | "pr-created"
+  ```
+- **Methods Using Conflict Status**:
+  - `updateRun(runId, { status: "conflict" })` — set conflict status
+  - `getRunsByStatus("conflict")` — retrieve conflicted runs
+- **Relevance**: Data persistence for conflict state
+
+### 6. **src/lib/__tests__/git.test.ts** (lines 88-130)
+- **Purpose**: Tests for git operations including conflict detection
+- **Test Coverage**:
+  - `mergeWorktree merges clean changes` (lines 88-103) — Tier 1 success case
+  - `mergeWorktree detects conflicts` (lines 105-130) — Tier 1 conflict case
+    - Creates conflicting edits on two branches
+    - Verifies `result.success === false`
+    - Verifies `result.conflicts` contains conflicting files
+    - Cleans up with `git merge --abort`
+- **Current State**: Tier 1 conflict detection tested
+- **Relevance**: Validates merge conflict detection
 
 ## Architecture & Patterns
 
-### Pipeline Orchestration Pattern
-- **Sequential phases**: Explorer → Developer ⇄ QA → Reviewer → Finalize
-- **Phase execution**: Each phase runs as a separate `query()` call with its own config
-- **Error handling**: Already recognizes `error_max_budget_usd` error subtype (agent-worker.ts:225)
-- **Naming convention**: `roleConfig.maxTurns` → should become `roleConfig.maxBudgetUsd`
-
-### SDK Integration
-- The Anthropic Claude Agent SDK supports `maxBudgetUsd?: number` in query options (confirmed in sdk.d.ts)
-- Budget limits are enforced by the SDK during query execution
-- Error subtype `error_max_budget_usd` is already handled by the error detection logic
-
-### Role Config Structure
-```typescript
-export interface RoleConfig {
-  role: AgentRole;
-  model: ModelSelection;
-  maxTurns: number;              // ← Change to maxBudgetUsd: number
-  reportFile: string;
-}
+### Merge Flow (Happy Path)
 ```
+foreman merge
+  └─ Refinery.mergeCompleted()
+      ├─ getCompletedRuns() → fetch runs with status="completed"
+      ├─ orderByDependencies() → topological sort by seed dependencies
+      └─ for each run:
+          ├─ mergeWorktree(repo, branch, target)
+          │   └─ git merge --no-ff → { success, conflicts? }
+          ├─ if success:
+          │   ├─ runTestCommand(testCmd) if --no-tests not set
+          │   ├─ if tests fail:
+          │   │   ├─ git reset --hard HEAD~1 (revert merge)
+          │   │   └─ updateRun(status="test-failed")
+          │   ├─ if tests pass (or skipped):
+          │   │   ├─ removeWorktree()
+          │   │   └─ updateRun(status="merged")
+          └─ if conflicts:
+              ├─ git merge --abort (abort merge)
+              └─ updateRun(status="conflict")
+```
+
+### Conflict Resolution Flow (Unimplemented — Tier 4)
+Currently, users can't resolve conflicts from CLI. The intended flow would be:
+```
+foreman merge --resolve <runId> --strategy theirs
+  └─ Refinery.resolveConflict(runId, "theirs")
+      ├─ git merge branchName --no-ff -X theirs
+      ├─ if success:
+      │   ├─ removeWorktree()
+      │   └─ updateRun(status="merged")
+      └─ if failure:
+          └─ updateRun(status="failed")
+```
+
+### Key Design Patterns
+
+1. **Dependency Ordering** — Uses Kahn's algorithm (topological sort) to order runs so dependencies merge before dependents. This ensures parent beads merge before child beads, reducing cascading conflicts.
+
+2. **Three-Tier Conflict Classification**:
+   - **Tier 2b**: Merge conflicts (conflicting file content) → detectable by git
+   - **Tier 2c**: Test failures (code integrates but tests fail) → detectable by test run
+   - **Tier 2d**: Other failures (git errors, unexpected exceptions) → caught by try/catch
+
+3. **Merge Abort on Conflict** — When conflicts detected, immediately abort merge with `git merge --abort` to leave repo in clean state. This allows the next merge attempt to start fresh.
+
+4. **Worktree Cleanup** — Only removes worktree on successful merge (Tier 2a). On conflict/failure, leaves worktree intact for potential future resolution.
+
+5. **Status Tracking** — Runs move through statuses:
+   - `completed` → `merged` (success)
+   - `completed` → `conflict` (merge conflict)
+   - `completed` → `test-failed` (tests failed after merge)
+   - `completed` → `failed` (other error)
+   - `conflict` → `merged` (after resolveConflict + theirs)
+   - `conflict` → `failed` (after resolveConflict + abort)
 
 ## Dependencies
 
-### What Uses maxTurns
-1. **agent-worker.ts**:
-   - Imports `ROLE_CONFIGS` from roles.ts
-   - Calls `roleConfig.maxTurns` in `runPhase()` function
-   - Passes value to SDK `query()` options
+### What Uses the Merge System
 
-2. **dispatcher.ts**:
-   - Hard-coded `maxTurns: 50` in `dispatchPlanStep()`
-   - No import from roles.ts (independent configuration)
+1. **merge.ts (CLI Command)**:
+   - Imports `Refinery`, `ForemanStore`, `SeedsClient`, `getRepoRoot`
+   - Calls `refinery.mergeCompleted()` and displays results
+   - Needs to add: call to `refinery.resolveConflict()` when `--resolve` flag provided
 
-3. **roles.ts**:
-   - Defines the canonical values for all phases
-   - No external dependencies on the property name
+2. **refinery.ts**:
+   - Imports `mergeWorktree()` from git.ts
+   - Imports `removeWorktree()` from git.ts
+   - Uses `SeedsClient` to fetch dependency graph for `orderByDependencies()`
+   - Uses `ForemanStore` to update run statuses and log events
 
-### SDK API Contract
-- The SDK's `query()` function accepts `maxBudgetUsd?: number` parameter
-- When a query exceeds budget, SDK returns error with `subtype: "error_max_budget_usd"`
-- No backwards compatibility issues - this is a parameter replacement
+3. **git.ts**:
+   - No internal dependencies; uses only Node.js built-ins (`child_process`, `fs`, `path`)
+
+4. **store.ts**:
+   - Defines Run type with "conflict" status
+   - Methods: `updateRun()`, `getRunsByStatus()`, `logEvent()`
+
+### What Depends on Merge System
+
+- **merge.ts** — Only user-facing code that directly uses merge system
 
 ## Existing Tests
 
-### Test Files
-1. **src/orchestrator/__tests__/roles.test.ts**
-   - Tests ROLE_CONFIGS structure (all roles defined, models correct)
-   - Tests prompt templates (context injection, read-only instructions)
-   - Tests verdict/issue parsing from reports
-   - **Status**: Tests focus on config existence, not specific maxTurns values
-   - **Impact**: Tests will likely pass after renaming property (no assertions on maxTurns specifically)
+### Complete Test Coverage
 
-2. **src/orchestrator/__tests__/agent-worker.test.ts**
-   - Tests worker process initialization and logging
-   - Tests config file handling and deletion
-   - **Status**: No assertions on maxTurns values
-   - **Impact**: Will need to verify logging format still works with maxBudgetUsd
+1. **src/lib/__tests__/git.test.ts**
+   - ✅ `mergeWorktree merges clean changes` — Tier 1 success
+   - ✅ `mergeWorktree detects conflicts` — Tier 1 conflict detection
+   - Coverage: Merge detection only; no Tier 2/3/4 tests
 
-### Test Coverage of Limits
-- No tests directly assert maxTurns values
-- No tests verify budget enforcement
-- New tests may be beneficial to ensure budget limits work correctly
+2. **No existing tests for**:
+   - ❌ `mergeCompleted()` function (Tier 2)
+   - ❌ `resolveConflict()` function (Tier 3)
+   - ❌ Merge command with conflict handling (Tier 4)
+   - ❌ Test failure reverting (Tier 2c)
+   - ❌ Dependency ordering logic (Tier 2 prerequisite)
 
 ## Recommended Approach
 
-### Phase 1: Update Role Configurations
-1. Update `RoleConfig` interface in roles.ts:
-   - Rename `maxTurns: number` → `maxBudgetUsd: number`
+### Phase 1: Wire Tier 4 CLI Options (Highest Priority)
+1. Add `--resolve <runId>` option to merge command
+2. Add `--strategy <strategy>` option (validate: "theirs" | "abort")
+3. When both provided:
+   - Call `refinery.resolveConflict(runId, strategy)`
+   - Display result (success/failure) with new status
+4. Add validation error if `--resolve` provided without `--strategy`
+5. Add test: CLI calls `resolveConflict()` with correct arguments
 
-2. Update `ROLE_CONFIGS` values with reasonable budget estimates:
-   - Need to estimate per-model costs based on token usage
-   - Suggested starting points (requires validation):
-     - **explorer** (haiku, 30 turns): $0.50-$1.00 USD
-     - **developer** (sonnet, 80 turns): $5.00-$10.00 USD
-     - **qa** (sonnet, 30 turns): $2.00-$4.00 USD
-     - **reviewer** (sonnet, 20 turns): $1.50-$3.00 USD
-   - Also update **dispatchPlanStep** budget in dispatcher.ts (currently maxTurns: 50)
+### Phase 2: Add Comprehensive Tests (Medium Priority)
+1. **refinery.test.ts** — Test `mergeCompleted()` with all outcome paths:
+   - Clean merge + tests pass → status: "merged"
+   - Merge conflict → status: "conflict" + merge aborted
+   - Clean merge + test failure → status: "test-failed" + merge reverted
+   - Other error → status: "failed"
 
-### Phase 2: Update Phase Execution in agent-worker.ts
-1. Update `runPhase()` function:
-   - Line 322: Change log format to show `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - Line 337: Pass `maxBudgetUsd: roleConfig.maxBudgetUsd` instead of `maxTurns`
+2. **refinery.test.ts** — Test `resolveConflict()`:
+   - Resolve with "theirs" → status: "merged" on success
+   - Resolve with "theirs" → status: "failed" on second conflict
+   - Resolve with "abort" → status: "failed"
 
-2. Verify error handling:
-   - Line 225 already checks for `error_max_budget_usd` — keep as-is
+3. **merge.test.ts** — Test CLI:
+   - `--resolve <id> --strategy theirs` → calls resolveConflict
+   - Error if missing `--strategy`
+   - Error if invalid `--strategy` value
 
-### Phase 3: Update Dispatcher Planning
-1. In dispatcher.ts `dispatchPlanStep()`:
-   - Replace `maxTurns: 50` with appropriate `maxBudgetUsd` value (suggest $3.00-$5.00)
+4. **git.test.ts** — Already covered; no additions needed
 
-### Phase 4: Update Tests & Documentation
-1. roles.test.ts:
-   - Update any hardcoded expectations if tests fail
-   - Consider adding assertions for budget values being positive numbers
-
-2. agent-worker.test.ts:
-   - Verify logging format with new maxBudgetUsd parameter
-   - Check that log output still contains relevant budget information
+### Phase 3: Error Handling & Edge Cases (Lower Priority)
+1. Handle resolve on non-"conflict" runs (e.g., already merged)
+2. Handle resolve on missing run
+3. Handle `git merge --abort` failure (merge not in progress)
+4. Handle `git merge -X theirs` creating new conflicts
+5. Clarify behavior when conflict run has missing worktree
 
 ## Potential Pitfalls & Edge Cases
 
-1. **Budget Estimation Accuracy**
-   - Turn counts are discrete (explorer: 30) but budgets must be estimated
-   - Per-model costs vary (Haiku cheaper than Sonnet than Opus)
-   - May need to adjust budgets based on real usage data
+1. **Conflict Run Without Worktree**
+   - If worktree deleted before `resolveConflict()` called, git merge will fail
+   - Solution: Verify worktree exists before attempting merge
 
-2. **Error Handling Clarity**
-   - Error message when budget exceeded may be different from turn limits
-   - Current code checks `error_max_budget_usd` — verify message consistency
+2. **Multiple Conflicts in Sequence**
+   - User resolves conflict A with "theirs"
+   - New conflict B appears on same branch
+   - Current code doesn't handle re-detection after re-merge
+   - Solution: Verify git merge succeeds; if conflict found, mark as "failed"
 
-3. **Logging Clarity**
-   - Phase startup logs currently show `maxTurns=30`
-   - Should show `maxBudgetUsd=$X.XX` for clarity
+3. **Test Suite Running on Conflicted Merges**
+   - `mergeCompleted()` runs tests on merged code
+   - But `resolveConflict()` does NOT run tests after "theirs" merge
+   - Inconsistency: main merge path runs tests; conflict resolution doesn't
+   - Solution: Either (a) add `runTests` param to `resolveConflict()`, or (b) document that "theirs" merge skips tests
 
-4. **Backwards Compatibility**
-   - Existing stored run data uses turns in progress tracking (agent-worker.ts line 196)
-   - Budget limits don't track in progress.turns — separate concerns
-   - No data migration needed (turns are tracked separately from limits)
+4. **Dependency Ordering Assumptions**
+   - `orderByDependencies()` assumes dependency graph is consistent
+   - If seed A depends on seed B, but B has failed (not in completed list), A may be unblocked prematurely
+   - Solution: Not an issue for merge (only runs on completed); but consider for future cross-phase merges
 
-5. **Dispersion Across Files**
-   - dispatcher.ts has a hard-coded maxTurns value (50) separate from roles.ts
-   - Consider whether plan steps should use same budget as phases or different
+5. **Merge Strategy Clarity**
+   - `-X theirs` means "in conflicts, take their version" (the branch being merged in)
+   - Terminology may be confusing: "their" = the agent's work, "ours" = main branch
+   - Solution: Add clarifying comment in code + help text: "Use agent's version of conflicting files"
+
+6. **Status Transition Completeness**
+   - Current code tracks transitions: completed → merged | conflict | test-failed | failed
+   - But doesn't track: conflict → merged (via resolveConflict)
+   - Solution: Add test to verify this transition
+
+## Key Implementation Points
+
+1. **Merge command needs to support two modes**:
+   - Normal mode: `foreman merge` → calls `mergeCompleted()`
+   - Resolve mode: `foreman merge --resolve <id> --strategy <strat>` → calls `resolveConflict()`
+   - These are mutually exclusive
+
+2. **Strategy validation**:
+   - Allow only "theirs" and "abort" for now
+   - Consider future strategies: "ours" (take main), "manual" (prompt user), "squash"
+
+3. **Result reporting**:
+   - For resolve mode, report single result (success/failure) not array
+   - Show new run status after resolution
+   - Show branch name for clarity
+
+4. **Worktree management**:
+   - `removeWorktree()` should only be called on success
+   - On `resolveConflict()` success, worktree should be removed (like normal merge)
+   - Already implemented in refinery line 284-290
+
+5. **Database updates**:
+   - `updateRun()` with new status
+   - `logEvent()` with resolution details
+   - Both already done in refinery.ts
 
 ## Next Steps for Developer
 
-1. Research typical costs per phase from production data (if available)
-2. Update roles.ts with maxBudgetUsd values (start conservative)
-3. Update agent-worker.ts runPhase() logging and query options
-4. Update dispatcher.ts dispatchPlanStep() budget
-5. Run tests to verify no regressions
-6. Monitor first few runs with new budgets to validate appropriateness
+1. **Add CLI options** to merge command (--resolve, --strategy)
+2. **Wire resolveConflict()** call from merge command
+3. **Add validation** for option combinations
+4. **Add basic tests** for CLI option handling
+5. **Add integration tests** for resolveConflict() end-to-end
+6. **Verify test running behavior** (should tests run after "theirs" merge?)
+7. **Add documentation** for merge --resolve usage in CLI help text
+8. **Consider telemetry** — log conflict resolutions for observability

@@ -1,11 +1,11 @@
 # Agent Task
 
 ## Task Details
-**Seed ID:** foreman-8842
-**Title:** Add pre-commit bug scanning to finalize phase
+**Seed ID:** foreman-ef3d
+**Title:** 4-tier merge conflict resolution
 **Description:** (no description provided)
 **Model:** claude-sonnet-4-6
-**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-8842
+**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-ef3d
 
 ## Agent Team
 This task is handled by an Engineering Lead agent that orchestrates a team:
