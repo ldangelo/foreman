@@ -11,6 +11,8 @@ export const mergeCommand = new Command("merge")
   .option("--target-branch <branch>", "Branch to merge into", "main")
   .option("--no-tests", "Skip running tests after merge")
   .option("--test-command <cmd>", "Test command to run", "npm test")
+  .option("--seed <id>", "Merge a single seed by ID")
+  .option("--list", "List seeds ready to merge (no merge performed)")
   .action(async (opts) => {
     try {
       const projectPath = await getRepoRoot(process.cwd());
@@ -18,19 +20,54 @@ export const mergeCommand = new Command("merge")
       const store = new ForemanStore();
       const refinery = new Refinery(store, seeds, projectPath);
 
-      console.log(chalk.bold("Running refinery on completed work...\n"));
-
       const project = store.getProjectByPath(projectPath);
       if (!project) {
         console.error(chalk.red("No project registered. Run 'foreman init' first."));
         process.exit(1);
       }
 
+      // --list: show completed runs and exit
+      if (opts.list) {
+        const completedRuns = await refinery.orderByDependencies(
+          refinery.getCompletedRuns(project.id),
+        );
+
+        if (completedRuns.length === 0) {
+          console.log(chalk.yellow("No completed seeds ready to merge."));
+          store.close();
+          return;
+        }
+
+        console.log(chalk.bold(`Seeds ready to merge (${completedRuns.length}):\n`));
+        console.log(chalk.dim("  (listed in dependency order — dependencies first)\n"));
+
+        for (let i = 0; i < completedRuns.length; i++) {
+          const run = completedRuns[i];
+          const branch = `foreman/${run.seed_id}`;
+          const elapsed = run.completed_at
+            ? Math.round((Date.now() - new Date(run.completed_at).getTime()) / 60000)
+            : 0;
+          const num = `${i + 1}`.padStart(2);
+          console.log(
+            `  ${chalk.dim(num + ".")} ${chalk.cyan(run.seed_id)} ${chalk.dim(branch)} ${chalk.dim(`(${elapsed}m ago)`)}`,
+          );
+        }
+
+        console.log(chalk.dim("\nMerge all:    foreman merge"));
+        console.log(chalk.dim("Merge one:    foreman merge --seed <id>"));
+
+        store.close();
+        return;
+      }
+
+      console.log(chalk.bold("Running refinery on completed work...\n"));
+
       const report = await refinery.mergeCompleted({
         targetBranch: opts.targetBranch,
         runTests: opts.tests, // commander inverts --no-tests to opts.tests = false
         testCommand: opts.testCommand,
         projectId: project.id,
+        seedId: opts.seed,
       });
 
       // Merged
@@ -69,7 +106,12 @@ export const mergeCommand = new Command("merge")
       }
 
       if (report.merged.length === 0 && report.conflicts.length === 0 && report.testFailures.length === 0) {
-        console.log(chalk.yellow("No completed tasks to merge."));
+        if (opts.seed) {
+          console.log(chalk.yellow(`No completed run found for seed ${opts.seed}.`));
+          console.log(chalk.dim("Use 'foreman merge --list' to see seeds ready to merge."));
+        } else {
+          console.log(chalk.yellow("No completed tasks to merge."));
+        }
       }
 
       store.close();

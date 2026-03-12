@@ -50,20 +50,100 @@ export class Refinery {
   ) {}
 
   /**
+   * Get all completed runs that are ready to merge, optionally filtered to a single seed.
+   */
+  getCompletedRuns(projectId?: string, seedId?: string): import("../lib/store.js").Run[] {
+    const completedRuns = this.store.getRunsByStatus("completed", projectId);
+    if (seedId) {
+      return completedRuns.filter((r) => r.seed_id === seedId);
+    }
+    return completedRuns;
+  }
+
+  /**
+   * Order runs by seed dependency graph so that dependencies merge before dependents.
+   * Falls back to insertion order if dependency info is unavailable.
+   */
+  async orderByDependencies(runs: import("../lib/store.js").Run[]): Promise<import("../lib/store.js").Run[]> {
+    if (runs.length <= 1) return runs;
+
+    try {
+      const graph = await this.seeds.getGraph();
+      // Build a map of seed_id → set of dependency seed_ids
+      const depMap = new Map<string, Set<string>>();
+      for (const edge of graph.edges) {
+        if (!depMap.has(edge.from)) depMap.set(edge.from, new Set());
+        depMap.get(edge.from)!.add(edge.to);
+      }
+
+      // Topological sort (Kahn's algorithm)
+      const runMap = new Map(runs.map((r) => [r.seed_id, r]));
+      const seedIds = new Set(runs.map((r) => r.seed_id));
+
+      // Only consider deps within our run set
+      const inDegree = new Map<string, number>();
+      const adj = new Map<string, string[]>();
+      for (const id of seedIds) {
+        inDegree.set(id, 0);
+        adj.set(id, []);
+      }
+      for (const id of seedIds) {
+        const deps = depMap.get(id);
+        if (!deps) continue;
+        for (const dep of deps) {
+          if (seedIds.has(dep)) {
+            adj.get(dep)!.push(id);
+            inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
+          }
+        }
+      }
+
+      const queue: string[] = [];
+      for (const [id, deg] of inDegree) {
+        if (deg === 0) queue.push(id);
+      }
+
+      const sorted: import("../lib/store.js").Run[] = [];
+      while (queue.length > 0) {
+        const id = queue.shift()!;
+        const run = runMap.get(id);
+        if (run) sorted.push(run);
+        for (const next of adj.get(id) ?? []) {
+          const newDeg = (inDegree.get(next) ?? 1) - 1;
+          inDegree.set(next, newDeg);
+          if (newDeg === 0) queue.push(next);
+        }
+      }
+
+      // Append any runs not in the graph (shouldn't happen, but safe)
+      for (const run of runs) {
+        if (!sorted.includes(run)) sorted.push(run);
+      }
+
+      return sorted;
+    } catch {
+      // Graph unavailable — fall back to original order
+      return runs;
+    }
+  }
+
+  /**
    * Find all completed (unmerged) runs and attempt to merge them into the target branch.
-   * Optionally run tests after each merge.
+   * Optionally run tests after each merge. Merges in dependency order.
    */
   async mergeCompleted(opts?: {
     targetBranch?: string;
     runTests?: boolean;
     testCommand?: string;
     projectId?: string;
+    seedId?: string;
   }): Promise<MergeReport> {
     const targetBranch = opts?.targetBranch ?? "main";
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
 
-    const completedRuns = this.store.getRunsByStatus("completed", opts?.projectId);
+    const rawRuns = this.getCompletedRuns(opts?.projectId, opts?.seedId);
+    const completedRuns = await this.orderByDependencies(rawRuns);
 
     const merged: MergedRun[] = [];
     const conflicts: ConflictRun[] = [];
