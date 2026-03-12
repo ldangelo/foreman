@@ -50,16 +50,15 @@ describe("CLI smoke tests", () => {
     tempDirs.length = 0;
   });
 
-  it("--help exits 0 and shows all 7 commands", async () => {
+  it("--help exits 0 and shows all commands including dashboard", async () => {
     const tmp = makeTempDir();
     const result = await run(["--help"], tmp);
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout;
-    for (const cmd of ["init", "plan", "decompose", "run", "status", "merge", "monitor"]) {
+    for (const cmd of ["init", "plan", "decompose", "run", "status", "merge", "monitor", "dashboard"]) {
       expect(output).toContain(cmd);
     }
-    expect(output).not.toContain("dashboard");
   }, 10_000);
 
   it("--version prints version number", async () => {

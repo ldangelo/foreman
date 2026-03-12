@@ -1,51 +1,52 @@
-# QA Report: Tool enforcement guards for agent roles
+# QA Report: Agent observability: dashboard command with live TUI
 
 ## Verdict: PASS
 
 ## Test Results
-- Test suite: 246 passed, 9 failed
-- New tests added: 16 (in `src/orchestrator/__tests__/roles.test.ts`)
-- All 9 failures are pre-existing environment issues unrelated to this change (verified by stashing changes and confirming same 9 failures, 230 passed before vs 246 passed after — exactly 16 new tests added, all pass)
+- Test suite: 262 passed, 9 failed (9 failures are pre-existing, not introduced by this change)
+- New tests added: 32 (src/cli/__tests__/dashboard.test.ts)
+- Dashboard-specific tests: 32/32 passed
 
-### Pre-existing Failures (Not Caused by This Change)
+## Pre-existing Failures (Not caused by this change)
+Confirmed by running tests on HEAD~1 before the implementation — same 9 failures in same 4 files:
 
-| Test File | Failing Tests | Root Cause |
-|---|---|---|
-| `src/cli/__tests__/commands.test.ts` | 4 tests | CLI binary not built (`ENOENT`) |
-| `src/orchestrator/__tests__/detached-spawn.test.ts` | 2 tests + 2 uncaught errors | `tsx` binary missing in worktree `node_modules` |
-| `src/orchestrator/__tests__/worker-spawn.test.ts` | 1 test | `tsx` binary missing in worktree `node_modules` |
+1. **src/orchestrator/__tests__/agent-worker.test.ts** (2 tests) — tsx binary not found in worktree node_modules
+2. **src/orchestrator/__tests__/detached-spawn.test.ts** (2 tests) — tsx binary not found, detached process spawn fails
+3. **src/orchestrator/__tests__/worker-spawn.test.ts** (1 test) — tsx binary not found in node_modules
+4. **src/cli/__tests__/commands.test.ts** (4 tests) — CLI smoke tests fail due to tsx binary not found in worktree node_modules (ENOENT)
+
+These are environment issues with the worktree (tsx binary missing from `node_modules/.bin/tsx`) and are unrelated to the dashboard implementation.
 
 ## Implementation Review
 
-### roles.ts Changes
-- `RoleConfig` interface extended with `allowedTools: string[]` — clean addition alongside `maxBudgetUsd`
-- `ALL_AGENT_TOOLS` constant lists all 15 known SDK tools (no duplicates — verified by test)
-- `getDisallowedTools(roleConfig)` function correctly computes set complement: `ALL_AGENT_TOOLS \ allowedTools`
-- Role-specific `allowedTools` assignments correctly enforce intent:
-  - **explorer**: `[Read, Glob, Grep]` — read-only
-  - **developer**: `[Read, Write, Edit, Bash, Glob, Grep, Agent, TodoWrite, WebFetch, WebSearch]` — full access
-  - **qa**: `[Read, Write, Edit, Bash, Glob, Grep, TodoWrite]` — no Agent spawning
-  - **reviewer**: `[Read, Glob, Grep]` — read-only (identical to explorer)
+### Files Changed
+- **src/cli/commands/dashboard.ts** (new) — full dashboard implementation with:
+  - `DashboardState` interface
+  - `renderEventLine()` — formats event timeline entries
+  - `renderProjectHeader()` — formats per-project header with metrics
+  - `renderDashboard()` — full multi-project dashboard renderer
+  - `pollDashboard()` — data collection from ForemanStore
+  - `dashboardCommand` — Commander command with `--interval`, `--project`, `--no-watch`, `--events` options
+- **src/cli/index.ts** — registers `dashboardCommand`
+- **src/cli/__tests__/commands.test.ts** — updated to include "dashboard" in expected commands list
 
-### agent-worker.ts Changes
-- `getDisallowedTools` imported and called at phase start in `runPhase()`
-- `disallowedTools` passed to SDK `query()` options as `disallowedTools: disallowedTools.length > 0 ? disallowedTools : undefined`
-- Log entries updated to include `allowed=[...]` and `disallowed=[...]` for observability
-- Passing `undefined` when disallowed list is empty is correct (avoids sending empty array to SDK)
+### Test Coverage
+All exported display and polling functions are tested:
+- `renderEventLine`: 6 tests covering dispatch, complete, fail events, null details, elapsed time, non-JSON details
+- `renderProjectHeader`: 6 tests covering project name, cost, tokens, agent count (singular/plural), zero-cost case
+- `renderDashboard`: 11 tests covering header, hint text, project display, active/completed agents, events, empty states, multi-project cost aggregation
+- `pollDashboard`: 9 tests covering project listing, empty state, active runs, progress collection, metrics, events, projectId filter, nonexistent project, lastUpdated timestamp
 
-### TypeScript Compilation
-- `npx tsc --noEmit` passes with zero errors
-
-### Edge Cases Verified by Tests
-- `getDisallowedTools` returns complement of `allowedTools` relative to `ALL_AGENT_TOOLS`
-- Union of `allowedTools` and `getDisallowedTools` equals `ALL_AGENT_TOOLS` for every role
-- Explorer and reviewer have identical read-only toolsets
-- QA has `Agent` disallowed but `Bash` allowed
-- All disallowed tools for every role are valid members of `ALL_AGENT_TOOLS` (no phantom tools)
-
-## Issues Found
-
-None. The implementation is correct, TypeScript compiles cleanly, and all new tests pass.
+### Correctness Checks
+- Empty state handling: dashboard shows "No projects registered" message when no projects exist
+- Single-agent pluralization: "1 active agent" vs "N active agents" handled correctly
+- Multi-project cost aggregation: footer sums costs across all projects correctly
+- projectId filter uses `store.getProject()` (not `listProjects`) when specified
+- SIGINT handler restores cursor (`\x1b[?25h`) before exiting
+- Single-shot mode (`--no-watch`) supported alongside live polling mode
 
 ## Files Modified
-- `src/orchestrator/__tests__/roles.test.ts` — 16 new tests added (no existing tests modified)
+- `/Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-cc6f/src/cli/__tests__/dashboard.test.ts` (new, 416 lines)
+- `/Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-cc6f/src/cli/commands/dashboard.ts` (new, 305 lines)
+- `/Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-cc6f/src/cli/index.ts` (modified)
+- `/Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-cc6f/src/cli/__tests__/commands.test.ts` (modified)
