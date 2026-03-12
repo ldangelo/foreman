@@ -61,63 +61,32 @@ export class Refinery {
   ) {}
 
   /**
-   * Archive report files from a branch into .foreman/reports/<name>-<seedId>.md.
-   * Checks out the branch, moves reports, commits, then returns to the target branch.
-   * This prevents report files from conflicting across branches during merge.
+   * Archive report files after a successful merge.
+   * Moves report files from the working tree into .foreman/reports/<name>-<seedId>.md
+   * and creates a follow-up commit. Called after mergeWorktree() succeeds so we
+   * don't need to checkout branches or deal with dirty working trees.
    */
-  private async archiveReports(branchName: string, seedId: string, targetBranch: string): Promise<void> {
+  private async archiveReportsPostMerge(seedId: string): Promise<void> {
     const reportsDir = join(this.projectPath, ".foreman", "reports");
     mkdirSync(reportsDir, { recursive: true });
-
-    // Check out the feature branch to move reports there
-    await git(["checkout", branchName], this.projectPath);
 
     let moved = false;
     for (const report of REPORT_FILES) {
       const src = join(this.projectPath, report);
       if (existsSync(src)) {
-        // e.g. QA_REPORT.md → .foreman/reports/QA_REPORT-foreman-071f.md
         const baseName = report.replace(".md", "");
         const dest = join(reportsDir, `${baseName}-${seedId}.md`);
         renameSync(src, dest);
         await git(["add", dest], this.projectPath);
-        await git(["rm", "--cached", report], this.projectPath).catch(() => {
-          // File may not be tracked
-        });
+        await git(["rm", "--cached", report], this.projectPath).catch(() => {});
         moved = true;
       }
-    }
-
-    // Also archive any timestamped rotated reports (e.g. REVIEW.2026-03-12T14-52-18-505Z.md)
-    try {
-      const lsFiles = await git(["ls-files", "--others", "--cached", "-z"], this.projectPath);
-      const rotated = lsFiles.split("\0").filter((f) =>
-        REPORT_FILES.some((r) => {
-          const base = r.replace(".md", "");
-          return f.startsWith(base + ".") && f.endsWith(".md") && f !== r;
-        }),
-      );
-      for (const f of rotated) {
-        const src = join(this.projectPath, f);
-        if (existsSync(src)) {
-          const dest = join(reportsDir, `${f.replace(".md", "")}-${seedId}.md`);
-          renameSync(src, dest);
-          await git(["add", dest], this.projectPath);
-          await git(["rm", "--cached", f], this.projectPath).catch(() => {});
-          moved = true;
-        }
-      }
-    } catch {
-      // Non-critical
     }
 
     if (moved) {
       await git(["add", "-A", ".foreman/reports/"], this.projectPath);
       await git(["commit", "-m", `Archive reports for ${seedId}`], this.projectPath);
     }
-
-    // Return to target branch for the actual merge
-    await git(["checkout", targetBranch], this.projectPath);
   }
 
   /**
@@ -224,8 +193,8 @@ export class Refinery {
       const branchName = `foreman/${run.seed_id}`;
 
       try {
-        // Archive report files from the branch before merging
-        await this.archiveReports(branchName, run.seed_id, targetBranch);
+        // Save pre-merge HEAD so we can revert both merge + archive if tests fail
+        const preMergeHead = await git(["rev-parse", "HEAD"], this.projectPath);
 
         const result = await mergeWorktree(this.projectPath, branchName, targetBranch);
 
@@ -253,13 +222,16 @@ export class Refinery {
           continue;
         }
 
-        // Merge succeeded — optionally run tests
+        // Merge succeeded — archive report files so they don't conflict with next merge
+        await this.archiveReportsPostMerge(run.seed_id);
+
+        // Optionally run tests
         if (runTests) {
           const testResult = await runTestCommand(testCommand, this.projectPath);
 
           if (!testResult.ok) {
-            // Revert the merge
-            await git(["reset", "--hard", "HEAD~1"], this.projectPath);
+            // Revert the merge + archive commits
+            await git(["reset", "--hard", preMergeHead], this.projectPath);
 
             this.store.updateRun(run.id, { status: "test-failed" });
             this.store.logEvent(
