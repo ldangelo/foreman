@@ -214,23 +214,23 @@ async function checkOrphanedWorktrees(
   }
 
   for (const wt of foremanWorktrees) {
-    // Extract bead ID from branch name: foreman/<beadId>
-    const beadId = wt.branch.replace("foreman/", "");
+    // Extract seed ID from branch name: foreman/<seedId>
+    const seedId = wt.branch.replace("foreman/", "");
 
     // Check run status for this worktree
-    const runs = store.getRunsForBead(beadId);
-    const activeRun = runs.find((r) =>
+    const runs = store.getRunsForSeed(seedId);
+    const activeRun = runs.find((r: any) =>
       ["pending", "running"].includes(r.status) && r.worktree_path === wt.path,
     );
-    const completedRun = runs.find((r) => r.status === "completed");
-    const mergedRun = runs.find((r) => r.status === "merged");
+    const completedRun = runs.find((r: any) => r.status === "completed");
+    const mergedRun = runs.find((r: any) => r.status === "merged");
 
     if (activeRun) {
       // Worktree has an active run — healthy
       results.push({
-        name: `worktree: ${beadId}`,
+        name: `worktree: ${seedId}`,
         status: "pass",
-        message: `Active run (${activeRun.status}) for bead ${beadId}`,
+        message: `Active run (${activeRun.status}) for seed ${seedId}`,
       });
     } else if (mergedRun) {
       // Already merged — safe to clean up
@@ -239,7 +239,7 @@ async function checkOrphanedWorktrees(
           await removeWorktree(projectPath, wt.path);
           try { await execFileAsync("git", ["worktree", "prune"], { cwd: projectPath }); } catch { /* */ }
           results.push({
-            name: `worktree: ${beadId}`,
+            name: `worktree: ${seedId}`,
             status: "fixed",
             message: `Already merged — stale worktree`,
             fixApplied: `Removed worktree at ${wt.path}`,
@@ -247,14 +247,14 @@ async function checkOrphanedWorktrees(
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           results.push({
-            name: `worktree: ${beadId}`,
+            name: `worktree: ${seedId}`,
             status: "warn",
             message: `Already merged but could not auto-remove: ${msg}`,
           });
         }
       } else {
         results.push({
-          name: `worktree: ${beadId}`,
+          name: `worktree: ${seedId}`,
           status: "warn",
           message: `Already merged — stale worktree. Use --fix to remove.`,
         });
@@ -262,9 +262,9 @@ async function checkOrphanedWorktrees(
     } else if (completedRun) {
       // Completed but not merged — needs merge, do NOT delete
       results.push({
-        name: `worktree: ${beadId}`,
+        name: `worktree: ${seedId}`,
         status: "warn",
-        message: `Needs merge. Run: foreman merge --bead ${beadId}`,
+        message: `Needs merge. Run: foreman merge --seed ${seedId}`,
       });
     } else {
       // No active, completed, or merged run — truly orphaned
@@ -273,7 +273,7 @@ async function checkOrphanedWorktrees(
           await removeWorktree(projectPath, wt.path);
           try { await execFileAsync("git", ["worktree", "prune"], { cwd: projectPath }); } catch { /* */ }
           results.push({
-            name: `worktree: ${beadId}`,
+            name: `worktree: ${seedId}`,
             status: "fixed",
             message: `Orphaned worktree (no runs)`,
             fixApplied: `Removed worktree at ${wt.path}`,
@@ -281,14 +281,14 @@ async function checkOrphanedWorktrees(
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           results.push({
-            name: `worktree: ${beadId}`,
+            name: `worktree: ${seedId}`,
             status: "warn",
             message: `Orphaned worktree — could not auto-remove: ${msg}`,
           });
         }
       } else {
         results.push({
-          name: `worktree: ${beadId}`,
+          name: `worktree: ${seedId}`,
           status: "warn",
           message: `Orphaned worktree at ${wt.path} (no runs). Use --fix to remove.`,
         });
@@ -326,7 +326,7 @@ async function checkZombieRuns(
 
     if (isAlive) {
       results.push({
-        name: `run: ${run.bead_id} [${run.agent_type}]`,
+        name: `run: ${run.seed_id} [${run.agent_type}]`,
         status: "pass",
         message: `Process pid ${pid} is alive`,
       });
@@ -337,14 +337,14 @@ async function checkZombieRuns(
           completed_at: new Date().toISOString(),
         });
         results.push({
-          name: `run: ${run.bead_id} [${run.agent_type}]`,
+          name: `run: ${run.seed_id} [${run.agent_type}]`,
           status: "fixed",
           message: `Zombie run (status=running, no live process${pid ? ` for pid ${pid}` : ""})`,
           fixApplied: "Marked as failed",
         });
       } else {
         results.push({
-          name: `run: ${run.bead_id} [${run.agent_type}]`,
+          name: `run: ${run.seed_id} [${run.agent_type}]`,
           status: "warn",
           message: `Zombie run: status=running but no live process${pid ? ` (pid ${pid})` : ""}. Use --fix to mark failed.`,
         });
@@ -422,7 +422,7 @@ async function checkFailedStuckRuns(
     results.push({
       name: `failed runs`,
       status: "warn",
-      message: `${failedRuns.length} failed run(s): ${failedRuns.slice(0, 5).map((r) => r.bead_id).join(", ")}${failedRuns.length > 5 ? "..." : ""}. Use 'foreman reset' to retry.`,
+      message: `${failedRuns.length} failed run(s): ${failedRuns.slice(0, 5).map((r) => r.seed_id).join(", ")}${failedRuns.length > 5 ? "..." : ""}. Use 'foreman reset' to retry.`,
     });
   }
 
@@ -431,7 +431,7 @@ async function checkFailedStuckRuns(
     results.push({
       name: `stuck runs`,
       status: "warn",
-      message: `${stuckRuns.length} stuck run(s): ${stuckRuns.slice(0, 5).map((r) => r.bead_id).join(", ")}${stuckRuns.length > 5 ? "..." : ""}. Use 'foreman reset' to retry or 'foreman run --resume' to continue.`,
+      message: `${stuckRuns.length} stuck run(s): ${stuckRuns.slice(0, 5).map((r) => r.seed_id).join(", ")}${stuckRuns.length > 5 ? "..." : ""}. Use 'foreman reset' to retry or 'foreman run --resume' to continue.`,
     });
   }
 

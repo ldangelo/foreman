@@ -64,9 +64,9 @@ export function renderAgentCard(run: Run, progress: RunProgress | null): string 
 
   const lines: string[] = [];
 
-  // Header: icon + bead ID + status + elapsed time
+  // Header: icon + seed ID + status + elapsed time
   lines.push(
-    `${statusColor(run.status, icon)} ${chalk.cyan.bold(run.bead_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}`,
+    `${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}`,
   );
   lines.push(`  ${chalk.dim("Model     ")} ${chalk.magenta(shortModel(run.agent_type))}`);
 

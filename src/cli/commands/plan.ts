@@ -3,7 +3,7 @@ import chalk from "chalk";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { BeadsClient } from "../../lib/beads.js";
+import { SeedsClient } from "../../lib/seeds.js";
 import { ForemanStore } from "../../lib/store.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { PlanStepDefinition } from "../../orchestrator/types.js";
@@ -61,8 +61,8 @@ export const planCommand = new Command("plan")
 
       // Initialize clients
       const store = new ForemanStore();
-      const beads = new BeadsClient(projectPath);
-      const dispatcher = new Dispatcher(beads, store, projectPath);
+      const seeds = new SeedsClient(projectPath);
+      const dispatcher = new Dispatcher(seeds, store, projectPath);
 
       try {
         // Ensure project is registered
@@ -126,63 +126,63 @@ export const planCommand = new Command("plan")
           return;
         }
 
-        // Create epic bead
+        // Create epic seed
         const epicTitle = `Plan: ${productDescription.slice(0, 80)}${productDescription.length > 80 ? "..." : ""}`;
-        const epic = await beads.create(epicTitle, {
+        const epic = await seeds.create(epicTitle, {
           type: "epic",
           priority: "P1",
           description: `Planning pipeline for: ${productDescription.slice(0, 200)}`,
         });
         console.log(
-          chalk.dim(`\nEpic bead: ${epic.id} — ${epicTitle}`),
+          chalk.dim(`\nEpic seed: ${epic.id} — ${epicTitle}`),
         );
 
-        // Create child beads with sequential dependencies
-        const beadIds: string[] = [];
+        // Create child seeds with sequential dependencies
+        const seedIds: string[] = [];
         for (let i = 0; i < steps.length; i++) {
           const step = steps[i];
-          const child = await beads.create(step.name, {
+          const child = await seeds.create(step.name, {
             type: "task",
             priority: "P1",
             parent: epic.id,
             description: `${step.command} ${step.input}`,
           });
 
-          // Add dependency on the previous bead (sequential chain)
+          // Add dependency on the previous seed (sequential chain)
           if (i > 0) {
-            await beads.addDependency(child.id, beadIds[i - 1]);
+            await seeds.addDependency(child.id, seedIds[i - 1]);
           }
 
-          beadIds.push(child.id);
+          seedIds.push(child.id);
           console.log(
             chalk.dim(
-              `  Bead ${child.id}: ${step.name}${i > 0 ? ` (depends on ${beadIds[i - 1]})` : " (ready)"}`,
+              `  Seed ${child.id}: ${step.name}${i > 0 ? ` (depends on ${seedIds[i - 1]})` : " (ready)"}`,
             ),
           );
         }
 
         // Sequential dispatch loop
         console.log(chalk.bold("\n Starting pipeline...\n"));
-        const beadIdSet = new Set(beadIds);
+        const seedIdSet = new Set(seedIds);
         let completedCount = 0;
 
-        while (completedCount < beadIds.length) {
-          // Find ready beads that belong to our epic
-          const readyBeads = await beads.ready();
-          const epicReady = readyBeads.filter((b) => beadIdSet.has(b.id));
+        while (completedCount < seedIds.length) {
+          // Find ready seeds that belong to our epic
+          const readySeeds = await seeds.ready();
+          const epicReady = readySeeds.filter((b) => seedIdSet.has(b.id));
 
           if (epicReady.length === 0) {
-            // No ready beads yet — poll until one becomes ready
+            // No ready seeds yet — poll until one becomes ready
             await sleep(10_000);
             continue;
           }
 
-          for (const readyBead of epicReady) {
-            const stepIndex = beadIds.indexOf(readyBead.id);
+          for (const readySeed of epicReady) {
+            const stepIndex = seedIds.indexOf(readySeed.id);
             const step = steps[stepIndex];
             console.log(
               chalk.bold(
-                `\n[${completedCount + 1}/${beadIds.length}] ${step.name}...`,
+                `\n[${completedCount + 1}/${seedIds.length}] ${step.name}...`,
               ),
             );
 
@@ -190,18 +190,18 @@ export const planCommand = new Command("plan")
               const result = await dispatcher.dispatchPlanStep(
                 project.id,
                 {
-                  id: readyBead.id,
-                  title: readyBead.title,
-                  type: readyBead.type,
-                  priority: readyBead.priority,
+                  id: readySeed.id,
+                  title: readySeed.title,
+                  type: readySeed.type,
+                  priority: readySeed.priority,
                 },
                 step.command,
                 step.input,
                 outputDir,
               );
 
-              // Close the bead on success
-              await beads.close(readyBead.id, "Completed");
+              // Close the seed on success
+              await seeds.close(readySeed.id, "Completed");
               console.log(
                 chalk.green(
                   `  ${step.name} complete (run: ${result.runId})`,
@@ -225,7 +225,7 @@ export const planCommand = new Command("plan")
         }
 
         // All done — close the epic
-        await beads.close(epic.id, "All planning steps completed");
+        await seeds.close(epic.id, "All planning steps completed");
         console.log(chalk.bold.green("\n Planning pipeline complete!"));
         console.log(chalk.dim(`\nOutputs in: ${outputDir}`));
         console.log(chalk.dim(`Epic: ${epic.id}`));

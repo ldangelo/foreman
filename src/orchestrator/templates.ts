@@ -1,4 +1,4 @@
-import type { BeadInfo, ModelSelection } from "./types.js";
+import type { SeedInfo, ModelSelection } from "./types.js";
 
 /**
  * Generate the TASK.md content placed in each worker worktree.
@@ -10,17 +10,17 @@ import type { BeadInfo, ModelSelection } from "./types.js";
  * when worktree branches are merged back to main.
  */
 export function workerAgentMd(
-  bead: BeadInfo,
+  seed: SeedInfo,
   worktreePath: string,
   model: ModelSelection,
 ): string {
-  const description = bead.description ?? "(no description provided)";
+  const description = seed.description ?? "(no description provided)";
 
   return `# Agent Task
 
 ## Task Details
-**Bead ID:** ${bead.id}
-**Title:** ${bead.title}
+**Seed ID:** ${seed.id}
+**Title:** ${seed.title}
 **Description:** ${description}
 **Model:** ${model}
 **Worktree:** ${worktreePath}

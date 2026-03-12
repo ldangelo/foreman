@@ -8,15 +8,15 @@
  */
 
 export interface LeadPromptOptions {
-  beadId: string;
-  beadTitle: string;
-  beadDescription: string;
+  seedId: string;
+  seedTitle: string;
+  seedDescription: string;
   skipExplore?: boolean;
   skipReview?: boolean;
 }
 
 export function leadPrompt(opts: LeadPromptOptions): string {
-  const { beadId, beadTitle, beadDescription, skipExplore, skipReview } = opts;
+  const { seedId, seedTitle, seedDescription, skipExplore, skipReview } = opts;
 
   const explorerSection = skipExplore
     ? `### Explorer — SKIPPED (--skip-explore)`
@@ -26,8 +26,8 @@ Spawn a sub-agent with the Agent tool to explore the codebase. Give it this prom
 \`\`\`
 You are an Explorer agent. Your job is to understand the codebase before implementation.
 
-Task: ${beadId} — ${beadTitle}
-Description: ${beadDescription}
+Task: ${seedId} — ${seedTitle}
+Description: ${seedDescription}
 
 Instructions:
 1. Read TASK.md for task context
@@ -61,8 +61,8 @@ Spawn a sub-agent to perform an independent code review. Give it this prompt:
 \`\`\`
 You are a Code Reviewer. Your job is independent quality review.
 
-Task: ${beadId} — ${beadTitle}
-Original requirement: ${beadDescription}
+Task: ${seedId} — ${seedTitle}
+Original requirement: ${seedDescription}
 
 Instructions:
 1. Read TASK.md for the original task description
@@ -78,7 +78,7 @@ Instructions:
 6. Write findings to REVIEW.md
 
 REVIEW.md format:
-# Code Review: ${beadTitle}
+# Code Review: ${seedTitle}
 ## Verdict: PASS | FAIL
 ## Summary
 ## Issues
@@ -101,9 +101,9 @@ After the Reviewer finishes, read REVIEW.md.
 You are the **Engineering Lead** orchestrating a team of specialized agents to implement a task.
 
 ## Task
-**Bead:** ${beadId}
-**Title:** ${beadTitle}
-**Description:** ${beadDescription}
+**Seed:** ${seedId}
+**Title:** ${seedTitle}
+**Description:** ${seedDescription}
 
 ## Your Team
 You have 4 specialized sub-agents you can spawn using the **Agent tool**:
@@ -122,8 +122,8 @@ Spawn a sub-agent to implement the task. Give it this prompt:
 \`\`\`
 You are a Developer agent. Your job is to implement the task.
 
-Task: ${beadId} — ${beadTitle}
-Description: ${beadDescription}
+Task: ${seedId} — ${seedTitle}
+Description: ${seedDescription}
 
 Instructions:
 1. Read TASK.md for task context
@@ -136,7 +136,7 @@ Rules:
 - Stay focused on THIS task only — do not refactor unrelated code
 - Follow existing codebase patterns and conventions
 - Write tests for new functionality
-- DO NOT commit, push, or close the bead — the lead handles that
+- DO NOT commit, push, or close the seed — the lead handles that
 - DO NOT run the full test suite — the QA agent handles that
 - After implementation, write DEVELOPER_REPORT.md summarizing: approach, files changed, tests added, decisions, and known limitations
 \`\`\`
@@ -149,7 +149,7 @@ Spawn a sub-agent to verify the implementation. Give it this prompt:
 \`\`\`
 You are a QA agent. Your job is to verify the implementation works correctly.
 
-Task: ${beadId} — ${beadTitle}
+Task: ${seedId} — ${seedTitle}
 
 Instructions:
 1. Read TASK.md and EXPLORER_REPORT.md (if exists) for context
@@ -160,7 +160,7 @@ Instructions:
 6. Write findings to QA_REPORT.md
 
 QA_REPORT.md format:
-# QA Report: ${beadTitle}
+# QA Report: ${seedTitle}
 ## Verdict: PASS | FAIL
 ## Test Results
 ## Issues Found
@@ -170,7 +170,7 @@ Rules:
 - You may modify test files and fix minor issues in source code
 - Focus on correctness and regressions, not style
 - Be specific about failures — include error messages
-- DO NOT commit, push, or close the bead
+- DO NOT commit, push, or close the seed
 \`\`\`
 
 After QA finishes, read QA_REPORT.md.
@@ -182,9 +182,9 @@ ${reviewerSection}
 ## Finalize
 Once all agents have passed (or you've decided the work is good enough after retries):
 1. \`git add -A\`
-2. \`git commit -m "${beadTitle} (${beadId})"\`
-3. \`git push -u origin foreman/${beadId}\`
-4. \`sd close ${beadId} --reason "Completed via agent team"\`
+2. \`git commit -m "${seedTitle} (${seedId})"\`
+3. \`git push -u origin foreman/${seedId}\`
+4. \`sd close ${seedId} --reason "Completed via agent team"\`
 
 ## Rules for You (the Lead)
 - **You orchestrate — you do not implement.** Use sub-agents for all code work.

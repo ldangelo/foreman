@@ -18,7 +18,7 @@ export interface Project {
 export interface Run {
   id: string;
   project_id: string;
-  bead_id: string;
+  seed_id: string;
   agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
-  bead_id TEXT NOT NULL,
+  seed_id TEXT NOT NULL,
   agent_type TEXT NOT NULL,
   session_key TEXT,
   worktree_path TEXT,
@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS events (
 // Add progress column to runs table if not present (migration)
 const MIGRATIONS = [
   `ALTER TABLE runs ADD COLUMN progress TEXT DEFAULT NULL`,
+  `ALTER TABLE runs RENAME COLUMN bead_id TO seed_id`,
 ];
 
 // ── Store ───────────────────────────────────────────────────────────────
@@ -228,7 +229,7 @@ export class ForemanStore {
 
   createRun(
     projectId: string,
-    beadId: string,
+    seedId: string,
     agentType: Run["agent_type"],
     worktreePath?: string
   ): Run {
@@ -236,7 +237,7 @@ export class ForemanStore {
     const run: Run = {
       id: randomUUID(),
       project_id: projectId,
-      bead_id: beadId,
+      seed_id: seedId,
       agent_type: agentType,
       session_key: null,
       worktree_path: worktreePath ?? null,
@@ -248,8 +249,8 @@ export class ForemanStore {
     };
     this.db
       .prepare(
-        `INSERT INTO runs (id, project_id, bead_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at)
-         VALUES (@id, @project_id, @bead_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at)`
+        `INSERT INTO runs (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at)
+         VALUES (@id, @project_id, @seed_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at)`
       )
       .run(run);
     return run;
@@ -305,17 +306,17 @@ export class ForemanStore {
       .all(status) as Run[];
   }
 
-  getRunsForBead(beadId: string, projectId?: string): Run[] {
+  getRunsForSeed(seedId: string, projectId?: string): Run[] {
     if (projectId) {
       return this.db
         .prepare(
-          "SELECT * FROM runs WHERE project_id = ? AND bead_id = ? ORDER BY created_at DESC, rowid DESC"
+          "SELECT * FROM runs WHERE project_id = ? AND seed_id = ? ORDER BY created_at DESC, rowid DESC"
         )
-        .all(projectId, beadId) as Run[];
+        .all(projectId, seedId) as Run[];
     }
     return this.db
-      .prepare("SELECT * FROM runs WHERE bead_id = ? ORDER BY created_at DESC, rowid DESC")
-      .all(beadId) as Run[];
+      .prepare("SELECT * FROM runs WHERE seed_id = ? ORDER BY created_at DESC, rowid DESC")
+      .all(seedId) as Run[];
   }
 
   getRunEvents(runId: string, eventType?: EventType): Event[] {

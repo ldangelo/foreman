@@ -11,12 +11,13 @@ import { prCommand } from "./commands/pr.js";
 import { monitorCommand } from "./commands/monitor.js";
 import { resetCommand } from "./commands/reset.js";
 import { attachCommand } from "./commands/attach.js";
+import { doctorCommand } from "./commands/doctor.js";
 
 const program = new Command();
 
 program
   .name("foreman")
-  .description("Multi-agent coding orchestrator built on Beads")
+  .description("Multi-agent coding orchestrator built on Seeds")
   .version("0.1.0");
 
 program.addCommand(initCommand);
@@ -29,5 +30,6 @@ program.addCommand(prCommand);
 program.addCommand(monitorCommand);
 program.addCommand(resetCommand);
 program.addCommand(attachCommand);
+program.addCommand(doctorCommand);
 
 program.parse();

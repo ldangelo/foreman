@@ -47,14 +47,14 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
 
 // ── Prompt templates ────────────────────────────────────────────────────
 
-export function explorerPrompt(beadId: string, beadTitle: string, beadDescription: string): string {
+export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string): string {
   return `# Explorer Agent
 
 You are an **Explorer** — your job is to understand the codebase before implementation begins.
 
 ## Task
-**Bead:** ${beadId} — ${beadTitle}
-**Description:** ${beadDescription}
+**Seed:** ${seedId} — ${seedTitle}
+**Description:** ${seedDescription}
 
 ## Instructions
 1. Read TASK.md for task context
@@ -67,7 +67,7 @@ You are an **Explorer** — your job is to understand the codebase before implem
 
 ## EXPLORER_REPORT.md Format
 \`\`\`markdown
-# Explorer Report: ${beadTitle}
+# Explorer Report: ${seedTitle}
 
 ## Relevant Files
 - path/to/file.ts — description of what it does and why it's relevant
@@ -96,9 +96,9 @@ You are an **Explorer** — your job is to understand the codebase before implem
 }
 
 export function developerPrompt(
-  beadId: string,
-  beadTitle: string,
-  beadDescription: string,
+  seedId: string,
+  seedTitle: string,
+  seedDescription: string,
   hasExplorerReport: boolean,
   feedbackContext?: string,
 ): string {
@@ -115,8 +115,8 @@ export function developerPrompt(
 You are a **Developer** — your job is to implement the task.
 ${feedbackSection}
 ## Task
-**Bead:** ${beadId} — ${beadTitle}
-**Description:** ${beadDescription}
+**Seed:** ${seedId} — ${seedTitle}
+**Description:** ${seedDescription}
 
 ## Instructions
 1. Read TASK.md for task context
@@ -129,7 +129,7 @@ ${explorerInstructions}
 - Stay focused on THIS task only — do not refactor unrelated code
 - Follow existing codebase patterns and conventions
 - Write tests for new functionality
-- **DO NOT** commit, push, or close the bead — the pipeline handles that
+- **DO NOT** commit, push, or close the seed — the pipeline handles that
 - **DO NOT** run the full test suite — the QA agent handles that
 - If blocked, write a note to BLOCKED.md explaining why
 
@@ -137,7 +137,7 @@ ${explorerInstructions}
 After implementation, write **DEVELOPER_REPORT.md** summarizing your work:
 
 \`\`\`markdown
-# Developer Report: ${beadTitle}
+# Developer Report: ${seedTitle}
 
 ## Approach
 - Brief description of the implementation strategy
@@ -157,13 +157,13 @@ After implementation, write **DEVELOPER_REPORT.md** summarizing your work:
 `;
 }
 
-export function qaPrompt(beadId: string, beadTitle: string): string {
+export function qaPrompt(seedId: string, seedTitle: string): string {
   return `# QA Agent
 
 You are a **QA Agent** — your job is to verify the implementation works correctly.
 
 ## Task
-Verify the implementation for: **${beadId} — ${beadTitle}**
+Verify the implementation for: **${seedId} — ${seedTitle}**
 
 ## Instructions
 1. Read TASK.md and EXPLORER_REPORT.md (if exists) for context
@@ -175,7 +175,7 @@ Verify the implementation for: **${beadId} — ${beadTitle}**
 
 ## QA_REPORT.md Format
 \`\`\`markdown
-# QA Report: ${beadTitle}
+# QA Report: ${seedTitle}
 
 ## Verdict: PASS | FAIL
 
@@ -194,18 +194,18 @@ Verify the implementation for: **${beadId} — ${beadTitle}**
 - You may modify test files and fix minor issues in source code
 - Focus on correctness and regressions, not style
 - Be specific about failures — include error messages
-- **DO NOT** commit, push, or close the bead
+- **DO NOT** commit, push, or close the seed
 `;
 }
 
-export function reviewerPrompt(beadId: string, beadTitle: string, beadDescription: string): string {
+export function reviewerPrompt(seedId: string, seedTitle: string, seedDescription: string): string {
   return `# Reviewer Agent
 
 You are a **Code Reviewer** — your job is independent quality review.
 
 ## Task
-Review the implementation for: **${beadId} — ${beadTitle}**
-**Original requirement:** ${beadDescription}
+Review the implementation for: **${seedId} — ${seedTitle}**
+**Original requirement:** ${seedDescription}
 
 ## Instructions
 1. Read TASK.md for the original task description
@@ -222,7 +222,7 @@ Review the implementation for: **${beadId} — ${beadTitle}**
 
 ## REVIEW.md Format
 \`\`\`markdown
-# Code Review: ${beadTitle}
+# Code Review: ${seedTitle}
 
 ## Verdict: PASS | FAIL
 

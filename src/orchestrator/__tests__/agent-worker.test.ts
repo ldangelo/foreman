@@ -40,8 +40,8 @@ describe("agent-worker.ts", () => {
     writeFileSync(configPath, JSON.stringify({
       runId: "test-run-001",
       projectId: "test-project",
-      beadId: "test-bead",
-      beadTitle: "Test Bead",
+      seedId: "test-seed",
+      seedTitle: "Test Seed",
       model: "claude-sonnet-4-6",
       worktreePath: tmpDir,
       prompt: "echo hello",
@@ -74,8 +74,8 @@ describe("agent-worker.ts", () => {
     writeFileSync(configPath, JSON.stringify({
       runId: "test-run-log",
       projectId: "test-project",
-      beadId: "test-bead-log",
-      beadTitle: "Test Logging",
+      seedId: "test-seed-log",
+      seedTitle: "Test Logging",
       model: "claude-sonnet-4-6",
       worktreePath: tmpDir,
       prompt: "test",
@@ -103,7 +103,7 @@ describe("agent-worker.ts", () => {
     if (existsSync(logFile)) {
       const content = readFileSync(logFile, "utf-8");
       expect(content).toContain("[foreman-worker]");
-      expect(content).toContain("test-bead-log");
+      expect(content).toContain("test-seed-log");
       expect(content).toContain("Test Logging");
     }
     // If log file doesn't exist, the worker crashed before logging

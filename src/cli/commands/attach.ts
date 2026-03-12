@@ -5,7 +5,7 @@ import { ForemanStore } from "../../lib/store.js";
 
 export const attachCommand = new Command("attach")
   .description("Attach to a running or completed agent's Claude session")
-  .argument("[id]", "Run ID or bead ID to attach to")
+  .argument("[id]", "Run ID or seed ID to attach to")
   .option("--list", "List all attachable sessions")
   .option("--worktree", "Open a shell in the agent's worktree instead of attaching")
   .action(async (id: string | undefined, opts: { list?: boolean; worktree?: boolean }) => {
@@ -18,19 +18,19 @@ export const attachCommand = new Command("attach")
     }
 
     if (!id) {
-      console.error("Usage: foreman attach <run-id|bead-id>");
+      console.error("Usage: foreman attach <run-id|seed-id>");
       console.error("       foreman attach --list");
       store.close();
       process.exit(1);
     }
 
-    // Look up by run ID first, then by bead ID (most recent run)
+    // Look up by run ID first, then by seed ID (most recent run)
     let run = store.getRun(id);
     if (!run) {
-      // Try as bead ID — get the most recent run for this bead
+      // Try as seed ID — get the most recent run for this seed
       const project = store.getProjectByPath(process.cwd());
       if (project) {
-        const runs = store.getRunsForBead(id, project.id);
+        const runs = store.getRunsForSeed(id, project.id);
         if (runs.length > 0) {
           run = runs[0]; // Most recent
         }
@@ -70,7 +70,7 @@ export const attachCommand = new Command("attach")
       process.exit(1);
     }
 
-    console.log(`Attaching to ${run.bead_id} [${run.agent_type}] session=${sessionId}`);
+    console.log(`Attaching to ${run.seed_id} [${run.agent_type}] session=${sessionId}`);
     console.log(`  Status: ${run.status}`);
     if (run.worktree_path) {
       console.log(`  Worktree: ${run.worktree_path}`);
@@ -116,7 +116,7 @@ function listSessions(store: ForemanStore): void {
   console.log(
     "  " +
     "RUN ID".padEnd(14) +
-    "BEAD".padEnd(20) +
+    "SEED".padEnd(20) +
     "STATUS".padEnd(12) +
     "MODEL".padEnd(22) +
     "SESSION",
@@ -130,7 +130,7 @@ function listSessions(store: ForemanStore): void {
     console.log(
       "  " +
       run.id.slice(0, 12).padEnd(14) +
-      run.bead_id.padEnd(20) +
+      run.seed_id.padEnd(20) +
       run.status.padEnd(12) +
       model.padEnd(22) +
       sessionDisplay,

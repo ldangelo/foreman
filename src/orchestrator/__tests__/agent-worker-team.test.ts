@@ -6,7 +6,7 @@ import { leadPrompt, type LeadPromptOptions } from "../lead-prompt.js";
  *
  * The agent-worker team mode (pipeline === true) does:
  *   1. Dynamically imports lead-prompt.js
- *   2. Calls leadPrompt() with bead info and skip options
+ *   2. Calls leadPrompt() with seed info and skip options
  *   3. Replaces config.prompt with the generated lead prompt
  *   4. Falls through to the standard single-agent SDK query loop
  *
@@ -19,9 +19,9 @@ import { leadPrompt, type LeadPromptOptions } from "../lead-prompt.js";
 interface WorkerConfig {
   runId: string;
   projectId: string;
-  beadId: string;
-  beadTitle: string;
-  beadDescription?: string;
+  seedId: string;
+  seedTitle: string;
+  seedDescription?: string;
   model: string;
   worktreePath: string;
   prompt: string;
@@ -36,9 +36,9 @@ function makeConfig(overrides?: Partial<WorkerConfig>): WorkerConfig {
   return {
     runId: "run-team-001",
     projectId: "proj-001",
-    beadId: "bead-42",
-    beadTitle: "Add rate limiting to API",
-    beadDescription: "Implement per-user rate limiting with sliding window",
+    seedId: "seed-42",
+    seedTitle: "Add rate limiting to API",
+    seedDescription: "Implement per-user rate limiting with sliding window",
     model: "claude-sonnet-4-6",
     worktreePath: "/tmp/worktree",
     prompt: "Original user prompt that should be replaced",
@@ -53,7 +53,7 @@ function makeConfig(overrides?: Partial<WorkerConfig>): WorkerConfig {
  *
  *   if (pipeline) {
  *     const { leadPrompt } = await import("./lead-prompt.js");
- *     const teamPrompt = leadPrompt({ beadId, beadTitle, ... });
+ *     const teamPrompt = leadPrompt({ seedId, seedTitle, ... });
  *     config.prompt = teamPrompt;
  *   }
  */
@@ -61,9 +61,9 @@ function simulateTeamModeTransform(config: WorkerConfig): string {
   if (!config.pipeline) return config.prompt;
 
   const teamPrompt = leadPrompt({
-    beadId: config.beadId,
-    beadTitle: config.beadTitle,
-    beadDescription: config.beadDescription ?? "(no description)",
+    seedId: config.seedId,
+    seedTitle: config.seedTitle,
+    seedDescription: config.seedDescription ?? "(no description)",
     skipExplore: config.skipExplore,
     skipReview: config.skipReview,
   });
@@ -95,22 +95,22 @@ describe("agent-worker team mode: prompt transformation", () => {
     expect(config.prompt).toBe("Original user prompt that should be replaced");
   });
 
-  it("includes bead context in the generated prompt", () => {
+  it("includes seed context in the generated prompt", () => {
     const config = makeConfig({
-      beadId: "bead-99",
-      beadTitle: "Implement webhook system",
-      beadDescription: "Create a reliable webhook delivery system with retries",
+      seedId: "seed-99",
+      seedTitle: "Implement webhook system",
+      seedDescription: "Create a reliable webhook delivery system with retries",
     });
 
     const prompt = simulateTeamModeTransform(config);
 
-    expect(prompt).toContain("bead-99");
+    expect(prompt).toContain("seed-99");
     expect(prompt).toContain("Implement webhook system");
     expect(prompt).toContain("Create a reliable webhook delivery system with retries");
   });
 
-  it("uses '(no description)' fallback when beadDescription is missing", () => {
-    const config = makeConfig({ beadDescription: undefined });
+  it("uses '(no description)' fallback when seedDescription is missing", () => {
+    const config = makeConfig({ seedDescription: undefined });
 
     const prompt = simulateTeamModeTransform(config);
 

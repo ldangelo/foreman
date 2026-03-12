@@ -57,20 +57,20 @@ export async function getCurrentBranch(repoPath: string): Promise<string> {
 }
 
 /**
- * Create a worktree for a bead.
+ * Create a worktree for a seed.
  *
- * - Branch: foreman/<beadId>
- * - Location: <repoPath>/.foreman-worktrees/<beadId>
+ * - Branch: foreman/<seedId>
+ * - Location: <repoPath>/.foreman-worktrees/<seedId>
  * - Base: current branch (auto-detected if not specified)
  */
 export async function createWorktree(
   repoPath: string,
-  beadId: string,
+  seedId: string,
   baseBranch?: string,
 ): Promise<{ worktreePath: string; branchName: string }> {
   const base = baseBranch ?? await getCurrentBranch(repoPath);
-  const branchName = `foreman/${beadId}`;
-  const worktreePath = join(repoPath, ".foreman-worktrees", beadId);
+  const branchName = `foreman/${seedId}`;
+  const worktreePath = join(repoPath, ".foreman-worktrees", seedId);
 
   // If worktree already exists (e.g. from a failed previous run), reuse it
   if (existsSync(worktreePath)) {

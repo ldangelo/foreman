@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { BeadsClient } from "../../lib/beads.js";
+import { SeedsClient } from "../../lib/seeds.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
@@ -20,7 +20,7 @@ export const runCommand = new Command("run")
   .option("--no-pipeline", "Skip the explorer/qa/reviewer pipeline — run as single worker agent")
   .option("--skip-explore", "Skip the explorer phase in the pipeline")
   .option("--skip-review", "Skip the reviewer phase in the pipeline")
-  .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
+  .option("--seed <id>", "Dispatch only this specific seed (must be ready)")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -32,13 +32,13 @@ export const runCommand = new Command("run")
     const pipeline = opts.pipeline as boolean;  // --no-pipeline sets to false
     const skipExplore = opts.skipExplore as boolean | undefined;
     const skipReview = opts.skipReview as boolean | undefined;
-    const beadFilter = opts.bead as string | undefined;
+    const seedFilter = opts.seed as string | undefined;
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
-      const beads = new BeadsClient(projectPath);
+      const seeds = new SeedsClient(projectPath);
       const store = new ForemanStore();
-      const dispatcher = new Dispatcher(beads, store, projectPath);
+      const dispatcher = new Dispatcher(seeds, store, projectPath);
 
       // Resume mode: pick up stuck/failed runs from a previous dispatch
       if (resume || resumeFailed) {
@@ -56,7 +56,7 @@ export const runCommand = new Command("run")
         if (result.resumed.length > 0) {
           console.log(chalk.green.bold(`Resumed ${result.resumed.length} agent(s):\n`));
           for (const task of result.resumed) {
-            console.log(`  ${chalk.cyan(task.beadId)} (was ${chalk.yellow(task.previousStatus)})`);
+            console.log(`  ${chalk.cyan(task.seedId)} (was ${chalk.yellow(task.previousStatus)})`);
             console.log(`    Model:    ${chalk.magenta(task.model)}`);
             console.log(`    Session:  ${chalk.dim(task.sessionId)}`);
             console.log(`    Run ID:   ${task.runId}`);
@@ -69,7 +69,7 @@ export const runCommand = new Command("run")
         if (result.skipped.length > 0) {
           console.log(chalk.dim(`Skipped ${result.skipped.length} run(s):`));
           for (const task of result.skipped) {
-            console.log(`  ${chalk.dim(task.beadId)} — ${task.reason}`);
+            console.log(`  ${chalk.dim(task.seedId)} — ${task.reason}`);
           }
           console.log();
         }
@@ -106,14 +106,14 @@ export const runCommand = new Command("run")
           pipeline,
           skipExplore,
           skipReview,
-          beadId: beadFilter,
+          seedId: seedFilter,
         });
 
         // Print dispatched tasks
         if (result.dispatched.length > 0) {
           console.log(chalk.green.bold(`Dispatched ${result.dispatched.length} task(s):\n`));
           for (const task of result.dispatched) {
-            console.log(`  ${chalk.cyan(task.beadId)} ${task.title}`);
+            console.log(`  ${chalk.cyan(task.seedId)} ${task.title}`);
             console.log(`    Model:    ${chalk.magenta(task.model)}`);
             console.log(`    Branch:   ${task.branchName}`);
             console.log(`    Worktree: ${task.worktreePath}`);
@@ -128,7 +128,7 @@ export const runCommand = new Command("run")
         if (result.skipped.length > 0) {
           console.log(chalk.dim(`Skipped ${result.skipped.length} task(s):`));
           for (const task of result.skipped) {
-            console.log(`  ${chalk.dim(task.beadId)} ${chalk.dim(task.title)} — ${task.reason}`);
+            console.log(`  ${chalk.dim(task.seedId)} ${chalk.dim(task.title)} — ${task.reason}`);
           }
           console.log();
         }

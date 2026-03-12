@@ -59,7 +59,7 @@ describe("ROLE_CONFIGS", () => {
 });
 
 describe("prompt templates", () => {
-  it("explorerPrompt includes bead context and read-only instructions", () => {
+  it("explorerPrompt includes seed context and read-only instructions", () => {
     const prompt = explorerPrompt("bd-123", "Fix auth", "JWT token refresh");
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("Fix auth");
@@ -68,7 +68,7 @@ describe("prompt templates", () => {
     expect(prompt).toContain("EXPLORER_REPORT.md");
   });
 
-  it("developerPrompt includes bead context", () => {
+  it("developerPrompt includes seed context", () => {
     const prompt = developerPrompt("bd-123", "Fix auth", "JWT refresh", true);
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("EXPLORER_REPORT.md");
@@ -85,13 +85,13 @@ describe("prompt templates", () => {
     expect(prompt).not.toContain("Previous Feedback");
   });
 
-  it("qaPrompt includes bead reference", () => {
+  it("qaPrompt includes seed reference", () => {
     const prompt = qaPrompt("bd-123", "Fix auth");
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("QA_REPORT.md");
   });
 
-  it("reviewerPrompt includes bead context and read-only rules", () => {
+  it("reviewerPrompt includes seed context and read-only rules", () => {
     const prompt = reviewerPrompt("bd-123", "Fix auth", "JWT refresh");
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("REVIEW.md");

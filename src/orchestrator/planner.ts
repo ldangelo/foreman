@@ -1,11 +1,11 @@
-import type { BeadsClient, Bead } from "../lib/beads.js";
+import type { SeedsClient, Seed } from "../lib/seeds.js";
 import type { DecompositionPlan } from "./types.js";
 
 export interface ExecutionResult {
-  epicBeadId: string;
-  sprintBeadIds: string[];
-  storyBeadIds: string[];
-  taskBeadIds: string[];
+  epicSeedId: string;
+  sprintSeedIds: string[];
+  storySeedIds: string[];
+  taskSeedIds: string[];
 }
 
 /**
@@ -56,42 +56,42 @@ function toSeedsType(type: string): string {
  */
 export async function executePlan(
   plan: DecompositionPlan,
-  beads: BeadsClient,
+  seeds: SeedsClient,
 ): Promise<ExecutionResult> {
-  // 1. Create the epic bead
-  const epicBead: Bead = await beads.create(plan.epic.title, {
+  // 1. Create the epic seed
+  const epicSeed: Seed = await seeds.create(plan.epic.title, {
     type: "epic",
     priority: "P1",
     description: plan.epic.description,
   });
 
-  const sprintBeadIds: string[] = [];
-  const storyBeadIds: string[] = [];
-  const taskBeadIds: string[] = [];
+  const sprintSeedIds: string[] = [];
+  const storySeedIds: string[] = [];
+  const taskSeedIds: string[] = [];
 
-  // Map task title → bead ID for cross-story dependency resolution
+  // Map task title → seed ID for cross-story dependency resolution
   const titleToId = new Map<string, string>();
 
   // 2. Create sprint → story → task hierarchy
   for (const sprint of plan.sprints) {
-    const sprintBead: Bead = await beads.create(sprint.title, {
+    const sprintSeed: Seed = await seeds.create(sprint.title, {
       type: toSeedsType("sprint"),
       priority: "P1",
-      parent: epicBead.id,
+      parent: epicSeed.id,
       description: sprint.goal,
       labels: ["kind:sprint"],
     });
-    sprintBeadIds.push(sprintBead.id);
+    sprintSeedIds.push(sprintSeed.id);
 
     for (const story of sprint.stories) {
-      const storyBead: Bead = await beads.create(story.title, {
+      const storySeed: Seed = await seeds.create(story.title, {
         type: toSeedsType("story"),
         priority: toSeedsPriority(story.priority),
-        parent: sprintBead.id,
+        parent: sprintSeed.id,
         description: story.description,
         labels: ["kind:story"],
       });
-      storyBeadIds.push(storyBead.id);
+      storySeedIds.push(storySeed.id);
 
       for (const task of story.tasks) {
         const labels = [`complexity:${task.estimatedComplexity}`];
@@ -99,15 +99,15 @@ export async function executePlan(
           labels.push(`kind:${task.type}`);
         }
 
-        const taskBead: Bead = await beads.create(task.title, {
+        const taskSeed: Seed = await seeds.create(task.title, {
           type: toSeedsType(task.type),
           priority: toSeedsPriority(task.priority),
-          parent: storyBead.id,
+          parent: storySeed.id,
           description: task.description,
           labels,
         });
-        titleToId.set(task.title, taskBead.id);
-        taskBeadIds.push(taskBead.id);
+        titleToId.set(task.title, taskSeed.id);
+        taskSeedIds.push(taskSeed.id);
       }
     }
   }
@@ -117,7 +117,7 @@ export async function executePlan(
 
   async function safeDep(childId: string, parentId: string, context: string): Promise<void> {
     try {
-      await beads.addDependency(childId, parentId);
+      await seeds.addDependency(childId, parentId);
     } catch (err: any) {
       depErrors.push(`${context}: ${childId} → ${parentId}: ${err.message}`);
     }
@@ -152,5 +152,5 @@ export async function executePlan(
     throw new Error(`${depErrors.length} dependency error(s):\n${summary}`);
   }
 
-  return { epicBeadId: epicBead.id, sprintBeadIds, storyBeadIds, taskBeadIds };
+  return { epicSeedId: epicSeed.id, sprintSeedIds, storySeedIds, taskSeedIds };
 }

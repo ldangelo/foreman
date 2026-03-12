@@ -42,7 +42,7 @@ export interface DecompositionPlan {
   sprints: SprintPlan[];
 }
 
-export interface BeadInfo {
+export interface SeedInfo {
   id: string;
   title: string;
   description?: string;
@@ -50,8 +50,11 @@ export interface BeadInfo {
   type?: string;
 }
 
+/** @deprecated Use SeedInfo instead */
+export type BeadInfo = SeedInfo;
+
 export interface DispatchedTask {
-  beadId: string;
+  seedId: string;
   title: string;
   runtime: RuntimeSelection;
   model: ModelSelection;
@@ -61,7 +64,7 @@ export interface DispatchedTask {
 }
 
 export interface SkippedTask {
-  beadId: string;
+  seedId: string;
   title: string;
   reason: string;
 }
@@ -74,7 +77,7 @@ export interface DispatchResult {
 }
 
 export interface ResumedTask {
-  beadId: string;
+  seedId: string;
   title: string;
   model: ModelSelection;
   runId: string;
@@ -92,7 +95,7 @@ export interface PlanStepDefinition {
 }
 
 export interface PlanStepDispatched {
-  beadId: string;
+  seedId: string;
   title: string;
   runId: string;
   sessionKey: string;
@@ -111,20 +114,20 @@ export interface MonitorReport {
 
 export interface MergedRun {
   runId: string;
-  beadId: string;
+  seedId: string;
   branchName: string;
 }
 
 export interface ConflictRun {
   runId: string;
-  beadId: string;
+  seedId: string;
   branchName: string;
   conflictFiles: string[];
 }
 
 export interface FailedRun {
   runId: string;
-  beadId: string;
+  seedId: string;
   branchName: string;
   error: string;
 }
@@ -137,7 +140,7 @@ export interface MergeReport {
 
 export interface CreatedPr {
   runId: string;
-  beadId: string;
+  seedId: string;
   branchName: string;
   prUrl: string;
 }

@@ -34,9 +34,9 @@ import type { AgentRole } from "./types.js";
 interface WorkerConfig {
   runId: string;
   projectId: string;
-  beadId: string;
-  beadTitle: string;
-  beadDescription?: string;
+  seedId: string;
+  seedTitle: string;
+  seedDescription?: string;
   model: string;
   worktreePath: string;
   prompt: string;
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   const config: WorkerConfig = JSON.parse(readFileSync(configPath, "utf-8"));
   try { unlinkSync(configPath); } catch { /* already deleted */ }
 
-  const { runId, projectId, beadId, beadTitle, model, worktreePath, prompt, resume, pipeline } = config;
+  const { runId, projectId, seedId, seedTitle, model, worktreePath, prompt, resume, pipeline } = config;
 
   // Set up logging
   const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   const mode = pipeline ? "pipeline" : (resume ? "resume" : "worker");
   const header = [
     `[foreman-worker] Agent ${mode.toUpperCase()} at ${new Date().toISOString()}`,
-    `  bead:      ${beadId} — ${beadTitle}`,
+    `  seed:      ${seedId} — ${seedTitle}`,
     `  model:     ${model}`,
     `  run:       ${runId}`,
     `  worktree:  ${worktreePath}`,
@@ -82,7 +82,7 @@ async function main(): Promise<void> {
   ].filter(Boolean).join("\n");
   await appendFile(logFile, header);
 
-  log(`Worker started for ${beadId} [${model}] pid=${process.pid} mode=${mode}`);
+  log(`Worker started for ${seedId} [${model}] pid=${process.pid} mode=${mode}`);
 
   // Open store connection
   const store = new ForemanStore();
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
   if (pipeline) {
     await runPipeline(config, store, logFile);
     store.close();
-    log(`Pipeline worker exiting for ${beadId}`);
+    log(`Pipeline worker exiting for ${seedId}`);
     return;
   }
 
@@ -206,8 +206,8 @@ async function main(): Promise<void> {
         if (result.subtype === "success") {
           store.updateRun(runId, { status: "completed", completed_at: now });
           store.logEvent(projectId, "complete", {
-            beadId,
-            title: beadTitle,
+            seedId,
+            title: seedTitle,
             costUsd: progress.costUsd,
             numTurns: progress.turns,
             toolCalls: progress.toolCalls,
@@ -229,7 +229,7 @@ async function main(): Promise<void> {
             completed_at: now,
           });
           store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
-            beadId,
+            seedId,
             reason,
             costUsd: progress.costUsd,
             numTurns: progress.turns,
@@ -249,7 +249,7 @@ async function main(): Promise<void> {
       const now = new Date().toISOString();
       store.updateRun(runId, { status: "stuck", completed_at: now });
       store.logEvent(projectId, "stuck", {
-        beadId,
+        seedId,
         reason: "SDK generator ended without result (connection drop or silent rate limit)",
         costUsd: progress.costUsd,
         numTurns: progress.turns,
@@ -279,7 +279,7 @@ async function main(): Promise<void> {
       completed_at: now,
     });
     store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
-      beadId,
+      seedId,
       reason,
       costUsd: progress.costUsd,
       numTurns: progress.turns,
@@ -292,7 +292,7 @@ async function main(): Promise<void> {
   }
 
   store.close();
-  log(`Worker exiting for ${beadId}`);
+  log(`Worker exiting for ${seedId}`);
 }
 
 // ── Pipeline orchestration ───────────────────────────────────────────────
@@ -320,7 +320,7 @@ async function runPhase(
   store.updateRunProgress(config.runId, progress);
 
   await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxBudgetUsd=${roleConfig.maxBudgetUsd})\n`);
-  log(`[${role.toUpperCase()}] Starting phase for ${config.beadId}`);
+  log(`[${role.toUpperCase()}] Starting phase for ${config.seedId}`);
 
   const env: Record<string, string | undefined> = { ...config.env };
 
@@ -423,17 +423,17 @@ function rotateReport(worktreePath: string, filename: string): void {
 }
 
 /**
- * Run git finalization: add, commit, push, and close the bead.
+ * Run git finalization: add, commit, push, and close the seed.
  * Uses execFileSync for safety — no shell interpolation.
  */
 async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
-  const { beadId, beadTitle, worktreePath } = config;
+  const { seedId, seedTitle, worktreePath } = config;
   const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: 30_000 };
 
   const report: string[] = [
-    `# Finalize Report: ${beadTitle}`,
+    `# Finalize Report: ${seedTitle}`,
     "",
-    `## Bead: ${beadId}`,
+    `## Seed: ${seedId}`,
     `## Timestamp: ${new Date().toISOString()}`,
     "",
   ];
@@ -442,7 +442,7 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   let commitHash = "(none)";
   try {
     execFileSync("git", ["add", "-A"], opts);
-    execFileSync("git", ["commit", "-m", `${beadTitle} (${beadId})`], opts);
+    execFileSync("git", ["commit", "-m", `${seedTitle} (${seedId})`], opts);
     commitHash = execFileSync("git", ["rev-parse", "--short", "HEAD"], opts).toString().trim();
     log(`[FINALIZE] Committed ${commitHash}`);
     report.push(`## Commit`, `- Status: SUCCESS`, `- Hash: ${commitHash}`, "");
@@ -460,9 +460,9 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
 
   // Push
   try {
-    execFileSync("git", ["push", "-u", "origin", `foreman/${beadId}`], opts);
+    execFileSync("git", ["push", "-u", "origin", `foreman/${seedId}`], opts);
     log(`[FINALIZE] Pushed to origin`);
-    report.push(`## Push`, `- Status: SUCCESS`, `- Branch: foreman/${beadId}`, "");
+    report.push(`## Push`, `- Status: SUCCESS`, `- Branch: foreman/${seedId}`, "");
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`[FINALIZE] Push failed: ${msg.slice(0, 200)}`);
@@ -473,8 +473,8 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   // Close seed
   try {
     const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
-    execFileSync(sdPath, ["close", beadId, "--reason", "Completed via pipeline"], opts);
-    log(`[FINALIZE] Closed seed ${beadId}`);
+    execFileSync(sdPath, ["close", seedId, "--reason", "Completed via pipeline"], opts);
+    log(`[FINALIZE] Closed seed ${seedId}`);
     report.push(`## Seed Close`, `- Status: SUCCESS`, "");
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -499,8 +499,8 @@ const MAX_DEV_RETRIES = 2;
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
 async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string): Promise<void> {
-  const { runId, projectId, beadId, beadTitle, worktreePath } = config;
-  const description = config.beadDescription ?? "(no description)";
+  const { runId, projectId, seedId, seedTitle, worktreePath } = config;
+  const description = config.seedDescription ?? "(no description)";
 
   const progress: RunProgress = {
     toolCalls: 0,
@@ -515,18 +515,18 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     currentPhase: "explorer",
   };
 
-  log(`Pipeline starting for ${beadId} [phases: ${config.skipExplore ? "skip-explore" : "explore"} → dev → qa → ${config.skipReview ? "skip-review" : "review"} → finalize]`);
+  log(`Pipeline starting for ${seedId} [phases: ${config.skipExplore ? "skip-explore" : "explore"} → dev → qa → ${config.skipReview ? "skip-review" : "review"} → finalize]`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n`);
 
   // ── Phase 1: Explorer ──────────────────────────────────────────────
   if (!config.skipExplore) {
     rotateReport(worktreePath, "EXPLORER_REPORT.md");
-    const result = await runPhase("explorer", explorerPrompt(beadId, beadTitle, description), config, progress, logFile, store);
+    const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
     if (!result.success) {
-      await markStuck(store, runId, projectId, beadId, beadTitle, progress, "explorer", result.error ?? "Explorer failed");
+      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed");
       return;
     }
-    store.logEvent(projectId, "complete", { beadId, phase: "explorer", costUsd: result.costUsd }, runId);
+    store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
   }
 
   const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
@@ -541,23 +541,23 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     rotateReport(worktreePath, "DEVELOPER_REPORT.md");
     const devResult = await runPhase(
       "developer",
-      developerPrompt(beadId, beadTitle, description, hasExplorerReport, feedbackContext),
+      developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext),
       config, progress, logFile, store,
     );
     if (!devResult.success) {
-      await markStuck(store, runId, projectId, beadId, beadTitle, progress, "developer", devResult.error ?? "Developer failed");
+      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed");
       return;
     }
-    store.logEvent(projectId, "complete", { beadId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
+    store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
 
     // QA
     rotateReport(worktreePath, "QA_REPORT.md");
-    const qaResult = await runPhase("qa", qaPrompt(beadId, beadTitle), config, progress, logFile, store);
+    const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
     if (!qaResult.success) {
-      await markStuck(store, runId, projectId, beadId, beadTitle, progress, "qa", qaResult.error ?? "QA failed");
+      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed");
       return;
     }
-    store.logEvent(projectId, "complete", { beadId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
+    store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
 
     const qaReport = readReport(worktreePath, "QA_REPORT.md");
     qaVerdict = qaReport ? parseVerdict(qaReport) : "unknown";
@@ -582,12 +582,12 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   // ── Phase 4: Reviewer ──────────────────────────────────────────────
   if (!config.skipReview) {
     rotateReport(worktreePath, "REVIEW.md");
-    const reviewResult = await runPhase("reviewer", reviewerPrompt(beadId, beadTitle, description), config, progress, logFile, store);
+    const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
     if (!reviewResult.success) {
-      await markStuck(store, runId, projectId, beadId, beadTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed");
+      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed");
       return;
     }
-    store.logEvent(projectId, "complete", { beadId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
+    store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
 
     const reviewReport = readReport(worktreePath, "REVIEW.md");
     const reviewVerdict = reviewReport ? parseVerdict(reviewReport) : "unknown";
@@ -605,16 +605,16 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
       const devResult = await runPhase(
         "developer",
-        developerPrompt(beadId, beadTitle, description, hasExplorerReport, reviewFeedback),
+        developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback),
         config, progress, logFile, store,
       );
       if (devResult.success) {
-        store.logEvent(projectId, "complete", { beadId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
+        store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
 
         rotateReport(worktreePath, "QA_REPORT.md");
-        const qaResult = await runPhase("qa", qaPrompt(beadId, beadTitle), config, progress, logFile, store);
+        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
         if (qaResult.success) {
-          store.logEvent(projectId, "complete", { beadId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
+          store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
         }
       }
     } else if (reviewVerdict === "fail") {
@@ -634,8 +634,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   const now = new Date().toISOString();
   store.updateRun(runId, { status: "completed", completed_at: now });
   store.logEvent(projectId, "complete", {
-    beadId,
-    title: beadTitle,
+    seedId,
+    title: seedTitle,
     costUsd: progress.costUsd,
     numTurns: progress.turns,
     toolCalls: progress.toolCalls,
@@ -645,7 +645,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     qaVerdict,
   }, runId);
 
-  log(`PIPELINE COMPLETED for ${beadId} (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
+  log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
   await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
 }
 
@@ -653,8 +653,8 @@ async function markStuck(
   store: ForemanStore,
   runId: string,
   projectId: string,
-  beadId: string,
-  beadTitle: string,
+  seedId: string,
+  seedTitle: string,
   progress: RunProgress,
   phase: string,
   reason: string,
@@ -664,8 +664,8 @@ async function markStuck(
   store.updateRunProgress(runId, progress);
   store.updateRun(runId, { status: isRateLimit ? "stuck" : "failed", completed_at: now });
   store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
-    beadId,
-    title: beadTitle,
+    seedId,
+    title: seedTitle,
     phase,
     reason,
     costUsd: progress.costUsd,
@@ -675,10 +675,10 @@ async function markStuck(
   // Reset seed back to open so it appears in sd ready for retry
   const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
   try {
-    execFileSync(sdPath, ["update", beadId, "--status", "open"], { stdio: "pipe", timeout: 10_000 });
-    log(`Reset bead ${beadId} back to open`);
+    execFileSync(sdPath, ["update", seedId, "--status", "open"], { stdio: "pipe", timeout: 10_000 });
+    log(`Reset seed ${seedId} back to open`);
   } catch {
-    log(`Warning: could not reset bead ${beadId} to open`);
+    log(`Warning: could not reset seed ${seedId} to open`);
   }
 
   store.close();

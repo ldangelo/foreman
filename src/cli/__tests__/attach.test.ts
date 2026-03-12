@@ -48,8 +48,8 @@ describe("foreman attach", () => {
     });
   });
 
-  describe("run lookup by bead ID", () => {
-    it("finds the most recent run for a bead", () => {
+  describe("run lookup by seed ID", () => {
+    it("finds the most recent run for a seed", () => {
       const project = store.registerProject("p", "/p");
       const run1 = store.createRun(project.id, "bd-xyz", "claude-sonnet-4-6", "/wt");
       store.updateRun(run1.id, { status: "completed" });
@@ -59,16 +59,16 @@ describe("foreman attach", () => {
         session_key: "foreman:sdk:claude-opus-4-6:run2:session-latest-session",
       });
 
-      const runs = store.getRunsForBead("bd-xyz", project.id);
+      const runs = store.getRunsForSeed("bd-xyz", project.id);
       expect(runs.length).toBeGreaterThanOrEqual(2);
       // Most recent run first
       expect(runs[0].id).toBe(run2.id);
       expect(runs[0].agent_type).toBe("claude-opus-4-6");
     });
 
-    it("returns empty for unknown bead", () => {
+    it("returns empty for unknown seed", () => {
       const project = store.registerProject("p", "/p");
-      const runs = store.getRunsForBead("bd-nonexistent", project.id);
+      const runs = store.getRunsForSeed("bd-nonexistent", project.id);
       expect(runs).toEqual([]);
     });
   });

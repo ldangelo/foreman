@@ -6,7 +6,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    bead_id: "beads-001",
+    seed_id: "seeds-001",
     agent_type: "claude-code",
     session_key: null,
     worktree_path: "/tmp/wt",
@@ -26,20 +26,20 @@ function makeMocks() {
     logEvent: vi.fn(),
     getRunEvents: vi.fn((): any[] => []),
   };
-  const beads = {
+  const seeds = {
     show: vi.fn(async () => ({ status: "open" })),
   };
-  const monitor = new Monitor(store as any, beads as any, "/tmp/project");
-  return { store, beads, monitor };
+  const monitor = new Monitor(store as any, seeds as any, "/tmp/project");
+  return { store, seeds, monitor };
 }
 
 describe("Monitor", () => {
   describe("checkAll", () => {
-    it("detects completed run when bead status is closed", async () => {
-      const { store, beads, monitor } = makeMocks();
+    it("detects completed run when seed status is closed", async () => {
+      const { store, seeds, monitor } = makeMocks();
       const run = makeRun();
       store.getActiveRuns.mockReturnValue([run]);
-      beads.show.mockResolvedValue({ status: "closed" });
+      seeds.show.mockResolvedValue({ status: "closed" });
 
       const report = await monitor.checkAll();
 
@@ -49,12 +49,12 @@ describe("Monitor", () => {
     });
 
     it("detects stuck agent when started_at exceeds timeout", async () => {
-      const { store, beads, monitor } = makeMocks();
+      const { store, seeds, monitor } = makeMocks();
       // Started 30 minutes ago
       const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
       const run = makeRun({ started_at: thirtyMinAgo });
       store.getActiveRuns.mockReturnValue([run]);
-      beads.show.mockResolvedValue({ status: "open" });
+      seeds.show.mockResolvedValue({ status: "open" });
 
       const report = await monitor.checkAll({ stuckTimeoutMinutes: 15 });
 
@@ -63,10 +63,10 @@ describe("Monitor", () => {
     });
 
     it("keeps active runs as active when recently started", async () => {
-      const { store, beads, monitor } = makeMocks();
+      const { store, seeds, monitor } = makeMocks();
       const run = makeRun({ started_at: new Date().toISOString() });
       store.getActiveRuns.mockReturnValue([run]);
-      beads.show.mockResolvedValue({ status: "open" });
+      seeds.show.mockResolvedValue({ status: "open" });
 
       const report = await monitor.checkAll({ stuckTimeoutMinutes: 15 });
 
@@ -76,18 +76,18 @@ describe("Monitor", () => {
     });
 
     it("returns correct categorization across all arrays", async () => {
-      const { store, beads, monitor } = makeMocks();
-      const completedRun = makeRun({ id: "run-done", bead_id: "beads-done" });
+      const { store, seeds, monitor } = makeMocks();
+      const completedRun = makeRun({ id: "run-done", seed_id: "seeds-done" });
       const stuckRun = makeRun({
         id: "run-stuck",
-        bead_id: "beads-stuck",
+        seed_id: "seeds-stuck",
         started_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
       });
-      const activeRun = makeRun({ id: "run-active", bead_id: "beads-active" });
+      const activeRun = makeRun({ id: "run-active", seed_id: "seeds-active" });
 
       store.getActiveRuns.mockReturnValue([completedRun, stuckRun, activeRun]);
-      beads.show.mockImplementation(async (...args: any[]) => {
-        if (args[0] === "beads-done") return { status: "closed" };
+      seeds.show.mockImplementation(async (...args: any[]) => {
+        if (args[0] === "seeds-done") return { status: "closed" };
         return { status: "open" };
       });
 
@@ -116,17 +116,17 @@ describe("Monitor", () => {
 
   describe("logging", () => {
     it("logs events on status changes", async () => {
-      const { store, beads, monitor } = makeMocks();
+      const { store, seeds, monitor } = makeMocks();
       const run = makeRun();
       store.getActiveRuns.mockReturnValue([run]);
-      beads.show.mockResolvedValue({ status: "closed" });
+      seeds.show.mockResolvedValue({ status: "closed" });
 
       await monitor.checkAll();
 
       expect(store.logEvent).toHaveBeenCalledWith(
         run.project_id,
         "complete",
-        expect.objectContaining({ beadId: run.bead_id }),
+        expect.objectContaining({ seedId: run.seed_id }),
         run.id,
       );
     });

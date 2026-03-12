@@ -1,5 +1,5 @@
 import type { ForemanStore, Run } from "../lib/store.js";
-import type { BeadsClient } from "../lib/beads.js";
+import type { SeedsClient } from "../lib/seeds.js";
 import { removeWorktree, createWorktree } from "../lib/git.js";
 import type { MonitorReport } from "./types.js";
 
@@ -8,7 +8,7 @@ import type { MonitorReport } from "./types.js";
 export class Monitor {
   constructor(
     private store: ForemanStore,
-    private beads: BeadsClient,
+    private seeds: SeedsClient,
     private projectPath: string,
   ) {}
 
@@ -34,9 +34,9 @@ export class Monitor {
 
     for (const run of activeRuns) {
       try {
-        const beadDetail = await this.beads.show(run.bead_id);
+        const seedDetail = await this.seeds.show(run.seed_id);
 
-        if (beadDetail.status === "closed" || beadDetail.status === "completed") {
+        if (seedDetail.status === "closed" || seedDetail.status === "completed") {
           // Agent finished — mark run as completed
           this.store.updateRun(run.id, {
             status: "completed",
@@ -45,7 +45,7 @@ export class Monitor {
           this.store.logEvent(
             run.project_id,
             "complete",
-            { beadId: run.bead_id, detectedBy: "monitor" },
+            { seedId: run.seed_id, detectedBy: "monitor" },
             run.id,
           );
           report.completed.push({ ...run, status: "completed" });
@@ -62,7 +62,7 @@ export class Monitor {
             this.store.logEvent(
               run.project_id,
               "stuck",
-              { beadId: run.bead_id, elapsedMinutes: Math.round(elapsedMinutes) },
+              { seedId: run.seed_id, elapsedMinutes: Math.round(elapsedMinutes) },
               run.id,
             );
             report.stuck.push({ ...run, status: "stuck" });
@@ -81,7 +81,7 @@ export class Monitor {
         this.store.logEvent(
           run.project_id,
           "fail",
-          { beadId: run.bead_id, error: message },
+          { seedId: run.seed_id, error: message },
           run.id,
         );
         report.failed.push({ ...run, status: "failed" });
@@ -108,7 +108,7 @@ export class Monitor {
       this.store.logEvent(
         run.project_id,
         "fail",
-        { beadId: run.bead_id, reason: `Max retries (${maxRetries}) exceeded` },
+        { seedId: run.seed_id, reason: `Max retries (${maxRetries}) exceeded` },
         run.id,
       );
       return false;
@@ -125,7 +125,7 @@ export class Monitor {
 
     // Recreate worktree
     try {
-      const { worktreePath } = await createWorktree(this.projectPath, run.bead_id);
+      const { worktreePath } = await createWorktree(this.projectPath, run.seed_id);
 
       this.store.updateRun(run.id, {
         status: "pending",
@@ -137,7 +137,7 @@ export class Monitor {
       this.store.logEvent(
         run.project_id,
         "recover",
-        { beadId: run.bead_id, attempt: retryCount + 1, maxRetries },
+        { seedId: run.seed_id, attempt: retryCount + 1, maxRetries },
         run.id,
       );
 
@@ -151,7 +151,7 @@ export class Monitor {
       this.store.logEvent(
         run.project_id,
         "fail",
-        { beadId: run.bead_id, reason: `Recovery failed: ${message}` },
+        { seedId: run.seed_id, reason: `Recovery failed: ${message}` },
         run.id,
       );
       return false;

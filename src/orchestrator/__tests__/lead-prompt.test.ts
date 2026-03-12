@@ -2,15 +2,15 @@ import { describe, it, expect } from "vitest";
 import { leadPrompt, type LeadPromptOptions } from "../lead-prompt.js";
 
 const baseOpts: LeadPromptOptions = {
-  beadId: "bead-123",
-  beadTitle: "Fix auth module",
-  beadDescription: "Fix JWT token refresh logic",
+  seedId: "seed-123",
+  seedTitle: "Fix auth module",
+  seedDescription: "Fix JWT token refresh logic",
 };
 
 describe("leadPrompt", () => {
-  it("contains the bead context", () => {
+  it("contains the seed context", () => {
     const prompt = leadPrompt(baseOpts);
-    expect(prompt).toContain("bead-123");
+    expect(prompt).toContain("seed-123");
     expect(prompt).toContain("Fix auth module");
     expect(prompt).toContain("Fix JWT token refresh logic");
   });

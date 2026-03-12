@@ -37,24 +37,24 @@ describe("git worktree manager", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath, branchName } = await createWorktree(repo, "bead-001");
+    const { worktreePath, branchName } = await createWorktree(repo, "seed-001");
 
-    expect(branchName).toBe("foreman/bead-001");
+    expect(branchName).toBe("foreman/seed-001");
     expect(existsSync(worktreePath)).toBe(true);
 
     const branches = execFileSync("git", ["branch", "--list"], { cwd: repo })
       .toString()
       .trim();
-    expect(branches).toContain("foreman/bead-001");
+    expect(branches).toContain("foreman/seed-001");
   });
 
   it("createWorktree uses correct path convention", async () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath } = await createWorktree(repo, "bead-002");
+    const { worktreePath } = await createWorktree(repo, "seed-002");
 
-    expect(worktreePath).toBe(join(repo, ".foreman-worktrees", "bead-002"));
+    expect(worktreePath).toBe(join(repo, ".foreman-worktrees", "seed-002"));
     expect(existsSync(worktreePath)).toBe(true);
   });
 
@@ -62,7 +62,7 @@ describe("git worktree manager", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath } = await createWorktree(repo, "bead-003");
+    const { worktreePath } = await createWorktree(repo, "seed-003");
     expect(existsSync(worktreePath)).toBe(true);
 
     await removeWorktree(repo, worktreePath);
@@ -73,14 +73,14 @@ describe("git worktree manager", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    await createWorktree(repo, "bead-a");
-    await createWorktree(repo, "bead-b");
+    await createWorktree(repo, "seed-a");
+    await createWorktree(repo, "seed-b");
 
     const worktrees = await listWorktrees(repo);
     const branches = worktrees.map((w) => w.branch);
 
-    expect(branches).toContain("foreman/bead-a");
-    expect(branches).toContain("foreman/bead-b");
+    expect(branches).toContain("foreman/seed-a");
+    expect(branches).toContain("foreman/seed-b");
     // Should also include the main worktree
     expect(worktrees.length).toBeGreaterThanOrEqual(3);
   });
@@ -89,7 +89,7 @@ describe("git worktree manager", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath, branchName } = await createWorktree(repo, "bead-merge");
+    const { worktreePath, branchName } = await createWorktree(repo, "seed-merge");
 
     // Add a new file in the worktree and commit
     writeFileSync(join(worktreePath, "feature.txt"), "new feature\n");
@@ -106,7 +106,7 @@ describe("git worktree manager", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath, branchName } = await createWorktree(repo, "bead-conflict");
+    const { worktreePath, branchName } = await createWorktree(repo, "seed-conflict");
 
     // Modify README.md in the worktree
     writeFileSync(join(worktreePath, "README.md"), "# worktree change\n");

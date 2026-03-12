@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { unwrapSdResponse } from "../beads.js";
+import { unwrapSdResponse } from "../seeds.js";
 
 describe("unwrapSdResponse", () => {
   it("unwraps list response to issues array", () => {

@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { BeadsClient } from "../../lib/beads.js";
+import { SeedsClient } from "../../lib/seeds.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Monitor } from "../../orchestrator/monitor.js";
@@ -15,9 +15,9 @@ export const monitorCommand = new Command("monitor")
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
-      const beads = new BeadsClient(projectPath);
+      const seeds = new SeedsClient(projectPath);
       const store = new ForemanStore();
-      const monitor = new Monitor(store, beads, projectPath);
+      const monitor = new Monitor(store, seeds, projectPath);
 
       console.log(chalk.bold("Checking agent status...\n"));
 
@@ -33,7 +33,7 @@ export const monitorCommand = new Command("monitor")
             ? Math.round((Date.now() - new Date(run.started_at).getTime()) / 60000)
             : 0;
           console.log(
-            `  ${chalk.cyan(run.bead_id)} ${chalk.dim(`[${run.agent_type}]`)} ${elapsed}m`,
+            `  ${chalk.cyan(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)} ${elapsed}m`,
           );
         }
         console.log();
@@ -43,7 +43,7 @@ export const monitorCommand = new Command("monitor")
       if (report.completed.length > 0) {
         console.log(chalk.cyan.bold(`Completed (${report.completed.length}):`));
         for (const run of report.completed) {
-          console.log(`  ${chalk.cyan(run.bead_id)} ${chalk.dim(`[${run.agent_type}]`)}`);
+          console.log(`  ${chalk.cyan(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)}`);
         }
         console.log();
       }
@@ -56,7 +56,7 @@ export const monitorCommand = new Command("monitor")
             ? Math.round((Date.now() - new Date(run.started_at).getTime()) / 60000)
             : 0;
           console.log(
-            `  ${chalk.yellow(run.bead_id)} ${chalk.dim(`[${run.agent_type}]`)} ${elapsed}m`,
+            `  ${chalk.yellow(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)} ${elapsed}m`,
           );
         }
         console.log();
@@ -67,9 +67,9 @@ export const monitorCommand = new Command("monitor")
           for (const run of report.stuck) {
             const recovered = await monitor.recoverStuck(run);
             if (recovered) {
-              console.log(`  ${chalk.green("✓")} ${run.bead_id} — re-queued as pending`);
+              console.log(`  ${chalk.green("✓")} ${run.seed_id} — re-queued as pending`);
             } else {
-              console.log(`  ${chalk.red("✗")} ${run.bead_id} — max retries exceeded, marked failed`);
+              console.log(`  ${chalk.red("✗")} ${run.seed_id} — max retries exceeded, marked failed`);
             }
           }
           console.log();
@@ -82,7 +82,7 @@ export const monitorCommand = new Command("monitor")
       if (report.failed.length > 0) {
         console.log(chalk.red.bold(`Failed (${report.failed.length}):`));
         for (const run of report.failed) {
-          console.log(`  ${chalk.red(run.bead_id)} ${chalk.dim(`[${run.agent_type}]`)}`);
+          console.log(`  ${chalk.red(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)}`);
         }
         console.log();
       }

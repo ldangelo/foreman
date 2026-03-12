@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { decomposePrd } from "../../orchestrator/decomposer.js";
 import { decomposePrdWithLlm } from "../../orchestrator/decomposer-llm.js";
 import { executePlan } from "../../orchestrator/planner.js";
-import { BeadsClient } from "../../lib/beads.js";
+import { SeedsClient } from "../../lib/seeds.js";
 import type { DecompositionPlan, TaskPlan } from "../../orchestrator/types.js";
 
 export const decomposeCommand = new Command("decompose")
@@ -71,14 +71,14 @@ export const decomposeCommand = new Command("decompose")
 
     // Execute
     console.log(chalk.bold("\nCreating seeds hierarchy..."));
-    const seeds = new BeadsClient(process.cwd());
+    const seeds = new SeedsClient(process.cwd());
     try {
       const result = await executePlan(plan, seeds);
-      console.log(chalk.green(`\nEpic created: ${result.epicBeadId}`));
-      console.log(chalk.green(`Sprints created: ${result.sprintBeadIds.length}`));
-      console.log(chalk.green(`Stories created: ${result.storyBeadIds.length}`));
-      console.log(chalk.green(`Tasks created: ${result.taskBeadIds.length}`));
-      for (const id of result.taskBeadIds) {
+      console.log(chalk.green(`\nEpic created: ${result.epicSeedId}`));
+      console.log(chalk.green(`Sprints created: ${result.sprintSeedIds.length}`));
+      console.log(chalk.green(`Stories created: ${result.storySeedIds.length}`));
+      console.log(chalk.green(`Tasks created: ${result.taskSeedIds.length}`));
+      for (const id of result.taskSeedIds) {
         console.log(chalk.dim(`  - ${id}`));
       }
     } catch (err: any) {

@@ -75,7 +75,7 @@ describe("ForemanStore", () => {
       const run = store.createRun(project.id, "bd-a1b2", "claude-code", "/tmp/wt");
 
       expect(run.status).toBe("pending");
-      expect(run.bead_id).toBe("bd-a1b2");
+      expect(run.seed_id).toBe("bd-a1b2");
       expect(store.getRun(run.id)).toEqual(run);
     });
 
@@ -104,14 +104,14 @@ describe("ForemanStore", () => {
     });
   });
 
-  describe("getRunsForBead", () => {
-    it("returns runs for a bead sorted by created_at DESC", () => {
+  describe("getRunsForSeed", () => {
+    it("returns runs for a seed sorted by created_at DESC", () => {
       const project = store.registerProject("p", "/p");
       const run1 = store.createRun(project.id, "bd-abc", "claude-sonnet-4-6", "/wt1");
       store.updateRun(run1.id, { status: "completed" });
       const run2 = store.createRun(project.id, "bd-abc", "claude-opus-4-6", "/wt1");
 
-      const runs = store.getRunsForBead("bd-abc", project.id);
+      const runs = store.getRunsForSeed("bd-abc", project.id);
       expect(runs).toHaveLength(2);
       // Most recent first
       expect(runs[0].id).toBe(run2.id);
@@ -124,12 +124,12 @@ describe("ForemanStore", () => {
       store.createRun(p1.id, "bd-abc", "claude-code", "/wt1");
       store.createRun(p2.id, "bd-abc", "claude-code", "/wt2");
 
-      expect(store.getRunsForBead("bd-abc", p1.id)).toHaveLength(1);
-      expect(store.getRunsForBead("bd-abc")).toHaveLength(2);
+      expect(store.getRunsForSeed("bd-abc", p1.id)).toHaveLength(1);
+      expect(store.getRunsForSeed("bd-abc")).toHaveLength(2);
     });
 
     it("returns empty array when no runs exist", () => {
-      expect(store.getRunsForBead("bd-nonexistent")).toEqual([]);
+      expect(store.getRunsForSeed("sd-nonexistent")).toEqual([]);
     });
   });
 
@@ -165,7 +165,7 @@ describe("ForemanStore", () => {
       const project = store.registerProject("p", "/p");
       const run = store.createRun(project.id, "bd-1", "claude-code");
 
-      store.logEvent(project.id, "dispatch", { bead: "bd-1" }, run.id);
+      store.logEvent(project.id, "dispatch", { seed: "bd-1" }, run.id);
       store.logEvent(project.id, "complete", { result: "ok" }, run.id);
 
       const events = store.getEvents(project.id);

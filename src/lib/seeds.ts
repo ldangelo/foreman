@@ -14,7 +14,7 @@ const SD_PATH = join(
 
 // ── Interfaces ──────────────────────────────────────────────────────────
 
-export interface Bead {
+export interface Seed {
   id: string;
   title: string;
   type: string;
@@ -26,7 +26,7 @@ export interface Bead {
   updated_at: string;
 }
 
-export interface BeadDetail extends Bead {
+export interface SeedDetail extends Seed {
   description: string | null;
   notes: string | null;
   acceptance: string | null;
@@ -35,8 +35,8 @@ export interface BeadDetail extends Bead {
   children: string[];
 }
 
-export interface BeadGraph {
-  nodes: Bead[];
+export interface SeedGraph {
+  nodes: Seed[];
   edges: { from: string; to: string; type: string }[];
 }
 
@@ -95,7 +95,7 @@ export const execBd = execSd;
 
 // ── Client ──────────────────────────────────────────────────────────────
 
-export class BeadsClient {
+export class SeedsClient {
   private projectPath: string;
 
   constructor(projectPath: string) {
@@ -130,7 +130,7 @@ export class BeadsClient {
     await execSd(["init"], this.projectPath);
   }
 
-  /** Create a new seed (task/epic/bug). Returns a Bead by fetching after create. */
+  /** Create a new seed (task/epic/bug). Returns a Seed by fetching after create. */
   async create(
     title: string,
     opts?: {
@@ -140,7 +140,7 @@ export class BeadsClient {
       description?: string;
       labels?: string[];
     },
-  ): Promise<Bead> {
+  ): Promise<Seed> {
     await this.requireInit();
     const args = ["create", "--title", title];
     if (opts?.type) args.push("--type", opts.type);
@@ -151,38 +151,38 @@ export class BeadsClient {
     // sd create returns { success, command, id } — fetch full object
     const id = result?.id ?? result;
     if (typeof id === "string") {
-      return await this.show(id) as unknown as Bead;
+      return await this.show(id) as unknown as Seed;
     }
-    return result as Bead;
+    return result as Seed;
   }
 
-  /** List beads with optional filters. */
+  /** List seeds with optional filters. */
   async list(opts?: {
     status?: string;
     assignee?: string;
     type?: string;
-  }): Promise<Bead[]> {
+  }): Promise<Seed[]> {
     await this.requireInit();
     const args = ["list"];
     if (opts?.status) args.push("--status", opts.status);
     if (opts?.assignee) args.push("--assignee", opts.assignee);
     if (opts?.type) args.push("--type", opts.type);
-    return ((await execSd(args, this.projectPath)) as Bead[]) ?? [];
+    return ((await execSd(args, this.projectPath)) as Seed[]) ?? [];
   }
 
   /** Return tasks whose blockers are all resolved. */
-  async ready(): Promise<Bead[]> {
+  async ready(): Promise<Seed[]> {
     await this.requireInit();
-    return ((await execSd(["ready"], this.projectPath)) as Bead[]) ?? [];
+    return ((await execSd(["ready"], this.projectPath)) as Seed[]) ?? [];
   }
 
-  /** Show full detail for one bead. */
-  async show(id: string): Promise<BeadDetail> {
+  /** Show full detail for one seed. */
+  async show(id: string): Promise<SeedDetail> {
     await this.requireInit();
-    return (await execSd(["show", id], this.projectPath)) as BeadDetail;
+    return (await execSd(["show", id], this.projectPath)) as SeedDetail;
   }
 
-  /** Update fields on a bead. */
+  /** Update fields on a seed. */
   async update(
     id: string,
     opts: {
@@ -205,7 +205,7 @@ export class BeadsClient {
     await execSd(args, this.projectPath);
   }
 
-  /** Close a bead, optionally with a reason. */
+  /** Close a seed, optionally with a reason. */
   async close(id: string, reason?: string): Promise<void> {
     await this.requireInit();
     const args = ["close", id];
@@ -220,14 +220,14 @@ export class BeadsClient {
   }
 
   /** Get the dependency graph, optionally scoped to an epic. */
-  async getGraph(epicId?: string): Promise<BeadGraph> {
+  async getGraph(epicId?: string): Promise<SeedGraph> {
     await this.requireInit();
     const args = ["graph"];
     if (epicId) args.push(epicId);
-    return (await execSd(args, this.projectPath)) as BeadGraph;
+    return (await execSd(args, this.projectPath)) as SeedGraph;
   }
 
-  /** Trigger bead compaction. */
+  /** Trigger seed compaction. */
   async compact(): Promise<void> {
     await this.requireInit();
     await execSd(["compact"], this.projectPath);
@@ -244,3 +244,12 @@ export class BeadsClient {
     }
   }
 }
+
+/** @deprecated Use SeedsClient instead */
+export const BeadsClient = SeedsClient;
+/** @deprecated Use Seed instead */
+export type Bead = Seed;
+/** @deprecated Use SeedDetail instead */
+export type BeadDetail = SeedDetail;
+/** @deprecated Use SeedGraph instead */
+export type BeadGraph = SeedGraph;

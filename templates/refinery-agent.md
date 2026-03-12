@@ -13,8 +13,8 @@ For each completed branch in the merge queue:
 ### 1. Review the Changes
 
 ```bash
-git diff main...foreman/{{BEAD_ID}} --stat
-git log main..foreman/{{BEAD_ID}} --oneline
+git diff main...foreman/{{SEED_ID}} --stat
+git log main..foreman/{{SEED_ID}} --oneline
 ```
 
 Quick review checklist:
@@ -26,7 +26,7 @@ Quick review checklist:
 
 ```bash
 git checkout main
-git merge --no-ff foreman/{{BEAD_ID}} -m "Merge: {{TITLE}} ({{BEAD_ID}})"
+git merge --no-ff foreman/{{SEED_ID}} -m "Merge: {{TITLE}} ({{SEED_ID}})"
 ```
 
 ### 3. Run Tests
@@ -40,7 +40,7 @@ git merge --no-ff foreman/{{BEAD_ID}} -m "Merge: {{TITLE}} ({{BEAD_ID}})"
 **If merge succeeds + tests pass:**
 ```bash
 git push origin main
-sd close {{BEAD_ID}} --reason "Merged and tested"
+sd close {{SEED_ID}} --reason "Merged and tested"
 ```
 
 **If merge has conflicts:**
@@ -49,14 +49,14 @@ sd close {{BEAD_ID}} --reason "Merged and tested"
 - For non-trivial conflicts, document them and skip this branch:
   ```bash
   git merge --abort
-  sd update {{BEAD_ID}} --notes "Merge conflict in: [files]. Needs manual resolution."
+  sd update {{SEED_ID}} --notes "Merge conflict in: [files]. Needs manual resolution."
   ```
 
 **If tests fail after merge:**
 ```bash
 git revert HEAD --no-edit
 git push origin main
-sd update {{BEAD_ID}} --notes "Tests failed after merge: [summary]. Reverted."
+sd update {{SEED_ID}} --notes "Tests failed after merge: [summary]. Reverted."
 ```
 
 ## Rules
@@ -71,7 +71,7 @@ sd update {{BEAD_ID}} --notes "Tests failed after merge: [summary]. Reverted."
 
 After successful merge:
 ```bash
-git worktree remove .foreman-worktrees/{{BEAD_ID}}
-git branch -d foreman/{{BEAD_ID}}
-git push origin --delete foreman/{{BEAD_ID}}
+git worktree remove .foreman-worktrees/{{SEED_ID}}
+git branch -d foreman/{{SEED_ID}}
+git push origin --delete foreman/{{SEED_ID}}
 ```

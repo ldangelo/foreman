@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import type { ForemanStore } from "../lib/store.js";
-import type { BeadsClient } from "../lib/beads.js";
+import type { SeedsClient } from "../lib/seeds.js";
 import { mergeWorktree, removeWorktree } from "../lib/git.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 
@@ -45,7 +45,7 @@ async function runTestCommand(command: string, cwd: string): Promise<{ ok: boole
 export class Refinery {
   constructor(
     private store: ForemanStore,
-    private beads: BeadsClient,
+    private seeds: SeedsClient,
     private projectPath: string,
   ) {}
 
@@ -70,7 +70,7 @@ export class Refinery {
     const testFailures: FailedRun[] = [];
 
     for (const run of completedRuns) {
-      const branchName = `foreman/${run.bead_id}`;
+      const branchName = `foreman/${run.seed_id}`;
 
       try {
         const result = await mergeWorktree(this.projectPath, branchName, targetBranch);
@@ -87,12 +87,12 @@ export class Refinery {
           this.store.logEvent(
             run.project_id,
             "conflict",
-            { beadId: run.bead_id, branchName, conflictFiles: result.conflicts },
+            { seedId: run.seed_id, branchName, conflictFiles: result.conflicts },
             run.id,
           );
           conflicts.push({
             runId: run.id,
-            beadId: run.bead_id,
+            seedId: run.seed_id,
             branchName,
             conflictFiles: result.conflicts ?? [],
           });
@@ -111,12 +111,12 @@ export class Refinery {
             this.store.logEvent(
               run.project_id,
               "test-fail",
-              { beadId: run.bead_id, branchName, output: testResult.output.slice(0, 2000) },
+              { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
               run.id,
             );
             testFailures.push({
               runId: run.id,
-              beadId: run.bead_id,
+              seedId: run.seed_id,
               branchName,
               error: testResult.output.slice(0, 500),
             });
@@ -140,12 +140,12 @@ export class Refinery {
         this.store.logEvent(
           run.project_id,
           "merge",
-          { beadId: run.bead_id, branchName, targetBranch },
+          { seedId: run.seed_id, branchName, targetBranch },
           run.id,
         );
         merged.push({
           runId: run.id,
-          beadId: run.bead_id,
+          seedId: run.seed_id,
           branchName,
         });
       } catch (err: unknown) {
@@ -153,12 +153,12 @@ export class Refinery {
         this.store.logEvent(
           run.project_id,
           "fail",
-          { beadId: run.bead_id, branchName, error: message },
+          { seedId: run.seed_id, branchName, error: message },
           run.id,
         );
         testFailures.push({
           runId: run.id,
-          beadId: run.bead_id,
+          seedId: run.seed_id,
           branchName,
           error: message,
         });
@@ -180,7 +180,7 @@ export class Refinery {
     const run = this.store.getRun(runId);
     if (!run) throw new Error(`Run ${runId} not found`);
 
-    const branchName = `foreman/${run.bead_id}`;
+    const branchName = `foreman/${run.seed_id}`;
 
     if (strategy === "abort") {
       this.store.updateRun(run.id, {
@@ -190,7 +190,7 @@ export class Refinery {
       this.store.logEvent(
         run.project_id,
         "fail",
-        { beadId: run.bead_id, reason: "Conflict resolution aborted by user" },
+        { seedId: run.seed_id, reason: "Conflict resolution aborted by user" },
         run.id,
       );
       return false;
@@ -216,7 +216,7 @@ export class Refinery {
       this.store.logEvent(
         run.project_id,
         "merge",
-        { beadId: run.bead_id, branchName, strategy: "theirs" },
+        { seedId: run.seed_id, branchName, strategy: "theirs" },
         run.id,
       );
       return true;
@@ -229,7 +229,7 @@ export class Refinery {
       this.store.logEvent(
         run.project_id,
         "fail",
-        { beadId: run.bead_id, error: message },
+        { seedId: run.seed_id, error: message },
         run.id,
       );
       return false;
@@ -254,23 +254,23 @@ export class Refinery {
     const failed: FailedRun[] = [];
 
     for (const run of completedRuns) {
-      const branchName = `foreman/${run.bead_id}`;
+      const branchName = `foreman/${run.seed_id}`;
 
       try {
         // Push branch to origin
         await git(["push", "-u", "origin", branchName], this.projectPath);
 
         // Build PR title and body
-        const title = `${run.bead_id}: ${branchName.replace("foreman/", "")}`;
+        const title = `${run.seed_id}: ${branchName.replace("foreman/", "")}`;
 
-        // Try to get bead info for a better title/body
-        let beadTitle = run.bead_id;
-        let beadDescription = "";
+        // Try to get seed info for a better title/body
+        let seedTitle = run.seed_id;
+        let seedDescription = "";
         try {
-          const beadInfo = await this.beads.show(run.bead_id);
-          if (beadInfo) {
-            beadTitle = beadInfo.title ?? run.bead_id;
-            beadDescription = beadInfo.description ?? "";
+          const seedInfo = await this.seeds.show(run.seed_id);
+          if (seedInfo) {
+            seedTitle = seedInfo.title ?? run.seed_id;
+            seedDescription = seedInfo.description ?? "";
           }
         } catch {
           // Non-fatal — use defaults
@@ -287,10 +287,10 @@ export class Refinery {
           // Non-fatal
         }
 
-        const prTitle = `${beadTitle} (${run.bead_id})`;
+        const prTitle = `${seedTitle} (${run.seed_id})`;
         const body = [
           "## Summary",
-          beadDescription || `Agent work for ${run.bead_id}`,
+          seedDescription || `Agent work for ${run.seed_id}`,
           "",
           "## Commits",
           commitLog ? `\`\`\`\n${commitLog}\n\`\`\`` : "(no commits)",
@@ -314,12 +314,12 @@ export class Refinery {
         this.store.logEvent(
           run.project_id,
           "pr-created",
-          { beadId: run.bead_id, branchName, baseBranch, prUrl, draft },
+          { seedId: run.seed_id, branchName, baseBranch, prUrl, draft },
           run.id,
         );
         created.push({
           runId: run.id,
-          beadId: run.bead_id,
+          seedId: run.seed_id,
           branchName,
           prUrl,
         });
@@ -328,12 +328,12 @@ export class Refinery {
         this.store.logEvent(
           run.project_id,
           "fail",
-          { beadId: run.bead_id, branchName, error: message },
+          { seedId: run.seed_id, branchName, error: message },
           run.id,
         );
         failed.push({
           runId: run.id,
-          beadId: run.bead_id,
+          seedId: run.seed_id,
           branchName,
           error: message,
         });

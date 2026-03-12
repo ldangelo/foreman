@@ -5,12 +5,12 @@ import { spawn } from "node:child_process";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 
-import type { BeadsClient, Bead } from "../lib/beads.js";
+import type { SeedsClient, Seed } from "../lib/seeds.js";
 import type { ForemanStore } from "../lib/store.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
 import type {
-  BeadInfo,
+  SeedInfo,
   DispatchResult,
   DispatchedTask,
   SkippedTask,
@@ -29,13 +29,13 @@ const PLAN_STEP_MAX_BUDGET_USD = 3.00;
 
 export class Dispatcher {
   constructor(
-    private beads: BeadsClient,
+    private seeds: SeedsClient,
     private store: ForemanStore,
     private projectPath: string,
   ) {}
 
   /**
-   * Query ready beads, create worktrees, write TASK.md, and record runs.
+   * Query ready seeds, create worktrees, write TASK.md, and record runs.
    */
   async dispatch(opts?: {
     maxAgents?: number;
@@ -47,7 +47,7 @@ export class Dispatcher {
     pipeline?: boolean;
     skipExplore?: boolean;
     skipReview?: boolean;
-    beadId?: string;
+    seedId?: string;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = opts?.projectId ?? this.resolveProjectId();
@@ -56,33 +56,33 @@ export class Dispatcher {
     const activeRuns = this.store.getActiveRuns(projectId);
     const available = Math.max(0, maxAgents - activeRuns.length);
 
-    let readyBeads = await this.beads.ready();
+    let readySeeds = await this.seeds.ready();
 
-    // Filter to a specific bead if requested
-    if (opts?.beadId) {
-      const target = readyBeads.find((b) => b.id === opts.beadId);
+    // Filter to a specific seed if requested
+    if (opts?.seedId) {
+      const target = readySeeds.find((b) => b.id === opts.seedId);
       if (!target) {
         return {
           dispatched: [],
-          skipped: [{ beadId: opts.beadId, title: opts.beadId, reason: "Not found in ready seeds" }],
+          skipped: [{ seedId: opts.seedId, title: opts.seedId, reason: "Not found in ready seeds" }],
           resumed: [],
           activeAgents: activeRuns.length,
         };
       }
-      readyBeads = [target];
+      readySeeds = [target];
     }
 
     const dispatched: DispatchedTask[] = [];
     const skipped: SkippedTask[] = [];
 
-    // Skip beads that already have an active run
-    const activeBeadIds = new Set(activeRuns.map((r) => r.bead_id));
+    // Skip seeds that already have an active run
+    const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
 
-    for (const bead of readyBeads) {
-      if (activeBeadIds.has(bead.id)) {
+    for (const seed of readySeeds) {
+      if (activeSeedIds.has(seed.id)) {
         skipped.push({
-          beadId: bead.id,
-          title: bead.title,
+          seedId: seed.id,
+          title: seed.title,
           reason: "Already has an active run",
         });
         continue;
@@ -90,26 +90,26 @@ export class Dispatcher {
 
       if (dispatched.length >= available) {
         skipped.push({
-          beadId: bead.id,
-          title: bead.title,
+          seedId: seed.id,
+          title: seed.title,
           reason: `Agent limit reached (${maxAgents})`,
         });
         continue;
       }
 
-      const beadInfo = beadToInfo(bead);
+      const seedInfo = seedToInfo(seed);
       const runtime: RuntimeSelection = "claude-code";
-      const model = opts?.model ?? this.selectModel(beadInfo);
+      const model = opts?.model ?? this.selectModel(seedInfo);
 
       if (opts?.dryRun) {
         dispatched.push({
-          beadId: bead.id,
-          title: bead.title,
+          seedId: seed.id,
+          title: seed.title,
           runtime,
           model,
-          worktreePath: join(this.projectPath, ".foreman-worktrees", bead.id),
+          worktreePath: join(this.projectPath, ".foreman-worktrees", seed.id),
           runId: "(dry-run)",
-          branchName: `foreman/${bead.id}`,
+          branchName: `foreman/${seed.id}`,
         });
         continue;
       }
@@ -118,38 +118,38 @@ export class Dispatcher {
         // 1. Create git worktree
         const { worktreePath, branchName } = await createWorktree(
           this.projectPath,
-          bead.id,
+          seed.id,
         );
 
         // 2. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
-        const taskMd = workerAgentMd(beadInfo, worktreePath, model);
+        const taskMd = workerAgentMd(seedInfo, worktreePath, model);
         await writeFile(join(worktreePath, "TASK.md"), taskMd, "utf-8");
 
         // 4. Record run in store
         const run = this.store.createRun(
           projectId,
-          bead.id,
+          seed.id,
           model,
           worktreePath,
         );
 
         // 5. Log dispatch event
         this.store.logEvent(projectId, "dispatch", {
-          beadId: bead.id,
-          title: bead.title,
+          seedId: seed.id,
+          title: seed.title,
           model,
           worktreePath,
           branchName,
         }, run.id);
 
-        // 6. Mark bead as in_progress before spawning agent
-        await this.beads.update(bead.id, { status: "in_progress" });
+        // 6. Mark seed as in_progress before spawning agent
+        await this.seeds.update(seed.id, { status: "in_progress" });
 
         // 7. Spawn the coding agent
         const sessionKey = await this.spawnAgent(
           model,
           worktreePath,
-          beadInfo,
+          seedInfo,
           run.id,
           opts?.telemetry,
           {
@@ -167,8 +167,8 @@ export class Dispatcher {
         });
 
         dispatched.push({
-          beadId: bead.id,
-          title: bead.title,
+          seedId: seed.id,
+          title: seed.title,
           runtime,
           model,
           worktreePath,
@@ -178,8 +178,8 @@ export class Dispatcher {
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         skipped.push({
-          beadId: bead.id,
-          title: bead.title,
+          seedId: seed.id,
+          title: seed.title,
           reason: `Dispatch failed: ${message}`,
         });
       }
@@ -224,8 +224,8 @@ export class Dispatcher {
     for (const run of resumableRuns) {
       if (resumed.length >= available) {
         skipped.push({
-          beadId: run.bead_id,
-          title: run.bead_id,
+          seedId: run.seed_id,
+          title: run.seed_id,
           reason: `Agent limit reached (${maxAgents})`,
         });
         continue;
@@ -236,8 +236,8 @@ export class Dispatcher {
       const sessionId = extractSessionId(run.session_key);
       if (!sessionId) {
         skipped.push({
-          beadId: run.bead_id,
-          title: run.bead_id,
+          seedId: run.seed_id,
+          title: run.seed_id,
           reason: "No SDK session ID found — cannot resume (was this a CLI-spawned run?)",
         });
         continue;
@@ -246,8 +246,8 @@ export class Dispatcher {
       // Check worktree still exists
       if (!run.worktree_path) {
         skipped.push({
-          beadId: run.bead_id,
-          title: run.bead_id,
+          seedId: run.seed_id,
+          title: run.seed_id,
           reason: "No worktree path — cannot resume",
         });
         continue;
@@ -256,19 +256,19 @@ export class Dispatcher {
       const model = (opts?.model ?? run.agent_type) as ModelSelection;
       const previousStatus = run.status;
 
-      log(`Resuming agent for ${run.bead_id} [${model}] session=${sessionId}`);
+      log(`Resuming agent for ${run.seed_id} [${model}] session=${sessionId}`);
 
       // Create a new run record for the resumed attempt
       const newRun = this.store.createRun(
         projectId,
-        run.bead_id,
+        run.seed_id,
         model,
         run.worktree_path,
       );
 
       // Log resume event
       this.store.logEvent(projectId, "restart", {
-        beadId: run.bead_id,
+        seedId: run.seed_id,
         model,
         previousRunId: run.id,
         previousStatus,
@@ -285,7 +285,7 @@ export class Dispatcher {
       const sessionKey = await this.resumeAgent(
         model,
         run.worktree_path,
-        { id: run.bead_id, title: run.bead_id },
+        { id: run.seed_id, title: run.seed_id },
         newRun.id,
         sessionId,
         opts?.telemetry,
@@ -298,8 +298,8 @@ export class Dispatcher {
       });
 
       resumed.push({
-        beadId: run.bead_id,
-        title: run.bead_id,
+        seedId: run.seed_id,
+        title: run.seed_id,
         model,
         runId: newRun.id,
         sessionId,
@@ -321,18 +321,18 @@ export class Dispatcher {
    */
   async dispatchPlanStep(
     projectId: string,
-    bead: BeadInfo,
+    seed: SeedInfo,
     ensembleCommand: string,
     input: string,
     outputDir: string,
   ): Promise<PlanStepDispatched> {
     // 1. Record run in store
-    const run = this.store.createRun(projectId, bead.id, "claude-code");
+    const run = this.store.createRun(projectId, seed.id, "claude-code");
 
     // 2. Log dispatch event
     this.store.logEvent(projectId, "dispatch", {
-      beadId: bead.id,
-      title: bead.title,
+      seedId: seed.id,
+      title: seed.title,
       ensembleCommand,
       outputDir,
       type: "plan-step",
@@ -379,8 +379,8 @@ export class Dispatcher {
           completed_at: new Date().toISOString(),
         });
         this.store.logEvent(projectId, "complete", {
-          beadId: bead.id,
-          title: bead.title,
+          seedId: seed.id,
+          title: seed.title,
           costUsd: resultMsg.total_cost_usd,
           numTurns: resultMsg.num_turns,
           durationMs: resultMsg.duration_ms,
@@ -393,7 +393,7 @@ export class Dispatcher {
           completed_at: new Date().toISOString(),
         });
         this.store.logEvent(projectId, "fail", {
-          beadId: bead.id,
+          seedId: seed.id,
           reason,
           costUsd: errResult.total_cost_usd,
         }, run.id);
@@ -409,7 +409,7 @@ export class Dispatcher {
           completed_at: new Date().toISOString(),
         });
         this.store.logEvent(projectId, "fail", {
-          beadId: bead.id,
+          seedId: seed.id,
           reason: message,
         }, run.id);
       }
@@ -417,8 +417,8 @@ export class Dispatcher {
     }
 
     return {
-      beadId: bead.id,
-      title: bead.title,
+      seedId: seed.id,
+      title: seed.title,
       runId: run.id,
       sessionKey,
     };
@@ -431,7 +431,7 @@ export class Dispatcher {
    * - Sonnet: default for most implementation tasks
    * - Haiku: simple config, docs-only, typo fixes
    */
-  selectModel(task: BeadInfo): ModelSelection {
+  selectModel(task: SeedInfo): ModelSelection {
     const text = `${task.title} ${task.description ?? ""}`.toLowerCase();
 
     const heavy = ["refactor", "architect", "design", "complex", "migrate", "overhaul"];
@@ -448,11 +448,11 @@ export class Dispatcher {
   }
 
   /**
-   * Build the TASK.md content for a bead (exposed for testing).
+   * Build the TASK.md content for a seed (exposed for testing).
    */
-  generateAgentInstructions(bead: BeadInfo, worktreePath: string): string {
-    const model = this.selectModel(bead);
-    return workerAgentMd(bead, worktreePath, model);
+  generateAgentInstructions(seed: SeedInfo, worktreePath: string): string {
+    const model = this.selectModel(seed);
+    return workerAgentMd(seed, worktreePath, model);
   }
 
   // ── Agent Spawning ─────────────────────────────────────────────────────
@@ -468,7 +468,7 @@ export class Dispatcher {
   private async spawnAgent(
     model: ModelSelection,
     worktreePath: string,
-    bead: BeadInfo,
+    seed: SeedInfo,
     runId: string,
     telemetry?: boolean,
     pipelineOpts?: {
@@ -481,24 +481,24 @@ export class Dispatcher {
       `Read TASK.md and implement the task described.`,
       `Use sd (seeds) to track your progress.`,
       `When completely finished:`,
-      `  sd close ${bead.id} --reason "Completed"`,
+      `  sd close ${seed.id} --reason "Completed"`,
       `  git add -A`,
-      `  git commit -m "${bead.title} (${bead.id})"`,
-      `  git push -u origin foreman/${bead.id}`,
+      `  git commit -m "${seed.title} (${seed.id})"`,
+      `  git push -u origin foreman/${seed.id}`,
     ].join("\n");
 
-    const env = buildWorkerEnv(telemetry, bead.id, runId, model);
+    const env = buildWorkerEnv(telemetry, seed.id, runId, model);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
-    log(`Spawning detached ${usePipeline ? "pipeline" : "worker"} for ${bead.id} [${model}] in ${worktreePath}`);
+    log(`Spawning detached ${usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}`);
 
     await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
-      beadId: bead.id,
-      beadTitle: bead.title,
-      beadDescription: bead.description,
+      seedId: seed.id,
+      seedTitle: seed.title,
+      seedDescription: seed.description,
       model,
       worktreePath,
       prompt,
@@ -520,7 +520,7 @@ export class Dispatcher {
   private async resumeAgent(
     model: ModelSelection,
     worktreePath: string,
-    bead: BeadInfo,
+    seed: SeedInfo,
     runId: string,
     sdkSessionId: string,
     telemetry?: boolean,
@@ -529,22 +529,22 @@ export class Dispatcher {
       `You were previously working on this task but were interrupted (likely by a rate limit).`,
       `Continue where you left off. Check your progress so far and complete the remaining work.`,
       `When completely finished:`,
-      `  sd close ${bead.id} --reason "Completed"`,
+      `  sd close ${seed.id} --reason "Completed"`,
       `  git add -A`,
-      `  git commit -m "${bead.title} (${bead.id})"`,
-      `  git push -u origin foreman/${bead.id}`,
+      `  git commit -m "${seed.title} (${seed.id})"`,
+      `  git push -u origin foreman/${seed.id}`,
     ].join("\n");
 
-    const env = buildWorkerEnv(telemetry, bead.id, runId, model);
+    const env = buildWorkerEnv(telemetry, seed.id, runId, model);
     const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;
 
-    log(`Resuming detached worker for ${bead.id} [${model}] session=${sdkSessionId}`);
+    log(`Resuming detached worker for ${seed.id} [${model}] session=${sdkSessionId}`);
 
     await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
-      beadId: bead.id,
-      beadTitle: bead.title,
+      seedId: seed.id,
+      seedTitle: seed.title,
       model,
       worktreePath,
       prompt: resumePrompt,
@@ -575,9 +575,9 @@ export class Dispatcher {
 interface WorkerConfig {
   runId: string;
   projectId: string;
-  beadId: string;
-  beadTitle: string;
-  beadDescription?: string;
+  seedId: string;
+  seedTitle: string;
+  seedDescription?: string;
   model: string;
   worktreePath: string;
   prompt: string;
@@ -632,7 +632,7 @@ async function spawnWorkerProcess(config: WorkerConfig): Promise<void> {
   await outFd.close();
   await errFd.close();
 
-  log(`  Worker pid=${child.pid} for ${config.beadId}`);
+  log(`  Worker pid=${child.pid} for ${config.seedId}`);
 }
 
 /**
@@ -641,7 +641,7 @@ async function spawnWorkerProcess(config: WorkerConfig): Promise<void> {
  */
 function buildWorkerEnv(
   telemetry: boolean | undefined,
-  beadId: string,
+  seedId: string,
   runId: string,
   model: string,
 ): Record<string, string> {
@@ -657,7 +657,7 @@ function buildWorkerEnv(
     env.CLAUDE_CODE_ENABLE_TELEMETRY = "1";
     env.OTEL_RESOURCE_ATTRIBUTES = [
       process.env.OTEL_RESOURCE_ATTRIBUTES,
-      `foreman.bead_id=${beadId}`,
+      `foreman.seed_id=${seedId}`,
       `foreman.run_id=${runId}`,
       `foreman.model=${model}`,
     ].filter(Boolean).join(",");
@@ -681,11 +681,11 @@ function extractSessionId(sessionKey: string | null): string | null {
   return m ? m[1] : null;
 }
 
-function beadToInfo(bead: Bead): BeadInfo {
+function seedToInfo(seed: Seed): SeedInfo {
   return {
-    id: bead.id,
-    title: bead.title,
-    priority: bead.priority,
-    type: bead.type,
+    id: seed.id,
+    title: seed.title,
+    priority: seed.priority,
+    type: seed.type,
   };
 }

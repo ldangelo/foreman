@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { BeadsClient } from "../../lib/beads.js";
+import { SeedsClient } from "../../lib/seeds.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Refinery } from "../../orchestrator/refinery.js";
@@ -14,9 +14,9 @@ export const mergeCommand = new Command("merge")
   .action(async (opts) => {
     try {
       const projectPath = await getRepoRoot(process.cwd());
-      const beads = new BeadsClient(projectPath);
+      const seeds = new SeedsClient(projectPath);
       const store = new ForemanStore();
-      const refinery = new Refinery(store, beads, projectPath);
+      const refinery = new Refinery(store, seeds, projectPath);
 
       console.log(chalk.bold("Running refinery on completed work...\n"));
 
@@ -37,7 +37,7 @@ export const mergeCommand = new Command("merge")
       if (report.merged.length > 0) {
         console.log(chalk.green.bold(`Merged ${report.merged.length} task(s):\n`));
         for (const m of report.merged) {
-          console.log(`  ${chalk.cyan(m.beadId)} ${m.branchName}`);
+          console.log(`  ${chalk.cyan(m.seedId)} ${m.branchName}`);
         }
         console.log();
       }
@@ -46,7 +46,7 @@ export const mergeCommand = new Command("merge")
       if (report.conflicts.length > 0) {
         console.log(chalk.yellow.bold(`Conflicts in ${report.conflicts.length} task(s):\n`));
         for (const c of report.conflicts) {
-          console.log(`  ${chalk.cyan(c.beadId)} ${c.branchName}`);
+          console.log(`  ${chalk.cyan(c.seedId)} ${c.branchName}`);
           for (const f of c.conflictFiles) {
             console.log(`    ${chalk.dim(f)}`);
           }
@@ -62,7 +62,7 @@ export const mergeCommand = new Command("merge")
       if (report.testFailures.length > 0) {
         console.log(chalk.red.bold(`Test failures in ${report.testFailures.length} task(s):\n`));
         for (const f of report.testFailures) {
-          console.log(`  ${chalk.cyan(f.beadId)} ${f.branchName}`);
+          console.log(`  ${chalk.cyan(f.seedId)} ${f.branchName}`);
           console.log(`    ${chalk.dim(f.error.split("\n")[0])}`);
         }
         console.log();

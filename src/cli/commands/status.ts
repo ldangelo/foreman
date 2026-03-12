@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { ForemanStore, type RunProgress } from "../../lib/store.js";
 
-interface Bead {
+interface Seed {
   id: string;
   title: string;
   status: string;
@@ -14,7 +14,7 @@ const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
 
 function renderStatus(): void {
   // Fetch seed list
-  let seeds: Bead[] = [];
+  let seeds: Seed[] = [];
   try {
     const output = execFileSync(sdPath, ["list", "--json", "--limit", "0"], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -102,7 +102,7 @@ function renderStatus(): void {
           : run.agent_type === "pi"
           ? chalk.bgGreen.white(` ${run.agent_type} `)
           : chalk.bgMagenta.white(` ${run.agent_type} `);
-        console.log(`  ${badge} ${run.bead_id} — ${run.status} (${elapsed}m)`);
+        console.log(`  ${badge} ${run.seed_id} — ${run.status} (${elapsed}m)`);
 
         // Show agent progress details
         if (run.progress) {

@@ -16,7 +16,7 @@ npx tsc --noEmit       # type check only
 # CLI (after build or via tsx)
 foreman init           # Initialize project + seeds
 foreman run            # Dispatch ready tasks to agents
-foreman run --bead X   # Dispatch specific task
+foreman run --seed X   # Dispatch specific task
 foreman status         # Show tasks + active agents
 foreman monitor        # Check agent health
 foreman reset          # Clean up failed/stuck runs
@@ -49,7 +49,7 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 **Key modules:**
 - `src/cli/commands/` — 10 CLI commands
 - `src/orchestrator/` — dispatcher, agent-worker, roles, planner, refinery
-- `src/lib/` — beads.ts (seeds wrapper), git.ts (worktrees), store.ts (SQLite)
+- `src/lib/` — seeds.ts (seeds wrapper), git.ts (worktrees), store.ts (SQLite)
 - `templates/` — worker-agent.md, refinery-agent.md
 
 **Agent pipeline** (orchestrated by TypeScript, not AI):

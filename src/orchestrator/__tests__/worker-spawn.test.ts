@@ -38,7 +38,7 @@ describe("Dispatcher worker spawning", () => {
     // Create a run manually to verify store operations
     const run = store.createRun(project.id, "bd-test", "claude-sonnet-4-6", join(tmpDir, "wt"));
     expect(run.status).toBe("pending");
-    expect(run.bead_id).toBe("bd-test");
+    expect(run.seed_id).toBe("bd-test");
 
     // Verify we can update it to running (what dispatcher does after spawn)
     store.updateRun(run.id, {
@@ -57,8 +57,8 @@ describe("Dispatcher worker spawning", () => {
     const config = {
       runId: "run-123",
       projectId: "proj-456",
-      beadId: "bd-test",
-      beadTitle: "Test Task",
+      seedId: "bd-test",
+      seedTitle: "Test Task",
       model: "claude-sonnet-4-6",
       worktreePath: "/tmp/wt/bd-test",
       prompt: "Read AGENTS.md and implement the task.",
@@ -70,8 +70,8 @@ describe("Dispatcher worker spawning", () => {
 
     expect(parsed.runId).toBe("run-123");
     expect(parsed.projectId).toBe("proj-456");
-    expect(parsed.beadId).toBe("bd-test");
-    expect(parsed.beadTitle).toBe("Test Task");
+    expect(parsed.seedId).toBe("bd-test");
+    expect(parsed.seedTitle).toBe("Test Task");
     expect(parsed.model).toBe("claude-sonnet-4-6");
     expect(parsed.worktreePath).toBe("/tmp/wt/bd-test");
     expect(parsed.prompt).toContain("AGENTS.md");
@@ -83,8 +83,8 @@ describe("Dispatcher worker spawning", () => {
     const config = {
       runId: "run-789",
       projectId: "proj-456",
-      beadId: "bd-test",
-      beadTitle: "Test Task",
+      seedId: "bd-test",
+      seedTitle: "Test Task",
       model: "claude-opus-4-6",
       worktreePath: "/tmp/wt/bd-test",
       prompt: "Continue where you left off.",

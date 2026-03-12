@@ -16,7 +16,7 @@ function makeRun(overrides?: Partial<Run>): Run {
   return {
     id: "run-001",
     project_id: "proj-1",
-    bead_id: "foreman-1a",
+    seed_id: "foreman-1a",
     agent_type: "claude-sonnet-4-6",
     session_key: null,
     worktree_path: null,
@@ -112,8 +112,8 @@ describe("shortPath", () => {
 // ── renderAgentCard() ─────────────────────────────────────────────────────
 
 describe("renderAgentCard", () => {
-  it("includes bead_id in output", () => {
-    const run = makeRun({ bead_id: "foreman-42a" });
+  it("includes seed_id in output", () => {
+    const run = makeRun({ seed_id: "foreman-42a" });
     const output = renderAgentCard(run, null);
     expect(output).toContain("foreman-42a");
   });
@@ -432,8 +432,8 @@ describe("renderWatchDisplay", () => {
   });
 
   it("renders multiple agent cards", () => {
-    const run1 = makeRun({ id: "r1", bead_id: "foreman-1a", status: "completed" });
-    const run2 = makeRun({ id: "r2", bead_id: "foreman-2b", status: "running" });
+    const run1 = makeRun({ id: "r1", seed_id: "foreman-1a", status: "completed" });
+    const run2 = makeRun({ id: "r2", seed_id: "foreman-2b", status: "running" });
     const state = makeState({
       runs: [
         { run: run1, progress: null },
