@@ -13,6 +13,7 @@ import {
   getDeveloperBudget,
   getQaBudget,
   getReviewerBudget,
+  getPlanStepBudget,
 } from "../lib/config.js";
 
 // ── Role config ─────────────────────────────────────────────────────────
@@ -30,6 +31,26 @@ export interface RoleConfig {
   /** Report file this role produces */
   reportFile: string;
 }
+
+// ── Plan step config ────────────────────────────────────────────────────
+
+/**
+ * Configuration for plan-step SDK queries (PRD/TRD generation via Ensemble).
+ * Plan steps are not pipeline phases — no role or reportFile needed.
+ */
+export interface PlanStepConfig {
+  model: ModelSelection;
+  maxBudgetUsd: number;
+  /** Maximum number of turns for a plan-step SDK query */
+  maxTurns: number;
+}
+
+export const PLAN_STEP_CONFIG: PlanStepConfig = {
+  model: "claude-sonnet-4-6",
+  maxBudgetUsd: getPlanStepBudget(),
+  // Sufficient for typical PRD/TRD generation runs; raise if plan steps hit the turn limit
+  maxTurns: 50,
+};
 
 /**
  * All valid model selections.

@@ -1,11 +1,27 @@
 # Agent Task
 
 ## Task Details
+<<<<<<< HEAD:.foreman/reports/TASK-foreman-29fc.md
 **Seed ID:** foreman-cbfc
 **Title:** Extract maxBudgetUsd values to environment variables
+||||||| parent of cca0fe7 (Extract dispatcher maxTurns and model to configuration (foreman-1d9d)):TASK.md
+**Bead ID:** foreman-fe78
+**Title:** Replace maxTurns with maxBudgetUsd for pipeline phase limits
+=======
+**Seed ID:** foreman-1d9d
+**Title:** Extract dispatcher maxTurns and model to configuration
+>>>>>>> cca0fe7 (Extract dispatcher maxTurns and model to configuration (foreman-1d9d)):TASK.md
 **Description:** (no description provided)
+<<<<<<< HEAD:.foreman/reports/TASK-foreman-29fc.md
 **Model:** claude-sonnet-4-6
 **Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-cbfc
+||||||| parent of cca0fe7 (Extract dispatcher maxTurns and model to configuration (foreman-1d9d)):TASK.md
+**Model:** claude-sonnet-4-6
+**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-fe78
+=======
+**Model:** claude-haiku-4-5-20251001
+**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-1d9d
+>>>>>>> cca0fe7 (Extract dispatcher maxTurns and model to configuration (foreman-1d9d)):TASK.md
 
 ## Agent Team
 This task is handled by an Engineering Lead agent that orchestrates a team:

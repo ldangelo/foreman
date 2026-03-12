@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Dispatcher } from "../dispatcher.js";
+import { PLAN_STEP_CONFIG } from "../roles.js";
 import type { SeedInfo } from "../types.js";
 
 // Minimal mocks — we only need selectModel which doesn't touch store/seeds
@@ -60,5 +61,31 @@ describe("Dispatcher.selectModel", () => {
 
   it("checks description for complexity signals", () => {
     expect(dispatcher.selectModel(makeSeed("Update module", "This requires a complex overhaul"))).toBe("claude-opus-4-6");
+  });
+});
+
+describe("PLAN_STEP_CONFIG", () => {
+  it("has a valid model", () => {
+    expect(PLAN_STEP_CONFIG.model).toBe("claude-sonnet-4-6");
+  });
+
+  it("has a finite maxBudgetUsd within a reasonable range", () => {
+    expect(Number.isFinite(PLAN_STEP_CONFIG.maxBudgetUsd)).toBe(true);
+    expect(PLAN_STEP_CONFIG.maxBudgetUsd).toBeGreaterThan(0);
+    expect(PLAN_STEP_CONFIG.maxBudgetUsd).toBeLessThanOrEqual(20);
+  });
+
+  it("has maxBudgetUsd of 3.00", () => {
+    expect(PLAN_STEP_CONFIG.maxBudgetUsd).toBe(3.00);
+  });
+
+  it("has a finite maxTurns within a reasonable range", () => {
+    expect(Number.isFinite(PLAN_STEP_CONFIG.maxTurns)).toBe(true);
+    expect(PLAN_STEP_CONFIG.maxTurns).toBeGreaterThan(0);
+    expect(PLAN_STEP_CONFIG.maxTurns).toBeLessThanOrEqual(500);
+  });
+
+  it("has maxTurns of 50", () => {
+    expect(PLAN_STEP_CONFIG.maxTurns).toBe(50);
   });
 });

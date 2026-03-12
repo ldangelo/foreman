@@ -10,6 +10,7 @@ import type { ForemanStore } from "../lib/store.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
 import { calculateImpactScores } from "./pagerank.js";
+import { PLAN_STEP_CONFIG } from "./roles.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -20,7 +21,6 @@ import type {
   ModelSelection,
   PlanStepDispatched,
 } from "./types.js";
-import { getPlanStepBudget } from "../lib/config.js";
 
 // ── Dispatcher ──────────────────────────────────────────────────────────
 
@@ -383,10 +383,11 @@ export class Dispatcher {
         prompt,
         options: {
           cwd: this.projectPath,
-          model: "claude-sonnet-4-6",
+          model: PLAN_STEP_CONFIG.model,
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
-          maxBudgetUsd: getPlanStepBudget(),
+          maxBudgetUsd: PLAN_STEP_CONFIG.maxBudgetUsd,
+          maxTurns: PLAN_STEP_CONFIG.maxTurns,
           env,
           persistSession: false,
         },
