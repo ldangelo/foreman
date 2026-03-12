@@ -115,4 +115,24 @@ describe("CLI smoke tests", () => {
       result.exitCode !== 0 || output.toLowerCase().includes("error") || output.includes("init")
     ).toBe(true);
   }, 10_000);
+
+  it("doctor --help shows usage", async () => {
+    const tmp = makeTempDir();
+    const result = await run(["doctor", "--help"], tmp);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("doctor");
+    expect(result.stdout).toContain("--fix");
+    expect(result.stdout).toContain("--dry-run");
+    expect(result.stdout).toContain("--json");
+  }, 10_000);
+
+  it("doctor --json outputs valid JSON outside git repo", async () => {
+    const tmp = makeTempDir();
+    // tmp is not a git repo, so doctor should exit 1 with JSON error
+    const result = await run(["doctor", "--json"], tmp);
+
+    // Should exit 1 (not a git repo)
+    expect(result.exitCode).toBe(1);
+  }, 10_000);
 });

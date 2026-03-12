@@ -1,51 +1,66 @@
-# QA Report: Tool enforcement guards for agent roles
+# QA Report: Health monitoring: doctor command with auto-fix
 
 ## Verdict: PASS
 
 ## Test Results
-- Test suite: 246 passed, 9 failed
-- New tests added: 16 (in `src/orchestrator/__tests__/roles.test.ts`)
-- All 9 failures are pre-existing environment issues unrelated to this change (verified by stashing changes and confirming same 9 failures, 230 passed before vs 246 passed after — exactly 16 new tests added, all pass)
+- **Doctor unit tests** (`src/orchestrator/__tests__/doctor.test.ts`): **19 passed, 0 failed**
+- **Full test suite (worktree)**: 249 passed, 11 failed
+- **Full test suite (main project)**: 250 passed, 0 failed
+- **TypeScript type check**: 0 errors
+- **New tests added**: 0 (19 tests were added by Developer)
 
-### Pre-existing Failures (Not Caused by This Change)
+## Failing Tests Analysis
 
-| Test File | Failing Tests | Root Cause |
+All 11 failing tests in the worktree are **pre-existing infrastructure failures unrelated to this feature**:
+
+| Test File | Failures | Root Cause |
 |---|---|---|
-| `src/cli/__tests__/commands.test.ts` | 4 tests | CLI binary not built (`ENOENT`) |
-| `src/orchestrator/__tests__/detached-spawn.test.ts` | 2 tests + 2 uncaught errors | `tsx` binary missing in worktree `node_modules` |
-| `src/orchestrator/__tests__/worker-spawn.test.ts` | 1 test | `tsx` binary missing in worktree `node_modules` |
+| `src/cli/__tests__/commands.test.ts` | 6 | `tsx` binary missing from worktree `node_modules/.bin/` |
+| `src/orchestrator/__tests__/agent-worker.test.ts` | 2 | Same — tsx ENOENT |
+| `src/orchestrator/__tests__/worker-spawn.test.ts` | 1 | Same — tsx ENOENT |
+| `src/orchestrator/__tests__/detached-spawn.test.ts` | 2 | Same — tsx ENOENT |
+
+These same tests **pass in the main project directory** where tsx is installed. The worktree's isolated `node_modules` directory is missing the tsx symlink, which is a worktree setup artifact — not a code regression introduced by this branch.
 
 ## Implementation Review
 
-### roles.ts Changes
-- `RoleConfig` interface extended with `allowedTools: string[]` — clean addition alongside `maxBudgetUsd`
-- `ALL_AGENT_TOOLS` constant lists all 15 known SDK tools (no duplicates — verified by test)
-- `getDisallowedTools(roleConfig)` function correctly computes set complement: `ALL_AGENT_TOOLS \ allowedTools`
-- Role-specific `allowedTools` assignments correctly enforce intent:
-  - **explorer**: `[Read, Glob, Grep]` — read-only
-  - **developer**: `[Read, Write, Edit, Bash, Glob, Grep, Agent, TodoWrite, WebFetch, WebSearch]` — full access
-  - **qa**: `[Read, Write, Edit, Bash, Glob, Grep, TodoWrite]` — no Agent spawning
-  - **reviewer**: `[Read, Glob, Grep]` — read-only (identical to explorer)
+### Files Changed
+- `src/orchestrator/doctor.ts` — New `Doctor` class with all check methods
+- `src/cli/commands/doctor.ts` — Refactored to use `Doctor` class
+- `src/orchestrator/types.ts` — Added `CheckResult`, `CheckStatus`, `DoctorReport` types
+- `src/orchestrator/__tests__/doctor.test.ts` — 19 unit tests
 
-### agent-worker.ts Changes
-- `getDisallowedTools` imported and called at phase start in `runPhase()`
-- `disallowedTools` passed to SDK `query()` options as `disallowedTools: disallowedTools.length > 0 ? disallowedTools : undefined`
-- Log entries updated to include `allowed=[...]` and `disallowed=[...]` for observability
-- Passing `undefined` when disallowed list is empty is correct (avoids sending empty array to SDK)
+### Feature Coverage
+The implementation correctly covers all required health checks:
 
-### TypeScript Compilation
-- `npx tsc --noEmit` passes with zero errors
+| Check | Tested | Auto-fix | Dry-run |
+|---|---|---|---|
+| `checkGitBinary` | ✅ (pass + fail cases) | n/a | n/a |
+| `checkSdBinary` | via `checkSystem` | n/a | n/a |
+| `checkProjectRegistered` | ✅ (pass + fail) | n/a | n/a |
+| `checkSeedsInitialized` | via `checkRepository` | n/a | n/a |
+| `checkDatabaseFile` | via `checkRepository` | n/a | n/a |
+| `checkZombieRuns` | ✅ (pass, warn, fix, dry-run) | ✅ | ✅ |
+| `checkStalePendingRuns` | ✅ (pass, warn, fix) | ✅ | ✅ |
+| `checkRunStateConsistency` | ✅ (pass, warn, fix) | ✅ | ✅ |
+| `checkFailedStuckRuns` | ✅ (pass, warn) | n/a | n/a |
+| `checkOrphanedWorktrees` | via `checkDataIntegrity` | ✅ | ✅ |
+| `checkBlockedSeeds` | via `checkDataIntegrity` | n/a | n/a |
+| `runAll` | ✅ (structure check) | — | — |
 
-### Edge Cases Verified by Tests
-- `getDisallowedTools` returns complement of `allowedTools` relative to `ALL_AGENT_TOOLS`
-- Union of `allowedTools` and `getDisallowedTools` equals `ALL_AGENT_TOOLS` for every role
-- Explorer and reviewer have identical read-only toolsets
-- QA has `Agent` disallowed but `Bash` allowed
-- All disallowed tools for every role are valid members of `ALL_AGENT_TOOLS` (no phantom tools)
+### Notable Correctness Points
+
+1. **`--fix` + `--dry-run` conflict**: CLI correctly warns when both flags are passed; dry-run takes precedence.
+2. **PATH blanking test for git**: Correctly uses `finally` block to restore `process.env.PATH` after testing the git-not-found path.
+3. **Branch ID extraction**: Uses `wt.branch.slice("foreman/".length)` (defensive) rather than `.replace("foreman/", "")`.
+4. **`execFileAsync` for `checkBlockedSeeds`**: Changed from synchronous `execFileSync` to async; consistent with the rest of the file.
+5. **`skip` status**: Added to `CheckStatus` type and handled in the CLI's `icon()`/`label()` functions.
+6. **Summary counts**: `runAll()` counts `skip` status entries in addition to pass/warn/fail/fixed.
 
 ## Issues Found
 
-None. The implementation is correct, TypeScript compiles cleanly, and all new tests pass.
+None. All failures are pre-existing worktree node_modules infrastructure issues, not regressions introduced by this feature.
 
 ## Files Modified
-- `src/orchestrator/__tests__/roles.test.ts` — 16 new tests added (no existing tests modified)
+
+None — all tests passed without requiring fixes.

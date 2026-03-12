@@ -1,165 +1,209 @@
-# Explorer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Explorer Report: Health monitoring: doctor command with auto-fix
 
 ## Summary
-The codebase uses `maxTurns` to limit SDK query execution in the agent orchestration pipeline. This needs to be replaced with `maxBudgetUsd` to enforce budget-based limits instead of turn-based limits. The change affects the role configurations, phase execution, and logging.
+The doctor command (`src/cli/commands/doctor.ts`) provides comprehensive health monitoring for the Foreman orchestrator with existing auto-fix capabilities via the `--fix` flag. The codebase has supporting infrastructure (Store, Monitor, git utilities) that can be leveraged for enhanced health checks and recovery.
 
 ## Relevant Files
 
-### 1. **src/orchestrator/roles.ts** (lines 13-46)
-- **Purpose**: Defines role configurations for the specialization pipeline (explorer, developer, qa, reviewer)
-- **Current State**:
-  - `RoleConfig` interface has `maxTurns: number` property (line 16)
-  - `ROLE_CONFIGS` object defines maxTurns for each phase:
-    - explorer: 30 turns
-    - developer: 80 turns
-    - qa: 30 turns
-    - reviewer: 20 turns
-- **Relevance**: Primary file that needs modification - interface definition and config values
+### Core Implementation
+- **src/cli/commands/doctor.ts** (609 lines)
+  - Implements `doctorCommand` with health checks and auto-fix logic
+  - Checks: SD binary, Git binary, Git repo, database file, project registration, seeds initialization, orphaned worktrees, zombie runs, stale pending runs, failed/stuck runs, blocked seeds
+  - Auto-fixes (with `--fix` flag): orphaned/merged worktrees, zombie runs, stale pending runs
+  - Outputs results in human-readable format or JSON (--json flag)
+  - Status states: "pass", "warn", "fail", "fixed"
 
-### 2. **src/orchestrator/agent-worker.ts** (lines 310-399)
-- **Purpose**: Standalone worker process that runs individual SDK query calls for each pipeline phase
-- **Current State**:
-  - Line 322: Logs `maxTurns=${roleConfig.maxTurns}` when starting a phase
-  - Line 337: Passes `maxTurns: roleConfig.maxTurns` to the SDK `query()` options
-  - Line 225: Already handles `error_max_budget_usd` error subtype (future-ready)
-- **Relevance**: Needs to replace logging and pass maxBudgetUsd to query() options instead
+### Supporting Infrastructure
+- **src/orchestrator/monitor.ts** (160 lines)
+  - `Monitor` class: checks active runs, detects completion/stuck state
+  - `recoverStuck()` method: recovers stuck runs with max retry limit (default 3)
+  - Uses Store to update run status and log events
+  - Already integrates with `monitor` command
 
-### 3. **src/orchestrator/dispatcher.ts** (line 361)
-- **Purpose**: Dispatches beads to agents, handles one-off planning steps
-- **Current State**:
-  - Line 361: Uses `maxTurns: 50` for `dispatchPlanStep()` SDK query
-- **Relevance**: Secondary location needing update for consistency with phase limits
+- **src/lib/store.ts** (509 lines)
+  - `ForemanStore` class: SQLite database for projects, runs, costs, events
+  - Key methods: `getRunsByStatus()`, `updateRun()`, `logEvent()`, `getRunEvents()`
+  - Tracks run status: pending, running, completed, failed, stuck, merged, conflict, test-failed, pr-created
+  - Event types: dispatch, claim, complete, fail, merge, stuck, restart, recover, conflict, test-fail, pr-created
+
+- **src/lib/git.ts** (150+ lines)
+  - Worktree management: `createWorktree()`, `removeWorktree()`, `deleteBranch()`, `listWorktrees()`
+  - Branch operations and git integration
+  - Helper: `extractPid()` from session_key (format: `pid-<number>`)
+
+- **src/cli/commands/monitor.ts** (107 lines)
+  - CLI command wrapping the Monitor class
+  - Options: `--recover` (auto-recover stuck agents), `--timeout` (stuck detection timeout)
+  - Displays active/completed/stuck/failed runs
+
+### CLI Integration
+- **src/cli/index.ts** (36 lines)
+  - Registers `doctorCommand` with the Commander.js program
+
+### Testing
+- **src/orchestrator/__tests__/monitor.test.ts** (134 lines)
+  - Unit tests for Monitor class
+  - Uses vitest with mocking of store/seeds dependencies
+  - Tests: checkAll(), recoverStuck(), event logging
+  - Pattern: create mock objects, inject into Monitor, verify behavior
+
+- **src/cli/__tests__/commands.test.ts** (118 lines)
+  - CLI smoke tests using tsx and execFile
+  - Tests general commands (--help, --version, etc.)
+  - Currently no doctor command tests
 
 ## Architecture & Patterns
 
-### Pipeline Orchestration Pattern
-- **Sequential phases**: Explorer → Developer ⇄ QA → Reviewer → Finalize
-- **Phase execution**: Each phase runs as a separate `query()` call with its own config
-- **Error handling**: Already recognizes `error_max_budget_usd` error subtype (agent-worker.ts:225)
-- **Naming convention**: `roleConfig.maxTurns` → should become `roleConfig.maxBudgetUsd`
-
-### SDK Integration
-- The Anthropic Claude Agent SDK supports `maxBudgetUsd?: number` in query options (confirmed in sdk.d.ts)
-- Budget limits are enforced by the SDK during query execution
-- Error subtype `error_max_budget_usd` is already handled by the error detection logic
-
-### Role Config Structure
+### Health Check Pattern
+Each check in doctor.ts follows this pattern:
 ```typescript
-export interface RoleConfig {
-  role: AgentRole;
-  model: ModelSelection;
-  maxTurns: number;              // ← Change to maxBudgetUsd: number
-  reportFile: string;
+async function checkX(): Promise<CheckResult | CheckResult[]> {
+  // Validation logic
+  return {
+    name: string,
+    status: CheckStatus ("pass" | "warn" | "fail" | "fixed"),
+    message: string,
+    fixApplied?: string  // Only set when fix is applied
+  };
 }
 ```
 
+### Auto-Fix Pattern
+- Checks that can auto-fix accept a `fix: boolean` parameter
+- When `fix` is true, immediately apply the fix and return status "fixed"
+- When `fix` is false, return status "warn" with instruction message
+- Example: `checkOrphanedWorktrees()` removes merged/orphaned worktrees
+
+### Error Handling
+- Try-catch blocks with graceful degradation
+- Error messages extracted from exceptions
+- Non-critical failures don't block other checks (e.g., git worktree prune)
+
+### Logging & Events
+- Monitor class logs all status transitions via `store.logEvent()`
+- Event details include seedId, error messages, elapsed time, retry counts
+- Events indexed by project_id and run_id
+
+### Naming Conventions
+- Command file: lowercase with hyphens (doctor.ts, monitor.ts)
+- Type definitions: PascalCase with Result suffix (CheckResult, MonitorReport)
+- Private functions: camelCase, start with check/is/extract prefixes
+- Constants: SCREAMING_SNAKE_CASE (none currently in doctor.ts)
+
 ## Dependencies
 
-### What Uses maxTurns
-1. **agent-worker.ts**:
-   - Imports `ROLE_CONFIGS` from roles.ts
-   - Calls `roleConfig.maxTurns` in `runPhase()` function
-   - Passes value to SDK `query()` options
+### doctor.ts imports:
+- Commander: CLI framework
+- Chalk: colored terminal output
+- Node.js builtins: fs, path, os, child_process, util
+- Local: ForemanStore, git utilities (getRepoRoot, listWorktrees, removeWorktree)
 
-2. **dispatcher.ts**:
-   - Hard-coded `maxTurns: 50` in `dispatchPlanStep()`
-   - No import from roles.ts (independent configuration)
+### Monitor.ts dependencies:
+- Store: database operations
+- SeedsClient: seed/issue information
+- Git utilities: worktree management
 
-3. **roles.ts**:
-   - Defines the canonical values for all phases
-   - No external dependencies on the property name
-
-### SDK API Contract
-- The SDK's `query()` function accepts `maxBudgetUsd?: number` parameter
-- When a query exceeds budget, SDK returns error with `subtype: "error_max_budget_usd"`
-- No backwards compatibility issues - this is a parameter replacement
+### Store.ts dependencies:
+- better-sqlite3: database
+- Node.js: fs, path, os, crypto
 
 ## Existing Tests
 
-### Test Files
-1. **src/orchestrator/__tests__/roles.test.ts**
-   - Tests ROLE_CONFIGS structure (all roles defined, models correct)
-   - Tests prompt templates (context injection, read-only instructions)
-   - Tests verdict/issue parsing from reports
-   - **Status**: Tests focus on config existence, not specific maxTurns values
-   - **Impact**: Tests will likely pass after renaming property (no assertions on maxTurns specifically)
+### Monitor Tests (monitor.test.ts)
+- Tests checkAll() with various run states (completed, stuck, active, failed)
+- Tests recoverStuck() with retry limits
+- Tests event logging on status changes
+- Mocking pattern: vitest.fn() for store/seeds methods
 
-2. **src/orchestrator/__tests__/agent-worker.test.ts**
-   - Tests worker process initialization and logging
-   - Tests config file handling and deletion
-   - **Status**: No assertions on maxTurns values
-   - **Impact**: Will need to verify logging format still works with maxBudgetUsd
+### CLI Tests (commands.test.ts)
+- Smoke tests for --help, --version, other commands
+- No doctor-specific tests currently
+- Uses tsx to run CLI and captures stdout/stderr/exitCode
 
-### Test Coverage of Limits
-- No tests directly assert maxTurns values
-- No tests verify budget enforcement
-- New tests may be beneficial to ensure budget limits work correctly
+### Store Tests (store-metrics.test.ts)
+- Database operations tests
 
 ## Recommended Approach
 
-### Phase 1: Update Role Configurations
-1. Update `RoleConfig` interface in roles.ts:
-   - Rename `maxTurns: number` → `maxBudgetUsd: number`
+### Phase 1: Enhance doctor command with orchestrator integration
+1. **Create Doctor class** (src/orchestrator/doctor.ts) similar to Monitor class
+   - Move check logic into isolated, reusable methods
+   - Each check returns CheckResult[] (supporting multiple results like worktrees)
+   - Integrate with Store and SeedsClient for better data access
+   - Public methods: `checkSystem()`, `checkRepository()`, `checkDataIntegrity()`
+   - Public method: `fixAll()` to apply all available fixes
 
-2. Update `ROLE_CONFIGS` values with reasonable budget estimates:
-   - Need to estimate per-model costs based on token usage
-   - Suggested starting points (requires validation):
-     - **explorer** (haiku, 30 turns): $0.50-$1.00 USD
-     - **developer** (sonnet, 80 turns): $5.00-$10.00 USD
-     - **qa** (sonnet, 30 turns): $2.00-$4.00 USD
-     - **reviewer** (sonnet, 20 turns): $1.50-$3.00 USD
-   - Also update **dispatchPlanStep** budget in dispatcher.ts (currently maxTurns: 50)
+2. **Refactor doctor command** to use Doctor class
+   - Simplified CLI implementation
+   - Cleaner separation of concerns
+   - Easier to test and extend
 
-### Phase 2: Update Phase Execution in agent-worker.ts
-1. Update `runPhase()` function:
-   - Line 322: Change log format to show `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - Line 337: Pass `maxBudgetUsd: roleConfig.maxBudgetUsd` instead of `maxTurns`
+### Phase 2: Add new health checks
+1. **Seed consistency checks**
+   - Check for seeds with missing/invalid types
+   - Verify seed hierarchy integrity (parent/child relationships)
 
-2. Verify error handling:
-   - Line 225 already checks for `error_max_budget_usd` — keep as-is
+2. **Database integrity checks**
+   - Validate foreign key constraints
+   - Check for orphaned records (runs without projects, events without runs)
+   - Verify data completeness (all required fields populated)
 
-### Phase 3: Update Dispatcher Planning
-1. In dispatcher.ts `dispatchPlanStep()`:
-   - Replace `maxTurns: 50` with appropriate `maxBudgetUsd` value (suggest $3.00-$5.00)
+3. **Worktree health checks**
+   - Verify worktree branches match seed IDs
+   - Check disk space for worktree directories
+   - Validate worktree Git configuration
 
-### Phase 4: Update Tests & Documentation
-1. roles.test.ts:
-   - Update any hardcoded expectations if tests fail
-   - Consider adding assertions for budget values being positive numbers
+4. **Run state consistency**
+   - Detect impossible state transitions
+   - Check for runs with completed_at but status != completed
+   - Verify progress field matches run status
 
-2. agent-worker.test.ts:
-   - Verify logging format with new maxBudgetUsd parameter
-   - Check that log output still contains relevant budget information
+### Phase 3: Enhance auto-fix capabilities
+1. **Data repair fixes**
+   - Auto-fix inconsistent run states
+   - Repair orphaned database records (with confirmation)
+   - Fix malformed seed IDs or properties
+
+2. **Selective fixing**
+   - Add `--fix-category` option to fix specific categories
+   - Add `--dry-run` option (already common pattern in reset.ts)
+   - Add confirmation prompts for destructive operations
+
+### Phase 4: Testing
+1. **Unit tests** (src/orchestrator/__tests__/doctor.test.ts)
+   - Test each check method with mocked Store/SeedsClient
+   - Test fix methods with transactional rollback
+   - Test error handling and edge cases
+
+2. **Integration tests** (src/cli/__tests__/doctor.test.ts)
+   - Test `foreman doctor` command with temp repos
+   - Test `--fix`, `--json` flags
+   - Test exit codes (0 for pass/fixed, 1 for fail)
+
+3. **Test utilities**
+   - Helper to create mock projects/runs/seeds
+   - Temporary database/git setup for integration tests
+   - Pattern already used in commands.test.ts
+
+## Key Files to Modify
+1. Create: **src/orchestrator/doctor.ts** (new Doctor class, ~400 lines)
+2. Modify: **src/cli/commands/doctor.ts** (refactor to use Doctor class, ~150 lines)
+3. Create: **src/orchestrator/__tests__/doctor.test.ts** (unit tests, ~200 lines)
+4. Modify: **src/cli/__tests__/commands.test.ts** (add doctor tests, +30 lines)
+5. Modify: **src/cli/index.ts** (no changes needed)
 
 ## Potential Pitfalls & Edge Cases
 
-1. **Budget Estimation Accuracy**
-   - Turn counts are discrete (explorer: 30) but budgets must be estimated
-   - Per-model costs vary (Haiku cheaper than Sonnet than Opus)
-   - May need to adjust budgets based on real usage data
+1. **Transaction safety**: Auto-fixes modify database and filesystem — should be wrapped in transactions or have dry-run support
+2. **Process kills**: `process.kill(pid, 0)` only works for processes the user owns — test with different user contexts
+3. **Git operations**: Concurrent worktree operations can fail — add retry logic with exponential backoff
+4. **Circular dependencies**: Orphaned worktree check iterates all worktrees — could be slow with many seeds
+5. **Performance**: Doctor checks can take 30+ seconds with slow git/database — add progress reporting
+6. **Stale data**: Monitor class queries seeds API synchronously — consider batching or caching
+7. **Seed API failures**: Some checks depend on external `sd` CLI — need graceful fallback
 
-2. **Error Handling Clarity**
-   - Error message when budget exceeded may be different from turn limits
-   - Current code checks `error_max_budget_usd` — verify message consistency
-
-3. **Logging Clarity**
-   - Phase startup logs currently show `maxTurns=30`
-   - Should show `maxBudgetUsd=$X.XX` for clarity
-
-4. **Backwards Compatibility**
-   - Existing stored run data uses turns in progress tracking (agent-worker.ts line 196)
-   - Budget limits don't track in progress.turns — separate concerns
-   - No data migration needed (turns are tracked separately from limits)
-
-5. **Dispersion Across Files**
-   - dispatcher.ts has a hard-coded maxTurns value (50) separate from roles.ts
-   - Consider whether plan steps should use same budget as phases or different
-
-## Next Steps for Developer
-
-1. Research typical costs per phase from production data (if available)
-2. Update roles.ts with maxBudgetUsd values (start conservative)
-3. Update agent-worker.ts runPhase() logging and query options
-4. Update dispatcher.ts dispatchPlanStep() budget
-5. Run tests to verify no regressions
-6. Monitor first few runs with new budgets to validate appropriateness
+## Design Decisions to Confirm
+1. Should Doctor class be similar to Monitor (separate orchestrator concern) or integrated into doctor command?
+2. Should fixes be transactional with rollback on error, or progressive with individual error handling?
+3. Should there be a `--verbose` flag to show detailed check output?
+4. Should failed checks exit with code 1, or only actual failures (not warnings)?

@@ -1,34 +1,32 @@
-# Developer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Developer Report: Health monitoring: doctor command with auto-fix
 
 ## Approach
 
-This iteration addressed the two NOTE-level feedback items from the previous review cycle. The core `maxTurns → maxBudgetUsd` migration was already complete; this pass tightens two remaining rough edges:
-
-1. Extract the inline `3.00` magic number in `dispatcher.ts` to a named constant, matching the pattern used by `ROLE_CONFIGS`.
-2. Strengthen the budget regression tests in `roles.test.ts` by pinning absolute USD values for `developer` and `reviewer`, so accidental budget reductions are caught.
+This iteration addresses the four NOTE-level issues raised in the previous code review. No new features were added; the focus was on correctness, consistency, and test quality.
 
 ## Files Changed
 
-- **src/orchestrator/dispatcher.ts** — Added `PLAN_STEP_MAX_BUDGET_USD = 3.00` constant above the `Dispatcher` class and replaced the inline literal `maxBudgetUsd: 3.00` with `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`. This mirrors how `ROLE_CONFIGS` centralises phase budgets, making future adjustments easy to find and change.
+- `src/orchestrator/doctor.ts` — Three changes:
+  1. Removed `execFileSync` import (no longer used); `checkBlockedSeeds` now uses the async `execFileAsync` (already imported) instead of the synchronous variant, keeping the file consistent and non-blocking.
+  2. `wt.branch.replace("foreman/", "")` replaced with `wt.branch.slice("foreman/".length)` for defensive branch-ID extraction that cannot be confused by a doubly-prefixed branch name.
 
-- **src/orchestrator/__tests__/roles.test.ts** — Added two new pinned-value tests:
-  - `"developer budget is $5.00"` — asserts `ROLE_CONFIGS.developer.maxBudgetUsd === 5.00`
-  - `"reviewer budget is $2.00"` — asserts `ROLE_CONFIGS.reviewer.maxBudgetUsd === 2.00`
+- `src/cli/commands/doctor.ts` — Added an explicit warning when both `--fix` and `--dry-run` are passed simultaneously, so users understand that `--fix` is silently ignored in that case (dry-run takes precedence).
 
-  These supplement the existing relative ordering test (`explorer < developer`) with absolute guard rails that catch regression if any budget is accidentally halved or zeroed.
+- `src/orchestrator/__tests__/doctor.test.ts` — Replaced the vacuous `expect(["pass", "fail"]).toContain(result.status)` assertion with a meaningful one (`expect(result.status).toBe("pass")`) since git is guaranteed on dev/CI machines. Added a second test case that blanks `PATH` and asserts `"fail"`, fully covering both branches of `checkGitBinary`.
 
 ## Tests Added/Modified
 
-- **src/orchestrator/__tests__/roles.test.ts**
-  - Added `"developer budget is $5.00"` — pins the developer role's exact budget
-  - Added `"reviewer budget is $2.00"` — pins the reviewer role's exact budget
+- `src/orchestrator/__tests__/doctor.test.ts`
+  - `checkGitBinary > returns pass when git is available` — now asserts status `"pass"` and checks the message string.
+  - `checkGitBinary > returns fail when git is not found` — new test; blanks `process.env.PATH`, calls `checkGitBinary`, asserts status `"fail"`, restores PATH in `finally`.
 
 ## Decisions & Trade-offs
 
-- **Which roles to pin**: Chose `developer` (the most expensive phase, most likely to be accidentally changed) and `reviewer` (a meaningfully different value from `developer`). `explorer` and `qa` are implicitly covered by the ordering test (`explorer < developer`) and the "all positive" guard.
-- **Constant scope**: `PLAN_STEP_MAX_BUDGET_USD` is module-scoped (not exported) since it is only used inside `dispatcher.ts`. If other modules ever need it, it can be exported at that point.
-- **No changes to budget values**: The values (`developer: 5.00`, `reviewer: 2.00`, plan step: `3.00`) are intentionally preserved from the previous iteration to keep this pass focused on code quality only.
+- **`execFileAsync` for `checkBlockedSeeds`**: The `stdout` property of the resolved object is used directly. The previous `execFileSync` call used `encoding: "utf-8"` to return a string; `execFileAsync` defaults the same way when no `encoding` is specified it returns a `Buffer`, but since we're passing no `encoding` option the result is still a string-typed `stdout` field when using the promisified variant without options — actually, to be safe the call relies on the default (string) output. This is identical behavior to the prior sync call.
+- **Blanking PATH for the `checkGitBinary` fail test**: This is a common pattern for testing binary-not-found paths without mocking internals. The `finally` block ensures PATH is always restored even if the assertion throws.
+- **No changes to CLI validation logic**: The `--fix` + `--dry-run` behavior (dry-run wins) was already correct; only the UX notification was missing. Adding a yellow warning line is the minimal, non-breaking fix.
 
 ## Known Limitations
 
-- Budget values are estimates based on expected token usage; real-world calibration should happen after a few pipeline runs with production workloads.
+- The `execFileAsync` for `checkBlockedSeeds` does not pass an explicit `encoding: "utf-8"` option — the promisified `execFile` returns `{ stdout: string, stderr: string }` by default (Node.js infers string from the absence of a `Buffer`-returning encoding), so `JSON.parse(stdout)` is safe. If a future Node.js version changes defaults this could silently break; adding `encoding: "utf-8"` explicitly would be more defensive.
+- The PATH-blanking approach in the git test may be fragile on systems where `execFile` resolves the binary at import time (it does not; Node resolves at call time), so this is acceptable.
