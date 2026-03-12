@@ -1,28 +1,27 @@
 # Code Review: Task groups for batch coordination
 
-## Verdict: FAIL
+## Verdict: PASS
 
 ## Summary
 
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation is clean, well-structured, and fully satisfies the requirements. Task groups are correctly implemented as a foreman-only coordination primitive stored in SQLite, with a dedicated `group-manager.ts` orchestration layer, proper CLI commands, and monitor integration. The schema migrations are applied correctly, idempotency is handled via `INSERT OR IGNORE`, error handling is defensive throughout, and 38 new tests pass cleanly with no regressions. One notable gap is that `Monitor.checkGroups()` is exposed but never wired into the `monitor` command or the `run` command's watch loop — auto-close works only when code explicitly calls `checkGroups()`, which nothing in the current codebase does. This is a functional gap but acceptable for an initial implementation if callers plan to invoke it manually or wire it later.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[NOTE]** `src/cli/commands/monitor.ts:24` — `Monitor.checkGroups()` is implemented but never called from the `monitor` CLI command or the `run` watch loop. Auto-close of task groups will not fire during normal `foreman run` or `foreman monitor` usage. If background auto-close is the intended behavior (as described in the Explorer report), this needs to be wired into `monitor.ts`'s action handler (after `checkAll`) and/or into `run.ts`'s watch loop.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[NOTE]** `src/orchestrator/group-manager.ts:38` — Seed fetch failures during `checkAndAutoClose` silently treat the member as "not done" (`done: false`). This is the right safety default, but a group whose member seed was deleted will never auto-close. Acceptable for v1, but worth documenting.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
+- **[NOTE]** `src/cli/commands/group.ts:26` — The `group create` success output prints the group ID twice: once inline (`Created group <id>`) and once at the bottom (`Group ID: <id>`). Minor UX inconsistency.
 
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
-
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/lib/store.ts` (updateGroup) — `updateGroup` only permits updating `status` and `completed_at`. This is intentional by type signature but means `name` and `parent_seed_id` are immutable after creation. That's fine for v1 but worth noting if editing groups is later needed.
 
 ## Positive Notes
 
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- Schema design is solid: `UNIQUE (group_id, seed_id)` constraint enforces idempotency at the DB layer, and `INSERT OR IGNORE` is the correct pattern to exploit it without application-level duplication checks.
+- Both SCHEMA and MIGRATIONS are kept in sync — new tables appear in both, which is the correct pattern for this codebase (SCHEMA handles fresh installs, MIGRATIONS handles upgrades).
+- GroupManager is properly isolated from the CLI: the CLI delegates to GroupManager, GroupManager delegates to store + seeds. Clean separation of concerns.
+- `checkAndAutoClose` guards on `group.status !== "active"` first, making repeated calls safe without hitting the Seeds API unnecessarily.
+- `getGroupStatus` gracefully handles missing seeds (returns `"unknown"` / `"(not found)"`) so `foreman group status` doesn't crash when a seed has been deleted.
+- Tests cover all critical paths: empty group, partial completion, full completion, parent-seed close, idempotent re-close, null group, progress percentage math, and cross-project isolation.
+- No breaking changes to any existing API surface.

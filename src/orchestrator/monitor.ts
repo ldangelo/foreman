@@ -1,7 +1,8 @@
-import type { ForemanStore, Run } from "../lib/store.js";
+import type { ForemanStore, Run, TaskGroup } from "../lib/store.js";
 import type { SeedsClient } from "../lib/seeds.js";
 import { removeWorktree, createWorktree } from "../lib/git.js";
 import type { MonitorReport } from "./types.js";
+import { GroupManager } from "./group-manager.js";
 
 // ── Monitor ──────────────────────────────────────────────────────────────
 
@@ -89,6 +90,15 @@ export class Monitor {
     }
 
     return report;
+  }
+
+  /**
+   * Check all active task groups and auto-close any whose members are all done.
+   * Returns the list of groups that were closed.
+   */
+  async checkGroups(projectId?: string): Promise<TaskGroup[]> {
+    const manager = new GroupManager(this.store, this.seeds);
+    return manager.checkAllGroups(projectId);
   }
 
   /**

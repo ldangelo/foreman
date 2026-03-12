@@ -193,6 +193,74 @@ describe("ForemanStore", () => {
     });
   });
 
+  // ── Task Groups ───────────────────────────────────────────────────
+
+  describe("task groups", () => {
+    it("creates and retrieves a group", () => {
+      const project = store.registerProject("p", "/p");
+      const group = store.createGroup(project.id, "my-batch", "seed-epic-1");
+
+      expect(group.name).toBe("my-batch");
+      expect(group.parent_seed_id).toBe("seed-epic-1");
+      expect(group.status).toBe("active");
+
+      const fetched = store.getGroup(group.id);
+      expect(fetched).toEqual(group);
+    });
+
+    it("returns null for non-existent group", () => {
+      expect(store.getGroup("nonexistent")).toBeNull();
+    });
+
+    it("adds group members idempotently", () => {
+      const project = store.registerProject("p", "/p");
+      const group = store.createGroup(project.id, "batch");
+
+      store.addGroupMember(group.id, "seed-1");
+      store.addGroupMember(group.id, "seed-2");
+      store.addGroupMember(group.id, "seed-1"); // duplicate — should be ignored
+
+      const members = store.getGroupMembers(group.id);
+      expect(members).toHaveLength(2);
+      expect(members.map((m) => m.seed_id).sort()).toEqual(["seed-1", "seed-2"]);
+    });
+
+    it("lists groups by project", () => {
+      const p1 = store.registerProject("p1", "/p1");
+      const p2 = store.registerProject("p2", "/p2");
+
+      store.createGroup(p1.id, "g1");
+      store.createGroup(p1.id, "g2");
+      store.createGroup(p2.id, "g3");
+
+      expect(store.listGroupsByProject(p1.id)).toHaveLength(2);
+      expect(store.listGroupsByProject(p2.id)).toHaveLength(1);
+    });
+
+    it("lists only active groups", () => {
+      const project = store.registerProject("p", "/p");
+      const g1 = store.createGroup(project.id, "active-group");
+      const g2 = store.createGroup(project.id, "completed-group");
+      store.updateGroup(g2.id, { status: "completed", completed_at: new Date().toISOString() });
+
+      const active = store.listActiveGroups(project.id);
+      expect(active).toHaveLength(1);
+      expect(active[0].id).toBe(g1.id);
+    });
+
+    it("updates group status", () => {
+      const project = store.registerProject("p", "/p");
+      const group = store.createGroup(project.id, "test");
+      const now = new Date().toISOString();
+
+      store.updateGroup(group.id, { status: "completed", completed_at: now });
+
+      const updated = store.getGroup(group.id)!;
+      expect(updated.status).toBe("completed");
+      expect(updated.completed_at).toBe(now);
+    });
+  });
+
   // ── Metrics ───────────────────────────────────────────────────────
 
   describe("metrics", () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Monitor } from "../monitor.js";
-import type { Run } from "../../lib/store.js";
+import type { Run, TaskGroup, TaskGroupMember } from "../../lib/store.js";
 
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
@@ -25,9 +25,13 @@ function makeMocks() {
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     getRunEvents: vi.fn((): any[] => []),
+    listActiveGroups: vi.fn(() => [] as TaskGroup[]),
+    getGroupMembers: vi.fn(() => [] as TaskGroupMember[]),
+    updateGroup: vi.fn(),
   };
   const seeds = {
     show: vi.fn(async () => ({ status: "open" })),
+    close: vi.fn(async () => {}),
   };
   const monitor = new Monitor(store as any, seeds as any, "/tmp/project");
   return { store, seeds, monitor };
@@ -129,6 +133,42 @@ describe("Monitor", () => {
         expect.objectContaining({ seedId: run.seed_id }),
         run.id,
       );
+    });
+  });
+
+  describe("checkGroups", () => {
+    it("returns empty array when no active groups exist", async () => {
+      const { monitor } = makeMocks();
+      const result = await monitor.checkGroups();
+      expect(result).toEqual([]);
+    });
+
+    it("delegates to GroupManager.checkAllGroups and returns closed groups", async () => {
+      const { store, seeds, monitor } = makeMocks();
+
+      const group = {
+        id: "group-1",
+        project_id: "proj-1",
+        name: "batch-1",
+        parent_seed_id: null,
+        status: "active" as const,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        completed_at: null,
+      };
+
+      // Simulate one active group whose single member is closed
+      store.listActiveGroups.mockReturnValue([group] as TaskGroup[]);
+      store.getGroupMembers.mockReturnValue([
+        { id: "m-1", group_id: "group-1", seed_id: "seed-x", created_at: "" } as TaskGroupMember,
+      ]);
+      seeds.show.mockResolvedValue({ status: "closed" });
+
+      const result = await monitor.checkGroups("proj-1");
+
+      expect(store.updateGroup).toHaveBeenCalledWith("group-1", expect.objectContaining({ status: "completed" }));
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe("group-1");
     });
   });
 });

@@ -25,6 +25,9 @@ export const monitorCommand = new Command("monitor")
         stuckTimeoutMinutes: timeoutMinutes,
       });
 
+      // Check task groups and auto-close any whose members are all done
+      const closedGroups = await monitor.checkGroups();
+
       // Active
       if (report.active.length > 0) {
         console.log(chalk.green.bold(`Active (${report.active.length}):`));
@@ -87,13 +90,25 @@ export const monitorCommand = new Command("monitor")
         console.log();
       }
 
+      // Auto-closed groups
+      if (closedGroups.length > 0) {
+        console.log(chalk.green.bold(`Auto-closed groups (${closedGroups.length}):`));
+        for (const group of closedGroups) {
+          console.log(
+            `  ${chalk.green("✓")} ${group.name} ${chalk.dim(`(${group.id})`)}` +
+            (group.parent_seed_id ? chalk.dim(` → closed ${group.parent_seed_id}`) : "")
+          );
+        }
+        console.log();
+      }
+
       const total =
         report.active.length +
         report.completed.length +
         report.stuck.length +
         report.failed.length;
 
-      if (total === 0) {
+      if (total === 0 && closedGroups.length === 0) {
         console.log(chalk.dim("No active runs found."));
       }
 

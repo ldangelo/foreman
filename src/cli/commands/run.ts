@@ -5,6 +5,7 @@ import { SeedsClient } from "../../lib/seeds.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
+import { Monitor } from "../../orchestrator/monitor.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk } from "../watch-ui.js";
 
@@ -39,6 +40,7 @@ export const runCommand = new Command("run")
       const seeds = new SeedsClient(projectPath);
       const store = new ForemanStore();
       const dispatcher = new Dispatcher(seeds, store, projectPath);
+      const monitor = new Monitor(store, seeds, projectPath);
 
       // Resume mode: pick up stuck/failed runs from a previous dispatch
       if (resume || resumeFailed) {
@@ -144,7 +146,13 @@ export const runCommand = new Command("run")
         if (watch) {
           const runIds = result.dispatched.map((t) => t.runId);
           await watchRunsInk(store, runIds);
-          // After batch completes, loop back to dispatch the next batch
+          // After batch completes, check task groups and auto-close any that are done
+          const closedGroups = await monitor.checkGroups();
+          if (closedGroups.length > 0) {
+            console.log(chalk.green(`\nAuto-closed ${closedGroups.length} task group(s): `) +
+              closedGroups.map((g) => chalk.bold(g.name)).join(", "));
+          }
+          // Loop back to dispatch the next batch
           continue;
         }
 

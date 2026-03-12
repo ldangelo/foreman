@@ -1,34 +1,73 @@
-# Developer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Developer Report: Task groups for batch coordination
 
 ## Approach
 
-This iteration addressed the two NOTE-level feedback items from the previous review cycle. The core `maxTurns → maxBudgetUsd` migration was already complete; this pass tightens two remaining rough edges:
+This iteration addressed four issues flagged in the previous review, all of which
+were `[NOTE]`-level items. The core data model, GroupManager, CLI commands, and
+store methods were already implemented in a prior pass. The focus here was:
 
-1. Extract the inline `3.00` magic number in `dispatcher.ts` to a named constant, matching the pattern used by `ROLE_CONFIGS`.
-2. Strengthen the budget regression tests in `roles.test.ts` by pinning absolute USD values for `developer` and `reviewer`, so accidental budget reductions are caught.
+1. **Wire `checkGroups()` into the monitor and run commands** — the most impactful
+   fix, ensuring auto-close of task groups fires during normal `foreman run` and
+   `foreman monitor` usage.
+2. **Fix duplicate group ID in `group create` output** — minor UX fix.
+3. **Document the silent-failure behavior** in `group-manager.ts` for seed fetch
+   errors (deleted seeds will never auto-close their group).
 
 ## Files Changed
 
-- **src/orchestrator/dispatcher.ts** — Added `PLAN_STEP_MAX_BUDGET_USD = 3.00` constant above the `Dispatcher` class and replaced the inline literal `maxBudgetUsd: 3.00` with `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`. This mirrors how `ROLE_CONFIGS` centralises phase budgets, making future adjustments easy to find and change.
+- **src/cli/commands/monitor.ts** — Added `await monitor.checkGroups()` call
+  immediately after `checkAll()`. Auto-closed groups are displayed in their own
+  "Auto-closed groups" section with group name, ID, and parent seed ID (if any).
+  The "No active runs found" message now also requires no closed groups, so it
+  doesn't appear when only groups were processed.
 
-- **src/orchestrator/__tests__/roles.test.ts** — Added two new pinned-value tests:
-  - `"developer budget is $5.00"` — asserts `ROLE_CONFIGS.developer.maxBudgetUsd === 5.00`
-  - `"reviewer budget is $2.00"` — asserts `ROLE_CONFIGS.reviewer.maxBudgetUsd === 2.00`
+- **src/cli/commands/run.ts** — Imported `Monitor` and created an instance
+  alongside the `Dispatcher`. In the watch loop, after `watchRunsInk` returns
+  (i.e. a batch completes), `monitor.checkGroups()` is called to trigger any
+  pending group auto-close. A brief summary line is printed if any groups closed.
 
-  These supplement the existing relative ordering test (`explorer < developer`) with absolute guard rails that catch regression if any budget is accidentally halved or zeroed.
+- **src/cli/commands/group.ts** — Fixed the `group create` success line to print
+  the group **name** (not ID) inline: `✓ Created group <name>`. The machine-
+  readable `Group ID: <id>` line at the end is preserved for shell scripting.
+
+- **src/orchestrator/group-manager.ts** — Added an explanatory comment in the
+  `checkAndAutoClose` catch block documenting the safety-default behavior and its
+  implication: groups with deleted member seeds will never auto-close in v1.
 
 ## Tests Added/Modified
 
-- **src/orchestrator/__tests__/roles.test.ts**
-  - Added `"developer budget is $5.00"` — pins the developer role's exact budget
-  - Added `"reviewer budget is $2.00"` — pins the reviewer role's exact budget
+- **src/orchestrator/__tests__/monitor.test.ts** — Extended the mock `store`
+  object with `listActiveGroups`, `getGroupMembers`, and `updateGroup` (needed by
+  `GroupManager` used inside `Monitor.checkGroups`). Also extended `seeds` mock
+  with `close`. Added a `describe("checkGroups")` block with two tests:
+  - Returns an empty array when no active groups exist.
+  - Delegates to `GroupManager.checkAllGroups` and returns the list of groups
+    that were auto-closed when all members are done.
 
 ## Decisions & Trade-offs
 
-- **Which roles to pin**: Chose `developer` (the most expensive phase, most likely to be accidentally changed) and `reviewer` (a meaningfully different value from `developer`). `explorer` and `qa` are implicitly covered by the ordering test (`explorer < developer`) and the "all positive" guard.
-- **Constant scope**: `PLAN_STEP_MAX_BUDGET_USD` is module-scoped (not exported) since it is only used inside `dispatcher.ts`. If other modules ever need it, it can be exported at that point.
-- **No changes to budget values**: The values (`developer: 5.00`, `reviewer: 2.00`, plan step: `3.00`) are intentionally preserved from the previous iteration to keep this pass focused on code quality only.
+- **`checkGroups()` call placement in `monitor.ts`**: Called after `checkAll` but
+  before printing, so the output is grouped — runs first, then groups. This keeps
+  the display coherent.
+
+- **`checkGroups()` call placement in `run.ts`**: Called after `watchRunsInk`
+  (inside the watch loop only). In `--no-watch` mode there is nothing to trigger
+  on, which is correct — groups only auto-close when tasks are observed to finish.
+
+- **No project-scoping in `run.ts` `checkGroups()` call**: The call uses no
+  `projectId` argument, which means it checks all active groups across all
+  projects. This matches the existing `monitor.checkAll()` behaviour (which also
+  checks all projects by default). Both can be scoped per-project via the optional
+  `projectId` parameter if needed in future.
 
 ## Known Limitations
 
-- Budget values are estimates based on expected token usage; real-world calibration should happen after a few pipeline runs with production workloads.
+- **Groups with deleted member seeds never auto-close** (documented in
+  `group-manager.ts`). This is the safe default for v1; a future enhancement could
+  add a `foreman group remove <group-id> <seed-id>` command to manually remove
+  stale members.
+- **`name` and `parent_seed_id` are immutable after creation** (`updateGroup` only
+  permits `status` and `completed_at`). Acceptable for v1.
+- **No event logging for group auto-close** in the store's `events` table. The
+  group status update itself is the record of truth. Adding `logEvent` calls could
+  improve audit trails in a future iteration.

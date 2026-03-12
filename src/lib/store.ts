@@ -81,6 +81,24 @@ export interface Metrics {
   costByRuntime: Array<{ run_id: string; cost: number; duration_seconds: number | null }>;
 }
 
+export interface TaskGroup {
+  id: string;
+  project_id: string;
+  name: string;
+  parent_seed_id: string | null;
+  status: "active" | "completed" | "failed";
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface TaskGroupMember {
+  id: string;
+  group_id: string;
+  seed_id: string;
+  created_at: string;
+}
+
 // ── Schema migration ────────────────────────────────────────────────────
 
 const SCHEMA = `
@@ -127,12 +145,52 @@ CREATE TABLE IF NOT EXISTS events (
   created_at TEXT,
   FOREIGN KEY (project_id) REFERENCES projects(id)
 );
+
+CREATE TABLE IF NOT EXISTS task_groups (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  parent_seed_id TEXT,
+  status TEXT DEFAULT 'active',
+  created_at TEXT,
+  updated_at TEXT,
+  completed_at TEXT,
+  FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+CREATE TABLE IF NOT EXISTS task_group_members (
+  id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  seed_id TEXT NOT NULL,
+  created_at TEXT,
+  FOREIGN KEY (group_id) REFERENCES task_groups(id),
+  UNIQUE (group_id, seed_id)
+);
 `;
 
 // Add progress column to runs table if not present (migration)
 const MIGRATIONS = [
   `ALTER TABLE runs ADD COLUMN progress TEXT DEFAULT NULL`,
   `ALTER TABLE runs RENAME COLUMN bead_id TO seed_id`,
+  `CREATE TABLE IF NOT EXISTS task_groups (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  parent_seed_id TEXT,
+  status TEXT DEFAULT 'active',
+  created_at TEXT,
+  updated_at TEXT,
+  completed_at TEXT,
+  FOREIGN KEY (project_id) REFERENCES projects(id)
+)`,
+  `CREATE TABLE IF NOT EXISTS task_group_members (
+  id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  seed_id TEXT NOT NULL,
+  created_at TEXT,
+  FOREIGN KEY (group_id) REFERENCES task_groups(id),
+  UNIQUE (group_id, seed_id)
+)`,
 ];
 
 // ── Store ───────────────────────────────────────────────────────────────
@@ -505,5 +563,83 @@ export class ForemanStore {
       tasksByStatus,
       costByRuntime,
     };
+  }
+
+  // ── Task Groups ──────────────────────────────────────────────────────
+
+  createGroup(projectId: string, name: string, parentSeedId?: string): TaskGroup {
+    const now = new Date().toISOString();
+    const group: TaskGroup = {
+      id: randomUUID(),
+      project_id: projectId,
+      name,
+      parent_seed_id: parentSeedId ?? null,
+      status: "active",
+      created_at: now,
+      updated_at: now,
+      completed_at: null,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO task_groups (id, project_id, name, parent_seed_id, status, created_at, updated_at, completed_at)
+         VALUES (@id, @project_id, @name, @parent_seed_id, @status, @created_at, @updated_at, @completed_at)`
+      )
+      .run(group);
+    return group;
+  }
+
+  getGroup(id: string): TaskGroup | null {
+    return (
+      (this.db.prepare("SELECT * FROM task_groups WHERE id = ?").get(id) as TaskGroup | undefined) ?? null
+    );
+  }
+
+  updateGroup(id: string, updates: Partial<Pick<TaskGroup, "status" | "completed_at">>): void {
+    const fields: string[] = [];
+    const values: Record<string, unknown> = { id };
+    for (const [key, value] of Object.entries(updates)) {
+      if (value !== undefined) {
+        fields.push(`${key} = @${key}`);
+        values[key] = value;
+      }
+    }
+    if (fields.length === 0) return;
+    fields.push("updated_at = @updated_at");
+    values.updated_at = new Date().toISOString();
+    this.db.prepare(`UPDATE task_groups SET ${fields.join(", ")} WHERE id = @id`).run(values);
+  }
+
+  listGroupsByProject(projectId: string): TaskGroup[] {
+    return this.db
+      .prepare("SELECT * FROM task_groups WHERE project_id = ? ORDER BY created_at DESC")
+      .all(projectId) as TaskGroup[];
+  }
+
+  listActiveGroups(projectId?: string): TaskGroup[] {
+    if (projectId) {
+      return this.db
+        .prepare("SELECT * FROM task_groups WHERE project_id = ? AND status = 'active' ORDER BY created_at DESC")
+        .all(projectId) as TaskGroup[];
+    }
+    return this.db
+      .prepare("SELECT * FROM task_groups WHERE status = 'active' ORDER BY created_at DESC")
+      .all() as TaskGroup[];
+  }
+
+  addGroupMember(groupId: string, seedId: string): void {
+    const now = new Date().toISOString();
+    // Idempotent upsert — ignore if already a member
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO task_group_members (id, group_id, seed_id, created_at)
+         VALUES (?, ?, ?, ?)`
+      )
+      .run(randomUUID(), groupId, seedId, now);
+  }
+
+  getGroupMembers(groupId: string): TaskGroupMember[] {
+    return this.db
+      .prepare("SELECT * FROM task_group_members WHERE group_id = ? ORDER BY created_at ASC")
+      .all(groupId) as TaskGroupMember[];
   }
 }

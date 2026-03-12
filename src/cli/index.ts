@@ -12,6 +12,7 @@ import { monitorCommand } from "./commands/monitor.js";
 import { resetCommand } from "./commands/reset.js";
 import { attachCommand } from "./commands/attach.js";
 import { doctorCommand } from "./commands/doctor.js";
+import { groupCommand } from "./commands/group.js";
 
 const program = new Command();
 
@@ -31,5 +32,6 @@ program.addCommand(monitorCommand);
 program.addCommand(resetCommand);
 program.addCommand(attachCommand);
 program.addCommand(doctorCommand);
+program.addCommand(groupCommand);
 
 program.parse();
