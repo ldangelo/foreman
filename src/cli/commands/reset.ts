@@ -132,8 +132,12 @@ export const resetCommand = new Command("reset")
             beadsReset++;
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            errors.push(`Failed to reset bead ${beadId}: ${msg}`);
-            console.log(`    ${chalk.red("error")} resetting bead: ${msg}`);
+            if (msg.includes("not found") || msg.includes("Issue not found")) {
+              console.log(`    ${chalk.dim("skip")} seed ${beadId} no longer exists`);
+            } else {
+              errors.push(`Failed to reset bead ${beadId}: ${msg}`);
+              console.log(`    ${chalk.red("error")} resetting bead: ${msg}`);
+            }
           }
         }
       }
