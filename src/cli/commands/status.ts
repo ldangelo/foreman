@@ -108,17 +108,16 @@ export const statusCommand = new Command("status")
               if (progress.toolCalls > 0) details.push(`${progress.toolCalls} tools`);
               if (progress.filesChanged.length > 0) details.push(`${progress.filesChanged.length} files`);
 
-              // Show current activity
+              // Show current phase (pipeline mode) or last tool (single agent)
               const lastTool = progress.lastToolCall ?? "starting";
-              const phase = parsePipelinePhase(progress.lastToolCall);
-              if (phase) {
+              const currentPhase = progress.currentPhase;
+              if (currentPhase) {
                 const phaseColors: Record<string, (s: string) => string> = {
                   explorer: chalk.cyan, developer: chalk.green,
                   qa: chalk.yellow, reviewer: chalk.magenta, finalize: chalk.blue,
                 };
-                const colorFn = phaseColors[phase.name] ?? chalk.white;
-                const retryTag = phase.retry ? chalk.dim(` (retry ${phase.retry})`) : "";
-                console.log(`    ${chalk.dim("└")} Phase: ${colorFn(phase.name)}${retryTag}  ${chalk.dim(details.join(", "))}`);
+                const colorFn = phaseColors[currentPhase] ?? chalk.white;
+                console.log(`    ${chalk.dim("└")} Phase: ${colorFn(currentPhase)}  last: ${chalk.dim(lastTool)}  ${chalk.dim(details.join(", "))}`);
               } else if (details.length > 0) {
                 // Team mode or single agent — show last tool and stats
                 const agentCount = progress.toolBreakdown["Agent"] ?? 0;
@@ -150,17 +149,3 @@ export const statusCommand = new Command("status")
     store.close();
   });
 
-/**
- * Parse pipeline phase from progress.lastToolCall.
- * Pipeline sets values like "explorer:start", "developer:start (retry 1)", "qa:start".
- * Non-pipeline agents use tool names like "Bash", "Read" — returns null for those.
- */
-function parsePipelinePhase(lastToolCall: string | null): { name: string; retry?: number } | null {
-  if (!lastToolCall) return null;
-  const match = lastToolCall.match(/^(explorer|developer|qa|reviewer|finalize):(\S+)(?: \(retry (\d+)\))?$/);
-  if (!match) return null;
-  return {
-    name: match[1],
-    retry: match[3] ? parseInt(match[3], 10) : undefined,
-  };
-}
