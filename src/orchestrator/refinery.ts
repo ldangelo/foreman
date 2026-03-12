@@ -112,7 +112,7 @@ export class Refinery {
           // File may have been deleted on one side — just remove it
           try { unlinkSync(join(this.projectPath, f)); } catch { /* gone */ }
         });
-        await git(["add", f], this.projectPath).catch(() => {});
+        await git(["add", "-f", f], this.projectPath).catch(() => {});
       }
 
       // Continue the rebase
@@ -362,7 +362,7 @@ export class Refinery {
           // Only report-file conflicts — auto-resolve by accepting the branch version
           for (const f of reportConflicts) {
             await git(["checkout", "--theirs", f], this.projectPath);
-            await git(["add", f], this.projectPath);
+            await git(["add", "-f", f], this.projectPath);
           }
           await git(["commit", "--no-edit"], this.projectPath);
         }

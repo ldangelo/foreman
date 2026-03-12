@@ -3,8 +3,125 @@ import chalk from "chalk";
 
 import { SeedsClient } from "../../lib/seeds.js";
 import { ForemanStore } from "../../lib/store.js";
+import type { Run } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
+
+// ── State mismatch detection ─────────────────────────────────────────────
+
+export interface StateMismatch {
+  seedId: string;
+  runId: string;
+  runStatus: string;
+  actualSeedStatus: string;
+  expectedSeedStatus: string;
+}
+
+export interface MismatchResult {
+  mismatches: StateMismatch[];
+  fixed: number;
+  errors: string[];
+}
+
+/**
+ * Map a run status to the expected seed status.
+ * This defines the correct seed state given a run's terminal state.
+ */
+export function mapRunStatusToSeedStatus(runStatus: string): string {
+  switch (runStatus) {
+    case "pending":
+    case "running":
+      return "in_progress";
+    case "completed":
+      return "closed";
+    case "failed":
+    case "stuck":
+      return "open";
+    case "merged":
+    case "pr-created":
+      return "closed";
+    case "conflict":
+    case "test-failed":
+      return "open";
+    default:
+      return "open";
+  }
+}
+
+/**
+ * Detect and fix seed/run state mismatches.
+ *
+ * Checks all terminal runs (completed, merged, etc.) for seeds that are still
+ * stuck in "in_progress". Seeds that are already included in the `resetSeedIds`
+ * set are skipped — those will be handled by the main reset loop.
+ *
+ * For each mismatch found, the seed status is updated to the expected value
+ * (unless dryRun is true).
+ */
+export async function detectAndFixMismatches(
+  store: Pick<ForemanStore, "getRunsByStatus">,
+  seeds: Pick<SeedsClient, "show" | "update">,
+  projectId: string,
+  resetSeedIds: ReadonlySet<string>,
+  opts?: { dryRun?: boolean },
+): Promise<MismatchResult> {
+  const dryRun = opts?.dryRun ?? false;
+
+  // Check terminal run statuses not already handled by the reset loop
+  const checkStatuses = ["completed", "merged", "pr-created", "conflict", "test-failed"] as const;
+  const terminalRuns = checkStatuses.flatMap((s) => store.getRunsByStatus(s, projectId));
+
+  // Deduplicate by seed_id: keep the most recently created run per seed
+  const latestBySeed = new Map<string, Run>();
+  for (const run of terminalRuns) {
+    // Skip seeds already being reset by the main loop
+    if (resetSeedIds.has(run.seed_id)) continue;
+
+    const existing = latestBySeed.get(run.seed_id);
+    if (!existing || run.created_at > existing.created_at) {
+      latestBySeed.set(run.seed_id, run);
+    }
+  }
+
+  const mismatches: StateMismatch[] = [];
+  const errors: string[] = [];
+  let fixed = 0;
+
+  for (const run of latestBySeed.values()) {
+    const expectedSeedStatus = mapRunStatusToSeedStatus(run.status);
+    try {
+      const seedDetail = await seeds.show(run.seed_id);
+
+      if (seedDetail.status !== expectedSeedStatus) {
+        mismatches.push({
+          seedId: run.seed_id,
+          runId: run.id,
+          runStatus: run.status,
+          actualSeedStatus: seedDetail.status,
+          expectedSeedStatus,
+        });
+
+        if (!dryRun) {
+          try {
+            await seeds.update(run.seed_id, { status: expectedSeedStatus });
+            fixed++;
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            errors.push(`Failed to fix mismatch for seed ${run.seed_id}: ${msg}`);
+          }
+        }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("not found") && !msg.includes("Issue not found")) {
+        errors.push(`Could not check seed ${run.seed_id}: ${msg}`);
+      }
+      // Seed not found — skip silently
+    }
+  }
+
+  return { mismatches, fixed, errors };
+}
 
 export const resetCommand = new Command("reset")
   .description("Reset failed/stuck runs: kill agents, remove worktrees, reset seeds to open")
@@ -32,17 +149,15 @@ export const resetCommand = new Command("reset")
 
       const runs = statuses.flatMap((s) => store.getRunsByStatus(s, project.id));
 
-      if (runs.length === 0) {
-        console.log(chalk.yellow("No runs to reset."));
-        store.close();
-        return;
-      }
-
       if (dryRun) {
         console.log(chalk.yellow("(dry run — no changes will be made)\n"));
       }
 
-      console.log(chalk.bold(`Resetting ${runs.length} run(s):\n`));
+      if (runs.length === 0) {
+        console.log(chalk.yellow("No active runs to reset.\n"));
+      } else {
+        console.log(chalk.bold(`Resetting ${runs.length} run(s):\n`));
+      }
 
       // Collect unique seed IDs to reset
       const seedIds = new Set<string>();
@@ -153,21 +268,44 @@ export const resetCommand = new Command("reset")
         }
       }
 
+      // 7. Detect and fix seed/run state mismatches for terminal runs
+      console.log(chalk.bold("\nChecking for seed/run state mismatches..."));
+      const mismatchResult = await detectAndFixMismatches(store, seeds, project.id, seedIds, { dryRun });
+
+      if (mismatchResult.mismatches.length > 0) {
+        for (const m of mismatchResult.mismatches) {
+          const action = dryRun
+            ? chalk.yellow("(would fix)")
+            : chalk.green("fixed");
+          console.log(
+            `  ${chalk.yellow("mismatch")} ${chalk.cyan(m.seedId)}: ` +
+            `run=${m.runStatus}, seed=${m.actualSeedStatus} → ${m.expectedSeedStatus} ${action}`,
+          );
+        }
+      } else {
+        console.log(chalk.dim("  No mismatches found."));
+      }
+
       // Summary
       console.log(chalk.bold("\nSummary:"));
       if (dryRun) {
         console.log(chalk.yellow(`  Would reset ${runs.length} runs across ${seedIds.size} seeds`));
+        if (mismatchResult.mismatches.length > 0) {
+          console.log(chalk.yellow(`  Would fix ${mismatchResult.mismatches.length} mismatch(es)`));
+        }
       } else {
         console.log(`  Processes killed:   ${killed}`);
         console.log(`  Worktrees removed:  ${worktreesRemoved}`);
         console.log(`  Branches deleted:   ${branchesDeleted}`);
         console.log(`  Runs marked failed: ${runsMarkedFailed}`);
         console.log(`  Seeds reset:        ${seedsReset}`);
+        console.log(`  Mismatches fixed:   ${mismatchResult.fixed}`);
       }
 
-      if (errors.length > 0) {
-        console.log(chalk.red(`\n  Errors (${errors.length}):`));
-        for (const err of errors) {
+      const allErrors = [...errors, ...mismatchResult.errors];
+      if (allErrors.length > 0) {
+        console.log(chalk.red(`\n  Errors (${allErrors.length}):`));
+        for (const err of allErrors) {
           console.log(chalk.red(`    ${err}`));
         }
       }

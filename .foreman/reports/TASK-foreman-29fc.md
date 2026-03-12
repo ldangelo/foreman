@@ -1,11 +1,11 @@
 # Agent Task
 
 ## Task Details
-**Seed ID:** foreman-29fc
-**Title:** Event-driven status refresh via agent worker notifications
+**Seed ID:** foreman-8f3c
+**Title:** Detect and fix seed/agent state mismatches in foreman reset
 **Description:** (no description provided)
 **Model:** claude-sonnet-4-6
-**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-29fc
+**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-8f3c
 
 ## Agent Team
 This task is handled by an Engineering Lead agent that orchestrates a team:
