@@ -5,6 +5,7 @@ import {
   shortModel,
   shortPath,
   renderAgentCard,
+  renderAgentCardSummary,
   renderWatchDisplay,
   poll,
   type WatchState,
@@ -227,6 +228,137 @@ describe("renderAgentCard", () => {
   });
 });
 
+// ── renderAgentCardSummary() ────────────────────────────────────────────────
+
+describe("renderAgentCardSummary", () => {
+  it("includes seed_id in output", () => {
+    const run = makeRun({ seed_id: "foreman-summary-test" });
+    const output = renderAgentCardSummary(run, null);
+    expect(output).toContain("foreman-summary-test");
+  });
+
+  it("shows status text", () => {
+    const run = makeRun({ status: "running" });
+    const output = renderAgentCardSummary(run, null);
+    expect(output).toContain("RUNNING");
+  });
+
+  it("shows model name", () => {
+    const run = makeRun({ agent_type: "claude-sonnet-4-6" });
+    const output = renderAgentCardSummary(run, null);
+    expect(output).toContain("sonnet-4-6");
+  });
+
+  it("shows 'Initializing...' for running run with no progress", () => {
+    const run = makeRun({ status: "running" });
+    const output = renderAgentCardSummary(run, null);
+    expect(output).toContain("Initializing...");
+  });
+
+  it("shows cost when progress is provided", () => {
+    const run = makeRun({ status: "running" });
+    const progress = makeProgress({ costUsd: 0.0456 });
+    const output = renderAgentCardSummary(run, progress);
+    expect(output).toContain("$0.0456");
+  });
+
+  it("shows last tool call when progress is provided", () => {
+    const run = makeRun({ status: "running" });
+    const progress = makeProgress({ lastToolCall: "Edit" });
+    const output = renderAgentCardSummary(run, progress);
+    expect(output).toContain("last: Edit");
+  });
+
+  it("shows current phase when available", () => {
+    const run = makeRun({ status: "running" });
+    const progress = makeProgress({ currentPhase: "developer" });
+    const output = renderAgentCardSummary(run, progress);
+    expect(output).toContain("[developer]");
+  });
+
+  it("shows turns and tool count in summary", () => {
+    const run = makeRun({ status: "running" });
+    const progress = makeProgress({ turns: 5, toolCalls: 12 });
+    const output = renderAgentCardSummary(run, progress);
+    expect(output).toContain("5t");
+    expect(output).toContain("12 tools");
+  });
+
+  it("shows ▶ expand indicator", () => {
+    const run = makeRun();
+    const output = renderAgentCardSummary(run, null);
+    expect(output).toContain("▶");
+  });
+
+  it("shows numeric index when provided", () => {
+    const run = makeRun();
+    const output = renderAgentCardSummary(run, null, 0);
+    expect(output).toContain("1.");
+  });
+
+  it("shows correct index for second agent", () => {
+    const run = makeRun();
+    const output = renderAgentCardSummary(run, null, 2);
+    expect(output).toContain("3.");
+  });
+
+  it("does not show index when not provided", () => {
+    const run = makeRun();
+    const output = renderAgentCardSummary(run, null);
+    expect(output).not.toMatch(/^\d+\./);
+  });
+
+  it("is shorter than full renderAgentCard for run with progress", () => {
+    const run = makeRun({ status: "running" });
+    const progress = makeProgress();
+    const summaryOutput = renderAgentCardSummary(run, progress);
+    const fullOutput = renderAgentCard(run, progress, true);
+    expect(summaryOutput.split("\n").length).toBeLessThan(fullOutput.split("\n").length);
+  });
+});
+
+// ── renderAgentCard() with isExpanded=false ─────────────────────────────────
+
+describe("renderAgentCard with isExpanded=false", () => {
+  it("returns summary view when isExpanded=false", () => {
+    const run = makeRun({ status: "running" });
+    const progress = makeProgress();
+    const collapsed = renderAgentCard(run, progress, false);
+    const summary = renderAgentCardSummary(run, progress);
+    expect(collapsed).toBe(summary);
+  });
+
+  it("shows ▶ indicator when collapsed", () => {
+    const run = makeRun();
+    const output = renderAgentCard(run, null, false);
+    expect(output).toContain("▶");
+  });
+
+  it("does NOT show tool breakdown when collapsed", () => {
+    const run = makeRun({ status: "running" });
+    const progress = makeProgress({ toolBreakdown: { Bash: 10, Read: 5 } });
+    const output = renderAgentCard(run, progress, false);
+    // Collapsed view is a single line
+    const lines = output.split("\n");
+    expect(lines.length).toBe(1);
+  });
+
+  it("shows ▼ indicator when expanded (default)", () => {
+    const run = makeRun();
+    const progress = makeProgress();
+    const output = renderAgentCard(run, progress);
+    expect(output).toContain("▼");
+  });
+
+  it("backward compat: default isExpanded=true shows full card", () => {
+    const run = makeRun({ status: "completed" });
+    const progress = makeProgress({ toolBreakdown: { Bash: 5 } });
+    const output = renderAgentCard(run, progress);
+    // Full card should have multiple lines
+    expect(output.split("\n").length).toBeGreaterThan(3);
+  });
+});
+
 // ── poll() ────────────────────────────────────────────────────────────────
 
 describe("poll", () => {
@@ -444,5 +576,133 @@ describe("renderWatchDisplay", () => {
     const output = renderWatchDisplay(state);
     expect(output).toContain("foreman-1a");
     expect(output).toContain("foreman-2b");
+  });
+
+  it("does NOT show toggle hints when expandedRunIds is undefined (non-interactive)", () => {
+    const state = makeState({ allDone: false });
+    // No expandedRunIds argument = non-interactive context (e.g. foreman status)
+    const output = renderWatchDisplay(state, true);
+    expect(output).not.toContain("'a' toggle all");
+    expect(output).not.toContain("1-9 toggle agent");
+  });
+
+  it("does NOT show toggle hints when allDone even with expandedRunIds", () => {
+    const run = makeRun({ id: "r1", status: "completed" });
+    const state = makeState({ runs: [{ run, progress: null }], allDone: true, completedCount: 1 });
+    const output = renderWatchDisplay(state, true, new Set());
+    expect(output).not.toContain("'a' toggle all");
+  });
+});
+
+// ── renderWatchDisplay() with expandedRunIds ──────────────────────────────
+
+describe("renderWatchDisplay with expandedRunIds", () => {
+  function makeState(overrides?: Partial<WatchState>): WatchState {
+    const run = makeRun({ id: "r1", status: "running" });
+    return {
+      runs: [{ run, progress: makeProgress() }],
+      allDone: false,
+      totalCost: 0,
+      totalTools: 0,
+      totalFiles: 0,
+      completedCount: 0,
+      failedCount: 0,
+      stuckCount: 0,
+      ...overrides,
+    };
+  }
+
+  it("shows collapsed summary when run not in expandedRunIds", () => {
+    const run = makeRun({ id: "r1", status: "running" });
+    const state = makeState({ runs: [{ run, progress: makeProgress() }] });
+    const expandedRunIds = new Set<string>(); // empty = all collapsed
+    const output = renderWatchDisplay(state, true, expandedRunIds);
+    expect(output).toContain("▶");
+    expect(output).not.toContain("▼");
+  });
+
+  it("shows expanded detail when run is in expandedRunIds", () => {
+    const run = makeRun({ id: "r1", status: "running" });
+    const state = makeState({ runs: [{ run, progress: makeProgress() }] });
+    const expandedRunIds = new Set<string>(["r1"]);
+    const output = renderWatchDisplay(state, true, expandedRunIds);
+    expect(output).toContain("▼");
+    expect(output).not.toContain("▶");
+  });
+
+  it("shows 'a' toggle hint when expandedRunIds is provided and not done", () => {
+    const state = makeState();
+    // Pass an expandedRunIds set to indicate interactive mode
+    const output = renderWatchDisplay(state, true, new Set<string>());
+    expect(output).toContain("'a' toggle all");
+  });
+
+  it("shows '1-9 toggle agent' hint only for multiple agents", () => {
+    const run1 = makeRun({ id: "r1", seed_id: "foreman-1a", status: "running" });
+    const run2 = makeRun({ id: "r2", seed_id: "foreman-2b", status: "running" });
+    const multiState = makeState({
+      runs: [
+        { run: run1, progress: makeProgress() },
+        { run: run2, progress: makeProgress() },
+      ],
+    });
+    const multiOutput = renderWatchDisplay(multiState, true, new Set<string>());
+    expect(multiOutput).toContain("1-9 toggle agent");
+  });
+
+  it("does NOT show '1-9 toggle agent' hint for single agent", () => {
+    const state = makeState();
+    const output = renderWatchDisplay(state, true, new Set<string>());
+    expect(output).not.toContain("1-9 toggle agent");
+    // But 'a' hint should still appear
+    expect(output).toContain("'a' toggle all");
+  });
+
+  it("renders multiple agents with mixed expand state", () => {
+    const run1 = makeRun({ id: "r1", seed_id: "foreman-1a", status: "running" });
+    const run2 = makeRun({ id: "r2", seed_id: "foreman-2b", status: "running" });
+    const state = makeState({
+      runs: [
+        { run: run1, progress: makeProgress() },
+        { run: run2, progress: makeProgress() },
+      ],
+      allDone: false,
+    });
+    const expandedRunIds = new Set<string>(["r1"]); // only first expanded
+    const output = renderWatchDisplay(state, true, expandedRunIds);
+    expect(output).toContain("foreman-1a");
+    expect(output).toContain("foreman-2b");
+    // Contains both indicators
+    expect(output).toContain("▼"); // r1 is expanded
+    expect(output).toContain("▶"); // r2 is collapsed
+  });
+
+  it("defaults to all expanded when expandedRunIds is undefined", () => {
+    const run = makeRun({ id: "r1", status: "running" });
+    const state = makeState({ runs: [{ run, progress: makeProgress() }] });
+    const output = renderWatchDisplay(state, true, undefined);
+    expect(output).toContain("▼");
+    expect(output).not.toContain("▶");
+  });
+
+  it("shows agent index numbers for multiple agents", () => {
+    const run1 = makeRun({ id: "r1", seed_id: "foreman-1a", status: "running" });
+    const run2 = makeRun({ id: "r2", seed_id: "foreman-2b", status: "running" });
+    const state = makeState({
+      runs: [
+        { run: run1, progress: null },
+        { run: run2, progress: null },
+      ],
+    });
+    const output = renderWatchDisplay(state, true, new Set());
+    expect(output).toContain("1.");
+    expect(output).toContain("2.");
+  });
+
+  it("does NOT show agent index numbers for single agent", () => {
+    const state = makeState();
+    const output = renderWatchDisplay(state, true, new Set());
+    // Single agent should not have a numeric prefix
+    expect(output).not.toMatch(/^\s*1\./m);
   });
 });

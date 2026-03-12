@@ -1,201 +1,171 @@
 import { describe, it, expect } from "vitest";
-import type { RunProgress } from "../../lib/store.js";
+import type { Run, RunProgress } from "../../lib/store.js";
+import { renderAgentCard, renderAgentCardSummary } from "../watch-ui.js";
 
 /**
- * Integration tests for the status command display logic.
+ * Tests for the unified agent status display helpers in watch-ui.ts.
  *
- * Tests parsePipelinePhase() and the sub-agent count display logic
- * from src/cli/commands/status.ts.
- *
- * Since parsePipelinePhase is not exported, we re-implement the same
- * regex logic here and verify it matches the behavior described in the
- * source (lines 143-151 of status.ts).
+ * Covers `renderAgentCard` (expanded) and `renderAgentCardSummary` (collapsed),
+ * focusing on the `currentPhase` pipeline-phase display that is shared between
+ * `foreman run` (watch UI) and `foreman status`.
  */
 
-/**
- * Mirrors parsePipelinePhase from status.ts (lines 143-151).
- * Pipeline sets values like "explorer:start", "developer:start (retry 1)", "qa:start".
- * Non-pipeline agents use tool names like "Bash", "Read" — returns null for those.
- */
-function parsePipelinePhase(lastToolCall: string | null): { name: string; retry?: number } | null {
-  if (!lastToolCall) return null;
-  const match = lastToolCall.match(/^(explorer|developer|qa|reviewer|finalize):(\S+)(?: \(retry (\d+)\))?$/);
-  if (!match) return null;
+// ── Fixtures ─────────────────────────────────────────────────────────────
+
+function makeRun(overrides?: Partial<Run>): Run {
   return {
-    name: match[1],
-    retry: match[3] ? parseInt(match[3], 10) : undefined,
+    id: "test-run-id",
+    project_id: "test-project",
+    seed_id: "foreman-abc1",
+    agent_type: "claude-sonnet-4-5",
+    session_key: null,
+    worktree_path: null,
+    status: "running",
+    started_at: new Date().toISOString(),
+    completed_at: null,
+    created_at: new Date().toISOString(),
+    progress: null,
+    ...overrides,
   };
 }
 
-/**
- * Mirrors the sub-agent display logic from status.ts (lines 109-113).
- * Determines the activity string shown for an active agent run.
- */
-function formatAgentActivity(progress: RunProgress): string {
-  const lastTool = progress.lastToolCall ?? "starting";
-  const agentCount = progress.toolBreakdown["Agent"] ?? 0;
-  return agentCount > 0
-    ? `${agentCount} sub-agent(s) spawned`
-    : `last: ${lastTool}`;
-}
-
-// ── parsePipelinePhase tests ────────────────────────────────────────────
-
-describe("parsePipelinePhase", () => {
-  it("parses 'explorer:start' as explorer phase", () => {
-    const result = parsePipelinePhase("explorer:start");
-    expect(result).toEqual({ name: "explorer", retry: undefined });
-  });
-
-  it("parses 'developer:start' as developer phase", () => {
-    const result = parsePipelinePhase("developer:start");
-    expect(result).toEqual({ name: "developer", retry: undefined });
-  });
-
-  it("parses 'qa:start' as qa phase", () => {
-    const result = parsePipelinePhase("qa:start");
-    expect(result).toEqual({ name: "qa", retry: undefined });
-  });
-
-  it("parses 'reviewer:start' as reviewer phase", () => {
-    const result = parsePipelinePhase("reviewer:start");
-    expect(result).toEqual({ name: "reviewer", retry: undefined });
-  });
-
-  it("parses 'finalize:start' as finalize phase", () => {
-    const result = parsePipelinePhase("finalize:start");
-    expect(result).toEqual({ name: "finalize", retry: undefined });
-  });
-
-  it("parses retry count from 'developer:start (retry 1)'", () => {
-    const result = parsePipelinePhase("developer:start (retry 1)");
-    expect(result).toEqual({ name: "developer", retry: 1 });
-  });
-
-  it("parses higher retry count from 'developer:start (retry 2)'", () => {
-    const result = parsePipelinePhase("developer:start (retry 2)");
-    expect(result).toEqual({ name: "developer", retry: 2 });
-  });
-
-  it("parses retry on qa phase", () => {
-    const result = parsePipelinePhase("qa:start (retry 1)");
-    expect(result).toEqual({ name: "qa", retry: 1 });
-  });
-
-  it("returns null for standard tool names: 'Bash'", () => {
-    expect(parsePipelinePhase("Bash")).toBeNull();
-  });
-
-  it("returns null for standard tool names: 'Read'", () => {
-    expect(parsePipelinePhase("Read")).toBeNull();
-  });
-
-  it("returns null for standard tool names: 'Agent'", () => {
-    expect(parsePipelinePhase("Agent")).toBeNull();
-  });
-
-  it("returns null for standard tool names: 'Write'", () => {
-    expect(parsePipelinePhase("Write")).toBeNull();
-  });
-
-  it("returns null for standard tool names: 'Edit'", () => {
-    expect(parsePipelinePhase("Edit")).toBeNull();
-  });
-
-  it("returns null for null input", () => {
-    expect(parsePipelinePhase(null)).toBeNull();
-  });
-
-  it("returns null for empty string", () => {
-    expect(parsePipelinePhase("")).toBeNull();
-  });
-
-  it("returns null for partial matches like 'explorer'", () => {
-    // Must have the colon and action part
-    expect(parsePipelinePhase("explorer")).toBeNull();
-  });
-
-  it("returns null for unknown phase names", () => {
-    expect(parsePipelinePhase("unknown:start")).toBeNull();
-  });
-});
-
-// ── Sub-agent display logic tests ───────────────────────────────────────
-
 function makeProgress(overrides?: Partial<RunProgress>): RunProgress {
   return {
-    toolCalls: 0,
-    toolBreakdown: {},
+    toolCalls: 5,
+    toolBreakdown: { Bash: 3, Read: 2 },
     filesChanged: [],
-    turns: 0,
-    costUsd: 0,
-    tokensIn: 0,
-    tokensOut: 0,
-    lastToolCall: null,
+    turns: 3,
+    costUsd: 0.0012,
+    tokensIn: 1000,
+    tokensOut: 500,
+    lastToolCall: "Bash",
     lastActivity: new Date().toISOString(),
     ...overrides,
   };
 }
 
-describe("sub-agent count display", () => {
-  it("shows sub-agent count when toolBreakdown has Agent entries", () => {
+// ── renderAgentCard (expanded) — currentPhase display ────────────────────
+
+describe("renderAgentCard (expanded) — currentPhase display", () => {
+  it("shows Phase row when currentPhase is 'explorer'", () => {
+    const card = renderAgentCard(makeRun(), makeProgress({ currentPhase: "explorer" }), true);
+    expect(card).toContain("Phase");
+    expect(card).toContain("explorer");
+  });
+
+  it("shows Phase row when currentPhase is 'developer'", () => {
+    const card = renderAgentCard(makeRun(), makeProgress({ currentPhase: "developer" }), true);
+    expect(card).toContain("Phase");
+    expect(card).toContain("developer");
+  });
+
+  it("shows Phase row when currentPhase is 'qa'", () => {
+    const card = renderAgentCard(makeRun(), makeProgress({ currentPhase: "qa" }), true);
+    expect(card).toContain("Phase");
+    expect(card).toContain("qa");
+  });
+
+  it("shows Phase row when currentPhase is 'reviewer'", () => {
+    const card = renderAgentCard(makeRun(), makeProgress({ currentPhase: "reviewer" }), true);
+    expect(card).toContain("Phase");
+    expect(card).toContain("reviewer");
+  });
+
+  it("shows Phase row when currentPhase is 'finalize'", () => {
+    const card = renderAgentCard(makeRun(), makeProgress({ currentPhase: "finalize" }), true);
+    expect(card).toContain("Phase");
+    expect(card).toContain("finalize");
+  });
+
+  it("omits Phase row when currentPhase is undefined", () => {
+    const card = renderAgentCard(makeRun(), makeProgress({ currentPhase: undefined }), true);
+    expect(card).not.toContain("Phase");
+  });
+
+  it("still renders Tools row alongside the Phase row", () => {
+    const card = renderAgentCard(makeRun(), makeProgress({ currentPhase: "qa", toolCalls: 12 }), true);
+    expect(card).toContain("Phase");
+    expect(card).toContain("Tools");
+  });
+
+  it("shows lastToolCall in the Tools row even when currentPhase is set", () => {
+    const card = renderAgentCard(
+      makeRun(),
+      makeProgress({ currentPhase: "developer", lastToolCall: "Edit" }),
+      true,
+    );
+    expect(card).toContain("Phase");
+    expect(card).toContain("developer");
+    expect(card).toContain("last: Edit");
+  });
+});
+
+// ── renderAgentCard (collapsed / summary) — currentPhase display ─────────
+
+describe("renderAgentCardSummary — currentPhase display", () => {
+  it("shows [phase] bracket notation when currentPhase is set", () => {
+    const summary = renderAgentCardSummary(makeRun(), makeProgress({ currentPhase: "reviewer" }));
+    expect(summary).toContain("[reviewer]");
+  });
+
+  it("shows 'last: <tool>' when currentPhase is absent", () => {
+    const summary = renderAgentCardSummary(
+      makeRun(),
+      makeProgress({ currentPhase: undefined, lastToolCall: "Read" }),
+    );
+    expect(summary).toContain("last: Read");
+  });
+
+  it("currentPhase takes priority over lastToolCall in summary", () => {
+    const summary = renderAgentCardSummary(
+      makeRun(),
+      makeProgress({ currentPhase: "finalize", lastToolCall: "Bash" }),
+    );
+    expect(summary).toContain("[finalize]");
+    expect(summary).not.toContain("last: Bash");
+  });
+
+  it("shows all five pipeline phases correctly", () => {
+    const phases = ["explorer", "developer", "qa", "reviewer", "finalize"] as const;
+    for (const phase of phases) {
+      const summary = renderAgentCardSummary(makeRun(), makeProgress({ currentPhase: phase }));
+      expect(summary).toContain(`[${phase}]`);
+    }
+  });
+});
+
+// ── renderAgentCard — delegating to summary when collapsed ───────────────
+
+describe("renderAgentCard — collapsed delegates to summary", () => {
+  it("collapsed card contains phase bracket notation same as summary", () => {
+    const run = makeRun();
+    const progress = makeProgress({ currentPhase: "explorer" });
+    const collapsed = renderAgentCard(run, progress, false);
+    const summary = renderAgentCardSummary(run, progress);
+    expect(collapsed).toBe(summary);
+  });
+});
+
+// ── renderAgentCard — tool breakdown rendering ───────────────────────────
+
+describe("renderAgentCard (expanded) — tool breakdown", () => {
+  it("renders tool breakdown bar chart for top tools", () => {
     const progress = makeProgress({
       toolBreakdown: { Agent: 3, Bash: 10, Read: 5 },
       lastToolCall: "Bash",
     });
-
-    const activity = formatAgentActivity(progress);
-    expect(activity).toBe("3 sub-agent(s) spawned");
+    const card = renderAgentCard(makeRun(), progress, true);
+    expect(card).toContain("Agent");
+    expect(card).toContain("Bash");
+    expect(card).toContain("Read");
   });
 
-  it("shows 'last: <toolName>' when no Agent tool calls", () => {
+  it("shows files changed count", () => {
     const progress = makeProgress({
-      toolBreakdown: { Bash: 10, Read: 5 },
-      lastToolCall: "Read",
+      filesChanged: ["src/foo.ts", "src/bar.ts"],
     });
-
-    const activity = formatAgentActivity(progress);
-    expect(activity).toBe("last: Read");
-  });
-
-  it("shows 'last: starting' when lastToolCall is null", () => {
-    const progress = makeProgress({
-      toolBreakdown: {},
-      lastToolCall: null,
-    });
-
-    const activity = formatAgentActivity(progress);
-    expect(activity).toBe("last: starting");
-  });
-
-  it("shows sub-agent count of 1 for a single sub-agent spawn", () => {
-    const progress = makeProgress({
-      toolBreakdown: { Agent: 1, Bash: 2 },
-      lastToolCall: "Agent",
-    });
-
-    const activity = formatAgentActivity(progress);
-    expect(activity).toBe("1 sub-agent(s) spawned");
-  });
-
-  it("shows 'last: <toolName>' when Agent count is 0", () => {
-    const progress = makeProgress({
-      toolBreakdown: { Agent: 0, Bash: 5 },
-      lastToolCall: "Bash",
-    });
-
-    // Agent: 0 is falsy, so should fall through to lastTool display
-    const activity = formatAgentActivity(progress);
-    expect(activity).toBe("last: Bash");
-  });
-
-  it("handles large sub-agent counts for team orchestration", () => {
-    const progress = makeProgress({
-      toolBreakdown: { Agent: 8, Bash: 50, Read: 30, Write: 15 },
-      lastToolCall: "Write",
-    });
-
-    const activity = formatAgentActivity(progress);
-    expect(activity).toBe("8 sub-agent(s) spawned");
+    const card = renderAgentCard(makeRun(), progress, true);
+    expect(card).toContain("Files");
+    expect(card).toContain("2");
   });
 });

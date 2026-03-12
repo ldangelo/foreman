@@ -3,7 +3,8 @@
     "allow": [
       "Read(//Users/ldangelo/Development/Curantis/monorepo/**)",
       "Bash(bd show monorepo-7zd)",
-      "Bash(bd show:*)"
+      "Bash(bd show:*)",
+      "Bash(bd create:*)"
     ]
   }
 }
