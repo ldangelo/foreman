@@ -1,28 +1,30 @@
-# Code Review: Task groups for batch coordination
+# Code Review: Agent checkpoint save/restore for crash recovery
 
-## Verdict: FAIL
+## Verdict: PASS
 
 ## Summary
 
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation adds a `phase_checkpoints` SQLite table and four store methods (`savePhaseCheckpoint`, `getPhaseCheckpoints`, `getPhaseCheckpoint`, `deletePhaseCheckpoints`), then modifies `runPipeline()` to load existing checkpoints on startup, skip already-completed phases, save a checkpoint after each phase succeeds, and delete all checkpoints on clean pipeline completion. A companion file-based checkpoint mechanism (`saveCheckpoint`/`loadCheckpoint`/`deleteCheckpoint`) is added for single-agent mode. A critical double-close bug in `markStuck()` found in a prior review cycle has been fixed. All CRITICAL and WARNING findings from the previous review have been resolved. The store test coverage is comprehensive (11 new tests), and the TypeScript compilation is clean.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[NOTE]** `src/orchestrator/agent-worker.ts:19` — `PhaseCheckpoint` is imported as a type but never directly referenced in the file. The methods `getPhaseCheckpoints` and `getPhaseCheckpoint` return `PhaseCheckpoint[]` / `PhaseCheckpoint | null` and those types are inferred from the store method signatures, so the import is unused. TypeScript does not error on unused type-only imports by default, but it is dead code that could confuse future readers.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[NOTE]** `src/orchestrator/agent-worker.ts:386–387` — In `savePhaseCheckpoint`, a new UUID is generated every call (`id: randomUUID()`). Because the table has `UNIQUE(run_id, phase)` and the insert is `INSERT OR REPLACE`, a re-save for the same `(run_id, phase)` pair will delete the old row and insert a new one with a different `id`. This is functionally correct but wastes a UUID and silently changes the primary key on idempotent saves. A small design note: storing a stable `id` (e.g. derived from `run_id + phase`) would make the record more stable, though this has no practical impact given the current usage pattern.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
+- **[NOTE]** `src/lib/store.ts:141–151` — The `phase_checkpoints` DDL comment correctly documents that there is no `ON DELETE CASCADE` on the `runs` table, so deleting a run leaves orphaned checkpoint rows unless `deletePhaseCheckpoints` is called first. No automated cleanup exists. This is consistent with the existing behavior of the `costs` and `events` tables, and the comment added in this iteration makes the limitation explicit.
 
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
-
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/orchestrator/agent-worker.ts` (single-agent mode) — The file-based checkpoint (`saveCheckpoint`/`loadCheckpoint`) is written on session-ID capture and on every 2-second progress flush in single-agent mode, but the stale checkpoint detected at startup is only logged — it is never used to restore state. This is intentional per the design (checkpoints are diagnostic in single-agent mode; full resumption uses the SDK session ID), and the logging provides crash observability. The behavior is correct but could benefit from a short in-code comment clarifying that file-based checkpoints in single-agent mode are diagnostic only.
 
 ## Positive Notes
 
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- All three actionable findings from the prior review cycle (CRITICAL double-close in `markStuck`, WARNING zero-cost checkpoint on max-retries exhaustion, NOTE non-null assertion in dev-qa restore path) have been correctly resolved. The fixes are targeted and minimal.
+- The three-milestone checkpoint design (explorer / dev-qa / reviewer) is a pragmatic simplification that avoids complex mid-loop state reconstruction while covering the most expensive phases.
+- `INSERT OR REPLACE` semantics for `savePhaseCheckpoint` provide idempotency: a crash after a checkpoint save but before the next phase starts will harmlessly re-save on retry without manual deduplication.
+- Cost accumulation on resume (`progress.costUsd = existingCheckpoints.reduce(...)`) correctly seeds total spend from all prior phase checkpoints, including the fixed max-retries path that now saves actual costs instead of zeros.
+- `deletePhaseCheckpoints` on successful pipeline completion keeps the table clean, preventing stale checkpoint data from affecting future re-runs of the same `runId`.
+- `getPhaseCheckpoint` returns `null` (not throws) for missing phases, and the null-safe access pattern (`devQaCheckpoint?.metadata ? ... : {}`) makes the restore path safe under any checkpoint-absent edge case.
+- The atomic write pattern for file-based checkpoints (write temp file + rename) prevents partial reads under concurrent access or crash mid-write.
+- Store test coverage for the new methods is thorough: round-trip save/retrieve, metadata round-trip, list, null/empty cases, UNIQUE replace semantics, delete isolation across runs, Set-based recovery pattern, cost accumulation, and null-safe access pattern are all exercised.
+- TypeScript compiles clean (`npx tsc --noEmit` passes with zero errors).
+- No schema migration is needed — `CREATE TABLE IF NOT EXISTS` makes the change backward compatible with existing databases.

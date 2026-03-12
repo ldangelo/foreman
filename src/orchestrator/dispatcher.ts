@@ -493,6 +493,8 @@ export class Dispatcher {
 
     log(`Spawning detached ${usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}`);
 
+    const checkpointDir = join(process.env.HOME ?? "/tmp", ".foreman", "checkpoints");
+
     await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
@@ -506,6 +508,7 @@ export class Dispatcher {
       pipeline: usePipeline,
       skipExplore: pipelineOpts?.skipExplore,
       skipReview: pipelineOpts?.skipReview,
+      checkpointDir,
     });
 
     return sessionKey;
@@ -540,6 +543,8 @@ export class Dispatcher {
 
     log(`Resuming detached worker for ${seed.id} [${model}] session=${sdkSessionId}`);
 
+    const checkpointDir = join(process.env.HOME ?? "/tmp", ".foreman", "checkpoints");
+
     await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
@@ -550,6 +555,7 @@ export class Dispatcher {
       prompt: resumePrompt,
       env,
       resume: sdkSessionId,
+      checkpointDir,
     });
 
     return sessionKey;
@@ -586,6 +592,7 @@ interface WorkerConfig {
   pipeline?: boolean;
   skipExplore?: boolean;
   skipReview?: boolean;
+  checkpointDir?: string;
 }
 
 /**

@@ -45,6 +45,69 @@ interface WorkerConfig {
   pipeline?: boolean;  // Run as lead pipeline (explorer → developer → qa → reviewer)
   skipExplore?: boolean;
   skipReview?: boolean;
+  checkpointDir?: string;  // Directory to write checkpoint files for crash recovery
+}
+
+// ── Checkpoint ───────────────────────────────────────────────────────────
+
+const CHECKPOINT_VERSION = 1;
+
+interface CheckpointData {
+  version: number;
+  runId: string;
+  seedId: string;
+  sessionId: string;
+  progress: RunProgress;
+  savedAt: string;
+}
+
+/**
+ * Atomically write a checkpoint file for crash recovery.
+ * Writes to a temp file then renames, so reads never see partial data.
+ */
+function saveCheckpoint(checkpointDir: string, runId: string, sessionId: string, progress: RunProgress): void {
+  const data: CheckpointData = {
+    version: CHECKPOINT_VERSION,
+    runId,
+    seedId: runId,  // runId is used as key; seedId is informational
+    sessionId,
+    progress: { ...progress },
+    savedAt: new Date().toISOString(),
+  };
+  const checkpointPath = join(checkpointDir, `${runId}.json`);
+  const tmpPath = `${checkpointPath}.tmp`;
+  try {
+    writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
+    renameSync(tmpPath, checkpointPath);
+  } catch {
+    // Non-fatal — checkpoint is best-effort
+    try { unlinkSync(tmpPath); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Load a checkpoint file. Returns null if not found or incompatible version.
+ */
+function loadCheckpoint(checkpointDir: string, runId: string): CheckpointData | null {
+  const checkpointPath = join(checkpointDir, `${runId}.json`);
+  try {
+    const raw = readFileSync(checkpointPath, "utf-8");
+    const data = JSON.parse(raw) as CheckpointData;
+    if (data.version !== CHECKPOINT_VERSION) {
+      return null;  // Incompatible version — skip
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Delete a checkpoint file after successful or permanent-failure completion.
+ */
+function deleteCheckpoint(checkpointDir: string, runId: string): void {
+  const checkpointPath = join(checkpointDir, `${runId}.json`);
+  try { unlinkSync(checkpointPath); } catch { /* already deleted or never existed */ }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────
@@ -66,6 +129,16 @@ async function main(): Promise<void> {
   const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
   await mkdir(logDir, { recursive: true });
   const logFile = join(logDir, `${runId}.log`);
+
+  // Set up checkpoint directory for crash recovery
+  const checkpointDir = config.checkpointDir ?? join(process.env.HOME ?? "/tmp", ".foreman", "checkpoints");
+  await mkdir(checkpointDir, { recursive: true });
+
+  // Check for stale checkpoint from a previous crashed run
+  const staleCheckpoint = loadCheckpoint(checkpointDir, runId);
+  if (staleCheckpoint) {
+    log(`Found stale checkpoint from ${staleCheckpoint.savedAt} — agent likely crashed at turn ${staleCheckpoint.progress.turns} (session=${staleCheckpoint.sessionId || "none"})`);
+  }
 
   const mode = pipeline ? "pipeline" : (resume ? "resume" : "worker");
   const header = [
@@ -120,9 +193,14 @@ async function main(): Promise<void> {
   };
 
   let progressDirty = false;
+  // File-based checkpoints in single-agent mode are diagnostic only:
+  // they capture last-known state for observability if the process crashes,
+  // but are not used to restore work. Full resumption uses the SDK session ID
+  // (via persistSession + resume option) which resumes from Anthropic's servers.
   const flushProgress = () => {
     if (progressDirty) {
       store.updateRunProgress(runId, progress);
+      saveCheckpoint(checkpointDir, runId, sessionId, progress);
       progressDirty = false;
     }
   };
@@ -166,6 +244,7 @@ async function main(): Promise<void> {
           session_key: `foreman:sdk:${model}:${runId}:session-${sessionId}`,
         });
         log(`  Session: ${sessionId}`);
+        saveCheckpoint(checkpointDir, runId, sessionId, progress);
       }
 
       // Track tool usage
@@ -204,6 +283,7 @@ async function main(): Promise<void> {
         resultHandled = true;
 
         if (result.subtype === "success") {
+          deleteCheckpoint(checkpointDir, runId);
           store.updateRun(runId, { status: "completed", completed_at: now });
           store.logEvent(projectId, "complete", {
             seedId,
@@ -224,6 +304,9 @@ async function main(): Promise<void> {
             || reason.includes("rate limit")
             || errResult.subtype === "error_max_budget_usd";
 
+          if (!isRateLimit) {
+            deleteCheckpoint(checkpointDir, runId);
+          }
           store.updateRun(runId, {
             status: isRateLimit ? "stuck" : "failed",
             completed_at: now,
@@ -273,6 +356,9 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (!isRateLimit) {
+      deleteCheckpoint(checkpointDir, runId);
+    }
     const now = new Date().toISOString();
     store.updateRun(runId, {
       status: isRateLimit ? "stuck" : "failed",
@@ -502,12 +588,23 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   const { runId, projectId, seedId, seedTitle, worktreePath } = config;
   const description = config.seedDescription ?? "(no description)";
 
+  // Load any existing phase checkpoints — a restarted pipeline can skip
+  // phases that already completed in a previous (crashed) run.
+  const existingCheckpoints = store.getPhaseCheckpoints(runId);
+  const completedPhases = new Set(existingCheckpoints.map((c) => c.phase));
+  const priorCostUsd = existingCheckpoints.reduce((sum, c) => sum + c.cost_usd, 0);
+
+  if (completedPhases.size > 0) {
+    log(`Pipeline resuming for ${seedId} — already completed phases: ${[...completedPhases].join(", ")} ($${priorCostUsd.toFixed(4)} prior cost)`);
+    await appendFile(logFile, `\n[foreman-worker] Resuming pipeline — skipping completed phases: ${[...completedPhases].join(", ")}\n`);
+  }
+
   const progress: RunProgress = {
     toolCalls: 0,
     toolBreakdown: {},
     filesChanged: [],
     turns: 0,
-    costUsd: 0,
+    costUsd: priorCostUsd,  // seed with cost from prior completed phases
     tokensIn: 0,
     tokensOut: 0,
     lastToolCall: null,
@@ -520,13 +617,18 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
   // ── Phase 1: Explorer ──────────────────────────────────────────────
   if (!config.skipExplore) {
-    rotateReport(worktreePath, "EXPLORER_REPORT.md");
-    const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
-    if (!result.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed");
-      return;
+    if (completedPhases.has("explorer")) {
+      log(`[EXPLORER] Skipping — already completed in prior run`);
+    } else {
+      rotateReport(worktreePath, "EXPLORER_REPORT.md");
+      const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
+      if (!result.success) {
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed");
+        return;
+      }
+      store.savePhaseCheckpoint(runId, "explorer", result.costUsd, { turns: result.turns });
+      store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
     }
-    store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
   }
 
   const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
@@ -536,91 +638,107 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   let feedbackContext: string | undefined;
   let qaVerdict: "pass" | "fail" | "unknown" = "unknown";
 
-  while (devRetries <= MAX_DEV_RETRIES) {
-    // Developer
-    rotateReport(worktreePath, "DEVELOPER_REPORT.md");
-    const devResult = await runPhase(
-      "developer",
-      developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext),
-      config, progress, logFile, store,
-    );
-    if (!devResult.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed");
-      return;
-    }
-    store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
+  // Restore dev-qa state from checkpoint if the whole loop already completed.
+  const devQaCheckpoint = store.getPhaseCheckpoint(runId, "dev-qa");
+  if (devQaCheckpoint) {
+    const meta = devQaCheckpoint.metadata ? JSON.parse(devQaCheckpoint.metadata) as Record<string, unknown> : {};
+    qaVerdict = (meta.qaVerdict as typeof qaVerdict) ?? "unknown";
+    devRetries = typeof meta.devRetries === "number" ? meta.devRetries : 0;
+    log(`[DEV-QA] Skipping — already completed in prior run (qaVerdict=${qaVerdict}, retries=${devRetries})`);
+  } else {
+    while (devRetries <= MAX_DEV_RETRIES) {
+      // Developer
+      rotateReport(worktreePath, "DEVELOPER_REPORT.md");
+      const devResult = await runPhase(
+        "developer",
+        developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext),
+        config, progress, logFile, store,
+      );
+      if (!devResult.success) {
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed");
+        return;
+      }
+      store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
 
-    // QA
-    rotateReport(worktreePath, "QA_REPORT.md");
-    const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
-    if (!qaResult.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed");
-      return;
-    }
-    store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
+      // QA
+      rotateReport(worktreePath, "QA_REPORT.md");
+      const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
+      if (!qaResult.success) {
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed");
+        return;
+      }
+      store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
 
-    const qaReport = readReport(worktreePath, "QA_REPORT.md");
-    qaVerdict = qaReport ? parseVerdict(qaReport) : "unknown";
+      const qaReport = readReport(worktreePath, "QA_REPORT.md");
+      qaVerdict = qaReport ? parseVerdict(qaReport) : "unknown";
 
-    if (qaVerdict === "pass" || qaVerdict === "unknown") {
-      log(`[QA] Verdict: ${qaVerdict} — proceeding to ${config.skipReview ? "finalize" : "review"}`);
-      break;
-    }
+      if (qaVerdict === "pass" || qaVerdict === "unknown") {
+        log(`[QA] Verdict: ${qaVerdict} — proceeding to ${config.skipReview ? "finalize" : "review"}`);
+        store.savePhaseCheckpoint(runId, "dev-qa", progress.costUsd, { qaVerdict, devRetries });
+        break;
+      }
 
-    // QA failed — retry developer with feedback
-    feedbackContext = qaReport ? extractIssues(qaReport) : "(QA failed but no report written)";
-    devRetries++;
-    if (devRetries <= MAX_DEV_RETRIES) {
-      log(`[QA] FAIL — sending back to Developer (retry ${devRetries}/${MAX_DEV_RETRIES})`);
-      await appendFile(logFile, `\n[PIPELINE] QA failed, retrying developer (${devRetries}/${MAX_DEV_RETRIES})\n`);
-    } else {
-      log(`[QA] FAIL — max retries exhausted, proceeding with current state`);
-      await appendFile(logFile, `\n[PIPELINE] QA failed after ${MAX_DEV_RETRIES} retries, proceeding anyway\n`);
+      // QA failed — retry developer with feedback
+      feedbackContext = qaReport ? extractIssues(qaReport) : "(QA failed but no report written)";
+      devRetries++;
+      if (devRetries <= MAX_DEV_RETRIES) {
+        log(`[QA] FAIL — sending back to Developer (retry ${devRetries}/${MAX_DEV_RETRIES})`);
+        await appendFile(logFile, `\n[PIPELINE] QA failed, retrying developer (${devRetries}/${MAX_DEV_RETRIES})\n`);
+      } else {
+        log(`[QA] FAIL — max retries exhausted, proceeding with current state`);
+        await appendFile(logFile, `\n[PIPELINE] QA failed after ${MAX_DEV_RETRIES} retries, proceeding anyway\n`);
+        store.savePhaseCheckpoint(runId, "dev-qa", progress.costUsd, { qaVerdict, devRetries });
+      }
     }
   }
 
   // ── Phase 4: Reviewer ──────────────────────────────────────────────
   if (!config.skipReview) {
-    rotateReport(worktreePath, "REVIEW.md");
-    const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
-    if (!reviewResult.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed");
-      return;
-    }
-    store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
-
-    const reviewReport = readReport(worktreePath, "REVIEW.md");
-    const reviewVerdict = reviewReport ? parseVerdict(reviewReport) : "unknown";
-
-    const hasIssues = reviewReport ? hasActionableIssues(reviewReport) : false;
-
-    if ((reviewVerdict === "fail" || (reviewVerdict === "pass" && hasIssues)) && devRetries < MAX_DEV_RETRIES) {
-      const reviewFeedback = reviewReport ? extractIssues(reviewReport) : "(Review failed but no issues listed)";
-      const reason = reviewVerdict === "fail" ? "FAIL" : "PASS with issues";
-      log(`[REVIEW] ${reason} — sending back to Developer with review feedback`);
-      await appendFile(logFile, `\n[PIPELINE] Review ${reason}, retrying developer with review feedback\n`);
-      devRetries++;
-
-      // One more dev → QA cycle to address review feedback
-      rotateReport(worktreePath, "DEVELOPER_REPORT.md");
-      const devResult = await runPhase(
-        "developer",
-        developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback),
-        config, progress, logFile, store,
-      );
-      if (devResult.success) {
-        store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
-
-        rotateReport(worktreePath, "QA_REPORT.md");
-        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
-        if (qaResult.success) {
-          store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
-        }
-      }
-    } else if (reviewVerdict === "fail") {
-      log(`[REVIEW] FAIL — max retries exhausted, finalizing with current state`);
+    if (completedPhases.has("reviewer")) {
+      log(`[REVIEWER] Skipping — already completed in prior run`);
     } else {
-      log(`[REVIEW] Verdict: ${reviewVerdict} (no actionable issues)`);
+      rotateReport(worktreePath, "REVIEW.md");
+      const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store);
+      if (!reviewResult.success) {
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed");
+        return;
+      }
+      store.savePhaseCheckpoint(runId, "reviewer", reviewResult.costUsd, { turns: reviewResult.turns });
+      store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
+
+      const reviewReport = readReport(worktreePath, "REVIEW.md");
+      const reviewVerdict = reviewReport ? parseVerdict(reviewReport) : "unknown";
+
+      const hasIssues = reviewReport ? hasActionableIssues(reviewReport) : false;
+
+      if ((reviewVerdict === "fail" || (reviewVerdict === "pass" && hasIssues)) && devRetries < MAX_DEV_RETRIES) {
+        const reviewFeedback = reviewReport ? extractIssues(reviewReport) : "(Review failed but no issues listed)";
+        const reason = reviewVerdict === "fail" ? "FAIL" : "PASS with issues";
+        log(`[REVIEW] ${reason} — sending back to Developer with review feedback`);
+        await appendFile(logFile, `\n[PIPELINE] Review ${reason}, retrying developer with review feedback\n`);
+        devRetries++;
+
+        // One more dev → QA cycle to address review feedback
+        rotateReport(worktreePath, "DEVELOPER_REPORT.md");
+        const devResult = await runPhase(
+          "developer",
+          developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback),
+          config, progress, logFile, store,
+        );
+        if (devResult.success) {
+          store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
+
+          rotateReport(worktreePath, "QA_REPORT.md");
+          const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store);
+          if (qaResult.success) {
+            store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
+          }
+        }
+      } else if (reviewVerdict === "fail") {
+        log(`[REVIEW] FAIL — max retries exhausted, finalizing with current state`);
+      } else {
+        log(`[REVIEW] Verdict: ${reviewVerdict} (no actionable issues)`);
+      }
     }
   }
 
@@ -630,6 +748,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: FINALIZE]\n`);
 
   await finalize(config, logFile);
+
+  // Clean up phase checkpoints — pipeline completed successfully.
+  store.deletePhaseCheckpoints(runId);
 
   const now = new Date().toISOString();
   store.updateRun(runId, { status: "completed", completed_at: now });

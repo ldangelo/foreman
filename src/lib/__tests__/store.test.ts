@@ -193,6 +193,132 @@ describe("ForemanStore", () => {
     });
   });
 
+  // ── Phase Checkpoints ─────────────────────────────────────────────
+
+  describe("phase checkpoints", () => {
+    it("saves and retrieves a phase checkpoint", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code", "/wt");
+
+      const checkpoint = store.savePhaseCheckpoint(run.id, "explorer", 0.50);
+      expect(checkpoint.run_id).toBe(run.id);
+      expect(checkpoint.phase).toBe("explorer");
+      expect(checkpoint.cost_usd).toBe(0.50);
+      expect(checkpoint.metadata).toBeNull();
+      expect(checkpoint.completed_at).toBeDefined();
+
+      const fetched = store.getPhaseCheckpoint(run.id, "explorer");
+      expect(fetched).not.toBeNull();
+      expect(fetched!.id).toBe(checkpoint.id);
+      expect(fetched!.phase).toBe("explorer");
+    });
+
+    it("saves metadata as JSON string", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code", "/wt");
+
+      store.savePhaseCheckpoint(run.id, "dev-qa", 2.50, { qaVerdict: "pass", devRetries: 0 });
+
+      const fetched = store.getPhaseCheckpoint(run.id, "dev-qa");
+      expect(fetched).not.toBeNull();
+      const meta = JSON.parse(fetched!.metadata!) as { qaVerdict: string; devRetries: number };
+      expect(meta.qaVerdict).toBe("pass");
+      expect(meta.devRetries).toBe(0);
+    });
+
+    it("uses stable ID (run_id:phase) — repeated saves do not allocate new UUIDs", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code", "/wt");
+
+      const first = store.savePhaseCheckpoint(run.id, "explorer", 0.25);
+      const second = store.savePhaseCheckpoint(run.id, "explorer", 0.50);
+
+      // ID must be the same stable derived value each time
+      expect(first.id).toBe(second.id);
+      expect(first.id).toBe(`${run.id}:explorer`);
+
+      // Latest cost_usd wins
+      const fetched = store.getPhaseCheckpoint(run.id, "explorer");
+      expect(fetched!.cost_usd).toBe(0.50);
+    });
+
+    it("returns null for non-existent phase checkpoint", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code", "/wt");
+
+      expect(store.getPhaseCheckpoint(run.id, "developer")).toBeNull();
+    });
+
+    it("getPhaseCheckpoints returns all phases ordered by completion time", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code", "/wt");
+
+      store.savePhaseCheckpoint(run.id, "explorer", 0.50);
+      store.savePhaseCheckpoint(run.id, "dev-qa", 2.00);
+      store.savePhaseCheckpoint(run.id, "reviewer", 1.50);
+
+      const checkpoints = store.getPhaseCheckpoints(run.id);
+      expect(checkpoints).toHaveLength(3);
+      const phases = checkpoints.map((c) => c.phase);
+      expect(phases).toContain("explorer");
+      expect(phases).toContain("dev-qa");
+      expect(phases).toContain("reviewer");
+    });
+
+    it("getPhaseCheckpoints returns empty array when none exist", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code", "/wt");
+
+      expect(store.getPhaseCheckpoints(run.id)).toEqual([]);
+    });
+
+    it("deletePhaseCheckpoints removes all checkpoints for a run", () => {
+      const project = store.registerProject("p", "/p");
+      const run1 = store.createRun(project.id, "sd-1", "claude-code", "/wt1");
+      const run2 = store.createRun(project.id, "sd-2", "claude-code", "/wt2");
+
+      store.savePhaseCheckpoint(run1.id, "explorer", 0.50);
+      store.savePhaseCheckpoint(run1.id, "dev-qa", 2.00);
+      store.savePhaseCheckpoint(run2.id, "explorer", 0.30);
+
+      store.deletePhaseCheckpoints(run1.id);
+
+      expect(store.getPhaseCheckpoints(run1.id)).toEqual([]);
+      // run2 checkpoints must be untouched
+      expect(store.getPhaseCheckpoints(run2.id)).toHaveLength(1);
+    });
+
+    it("cost accumulation: priorCostUsd can be seeded from existing checkpoints", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code", "/wt");
+
+      store.savePhaseCheckpoint(run.id, "explorer", 0.80);
+      store.savePhaseCheckpoint(run.id, "dev-qa", 3.20);
+
+      const checkpoints = store.getPhaseCheckpoints(run.id);
+      const completedPhases = new Set(checkpoints.map((c) => c.phase));
+      const priorCostUsd = checkpoints.reduce((sum, c) => sum + c.cost_usd, 0);
+
+      expect(completedPhases.has("explorer")).toBe(true);
+      expect(completedPhases.has("dev-qa")).toBe(true);
+      expect(completedPhases.has("reviewer")).toBe(false);
+      expect(priorCostUsd).toBeCloseTo(4.00);
+    });
+
+    it("null-safe metadata access works when metadata is null", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "sd-1", "claude-code", "/wt");
+
+      store.savePhaseCheckpoint(run.id, "dev-qa", 1.00);  // no metadata
+      const checkpoint = store.getPhaseCheckpoint(run.id, "dev-qa");
+      expect(checkpoint).not.toBeNull();
+
+      // Simulate the null-safe access pattern used in runPipeline()
+      const meta = checkpoint!.metadata ? JSON.parse(checkpoint!.metadata) as Record<string, unknown> : {};
+      expect(meta).toEqual({});
+    });
+  });
+
   // ── Metrics ───────────────────────────────────────────────────────
 
   describe("metrics", () => {

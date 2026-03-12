@@ -81,6 +81,15 @@ export interface Metrics {
   costByRuntime: Array<{ run_id: string; cost: number; duration_seconds: number | null }>;
 }
 
+export interface PhaseCheckpoint {
+  id: string;
+  run_id: string;
+  phase: string;
+  completed_at: string;
+  cost_usd: number;
+  metadata: string | null;
+}
+
 // ── Schema migration ────────────────────────────────────────────────────
 
 const SCHEMA = `
@@ -126,6 +135,22 @@ CREATE TABLE IF NOT EXISTS events (
   details TEXT,
   created_at TEXT,
   FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+-- Phase checkpoints for pipeline crash recovery.
+-- Records which phases (explorer/developer/qa/reviewer) have completed for a run,
+-- so a restarted pipeline can skip already-completed phases.
+-- NOTE: No ON DELETE CASCADE on runs — consistent with costs and events tables.
+-- Callers must invoke deletePhaseCheckpoints(runId) before deleting a run
+-- to avoid leaving orphaned rows.
+CREATE TABLE IF NOT EXISTS phase_checkpoints (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  cost_usd REAL DEFAULT 0.0,
+  metadata TEXT,
+  UNIQUE(run_id, phase)
 );
 `;
 
@@ -430,6 +455,67 @@ export class ForemanStore {
     return this.db
       .prepare(`SELECT * FROM events ${where} ORDER BY created_at DESC ${limitClause}`)
       .all(...params) as Event[];
+  }
+
+  // ── Phase Checkpoints ────────────────────────────────────────────────
+
+  /**
+   * Save a phase checkpoint for pipeline crash recovery.
+   * Uses a stable ID derived from (run_id, phase) so repeated saves for the
+   * same phase are idempotent — INSERT OR REPLACE replaces the row in-place
+   * without allocating a new UUID on every call.
+   */
+  savePhaseCheckpoint(
+    runId: string,
+    phase: string,
+    costUsd: number,
+    metadata?: Record<string, unknown>,
+  ): PhaseCheckpoint {
+    const now = new Date().toISOString();
+    // Stable ID: no UUID churn on repeated saves for the same (run_id, phase).
+    const id = `${runId}:${phase}`;
+    const checkpoint: PhaseCheckpoint = {
+      id,
+      run_id: runId,
+      phase,
+      completed_at: now,
+      cost_usd: costUsd,
+      metadata: metadata ? JSON.stringify(metadata) : null,
+    };
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO phase_checkpoints (id, run_id, phase, completed_at, cost_usd, metadata)
+         VALUES (@id, @run_id, @phase, @completed_at, @cost_usd, @metadata)`,
+      )
+      .run(checkpoint);
+    return checkpoint;
+  }
+
+  /**
+   * Get all phase checkpoints for a run, ordered by completion time.
+   */
+  getPhaseCheckpoints(runId: string): PhaseCheckpoint[] {
+    return this.db
+      .prepare("SELECT * FROM phase_checkpoints WHERE run_id = ? ORDER BY completed_at ASC")
+      .all(runId) as PhaseCheckpoint[];
+  }
+
+  /**
+   * Get a single phase checkpoint. Returns null if not found.
+   */
+  getPhaseCheckpoint(runId: string, phase: string): PhaseCheckpoint | null {
+    return (
+      (this.db
+        .prepare("SELECT * FROM phase_checkpoints WHERE run_id = ? AND phase = ?")
+        .get(runId, phase) as PhaseCheckpoint | undefined) ?? null
+    );
+  }
+
+  /**
+   * Delete all phase checkpoints for a run (call on clean pipeline completion).
+   */
+  deletePhaseCheckpoints(runId: string): void {
+    this.db.prepare("DELETE FROM phase_checkpoints WHERE run_id = ?").run(runId);
   }
 
   // ── Metrics ─────────────────────────────────────────────────────────
