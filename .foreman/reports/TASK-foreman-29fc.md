@@ -1,11 +1,11 @@
 # Agent Task
 
 ## Task Details
-**Seed ID:** foreman-4ac5
-**Title:** PageRank-based task prioritization for sd ready
+**Seed ID:** foreman-8842
+**Title:** Add pre-commit bug scanning to finalize phase
 **Description:** (no description provided)
 **Model:** claude-sonnet-4-6
-**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-4ac5
+**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-8842
 
 ## Agent Team
 This task is handled by an Engineering Lead agent that orchestrates a team:

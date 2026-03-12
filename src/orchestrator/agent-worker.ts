@@ -520,6 +520,25 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
     "",
   ];
 
+  // Bug scan (pre-commit type check) — 60 s timeout to handle TypeScript cold-start
+  const buildOpts = { ...opts, timeout: 60_000 };
+  try {
+    execFileSync("npx", ["tsc", "--noEmit"], buildOpts);
+    log(`[FINALIZE] Type check passed`);
+    report.push(`## Build / Type Check`, `- Status: SUCCESS`, "");
+  } catch (err: unknown) {
+    const rawMsg = err instanceof Error ? err.message : String(err);
+    // execFileSync throws with stderr in the message when stdio:"pipe"
+    const stderr =
+      err instanceof Error && "stderr" in err
+        ? String((err as NodeJS.ErrnoException & { stderr?: Buffer }).stderr ?? "")
+        : "";
+    const detail = (stderr || rawMsg).slice(0, 500);
+    log(`[FINALIZE] Type check failed: ${detail.slice(0, 200)}`);
+    await appendFile(logFile, `[FINALIZE] Type check error:\n${detail}\n`);
+    report.push(`## Build / Type Check`, `- Status: FAILED`, `- Errors:`, "```", detail, "```", "");
+  }
+
   // Commit
   let commitHash = "(none)";
   try {
