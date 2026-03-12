@@ -19,6 +19,7 @@ import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import {
   ROLE_CONFIGS,
+  getDisallowedTools,
   explorerPrompt,
   developerPrompt,
   qaPrompt,
@@ -319,8 +320,17 @@ async function runPhase(
   progress.currentPhase = role;
   store.updateRunProgress(config.runId, progress);
 
-  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxBudgetUsd=${roleConfig.maxBudgetUsd})\n`);
-  log(`[${role.toUpperCase()}] Starting phase for ${config.seedId}`);
+  // Compute role-based tool restrictions: disallow all tools not in the role's whitelist.
+  // This enforces role separation (e.g. explorer/reviewer can't modify source code).
+  // Works in tandem with bypassPermissions (headless operation) — bypassPermissions
+  // grants filesystem access, disallowedTools restricts which SDK tools are available.
+  const disallowedTools = getDisallowedTools(roleConfig);
+  // Log format: "[PHASE: <ROLE>] Starting (model=..., maxBudgetUsd=..., allowedTools=[...])"
+  // Kept stable intentionally — downstream log parsers (e.g. cost analysis scripts) may
+  // depend on this format. Change with care and update any parsers accordingly.
+  const allowedSummary = roleConfig.allowedTools.join(", ");
+  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxBudgetUsd=${roleConfig.maxBudgetUsd}, allowedTools=[${allowedSummary}])\n`);
+  log(`[${role.toUpperCase()}] Starting phase for ${config.seedId} (${roleConfig.allowedTools.length} allowed tools, ${disallowedTools.length} disallowed)`);
 
   const env: Record<string, string | undefined> = { ...config.env };
 
@@ -335,6 +345,7 @@ async function runPhase(
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         maxBudgetUsd: roleConfig.maxBudgetUsd,
+        disallowedTools,
         env,
         persistSession: false,
       },

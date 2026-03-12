@@ -1,34 +1,28 @@
-# Developer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Developer Report: Tool enforcement guards for agent roles
 
 ## Approach
 
-This iteration addressed the two NOTE-level feedback items from the previous review cycle. The core `maxTurns → maxBudgetUsd` migration was already complete; this pass tightens two remaining rough edges:
-
-1. Extract the inline `3.00` magic number in `dispatcher.ts` to a named constant, matching the pattern used by `ROLE_CONFIGS`.
-2. Strengthen the budget regression tests in `roles.test.ts` by pinning absolute USD values for `developer` and `reviewer`, so accidental budget reductions are caught.
+The core tool enforcement implementation (whitelist model, `ALL_AGENT_TOOLS`, `getDisallowedTools()`, and `disallowedTools` SDK option) was already fully implemented in commit 82f94c5. This iteration addresses the NOTE-level feedback from the previous code review, improving clarity and type safety without changing runtime behaviour.
 
 ## Files Changed
 
-- **src/orchestrator/dispatcher.ts** — Added `PLAN_STEP_MAX_BUDGET_USD = 3.00` constant above the `Dispatcher` class and replaced the inline literal `maxBudgetUsd: 3.00` with `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`. This mirrors how `ROLE_CONFIGS` centralises phase budgets, making future adjustments easy to find and change.
+- **src/orchestrator/roles.ts** — Updated the `ALL_AGENT_TOOLS` JSDoc comment to clarify that this constant represents Claude Code's agent-level tool vocabulary, *not* the `@anthropic-ai/claude-agent-sdk` library's exported interface. The old comment said "Keep this sorted and up-to-date with SDK releases", which was misleading because several tools in the list (`CronCreate`, `CronDelete`, `CronList`, `TeamCreate`, `TeamDelete`, `SendMessage`, `EnterWorktree`, `ExitWorktree`, `EnterPlanMode`, `ExitPlanMode`) are Claude Code runtime primitives, not SDK exports. The new comment names those tools explicitly and directs maintainers to check the Claude Code changelog rather than the SDK package changelog.
 
-- **src/orchestrator/__tests__/roles.test.ts** — Added two new pinned-value tests:
-  - `"developer budget is $5.00"` — asserts `ROLE_CONFIGS.developer.maxBudgetUsd === 5.00`
-  - `"reviewer budget is $2.00"` — asserts `ROLE_CONFIGS.reviewer.maxBudgetUsd === 2.00`
+- **src/orchestrator/agent-worker.ts** — Added a comment above the `allowedSummary` / log-file write at line 328 to document that the `[PHASE: <ROLE>] Starting (...)` log format is intentionally stable. Downstream tooling (cost analysis scripts, log parsers) may pattern-match on this line, so the comment warns maintainers to update any such tooling if the format changes.
 
-  These supplement the existing relative ordering test (`explorer < developer`) with absolute guard rails that catch regression if any budget is accidentally halved or zeroed.
+- **src/orchestrator/__tests__/roles.test.ts** — Imported `RoleConfig` type and added `satisfies RoleConfig` to the two edge-case test objects in the `getDisallowedTools` suite ("returns empty array for a hypothetical all-tools config" and "returns all tools for empty allowedTools"). This ensures TypeScript will flag these test fixtures as structurally invalid if `RoleConfig` gains new required fields in the future, rather than silently widening the type.
 
 ## Tests Added/Modified
 
-- **src/orchestrator/__tests__/roles.test.ts**
-  - Added `"developer budget is $5.00"` — pins the developer role's exact budget
-  - Added `"reviewer budget is $2.00"` — pins the reviewer role's exact budget
+- **src/orchestrator/__tests__/roles.test.ts** — No new test cases added; two existing edge-case configs updated with `satisfies RoleConfig` for compile-time type safety. All 47 tests continue to pass.
 
 ## Decisions & Trade-offs
 
-- **Which roles to pin**: Chose `developer` (the most expensive phase, most likely to be accidentally changed) and `reviewer` (a meaningfully different value from `developer`). `explorer` and `qa` are implicitly covered by the ordering test (`explorer < developer`) and the "all positive" guard.
-- **Constant scope**: `PLAN_STEP_MAX_BUDGET_USD` is module-scoped (not exported) since it is only used inside `dispatcher.ts`. If other modules ever need it, it can be exported at that point.
-- **No changes to budget values**: The values (`developer: 5.00`, `reviewer: 2.00`, plan step: `3.00`) are intentionally preserved from the previous iteration to keep this pass focused on code quality only.
+- **Skipped narrowing `getDisallowedTools` signature** — The reviewer noted that accepting `{ allowedTools: ReadonlyArray<string> }` instead of `RoleConfig` would make the dependency explicit. However, the feedback itself described the current form as "idiomatic for this codebase's pattern of passing full configs", so the signature was left unchanged to avoid unnecessary churn.
+
+- **Log format comment is advisory, not enforced** — There is currently no automated test for the exact log line format. The comment serves as a human-readable contract. A more rigorous approach would snapshot-test the log output, but that would require a heavier test harness and is out of scope for NOTE-level feedback.
 
 ## Known Limitations
 
-- Budget values are estimates based on expected token usage; real-world calibration should happen after a few pipeline runs with production workloads.
+- `ALL_AGENT_TOOLS` still requires manual updates when new Claude Code tools are released; the existing test ("is sorted alphabetically", "has no duplicate entries") catches structural regressions but cannot detect missing tools.
+- `dispatcher.ts` still hardcodes `permissionMode: "bypassPermissions"` without role-based tool enforcement (pre-existing gap, noted in the Explorer Report).

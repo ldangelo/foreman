@@ -1,165 +1,113 @@
-# Explorer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Explorer Report: Tool enforcement guards for agent roles
 
 ## Summary
-The codebase uses `maxTurns` to limit SDK query execution in the agent orchestration pipeline. This needs to be replaced with `maxBudgetUsd` to enforce budget-based limits instead of turn-based limits. The change affects the role configurations, phase execution, and logging.
+Tool enforcement guards have already been implemented (commit 82f94c5) to restrict agent roles to only the tools they require. The implementation uses SDK-level `disallowedTools` configuration to enforce role-based access control, ensuring explorer and reviewer agents cannot modify source code, QA cannot spawn sub-agents, and only the developer has full read/write/execute access.
 
 ## Relevant Files
 
-### 1. **src/orchestrator/roles.ts** (lines 13-46)
-- **Purpose**: Defines role configurations for the specialization pipeline (explorer, developer, qa, reviewer)
-- **Current State**:
-  - `RoleConfig` interface has `maxTurns: number` property (line 16)
-  - `ROLE_CONFIGS` object defines maxTurns for each phase:
-    - explorer: 30 turns
-    - developer: 80 turns
-    - qa: 30 turns
-    - reviewer: 20 turns
-- **Relevance**: Primary file that needs modification - interface definition and config values
+### Core Implementation
+- **src/orchestrator/roles.ts** — Defines role configs with `allowedTools` whitelists and `getDisallowedTools()` computation function. Contains:
+  - `RoleConfig` interface (lines 13-24): Added `allowedTools` property
+  - `ALL_AGENT_TOOLS` constant (lines 27-50): Complete list of all 25 SDK tools
+  - `getDisallowedTools()` function (lines 52-54): Computes disallowed tools as complement of allowed tools
+  - `ROLE_CONFIGS` (lines 56+): Per-role tool configurations
 
-### 2. **src/orchestrator/agent-worker.ts** (lines 310-399)
-- **Purpose**: Standalone worker process that runs individual SDK query calls for each pipeline phase
-- **Current State**:
-  - Line 322: Logs `maxTurns=${roleConfig.maxTurns}` when starting a phase
-  - Line 337: Passes `maxTurns: roleConfig.maxTurns` to the SDK `query()` options
-  - Line 225: Already handles `error_max_budget_usd` error subtype (future-ready)
-- **Relevance**: Needs to replace logging and pass maxBudgetUsd to query() options instead
+- **src/orchestrator/agent-worker.ts** — Uses tool enforcement in pipeline phase execution:
+  - `runPhase()` function (lines 310-399): Gets disallowed tools from config, logs tool guard summary, passes `disallowedTools` to SDK `query()` options
+  - Line 322-327: Computes and logs disallowed tools summary
+  - Line 335-348: Applies disallowed tools to SDK options
+  - Line 340-345: Comment explaining complementary purpose of `bypassPermissions` + `disallowedTools`
 
-### 3. **src/orchestrator/dispatcher.ts** (line 361)
-- **Purpose**: Dispatches beads to agents, handles one-off planning steps
-- **Current State**:
-  - Line 361: Uses `maxTurns: 50` for `dispatchPlanStep()` SDK query
-- **Relevance**: Secondary location needing update for consistency with phase limits
+### Types
+- **src/orchestrator/types.ts** — Defines `AgentRole` type (line 7) including "explorer" | "developer" | "qa" | "reviewer"
+
+### Tests
+- **src/orchestrator/__tests__/roles.test.ts** — Comprehensive test coverage (197 lines added):
+  - "tool enforcement guards" suite: Tests that each role has correct `allowedTools` set
+  - "getDisallowedTools" suite: Tests disallowed computation logic
+  - Tests verify explorer/reviewer are read-only, developer has full access, QA can't spawn agents, AskUserQuestion excluded from all roles
 
 ## Architecture & Patterns
 
-### Pipeline Orchestration Pattern
-- **Sequential phases**: Explorer → Developer ⇄ QA → Reviewer → Finalize
-- **Phase execution**: Each phase runs as a separate `query()` call with its own config
-- **Error handling**: Already recognizes `error_max_budget_usd` error subtype (agent-worker.ts:225)
-- **Naming convention**: `roleConfig.maxTurns` → should become `roleConfig.maxBudgetUsd`
+### Role Tool Matrices
+Four specialized agent roles with specific tool access patterns:
 
-### SDK Integration
-- The Anthropic Claude Agent SDK supports `maxBudgetUsd?: number` in query options (confirmed in sdk.d.ts)
-- Budget limits are enforced by the SDK during query execution
-- Error subtype `error_max_budget_usd` is already handled by the error detection logic
+| Role | Purpose | Allowed Tools | Rationale |
+|------|---------|---|---|
+| **explorer** | Codebase analysis, read-only | Read, Glob, Grep, Write | Writes EXPLORER_REPORT.md only; no source modification |
+| **developer** | Implementation, full access | Read, Write, Edit, Bash, Glob, Grep, Agent, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch | Needs full control; TaskOutput/TaskStop to manage sub-agents |
+| **qa** | Testing and validation | Read, Write, Edit, Bash, Glob, Grep, TodoWrite | Can modify test files; cannot spawn agents or write reports other than tests |
+| **reviewer** | Code review, read-only | Read, Glob, Grep, Write | Writes REVIEW.md only; cannot modify source or run tests |
 
-### Role Config Structure
-```typescript
-export interface RoleConfig {
-  role: AgentRole;
-  model: ModelSelection;
-  maxTurns: number;              // ← Change to maxBudgetUsd: number
-  reportFile: string;
-}
-```
+### Implementation Approach
+1. **Whitelist model** — Each role declares `allowedTools` (what it CAN do)
+2. **Computed disallowed set** — `getDisallowedTools()` computes complement for SDK
+3. **SDK enforcement** — `disallowedTools` option passed to `query()` prevents unauthorized tool use
+4. **Complementary guards** — Both `permissionMode: "bypassPermissions"` (headless operation) and `disallowedTools` (role restriction) work together
+
+### Key Design Decisions
+- **AskUserQuestion excluded** — No role uses it; pipeline runs fully autonomous without human interaction
+- **Write included for explorer/reviewer** — Allows them to produce report files
+- **TaskOutput/TaskStop for developer** — Enables background agent management without agent spawning permission for other roles
+- **Comprehensive SDK tool list** — 25 tools tracked in `ALL_AGENT_TOOLS` to catch SDK drift
 
 ## Dependencies
+- **Claude Agent SDK** (@anthropic-ai/claude-agent-sdk): Provides `disallowedTools` option in `query()` options
+- **Vitest**: Testing framework for 18+ tool enforcement test cases
+- **Types**: AgentRole, RoleConfig, SDKOptions
 
-### What Uses maxTurns
-1. **agent-worker.ts**:
-   - Imports `ROLE_CONFIGS` from roles.ts
-   - Calls `roleConfig.maxTurns` in `runPhase()` function
-   - Passes value to SDK `query()` options
-
-2. **dispatcher.ts**:
-   - Hard-coded `maxTurns: 50` in `dispatchPlanStep()`
-   - No import from roles.ts (independent configuration)
-
-3. **roles.ts**:
-   - Defines the canonical values for all phases
-   - No external dependencies on the property name
-
-### SDK API Contract
-- The SDK's `query()` function accepts `maxBudgetUsd?: number` parameter
-- When a query exceeds budget, SDK returns error with `subtype: "error_max_budget_usd"`
-- No backwards compatibility issues - this is a parameter replacement
+## What Depends on This Code
+- `src/orchestrator/agent-worker.ts`: Uses `ROLE_CONFIGS` and `getDisallowedTools()` in `runPhase()`
+- `src/orchestrator/dispatcher.ts`: Currently hardcoded to `permissionMode: "bypassPermissions"` (no role-based tool enforcement yet)
+- Pipeline agents: All four roles (explorer→developer→qa→reviewer) respect tool restrictions
 
 ## Existing Tests
+- **src/orchestrator/__tests__/roles.test.ts**
+  - 60 existing tests for prompts, verdicts, issue extraction
+  - 56+ new tests specifically for tool enforcement (added in 82f94c5)
+  - Tests cover: role configurations, allowed/disallowed tool sets, API completeness, role-specific constraints
 
-### Test Files
-1. **src/orchestrator/__tests__/roles.test.ts**
-   - Tests ROLE_CONFIGS structure (all roles defined, models correct)
-   - Tests prompt templates (context injection, read-only instructions)
-   - Tests verdict/issue parsing from reports
-   - **Status**: Tests focus on config existence, not specific maxTurns values
-   - **Impact**: Tests will likely pass after renaming property (no assertions on maxTurns specifically)
+## Existing Patterns in Codebase
+1. **Role-based configuration** — ROLE_CONFIGS pattern used for model selection, budget, and now tool access
+2. **Whitelist-based security** — Matches existing `permissionMode` approach
+3. **Computed derived values** — `getDisallowedTools()` follows pattern of verdict/issue extraction helpers
+4. **Comprehensive test coverage** — Each behavior tested with multiple assertions
+5. **Documentation via comments** — Inline rationales explain why tools are allowed/disallowed
 
-2. **src/orchestrator/__tests__/agent-worker.test.ts**
-   - Tests worker process initialization and logging
-   - Tests config file handling and deletion
-   - **Status**: No assertions on maxTurns values
-   - **Impact**: Will need to verify logging format still works with maxBudgetUsd
+## Recommended Approach (If Extending)
 
-### Test Coverage of Limits
-- No tests directly assert maxTurns values
-- No tests verify budget enforcement
-- New tests may be beneficial to ensure budget limits work correctly
+If future work needs to extend tool enforcement:
 
-## Recommended Approach
+1. **Adding new SDK tools**
+   - Update `ALL_AGENT_TOOLS` in roles.ts (keep sorted)
+   - Add test to `roles.test.ts` "matches known-complete SDK tool set"
+   - Decide which roles get access (update ROLE_CONFIGS)
+   - Add specific test for the new tool behavior
 
-### Phase 1: Update Role Configurations
-1. Update `RoleConfig` interface in roles.ts:
-   - Rename `maxTurns: number` → `maxBudgetUsd: number`
+2. **Adding new agent roles** (if pipeline expands beyond 4)
+   - Add to `AgentRole` type in types.ts
+   - Create RoleConfig entry in roles.ts with allowedTools
+   - Update `runPhase()` to handle new role type
+   - Add tests to roles.test.ts
 
-2. Update `ROLE_CONFIGS` values with reasonable budget estimates:
-   - Need to estimate per-model costs based on token usage
-   - Suggested starting points (requires validation):
-     - **explorer** (haiku, 30 turns): $0.50-$1.00 USD
-     - **developer** (sonnet, 80 turns): $5.00-$10.00 USD
-     - **qa** (sonnet, 30 turns): $2.00-$4.00 USD
-     - **reviewer** (sonnet, 20 turns): $1.50-$3.00 USD
-   - Also update **dispatchPlanStep** budget in dispatcher.ts (currently maxTurns: 50)
+3. **Implementing tool enforcement in dispatcher.ts**
+   - Currently dispatcher's `dispatchPlanStep()` hardcodes `permissionMode: "bypassPermissions"`
+   - Could add similar role-based enforcement for plan step execution
+   - Would need new role type or reuse existing ones with tailored tool sets
 
-### Phase 2: Update Phase Execution in agent-worker.ts
-1. Update `runPhase()` function:
-   - Line 322: Change log format to show `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - Line 337: Pass `maxBudgetUsd: roleConfig.maxBudgetUsd` instead of `maxTurns`
+4. **Monitoring tool violations**
+   - Currently SDK silently prevents disallowed tools
+   - Could add logging in agent-worker.ts to track attempted tool use
+   - Would help audit compliance with role restrictions
 
-2. Verify error handling:
-   - Line 225 already checks for `error_max_budget_usd` — keep as-is
+## Known Gaps/Limitations
 
-### Phase 3: Update Dispatcher Planning
-1. In dispatcher.ts `dispatchPlanStep()`:
-   - Replace `maxTurns: 50` with appropriate `maxBudgetUsd` value (suggest $3.00-$5.00)
+1. **dispatcher.ts not updated** — Single `dispatchPlanStep()` still uses hardcoded permissions; could benefit from role-based enforcement
+2. **No audit logging** — Agents cannot see why a tool was disallowed; only get SDK error
+3. **AskUserQuestion** — Intentionally excluded but not explicitly tested as error case (only tested as "not in allowedTools")
+4. **Runtime validation** — Tool enforcement happens at SDK level; no compile-time verification
 
-### Phase 4: Update Tests & Documentation
-1. roles.test.ts:
-   - Update any hardcoded expectations if tests fail
-   - Consider adding assertions for budget values being positive numbers
-
-2. agent-worker.test.ts:
-   - Verify logging format with new maxBudgetUsd parameter
-   - Check that log output still contains relevant budget information
-
-## Potential Pitfalls & Edge Cases
-
-1. **Budget Estimation Accuracy**
-   - Turn counts are discrete (explorer: 30) but budgets must be estimated
-   - Per-model costs vary (Haiku cheaper than Sonnet than Opus)
-   - May need to adjust budgets based on real usage data
-
-2. **Error Handling Clarity**
-   - Error message when budget exceeded may be different from turn limits
-   - Current code checks `error_max_budget_usd` — verify message consistency
-
-3. **Logging Clarity**
-   - Phase startup logs currently show `maxTurns=30`
-   - Should show `maxBudgetUsd=$X.XX` for clarity
-
-4. **Backwards Compatibility**
-   - Existing stored run data uses turns in progress tracking (agent-worker.ts line 196)
-   - Budget limits don't track in progress.turns — separate concerns
-   - No data migration needed (turns are tracked separately from limits)
-
-5. **Dispersion Across Files**
-   - dispatcher.ts has a hard-coded maxTurns value (50) separate from roles.ts
-   - Consider whether plan steps should use same budget as phases or different
-
-## Next Steps for Developer
-
-1. Research typical costs per phase from production data (if available)
-2. Update roles.ts with maxBudgetUsd values (start conservative)
-3. Update agent-worker.ts runPhase() logging and query options
-4. Update dispatcher.ts dispatchPlanStep() budget
-5. Run tests to verify no regressions
-6. Monitor first few runs with new budgets to validate appropriateness
+## Potential Edge Cases to Watch
+- **Developer spawns agents** — Developer can use `Agent` tool but spawned sub-agents will still inherit parent's tool restrictions (verify this behavior)
+- **Report file conflicts** — Multiple roles might try to write same file if role config changes (mitigated by report file rotation in agent-worker.ts lines 407-423)
+- **SDK tool list drift** — When SDK gains new tools, `ALL_AGENT_TOOLS` becomes stale; test catches this but requires manual update

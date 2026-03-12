@@ -1,28 +1,25 @@
-# Code Review: Task groups for batch coordination
+# Code Review: Tool enforcement guards for agent roles
 
-## Verdict: FAIL
+## Verdict: PASS
 
 ## Summary
-
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation correctly adds role-based tool access control to the foreman pipeline by introducing a whitelist-based `allowedTools` field on each `RoleConfig` and a `getDisallowedTools()` helper that computes the complement. The computed set is passed directly to the SDK's `disallowedTools` option in `runPhase()`, enforcing that explorer/reviewer cannot modify source code, QA cannot spawn agents, and only developer has full access. The change is minimal (three files touched, zero pre-existing tests broken), well-commented, and ships with 36 new passing tests covering all meaningful behaviors including edge cases. TypeScript compiles cleanly with zero errors.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[NOTE]** `src/orchestrator/roles.ts:32-57` — `ALL_AGENT_TOOLS` contains several tool names (`CronCreate`, `CronDelete`, `CronList`, `TeamCreate`, `TeamDelete`, `SendMessage`, `EnterWorktree`, `ExitWorktree`, `EnterPlanMode`, `ExitPlanMode`) that are not defined in `sdk-tools.d.ts`. These appear to be Claude Code agent-level tools available in the running process environment rather than built-in SDK primitives. This is not a bug (the SDK accepts any `string[]` for `disallowedTools`), but the comment "Keep this sorted and up-to-date with SDK releases" may be misleading — this list is really Claude Code's tool vocabulary, not the SDK library's exported interface. A comment clarifying this distinction would reduce future confusion when someone checks the SDK changelog.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[NOTE]** `src/orchestrator/agent-worker.ts:328` — The `allowedSummary` string (all allowed tool names joined) is written to the log file on every phase start. For developer's 12-tool list this is verbose but harmless. Worth noting in case log parsers downstream depend on the exact log line format.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
+- **[NOTE]** `src/orchestrator/roles.ts:63-66` — `getDisallowedTools` takes a `RoleConfig` but only uses `config.allowedTools`. A narrower signature accepting `{ allowedTools: ReadonlyArray<string> }` would make the dependency explicit, though the current form is idiomatic for this codebase's pattern of passing full configs.
 
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
-
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/orchestrator/__tests__/roles.test.ts:300-320` — The edge-case tests for "all-tools config" and "no-tools config" manually construct `RoleConfig` objects with hardcoded budget/model values. These will silently pass even if `RoleConfig` gains required fields in the future. Using `satisfies RoleConfig` instead of the implicit type widening would make the intent clearer, but this is a minor style point.
 
 ## Positive Notes
-
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- Whitelist model is the right security posture — adding tools requires explicit opt-in rather than remembering to block new tools.
+- `getDisallowedTools()` is a clean, pure function that is trivially testable.
+- The complementarity invariant (`allowed ∪ disallowed = ALL_AGENT_TOOLS`) is verified by test for every role, which gives strong confidence the implementation is correct.
+- The inline comment explaining the relationship between `bypassPermissions` and `disallowedTools` (lines 323-326 of agent-worker.ts) is genuinely helpful for future maintainers.
+- Explorer uses haiku and its `allowedTools` is intentionally small — the cost profile stays low for the read-only phase.
+- `AskUserQuestion` exclusion from all roles is correctly enforced and explicitly tested, ensuring the pipeline remains fully autonomous.
+- Log output updated to show both allowed-tool count and disallowed-tool count, making operational debugging straightforward.

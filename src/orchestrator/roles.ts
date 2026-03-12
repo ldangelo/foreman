@@ -16,6 +16,61 @@ export interface RoleConfig {
   maxBudgetUsd: number;
   /** Report file this role produces */
   reportFile: string;
+  /**
+   * Whitelist of SDK tool names this role is allowed to use.
+   * The complement (all tools NOT in this set) is passed as disallowedTools
+   * to the SDK query() call to enforce role-based access control.
+   */
+  allowedTools: ReadonlyArray<string>;
+}
+
+/**
+ * Complete vocabulary of Claude Code agent tools available in the running process
+ * environment. Used to compute disallowed tools as the complement of each role's
+ * allowedTools whitelist.
+ *
+ * NOTE: This is Claude Code's tool vocabulary, not the @anthropic-ai/claude-agent-sdk
+ * library's exported interface. Several tools here (CronCreate, CronDelete, CronList,
+ * TeamCreate, TeamDelete, SendMessage, EnterWorktree, ExitWorktree, EnterPlanMode,
+ * ExitPlanMode) are agent-level primitives provided by the Claude Code runtime and are
+ * not exported from the SDK package itself. Keep this list sorted; update it when new
+ * Claude Code tools become available (check the Claude Code changelog, not the SDK
+ * package changelog).
+ */
+export const ALL_AGENT_TOOLS: ReadonlyArray<string> = [
+  "Agent",
+  "AskUserQuestion",
+  "Bash",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "Edit",
+  "EnterPlanMode",
+  "EnterWorktree",
+  "ExitPlanMode",
+  "ExitWorktree",
+  "Glob",
+  "Grep",
+  "NotebookEdit",
+  "Read",
+  "SendMessage",
+  "TaskOutput",
+  "TaskStop",
+  "TeamCreate",
+  "TeamDelete",
+  "TodoWrite",
+  "WebFetch",
+  "WebSearch",
+  "Write",
+] as const;
+
+/**
+ * Compute the disallowed tools for a role config.
+ * Returns all SDK tools NOT in the role's allowedTools whitelist.
+ */
+export function getDisallowedTools(config: RoleConfig): string[] {
+  const allowed = new Set(config.allowedTools);
+  return ALL_AGENT_TOOLS.filter((tool) => !allowed.has(tool));
 }
 
 export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleConfig> = {
@@ -24,24 +79,49 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
     model: "claude-haiku-4-5-20251001",
     maxBudgetUsd: 1.00,
     reportFile: "EXPLORER_REPORT.md",
+    // Explorer is read-only: can read files and write its report, but cannot
+    // modify source code, run commands, or spawn agents.
+    allowedTools: ["Glob", "Grep", "Read", "Write"],
   },
   developer: {
     role: "developer",
     model: "claude-sonnet-4-6",
     maxBudgetUsd: 5.00,
     reportFile: "DEVELOPER_REPORT.md",
+    // Developer has full access: needs to read/write/edit source, run builds/tests,
+    // search the web, manage todos, and optionally spawn background sub-agents.
+    allowedTools: [
+      "Agent",
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "TaskOutput",
+      "TaskStop",
+      "TodoWrite",
+      "WebFetch",
+      "WebSearch",
+      "Write",
+    ],
   },
   qa: {
     role: "qa",
     model: "claude-sonnet-4-6",
     maxBudgetUsd: 3.00,
     reportFile: "QA_REPORT.md",
+    // QA can read/write/run tests, but cannot spawn agents or write arbitrary
+    // plan/cron/team constructs. Focused on test execution and validation.
+    allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
   },
   reviewer: {
     role: "reviewer",
     model: "claude-sonnet-4-6",
     maxBudgetUsd: 2.00,
     reportFile: "REVIEW.md",
+    // Reviewer is read-only: can read source and write its review report,
+    // but cannot modify source code, run commands, or spawn agents.
+    allowedTools: ["Glob", "Grep", "Read", "Write"],
   },
 };
 
