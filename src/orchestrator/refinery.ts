@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ForemanStore } from "../lib/store.js";
@@ -17,6 +17,8 @@ const REPORT_FILES = [
   "QA_REPORT.md",
   "REVIEW.md",
   "FINALIZE_REPORT.md",
+  "TASK.md",
+  "AGENTS.md",
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -61,6 +63,31 @@ export class Refinery {
   ) {}
 
   /**
+   * Remove report files from the working tree before merging so they can't
+   * conflict. Commits the removal if any tracked files were removed.
+   */
+  private async removeReportFiles(): Promise<void> {
+    let removed = false;
+    for (const report of REPORT_FILES) {
+      const filePath = join(this.projectPath, report);
+      if (existsSync(filePath)) {
+        await git(["rm", "-f", report], this.projectPath).catch(() => {
+          try { unlinkSync(filePath); } catch { /* already gone */ }
+        });
+        removed = true;
+      }
+    }
+    if (removed) {
+      // Only commit if there are staged changes (git rm of tracked files)
+      try {
+        await git(["commit", "-m", "Remove report files before merge"], this.projectPath);
+      } catch {
+        // Nothing staged (files were untracked) — that's fine
+      }
+    }
+  }
+
+  /**
    * Archive report files after a successful merge.
    * Moves report files from the working tree into .foreman/reports/<name>-<seedId>.md
    * and creates a follow-up commit. Called after mergeWorktree() succeeds so we
@@ -77,14 +104,13 @@ export class Refinery {
         const baseName = report.replace(".md", "");
         const dest = join(reportsDir, `${baseName}-${seedId}.md`);
         renameSync(src, dest);
-        await git(["add", dest], this.projectPath);
+        await git(["add", "-f", dest], this.projectPath);
         await git(["rm", "--cached", report], this.projectPath).catch(() => {});
         moved = true;
       }
     }
 
     if (moved) {
-      await git(["add", "-A", ".foreman/reports/"], this.projectPath);
       await git(["commit", "-m", `Archive reports for ${seedId}`], this.projectPath);
     }
   }
@@ -170,6 +196,10 @@ export class Refinery {
   /**
    * Find all completed (unmerged) runs and attempt to merge them into the target branch.
    * Optionally run tests after each merge. Merges in dependency order.
+   *
+   * Report files (QA_REPORT.md, REVIEW.md, TASK.md, AGENTS.md, etc.) are removed
+   * before each merge to prevent conflicts, then archived to .foreman/reports/ after.
+   * Only real code conflicts are reported as failures.
    */
   async mergeCompleted(opts?: {
     targetBranch?: string;
@@ -193,33 +223,49 @@ export class Refinery {
       const branchName = `foreman/${run.seed_id}`;
 
       try {
-        // Save pre-merge HEAD so we can revert both merge + archive if tests fail
+        // Remove report files so they can't cause merge conflicts
+        await this.removeReportFiles();
+
+        // Save pre-merge HEAD so we can revert merge + archive if tests fail
         const preMergeHead = await git(["rev-parse", "HEAD"], this.projectPath);
 
         const result = await mergeWorktree(this.projectPath, branchName, targetBranch);
 
         if (!result.success) {
-          // Merge conflicts — abort the merge to leave repo clean for next attempt
-          try {
-            await git(["merge", "--abort"], this.projectPath);
-          } catch {
-            // merge --abort may fail if already clean
+          const allConflicts = result.conflicts ?? [];
+          const reportConflicts = allConflicts.filter((f) => REPORT_FILES.includes(f));
+          const codeConflicts = allConflicts.filter((f) => !REPORT_FILES.includes(f));
+
+          if (codeConflicts.length > 0) {
+            // Real code conflicts — abort and report
+            try {
+              await git(["merge", "--abort"], this.projectPath);
+            } catch {
+              // merge --abort may fail if already clean
+            }
+
+            this.store.updateRun(run.id, { status: "conflict" });
+            this.store.logEvent(
+              run.project_id,
+              "conflict",
+              { seedId: run.seed_id, branchName, conflictFiles: codeConflicts },
+              run.id,
+            );
+            conflicts.push({
+              runId: run.id,
+              seedId: run.seed_id,
+              branchName,
+              conflictFiles: codeConflicts,
+            });
+            continue;
           }
 
-          this.store.updateRun(run.id, { status: "conflict" });
-          this.store.logEvent(
-            run.project_id,
-            "conflict",
-            { seedId: run.seed_id, branchName, conflictFiles: result.conflicts },
-            run.id,
-          );
-          conflicts.push({
-            runId: run.id,
-            seedId: run.seed_id,
-            branchName,
-            conflictFiles: result.conflicts ?? [],
-          });
-          continue;
+          // Only report-file conflicts — auto-resolve by accepting the branch version
+          for (const f of reportConflicts) {
+            await git(["checkout", "--theirs", f], this.projectPath);
+            await git(["add", f], this.projectPath);
+          }
+          await git(["commit", "--no-edit"], this.projectPath);
         }
 
         // Merge succeeded — archive report files so they don't conflict with next merge
