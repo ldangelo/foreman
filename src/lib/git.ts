@@ -177,24 +177,45 @@ export async function mergeWorktree(
   targetBranch?: string,
 ): Promise<MergeResult> {
   targetBranch ??= await getCurrentBranch(repoPath);
-  // Checkout target branch
-  await git(["checkout", targetBranch], repoPath);
+
+  // Stash any local changes so checkout doesn't fail on a dirty tree
+  let stashed = false;
+  try {
+    const stashOut = await git(["stash", "push", "-m", "foreman-merge-auto-stash"], repoPath);
+    stashed = !stashOut.includes("No local changes");
+  } catch {
+    // stash may fail if there's nothing to stash — that's fine
+  }
 
   try {
-    await git(["merge", branchName, "--no-ff"], repoPath);
-    return { success: true };
-  } catch (err: any) {
-    const message: string = err.message ?? "";
-    if (message.includes("CONFLICT") || message.includes("Merge conflict")) {
-      // Gather conflicting files
-      const statusOut = await git(["diff", "--name-only", "--diff-filter=U"], repoPath);
-      const conflicts = statusOut
-        .split("\n")
-        .map((f) => f.trim())
-        .filter(Boolean);
-      return { success: false, conflicts };
+    // Checkout target branch
+    await git(["checkout", targetBranch], repoPath);
+
+    try {
+      await git(["merge", branchName, "--no-ff"], repoPath);
+      return { success: true };
+    } catch (err: any) {
+      const message: string = err.message ?? "";
+      if (message.includes("CONFLICT") || message.includes("Merge conflict")) {
+        // Gather conflicting files
+        const statusOut = await git(["diff", "--name-only", "--diff-filter=U"], repoPath);
+        const conflicts = statusOut
+          .split("\n")
+          .map((f) => f.trim())
+          .filter(Boolean);
+        return { success: false, conflicts };
+      }
+      // Re-throw for unexpected errors
+      throw err;
     }
-    // Re-throw for unexpected errors
-    throw err;
+  } finally {
+    // Restore stashed changes
+    if (stashed) {
+      try {
+        await git(["stash", "pop"], repoPath);
+      } catch {
+        // Pop may conflict — leave in stash, user can recover with `git stash pop`
+      }
+    }
   }
 }
