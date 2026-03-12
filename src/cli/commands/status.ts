@@ -77,12 +77,13 @@ function renderStatus(): void {
   const store = new ForemanStore();
   const project = store.getProjectByPath(resolve("."));
 
-  // Show failed/stuck run counts from SQLite
+  // Show failed/stuck run counts from SQLite (only recent — last 24h)
   if (project) {
-    const failedCount = store.getRunsByStatus("failed", project.id).length;
-    const stuckCount = store.getRunsByStatus("stuck", project.id).length;
-    if (failedCount > 0) console.log(`  Failed:      ${chalk.red(failedCount)}`);
-    if (stuckCount > 0) console.log(`  Stuck:       ${chalk.red(stuckCount)}`);
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const failedCount = store.getRunsByStatusSince("failed", since, project.id).length;
+    const stuckCount = store.getRunsByStatusSince("stuck", since, project.id).length;
+    if (failedCount > 0) console.log(`  Failed:      ${chalk.red(failedCount)} ${chalk.dim("(last 24h)")}`);
+    if (stuckCount > 0) console.log(`  Stuck:       ${chalk.red(stuckCount)} ${chalk.dim("(last 24h)")}`);
   }
 
   console.log();

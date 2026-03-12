@@ -306,6 +306,43 @@ export class ForemanStore {
       .all(status) as Run[];
   }
 
+  getRunsByStatusSince(status: Run["status"], since: string, projectId?: string): Run[] {
+    if (projectId) {
+      return this.db
+        .prepare(
+          "SELECT * FROM runs WHERE project_id = ? AND status = ? AND created_at >= ? ORDER BY created_at DESC"
+        )
+        .all(projectId, status, since) as Run[];
+    }
+    return this.db
+      .prepare("SELECT * FROM runs WHERE status = ? AND created_at >= ? ORDER BY created_at DESC")
+      .all(status, since) as Run[];
+  }
+
+  /**
+   * Purge old runs in terminal states (failed, merged, test-failed, conflict)
+   * that are older than the given cutoff date. Returns number of rows deleted.
+   */
+  purgeOldRuns(olderThan: string, projectId?: string): number {
+    const terminalStatuses = ["failed", "merged", "test-failed", "conflict"];
+    const placeholders = terminalStatuses.map(() => "?").join(", ");
+
+    if (projectId) {
+      const result = this.db
+        .prepare(
+          `DELETE FROM runs WHERE project_id = ? AND status IN (${placeholders}) AND created_at < ?`
+        )
+        .run(projectId, ...terminalStatuses, olderThan);
+      return result.changes;
+    }
+    const result = this.db
+      .prepare(
+        `DELETE FROM runs WHERE status IN (${placeholders}) AND created_at < ?`
+      )
+      .run(...terminalStatuses, olderThan);
+    return result.changes;
+  }
+
   getRunsForSeed(seedId: string, projectId?: string): Run[] {
     if (projectId) {
       return this.db
