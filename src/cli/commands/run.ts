@@ -21,6 +21,7 @@ export const runCommand = new Command("run")
   .option("--skip-explore", "Skip the explorer phase in the pipeline")
   .option("--skip-review", "Skip the reviewer phase in the pipeline")
   .option("--seed <id>", "Dispatch only this specific seed (must be ready)")
+  .option("--projects <paths>", "Comma-separated list of project paths for multi-repo dispatch (must be registered via 'foreman init')")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -39,6 +40,43 @@ export const runCommand = new Command("run")
       const seeds = new SeedsClient(projectPath);
       const store = new ForemanStore();
       const dispatcher = new Dispatcher(seeds, store, projectPath);
+
+      // Multi-repo mode: dispatch across multiple project paths
+      if (opts.projects) {
+        if (seedFilter) {
+          console.error(chalk.red("Error: --seed and --projects cannot be used together. The --seed flag is ignored in multi-repo mode."));
+          process.exit(1);
+        }
+
+        const projectPaths = (opts.projects as string).split(",").map((s: string) => s.trim()).filter(Boolean);
+
+        const multiResult = await dispatcher.dispatchMultiRepo({
+          projectPaths,
+          maxAgentsTotal: maxAgents,
+          model,
+          dryRun,
+          telemetry,
+          pipeline,
+          skipExplore,
+          skipReview,
+        });
+
+        for (const [projPath, result] of Object.entries(multiResult.byProject)) {
+          console.log(chalk.bold(`\n── Project: ${projPath} ──`));
+          if (result.dispatched.length > 0) {
+            console.log(chalk.green.bold(`  Dispatched ${result.dispatched.length} task(s)`));
+            for (const task of result.dispatched) {
+              console.log(`    ${chalk.cyan(task.seedId)} ${task.title} [${chalk.magenta(task.model)}]`);
+            }
+          }
+          if (result.skipped.length > 0) {
+            console.log(chalk.dim(`  Skipped ${result.skipped.length} task(s)`));
+          }
+        }
+        console.log(chalk.bold(`\nTotal dispatched: ${multiResult.totalDispatched}  Active agents: ${multiResult.totalActiveAgents}`));
+        store.close();
+        return;
+      }
 
       // Resume mode: pick up stuck/failed runs from a previous dispatch
       if (resume || resumeFailed) {

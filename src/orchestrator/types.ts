@@ -149,3 +149,35 @@ export interface PrReport {
   created: CreatedPr[];
   failed: FailedRun[];
 }
+
+// ── Multi-repo types ────────────────────────────────────────────────────
+
+export interface MultiRepoDispatchOpts {
+  projectPaths: string[];           // absolute paths to each repo
+  maxAgentsPerProject?: number;     // per-repo agent limit (default: 5)
+  maxAgentsTotal?: number;          // overall agent limit (default: unlimited)
+  model?: ModelSelection;
+  dryRun?: boolean;
+  telemetry?: boolean;
+  pipeline?: boolean;
+  skipExplore?: boolean;
+  skipReview?: boolean;
+}
+
+export interface MultiRepoDispatchResult {
+  byProject: Record<string, DispatchResult>;  // projectPath → DispatchResult
+  totalDispatched: number;
+  totalSkipped: number;
+  totalActiveAgents: number;
+}
+
+export interface MultiRepoMergeOpts {
+  targetBranches: Record<string, string>;       // projectPath → branch name
+  runTests?: boolean;
+  testCommands?: Record<string, string>;        // projectPath → test command
+}
+
+export interface MultiRepoMergeReport {
+  byProject: Record<string, MergeReport>;  // projectPath → MergeReport
+  errors: Record<string, string>;          // projectPath → error message (for projects that failed to merge entirely)
+}

@@ -12,23 +12,22 @@ interface Seed {
 
 const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
 
-function renderStatus(): void {
+function renderStatus(projectPath?: string): void {
+  const cwd = projectPath ?? resolve(".");
   // Fetch seed list
   let seeds: Seed[] = [];
   try {
     const output = execFileSync(sdPath, ["list", "--json", "--limit", "0"], {
       stdio: ["pipe", "pipe", "pipe"],
       encoding: "utf-8",
+      cwd,
     });
     const parsed = JSON.parse(output);
     seeds = parsed.issues ?? parsed ?? [];
   } catch {
-    console.error(
-      chalk.red(
-        "Failed to read seeds. Is this a foreman project? Run 'foreman init' first.",
-      ),
+    throw new Error(
+      `Failed to read seeds for ${cwd}. Is this a foreman project? Run 'foreman init' first.`,
     );
-    process.exit(1);
   }
 
   const inProgress = seeds.filter((b) => b.status === "in_progress").length;
@@ -39,6 +38,7 @@ function renderStatus(): void {
     const closedOutput = execFileSync(sdPath, ["list", "--status=closed", "--json", "--limit", "0"], {
       stdio: ["pipe", "pipe", "pipe"],
       encoding: "utf-8",
+      cwd,
     });
     const closedParsed = JSON.parse(closedOutput);
     completed = (closedParsed.issues ?? closedParsed ?? []).length;
@@ -53,6 +53,7 @@ function renderStatus(): void {
     const readyOutput = execFileSync(sdPath, ["ready", "--json"], {
       stdio: ["pipe", "pipe", "pipe"],
       encoding: "utf-8",
+      cwd,
     });
     const readyParsed = JSON.parse(readyOutput);
     ready = (readyParsed.issues ?? readyParsed ?? []).length;
@@ -61,6 +62,7 @@ function renderStatus(): void {
     const blockedOutput = execFileSync(sdPath, ["blocked", "--json"], {
       stdio: ["pipe", "pipe", "pipe"],
       encoding: "utf-8",
+      cwd,
     });
     const blockedParsed = JSON.parse(blockedOutput);
     blocked = (blockedParsed.issues ?? blockedParsed ?? []).length;
@@ -75,7 +77,7 @@ function renderStatus(): void {
 
   // Show active agents from sqlite
   const store = new ForemanStore();
-  const project = store.getProjectByPath(resolve("."));
+  const project = store.getProjectByPath(cwd);
 
   // Show failed/stuck run counts from SQLite
   if (project) {
@@ -157,7 +159,33 @@ function renderStatus(): void {
 export const statusCommand = new Command("status")
   .description("Show project status from seeds + sqlite")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
-  .action(async (opts: { watch?: boolean | string }) => {
+  .option("--project <path>", "Project path (overrides cwd detection)")
+  .option("--all-projects", "Show status for all registered projects")
+  .action(async (opts: { watch?: boolean | string; project?: string; allProjects?: boolean }) => {
+    if (opts.allProjects) {
+      // --watch is silently incompatible with --all-projects (would need per-project watch loops)
+      if (opts.watch !== undefined) {
+        console.warn(chalk.yellow("Warning: --watch is ignored when --all-projects is set."));
+      }
+      const store = new ForemanStore();
+      const projects = store.listProjects();
+      store.close();
+      if (projects.length === 0) {
+        console.log(chalk.yellow("No projects registered."));
+        return;
+      }
+      for (const proj of projects) {
+        console.log(chalk.bold(`\n── Project: ${proj.name} (${proj.path}) ──\n`));
+        try {
+          renderStatus(proj.path);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(chalk.red(`  Error: ${message}`));
+        }
+      }
+      return;
+    }
+
     if (opts.watch !== undefined) {
       const interval = typeof opts.watch === "string" ? parseInt(opts.watch, 10) : 10;
       const seconds = Number.isFinite(interval) && interval > 0 ? interval : 10;
@@ -173,12 +201,23 @@ export const statusCommand = new Command("status")
         // Clear screen and move cursor to top
         process.stdout.write("\x1b[2J\x1b[H");
         console.log(chalk.bold("Project Status") + chalk.dim(`  (watching every ${seconds}s — Ctrl+C to stop)\n`));
-        renderStatus();
+        try {
+          renderStatus(opts.project);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(chalk.red(message));
+        }
         console.log(chalk.dim(`\nLast updated: ${new Date().toLocaleTimeString()}`));
         await new Promise((r) => setTimeout(r, seconds * 1000));
       }
     } else {
       console.log(chalk.bold("Project Status\n"));
-      renderStatus();
+      try {
+        renderStatus(opts.project);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(chalk.red(message));
+        process.exit(1);
+      }
     }
   });

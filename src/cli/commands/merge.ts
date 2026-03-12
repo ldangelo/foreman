@@ -13,9 +13,12 @@ export const mergeCommand = new Command("merge")
   .option("--test-command <cmd>", "Test command to run", "npm test")
   .option("--seed <id>", "Merge a single seed by ID")
   .option("--list", "List seeds ready to merge (no merge performed)")
+  .option("--project <path>", "Project path (overrides cwd detection)")
   .action(async (opts) => {
     try {
-      const projectPath = await getRepoRoot(process.cwd());
+      const projectPath = opts.project
+        ? opts.project as string
+        : await getRepoRoot(process.cwd());
       const seeds = new SeedsClient(projectPath);
       const store = new ForemanStore();
       const refinery = new Refinery(store, seeds, projectPath);

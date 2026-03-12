@@ -233,6 +233,50 @@ export class SeedsClient {
     await execSd(["compact"], this.projectPath);
   }
 
+  // ── Static multi-repo helpers ────────────────────────────────────────
+
+  /**
+   * Query ready seeds across multiple project paths.
+   * Returns an array of { projectPath, seeds } entries.
+   * Projects that fail are silently skipped.
+   */
+  static async readyAcrossRepos(
+    projectPaths: string[],
+  ): Promise<Array<{ projectPath: string; seeds: Seed[] }>> {
+    const results: Array<{ projectPath: string; seeds: Seed[] }> = [];
+    for (const projectPath of projectPaths) {
+      try {
+        const client = new SeedsClient(projectPath);
+        const seeds = await client.ready();
+        results.push({ projectPath, seeds });
+      } catch {
+        results.push({ projectPath, seeds: [] });
+      }
+    }
+    return results;
+  }
+
+  /**
+   * List seeds across multiple project paths with optional filters.
+   * Returns an array of { projectPath, seeds } entries.
+   */
+  static async listAcrossRepos(
+    projectPaths: string[],
+    opts?: { status?: string; type?: string },
+  ): Promise<Array<{ projectPath: string; seeds: Seed[] }>> {
+    const results: Array<{ projectPath: string; seeds: Seed[] }> = [];
+    for (const projectPath of projectPaths) {
+      try {
+        const client = new SeedsClient(projectPath);
+        const seeds = await client.list(opts);
+        results.push({ projectPath, seeds });
+      } catch {
+        results.push({ projectPath, seeds: [] });
+      }
+    }
+    return results;
+  }
+
   // ── Private helpers ─────────────────────────────────────────────────
 
   private async requireInit(): Promise<void> {

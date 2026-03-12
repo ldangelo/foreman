@@ -1,12 +1,19 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import type { ForemanStore } from "../lib/store.js";
-import type { SeedsClient } from "../lib/seeds.js";
+import type { ForemanStore, Run } from "../lib/store.js";
+import { SeedsClient } from "../lib/seeds.js";
 import { mergeWorktree, removeWorktree } from "../lib/git.js";
-import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
+import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr, MultiRepoMergeOpts, MultiRepoMergeReport } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+
+// ── Logging ──────────────────────────────────────────────────────────────
+
+function log(msg: string): void {
+  const ts = new Date().toISOString().slice(11, 23);
+  console.error(`[foreman ${ts}] ${msg}`);
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -52,7 +59,7 @@ export class Refinery {
   /**
    * Get all completed runs that are ready to merge, optionally filtered to a single seed.
    */
-  getCompletedRuns(projectId?: string, seedId?: string): import("../lib/store.js").Run[] {
+  getCompletedRuns(projectId?: string, seedId?: string): Run[] {
     const completedRuns = this.store.getRunsByStatus("completed", projectId);
     if (seedId) {
       return completedRuns.filter((r) => r.seed_id === seedId);
@@ -64,7 +71,7 @@ export class Refinery {
    * Order runs by seed dependency graph so that dependencies merge before dependents.
    * Falls back to insertion order if dependency info is unavailable.
    */
-  async orderByDependencies(runs: import("../lib/store.js").Run[]): Promise<import("../lib/store.js").Run[]> {
+  async orderByDependencies(runs: Run[]): Promise<Run[]> {
     if (runs.length <= 1) return runs;
 
     try {
@@ -103,7 +110,7 @@ export class Refinery {
         if (deg === 0) queue.push(id);
       }
 
-      const sorted: import("../lib/store.js").Run[] = [];
+      const sorted: Run[] = [];
       while (queue.length > 0) {
         const id = queue.shift()!;
         const run = runMap.get(id);
@@ -117,7 +124,7 @@ export class Refinery {
 
       // Append any runs not in the graph (shouldn't happen, but safe)
       for (const run of runs) {
-        if (!sorted.includes(run)) sorted.push(run);
+        if (!sorted.some((r) => r.id === run.id)) sorted.push(run);
       }
 
       return sorted;
@@ -421,5 +428,48 @@ export class Refinery {
     }
 
     return { created, failed };
+  }
+
+  /**
+   * Merge completed runs across multiple repositories.
+   *
+   * For each project path in opts.targetBranches, creates a Refinery for
+   * that project and calls mergeCompleted() with the specified target branch
+   * and optional test command.
+   *
+   * Projects whose path is not registered in the store are skipped.
+   */
+  async mergeMultiRepo(opts: MultiRepoMergeOpts): Promise<MultiRepoMergeReport> {
+    const byProject: Record<string, MergeReport> = {};
+    const errors: Record<string, string> = {};
+
+    for (const [projectPath, targetBranch] of Object.entries(opts.targetBranches)) {
+      const project = this.store.getProjectByPath(projectPath);
+      if (!project) {
+        log(`Project at ${projectPath} not registered — skipping merge`);
+        byProject[projectPath] = { merged: [], conflicts: [], testFailures: [] };
+        continue;
+      }
+
+      const projectSeeds = new SeedsClient(projectPath);
+      const projectRefinery = new Refinery(this.store, projectSeeds, projectPath);
+
+      try {
+        const report = await projectRefinery.mergeCompleted({
+          targetBranch,
+          runTests: opts.runTests,
+          testCommand: opts.testCommands?.[projectPath],
+          projectId: project.id,
+        });
+        byProject[projectPath] = report;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        log(`Failed to merge for project ${projectPath}: ${message}`);
+        byProject[projectPath] = { merged: [], conflicts: [], testFailures: [] };
+        errors[projectPath] = message;
+      }
+    }
+
+    return { byProject, errors };
   }
 }

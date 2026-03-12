@@ -5,7 +5,8 @@ import { spawn } from "node:child_process";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 
-import type { SeedsClient, Seed } from "../lib/seeds.js";
+import { SeedsClient } from "../lib/seeds.js";
+import type { Seed } from "../lib/seeds.js";
 import type { ForemanStore } from "../lib/store.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
@@ -18,6 +19,8 @@ import type {
   RuntimeSelection,
   ModelSelection,
   PlanStepDispatched,
+  MultiRepoDispatchOpts,
+  MultiRepoDispatchResult,
 } from "./types.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -422,6 +425,76 @@ export class Dispatcher {
       runId: run.id,
       sessionKey,
     };
+  }
+
+  /**
+   * Dispatch ready seeds across multiple repositories.
+   *
+   * Creates a SeedsClient per project, queries ready seeds for each,
+   * and dispatches up to maxAgentsPerProject agents per repo (and
+   * maxAgentsTotal overall). Projects must be registered via `foreman init`.
+   */
+  async dispatchMultiRepo(opts: MultiRepoDispatchOpts): Promise<MultiRepoDispatchResult> {
+    const maxPerProject = opts.maxAgentsPerProject ?? 5;
+    const maxTotal = opts.maxAgentsTotal ?? Infinity;
+
+    const byProject: Record<string, DispatchResult> = {};
+    let totalDispatched = 0;
+    let totalSkipped = 0;
+    let totalActiveAgents = 0;
+
+    for (const projectPath of opts.projectPaths) {
+      if (totalDispatched >= maxTotal) {
+        // Already hit the global limit — skip remaining projects
+        const emptyResult: DispatchResult = {
+          dispatched: [],
+          skipped: [],
+          resumed: [],
+          activeAgents: 0,
+        };
+        byProject[projectPath] = emptyResult;
+        continue;
+      }
+
+      // Get or register the project in the store
+      const project = this.store.getProjectByPath(projectPath);
+      if (!project) {
+        log(`Project at ${projectPath} not registered — skipping`);
+        byProject[projectPath] = { dispatched: [], skipped: [], resumed: [], activeAgents: 0 };
+        continue;
+      }
+
+      // Create a project-specific dispatcher
+      const projectSeeds = new SeedsClient(projectPath);
+      const projectDispatcher = new Dispatcher(projectSeeds, this.store, projectPath);
+
+      const remaining = maxTotal - totalDispatched;
+      const projectMaxAgents = Math.min(maxPerProject, remaining);
+
+      try {
+        const result = await projectDispatcher.dispatch({
+          maxAgents: projectMaxAgents,
+          model: opts.model,
+          dryRun: opts.dryRun,
+          telemetry: opts.telemetry,
+          pipeline: opts.pipeline,
+          skipExplore: opts.skipExplore,
+          skipReview: opts.skipReview,
+          projectId: project.id,
+        });
+
+        byProject[projectPath] = result;
+        totalDispatched += result.dispatched.length;
+        totalSkipped += result.skipped.length;
+        totalActiveAgents += result.activeAgents;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        log(`Failed to dispatch for project ${projectPath}: ${message}`);
+        byProject[projectPath] = { dispatched: [], skipped: [], resumed: [], activeAgents: 0 };
+      }
+    }
+
+    return { byProject, totalDispatched, totalSkipped, totalActiveAgents };
   }
 
   /**

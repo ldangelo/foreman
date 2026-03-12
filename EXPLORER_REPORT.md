@@ -1,165 +1,302 @@
-# Explorer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Explorer Report: Multi-repo orchestration support
 
-## Summary
-The codebase uses `maxTurns` to limit SDK query execution in the agent orchestration pipeline. This needs to be replaced with `maxBudgetUsd` to enforce budget-based limits instead of turn-based limits. The change affects the role configurations, phase execution, and logging.
+## Executive Summary
+
+Foreman currently operates under the assumption of **single-repository execution**. Each command resolves the project path from the current working directory via `getRepoRoot()`, and all orchestration (dispatch, merge, status) operates on that single project. Enabling multi-repo support requires:
+
+1. **Store enhancements** — Track multiple projects and their relationships
+2. **CLI modifications** — Accept explicit project selection (via flag/config/env)
+3. **Dispatcher improvements** — Handle seeds from multiple repos in a single run
+4. **Refinery extensions** — Merge work across multiple repositories
+5. **Git management** — Support worktrees in separate repository roots
+6. **Seeds coordination** — Execute seeds that reference multiple repos
+
+---
 
 ## Relevant Files
 
-### 1. **src/orchestrator/roles.ts** (lines 13-46)
-- **Purpose**: Defines role configurations for the specialization pipeline (explorer, developer, qa, reviewer)
-- **Current State**:
-  - `RoleConfig` interface has `maxTurns: number` property (line 16)
-  - `ROLE_CONFIGS` object defines maxTurns for each phase:
-    - explorer: 30 turns
-    - developer: 80 turns
-    - qa: 30 turns
-    - reviewer: 20 turns
-- **Relevance**: Primary file that needs modification - interface definition and config values
+### Store & Project Management
+- **`src/lib/store.ts`** (lines 1-226)
+  - `Project` interface with `id`, `name`, `path` (unique constraint), `status`, timestamps
+  - `ForemanStore` class managing projects, runs, costs, events
+  - Key methods: `registerProject()`, `getProjectByPath()`, `listProjects()`, `getActiveRuns(projectId?)`
+  - **Current limitation**: `getProjectByPath()` assumes single lookup; no multi-project filtering
+  - **Issue**: Runs are associated 1:1 with projects via `project_id`, but seeds live in `.seeds/` per repo
 
-### 2. **src/orchestrator/agent-worker.ts** (lines 310-399)
-- **Purpose**: Standalone worker process that runs individual SDK query calls for each pipeline phase
-- **Current State**:
-  - Line 322: Logs `maxTurns=${roleConfig.maxTurns}` when starting a phase
-  - Line 337: Passes `maxTurns: roleConfig.maxTurns` to the SDK `query()` options
-  - Line 225: Already handles `error_max_budget_usd` error subtype (future-ready)
-- **Relevance**: Needs to replace logging and pass maxBudgetUsd to query() options instead
+### CLI Commands
+- **`src/cli/index.ts`** (line 1-36)
+  - Main entry point with 11 commands, all invoked without project context
 
-### 3. **src/orchestrator/dispatcher.ts** (line 361)
-- **Purpose**: Dispatches beads to agents, handles one-off planning steps
-- **Current State**:
-  - Line 361: Uses `maxTurns: 50` for `dispatchPlanStep()` SDK query
-- **Relevance**: Secondary location needing update for consistency with phase limits
+- **`src/cli/commands/init.ts`** (lines 1-67)
+  - `foreman init --name` registers one project per directory
+  - Uses `execFileSync()` to call `sd init` (Seeds CLI)
+  - **Limitation**: Only works in current directory
+
+- **`src/cli/commands/run.ts`** (lines 1-162)
+  - Calls `getRepoRoot()` to resolve project path (line 38)
+  - Creates `Dispatcher(seeds, store, projectPath)` (line 41)
+  - **Limitation**: Single projectPath; no cross-repo dispatching
+
+- **`src/cli/commands/merge.ts`** (lines 1-124)
+  - Calls `getRepoRoot()` to resolve project (line 18)
+  - Creates `Refinery(store, seeds, projectPath)` (line 21)
+  - Looks up project with `getProjectByPath()` (line 23)
+  - **Limitation**: Can only merge into single target branch in single repo
+
+- **`src/cli/commands/status.ts`** (lines 1-185)
+  - Fetches seeds with `sd list` from current directory (lines 19, 39, 53, 61)
+  - Gets project with `getProjectByPath(resolve("."))` (line 78)
+  - **Limitation**: Shows only current project status
+
+- **Other commands**: `plan`, `decompose`, `monitor`, `attach`, `reset`, `pr`, `doctor` all follow same pattern of `getRepoRoot()` → single project lookup
+
+### Orchestration Engine
+- **`src/orchestrator/dispatcher.ts`** (lines 1-150+)
+  - Constructor takes `projectPath: string` (single repo assumption)
+  - `dispatch()` method queries seeds from single repo, creates worktrees in single repo
+  - `createWorktree(repoPath, seedId)` writes to `.foreman-worktrees/<seedId>` within repo
+  - **Critical limitation** (line 73): Worktree path assumes repo structure: `join(repoPath, ".foreman-worktrees", seedId)`
+
+- **`src/orchestrator/refinery.ts`** (lines 1-250+)
+  - Constructor takes `projectPath: string` (single repo)
+  - `mergeCompleted()` merges branches into single target repo
+  - Uses `mergeWorktree(projectPath, branchName, targetBranch)` which assumes single repo
+  - **Limitation**: Cannot merge across repos
+
+- **`src/orchestrator/types.ts`**
+  - `DispatchedTask` includes `worktreePath` (assumes single repo)
+  - No cross-repo references in types
+
+### Git Management
+- **`src/lib/git.ts`** (lines 1-150+)
+  - `createWorktree(repoPath, seedId, baseBranch?)` — creates worktree in `.foreman-worktrees/`
+  - `removeWorktree(repoPath, worktreePath)` — removes worktree
+  - `listWorktrees(repoPath)` — lists worktrees in single repo
+  - `mergeWorktree(repoPath, branchName, targetBranch)` — merges branch in single repo
+  - All functions assume single repository root
+
+### Seeds Client
+- **`src/lib/seeds.ts`** (lines 1-100+)
+  - `SeedsClient` constructor takes `projectPath: string`
+  - All methods (ready, list, update, etc.) call `sd` CLI in project directory
+  - No cross-repo seed querying
+
+---
 
 ## Architecture & Patterns
 
-### Pipeline Orchestration Pattern
-- **Sequential phases**: Explorer → Developer ⇄ QA → Reviewer → Finalize
-- **Phase execution**: Each phase runs as a separate `query()` call with its own config
-- **Error handling**: Already recognizes `error_max_budget_usd` error subtype (agent-worker.ts:225)
-- **Naming convention**: `roleConfig.maxTurns` → should become `roleConfig.maxBudgetUsd`
-
-### SDK Integration
-- The Anthropic Claude Agent SDK supports `maxBudgetUsd?: number` in query options (confirmed in sdk.d.ts)
-- Budget limits are enforced by the SDK during query execution
-- Error subtype `error_max_budget_usd` is already handled by the error detection logic
-
-### Role Config Structure
-```typescript
-export interface RoleConfig {
-  role: AgentRole;
-  model: ModelSelection;
-  maxTurns: number;              // ← Change to maxBudgetUsd: number
-  reportFile: string;
-}
+### Current Single-Repo Architecture
 ```
+┌─ Project Directory
+│  ├─ .seeds/                    (Seeds workspace — all tasks)
+│  ├─ .foreman-worktrees/        (Git worktrees per seed)
+│  │  ├─ <seedId>/               (Branch: foreman/<seedId>)
+│  │  └─ ...
+│  └─ src/, tests/, etc.         (Actual code)
+└─ SQLite Store (~/.foreman/foreman.db)
+   ├─ projects table             (Project metadata)
+   ├─ runs table                 (Run records per seed per project)
+   └─ costs/events tables        (Metrics per run)
+```
+
+### Key Assumptions
+1. **One project per CLI invocation** — `getRepoRoot()` determines context
+2. **Seeds per repo** — `.seeds/` is repo-local; no cross-repo seed fetching
+3. **Worktrees per repo** — `.foreman-worktrees/` lives in repo root
+4. **Single merge target** — Refinery merges all branches into one repo/branch
+5. **Project lookup by path** — Store treats path as unique identifier
+
+### Naming Conventions
+- Branches follow `foreman/<seedId>` pattern (repo-agnostic seed IDs)
+- Seeds CLI is invoked via `sd` command (from `~/.bun/bin/sd`)
+- Worktree removal uses `git worktree remove --force`
+
+---
 
 ## Dependencies
 
-### What Uses maxTurns
-1. **agent-worker.ts**:
-   - Imports `ROLE_CONFIGS` from roles.ts
-   - Calls `roleConfig.maxTurns` in `runPhase()` function
-   - Passes value to SDK `query()` options
+### What Foreman depends on
+- **Beads/Seeds CLI** (`sd` command) — Task definition & tracking
+- **Git** — Worktree creation/management, merging
+- **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — Agent spawning
+- **Better SQLite3** — Local state store
+- **Commander** — CLI parsing
+- **Chalk** — Colored output
 
-2. **dispatcher.ts**:
-   - Hard-coded `maxTurns: 50` in `dispatchPlanStep()`
-   - No import from roles.ts (independent configuration)
+### What depends on Foreman's multi-repo capability
+- **Dispatcher** — Needs to know which repo each seed belongs to
+- **Refinery** — Needs to merge to different target repos
+- **Status/Monitor** — Need to aggregate stats across multiple repos
+- **Dashboard** — Should display multiple projects in parallel
 
-3. **roles.ts**:
-   - Defines the canonical values for all phases
-   - No external dependencies on the property name
+### Current Pain Points
+- Store has `project_id` FK on runs, but dispatcher doesn't propagate it explicitly
+- SeedsClient has no way to query seeds from multiple repos
+- Worktree paths are tightly coupled to single repo structure
+- CLI assumes `cwd` determines project context
 
-### SDK API Contract
-- The SDK's `query()` function accepts `maxBudgetUsd?: number` parameter
-- When a query exceeds budget, SDK returns error with `subtype: "error_max_budget_usd"`
-- No backwards compatibility issues - this is a parameter replacement
+---
 
 ## Existing Tests
 
-### Test Files
-1. **src/orchestrator/__tests__/roles.test.ts**
-   - Tests ROLE_CONFIGS structure (all roles defined, models correct)
-   - Tests prompt templates (context injection, read-only instructions)
-   - Tests verdict/issue parsing from reports
-   - **Status**: Tests focus on config existence, not specific maxTurns values
-   - **Impact**: Tests will likely pass after renaming property (no assertions on maxTurns specifically)
+Tests exist for components that need to support multi-repo:
+- **`src/lib/__tests__/store.test.ts`** — Project/run CRUD operations
+- **`src/lib/__tests__/git.test.ts`** — Worktree creation/removal
+- **`src/lib/__tests__/seeds.test.ts`** — Seeds CLI interactions
+- **`src/orchestrator/__tests__/dispatcher.test.ts`** — Dispatch workflow
+- **`src/cli/__tests__/commands.test.ts`** — CLI command execution
+- **`src/orchestrator/__tests__/worker-spawn.test.ts`** — Agent spawning
 
-2. **src/orchestrator/__tests__/agent-worker.test.ts**
-   - Tests worker process initialization and logging
-   - Tests config file handling and deletion
-   - **Status**: No assertions on maxTurns values
-   - **Impact**: Will need to verify logging format still works with maxBudgetUsd
+**Test coverage**: Tests currently mock single-project scenarios; multi-repo tests will need to validate:
+- Cross-repo seed queries
+- Multi-repo merge ordering
+- Worktree isolation across repos
+- Cost aggregation across projects
 
-### Test Coverage of Limits
-- No tests directly assert maxTurns values
-- No tests verify budget enforcement
-- New tests may be beneficial to ensure budget limits work correctly
+---
 
 ## Recommended Approach
 
-### Phase 1: Update Role Configurations
-1. Update `RoleConfig` interface in roles.ts:
-   - Rename `maxTurns: number` → `maxBudgetUsd: number`
+### Phase 1: CLI & Project Resolution (Priority: HIGH)
+1. **Add `--project` flag** to all CLI commands (or env var `FOREMAN_PROJECT`)
+   - `foreman run --project frontend --max-agents 3`
+   - Fall back to `getRepoRoot()` if not specified (backward compatible)
 
-2. Update `ROLE_CONFIGS` values with reasonable budget estimates:
-   - Need to estimate per-model costs based on token usage
-   - Suggested starting points (requires validation):
-     - **explorer** (haiku, 30 turns): $0.50-$1.00 USD
-     - **developer** (sonnet, 80 turns): $5.00-$10.00 USD
-     - **qa** (sonnet, 30 turns): $2.00-$4.00 USD
-     - **reviewer** (sonnet, 20 turns): $1.50-$3.00 USD
-   - Also update **dispatchPlanStep** budget in dispatcher.ts (currently maxTurns: 50)
+2. **Extend `getRepoRoot()` behavior**
+   - Allow explicit project path override
+   - Validate project is registered in store
 
-### Phase 2: Update Phase Execution in agent-worker.ts
-1. Update `runPhase()` function:
-   - Line 322: Change log format to show `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - Line 337: Pass `maxBudgetUsd: roleConfig.maxBudgetUsd` instead of `maxTurns`
+3. **Update command handlers** to accept optional `projectPath` parameter
+   - `run.ts`, `merge.ts`, `status.ts`, `decompose.ts`, etc.
 
-2. Verify error handling:
-   - Line 225 already checks for `error_max_budget_usd` — keep as-is
+**Files to modify**: `src/cli/index.ts`, `src/cli/commands/*.ts`
 
-### Phase 3: Update Dispatcher Planning
-1. In dispatcher.ts `dispatchPlanStep()`:
-   - Replace `maxTurns: 50` with appropriate `maxBudgetUsd` value (suggest $3.00-$5.00)
+### Phase 2: Multi-Repo Orchestration (Priority: HIGH)
+1. **Enhance Dispatcher**
+   - Add method `dispatchMultiRepo(projectIds: string[], opts)`
+   - Gather seeds from all specified projects
+   - Create worktrees in respective repos
+   - **Constraint**: Different repos may have conflicting seed IDs → include repo prefix in run tracking
 
-### Phase 4: Update Tests & Documentation
-1. roles.test.ts:
-   - Update any hardcoded expectations if tests fail
-   - Consider adding assertions for budget values being positive numbers
+2. **Enhance Refinery**
+   - Add method `mergeMultiRepo(projectMergeTargets: {[projectId]: branch})`
+   - Iterate through projects, merge in dependency order
+   - Handle cross-project dependencies in merge ordering
 
-2. agent-worker.test.ts:
-   - Verify logging format with new maxBudgetUsd parameter
-   - Check that log output still contains relevant budget information
+3. **Update Dispatcher.spawnAgent()** to pass project-specific context
+   - Include `projectPath` in WorkerConfig
+   - Agents need to know which repo their worktree belongs to
+
+**Files to modify**: `src/orchestrator/dispatcher.ts`, `src/orchestrator/refinery.ts`, `src/orchestrator/agent-worker.ts`
+
+### Phase 3: Seeds Multi-Repo Support (Priority: MEDIUM)
+1. **Extend SeedsClient**
+   - New method `readyAcrossRepos(projectPaths: string[])`
+   - New method `getGraphAcrossRepos(projectPaths: string[])`
+   - Combine results while handling duplicate seed IDs
+
+2. **Worktree Path Encoding**
+   - Include repo identifier in worktree path or metadata
+   - Example: `.foreman-worktrees/<projectId>/<seedId>` OR store `(projectId, seedId)` tuple in runs table
+
+**Files to modify**: `src/lib/seeds.ts`, `src/lib/store.ts` (add `project_seed_id` index)
+
+### Phase 4: Git Management (Priority: MEDIUM)
+1. **Enhance Git helpers**
+   - `createWorktree()` already takes `repoPath` — no change needed
+   - `mergeWorktree()` already takes `repoPath` — no change needed
+   - **Actually**: Git layer is already repo-agnostic! Just need dispatcher/refinery to call with correct repo.
+
+**Files to modify**: None (git.ts is already multi-repo compatible)
+
+### Phase 5: Status & Observability (Priority: LOW)
+1. **Extend status/monitor commands**
+   - `foreman status --all-projects` to see all projects
+   - `foreman status --projects frontend,backend` for subset
+   - Dashboard should default to all projects
+
+2. **Aggregate metrics across repos**
+   - Refinery logs events per project — already supports filtering
+
+**Files to modify**: `src/cli/commands/status.ts`, `src/cli/commands/monitor.ts`, `src/orchestrator/types.ts` (add MultiProject types)
+
+---
 
 ## Potential Pitfalls & Edge Cases
 
-1. **Budget Estimation Accuracy**
-   - Turn counts are discrete (explorer: 30) but budgets must be estimated
-   - Per-model costs vary (Haiku cheaper than Sonnet than Opus)
-   - May need to adjust budgets based on real usage data
+### 1. Seed ID Collisions
+- **Problem**: Two repos may have seeds with same ID (e.g., both have `db-01`)
+- **Solution**: Store `(project_id, seed_id)` as composite key in runs; worktree path should encode both
 
-2. **Error Handling Clarity**
-   - Error message when budget exceeded may be different from turn limits
-   - Current code checks `error_max_budget_usd` — verify message consistency
+### 2. Conflicting Dependencies Across Repos
+- **Problem**: Repo A seed depends on Repo B seed; merge order matters
+- **Solution**: Extend `orderByDependencies()` to handle cross-project deps via full seed graph
 
-3. **Logging Clarity**
-   - Phase startup logs currently show `maxTurns=30`
-   - Should show `maxBudgetUsd=$X.XX` for clarity
+### 3. Worktree Cleanup on Merge Failure
+- **Problem**: If multi-repo merge fails halfway, some worktrees cleaned up, others not
+- **Solution**: Refinery should transaction-like behavior — track cleanup separately, defer until all merges attempted
 
-4. **Backwards Compatibility**
-   - Existing stored run data uses turns in progress tracking (agent-worker.ts line 196)
-   - Budget limits don't track in progress.turns — separate concerns
-   - No data migration needed (turns are tracked separately from limits)
+### 4. Git Worktree Location
+- **Problem**: `.foreman-worktrees/` lives in repo root; if coordinating from parent dir, unclear which repo owns worktree
+- **Solution**: Worktree metadata in runs table (already includes `worktree_path`) should be absolute path; tests should validate
 
-5. **Dispersion Across Files**
-   - dispatcher.ts has a hard-coded maxTurns value (50) separate from roles.ts
-   - Consider whether plan steps should use same budget as phases or different
+### 5. Seeds CLI Multi-Repo Querying
+- **Problem**: `sd ready` only works in repo directory; no cross-repo querying
+- **Solution**: Dispatcher must call `SeedsClient.ready()` separately for each project path, merge results
 
-## Next Steps for Developer
+### 6. Test Suite Coverage
+- **Problem**: Existing tests mock single-project workflows; new tests needed for multi-repo
+- **Solution**: Create fixtures with 2+ test repos; test merge ordering, cleanup, cost aggregation
 
-1. Research typical costs per phase from production data (if available)
-2. Update roles.ts with maxBudgetUsd values (start conservative)
-3. Update agent-worker.ts runPhase() logging and query options
-4. Update dispatcher.ts dispatchPlanStep() budget
-5. Run tests to verify no regressions
-6. Monitor first few runs with new budgets to validate appropriateness
+---
+
+## Implementation Notes for Developer
+
+### Type Safety
+- Consider new types in `src/orchestrator/types.ts`:
+  ```typescript
+  export interface MultiRepoDispatchOpts {
+    projectPaths: string[];  // or projectIds + store lookup
+    maxAgentsPerProject?: number;
+    maxAgentsTotal?: number;
+  }
+
+  export interface MultiRepoMergeOpts {
+    targetBranches: Record<string, string>;  // projectId → branch
+    runTests: boolean;
+    testCommands: Record<string, string>;    // projectId → test command
+  }
+  ```
+
+### Backward Compatibility
+- All changes should be **backward compatible** — single-repo CLI commands must continue to work
+- Flag defaults: `--project` unspecified = current working directory (existing behavior)
+
+### Store Schema Changes (if needed)
+- Consider adding migration to ensure `project_seed_id` uniqueness (if using composite key)
+- Existing runs table already has `project_id` + `seed_id`; likely sufficient
+
+### Testing Strategy
+- **Unit tests**: Multi-project dispatcher, refinery, SeedsClient
+- **Integration tests**: Two mock repos with dependent seeds; verify dispatch, merge order
+- **E2E tests**: Real repos (or temp git repos); full pipeline with multi-project
+
+---
+
+## Summary for Developer
+
+The foundation for multi-repo support is **already in place**:
+- ✅ Store tracks multiple projects
+- ✅ Runs associate with projects
+- ✅ Git layer is repo-agnostic
+- ✅ CLI has room for project selection flags
+
+**Main work**:
+1. Wire up project selection in CLI (Phase 1)
+2. Enhance dispatcher/refinery for multi-repo orchestration (Phase 2)
+3. Coordinate SeedsClient across multiple repos (Phase 3)
+4. Update status/observability commands (Phase 5)
+
+**Risk**: Seed ID collisions and cross-repo dependency ordering — require care in Phase 2-3.
+
+**Estimated scope**: ~20-30 modified files, new multi-project types/methods, comprehensive test additions.
