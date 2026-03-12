@@ -57,7 +57,7 @@ You are an **Explorer** — your job is to understand the codebase before implem
 **Description:** ${beadDescription}
 
 ## Instructions
-1. Read AGENTS.md for task context
+1. Read TASK.md for task context
 2. Explore the codebase to understand the relevant architecture:
    - Find the files that will need to be modified
    - Identify existing patterns, conventions, and abstractions
@@ -119,7 +119,7 @@ ${feedbackSection}
 **Description:** ${beadDescription}
 
 ## Instructions
-1. Read AGENTS.md for task context
+1. Read TASK.md for task context
 ${explorerInstructions}
 3. Implement the required changes
 4. Write or update tests for your changes
@@ -144,7 +144,7 @@ You are a **QA Agent** — your job is to verify the implementation works correc
 Verify the implementation for: **${beadId} — ${beadTitle}**
 
 ## Instructions
-1. Read AGENTS.md and EXPLORER_REPORT.md (if exists) for context
+1. Read TASK.md and EXPLORER_REPORT.md (if exists) for context
 2. Review what the Developer changed (check git diff)
 3. Run the existing test suite
 4. If tests fail due to the changes, attempt to fix them
@@ -186,7 +186,7 @@ Review the implementation for: **${beadId} — ${beadTitle}**
 **Original requirement:** ${beadDescription}
 
 ## Instructions
-1. Read AGENTS.md for the original task description
+1. Read TASK.md for the original task description
 2. Read EXPLORER_REPORT.md (if exists) for architecture context
 3. Read QA_REPORT.md for test results
 4. Review ALL changed files (use git diff against the base branch)

@@ -30,7 +30,7 @@ export class Dispatcher {
   ) {}
 
   /**
-   * Query ready beads, create worktrees, write AGENTS.md, and record runs.
+   * Query ready beads, create worktrees, write TASK.md, and record runs.
    */
   async dispatch(opts?: {
     maxAgents?: number;
@@ -116,9 +116,9 @@ export class Dispatcher {
           bead.id,
         );
 
-        // 2. Write AGENTS.md in the worktree (seeds is git-tracked, no symlink needed)
-        const agentsMd = workerAgentMd(beadInfo, worktreePath, model);
-        await writeFile(join(worktreePath, "AGENTS.md"), agentsMd, "utf-8");
+        // 2. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
+        const taskMd = workerAgentMd(beadInfo, worktreePath, model);
+        await writeFile(join(worktreePath, "TASK.md"), taskMd, "utf-8");
 
         // 4. Record run in store
         const run = this.store.createRun(
@@ -443,7 +443,7 @@ export class Dispatcher {
   }
 
   /**
-   * Build the AGENTS.md content for a bead (exposed for testing).
+   * Build the TASK.md content for a bead (exposed for testing).
    */
   generateAgentInstructions(bead: BeadInfo, worktreePath: string): string {
     const model = this.selectModel(bead);
@@ -473,7 +473,7 @@ export class Dispatcher {
     },
   ): Promise<string> {
     const prompt = [
-      `Read AGENTS.md and implement the task described.`,
+      `Read TASK.md and implement the task described.`,
       `Use sd (seeds) to track your progress.`,
       `When completely finished:`,
       `  sd close ${bead.id} --reason "Completed"`,
