@@ -1,34 +1,54 @@
-# Developer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Developer Report: Cost tracking with per-agent and per-phase breakdowns
 
 ## Approach
 
-This iteration addressed the two NOTE-level feedback items from the previous review cycle. The core `maxTurns → maxBudgetUsd` migration was already complete; this pass tightens two remaining rough edges:
+Extended the existing progress tracking infrastructure to store per-phase costs and agent attribution inside the `RunProgress` JSON column (already stored in SQLite). This avoids any database schema changes while adding full per-phase and per-agent cost visibility.
 
-1. Extract the inline `3.00` magic number in `dispatcher.ts` to a named constant, matching the pattern used by `ROLE_CONFIGS`.
-2. Strengthen the budget regression tests in `roles.test.ts` by pinning absolute USD values for `developer` and `reviewer`, so accidental budget reductions are caught.
+The approach follows the Explorer's recommended plan exactly:
+1. Extend `RunProgress` and `Metrics` interfaces with optional phase/agent fields
+2. Record phase costs in `agent-worker.ts` immediately after each phase completes
+3. Add `getCostBreakdown()` and `getPhaseMetrics()` query methods to `ForemanStore`
+4. Update `getMetrics()` to aggregate phase costs
+5. Update `watch-ui.ts` to show per-phase breakdown in agent cards
+6. Update `status.ts` to show phase and model breakdown in the Costs section
 
 ## Files Changed
 
-- **src/orchestrator/dispatcher.ts** — Added `PLAN_STEP_MAX_BUDGET_USD = 3.00` constant above the `Dispatcher` class and replaced the inline literal `maxBudgetUsd: 3.00` with `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`. This mirrors how `ROLE_CONFIGS` centralises phase budgets, making future adjustments easy to find and change.
+- **src/lib/store.ts** — Added `costByPhase` and `agentByPhase` optional fields to `RunProgress` interface; added `costByPhase` and `agentCostBreakdown` optional fields to `Metrics` interface; added `getCostBreakdown(runId)` and `getPhaseMetrics(projectId?, since?)` methods; updated `getMetrics()` to call `getPhaseMetrics()` and populate the new fields.
 
-- **src/orchestrator/__tests__/roles.test.ts** — Added two new pinned-value tests:
-  - `"developer budget is $5.00"` — asserts `ROLE_CONFIGS.developer.maxBudgetUsd === 5.00`
-  - `"reviewer budget is $2.00"` — asserts `ROLE_CONFIGS.reviewer.maxBudgetUsd === 2.00`
+- **src/orchestrator/agent-worker.ts** — In `runPhase()`, after accumulating totals, now also records `progress.costByPhase[role]` and `progress.agentByPhase[role]` with the phase's cost and the model used from `roleConfig.model`.
 
-  These supplement the existing relative ordering test (`explorer < developer`) with absolute guard rails that catch regression if any budget is accidentally halved or zeroed.
+- **src/cli/watch-ui.ts** — In `renderAgentCard()`, after displaying the total cost, shows a per-phase cost breakdown with agent model hints when `costByPhase` data is present. Phases are sorted in pipeline order (explorer → developer → qa → reviewer).
+
+- **src/cli/commands/status.ts** — In the Costs section, added display of per-phase cost breakdown and per-model cost breakdown using data from `getMetrics()`.
+
+- **src/lib/__tests__/store-metrics.test.ts** — Added 6 new tests covering: backwards compatibility (no phase data), `getCostBreakdown` for runs with and without phase data, `getPhaseMetrics` aggregation across runs, `getMetrics` integration with phase data, and `getMetrics` with no phase data.
 
 ## Tests Added/Modified
 
-- **src/orchestrator/__tests__/roles.test.ts**
-  - Added `"developer budget is $5.00"` — pins the developer role's exact budget
-  - Added `"reviewer budget is $2.00"` — pins the reviewer role's exact budget
+- **src/lib/__tests__/store-metrics.test.ts** — 6 new test cases:
+  1. `empty project returns zero metrics` — extended to check `costByPhase`/`agentCostBreakdown` are undefined
+  2. `getCostBreakdown returns empty records for runs without phase data`
+  3. `getCostBreakdown returns empty records for runs with progress but no phase data` (backwards compat)
+  4. `getCostBreakdown returns correct phase and agent costs`
+  5. `getPhaseMetrics aggregates phase costs across multiple runs`
+  6. `getMetrics includes costByPhase and agentCostBreakdown when phase data exists`
+  7. `getMetrics omits costByPhase/agentCostBreakdown for runs without phase data`
+
+All 10 tests pass (4 pre-existing + 6 new).
 
 ## Decisions & Trade-offs
 
-- **Which roles to pin**: Chose `developer` (the most expensive phase, most likely to be accidentally changed) and `reviewer` (a meaningfully different value from `developer`). `explorer` and `qa` are implicitly covered by the ordering test (`explorer < developer`) and the "all positive" guard.
-- **Constant scope**: `PLAN_STEP_MAX_BUDGET_USD` is module-scoped (not exported) since it is only used inside `dispatcher.ts`. If other modules ever need it, it can be exported at that point.
-- **No changes to budget values**: The values (`developer: 5.00`, `reviewer: 2.00`, plan step: `3.00`) are intentionally preserved from the previous iteration to keep this pass focused on code quality only.
+- **Storing in progress JSON vs new DB table**: Chose the progress JSON approach to avoid schema migrations. The progress column already stores arbitrary JSON; adding optional fields is backward-compatible.
+
+- **Phase costs are cumulative per role**: Since developer can run multiple times (retry loop), `costByPhase[role]` accumulates with `+=` so all retries are summed into the phase total.
+
+- **`getMetrics()` delegates to `getPhaseMetrics()`**: Avoids duplicating the aggregation logic. The `since` parameter is passed through so time-bounded metrics work correctly.
+
+- **Optional fields return `undefined` when empty**: Consumers that don't need phase data are unaffected; `costByPhase` and `agentCostBreakdown` are only populated when there is actual phase data.
 
 ## Known Limitations
 
-- Budget values are estimates based on expected token usage; real-world calibration should happen after a few pipeline runs with production workloads.
+- **Single-agent mode**: No per-phase breakdown (there are no phases). The `costByPhase` field will be absent from progress. This is by design.
+- **Finalize phase**: The finalize step runs `git` commands, not the SDK, so it has no cost to record. It correctly has no entry in `costByPhase`.
+- **Phase order in display**: The `reviewer` phase is included in the order but only when `skipReview` is false. The ordering is still correct.

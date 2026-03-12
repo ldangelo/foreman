@@ -72,6 +72,8 @@ export interface RunProgress {
   lastToolCall: string | null;  // most recent tool name
   lastActivity: string;         // ISO timestamp
   currentPhase?: string;        // Pipeline phase: "explorer" | "developer" | "qa" | "reviewer" | "finalize"
+  costByPhase?: Record<string, number>;  // e.g. { explorer: 0.10, developer: 0.50 }
+  agentByPhase?: Record<string, string>; // e.g. { explorer: "claude-haiku-4-5", developer: "claude-sonnet-4-6" }
 }
 
 export interface Metrics {
@@ -79,6 +81,8 @@ export interface Metrics {
   totalTokens: number;
   tasksByStatus: Record<string, number>;
   costByRuntime: Array<{ run_id: string; cost: number; duration_seconds: number | null }>;
+  costByPhase?: Record<string, number>;      // aggregated cost per pipeline phase
+  agentCostBreakdown?: Record<string, number>; // aggregated cost per model/agent type
 }
 
 // ── Schema migration ────────────────────────────────────────────────────
@@ -392,6 +396,86 @@ export class ForemanStore {
     return this.db.prepare("SELECT * FROM costs ORDER BY recorded_at DESC").all() as Cost[];
   }
 
+  /**
+   * Get per-phase and per-agent cost breakdown for a single run.
+   * Returns empty records if the run has no phase cost data (backwards compatible).
+   */
+  getCostBreakdown(runId: string): { byPhase: Record<string, number>; byAgent: Record<string, number> } {
+    const progress = this.getRunProgress(runId);
+    if (!progress) {
+      return { byPhase: {}, byAgent: {} };
+    }
+
+    const byPhase: Record<string, number> = { ...(progress.costByPhase ?? {}) };
+
+    // Build byAgent by summing costs per model across phases
+    const byAgent: Record<string, number> = {};
+    if (progress.costByPhase && progress.agentByPhase) {
+      for (const [phase, cost] of Object.entries(progress.costByPhase)) {
+        const agent = progress.agentByPhase[phase];
+        if (agent) {
+          byAgent[agent] = (byAgent[agent] ?? 0) + cost;
+        }
+      }
+    }
+
+    return { byPhase, byAgent };
+  }
+
+  /**
+   * Aggregate phase costs across all runs in a project.
+   * Reads per-phase cost data stored in progress JSON.
+   */
+  getPhaseMetrics(projectId?: string, since?: string): {
+    totalByPhase: Record<string, number>;
+    totalByAgent: Record<string, number>;
+    runsByPhase: Record<string, number>;
+  } {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (projectId) {
+      conditions.push("project_id = ?");
+      params.push(projectId);
+    }
+    if (since) {
+      conditions.push("created_at >= ?");
+      params.push(since);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const rows = this.db
+      .prepare(`SELECT progress FROM runs ${where}`)
+      .all(...params) as Array<{ progress: string | null }>;
+
+    const totalByPhase: Record<string, number> = {};
+    const totalByAgent: Record<string, number> = {};
+    const runsByPhase: Record<string, number> = {};
+
+    for (const row of rows) {
+      if (!row.progress) continue;
+      try {
+        const progress = JSON.parse(row.progress) as RunProgress;
+        if (!progress.costByPhase) continue;
+
+        for (const [phase, cost] of Object.entries(progress.costByPhase)) {
+          totalByPhase[phase] = (totalByPhase[phase] ?? 0) + cost;
+          runsByPhase[phase] = (runsByPhase[phase] ?? 0) + 1;
+        }
+
+        if (progress.agentByPhase) {
+          for (const [phase, agent] of Object.entries(progress.agentByPhase)) {
+            const cost = progress.costByPhase[phase] ?? 0;
+            totalByAgent[agent] = (totalByAgent[agent] ?? 0) + cost;
+          }
+        }
+      } catch {
+        // Ignore malformed progress
+      }
+    }
+
+    return { totalByPhase, totalByAgent, runsByPhase };
+  }
+
   // ── Events ──────────────────────────────────────────────────────────
 
   logEvent(
@@ -499,11 +583,20 @@ export class ForemanStore {
       )
       .all(...runParams) as Metrics["costByRuntime"];
 
+    // Phase & agent cost breakdown (aggregated from run progress JSON)
+    const phaseMetrics = this.getPhaseMetrics(projectId, since);
+
     return {
       totalCost: totals.totalCost,
       totalTokens: totals.totalTokens,
       tasksByStatus,
       costByRuntime,
+      costByPhase: Object.keys(phaseMetrics.totalByPhase).length > 0
+        ? phaseMetrics.totalByPhase
+        : undefined,
+      agentCostBreakdown: Object.keys(phaseMetrics.totalByAgent).length > 0
+        ? phaseMetrics.totalByAgent
+        : undefined,
     };
   }
 }
