@@ -13,6 +13,7 @@ import { resetCommand } from "./commands/reset.js";
 import { attachCommand } from "./commands/attach.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { dashboardCommand } from "./commands/dashboard.js";
+import { seedCommand } from "./commands/seed.js";
 
 const program = new Command();
 
@@ -33,5 +34,6 @@ program.addCommand(resetCommand);
 program.addCommand(attachCommand);
 program.addCommand(doctorCommand);
 program.addCommand(dashboardCommand);
+program.addCommand(seedCommand);
 
 program.parse();

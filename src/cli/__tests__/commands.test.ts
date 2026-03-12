@@ -1,14 +1,28 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 const execFileAsync = promisify(execFile);
 
-const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx");
+// Resolve tsx binary: prefer the worktree's own node_modules, fall back to the
+// main repo's node_modules (worktrees share source but may not have their own
+// node_modules populated).
+function findTsx(): string {
+  const candidates = [
+    path.resolve(__dirname, "../../../node_modules/.bin/tsx"),
+    path.resolve(__dirname, "../../../../../node_modules/.bin/tsx"),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return candidates[0]; // best-effort fallback
+}
+
+const TSX = findTsx();
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 interface ExecResult {
@@ -50,13 +64,13 @@ describe("CLI smoke tests", () => {
     tempDirs.length = 0;
   });
 
-  it("--help exits 0 and shows all commands including dashboard", async () => {
+  it("--help exits 0 and shows all commands including dashboard and seed", async () => {
     const tmp = makeTempDir();
     const result = await run(["--help"], tmp);
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout;
-    for (const cmd of ["init", "plan", "decompose", "run", "status", "merge", "monitor", "dashboard"]) {
+    for (const cmd of ["init", "plan", "decompose", "run", "status", "merge", "monitor", "dashboard", "seed"]) {
       expect(output).toContain(cmd);
     }
   }, 10_000);
