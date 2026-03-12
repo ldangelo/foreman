@@ -9,6 +9,7 @@ import type { SeedsClient, Seed } from "../lib/seeds.js";
 import type { ForemanStore } from "../lib/store.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
+import { getBudgetFromEnv } from "./config.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -23,7 +24,7 @@ import type {
 // ── Constants ────────────────────────────────────────────────────────────
 
 /** Maximum budget (USD) for a single plan-step SDK query in dispatchPlanStep(). */
-const PLAN_STEP_MAX_BUDGET_USD = 3.00;
+const PLAN_STEP_MAX_BUDGET_USD = getBudgetFromEnv("FOREMAN_PLAN_STEP_MAX_BUDGET_USD", 3.00);
 
 // ── Dispatcher ──────────────────────────────────────────────────────────
 

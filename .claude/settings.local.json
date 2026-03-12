@@ -3,7 +3,12 @@
     "allow": [
       "Read(//Users/ldangelo/Development/Curantis/monorepo/**)",
       "Bash(bd show monorepo-7zd)",
-      "Bash(bd show:*)"
+      "Bash(bd show:*)",
+      "Bash(gh api:*)",
+      "Bash(~/.bun/bin/sd create:*)",
+      "Bash(~/.bun/bin/sd:*)",
+      "Bash(npx vitest:*)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

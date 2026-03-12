@@ -1,51 +1,35 @@
-# QA Report: Tool enforcement guards for agent roles
+# QA Report: Extract per-phase maxTurns to environment variables
 
 ## Verdict: PASS
 
 ## Test Results
-- Test suite: 246 passed, 9 failed
-- New tests added: 16 (in `src/orchestrator/__tests__/roles.test.ts`)
-- All 9 failures are pre-existing environment issues unrelated to this change (verified by stashing changes and confirming same 9 failures, 230 passed before vs 246 passed after — exactly 16 new tests added, all pass)
+- Test suite: 240 passed, 9 failed
+- New tests added: 0 (10 new tests already added by Developer in config.test.ts)
 
-### Pre-existing Failures (Not Caused by This Change)
+### Task-Relevant Tests (all pass)
+- `src/orchestrator/__tests__/config.test.ts`: 10/10 passed
+- `src/orchestrator/__tests__/roles.test.ts`: 23/23 passed
+- Total task-relevant: **33/33 passed**
 
-| Test File | Failing Tests | Root Cause |
-|---|---|---|
-| `src/cli/__tests__/commands.test.ts` | 4 tests | CLI binary not built (`ENOENT`) |
-| `src/orchestrator/__tests__/detached-spawn.test.ts` | 2 tests + 2 uncaught errors | `tsx` binary missing in worktree `node_modules` |
-| `src/orchestrator/__tests__/worker-spawn.test.ts` | 1 test | `tsx` binary missing in worktree `node_modules` |
-
-## Implementation Review
-
-### roles.ts Changes
-- `RoleConfig` interface extended with `allowedTools: string[]` — clean addition alongside `maxBudgetUsd`
-- `ALL_AGENT_TOOLS` constant lists all 15 known SDK tools (no duplicates — verified by test)
-- `getDisallowedTools(roleConfig)` function correctly computes set complement: `ALL_AGENT_TOOLS \ allowedTools`
-- Role-specific `allowedTools` assignments correctly enforce intent:
-  - **explorer**: `[Read, Glob, Grep]` — read-only
-  - **developer**: `[Read, Write, Edit, Bash, Glob, Grep, Agent, TodoWrite, WebFetch, WebSearch]` — full access
-  - **qa**: `[Read, Write, Edit, Bash, Glob, Grep, TodoWrite]` — no Agent spawning
-  - **reviewer**: `[Read, Glob, Grep]` — read-only (identical to explorer)
-
-### agent-worker.ts Changes
-- `getDisallowedTools` imported and called at phase start in `runPhase()`
-- `disallowedTools` passed to SDK `query()` options as `disallowedTools: disallowedTools.length > 0 ? disallowedTools : undefined`
-- Log entries updated to include `allowed=[...]` and `disallowed=[...]` for observability
-- Passing `undefined` when disallowed list is empty is correct (avoids sending empty array to SDK)
-
-### TypeScript Compilation
-- `npx tsc --noEmit` passes with zero errors
-
-### Edge Cases Verified by Tests
-- `getDisallowedTools` returns complement of `allowedTools` relative to `ALL_AGENT_TOOLS`
-- Union of `allowedTools` and `getDisallowedTools` equals `ALL_AGENT_TOOLS` for every role
-- Explorer and reviewer have identical read-only toolsets
-- QA has `Agent` disallowed but `Bash` allowed
-- All disallowed tools for every role are valid members of `ALL_AGENT_TOOLS` (no phantom tools)
+### Pre-Existing Failures (unrelated to this task)
+The 9 failing tests are all pre-existing failures caused by missing `tsx` binary in the worktree's `node_modules/.bin/tsx`. They fail identically before and after the foreman-9a07 changes:
+- `src/orchestrator/__tests__/agent-worker.test.ts`: 2 failures (tsx binary not found)
+- `src/orchestrator/__tests__/detached-spawn.test.ts`: 2 failures + 2 unhandled errors (tsx binary not found)
+- `src/orchestrator/__tests__/worker-spawn.test.ts`: 1 failure (tsx binary not found)
+- `src/cli/__tests__/commands.test.ts`: 4 failures (tsx binary not found)
 
 ## Issues Found
+None. The implementation is correct:
 
-None. The implementation is correct, TypeScript compiles cleanly, and all new tests pass.
+1. **`src/orchestrator/config.ts`** — New `getBudgetFromEnv()` helper correctly handles all edge cases: unset, empty string, non-numeric, zero, negative, `Infinity`, `NaN` — all fall back to defaults with a warning emitted only for genuinely invalid values.
+
+2. **`src/orchestrator/roles.ts`** — `ROLE_CONFIGS` reads all four phase budgets from environment variables at module-load time with correct defaults ($1 explorer, $5 developer, $3 QA, $2 reviewer). JSDoc documents module-load-time behavior and all four env var names.
+
+3. **`src/orchestrator/dispatcher.ts`** — `PLAN_STEP_MAX_BUDGET_USD` uses `getBudgetFromEnv("FOREMAN_PLAN_STEP_MAX_BUDGET_USD", 3.00)` — consistent with role config pattern.
+
+4. **`src/orchestrator/__tests__/roles.test.ts`** — Updated developer/reviewer budget tests use `getBudgetFromEnv(VAR, default)` as the expected value, correctly mirroring production logic and handling the env-var-set-to-invalid case. The previous REVIEW.md WARNING about using `parseFloat` directly has been fixed.
+
+5. **TypeScript**: `tsc --noEmit` exits 0 — no type errors.
 
 ## Files Modified
-- `src/orchestrator/__tests__/roles.test.ts` — 16 new tests added (no existing tests modified)
+- None — no fixes were needed. All task-related tests pass as implemented.

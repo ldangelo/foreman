@@ -232,6 +232,30 @@ Each spawned agent emits:
 - `foreman.run_id` — the foreman run ID
 - `foreman.model` — the Claude model used
 
+## Environment Variables
+
+Budget limits for each pipeline phase can be overridden via environment variables.
+Values must be positive numbers (USD). Invalid, zero, or negative values fall back to the built-in default.
+
+| Variable | Default | Phase |
+|----------|---------|-------|
+| `FOREMAN_EXPLORER_MAX_BUDGET_USD` | `1.00` | Explorer (read-only codebase analysis, Haiku) |
+| `FOREMAN_DEVELOPER_MAX_BUDGET_USD` | `5.00` | Developer (implementation, Sonnet) |
+| `FOREMAN_QA_MAX_BUDGET_USD` | `3.00` | QA (test verification, Sonnet) |
+| `FOREMAN_REVIEWER_MAX_BUDGET_USD` | `2.00` | Reviewer (code review, Sonnet) |
+| `FOREMAN_PLAN_STEP_MAX_BUDGET_USD` | `3.00` | Plan steps in `foreman plan` (Sonnet) |
+
+Example — increase the developer budget for a complex refactor sprint:
+
+```bash
+export FOREMAN_DEVELOPER_MAX_BUDGET_USD=10.00
+export FOREMAN_QA_MAX_BUDGET_USD=5.00
+foreman run
+```
+
+> **Note:** These variables are read once at process start. They cannot be
+> changed after Foreman has launched (variables are resolved at module-load time).
+
 ## Configuration
 
 Global config at `~/.foreman/`:

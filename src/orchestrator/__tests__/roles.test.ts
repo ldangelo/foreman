@@ -8,6 +8,7 @@ import {
   parseVerdict,
   extractIssues,
 } from "../roles.js";
+import { getBudgetFromEnv } from "../config.js";
 
 describe("ROLE_CONFIGS", () => {
   it("has configs for all sub-agent roles", () => {
@@ -43,12 +44,18 @@ describe("ROLE_CONFIGS", () => {
     expect(ROLE_CONFIGS.explorer.maxBudgetUsd).toBeLessThan(ROLE_CONFIGS.developer.maxBudgetUsd);
   });
 
-  it("developer budget is $5.00", () => {
-    expect(ROLE_CONFIGS.developer.maxBudgetUsd).toBe(5.00);
+  it("developer default budget is $5.00 (override via FOREMAN_DEVELOPER_MAX_BUDGET_USD)", () => {
+    // ROLE_CONFIGS is frozen at module-load time.  In a normal test run the env
+    // var is not set, so the default ($5.00) is used.  If it IS set to a valid
+    // positive number, that value is used instead.  Mirror getBudgetFromEnv's
+    // validation logic here so the expected value always matches the actual one.
+    const expected = getBudgetFromEnv("FOREMAN_DEVELOPER_MAX_BUDGET_USD", 5.00);
+    expect(ROLE_CONFIGS.developer.maxBudgetUsd).toBe(expected);
   });
 
-  it("reviewer budget is $2.00", () => {
-    expect(ROLE_CONFIGS.reviewer.maxBudgetUsd).toBe(2.00);
+  it("reviewer default budget is $2.00 (override via FOREMAN_REVIEWER_MAX_BUDGET_USD)", () => {
+    const expected = getBudgetFromEnv("FOREMAN_REVIEWER_MAX_BUDGET_USD", 2.00);
+    expect(ROLE_CONFIGS.reviewer.maxBudgetUsd).toBe(expected);
   });
 
   it("all role configs have no maxTurns property", () => {

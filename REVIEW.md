@@ -1,28 +1,24 @@
-# Code Review: Task groups for batch coordination
+# Code Review: Extract per-phase maxTurns to environment variables
 
 ## Verdict: FAIL
 
 ## Summary
 
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation is well-structured and correctly extracts all five hardcoded budget constants (`FOREMAN_EXPLORER_MAX_BUDGET_USD`, `FOREMAN_DEVELOPER_MAX_BUDGET_USD`, `FOREMAN_QA_MAX_BUDGET_USD`, `FOREMAN_REVIEWER_MAX_BUDGET_USD`, `FOREMAN_PLAN_STEP_MAX_BUDGET_USD`) into environment variables via a new `config.ts` helper. The `getBudgetFromEnv()` function handles all invalid-input edge cases correctly and the new `config.test.ts` tests are thorough. Production code is correct and backward-compatible. However, the updated `roles.test.ts` contains a logic flaw in the env-var-set branch that will cause test failures if the env var is set to an invalid value (zero, negative, non-numeric, Infinity), because it calls `parseFloat()` directly rather than mimicking `getBudgetFromEnv`'s validation/fallback behaviour.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[WARNING]** `src/orchestrator/__tests__/roles.test.ts:49-55,60-66` — The `else` branches for the developer and reviewer budget tests call `parseFloat(process.env[VAR])` directly, which returns `NaN`/`0`/negative for invalid values. `getBudgetFromEnv` would fall back to the default in those same cases, so `expect(ROLE_CONFIGS.developer.maxBudgetUsd).toBe(parseFloat("0"))` fails as `expect(5.00).toBe(0)`. The `else` branch should either use `getBudgetFromEnv(VAR, defaultValue)` as the expected value, or guard `parseFloat(raw) > 0` before using it.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[NOTE]** `src/orchestrator/roles.ts` — `ROLE_CONFIGS` is initialised once at module-load time, so environment variables must be set before the module is imported. This is the expected Node.js pattern and tests work correctly, but it means you cannot override a role budget within the same process after import. Worth documenting.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
-
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
-
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `README.md` — The Explorer report's implementation checklist included documenting the new `FOREMAN_*_MAX_BUDGET_USD` environment variables, but no documentation was added to `README.md` or a `CONFIG.md`. Users deploying the tool have no discoverable reference for these variables. Consider adding an **Environment Variables** section to the README.
 
 ## Positive Notes
 
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- `getBudgetFromEnv` handles every invalid-input edge case (undefined, empty string, `NaN`, `Infinity`, zero, negative) with a single clean guard (`!isFinite(parsed) || parsed <= 0`). The fallback is always the supplied default, and a stderr warning is emitted only for genuinely invalid values (not for the normal "not set" case).
+- All five budget constants are covered (four roles + plan step), satisfying the full scope of the task.
+- Defaults are kept identical to the previous hardcoded values, so existing deployments work without any configuration changes.
+- `config.test.ts` is comprehensive: 10 tests cover all documented invalid-input variants and the happy path.
+- The `PLAN_STEP_MAX_BUDGET_USD` constant correctly uses `getBudgetFromEnv` at module level, consistent with the `ROLE_CONFIGS` pattern.
+- TypeScript compilation is clean (`tsc --noEmit` exits 0).

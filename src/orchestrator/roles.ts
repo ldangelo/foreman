@@ -7,6 +7,7 @@
  */
 
 import type { AgentRole, ModelSelection } from "./types.js";
+import { getBudgetFromEnv } from "./config.js";
 
 // ── Role config ─────────────────────────────────────────────────────────
 
@@ -18,29 +19,43 @@ export interface RoleConfig {
   reportFile: string;
 }
 
+/**
+ * Per-phase role configurations for the specialisation pipeline.
+ *
+ * Budget values are read from environment variables at **module-load time**.
+ * This means environment variables must be set in the process environment
+ * *before* this module is first imported — typically at process startup.
+ * Changing these variables after the module has been imported has no effect.
+ *
+ * Override via:
+ *   FOREMAN_EXPLORER_MAX_BUDGET_USD   (default: $1.00)
+ *   FOREMAN_DEVELOPER_MAX_BUDGET_USD  (default: $5.00)
+ *   FOREMAN_QA_MAX_BUDGET_USD         (default: $3.00)
+ *   FOREMAN_REVIEWER_MAX_BUDGET_USD   (default: $2.00)
+ */
 export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleConfig> = {
   explorer: {
     role: "explorer",
     model: "claude-haiku-4-5-20251001",
-    maxBudgetUsd: 1.00,
+    maxBudgetUsd: getBudgetFromEnv("FOREMAN_EXPLORER_MAX_BUDGET_USD", 1.00),
     reportFile: "EXPLORER_REPORT.md",
   },
   developer: {
     role: "developer",
     model: "claude-sonnet-4-6",
-    maxBudgetUsd: 5.00,
+    maxBudgetUsd: getBudgetFromEnv("FOREMAN_DEVELOPER_MAX_BUDGET_USD", 5.00),
     reportFile: "DEVELOPER_REPORT.md",
   },
   qa: {
     role: "qa",
     model: "claude-sonnet-4-6",
-    maxBudgetUsd: 3.00,
+    maxBudgetUsd: getBudgetFromEnv("FOREMAN_QA_MAX_BUDGET_USD", 3.00),
     reportFile: "QA_REPORT.md",
   },
   reviewer: {
     role: "reviewer",
     model: "claude-sonnet-4-6",
-    maxBudgetUsd: 2.00,
+    maxBudgetUsd: getBudgetFromEnv("FOREMAN_REVIEWER_MAX_BUDGET_USD", 2.00),
     reportFile: "REVIEW.md",
   },
 };
