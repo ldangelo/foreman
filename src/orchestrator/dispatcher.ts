@@ -9,6 +9,7 @@ import type { SeedsClient, Seed } from "../lib/seeds.js";
 import type { ForemanStore } from "../lib/store.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
+import { calculateImpactScores } from "./pagerank.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -57,6 +58,26 @@ export class Dispatcher {
     const available = Math.max(0, maxAgents - activeRuns.length);
 
     let readySeeds = await this.seeds.ready();
+
+    // Sort ready seeds by PageRank impact score so highest-value tasks are dispatched first.
+    // Falls back to original order gracefully if the graph is unavailable.
+    if (!opts?.seedId) {
+      try {
+        const graph = await this.seeds.getGraph();
+        const impactScores = calculateImpactScores(readySeeds, graph);
+        readySeeds = [...readySeeds].sort((a, b) => {
+          const scoreA = impactScores.get(a.id) ?? 0;
+          const scoreB = impactScores.get(b.id) ?? 0;
+          if (scoreA !== scoreB) return scoreB - scoreA;  // higher score first
+          // Tie-break by priority field (P0 < P1 < ... < P4)
+          const priorityOrder: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 };
+          return (priorityOrder[a.priority] ?? 5) - (priorityOrder[b.priority] ?? 5);
+        });
+        log(`PageRank scored ${readySeeds.length} ready seeds`);
+      } catch (err) {
+        log(`Could not fetch graph for PageRank scoring (falling back to default order): ${err}`);
+      }
+    }
 
     // Filter to a specific seed if requested
     if (opts?.seedId) {
