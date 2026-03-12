@@ -44,12 +44,15 @@ describe("ROLE_CONFIGS", () => {
     expect(ROLE_CONFIGS.explorer.maxBudgetUsd).toBeLessThan(ROLE_CONFIGS.developer.maxBudgetUsd);
   });
 
-  it("developer budget is $5.00", () => {
-    expect(ROLE_CONFIGS.developer.maxBudgetUsd).toBe(5.00);
+  it("developer budget defaults to $5.00", () => {
+    // Use buildRoleConfigs() to get a fresh read with clean env
+    const configs = buildRoleConfigs();
+    expect(configs.developer.maxBudgetUsd).toBe(5.00);
   });
 
-  it("reviewer budget is $2.00", () => {
-    expect(ROLE_CONFIGS.reviewer.maxBudgetUsd).toBe(2.00);
+  it("reviewer budget defaults to $2.00", () => {
+    const configs = buildRoleConfigs();
+    expect(configs.reviewer.maxBudgetUsd).toBe(2.00);
   });
 
   it("all role configs have no maxTurns property", () => {
@@ -171,6 +174,10 @@ describe("buildRoleConfigs — environment variable overrides", () => {
     "FOREMAN_DEVELOPER_MODEL",
     "FOREMAN_QA_MODEL",
     "FOREMAN_REVIEWER_MODEL",
+    "FOREMAN_EXPLORER_BUDGET_USD",
+    "FOREMAN_DEVELOPER_BUDGET_USD",
+    "FOREMAN_QA_BUDGET_USD",
+    "FOREMAN_REVIEWER_BUDGET_USD",
   ] as const;
 
   beforeEach(() => {
@@ -257,6 +264,18 @@ describe("buildRoleConfigs — environment variable overrides", () => {
     process.env["FOREMAN_DEVELOPER_MODEL"] = "claude-haiku-4-5-20251001";
     const configs = buildRoleConfigs();
     expect(configs.developer.maxBudgetUsd).toBe(5.00);
+  });
+
+  it("overrides budget via FOREMAN_DEVELOPER_BUDGET_USD", () => {
+    process.env["FOREMAN_DEVELOPER_BUDGET_USD"] = "10.00";
+    const configs = buildRoleConfigs();
+    expect(configs.developer.maxBudgetUsd).toBe(10.00);
+  });
+
+  it("overrides budget via FOREMAN_EXPLORER_BUDGET_USD", () => {
+    process.env["FOREMAN_EXPLORER_BUDGET_USD"] = "2.50";
+    const configs = buildRoleConfigs();
+    expect(configs.explorer.maxBudgetUsd).toBe(2.50);
   });
 
   it("report files are not affected by model env var overrides", () => {

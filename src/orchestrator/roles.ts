@@ -8,6 +8,12 @@
 
 import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRole, ModelSelection } from "./types.js";
+import {
+  getExplorerBudget,
+  getDeveloperBudget,
+  getQaBudget,
+  getReviewerBudget,
+} from "../lib/config.js";
 
 // ── Role config ─────────────────────────────────────────────────────────
 
@@ -89,28 +95,28 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker">
     explorer: {
       role: "explorer",
       model: resolveModel("FOREMAN_EXPLORER_MODEL", DEFAULT_MODELS.explorer),
-      maxBudgetUsd: 1.00,
+      maxBudgetUsd: getExplorerBudget(),
       permissionMode: "acceptEdits",
       reportFile: "EXPLORER_REPORT.md",
     },
     developer: {
       role: "developer",
       model: resolveModel("FOREMAN_DEVELOPER_MODEL", DEFAULT_MODELS.developer),
-      maxBudgetUsd: 5.00,
+      maxBudgetUsd: getDeveloperBudget(),
       permissionMode: "acceptEdits",
       reportFile: "DEVELOPER_REPORT.md",
     },
     qa: {
       role: "qa",
       model: resolveModel("FOREMAN_QA_MODEL", DEFAULT_MODELS.qa),
-      maxBudgetUsd: 3.00,
+      maxBudgetUsd: getQaBudget(),
       permissionMode: "acceptEdits",
       reportFile: "QA_REPORT.md",
     },
     reviewer: {
       role: "reviewer",
       model: resolveModel("FOREMAN_REVIEWER_MODEL", DEFAULT_MODELS.reviewer),
-      maxBudgetUsd: 2.00,
+      maxBudgetUsd: getReviewerBudget(),
       permissionMode: "acceptEdits",
       reportFile: "REVIEW.md",
     },

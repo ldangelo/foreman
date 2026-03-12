@@ -1,11 +1,11 @@
 # Agent Task
 
 ## Task Details
-**Seed ID:** foreman-ef3d
-**Title:** 4-tier merge conflict resolution
+**Seed ID:** foreman-cbfc
+**Title:** Extract maxBudgetUsd values to environment variables
 **Description:** (no description provided)
 **Model:** claude-sonnet-4-6
-**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-ef3d
+**Worktree:** /Users/ldangelo/Development/Fortium/foreman/.foreman-worktrees/foreman-cbfc
 
 ## Agent Team
 This task is handled by an Engineering Lead agent that orchestrates a team:
