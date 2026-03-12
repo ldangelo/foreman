@@ -1,34 +1,33 @@
-# Developer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Developer Report: Event-driven status refresh via agent worker notifications
 
 ## Approach
 
-This iteration addressed the two NOTE-level feedback items from the previous review cycle. The core `maxTurns → maxBudgetUsd` migration was already complete; this pass tightens two remaining rough edges:
-
-1. Extract the inline `3.00` magic number in `dispatcher.ts` to a named constant, matching the pattern used by `ROLE_CONFIGS`.
-2. Strengthen the budget regression tests in `roles.test.ts` by pinning absolute USD values for `developer` and `reviewer`, so accidental budget reductions are caught.
+Addressed all four [NOTE] items raised in the previous code review. The core implementation (HTTP-based notification system) was already in place and had received a PASS verdict; this iteration is a focused polish pass making the defensive guards explicit, raising the EventEmitter listener cap, and documenting two acknowledged asymmetries in inline comments.
 
 ## Files Changed
 
-- **src/orchestrator/dispatcher.ts** — Added `PLAN_STEP_MAX_BUDGET_USD = 3.00` constant above the `Dispatcher` class and replaced the inline literal `maxBudgetUsd: 3.00` with `maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD`. This mirrors how `ROLE_CONFIGS` centralises phase budgets, making future adjustments easy to find and change.
+- `src/orchestrator/notification-bus.ts` — Added explicit constructor that calls `this.setMaxListeners(0)`. Per-run channels each have at most 1 listener in current usage, so the default Node.js cap of 10 is never hit; the change guards against future consumers subscribing to the global `"notification"` channel from many places simultaneously. Inline comment explains the rationale.
 
-- **src/orchestrator/__tests__/roles.test.ts** — Added two new pinned-value tests:
-  - `"developer budget is $5.00"` — asserts `ROLE_CONFIGS.developer.maxBudgetUsd === 5.00`
-  - `"reviewer budget is $2.00"` — asserts `ROLE_CONFIGS.reviewer.maxBudgetUsd === 2.00`
+- `src/orchestrator/notification-server.ts` — Added `let responded = false` guard flag to the POST /notify handler. The flag is set before every `res.end()` call; the `"end"` event handler checks it at entry. This makes the intent explicit and protects against future refactors inadvertently producing a second response after the 413 oversized-payload path already replied and called `req.destroy()`.
 
-  These supplement the existing relative ordering test (`explorer < developer`) with absolute guard rails that catch regression if any budget is accidentally halved or zeroed.
+- `src/orchestrator/agent-worker.ts` — Added a block comment above the single-agent `for await` loop documenting the intentional asymmetry: single-agent mode emits only terminal status notifications, while pipeline mode (`runPhase`) emits a progress notification after every assistant turn. Explains that single-agent progress is flushed to SQLite every 2 s and the polling fallback preserves live-UI benefit.
+
+- `src/cli/commands/run.ts` — Expanded the notification-server startup comment to note that `monitor.ts` is not yet wired to `notificationBus`, why (API refactoring needed), and that it is deferred to a follow-up task.
 
 ## Tests Added/Modified
 
-- **src/orchestrator/__tests__/roles.test.ts**
-  - Added `"developer budget is $5.00"` — pins the developer role's exact budget
-  - Added `"reviewer budget is $2.00"` — pins the reviewer role's exact budget
+No new tests needed — all changes are defensive guards and documentation. The 17 existing notification tests (`notification-bus.test.ts`, `notification-server.test.ts`) continue to pass, and TypeScript compiles cleanly (`tsc --noEmit` exits 0).
 
 ## Decisions & Trade-offs
 
-- **Which roles to pin**: Chose `developer` (the most expensive phase, most likely to be accidentally changed) and `reviewer` (a meaningfully different value from `developer`). `explorer` and `qa` are implicitly covered by the ordering test (`explorer < developer`) and the "all positive" guard.
-- **Constant scope**: `PLAN_STEP_MAX_BUDGET_USD` is module-scoped (not exported) since it is only used inside `dispatcher.ts`. If other modules ever need it, it can be exported at that point.
-- **No changes to budget values**: The values (`developer: 5.00`, `reviewer: 2.00`, plan step: `3.00`) are intentionally preserved from the previous iteration to keep this pass focused on code quality only.
+1. **`setMaxListeners(0)` vs `setMaxListeners(100)`**: Used `0` (unlimited) rather than an arbitrary ceiling. The singleton `notificationBus` is shared by every watched run; the correct bound is the number of concurrent watched runs, which is not statically known. Unlimited is the safer default.
+
+2. **`responded` flag set at every branch**: Rather than a single set-at-end pattern, the flag is set immediately before each `res.end()` call. This makes each branch self-contained and safe regardless of future additions to the handler.
+
+3. **Comments over code changes for agent-worker asymmetry**: The asymmetry between single-agent and pipeline progress notification is intentional by design. A comment is the right tool here — changing the code to add progress notifications in single-agent mode is a separate concern deferred to a follow-up.
 
 ## Known Limitations
 
-- Budget values are estimates based on expected token usage; real-world calibration should happen after a few pipeline runs with production workloads.
+- **monitor.ts not wired up** (pre-existing, documented in run.ts comment): The monitoring process still uses its polling-only loop. Deferred.
+- **No notification persistence** (pre-existing): Notifications dropped if the foreman watch session exits. SQLite remains source of truth.
+- **No deduplication** (pre-existing): Rapid notifications may wake the UI loop multiple times; harmless since each wake re-polls SQLite.

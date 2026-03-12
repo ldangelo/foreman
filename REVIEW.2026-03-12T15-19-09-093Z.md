@@ -1,28 +1,25 @@
-# Code Review: Task groups for batch coordination
+# Code Review: Event-driven status refresh via agent worker notifications
 
-## Verdict: FAIL
+## Verdict: PASS
 
 ## Summary
-
-The implementation adds a solid data model layer (schema, CRUD, types) and a working `dispatchGroups()` method with parent-based grouping, parallel/sequential coordination, and proper agent-limit enforcement. Tests pass cleanly for all new code (17 new tests, 9 pre-existing unrelated failures). However, there are two WARNING-level issues: the `ungrouped` field in `GroupedDispatchResult` is always empty and misleading (real ungrouped beads are included in `groups` as a named group), and a new group DB record is created on every `dispatchGroups()` call with no deduplication check, causing duplicate group rows on repeated runs. There is also a dead variable and a minor sequential-mode edge case worth noting.
+The implementation delivers a clean, well-scoped event-driven notification layer on top of the existing polling architecture. Workers POST JSON to a loopback HTTP server running in the foreman parent process; the `NotificationBus` (an `EventEmitter` wrapper) relays those notifications to `watchRunsInk`, which interrupts its 3-second sleep to re-render immediately. The design is deliberately additive: SQLite remains the source of truth, all new parameters are optional, and every code path has a polling fallback. The 17 new tests cover the happy path and important error cases thoroughly, and all existing tests continue to pass. No critical or blocking issues were found.
 
 ## Issues
 
-- **[WARNING]** `src/orchestrator/types.ts:86` / `src/orchestrator/dispatcher.ts:356-361` — `GroupedDispatchResult.ungrouped` field is always an empty `DispatchResult` (zero dispatched, zero skipped, zero resumed). Beads with no parent are collected under the `null` key and emitted as a `"ungrouped"` group inside `groups[]`, not in `ungrouped`. The field is also unused at the call site in `run.ts`. This is misleading to future consumers and wastes interface space. The field should either be removed, or the actual ungrouped beads should be moved into it consistently.
+- **[NOTE]** `src/orchestrator/notification-server.ts:83-90` — The oversized-payload guard sends a 413, calls `res.end()`, then calls `req.destroy()`. Node.js stream semantics guarantee that `req.on("end")` will not fire after `destroy()`, so the double-response concern is academic. However, adding a `let responded = false` guard flag (set before `res.end()` calls, checked at the top of the `end` handler) would make the intent explicit and defensive against future refactors.
 
-- **[WARNING]** `src/orchestrator/dispatcher.ts:267-273` — A new `task_groups` DB row is created on every non-dry-run invocation of `dispatchGroups()` for each group key found in the ready list. There is no lookup to check whether a group for that parent already exists. Running `foreman run --group-mode parallel` twice in succession (e.g., the watch-loop continuation path) creates duplicate group rows for the same parent, making `listGroups()` and group-status tracking unreliable. The fix is to query for an existing pending/running group with the same `name` + `project_id` before inserting.
+- **[NOTE]** `src/orchestrator/agent-worker.ts:208-295` — Single-agent (non-pipeline) mode emits only status notifications (`completed`, `failed`, `stuck`) but never progress notifications. Pipeline mode (`runPhase`) emits a progress notification after every assistant turn. The asymmetry is intentional (progress in the single-agent path is already flushed to SQLite every 2 s), but it means the live-UI benefit is lower for `--no-pipeline` runs. Worth documenting or aligning in a follow-up.
 
-- **[NOTE]** `src/lib/store.ts:330` — `const statuses = new Set(runs.map((r) => r.status));` is computed but never read. The subsequent logic uses `runs.every(...)` directly. Dead variable; should be removed.
+- **[NOTE]** `src/orchestrator/notification-bus.ts:12` — `NotificationBus` extends `EventEmitter` without calling `setMaxListeners(0)` or raising the cap. Each watched run registers on its own unique `notification:<runId>` event channel, so MaxListeners warnings are not a practical concern with the current usage pattern. If a future consumer subscribes to the global `"notification"` channel from more than 10 places simultaneously, the default warning would fire. Consider `this.setMaxListeners(100)` or `0` (unlimited) as a precaution.
 
-- **[NOTE]** `src/orchestrator/dispatcher.ts:250` — Sequential mode checks `totalDispatched > 0` (tasks dispatched in the current call only). If there are pre-existing active runs from a prior batch (`activeRuns.length > 0`), sequential mode still proceeds to dispatch the first group in the new call. This may be intentional, but it is inconsistent with the stated semantics of "each group must fully complete before the next one starts." Consider checking `activeRuns.length > 0 || totalDispatched > 0` for stricter enforcement.
-
-- **[NOTE]** `src/cli/commands/run.ts:97-100` — Runtime string validation of `--group-mode` is done manually after the cast to `GroupCoordinationMode`. Commander's `.choices()` method would provide declarative validation and proper help text without a manual check.
+- **[NOTE]** `src/cli/commands/run.ts` — `monitor.ts` is not wired to `notificationBus`. This is a known, acknowledged deferral (documented in the developer report). A follow-up task should be tracked so the monitor command gains the same latency reduction as the watch UI.
 
 ## Positive Notes
 
-- Data model follows existing store patterns exactly: prepared statements, `randomUUID()`, `DEFAULT NULL` migrations, FK constraints — no shortcuts taken.
-- `syncGroupStatus()` correctly handles all terminal run states (`merged`, `pr-created`, `conflict`, `test-failed`, `stuck`) and introduces a useful `"partial"` status for mixed outcomes.
-- Test coverage is thorough: all `syncGroupStatus` edge cases are covered, group CRUD round-trips are verified, and dispatcher dry-run tests clearly validate grouping, agent limits, sequential blocking, and coordination-mode propagation.
-- Existing tests (`watch-ui`, `monitor`) were properly updated with the new `group_id: null` field with no regressions.
-- `dispatchGroups()` is an entirely additive, opt-in code path — non-group-mode behavior is unchanged.
-- TypeScript compiles cleanly with no errors.
+- **Backwards compatibility is airtight.** Every new parameter (`notifyUrl`, `notificationBus`) is optional; existing callers compile and run without changes.
+- **Security posture is correct.** The HTTP server binds exclusively to `127.0.0.1` on an OS-assigned port, accepts a 64 KB payload cap, and is only reachable from the local machine.
+- **Fire-and-forget is the right default.** The 500 ms timeout and silent error suppression in `NotificationClient.send()` ensure workers are never blocked or crashed by a missing/slow parent server.
+- **Lifecycle management is clean.** The `finally` block in `run.ts` unconditionally stops the notification server regardless of how the command exits, and `watchRunsInk` unsubscribes its per-run listeners in its own `finally` block, preventing listener leaks.
+- **Test coverage is appropriate.** `notification-server.test.ts` validates all HTTP status codes (200, 400, 413, 404), lifecycle transitions (start → stop → restart), and edge cases (unstarted stop, oversized payload, invalid JSON). `notification-bus.test.ts` validates isolation between run channels, multiple listeners, and unsubscription.
+- **Per-run event channels are a sound design choice.** Using `notification:<runId>` as the channel key (rather than a single shared channel) means listeners are scoped exactly to their run, avoiding accidental cross-run wake-ups and keeping the EventEmitter per-event listener count at 1 regardless of concurrency.

@@ -48,6 +48,8 @@ export class Dispatcher {
     skipExplore?: boolean;
     skipReview?: boolean;
     seedId?: string;
+    /** URL of the notification server (e.g. "http://127.0.0.1:PORT") */
+    notifyUrl?: string;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = opts?.projectId ?? this.resolveProjectId();
@@ -157,6 +159,7 @@ export class Dispatcher {
             skipExplore: opts?.skipExplore,
             skipReview: opts?.skipReview,
           },
+          opts?.notifyUrl,
         );
 
         // Update run with session key
@@ -205,6 +208,8 @@ export class Dispatcher {
     model?: ModelSelection;
     telemetry?: boolean;
     statuses?: Array<"stuck" | "failed">;
+    /** URL of the notification server (e.g. "http://127.0.0.1:PORT") */
+    notifyUrl?: string;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = this.resolveProjectId();
@@ -289,6 +294,7 @@ export class Dispatcher {
         newRun.id,
         sessionId,
         opts?.telemetry,
+        opts?.notifyUrl,
       );
 
       this.store.updateRun(newRun.id, {
@@ -476,6 +482,7 @@ export class Dispatcher {
       skipExplore?: boolean;
       skipReview?: boolean;
     },
+    notifyUrl?: string,
   ): Promise<string> {
     const prompt = [
       `Read TASK.md and implement the task described.`,
@@ -487,7 +494,7 @@ export class Dispatcher {
       `  git push -u origin foreman/${seed.id}`,
     ].join("\n");
 
-    const env = buildWorkerEnv(telemetry, seed.id, runId, model);
+    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
@@ -524,6 +531,7 @@ export class Dispatcher {
     runId: string,
     sdkSessionId: string,
     telemetry?: boolean,
+    notifyUrl?: string,
   ): Promise<string> {
     const resumePrompt = [
       `You were previously working on this task but were interrupted (likely by a rate limit).`,
@@ -535,7 +543,7 @@ export class Dispatcher {
       `  git push -u origin foreman/${seed.id}`,
     ].join("\n");
 
-    const env = buildWorkerEnv(telemetry, seed.id, runId, model);
+    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;
 
     log(`Resuming detached worker for ${seed.id} [${model}] session=${sdkSessionId}`);
@@ -644,6 +652,7 @@ function buildWorkerEnv(
   seedId: string,
   runId: string,
   model: string,
+  notifyUrl?: string,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -652,6 +661,10 @@ function buildWorkerEnv(
     }
   }
   env.PATH = `/opt/homebrew/bin:${env.PATH ?? ""}`;
+
+  if (notifyUrl) {
+    env.FOREMAN_NOTIFY_URL = notifyUrl;
+  }
 
   if (telemetry) {
     env.CLAUDE_CODE_ENABLE_TELEMETRY = "1";

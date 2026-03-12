@@ -149,3 +149,22 @@ export interface PrReport {
   created: CreatedPr[];
   failed: FailedRun[];
 }
+
+// ── Worker Notification types ─────────────────────────────────────────────
+
+export interface WorkerStatusNotification {
+  type: "status";
+  runId: string;
+  status: import("../lib/store.js").Run["status"];
+  timestamp: string;
+  details?: Record<string, unknown>;
+}
+
+export interface WorkerProgressNotification {
+  type: "progress";
+  runId: string;
+  progress: import("../lib/store.js").RunProgress;
+  timestamp: string;
+}
+
+export type WorkerNotification = WorkerStatusNotification | WorkerProgressNotification;
