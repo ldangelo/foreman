@@ -81,6 +81,20 @@ export interface Metrics {
   costByRuntime: Array<{ run_id: string; cost: number; duration_seconds: number | null }>;
 }
 
+// ── Messaging interfaces ─────────────────────────────────────────────────
+
+export interface Message {
+  id: string;
+  run_id: string;
+  sender_agent_type: string;
+  recipient_agent_type: string;
+  subject: string;
+  body: string;
+  read: number; // 0 = unread, 1 = read (SQLite boolean)
+  created_at: string;
+  deleted_at: string | null;
+}
+
 // ── Schema migration ────────────────────────────────────────────────────
 
 const SCHEMA = `
@@ -127,13 +141,53 @@ CREATE TABLE IF NOT EXISTS events (
   created_at TEXT,
   FOREIGN KEY (project_id) REFERENCES projects(id)
 );
+
+`;
+
+// Messages table DDL — kept separate so it can be applied after pre-flight migrations
+// that drop any incompatible legacy messages table.
+const MESSAGES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS messages (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  sender_agent_type TEXT NOT NULL,
+  recipient_agent_type TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  body TEXT NOT NULL,
+  read INTEGER DEFAULT 0,
+  created_at TEXT NOT NULL,
+  deleted_at TEXT DEFAULT NULL,
+  FOREIGN KEY (run_id) REFERENCES runs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_run_recipient
+  ON messages (run_id, recipient_agent_type);
+
+CREATE INDEX IF NOT EXISTS idx_messages_run_sender
+  ON messages (run_id, sender_agent_type);
 `;
 
 // Add progress column to runs table if not present (migration)
+// These migrations are idempotent via failure: ALTER TABLE and RENAME COLUMN throw
+// if the change was already applied, which is caught and silently ignored.
 const MIGRATIONS = [
   `ALTER TABLE runs ADD COLUMN progress TEXT DEFAULT NULL`,
   `ALTER TABLE runs RENAME COLUMN bead_id TO seed_id`,
 ];
+
+// One-time destructive migrations that cannot be made idempotent via failure
+// (e.g. DROP TABLE IF EXISTS never throws).  These are gated by user_version so
+// they only execute once — the first time a store is opened against a legacy DB.
+//
+// user_version 0 → initial / legacy state (may have an old messages table)
+// user_version 1 → legacy messages table + stale index have been cleaned up
+const SCHEMA_VERSION = 1;
+
+// SQL run when user_version < SCHEMA_VERSION to migrate a legacy database
+const SCHEMA_UPGRADE_SQL = `
+DROP TABLE IF EXISTS messages;
+DROP INDEX IF EXISTS idx_messages_run_status;
+`;
 
 // ── Store ───────────────────────────────────────────────────────────────
 
@@ -149,7 +203,8 @@ export class ForemanStore {
     this.db.pragma("foreign_keys = ON");
     this.db.exec(SCHEMA);
 
-    // Run idempotent migrations
+    // Run idempotent migrations (errors are silently ignored — they indicate
+    // the change was already applied, e.g. column already exists).
     for (const sql of MIGRATIONS) {
       try {
         this.db.exec(sql);
@@ -157,6 +212,19 @@ export class ForemanStore {
         // Column/table already exists — safe to ignore
       }
     }
+
+    // Run one-time destructive migrations gated by user_version pragma.
+    // This ensures DROP TABLE / DROP INDEX only executes once, even though
+    // those statements never throw (unlike ALTER TABLE idempotency above).
+    const currentVersion = this.db.pragma("user_version", { simple: true }) as number;
+    if (currentVersion < SCHEMA_VERSION) {
+      this.db.exec(SCHEMA_UPGRADE_SQL);
+      this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
+    }
+
+    // Apply messaging schema after migrations so any legacy messages table has
+    // been dropped first, allowing a clean re-creation.
+    this.db.exec(MESSAGES_SCHEMA);
   }
 
   close(): void {
@@ -430,6 +498,127 @@ export class ForemanStore {
     return this.db
       .prepare(`SELECT * FROM events ${where} ORDER BY created_at DESC ${limitClause}`)
       .all(...params) as Event[];
+  }
+
+  // ── Messaging ───────────────────────────────────────────────────────
+
+  /**
+   * Send a message from one agent to another within a run.
+   * Messages are scoped by run_id so agents in different runs cannot cross-communicate.
+   */
+  sendMessage(
+    runId: string,
+    senderAgentType: string,
+    recipientAgentType: string,
+    subject: string,
+    body: string
+  ): Message {
+    const now = new Date().toISOString();
+    const message: Message = {
+      id: randomUUID(),
+      run_id: runId,
+      sender_agent_type: senderAgentType,
+      recipient_agent_type: recipientAgentType,
+      subject,
+      body,
+      read: 0,
+      created_at: now,
+      deleted_at: null,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO messages
+           (id, run_id, sender_agent_type, recipient_agent_type, subject, body, read, created_at, deleted_at)
+         VALUES
+           (@id, @run_id, @sender_agent_type, @recipient_agent_type, @subject, @body, @read, @created_at, @deleted_at)`
+      )
+      .run(message);
+    return message;
+  }
+
+  /**
+   * Get messages for an agent in a run.
+   * @param runId - The run to scope messages to
+   * @param agentType - The recipient agent type
+   * @param unreadOnly - If true, only return unread messages (default: false)
+   */
+  getMessages(runId: string, agentType: string, unreadOnly = false): Message[] {
+    if (unreadOnly) {
+      return this.db
+        .prepare(
+          `SELECT * FROM messages
+           WHERE run_id = ? AND recipient_agent_type = ? AND read = 0 AND deleted_at IS NULL
+           ORDER BY created_at ASC, rowid ASC`
+        )
+        .all(runId, agentType) as Message[];
+    }
+    return this.db
+      .prepare(
+        `SELECT * FROM messages
+         WHERE run_id = ? AND recipient_agent_type = ? AND deleted_at IS NULL
+         ORDER BY created_at ASC, rowid ASC`
+      )
+      .all(runId, agentType) as Message[];
+  }
+
+  /**
+   * Get all messages in a run (for lead/coordinator visibility).
+   */
+  getAllMessages(runId: string): Message[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM messages
+         WHERE run_id = ? AND deleted_at IS NULL
+         ORDER BY created_at ASC, rowid ASC`
+      )
+      .all(runId) as Message[];
+  }
+
+  /**
+   * Mark a message as read.
+   * @returns true if the message was found and updated, false if no such message exists.
+   */
+  markMessageRead(messageId: string): boolean {
+    const result = this.db
+      .prepare("UPDATE messages SET read = 1 WHERE id = ?")
+      .run(messageId);
+    return result.changes > 0;
+  }
+
+  /**
+   * Mark all messages for an agent in a run as read.
+   *
+   * The `deleted_at IS NULL` guard is intentional: soft-deleted messages are
+   * excluded from all normal queries and should not be resurrected by a bulk
+   * read — they remain "deleted" and do not count as unread.
+   */
+  markAllMessagesRead(runId: string, agentType: string): void {
+    this.db
+      .prepare(
+        "UPDATE messages SET read = 1 WHERE run_id = ? AND recipient_agent_type = ? AND deleted_at IS NULL"
+      )
+      .run(runId, agentType);
+  }
+
+  /**
+   * Soft-delete a message (sets deleted_at timestamp).
+   * @returns true if the message was found and soft-deleted, false if no such message exists.
+   */
+  deleteMessage(messageId: string): boolean {
+    const result = this.db
+      .prepare("UPDATE messages SET deleted_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), messageId);
+    return result.changes > 0;
+  }
+
+  /**
+   * Get a single message by ID.
+   */
+  getMessage(messageId: string): Message | null {
+    return (
+      (this.db.prepare("SELECT * FROM messages WHERE id = ?").get(messageId) as Message | undefined) ??
+      null
+    );
   }
 
   // ── Metrics ─────────────────────────────────────────────────────────
