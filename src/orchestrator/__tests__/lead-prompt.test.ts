@@ -34,8 +34,9 @@ describe("leadPrompt", () => {
     expect(prompt).toContain("Agent tool");
   });
 
-  it("includes finalize steps (commit, push, close)", () => {
+  it("includes finalize steps (bug scan, commit, push, close)", () => {
     const prompt = leadPrompt(baseOpts);
+    expect(prompt).toContain("tsc --noEmit");
     expect(prompt).toContain("git commit");
     expect(prompt).toContain("git push");
     expect(prompt).toContain("sd close");

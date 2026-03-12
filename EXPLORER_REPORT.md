@@ -1,165 +1,217 @@
-# Explorer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Explorer Report: Add pre-commit bug scanning to finalize phase
 
-## Summary
-The codebase uses `maxTurns` to limit SDK query execution in the agent orchestration pipeline. This needs to be replaced with `maxBudgetUsd` to enforce budget-based limits instead of turn-based limits. The change affects the role configurations, phase execution, and logging.
+## Task Overview
+
+Add pre-commit bug scanning to the finalize phase of the agent pipeline. The finalize phase is the final step where git operations (add, commit, push) and seed closure occur. Bug scanning should validate the code before committing to catch compilation errors, type errors, and other defects early.
 
 ## Relevant Files
 
-### 1. **src/orchestrator/roles.ts** (lines 13-46)
-- **Purpose**: Defines role configurations for the specialization pipeline (explorer, developer, qa, reviewer)
-- **Current State**:
-  - `RoleConfig` interface has `maxTurns: number` property (line 16)
-  - `ROLE_CONFIGS` object defines maxTurns for each phase:
-    - explorer: 30 turns
-    - developer: 80 turns
-    - qa: 30 turns
-    - reviewer: 20 turns
-- **Relevance**: Primary file that needs modification - interface definition and config values
+### Primary File to Modify
 
-### 2. **src/orchestrator/agent-worker.ts** (lines 310-399)
-- **Purpose**: Standalone worker process that runs individual SDK query calls for each pipeline phase
-- **Current State**:
-  - Line 322: Logs `maxTurns=${roleConfig.maxTurns}` when starting a phase
-  - Line 337: Passes `maxTurns: roleConfig.maxTurns` to the SDK `query()` options
-  - Line 225: Already handles `error_max_budget_usd` error subtype (future-ready)
-- **Relevance**: Needs to replace logging and pass maxBudgetUsd to query() options instead
+- **src/orchestrator/agent-worker.ts** — Contains the `finalize()` function (lines 429-493) that handles git operations. This is where bug scanning checks will be added **before** the commit step (before line 441).
 
-### 3. **src/orchestrator/dispatcher.ts** (line 361)
-- **Purpose**: Dispatches beads to agents, handles one-off planning steps
-- **Current State**:
-  - Line 361: Uses `maxTurns: 50` for `dispatchPlanStep()` SDK query
-- **Relevance**: Secondary location needing update for consistency with phase limits
+### Related Files (Reference/Documentation Only)
+
+- **src/orchestrator/lead-prompt.ts** — Documents the finalize process in team instructions (lines 182-187). Shows that finalize performs git add, commit, push, and seed close. Pipeline description at lines 518 and 643.
+- **src/orchestrator/__tests__/agent-worker-team.test.ts** — Contains test patterns for agent-worker phases. Test at line 193: `"generated prompt includes finalize steps (commit, push, close)"` would need updating.
+- **src/orchestrator/__tests__/lead-prompt.test.ts** — Contains test at line 37: `"includes finalize steps (commit, push, close)"` would need updating.
+- **src/lib/store.ts** — Defines `currentPhase` field in `RunProgress` type; tracks "finalize" as a pipeline phase.
+- **package.json** — Contains `"build": "tsc"` (line 11) which is the primary bug scanning tool to use.
 
 ## Architecture & Patterns
 
-### Pipeline Orchestration Pattern
-- **Sequential phases**: Explorer → Developer ⇄ QA → Reviewer → Finalize
-- **Phase execution**: Each phase runs as a separate `query()` call with its own config
-- **Error handling**: Already recognizes `error_max_budget_usd` error subtype (agent-worker.ts:225)
-- **Naming convention**: `roleConfig.maxTurns` → should become `roleConfig.maxBudgetUsd`
+### Current Finalize Function Flow
 
-### SDK Integration
-- The Anthropic Claude Agent SDK supports `maxBudgetUsd?: number` in query options (confirmed in sdk.d.ts)
-- Budget limits are enforced by the SDK during query execution
-- Error subtype `error_max_budget_usd` is already handled by the error detection logic
+The `finalize()` function (lines 429-493 in agent-worker.ts) follows this sequence:
 
-### Role Config Structure
+```
+1. Initialize report array with seed info and timestamp
+2. TRY: git add -A, git commit, git rev-parse HEAD
+       CATCH: "nothing to commit" special case, other commit errors
+3. TRY: git push -u origin foreman/{seedId}
+       CATCH: log and continue on error
+4. TRY: sd close {seedId} --reason "Completed via pipeline"
+       CATCH: log and continue on error
+5. Write FINALIZE_REPORT.md to disk
+6. Return
+```
+
+**Proposed addition**: Insert bug scanning BEFORE step 2 (commit).
+
+### Error Handling Pattern
+
+The finalize function uses **try-catch blocks per operation** with these characteristics:
+
+- Each step is independent (catch blocks don't prevent next step)
+- Errors are logged to both: in-memory `report` array AND the `logFile`
+- Success/failure status recorded in report sections: `## Commit`, `## Push`, `## Seed Close`
+- Error messages truncated to 300-500 chars for report, 200 chars for logging
+- Non-fatal errors don't throw — they record and continue (pattern: log → report → continue)
+- Special case handling: "nothing to commit" is caught separately and not treated as an error
+
+### Command Execution Pattern
+
+Uses `execFileSync()` for shell commands (preferred over shell strings for safety):
+
 ```typescript
-export interface RoleConfig {
-  role: AgentRole;
-  model: ModelSelection;
-  maxTurns: number;              // ← Change to maxBudgetUsd: number
-  reportFile: string;
+execFileSync("git", ["add", "-A"], opts)
+execFileSync("git", ["commit", "-m", msg], opts)
+execFileSync("git", ["push", "-u", "origin", branch], opts)
+```
+
+Options object used throughout:
+```typescript
+const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: 30_000 };
+```
+
+### Imports Already Available
+
+All necessary imports are already present in agent-worker.ts:
+- `execFileSync` from `node:child_process` (line 15) ✓
+- `appendFile` from `node:fs/promises` (line 13) ✓
+- `join` from `node:path` (line 14) ✓
+- Error handling patterns already established ✓
+
+### Bug Scanning Tool Available
+
+From package.json (lines 10-15):
+```json
+"scripts": {
+  "build": "tsc",
+  "dev": "tsx watch src/cli/index.ts",
+  "start": "node dist/cli/index.js",
+  "test": "vitest run",
+  "test:watch": "vitest"
 }
 ```
 
+**Available option**: `npm run build` — TypeScript compilation via tsc
+
+This catches:
+- Type errors
+- Syntax errors
+- Missing imports
+- Assignment type mismatches
+- Other static analysis issues
+
+**Alternative**: `tsc --noEmit` (non-destructive type check without generating dist/ files)
+
 ## Dependencies
 
-### What Uses maxTurns
-1. **agent-worker.ts**:
-   - Imports `ROLE_CONFIGS` from roles.ts
-   - Calls `roleConfig.maxTurns` in `runPhase()` function
-   - Passes value to SDK `query()` options
+### What This Feature Depends On
 
-2. **dispatcher.ts**:
-   - Hard-coded `maxTurns: 50` in `dispatchPlanStep()`
-   - No import from roles.ts (independent configuration)
+- `execFileSync` from `node:child_process` ✓
+- NPM/tsc available in the worktree environment
+- Existing error handling patterns ✓
+- Existing report generation patterns ✓
 
-3. **roles.ts**:
-   - Defines the canonical values for all phases
-   - No external dependencies on the property name
+### Who Depends on This
 
-### SDK API Contract
-- The SDK's `query()` function accepts `maxBudgetUsd?: number` parameter
-- When a query exceeds budget, SDK returns error with `subtype: "error_max_budget_usd"`
-- No backwards compatibility issues - this is a parameter replacement
+- **src/orchestrator/agent-worker.ts:runPipeline()** — calls `finalize()` at line 632
+- **src/orchestrator/dispatcher.ts** — spawns agent-worker.ts as subprocess
+- CLI commands that trigger pipeline (run.ts, etc.)
 
 ## Existing Tests
 
-### Test Files
-1. **src/orchestrator/__tests__/roles.test.ts**
-   - Tests ROLE_CONFIGS structure (all roles defined, models correct)
-   - Tests prompt templates (context injection, read-only instructions)
-   - Tests verdict/issue parsing from reports
-   - **Status**: Tests focus on config existence, not specific maxTurns values
-   - **Impact**: Tests will likely pass after renaming property (no assertions on maxTurns specifically)
+### Test Files That Reference Finalize
 
-2. **src/orchestrator/__tests__/agent-worker.test.ts**
-   - Tests worker process initialization and logging
-   - Tests config file handling and deletion
-   - **Status**: No assertions on maxTurns values
-   - **Impact**: Will need to verify logging format still works with maxBudgetUsd
+- **src/orchestrator/__tests__/agent-worker-team.test.ts** (line 193)
+  - Test: `"generated prompt includes finalize steps (commit, push, close)"`
+  - Current expectation: checks for "git commit", "git push", "sd close"
+  - **Needs update**: Add expectation for bug scanning step (e.g., "build" or "type check")
 
-### Test Coverage of Limits
-- No tests directly assert maxTurns values
-- No tests verify budget enforcement
-- New tests may be beneficial to ensure budget limits work correctly
+- **src/orchestrator/__tests__/lead-prompt.test.ts** (line 37)
+  - Test: `"includes finalize steps (commit, push, close)"`
+  - Current expectation: checks for "git commit", "git push", "sd close"
+  - **Needs update**: Add expectation for bug scanning step
+
+### No Direct Unit Tests for `finalize()` Function
+
+The `finalize()` function itself is not directly unit tested. It's integration-tested through the pipeline tests. This is acceptable since it's a straightforward shell command orchestrator.
 
 ## Recommended Approach
 
-### Phase 1: Update Role Configurations
-1. Update `RoleConfig` interface in roles.ts:
-   - Rename `maxTurns: number` → `maxBudgetUsd: number`
+### Step-by-Step Implementation Plan
 
-2. Update `ROLE_CONFIGS` values with reasonable budget estimates:
-   - Need to estimate per-model costs based on token usage
-   - Suggested starting points (requires validation):
-     - **explorer** (haiku, 30 turns): $0.50-$1.00 USD
-     - **developer** (sonnet, 80 turns): $5.00-$10.00 USD
-     - **qa** (sonnet, 30 turns): $2.00-$4.00 USD
-     - **reviewer** (sonnet, 20 turns): $1.50-$3.00 USD
-   - Also update **dispatchPlanStep** budget in dispatcher.ts (currently maxTurns: 50)
+1. **Add bug scanning section in `finalize()` function** (agent-worker.ts)
+   - Insert new try-catch block after report initialization (after line 439, before commit section at line 441)
+   - Execute: `execFileSync("npm", ["run", "build"], opts)` with the existing `opts` object
+   - Wrap in try-catch following existing error handling pattern
+   - Catch errors (type check failures) and add status to report under new `## Build / Type Check` section
+   - Non-blocking: report status but continue to commit regardless (following existing pattern)
 
-### Phase 2: Update Phase Execution in agent-worker.ts
-1. Update `runPhase()` function:
-   - Line 322: Change log format to show `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - Line 337: Pass `maxBudgetUsd: roleConfig.maxBudgetUsd` instead of `maxTurns`
+2. **Update report structure**
+   - Add `## Build` or `## Type Check` section before `## Commit` section
+   - Status: SUCCESS | FAILED | SKIPPED
+   - Include error output snippet (first few lines) for debugging
 
-2. Verify error handling:
-   - Line 225 already checks for `error_max_budget_usd` — keep as-is
+3. **Update lead prompt instructions** (lead-prompt.ts, lines 182-187)
+   - Update Finalize section to mention that bug scanning occurs before commit
+   - Helps document the new behavior for users
 
-### Phase 3: Update Dispatcher Planning
-1. In dispatcher.ts `dispatchPlanStep()`:
-   - Replace `maxTurns: 50` with appropriate `maxBudgetUsd` value (suggest $3.00-$5.00)
+4. **Update tests**
+   - agent-worker-team.test.ts line 193: Add expectation for build/type-check step
+   - lead-prompt.test.ts line 37: Add expectation for build/type-check mention
 
-### Phase 4: Update Tests & Documentation
-1. roles.test.ts:
-   - Update any hardcoded expectations if tests fail
-   - Consider adding assertions for budget values being positive numbers
+### File Changes Summary
 
-2. agent-worker.test.ts:
-   - Verify logging format with new maxBudgetUsd parameter
-   - Check that log output still contains relevant budget information
+| File | Change Type | Details |
+|------|-------------|---------|
+| src/orchestrator/agent-worker.ts | Add try-catch | Insert bug scanning before commit (new lines ~440-460) |
+| src/orchestrator/lead-prompt.ts | Update docs | Lines 182-187 (add mention of build/type-check) |
+| src/orchestrator/__tests__/agent-worker-team.test.ts | Update test expectations | Line 193 (add expectation for build step) |
+| src/orchestrator/__tests__/lead-prompt.test.ts | Update test expectations | Line 37 (add expectation for build/type-check) |
 
 ## Potential Pitfalls & Edge Cases
 
-1. **Budget Estimation Accuracy**
-   - Turn counts are discrete (explorer: 30) but budgets must be estimated
-   - Per-model costs vary (Haiku cheaper than Sonnet than Opus)
-   - May need to adjust budgets based on real usage data
+1. **Performance**: `npm run build` can be slow on large TypeScript projects
+   - Current timeout: 30 seconds — should be sufficient for most builds
+   - Mitigation: Could skip if no files changed (detect via `git diff --name-only`)
+   - Status: Accept as-is initially; can optimize later if needed
 
-2. **Error Handling Clarity**
-   - Error message when budget exceeded may be different from turn limits
-   - Current code checks `error_max_budget_usd` — verify message consistency
+2. **Tool Availability**: What if npm/tsc not in PATH in worktree?
+   - Existing pattern: Line 475 in agent-worker.ts shows how to use full paths
+   - Solution: Use `join(process.cwd(), "node_modules", ".bin", "npm")` or similar
+   - Or: Execute from worktree directory where `npm` is available
 
-3. **Logging Clarity**
-   - Phase startup logs currently show `maxTurns=30`
-   - Should show `maxBudgetUsd=$X.XX` for clarity
+3. **Type Check vs. Build**:
+   - `tsc --noEmit`: Fast, type checking only, no dist output
+   - `npm run build`: Builds full project, generates artifacts to disk (may be OK)
+   - Recommendation: Use `npm run build` for now (matches project conventions)
 
-4. **Backwards Compatibility**
-   - Existing stored run data uses turns in progress tracking (agent-worker.ts line 196)
-   - Budget limits don't track in progress.turns — separate concerns
-   - No data migration needed (turns are tracked separately from limits)
+4. **Failing Type Checks — Should They Block?**
+   - Current pattern in finalize: Non-fatal errors (report but continue)
+   - Recommendation: Follow existing pattern (non-blocking)
+   - Rationale: Downstream QA/review phases already validate code; this is a safety check
+   - Developer would see failure in FINALIZE_REPORT.md and can address in next iteration
 
-5. **Dispersion Across Files**
-   - dispatcher.ts has a hard-coded maxTurns value (50) separate from roles.ts
-   - Consider whether plan steps should use same budget as phases or different
+5. **Pre-existing Type Errors**:
+   - Bug scan might fail on code that was already broken
+   - This is expected behavior — the feature is to catch issues
+   - Report will clearly show what failed, allowing developer/reviewer to assess if it's pre-existing
 
-## Next Steps for Developer
+6. **Empty Changes**:
+   - Already handled by "nothing to commit" check (line 451)
+   - Bug scan could be skipped in this case (optimization, not required)
 
-1. Research typical costs per phase from production data (if available)
-2. Update roles.ts with maxBudgetUsd values (start conservative)
-3. Update agent-worker.ts runPhase() logging and query options
-4. Update dispatcher.ts dispatchPlanStep() budget
-5. Run tests to verify no regressions
-6. Monitor first few runs with new budgets to validate appropriateness
+## Implementation Notes
+
+### Code Style & Conventions to Follow
+
+- Use `execFileSync` with array args (never shell string concatenation)
+- Use `opts` object with timeout, stdio, cwd defined at function start
+- Wrap errors with context: `err instanceof Error ? err.message : String(err)`
+- Truncate long errors: `.slice(0, 300)` for report, `.slice(0, 200)` for logging
+- Log every step: `log("[FINALIZE] <message>")`
+- Add every step to report: `report.push()`
+- Use markdown headers in report: `## Build` or `## Type Check`
+
+### Success Criteria
+
+✅ Pre-commit bug scanning runs **before** `git add -A`
+✅ Results reported in FINALIZE_REPORT.md with clear status
+✅ Errors don't block finalization (non-fatal pattern consistent with push/close)
+✅ Both console logging and report recording implemented
+✅ Tests updated to reflect new finalize step
+✅ Handles missing tools gracefully (doesn't crash)
+✅ Performance acceptable (existing 30s timeout sufficient)

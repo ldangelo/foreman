@@ -190,10 +190,11 @@ describe("agent-worker team mode: prompt is suitable for SDK query()", () => {
     expect(prompt).toContain("REVIEW.md");
   });
 
-  it("generated prompt includes finalize steps (commit, push, close)", () => {
+  it("generated prompt includes finalize steps (bug scan, commit, push, close)", () => {
     const config = makeConfig();
     const prompt = simulateTeamModeTransform(config);
 
+    expect(prompt).toContain("tsc --noEmit");
     expect(prompt).toContain("git commit");
     expect(prompt).toContain("git push");
     expect(prompt).toContain("sd close");
