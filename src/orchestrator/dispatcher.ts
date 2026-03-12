@@ -20,6 +20,11 @@ import type {
   PlanStepDispatched,
 } from "./types.js";
 
+// ── Constants ────────────────────────────────────────────────────────────
+
+/** Maximum budget (USD) for a single plan-step SDK query in dispatchPlanStep(). */
+const PLAN_STEP_MAX_BUDGET_USD = 3.00;
+
 // ── Dispatcher ──────────────────────────────────────────────────────────
 
 export class Dispatcher {
@@ -358,7 +363,7 @@ export class Dispatcher {
           model: "claude-sonnet-4-6",
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
-          maxTurns: 50,
+          maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD,
           env,
           persistSession: false,
         },

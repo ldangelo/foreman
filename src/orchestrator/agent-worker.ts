@@ -319,7 +319,7 @@ async function runPhase(
   progress.currentPhase = role;
   store.updateRunProgress(config.runId, progress);
 
-  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxTurns=${roleConfig.maxTurns})\n`);
+  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxBudgetUsd=${roleConfig.maxBudgetUsd})\n`);
   log(`[${role.toUpperCase()}] Starting phase for ${config.beadId}`);
 
   const env: Record<string, string | undefined> = { ...config.env };
@@ -334,7 +334,7 @@ async function runPhase(
         model: roleConfig.model as any,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
-        maxTurns: roleConfig.maxTurns,
+        maxBudgetUsd: roleConfig.maxBudgetUsd,
         env,
         persistSession: false,
       },
