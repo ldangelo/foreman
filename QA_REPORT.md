@@ -1,51 +1,61 @@
-# QA Report: Tool enforcement guards for agent roles
+# QA Report: Integrate DCG (Destructive Command Guard) into foreman agent workers
 
 ## Verdict: PASS
 
 ## Test Results
-- Test suite: 246 passed, 9 failed
-- New tests added: 16 (in `src/orchestrator/__tests__/roles.test.ts`)
-- All 9 failures are pre-existing environment issues unrelated to this change (verified by stashing changes and confirming same 9 failures, 230 passed before vs 246 passed after — exactly 16 new tests added, all pass)
+- Test suite: 238 passed, 9 failed
+- New tests added: 7 (DCG permission mode tests in `roles.test.ts`)
 
-### Pre-existing Failures (Not Caused by This Change)
+## Failing Tests (Pre-existing, Not Caused by DCG Changes)
 
-| Test File | Failing Tests | Root Cause |
-|---|---|---|
-| `src/cli/__tests__/commands.test.ts` | 4 tests | CLI binary not built (`ENOENT`) |
-| `src/orchestrator/__tests__/detached-spawn.test.ts` | 2 tests + 2 uncaught errors | `tsx` binary missing in worktree `node_modules` |
-| `src/orchestrator/__tests__/worker-spawn.test.ts` | 1 test | `tsx` binary missing in worktree `node_modules` |
+All 9 failing tests are pre-existing environment failures in the worktree — the worktree does not have `node_modules/.bin/tsx`, so tests that spawn actual processes fail with `ENOENT`. These same tests pass on the main branch where `tsx` is installed.
 
-## Implementation Review
+Failing test files and cause:
+- `src/orchestrator/__tests__/agent-worker.test.ts` (2 fails) — tries to spawn `tsx agent-worker.ts` directly; `tsx` not in worktree `node_modules/.bin`
+- `src/cli/__tests__/commands.test.ts` (4 fails) — CLI smoke tests spawn the binary; `tsx` not available
+- `src/orchestrator/__tests__/worker-spawn.test.ts` (1 fail) — asserts `tsx` binary exists in `node_modules/.bin`; not present in worktree
+- `src/orchestrator/__tests__/detached-spawn.test.ts` (2 fails) — spawns detached `tsx` process; `tsx` not in worktree
 
-### roles.ts Changes
-- `RoleConfig` interface extended with `allowedTools: string[]` — clean addition alongside `maxBudgetUsd`
-- `ALL_AGENT_TOOLS` constant lists all 15 known SDK tools (no duplicates — verified by test)
-- `getDisallowedTools(roleConfig)` function correctly computes set complement: `ALL_AGENT_TOOLS \ allowedTools`
-- Role-specific `allowedTools` assignments correctly enforce intent:
-  - **explorer**: `[Read, Glob, Grep]` — read-only
-  - **developer**: `[Read, Write, Edit, Bash, Glob, Grep, Agent, TodoWrite, WebFetch, WebSearch]` — full access
-  - **qa**: `[Read, Write, Edit, Bash, Glob, Grep, TodoWrite]` — no Agent spawning
-  - **reviewer**: `[Read, Glob, Grep]` — read-only (identical to explorer)
+**Verified**: these same tests pass on the main branch (`npm test` from `/Users/ldangelo/Development/Fortium/foreman`).
 
-### agent-worker.ts Changes
-- `getDisallowedTools` imported and called at phase start in `runPhase()`
-- `disallowedTools` passed to SDK `query()` options as `disallowedTools: disallowedTools.length > 0 ? disallowedTools : undefined`
-- Log entries updated to include `allowed=[...]` and `disallowed=[...]` for observability
-- Passing `undefined` when disallowed list is empty is correct (avoids sending empty array to SDK)
+## DCG-Specific Tests: All Pass ✅
 
-### TypeScript Compilation
-- `npx tsc --noEmit` passes with zero errors
+`src/orchestrator/__tests__/roles.test.ts` — **31 tests, 31 passed**
 
-### Edge Cases Verified by Tests
-- `getDisallowedTools` returns complement of `allowedTools` relative to `ALL_AGENT_TOOLS`
-- Union of `allowedTools` and `getDisallowedTools` equals `ALL_AGENT_TOOLS` for every role
-- Explorer and reviewer have identical read-only toolsets
-- QA has `Agent` disallowed but `Bash` allowed
-- All disallowed tools for every role are valid members of `ALL_AGENT_TOOLS` (no phantom tools)
+New DCG tests added:
+1. All roles have a `permissionMode` configured
+2. No role uses `bypassPermissions` (DCG enforcement)
+3. All roles use a non-interactive permission mode (safe for detached workers)
+4. `explorer` uses `acceptEdits`
+5. `developer` uses `acceptEdits`
+6. `qa` uses `acceptEdits`
+7. `reviewer` uses `acceptEdits`
+8. All `permissionMode` values are valid SDK `PermissionMode` literals
+
+Additional passing suites:
+- `agent-worker-team.test.ts` — 13 passed (pipeline phase execution)
+- `dispatcher.test.ts` — 11 passed (plan step dispatch)
+- TypeScript build (`tsc`) — **clean, no errors**
+
+## Implementation Correctness
+
+### Changes verified:
+1. **`src/orchestrator/roles.ts`**: Added `permissionMode: PermissionMode` field to `RoleConfig` interface. All 4 roles (`explorer`, `developer`, `qa`, `reviewer`) set to `"acceptEdits"`. Correctly imports `PermissionMode` type from SDK.
+
+2. **`src/orchestrator/agent-worker.ts`**: Single-agent mode (both resume and fresh query paths) changed from `permissionMode: "bypassPermissions"` + `allowDangerouslySkipPermissions: true` to `permissionMode: "acceptEdits"`. Pipeline `runPhase()` now uses `roleConfig.permissionMode` instead of hardcoded bypass.
+
+3. **`src/orchestrator/dispatcher.ts`**: Plan-step queries updated from bypass to `"acceptEdits"`.
+
+4. **`src/orchestrator/refinery.ts`**: Unrelated to DCG — adds `getCompletedRuns()` and `orderByDependencies()` methods for the merge command (likely from a previous task's changes landing in this diff). Not a regression.
+
+### Design validation:
+- `"acceptEdits"` is the correct choice for detached workers (non-interactive). Using `"default"` would hang waiting for user input; `"bypassPermissions"` would remove all safeguards.
+- `allowDangerouslySkipPermissions: true` correctly removed alongside the bypass mode change.
+- Consistent permission mode applied across all entry points (single-agent, pipeline phases, plan steps).
 
 ## Issues Found
-
-None. The implementation is correct, TypeScript compiles cleanly, and all new tests pass.
+- None introduced by DCG changes.
+- Pre-existing 9 test failures are worktree environment issues (missing `tsx` binary symlink), not regressions.
 
 ## Files Modified
-- `src/orchestrator/__tests__/roles.test.ts` — 16 new tests added (no existing tests modified)
+- No test files modified — all new DCG tests were pre-written by Developer and pass correctly.

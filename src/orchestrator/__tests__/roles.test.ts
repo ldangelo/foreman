@@ -58,6 +58,62 @@ describe("ROLE_CONFIGS", () => {
   });
 });
 
+describe("DCG (Destructive Command Guard) permission modes", () => {
+  it("all roles have a permissionMode configured", () => {
+    for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
+      expect(config.permissionMode, `${role} should have a permissionMode`).toBeDefined();
+      expect(typeof config.permissionMode, `${role} permissionMode should be a string`).toBe("string");
+    }
+  });
+
+  it("no role uses bypassPermissions (DCG enforcement)", () => {
+    for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
+      expect(
+        config.permissionMode,
+        `${role} must not use bypassPermissions — DCG requires guarded permission mode`,
+      ).not.toBe("bypassPermissions");
+    }
+  });
+
+  it("all roles use a non-interactive permission mode (safe for detached workers)", () => {
+    // Workers run as detached processes with no user interaction.
+    // 'default' would hang waiting for user input — must use acceptEdits or dontAsk.
+    const interactiveModes = ["default"];
+    for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
+      expect(
+        interactiveModes,
+        `${role} uses interactive permission mode '${config.permissionMode}' which would hang in detached worker`,
+      ).not.toContain(config.permissionMode);
+    }
+  });
+
+  it("explorer uses acceptEdits to allow writing EXPLORER_REPORT.md", () => {
+    expect(ROLE_CONFIGS.explorer.permissionMode).toBe("acceptEdits");
+  });
+
+  it("developer uses acceptEdits for file write access", () => {
+    expect(ROLE_CONFIGS.developer.permissionMode).toBe("acceptEdits");
+  });
+
+  it("qa uses acceptEdits for test runs and file modifications", () => {
+    expect(ROLE_CONFIGS.qa.permissionMode).toBe("acceptEdits");
+  });
+
+  it("reviewer uses acceptEdits to allow writing REVIEW.md", () => {
+    expect(ROLE_CONFIGS.reviewer.permissionMode).toBe("acceptEdits");
+  });
+
+  it("permissionMode values are valid SDK PermissionMode literals", () => {
+    const validModes = ["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"];
+    for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
+      expect(
+        validModes,
+        `${role} has invalid permissionMode: '${config.permissionMode}'`,
+      ).toContain(config.permissionMode);
+    }
+  });
+});
+
 describe("prompt templates", () => {
   it("explorerPrompt includes seed context and read-only instructions", () => {
     const prompt = explorerPrompt("bd-123", "Fix auth", "JWT token refresh");

@@ -1,165 +1,253 @@
-# Explorer Report: Replace maxTurns with maxBudgetUsd for pipeline phase limits
+# Explorer Report: Integrate DCG (Destructive Command Guard) into foreman agent workers
 
 ## Summary
-The codebase uses `maxTurns` to limit SDK query execution in the agent orchestration pipeline. This needs to be replaced with `maxBudgetUsd` to enforce budget-based limits instead of turn-based limits. The change affects the role configurations, phase execution, and logging.
+
+Foreman agent workers currently bypass all permission checks using `permissionMode: "bypassPermissions"` and `allowDangerouslySkipPermissions: true`. DCG (Destructive Command Guard) integration means implementing proper safeguards for destructive operations by:
+
+1. Stopping the blanket bypass of permissions
+2. Switching to a controlled permission mode (`default`, `dontAsk`, or `acceptEdits`)
+3. Properly handling tool annotations (MCP tools marked with `destructive: true`)
+4. Allowing explicit approval or denial of destructive operations based on the task context
 
 ## Relevant Files
 
-### 1. **src/orchestrator/roles.ts** (lines 13-46)
-- **Purpose**: Defines role configurations for the specialization pipeline (explorer, developer, qa, reviewer)
-- **Current State**:
-  - `RoleConfig` interface has `maxTurns: number` property (line 16)
-  - `ROLE_CONFIGS` object defines maxTurns for each phase:
-    - explorer: 30 turns
-    - developer: 80 turns
-    - qa: 30 turns
-    - reviewer: 20 turns
-- **Relevance**: Primary file that needs modification - interface definition and config values
+### 1. **src/orchestrator/agent-worker.ts** (Main Worker Process)
+- **Lines 133-156**: Single-agent query initialization with SDK options
+  - Currently uses `permissionMode: "bypassPermissions"` and `allowDangerouslySkipPermissions: true`
+  - These settings disable all permission prompts and safeguards
 
-### 2. **src/orchestrator/agent-worker.ts** (lines 310-399)
-- **Purpose**: Standalone worker process that runs individual SDK query calls for each pipeline phase
-- **Current State**:
-  - Line 322: Logs `maxTurns=${roleConfig.maxTurns}` when starting a phase
-  - Line 337: Passes `maxTurns: roleConfig.maxTurns` to the SDK `query()` options
-  - Line 225: Already handles `error_max_budget_usd` error subtype (future-ready)
-- **Relevance**: Needs to replace logging and pass maxBudgetUsd to query() options instead
+- **Lines 330-341**: Pipeline phase execution (`runPhase()` function)
+  - Runs each phase (explorer, developer, qa, reviewer) as separate SDK queries
+  - Currently bypasses all permissions for all phases indiscriminately
+  - All phases use same permission mode regardless of destructive-ness
 
-### 3. **src/orchestrator/dispatcher.ts** (line 361)
-- **Purpose**: Dispatches beads to agents, handles one-off planning steps
-- **Current State**:
-  - Line 361: Uses `maxTurns: 50` for `dispatchPlanStep()` SDK query
-- **Relevance**: Secondary location needing update for consistency with phase limits
+- **Lines 158-243**: Message handling for single-agent mode
+  - Already handles rate limit errors (`error_max_budget_usd` on line 225)
+  - Error handling logic can be extended for permission-related errors
+
+### 2. **src/orchestrator/dispatcher.ts** (Task Dispatcher)
+- **Lines 25-26**: Constant definition for plan step budget
+
+- **Lines 149-160**: Agent spawning in `dispatch()` method
+  - Spawns agent-worker process with config
+
+- **Lines 330-341**: Plan step execution in `dispatchPlanStep()` method
+  - Also uses `permissionMode: "bypassPermissions"`
+  - Handles one-off planning steps outside pipeline phases
+
+### 3. **Node SDK Type Definitions** (`node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`)
+- **Lines 549-553**: MCP tool annotations
+  - Tools can have `destructive?: boolean` annotation
+  - Also supports `readOnly?: boolean` and `openWorld?: boolean`
+
+- **Permission mode options**: `'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk'`
+  - `default`: Standard behavior, prompts for dangerous operations
+  - `acceptEdits`: Auto-accept file edits
+  - `bypassPermissions`: Skip all checks (current approach, requires `allowDangerouslySkipPermissions`)
+  - `dontAsk`: Don't prompt, deny if not pre-approved
+  - `plan`: Planning mode, no actual execution
+
+- **MCP server status**: Tracks available tools and their annotations
+
+### 4. **src/orchestrator/roles.ts** (Role Configuration)
+- **Lines 13-46**: `RoleConfig` interface and `ROLE_CONFIGS` object
+  - Defines configuration for each agent role (explorer, developer, qa, reviewer)
+  - No current permission-related configuration
+  - May need to add permission policies per role
+
+### 5. **src/orchestrator/__tests__/agent-worker.test.ts** (Worker Tests)
+- Basic tests for config file handling, logging
+- No tests for permission modes or destructive operations
+- Tests use invalid API keys to prevent actual SDK execution
+
+### 6. **src/orchestrator/__tests__/agent-worker-team.test.ts** (Pipeline Tests)
+- Tests for pipeline phase execution
+- Should verify permission handling across phases
 
 ## Architecture & Patterns
 
-### Pipeline Orchestration Pattern
-- **Sequential phases**: Explorer → Developer ⇄ QA → Reviewer → Finalize
-- **Phase execution**: Each phase runs as a separate `query()` call with its own config
-- **Error handling**: Already recognizes `error_max_budget_usd` error subtype (agent-worker.ts:225)
-- **Naming convention**: `roleConfig.maxTurns` → should become `roleConfig.maxBudgetUsd`
+### Current Permission Model
+- **Blanket bypass**: All SDK queries use `bypassPermissions` mode
+- **No discrimination**: All tools, all phases, all contexts use same approach
+- **Intentional**: This is a deliberate trade-off to allow agents full autonomy
 
-### SDK Integration
-- The Anthropic Claude Agent SDK supports `maxBudgetUsd?: number` in query options (confirmed in sdk.d.ts)
-- Budget limits are enforced by the SDK during query execution
-- Error subtype `error_max_budget_usd` is already handled by the error detection logic
+### Proposed DCG Integration Pattern
+- **Role-based permissions**: Different permission modes per agent role:
+  - **Explorer**: `default` or `dontAsk` (read-only operations only)
+  - **Developer**: `default` or `dontAsk` with approval for destructive ops
+  - **QA**: `acceptEdits` (mainly reviewing and testing)
+  - **Reviewer**: `dontAsk` (read-only code review)
 
-### Role Config Structure
+- **Destructive operation handling**:
+  - Use permission mode that respects `destructive: true` annotations on MCP tools
+  - Either prompt user (requires interactive session) or deny by default
+  - Plan step queries (one-off planning) may have different rules
+
+### SDK Query Options Structure
 ```typescript
-export interface RoleConfig {
-  role: AgentRole;
+options: {
+  cwd: string;
   model: ModelSelection;
-  maxTurns: number;              // ← Change to maxBudgetUsd: number
-  reportFile: string;
+  permissionMode: PermissionMode;  // Currently always "bypassPermissions"
+  allowDangerouslySkipPermissions?: boolean;  // Only used with bypassPermissions
+  env: Record<string, string>;
+  persistSession: boolean;
+  maxBudgetUsd?: number;
 }
 ```
 
 ## Dependencies
 
-### What Uses maxTurns
+### What Uses Permission Settings
 1. **agent-worker.ts**:
-   - Imports `ROLE_CONFIGS` from roles.ts
-   - Calls `roleConfig.maxTurns` in `runPhase()` function
-   - Passes value to SDK `query()` options
+   - Imports `query` from SDK
+   - Passes options with `permissionMode` to query calls
+   - No current exports of permission configuration
 
 2. **dispatcher.ts**:
-   - Hard-coded `maxTurns: 50` in `dispatchPlanStep()`
-   - No import from roles.ts (independent configuration)
+   - Spawns agent-worker process
+   - Also calls `query()` for plan steps with same permissions
+   - Should align with agent-worker permissions
 
 3. **roles.ts**:
-   - Defines the canonical values for all phases
-   - No external dependencies on the property name
+   - Defines role configurations but not permission policies
+   - Could be extended to include `permissionMode` per role
 
-### SDK API Contract
-- The SDK's `query()` function accepts `maxBudgetUsd?: number` parameter
-- When a query exceeds budget, SDK returns error with `subtype: "error_max_budget_usd"`
-- No backwards compatibility issues - this is a parameter replacement
+### SDK Dependencies
+- `@anthropic-ai/claude-agent-sdk` version supports:
+  - Tool annotations (destructive, readOnly, openWorld)
+  - Multiple permission modes
+  - Error handling for permission denials
 
 ## Existing Tests
 
-### Test Files
-1. **src/orchestrator/__tests__/roles.test.ts**
-   - Tests ROLE_CONFIGS structure (all roles defined, models correct)
-   - Tests prompt templates (context injection, read-only instructions)
-   - Tests verdict/issue parsing from reports
-   - **Status**: Tests focus on config existence, not specific maxTurns values
-   - **Impact**: Tests will likely pass after renaming property (no assertions on maxTurns specifically)
+### 1. **src/orchestrator/__tests__/agent-worker.test.ts**
+- Tests config file handling
+- Tests log directory creation
+- No permission-related assertions
+- Uses invalid API key to prevent actual SDK calls
 
-2. **src/orchestrator/__tests__/agent-worker.test.ts**
-   - Tests worker process initialization and logging
-   - Tests config file handling and deletion
-   - **Status**: No assertions on maxTurns values
-   - **Impact**: Will need to verify logging format still works with maxBudgetUsd
+### 2. **src/orchestrator/__tests__/agent-worker-team.test.ts**
+- Tests pipeline phase orchestration
+- Tests dev→qa retry logic
+- Tests finalization and git operations
+- **Gap**: No tests for permission enforcement
 
-### Test Coverage of Limits
-- No tests directly assert maxTurns values
-- No tests verify budget enforcement
-- New tests may be beneficial to ensure budget limits work correctly
+### 3. **src/orchestrator/__tests__/roles.test.ts**
+- Tests role configuration structure
+- Tests prompt templates
+- **Gap**: No permission policy tests
 
 ## Recommended Approach
 
-### Phase 1: Update Role Configurations
-1. Update `RoleConfig` interface in roles.ts:
-   - Rename `maxTurns: number` → `maxBudgetUsd: number`
+### Phase 1: Design Permission Policy
+1. **Define per-role permission modes**:
+   - Create mapping from role → permission mode
+   - Consider whether each role should guard destructive operations
+   - Document the rationale for each choice
 
-2. Update `ROLE_CONFIGS` values with reasonable budget estimates:
-   - Need to estimate per-model costs based on token usage
-   - Suggested starting points (requires validation):
-     - **explorer** (haiku, 30 turns): $0.50-$1.00 USD
-     - **developer** (sonnet, 80 turns): $5.00-$10.00 USD
-     - **qa** (sonnet, 30 turns): $2.00-$4.00 USD
-     - **reviewer** (sonnet, 20 turns): $1.50-$3.00 USD
-   - Also update **dispatchPlanStep** budget in dispatcher.ts (currently maxTurns: 50)
+2. **Plan error handling**:
+   - What happens when a destructive operation is denied?
+   - Should pipeline continue or fail?
+   - How to log permission denials for audit trail
 
-### Phase 2: Update Phase Execution in agent-worker.ts
-1. Update `runPhase()` function:
-   - Line 322: Change log format to show `maxBudgetUsd=${roleConfig.maxBudgetUsd}`
-   - Line 337: Pass `maxBudgetUsd: roleConfig.maxBudgetUsd` instead of `maxTurns`
+### Phase 2: Update Role Configuration
+1. In `roles.ts`:
+   - Extend `RoleConfig` interface to include `permissionMode: PermissionMode`
+   - Update `ROLE_CONFIGS` with appropriate permission modes per role
+   - Example:
+     ```typescript
+     export interface RoleConfig {
+       role: AgentRole;
+       model: ModelSelection;
+       maxBudgetUsd: number;
+       permissionMode: PermissionMode;  // ADD THIS
+       reportFile: string;
+     }
+     ```
 
-2. Verify error handling:
-   - Line 225 already checks for `error_max_budget_usd` — keep as-is
+### Phase 3: Update Agent Worker Queries
+1. In `agent-worker.ts`:
+   - **Single-agent mode** (lines 133-156):
+     - Change permission settings based on task context
+     - Option A: Use `default` mode (interactive - not viable for detached process)
+     - Option B: Use `dontAsk` mode (auto-deny destructive ops)
+     - Option C: Keep bypass but add logging/audit trail
 
-### Phase 3: Update Dispatcher Planning
-1. In dispatcher.ts `dispatchPlanStep()`:
-   - Replace `maxTurns: 50` with appropriate `maxBudgetUsd` value (suggest $3.00-$5.00)
+   - **Pipeline phases** (lines 330-341):
+     - Replace hardcoded `permissionMode: "bypassPermissions"` with `roleConfig.permissionMode`
+     - Remove `allowDangerouslySkipPermissions: true` when not needed
 
-### Phase 4: Update Tests & Documentation
-1. roles.test.ts:
-   - Update any hardcoded expectations if tests fail
-   - Consider adding assertions for budget values being positive numbers
+2. Error handling enhancements:
+   - Add specific handlers for permission denial errors
+   - Log when destructive operations are denied
+   - Consider retry logic or phase failure handling
 
-2. agent-worker.test.ts:
-   - Verify logging format with new maxBudgetUsd parameter
-   - Check that log output still contains relevant budget information
+### Phase 4: Update Dispatcher Plan Steps
+1. In `dispatcher.ts`:
+   - Plan step queries should use controlled permission mode
+   - Consider whether plan steps need same safeguards as pipeline phases
+
+### Phase 5: Add Tests
+1. In `__tests__/roles.test.ts`:
+   - Verify each role has appropriate permission mode
+   - Test that explorer has most restrictive, developer has appropriate level
+
+2. In `__tests__/agent-worker.test.ts`:
+   - Test that permission mode is correctly passed to SDK
+   - Test behavior when destructive operation is denied
+
+3. Consider adding integration test for permission enforcement (if feasible with SDK mock)
 
 ## Potential Pitfalls & Edge Cases
 
-1. **Budget Estimation Accuracy**
-   - Turn counts are discrete (explorer: 30) but budgets must be estimated
-   - Per-model costs vary (Haiku cheaper than Sonnet than Opus)
-   - May need to adjust budgets based on real usage data
+1. **Interactive vs Non-Interactive**:
+   - Worker is detached process with no user interaction
+   - Permission mode `default` will prompt user but no one to respond → hang
+   - Solution: Use `dontAsk` or `acceptEdits`, not `default`
 
-2. **Error Handling Clarity**
-   - Error message when budget exceeded may be different from turn limits
-   - Current code checks `error_max_budget_usd` — verify message consistency
+2. **Permission Denial vs Feature Limitation**:
+   - When a destructive operation is denied, how should pipeline respond?
+   - Is it a failure condition or expected behavior?
+   - Error messages must clearly indicate permission denial vs actual failure
 
-3. **Logging Clarity**
-   - Phase startup logs currently show `maxTurns=30`
-   - Should show `maxBudgetUsd=$X.XX` for clarity
+3. **MCP Tool Annotations**:
+   - Not all destructive operations may have proper annotations
+   - Some tools might not be from MCP sources (built-in SDK tools)
+   - Built-in tools like `Write`, `Edit`, `Bash` may not have destructive annotations
 
-4. **Backwards Compatibility**
-   - Existing stored run data uses turns in progress tracking (agent-worker.ts line 196)
-   - Budget limits don't track in progress.turns — separate concerns
-   - No data migration needed (turns are tracked separately from limits)
+4. **Phase-Specific Permissions**:
+   - Explorer should be very restrictive (read-only)
+   - Developer needs write access
+   - Current design may need fine-grained tool-level permissions, not just mode
 
-5. **Dispersion Across Files**
-   - dispatcher.ts has a hard-coded maxTurns value (50) separate from roles.ts
-   - Consider whether plan steps should use same budget as phases or different
+5. **Backwards Compatibility**:
+   - Currently agents have full autonomy
+   - Switching to guarded mode may cause legitimate operations to be blocked
+   - May need transition period with logging of what would be blocked
+
+6. **Plan Steps vs Pipeline Phases**:
+   - Plan steps for decomposition/analysis have different safety requirements than dev phases
+   - May need different permission policies
 
 ## Next Steps for Developer
 
-1. Research typical costs per phase from production data (if available)
-2. Update roles.ts with maxBudgetUsd values (start conservative)
-3. Update agent-worker.ts runPhase() logging and query options
-4. Update dispatcher.ts dispatchPlanStep() budget
-5. Run tests to verify no regressions
-6. Monitor first few runs with new budgets to validate appropriateness
+1. **Decision**: Choose which permission mode aligns with project safety goals:
+   - `bypassPermissions`: Current (unsafe but permissive)
+   - `dontAsk`: Deny destructive by default (safest but restrictive)
+   - `acceptEdits`: Auto-accept file edits but deny other destructive ops (balanced)
+
+2. **Implementation Priority**:
+   - Start with pipeline phases (most impact)
+   - Then handle plan steps
+   - Finally, add tests for permission enforcement
+
+3. **Validation**:
+   - Test with actual destructive operations (force delete, shell commands)
+   - Verify denied operations don't break pipeline
+   - Check error messages are clear
+
+4. **Documentation**:
+   - Update CLAUDE.md to explain DCG integration
+   - Document which roles have which permissions
+   - Explain how to handle permission denials

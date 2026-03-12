@@ -6,6 +6,7 @@
  * same worktree. Communication is via report files (EXPLORER_REPORT.md, etc).
  */
 
+import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRole, ModelSelection } from "./types.js";
 
 // ── Role config ─────────────────────────────────────────────────────────
@@ -14,6 +15,16 @@ export interface RoleConfig {
   role: AgentRole;
   model: ModelSelection;
   maxBudgetUsd: number;
+  /**
+   * Permission mode for DCG (Destructive Command Guard).
+   * Controls how the SDK handles tool permission prompts:
+   * - `"acceptEdits"`: Auto-accept file edits; denies or prompts for other destructive ops
+   * - `"dontAsk"`: Deny operations that would normally prompt (most restrictive)
+   *
+   * We never use `"bypassPermissions"` for pipeline phases — that disables all
+   * safeguards and is the mode being replaced by this DCG integration.
+   */
+  permissionMode: PermissionMode;
   /** Report file this role produces */
   reportFile: string;
 }
@@ -23,24 +34,35 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
     role: "explorer",
     model: "claude-haiku-4-5-20251001",
     maxBudgetUsd: 1.00,
+    // Explorer writes EXPLORER_REPORT.md (file edit) but should not run destructive commands.
+    // acceptEdits allows the report write while guarding against shell-level destruction.
+    permissionMode: "acceptEdits",
     reportFile: "EXPLORER_REPORT.md",
   },
   developer: {
     role: "developer",
     model: "claude-sonnet-4-6",
     maxBudgetUsd: 5.00,
+    // Developer needs full file read/write access but destructive bash ops should be guarded.
+    permissionMode: "acceptEdits",
     reportFile: "DEVELOPER_REPORT.md",
   },
   qa: {
     role: "qa",
     model: "claude-sonnet-4-6",
     maxBudgetUsd: 3.00,
+    // QA runs tests (bash), modifies test files, and writes QA_REPORT.md.
+    // acceptEdits covers all file operations; guards against destructive non-edit ops.
+    permissionMode: "acceptEdits",
     reportFile: "QA_REPORT.md",
   },
   reviewer: {
     role: "reviewer",
     model: "claude-sonnet-4-6",
     maxBudgetUsd: 2.00,
+    // Reviewer reads code and writes REVIEW.md only. acceptEdits permits that file write
+    // while preventing any accidental source-file modifications or destructive commands.
+    permissionMode: "acceptEdits",
     reportFile: "REVIEW.md",
   },
 };

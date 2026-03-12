@@ -356,13 +356,15 @@ export class Dispatcher {
     try {
       let resultMsg: SDKResultSuccess | SDKResultError | undefined;
 
+      // DCG: use acceptEdits instead of bypassPermissions for plan-step queries.
+      // Plan steps (PRD/TRD generation) need file write access but should not
+      // bypass all safety checks for destructive operations.
       for await (const message of query({
         prompt,
         options: {
           cwd: this.projectPath,
           model: "claude-sonnet-4-6",
-          permissionMode: "bypassPermissions",
-          allowDangerouslySkipPermissions: true,
+          permissionMode: "acceptEdits",
           maxBudgetUsd: PLAN_STEP_MAX_BUDGET_USD,
           env,
           persistSession: false,
