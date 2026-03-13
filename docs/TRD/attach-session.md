@@ -339,32 +339,32 @@ All tmux errors use structured codes `TMUX-001` through `TMUX-012`. Error codes 
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| AT-T038 | Write integration test for full dispatch-attach-detach cycle using real tmux sessions. Wrap with `describe.skipIf(!tmuxAvailable)` for CI environments without tmux. Test: (1) dispatch agent -> real tmux session created -> run record has tmux_session, (2) attach command uses tmux attach-session, (3) detach (simulated), (4) reattach works, (5) agent completes -> session persists -> attach still works for review. Clean up all test sessions in `afterEach` | 4h | AT-T017, AT-T026 | `src/orchestrator/__tests__/tmux-integration.test.ts` | [ ] |
-| AT-T039 | Write integration test for fallback behavior (no tmux dependency — runs on all CI). Test: (1) dispatch without tmux -> detached process (existing behavior preserved), (2) attach falls back to claude --resume, (3) follow falls back to tail. Verify no regressions in non-tmux path | 3h | AT-T038 | `src/orchestrator/__tests__/tmux-integration.test.ts` | [ ] |
+| AT-T038 | Write integration test for full dispatch-attach-detach cycle using real tmux sessions. Wrap with `describe.skipIf(!tmuxAvailable)` for CI environments without tmux. Test: (1) dispatch agent -> real tmux session created -> run record has tmux_session, (2) attach command uses tmux attach-session, (3) detach (simulated), (4) reattach works, (5) agent completes -> session persists -> attach still works for review. Clean up all test sessions in `afterEach` | 4h | AT-T017, AT-T026 | `src/orchestrator/__tests__/tmux-integration.test.ts` | [x] |
+| AT-T039 | Write integration test for fallback behavior (no tmux dependency — runs on all CI). Test: (1) dispatch without tmux -> detached process (existing behavior preserved), (2) attach falls back to claude --resume, (3) follow falls back to tail. Verify no regressions in non-tmux path | 3h | AT-T038 | `src/orchestrator/__tests__/tmux-integration.test.ts` | [x] |
 
 #### Story 6.2: Follow Mode Edge Cases
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| AT-T040 | Write tests for follow mode edge cases. Test: (1) follow mode with rapidly updating output (ensure no duplicate lines), (2) follow mode when session ends mid-poll (graceful exit), (3) multiple concurrent follow mode sessions to same agent (independent operation), (4) follow mode with empty initial output (no crash), (5) follow mode interval respects FOREMAN_TMUX_FOLLOW_INTERVAL_MS env var | 3h | AT-T020, AT-T021 | `src/cli/__tests__/attach-follow.test.ts` | [ ] |
+| AT-T040 | Write tests for follow mode edge cases. Test: (1) follow mode with rapidly updating output (ensure no duplicate lines), (2) follow mode when session ends mid-poll (graceful exit), (3) multiple concurrent follow mode sessions to same agent (independent operation), (4) follow mode with empty initial output (no crash), (5) follow mode interval respects FOREMAN_TMUX_FOLLOW_INTERVAL_MS env var | 3h | AT-T020, AT-T021 | `src/cli/__tests__/attach-follow.test.ts` | [x] |
 
 #### Story 6.3: Monitor and Health Edge Cases
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| AT-T041 | Write tests for monitor tmux edge cases. Test: (1) monitor with mix of tmux and non-tmux runs (correct handling of each), (2) tmux command timeout during liveness check (graceful fallback to timeout heuristic), (3) concurrent monitor calls (no race conditions on store updates) | 3h | AT-T031, AT-T032 | `src/orchestrator/__tests__/monitor-tmux-edge.test.ts` | [ ] |
+| AT-T041 | Write tests for monitor tmux edge cases. Test: (1) monitor with mix of tmux and non-tmux runs (correct handling of each), (2) tmux command timeout during liveness check (graceful fallback to timeout heuristic), (3) concurrent monitor calls (no race conditions on store updates) | 3h | AT-T031, AT-T032 | `src/orchestrator/__tests__/monitor-tmux-edge.test.ts` | [x] |
 
 #### Story 6.4: Error Path Tests
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| AT-T042 | Write tests for all TMUX error codes. Verify each error code (TMUX-001 through TMUX-012) is triggered by the correct scenario and produces the correct user-facing message. Test graceful degradation for all error paths (no unhandled exceptions) | 4h | AT-T009, AT-T017 | `src/lib/__tests__/tmux-errors.test.ts` | [ ] |
+| AT-T042 | Write tests for all TMUX error codes. Verify each error code (TMUX-001 through TMUX-012) is triggered by the correct scenario and produces the correct user-facing message. Test graceful degradation for all error paths (no unhandled exceptions) | 4h | AT-T009, AT-T017 | `src/lib/__tests__/tmux-errors.test.ts` | [x] |
 
 #### Story 6.5: Session Name Edge Cases
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| AT-T043 | Write tests for session name edge cases. Test: (1) seed IDs with unicode characters, (2) very long seed IDs (tmux has a name length limit), (3) seed IDs that are entirely special characters, (4) seed IDs matching existing tmux session naming patterns, (5) case sensitivity | 2h | AT-T002 | `src/lib/__tests__/tmux-names.test.ts` | [ ] |
+| AT-T043 | Write tests for session name edge cases. Test: (1) seed IDs with unicode characters, (2) very long seed IDs (tmux has a name length limit), (3) seed IDs that are entirely special characters, (4) seed IDs matching existing tmux session naming patterns, (5) case sensitivity | 2h | AT-T002 | `src/lib/__tests__/tmux-names.test.ts` | [x] |
 
 ---
 
