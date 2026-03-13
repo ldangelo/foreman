@@ -136,6 +136,8 @@ export interface MergeReport {
   merged: MergedRun[];
   conflicts: ConflictRun[];
   testFailures: FailedRun[];
+  /** PRs created for branches that had code conflicts */
+  prsCreated: CreatedPr[];
 }
 
 export interface CreatedPr {

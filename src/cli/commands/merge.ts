@@ -151,6 +151,16 @@ export const mergeCommand = new Command("merge")
         console.log();
       }
 
+      // PRs created for conflicts
+      if (report.prsCreated.length > 0) {
+        console.log(chalk.blue.bold(`PRs created for ${report.prsCreated.length} conflicting task(s):\n`));
+        for (const pr of report.prsCreated) {
+          console.log(`  ${chalk.cyan(pr.seedId)} ${chalk.dim(pr.branchName)}`);
+          console.log(`    ${chalk.underline(pr.prUrl)}`);
+        }
+        console.log();
+      }
+
       // Test failures
       if (report.testFailures.length > 0) {
         console.log(chalk.red.bold(`Test failures in ${report.testFailures.length} task(s):\n`));
@@ -161,7 +171,7 @@ export const mergeCommand = new Command("merge")
         console.log();
       }
 
-      if (report.merged.length === 0 && report.conflicts.length === 0 && report.testFailures.length === 0) {
+      if (report.merged.length === 0 && report.conflicts.length === 0 && report.testFailures.length === 0 && report.prsCreated.length === 0) {
         if (opts.seed) {
           console.log(chalk.yellow(`No completed run found for seed ${opts.seed}.`));
           console.log(chalk.dim("Use 'foreman merge --list' to see seeds ready to merge."));

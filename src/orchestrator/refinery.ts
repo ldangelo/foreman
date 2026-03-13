@@ -183,6 +183,69 @@ export class Refinery {
   }
 
   /**
+   * Push a conflicting branch and create a PR for manual resolution.
+   * Returns the CreatedPr info, or null if PR creation fails.
+   */
+  private async createPrForConflict(
+    run: import("../lib/store.js").Run,
+    branchName: string,
+    baseBranch: string,
+    conflictNote: string,
+  ): Promise<import("./types.js").CreatedPr | null> {
+    try {
+      // Push branch to origin (force-push since rebase may have rewritten history)
+      await git(["push", "-u", "-f", "origin", branchName], this.projectPath);
+
+      // Get seed info for PR title/body
+      let seedTitle = run.seed_id;
+      let seedDescription = "";
+      try {
+        const seedInfo = await this.seeds.show(run.seed_id);
+        if (seedInfo) {
+          seedTitle = seedInfo.title ?? run.seed_id;
+          seedDescription = seedInfo.description ?? "";
+        }
+      } catch { /* use defaults */ }
+
+      const prTitle = `${seedTitle} (${run.seed_id})`;
+      const body = [
+        "## Summary",
+        seedDescription || `Agent work for ${run.seed_id}`,
+        "",
+        "## Conflicts",
+        `This branch has conflicts with \`${baseBranch}\` that need manual resolution:`,
+        conflictNote,
+        "",
+        `Foreman run: \`${run.id}\``,
+      ].join("\n");
+
+      const prUrl = await gh(
+        ["pr", "create", "--base", baseBranch, "--head", branchName, "--title", prTitle, "--body", body],
+        this.projectPath,
+      );
+
+      this.store.updateRun(run.id, { status: "pr-created" });
+      this.store.logEvent(
+        run.project_id,
+        "pr-created",
+        { seedId: run.seed_id, branchName, baseBranch, prUrl, conflictNote },
+        run.id,
+      );
+      return { runId: run.id, seedId: run.seed_id, branchName, prUrl };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.store.updateRun(run.id, { status: "conflict" });
+      this.store.logEvent(
+        run.project_id,
+        "fail",
+        { seedId: run.seed_id, branchName, error: `PR creation failed: ${message}` },
+        run.id,
+      );
+      return null;
+    }
+  }
+
+  /**
    * Get all completed runs that are ready to merge, optionally filtered to a single seed.
    */
   getCompletedRuns(projectId?: string, seedId?: string): import("../lib/store.js").Run[] {
@@ -285,6 +348,7 @@ export class Refinery {
     const merged: MergedRun[] = [];
     const conflicts: ConflictRun[] = [];
     const testFailures: FailedRun[] = [];
+    const prsCreated: import("./types.js").CreatedPr[] = [];
 
     for (const run of completedRuns) {
       const branchName = `foreman/${run.seed_id}`;
@@ -308,19 +372,13 @@ export class Refinery {
           try { await git(["checkout", targetBranch], this.projectPath); } catch { /* best effort */ }
 
           if (!rebaseOk) {
-            this.store.updateRun(run.id, { status: "conflict" });
-            this.store.logEvent(
-              run.project_id,
-              "conflict",
-              { seedId: run.seed_id, branchName, error: "Rebase failed with code conflicts" },
-              run.id,
-            );
-            conflicts.push({
-              runId: run.id,
-              seedId: run.seed_id,
-              branchName,
-              conflictFiles: [],
-            });
+            // Rebase failed — create a PR for manual conflict resolution
+            const pr = await this.createPrForConflict(run, branchName, targetBranch, "Rebase conflicts");
+            if (pr) {
+              prsCreated.push(pr);
+            } else {
+              conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
+            }
             continue;
           }
         }
@@ -336,26 +394,20 @@ export class Refinery {
           const codeConflicts = allConflicts.filter((f) => !this.isReportFile(f));
 
           if (codeConflicts.length > 0) {
-            // Real code conflicts — abort and report
+            // Real code conflicts — abort merge and create PR instead
             try {
               await git(["merge", "--abort"], this.projectPath);
             } catch {
               // merge --abort may fail if already clean
             }
 
-            this.store.updateRun(run.id, { status: "conflict" });
-            this.store.logEvent(
-              run.project_id,
-              "conflict",
-              { seedId: run.seed_id, branchName, conflictFiles: codeConflicts },
-              run.id,
-            );
-            conflicts.push({
-              runId: run.id,
-              seedId: run.seed_id,
-              branchName,
-              conflictFiles: codeConflicts,
-            });
+            const pr = await this.createPrForConflict(run, branchName, targetBranch,
+              `Conflicts in: ${codeConflicts.join(", ")}`);
+            if (pr) {
+              prsCreated.push(pr);
+            } else {
+              conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: codeConflicts });
+            }
             continue;
           }
 
@@ -436,7 +488,7 @@ export class Refinery {
       }
     }
 
-    return { merged, conflicts, testFailures };
+    return { merged, conflicts, testFailures, prsCreated };
   }
 
   /**
