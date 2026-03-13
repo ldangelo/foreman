@@ -1,14 +1,85 @@
 import { Command } from "commander";
+import { spawnSync } from "node:child_process";
 import chalk from "chalk";
 
 import { SeedsClient } from "../../lib/seeds.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
-import type { ModelSelection } from "../../orchestrator/types.js";
+import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk, type WatchResult } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
+
+// ── Auto-Attach Logic (AT-T028/AT-T029) ──────────────────────────────
+
+/** Options for the autoAttach function */
+export interface AutoAttachOpts {
+  dispatched: DispatchedTask[];
+  store: ForemanStore;
+  isTTY: boolean;
+  forceAttach: boolean;
+  noAttach: boolean;
+  seedFilter: string | undefined;
+  /** Override retry delay for testing (default: 500ms) */
+  retryDelayMs?: number;
+}
+
+/**
+ * Auto-attach to a tmux session after dispatching a single agent.
+ *
+ * Conditions for auto-attach (unless forceAttach overrides):
+ * 1. stdout is a TTY (or forceAttach is true)
+ * 2. only one agent was dispatched (single --seed mode)
+ * 3. --no-attach was not set
+ *
+ * If forceAttach is true with multiple agents, attaches to the first agent.
+ *
+ * Returns true if an attach was performed, false otherwise.
+ */
+export async function autoAttach(opts: AutoAttachOpts): Promise<boolean> {
+  const { dispatched, store, isTTY, forceAttach, noAttach, seedFilter, retryDelayMs = 500 } = opts;
+
+  // --no-attach always wins
+  if (noAttach) return false;
+
+  // Nothing dispatched
+  if (dispatched.length === 0) return false;
+
+  // Determine if we should attach
+  const shouldAttach = forceAttach || (isTTY && dispatched.length === 1 && seedFilter !== undefined);
+  if (!shouldAttach) return false;
+
+  // Pick the target: first dispatched agent
+  const target = dispatched[0];
+
+  // Look up the run's tmux_session, with retries for race conditions (AT-T029)
+  const maxRetries = 3;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const run = store.getRun(target.runId);
+    if (run?.tmux_session) {
+      console.log(`Auto-attaching to ${run.tmux_session}... (Ctrl+B, D to detach)`);
+      spawnSync("tmux", ["attach-session", "-t", run.tmux_session], {
+        stdio: "inherit",
+      });
+      return true;
+    }
+
+    // Only retry if forceAttach is set (race condition handling)
+    // For normal auto-attach, no tmux_session means tmux is unavailable -- skip silently
+    if (!forceAttach) return false;
+
+    // Wait before retrying
+    if (attempt < maxRetries - 1) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  }
+
+  // All retries exhausted — skip silently
+  return false;
+}
+
+// ── Run Command ──────────────────────────────────────────────────────
 
 export const runCommand = new Command("run")
   .description("Dispatch ready tasks to agents")
@@ -23,6 +94,8 @@ export const runCommand = new Command("run")
   .option("--skip-explore", "Skip the explorer phase in the pipeline")
   .option("--skip-review", "Skip the reviewer phase in the pipeline")
   .option("--seed <id>", "Dispatch only this specific seed (must be ready)")
+  .option("--attach", "Force auto-attach to tmux session after dispatch")
+  .option("--no-attach", "Disable auto-attach to tmux session after dispatch")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -35,6 +108,8 @@ export const runCommand = new Command("run")
     const skipExplore = opts.skipExplore as boolean | undefined;
     const skipReview = opts.skipReview as boolean | undefined;
     const seedFilter = opts.seed as string | undefined;
+    const forceAttach = opts.attach === true;
+    const noAttach = opts.attach === false;
 
     // Start notification server so workers can POST status updates immediately
     // instead of waiting for the next poll cycle. Stopped in the finally block.
@@ -165,6 +240,16 @@ export const runCommand = new Command("run")
           break;
         }
 
+        // AT-T028: Auto-attach to tmux session after dispatch
+        await autoAttach({
+          dispatched: result.dispatched,
+          store,
+          isTTY: !!process.stdout.isTTY,
+          forceAttach,
+          noAttach,
+          seedFilter,
+        });
+
         // Watch mode: wait for this batch to finish, then loop to check for more
         if (watch) {
           const runIds = result.dispatched.map((t) => t.runId);
@@ -190,4 +275,3 @@ export const runCommand = new Command("run")
       await notifyServer.stop().catch(() => { /* ignore cleanup errors */ });
     }
   });
-

@@ -6,6 +6,7 @@ import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
+import { TmuxClient } from "../../lib/tmux.js";
 
 // ── State mismatch detection ─────────────────────────────────────────────
 
@@ -268,7 +269,16 @@ export const resetCommand = new Command("reset")
         }
       }
 
-      // 7. Detect and fix seed/run state mismatches for terminal runs
+      // 7. Kill all foreman tmux sessions
+      if (!dryRun) {
+        const tmux = new TmuxClient();
+        const tmuxResult = await cleanupTmuxSessions(tmux);
+        if (!tmuxResult.skipped && tmuxResult.killed > 0) {
+          console.log(`\n  ${chalk.yellow("Killed")} ${tmuxResult.killed} tmux session(s)`);
+        }
+      }
+
+      // 8. Detect and fix seed/run state mismatches for terminal runs
       console.log(chalk.bold("\nChecking for seed/run state mismatches..."));
       const mismatchResult = await detectAndFixMismatches(store, seeds, project.id, seedIds, { dryRun });
 
@@ -319,6 +329,43 @@ export const resetCommand = new Command("reset")
       process.exit(1);
     }
   });
+
+// ── Tmux cleanup ─────────────────────────────────────────────────────────
+
+export interface TmuxCleanupResult {
+  killed: number;
+  errors: number;
+  skipped: boolean;
+}
+
+/**
+ * Kill all foreman-* tmux sessions.
+ * Skips silently if tmux is unavailable.
+ * Individual kill failures do not abort the loop.
+ */
+export async function cleanupTmuxSessions(
+  tmux: Pick<TmuxClient, "isAvailable" | "listForemanSessions" | "killSession">,
+): Promise<TmuxCleanupResult> {
+  const available = await tmux.isAvailable();
+  if (!available) {
+    return { killed: 0, errors: 0, skipped: true };
+  }
+
+  const sessions = await tmux.listForemanSessions();
+  let killed = 0;
+  let errors = 0;
+
+  for (const session of sessions) {
+    const success = await tmux.killSession(session.sessionName);
+    if (success) {
+      killed++;
+    } else {
+      errors++;
+    }
+  }
+
+  return { killed, errors, skipped: false };
+}
 
 function extractPid(sessionKey: string | null): number | null {
   if (!sessionKey) return null;
