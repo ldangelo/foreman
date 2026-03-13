@@ -31,16 +31,27 @@ export interface TmuxSessionInfo {
 
 // ── Standalone Functions ─────────────────────────────────────────────────
 
+/** Maximum total length of a tmux session name (practical tmux limit). */
+const MAX_SESSION_NAME_LENGTH = 256;
+
 /**
  * Generate a tmux session name from a seed ID.
  * Format: `foreman-<seedId>` with invalid characters replaced by hyphens.
+ *
+ * - Leading/trailing whitespace is stripped from the input before sanitization.
+ * - Colons, periods, and whitespace characters within the seed are replaced with `-`.
+ * - Falls back to `foreman-unknown` if the seed is empty **or** consists entirely
+ *   of characters that sanitize to hyphens (e.g. `"-"` → `"foreman-unknown"`).
+ * - The resulting name is truncated to {@link MAX_SESSION_NAME_LENGTH} characters
+ *   to stay within tmux's practical session-name limit.
  */
 export function tmuxSessionName(seedId: string): string {
-  const sanitized = seedId.replace(/[:\.\s]/g, "-").trim();
+  const sanitized = seedId.trim().replace(/[:.\s]/g, "-");
   if (!sanitized || sanitized.replace(/-/g, "").length === 0) {
     return "foreman-unknown";
   }
-  return `foreman-${sanitized}`;
+  const name = `foreman-${sanitized}`;
+  return name.slice(0, MAX_SESSION_NAME_LENGTH);
 }
 
 // ── TmuxClient Class ─────────────────────────────────────────────────────

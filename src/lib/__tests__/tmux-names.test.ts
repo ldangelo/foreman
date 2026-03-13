@@ -97,24 +97,25 @@ describe("tmuxSessionName edge cases", () => {
     it("handles seed ID at exactly 256 characters", () => {
       const longId = "a".repeat(256);
       const result = tmuxSessionName(longId);
-      expect(result).toBe(`foreman-${longId}`);
-      // Total length: 8 (foreman-) + 256 = 264
-      expect(result.length).toBe(264);
+      // "foreman-" (8) + 256 = 264 chars, truncated to 256
+      expect(result.length).toBe(256);
+      expect(result.startsWith("foreman-")).toBe(true);
     });
 
     it("handles seed ID exceeding 256 characters", () => {
       const veryLongId = "x".repeat(500);
       const result = tmuxSessionName(veryLongId);
-      // The function does not truncate — it returns the full name
-      expect(result).toBe(`foreman-${veryLongId}`);
-      expect(result.length).toBe(508);
+      // Truncated to MAX_SESSION_NAME_LENGTH (256)
+      expect(result.length).toBe(256);
+      expect(result.startsWith("foreman-")).toBe(true);
     });
 
     it("handles seed ID of 1000 characters", () => {
       const hugeId = "seed-" + "z".repeat(995);
       const result = tmuxSessionName(hugeId);
       expect(result.startsWith("foreman-seed-")).toBe(true);
-      expect(result.length).toBe(1008); // 8 + 1000
+      // Truncated to 256 chars
+      expect(result.length).toBe(256);
     });
 
     it("handles long seed ID with many sanitizable characters", () => {

@@ -68,6 +68,24 @@ describe("tmuxSessionName", () => {
   it("returns foreman-unknown for whitespace-only string", () => {
     expect(tmuxSessionName("   ")).toBe("foreman-unknown");
   });
+
+  it("strips leading and trailing whitespace from input before sanitizing", () => {
+    expect(tmuxSessionName("  abc  ")).toBe("foreman-abc");
+  });
+
+  it("returns foreman-unknown for all-hyphens input", () => {
+    // Inputs that consist entirely of characters that become hyphens fall back
+    // to foreman-unknown rather than producing foreman--- etc.
+    expect(tmuxSessionName("-")).toBe("foreman-unknown");
+    expect(tmuxSessionName("---")).toBe("foreman-unknown");
+  });
+
+  it("truncates session names longer than 256 characters", () => {
+    const longSeed = "a".repeat(300);
+    const result = tmuxSessionName(longSeed);
+    expect(result.length).toBe(256);
+    expect(result.startsWith("foreman-")).toBe(true);
+  });
 });
 
 describe("TmuxClient", () => {
