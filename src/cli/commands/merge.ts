@@ -1,10 +1,28 @@
 import { Command } from "commander";
 import chalk from "chalk";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import { SeedsClient } from "../../lib/seeds.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Refinery } from "../../orchestrator/refinery.js";
+import { MergeQueue } from "../../orchestrator/merge-queue.js";
+import type { MergeQueueStatus } from "../../orchestrator/merge-queue.js";
+import type { MergedRun, ConflictRun, FailedRun, CreatedPr } from "../../orchestrator/types.js";
+
+const execFileAsync = promisify(execFile);
+
+/** Status label with color for queue display. */
+function statusLabel(status: MergeQueueStatus): string {
+  switch (status) {
+    case "pending":  return chalk.yellow("pending");
+    case "merging":  return chalk.blue("merging");
+    case "merged":   return chalk.green("merged");
+    case "conflict": return chalk.red("conflict");
+    case "failed":   return chalk.red("failed");
+  }
+}
 
 export const mergeCommand = new Command("merge")
   .description("Merge completed agent work into target branch")
@@ -21,6 +39,7 @@ export const mergeCommand = new Command("merge")
       const seeds = new SeedsClient(projectPath);
       const store = new ForemanStore();
       const refinery = new Refinery(store, seeds, projectPath);
+      const mq = new MergeQueue(store.getDb());
 
       const project = store.getProjectByPath(projectPath);
       if (!project) {
@@ -28,7 +47,7 @@ export const mergeCommand = new Command("merge")
         process.exit(1);
       }
 
-      // --resolve mode: resolve a conflicting run
+      // --resolve mode: resolve a conflicting run (unchanged)
       if (opts.resolve) {
         if (!opts.strategy) {
           console.error(chalk.red("Error: --strategy <theirs|abort> is required when using --resolve"));
@@ -66,47 +85,53 @@ export const mergeCommand = new Command("merge")
 
         const success = await refinery.resolveConflict(runId, strategy as "theirs" | "abort", {
           targetBranch: opts.targetBranch,
-          runTests: opts.tests, // commander inverts --no-tests to opts.tests = false
+          runTests: opts.tests,
           testCommand: opts.testCommand,
         });
 
         if (success) {
-          console.log(chalk.green.bold(`✓ Conflict resolved — ${run.seed_id} merged successfully.`));
+          console.log(chalk.green.bold(`Conflict resolved -- ${run.seed_id} merged successfully.`));
         } else if (strategy === "abort") {
-          console.log(chalk.yellow(`Merge aborted — ${run.seed_id} marked as failed.`));
+          console.log(chalk.yellow(`Merge aborted -- ${run.seed_id} marked as failed.`));
         } else {
-          console.log(chalk.red(`✗ Failed to resolve conflict for ${run.seed_id} — marked as failed.`));
+          console.log(chalk.red(`Failed to resolve conflict for ${run.seed_id} -- marked as failed.`));
         }
 
         store.close();
         return;
       }
 
-      // --list: show completed runs and exit
+      // --list: show queue entries and exit (MQ-T019)
       if (opts.list) {
-        const completedRuns = await refinery.orderByDependencies(
-          refinery.getCompletedRuns(project.id),
-        );
+        // Reconcile first to ensure queue is up to date
+        const reconcileResult = await mq.reconcile(store.getDb(), projectPath, execFileAsync);
+        if (reconcileResult.enqueued > 0) {
+          console.log(chalk.dim(`  (reconciled ${reconcileResult.enqueued} new entry/entries into queue)\n`));
+        }
 
-        if (completedRuns.length === 0) {
-          console.log(chalk.yellow("No completed seeds ready to merge."));
+        const entries = mq.list();
+
+        if (entries.length === 0) {
+          console.log(chalk.yellow("No seeds in merge queue."));
           store.close();
           return;
         }
 
-        console.log(chalk.bold(`Seeds ready to merge (${completedRuns.length}):\n`));
-        console.log(chalk.dim("  (listed in dependency order — dependencies first)\n"));
+        console.log(chalk.bold(`Merge queue (${entries.length} entries):\n`));
 
-        for (let i = 0; i < completedRuns.length; i++) {
-          const run = completedRuns[i];
-          const branch = `foreman/${run.seed_id}`;
-          const elapsed = run.completed_at
-            ? Math.round((Date.now() - new Date(run.completed_at).getTime()) / 60000)
-            : 0;
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
+          const elapsed = Math.round(
+            (Date.now() - new Date(entry.enqueued_at).getTime()) / 60000,
+          );
+          const filesCount = entry.files_modified.length;
           const num = `${i + 1}`.padStart(2);
           console.log(
-            `  ${chalk.dim(num + ".")} ${chalk.cyan(run.seed_id)} ${chalk.dim(branch)} ${chalk.dim(`(${elapsed}m ago)`)}`,
+            `  ${chalk.dim(num + ".")} ${statusLabel(entry.status)} ${chalk.cyan(entry.seed_id)} ${chalk.dim(entry.branch_name)} ${chalk.dim(`(${elapsed}m ago, ${filesCount} files)`)}`,
           );
+          if (entry.error) {
+            console.log(`      ${chalk.dim(entry.error)}`);
+          }
         }
 
         console.log(chalk.dim("\nMerge all:    foreman merge"));
@@ -116,29 +141,94 @@ export const mergeCommand = new Command("merge")
         return;
       }
 
+      // ── Main merge flow (MQ-T018): queue-based ────────────────────────
+
       console.log(chalk.bold("Running refinery on completed work...\n"));
 
-      const report = await refinery.mergeCompleted({
-        targetBranch: opts.targetBranch,
-        runTests: opts.tests, // commander inverts --no-tests to opts.tests = false
-        testCommand: opts.testCommand,
-        projectId: project.id,
-        seedId: opts.seed,
-      });
+      // Step 1: Reconcile — ensure all completed runs are in the queue
+      const reconcileResult = await mq.reconcile(store.getDb(), projectPath, execFileAsync);
+      if (reconcileResult.enqueued > 0) {
+        console.log(chalk.dim(`  Reconciled ${reconcileResult.enqueued} completed run(s) into merge queue.\n`));
+      }
 
-      // Merged
-      if (report.merged.length > 0) {
-        console.log(chalk.green.bold(`Merged ${report.merged.length} task(s):\n`));
-        for (const m of report.merged) {
+      // Step 2: Process queue via dequeue loop
+      const merged: MergedRun[] = [];
+      const conflicts: ConflictRun[] = [];
+      const testFailures: FailedRun[] = [];
+      const prsCreated: CreatedPr[] = [];
+      const skippedIds: number[] = []; // entries skipped due to --seed filter
+
+      let entry = mq.dequeue();
+      while (entry) {
+        // If --seed filter is active, skip non-matching entries
+        if (opts.seed && entry.seed_id !== opts.seed) {
+          skippedIds.push(entry.id);
+          entry = mq.dequeue();
+          continue;
+        }
+
+        console.log(`Processing: ${chalk.cyan(entry.seed_id)} (${chalk.dim(entry.branch_name)})`);
+
+        try {
+          const report = await refinery.mergeCompleted({
+            targetBranch: opts.targetBranch,
+            runTests: opts.tests,
+            testCommand: opts.testCommand,
+            projectId: project.id,
+            seedId: entry.seed_id,
+          });
+
+          if (report.merged.length > 0) {
+            mq.updateStatus(entry.id, "merged", { completedAt: new Date().toISOString() });
+            merged.push(...report.merged);
+          } else if (report.conflicts.length > 0 || report.prsCreated.length > 0) {
+            mq.updateStatus(entry.id, "conflict", { error: "Code conflicts" });
+            conflicts.push(...report.conflicts);
+            prsCreated.push(...report.prsCreated);
+          } else if (report.testFailures.length > 0) {
+            mq.updateStatus(entry.id, "failed", { error: "Test failures" });
+            testFailures.push(...report.testFailures);
+          } else {
+            // No completed run found for this seed (already merged or no run)
+            mq.updateStatus(entry.id, "failed", { error: "No completed run found" });
+          }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          mq.updateStatus(entry.id, "failed", { error: message });
+          testFailures.push({
+            runId: entry.run_id,
+            seedId: entry.seed_id,
+            branchName: entry.branch_name,
+            error: message,
+          });
+        }
+
+        // If --seed filter, stop after processing the target
+        if (opts.seed) {
+          break;
+        }
+
+        entry = mq.dequeue();
+      }
+
+      // Reset skipped entries back to pending (for --seed filter)
+      for (const id of skippedIds) {
+        mq.updateStatus(id, "pending");
+      }
+
+      // ── Display results ─────────────────────────────────────────────
+
+      if (merged.length > 0) {
+        console.log(chalk.green.bold(`\nMerged ${merged.length} task(s):\n`));
+        for (const m of merged) {
           console.log(`  ${chalk.cyan(m.seedId)} ${m.branchName}`);
         }
         console.log();
       }
 
-      // Conflicts
-      if (report.conflicts.length > 0) {
-        console.log(chalk.yellow.bold(`Conflicts in ${report.conflicts.length} task(s):\n`));
-        for (const c of report.conflicts) {
+      if (conflicts.length > 0) {
+        console.log(chalk.yellow.bold(`Conflicts in ${conflicts.length} task(s):\n`));
+        for (const c of conflicts) {
           console.log(`  ${chalk.cyan(c.seedId)} ${c.branchName}`);
           for (const f of c.conflictFiles) {
             console.log(`    ${chalk.dim(f)}`);
@@ -151,27 +241,25 @@ export const mergeCommand = new Command("merge")
         console.log();
       }
 
-      // PRs created for conflicts
-      if (report.prsCreated.length > 0) {
-        console.log(chalk.blue.bold(`PRs created for ${report.prsCreated.length} conflicting task(s):\n`));
-        for (const pr of report.prsCreated) {
+      if (prsCreated.length > 0) {
+        console.log(chalk.blue.bold(`PRs created for ${prsCreated.length} conflicting task(s):\n`));
+        for (const pr of prsCreated) {
           console.log(`  ${chalk.cyan(pr.seedId)} ${chalk.dim(pr.branchName)}`);
           console.log(`    ${chalk.underline(pr.prUrl)}`);
         }
         console.log();
       }
 
-      // Test failures
-      if (report.testFailures.length > 0) {
-        console.log(chalk.red.bold(`Test failures in ${report.testFailures.length} task(s):\n`));
-        for (const f of report.testFailures) {
+      if (testFailures.length > 0) {
+        console.log(chalk.red.bold(`Test failures in ${testFailures.length} task(s):\n`));
+        for (const f of testFailures) {
           console.log(`  ${chalk.cyan(f.seedId)} ${f.branchName}`);
           console.log(`    ${chalk.dim(f.error.split("\n")[0])}`);
         }
         console.log();
       }
 
-      if (report.merged.length === 0 && report.conflicts.length === 0 && report.testFailures.length === 0 && report.prsCreated.length === 0) {
+      if (merged.length === 0 && conflicts.length === 0 && testFailures.length === 0 && prsCreated.length === 0) {
         if (opts.seed) {
           console.log(chalk.yellow(`No completed run found for seed ${opts.seed}.`));
           console.log(chalk.dim("Use 'foreman merge --list' to see seeds ready to merge."));

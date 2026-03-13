@@ -251,6 +251,11 @@ export class ForemanStore {
     this.db.exec(MESSAGES_SCHEMA);
   }
 
+  /** Expose the underlying database for modules that need direct access (e.g. MergeQueue). */
+  getDb(): Database.Database {
+    return this.db;
+  }
+
   close(): void {
     this.db.close();
   }

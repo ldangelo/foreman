@@ -30,6 +30,7 @@ import {
   extractIssues,
   hasActionableIssues,
 } from "./roles.js";
+import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
@@ -566,15 +567,47 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   }
 
   // Push
+  let pushSucceeded = false;
   try {
     execFileSync("git", ["push", "-u", "origin", `foreman/${seedId}`], opts);
     log(`[FINALIZE] Pushed to origin`);
     report.push(`## Push`, `- Status: SUCCESS`, `- Branch: foreman/${seedId}`, "");
+    pushSucceeded = true;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`[FINALIZE] Push failed: ${msg.slice(0, 200)}`);
     await appendFile(logFile, `[FINALIZE] Push error: ${msg}\n`);
     report.push(`## Push`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
+  }
+
+  // Enqueue to merge queue (fire-and-forget — must not block finalization)
+  if (pushSucceeded) {
+    try {
+      const enqueueStore = new ForemanStore();
+      const enqueueResult = enqueueToMergeQueue({
+        db: enqueueStore.getDb(),
+        seedId,
+        runId: config.runId,
+        worktreePath,
+        getFilesModified: () => {
+          const output = execFileSync("git", ["diff", "--name-only", "main...HEAD"], opts).toString().trim();
+          return output ? output.split("\n") : [];
+        },
+      });
+      enqueueStore.close();
+
+      if (enqueueResult.success) {
+        log(`[FINALIZE] Enqueued to merge queue`);
+        report.push(`## Merge Queue`, `- Status: ENQUEUED`, "");
+      } else {
+        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error}`);
+        report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueResult.error?.slice(0, 300)}`, "");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${msg}`);
+      report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
+    }
   }
 
   // Close seed
