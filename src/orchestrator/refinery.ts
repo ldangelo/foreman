@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ForemanStore } from "../lib/store.js";
@@ -8,19 +8,10 @@ import type { SeedsClient } from "../lib/seeds.js";
 import { mergeWorktree, removeWorktree } from "../lib/git.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
+import { ConflictResolver } from "./conflict-resolver.js";
+import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
 
 const execFileAsync = promisify(execFile);
-
-// Report files that agents produce in the worktree root
-const REPORT_FILES = [
-  "EXPLORER_REPORT.md",
-  "DEVELOPER_REPORT.md",
-  "QA_REPORT.md",
-  "REVIEW.md",
-  "FINALIZE_REPORT.md",
-  "TASK.md",
-  "AGENTS.md",
-];
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -58,21 +49,22 @@ async function runTestCommand(command: string, cwd: string): Promise<{ ok: boole
 // ── Refinery ─────────────────────────────────────────────────────────────
 
 export class Refinery {
+  private conflictResolver: ConflictResolver;
+
   constructor(
     private store: ForemanStore,
     private seeds: SeedsClient,
     private projectPath: string,
-  ) {}
+  ) {
+    this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG);
+  }
 
   /**
    * Check if a file path is a report/non-code file that can be auto-resolved.
+   * Delegates to ConflictResolver.isReportFile().
    */
   private isReportFile(f: string): boolean {
-    if (REPORT_FILES.includes(f)) return true;
-    if (f.startsWith(".foreman/reports/")) return true;
-    if (f.endsWith(".md") && REPORT_FILES.some((r) => f.startsWith(r.replace(".md", ".")))) return true;
-    if (f === ".claude/settings.local.json") return true;
-    return false;
+    return ConflictResolver.isReportFile(f);
   }
 
   /**
@@ -80,54 +72,10 @@ export class Refinery {
    * If so, auto-resolve them and continue rebase (looping until done).
    * If real code conflicts exist, abort rebase and return false.
    * Returns true if rebase completed successfully.
+   * Delegates to ConflictResolver.autoResolveRebaseConflicts().
    */
   private async autoResolveRebaseConflicts(targetBranch: string): Promise<boolean> {
-    const MAX_ITERATIONS = 50; // safety limit
-    for (let i = 0; i < MAX_ITERATIONS; i++) {
-      // Get conflicted files
-      let conflictFiles: string[];
-      try {
-        const out = await git(["diff", "--name-only", "--diff-filter=U"], this.projectPath);
-        conflictFiles = out.split("\n").map((f) => f.trim()).filter(Boolean);
-      } catch {
-        conflictFiles = [];
-      }
-
-      if (conflictFiles.length === 0) {
-        // No conflicts — rebase may have completed or we resolved the last step
-        return true;
-      }
-
-      const codeConflicts = conflictFiles.filter((f) => !this.isReportFile(f));
-      if (codeConflicts.length > 0) {
-        // Real code conflicts — abort
-        try { await git(["rebase", "--abort"], this.projectPath); } catch { /* already clean */ }
-        return false;
-      }
-
-      // All conflicts are report files — auto-resolve by accepting ours (the branch version in rebase)
-      for (const f of conflictFiles) {
-        // In rebase context, --ours is the branch being rebased onto (target),
-        // --theirs is the branch's own commits. We want the branch's version.
-        await git(["checkout", "--theirs", f], this.projectPath).catch(() => {
-          // File may have been deleted on one side — just remove it
-          try { unlinkSync(join(this.projectPath, f)); } catch { /* gone */ }
-        });
-        await git(["add", "-f", f], this.projectPath).catch(() => {});
-      }
-
-      // Continue the rebase
-      try {
-        await git(["rebase", "--continue"], this.projectPath);
-        return true; // rebase completed
-      } catch {
-        // More conflicts on the next commit — loop again
-      }
-    }
-
-    // Hit iteration limit — abort to be safe
-    try { await git(["rebase", "--abort"], this.projectPath); } catch { /* already clean */ }
-    return false;
+    return this.conflictResolver.autoResolveRebaseConflicts(targetBranch);
   }
 
   /**
@@ -165,26 +113,10 @@ export class Refinery {
   /**
    * Remove report files from the working tree before merging so they can't
    * conflict. Commits the removal if any tracked files were removed.
+   * Delegates to ConflictResolver.removeReportFiles().
    */
   private async removeReportFiles(): Promise<void> {
-    let removed = false;
-    for (const report of REPORT_FILES) {
-      const filePath = join(this.projectPath, report);
-      if (existsSync(filePath)) {
-        await git(["rm", "-f", report], this.projectPath).catch(() => {
-          try { unlinkSync(filePath); } catch { /* already gone */ }
-        });
-        removed = true;
-      }
-    }
-    if (removed) {
-      // Only commit if there are staged changes (git rm of tracked files)
-      try {
-        await git(["commit", "-m", "Remove report files before merge"], this.projectPath);
-      } catch {
-        // Nothing staged (files were untracked) — that's fine
-      }
-    }
+    return this.conflictResolver.removeReportFiles();
   }
 
   /**
@@ -192,27 +124,10 @@ export class Refinery {
    * Moves report files from the working tree into .foreman/reports/<name>-<seedId>.md
    * and creates a follow-up commit. Called after mergeWorktree() succeeds so we
    * don't need to checkout branches or deal with dirty working trees.
+   * Delegates to ConflictResolver.archiveReportsPostMerge().
    */
   private async archiveReportsPostMerge(seedId: string): Promise<void> {
-    const reportsDir = join(this.projectPath, ".foreman", "reports");
-    mkdirSync(reportsDir, { recursive: true });
-
-    let moved = false;
-    for (const report of REPORT_FILES) {
-      const src = join(this.projectPath, report);
-      if (existsSync(src)) {
-        const baseName = report.replace(".md", "");
-        const dest = join(reportsDir, `${baseName}-${seedId}.md`);
-        renameSync(src, dest);
-        await git(["add", "-f", dest], this.projectPath);
-        await git(["rm", "--cached", report], this.projectPath).catch(() => {});
-        moved = true;
-      }
-    }
-
-    if (moved) {
-      await git(["commit", "-m", `Archive reports for ${seedId}`], this.projectPath);
-    }
+    return this.conflictResolver.archiveReportsPostMerge(seedId);
   }
 
   /**
@@ -635,6 +550,26 @@ export class Refinery {
   /**
    * Find all completed runs and create PRs for their branches.
    * Pushes branches to origin and uses `gh pr create`.
+   *
+   * MQ-T058d Investigation: Why `gh pr create` instead of `git town propose`
+   * -------------------------------------------------------------------------
+   * git town propose (v22.6.0) was investigated for PR creation. Findings:
+   *   1. It DOES support --title and --body flags.
+   *   2. However, it opens a browser window (`open https://github.com/...`)
+   *      rather than creating the PR via the GitHub API.
+   *   3. No PR URL is returned in stdout -- only a GitHub compare URL is
+   *      opened in the system browser.
+   *   4. It also runs `git fetch`, `git stash`, and `git push` as side-effects,
+   *      which conflicts with our explicit push step above.
+   *
+   * Since Foreman agents run non-interactively (see CLAUDE.md critical
+   * constraints: "agents hang on interactive prompts"), and we need the PR URL
+   * returned for event logging, `gh pr create` remains the correct choice for
+   * both normal-flow and conflict PRs.
+   *
+   * Conflict PRs (ConflictResolver.handleFallback) also use `gh pr create`
+   * because they require structured titles with "[Conflict]" prefix and
+   * detailed resolution metadata in the body.
    */
   async createPRs(opts?: {
     baseBranch?: string;

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
+import { existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import type { MergeQueueConfig } from "./merge-config.js";
 import { MergeValidator } from "./merge-validator.js";
 import type { ConflictPatterns } from "./conflict-patterns.js";
@@ -9,6 +10,17 @@ import type { ConflictPatterns } from "./conflict-patterns.js";
 const execFileAsync = promisify(execFile);
 
 const MAX_BUFFER = 10 * 1024 * 1024;
+
+// Report files that agents produce in the worktree root
+export const REPORT_FILES = [
+  "EXPLORER_REPORT.md",
+  "DEVELOPER_REPORT.md",
+  "QA_REPORT.md",
+  "REVIEW.md",
+  "FINALIZE_REPORT.md",
+  "TASK.md",
+  "AGENTS.md",
+];
 
 /** Shape of the Anthropic Messages API response (subset). */
 export interface AnthropicMessage {
@@ -998,6 +1010,11 @@ export class ConflictResolver {
    *
    * Aborts the current merge and creates a conflict PR via `gh pr create`
    * with structured metadata about which tiers were attempted.
+   *
+   * Uses `gh pr create` intentionally (not `git town propose`) -- see
+   * MQ-T058d investigation in Refinery.createPRs() for full rationale.
+   * Conflict PRs specifically need custom "[Conflict]" title prefix and
+   * structured resolution metadata that require API-level control.
    */
   async handleFallback(
     branchName: string,
@@ -1055,5 +1072,124 @@ export class ConflictResolver {
       const message = err instanceof Error ? err.message : String(err);
       return { error: message };
     }
+  }
+
+  /**
+   * Check if a file path is a report/non-code file that can be auto-resolved.
+   */
+  static isReportFile(f: string): boolean {
+    if (REPORT_FILES.includes(f)) return true;
+    if (f.startsWith(".foreman/reports/")) return true;
+    if (f.endsWith(".md") && REPORT_FILES.some((r) => f.startsWith(r.replace(".md", ".")))) return true;
+    if (f === ".claude/settings.local.json") return true;
+    return false;
+  }
+
+  /**
+   * Remove report files from the working tree before merging so they can't
+   * conflict. Commits the removal if any tracked files were removed.
+   */
+  async removeReportFiles(): Promise<void> {
+    let removed = false;
+    for (const report of REPORT_FILES) {
+      const filePath = path.join(this.projectPath, report);
+      if (existsSync(filePath)) {
+        await this.git(["rm", "-f", report]).catch(() => {
+          try { unlinkSync(filePath); } catch { /* already gone */ }
+        });
+        removed = true;
+      }
+    }
+    if (removed) {
+      // Only commit if there are staged changes (git rm of tracked files)
+      try {
+        await this.git(["commit", "-m", "Remove report files before merge"]);
+      } catch {
+        // Nothing staged (files were untracked) — that's fine
+      }
+    }
+  }
+
+  /**
+   * Archive report files after a successful merge.
+   * Moves report files from the working tree into .foreman/reports/<name>-<seedId>.md
+   * and creates a follow-up commit. Called after mergeWorktree() succeeds so we
+   * don't need to checkout branches or deal with dirty working trees.
+   */
+  async archiveReportsPostMerge(seedId: string): Promise<void> {
+    const reportsDir = path.join(this.projectPath, ".foreman", "reports");
+    mkdirSync(reportsDir, { recursive: true });
+
+    let moved = false;
+    for (const report of REPORT_FILES) {
+      const src = path.join(this.projectPath, report);
+      if (existsSync(src)) {
+        const baseName = report.replace(".md", "");
+        const dest = path.join(reportsDir, `${baseName}-${seedId}.md`);
+        renameSync(src, dest);
+        await this.git(["add", "-f", dest]);
+        await this.git(["rm", "--cached", report]).catch(() => {});
+        moved = true;
+      }
+    }
+
+    if (moved) {
+      await this.git(["commit", "-m", `Archive reports for ${seedId}`]);
+    }
+  }
+
+  /**
+   * During a rebase conflict, check if all conflicts are report files.
+   * If so, auto-resolve them and continue rebase (looping until done).
+   * If real code conflicts exist, abort rebase and return false.
+   * Returns true if rebase completed successfully.
+   */
+  async autoResolveRebaseConflicts(targetBranch: string): Promise<boolean> {
+    const MAX_ITERATIONS = 50; // safety limit
+    for (let i = 0; i < MAX_ITERATIONS; i++) {
+      // Get conflicted files
+      let conflictFiles: string[];
+      try {
+        const out = await this.git(["diff", "--name-only", "--diff-filter=U"]);
+        conflictFiles = out.split("\n").map((f) => f.trim()).filter(Boolean);
+      } catch {
+        conflictFiles = [];
+      }
+
+      if (conflictFiles.length === 0) {
+        // No conflicts — rebase may have completed or we resolved the last step
+        return true;
+      }
+
+      const codeConflicts = conflictFiles.filter((f) => !ConflictResolver.isReportFile(f));
+      if (codeConflicts.length > 0) {
+        // Real code conflicts — abort
+        try { await this.git(["rebase", "--abort"]); } catch { /* already clean */ }
+        return false;
+      }
+
+      // All conflicts are report files — auto-resolve by accepting ours (the branch version in rebase)
+      for (const f of conflictFiles) {
+        // In rebase context, --ours is the branch being rebased onto (target),
+        // --theirs is the branch's own commits. We want the branch's version.
+        await this.git(["checkout", "--theirs", f]).catch(() => {
+          // File may have been deleted on one side — just remove it
+          try { unlinkSync(path.join(this.projectPath, f)); } catch { /* gone */ }
+        });
+        await this.git(["add", "-f", f]).catch(() => {});
+      }
+
+      // Continue the rebase
+      try {
+        await this.git(["rebase", "--continue"]);
+        return true; // rebase completed
+      } catch {
+        // More conflicts on the next commit — loop again
+      }
+    }
+
+    // Hit iteration limit — abort to be safe
+    try { await this.git(["rebase", "--abort"]); } catch { /* already clean */ }
+    return false;
   }
 }
