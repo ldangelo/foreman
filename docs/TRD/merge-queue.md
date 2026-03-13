@@ -309,25 +309,25 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T038 | Implement per-file cascade orchestrator in `ConflictResolver.resolveConflicts()`: after Tier 1 identifies conflicted files, iterate each file through Tier 2 -> 3 -> 4 -> Fallback independently. Track per-file tier resolution in `resolvedTiers: Map<string, number>`. If any file reaches Fallback, `git merge --abort` entire merge | 5h | MQ-T027, MQ-T030, MQ-T034 | `src/orchestrator/conflict-resolver.ts` | [ ] |
-| MQ-T039 | Implement Fallback handler: `git merge --abort`, create conflict PR via `gh pr create` with custom title/body (includes per-file tier attempts, error codes, conflict details). Update queue entry to `conflict` status with error code MQ-018. Log all per-file tier attempts. Note: uses `gh pr create` (not `git town propose`) because conflict PRs require structured title/body with resolution metadata | 3h | MQ-T038 | `src/orchestrator/conflict-resolver.ts` | [ ] |
-| MQ-T040 | Extend `MergeReport` type with `resolvedTiers?: Map<string, number>` field (filepath -> tier number). Update `MergedRun` to include per-file resolution detail | 2h | MQ-T038 | `src/orchestrator/types.ts` | [ ] |
-| MQ-T041 | Write integration tests for per-file cascade -- multi-file conflict where file A resolves at Tier 2, file B at Tier 3, file C at Tier 4; single file reaching Fallback aborts all; `resolvedTiers` map populated correctly | 5h | MQ-T038, MQ-T039 | `src/orchestrator/__tests__/conflict-resolver-cascade.test.ts` | [ ] |
+| MQ-T038 | Implement per-file cascade orchestrator in `ConflictResolver.resolveConflicts()`: after Tier 1 identifies conflicted files, iterate each file through Tier 2 -> 3 -> 4 -> Fallback independently. Track per-file tier resolution in `resolvedTiers: Map<string, number>`. If any file reaches Fallback, `git merge --abort` entire merge | 5h | MQ-T027, MQ-T030, MQ-T034 | `src/orchestrator/conflict-resolver.ts` | [x] |
+| MQ-T039 | Implement Fallback handler: `git merge --abort`, create conflict PR via `gh pr create` with custom title/body (includes per-file tier attempts, error codes, conflict details). Update queue entry to `conflict` status with error code MQ-018. Log all per-file tier attempts. Note: uses `gh pr create` (not `git town propose`) because conflict PRs require structured title/body with resolution metadata | 3h | MQ-T038 | `src/orchestrator/conflict-resolver.ts` | [x] |
+| MQ-T040 | Extend `MergeReport` type with `resolvedTiers?: Map<string, number>` field (filepath -> tier number). Update `MergedRun` to include per-file resolution detail | 2h | MQ-T038 | `src/orchestrator/types.ts` | [x] |
+| MQ-T041 | Write integration tests for per-file cascade -- multi-file conflict where file A resolves at Tier 2, file B at Tier 3, file C at Tier 4; single file reaching Fallback aborts all; `resolvedTiers` map populated correctly | 5h | MQ-T038, MQ-T039 | `src/orchestrator/__tests__/conflict-resolver-cascade.test.ts` | [x] |
 
 #### Story 4.2: Post-Merge Validation
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T042 | Implement post-merge test runner in ConflictResolver: run test suite via `runTestCommand()` only when AI resolution was used (Tier 3/4) -- skip tests for clean merges (Tier 1) and auto-resolved merges (Tier 2). On failure: record AI-resolved files to conflict_patterns with `post_merge_test_failure`, `git reset --hard HEAD~1`, escalate to PR via `git town propose`, update queue entry to `conflict` with MQ-007. `--no-tests` flag overrides to skip entirely | 4h | MQ-T038 | `src/orchestrator/conflict-resolver.ts` | [ ] |
-| MQ-T043 | Write tests for post-merge validation -- tests skipped for Tier 1/2 merges, tests run for Tier 3/4 merges, test pass continues, test fail triggers reset + PR + pattern recording, reset is safe (local unpushed commit), `--no-tests` override works | 4h | MQ-T042 | `src/orchestrator/__tests__/conflict-resolver-postmerge.test.ts` | [ ] |
+| MQ-T042 | Implement post-merge test runner in ConflictResolver: run test suite via `runTestCommand()` only when AI resolution was used (Tier 3/4) -- skip tests for clean merges (Tier 1) and auto-resolved merges (Tier 2). On failure: record AI-resolved files to conflict_patterns with `post_merge_test_failure`, `git reset --hard HEAD~1`, escalate to PR via `git town propose`, update queue entry to `conflict` with MQ-007. `--no-tests` flag overrides to skip entirely | 4h | MQ-T038 | `src/orchestrator/conflict-resolver.ts` | [x] |
+| MQ-T043 | Write tests for post-merge validation -- tests skipped for Tier 1/2 merges, tests run for Tier 3/4 merges, test pass continues, test fail triggers reset + PR + pattern recording, reset is safe (local unpushed commit), `--no-tests` override works | 4h | MQ-T042 | `src/orchestrator/__tests__/conflict-resolver-postmerge.test.ts` | [x] |
 
 #### Story 4.3: Event Logging with Error Codes
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T044 | Add `EventType` entries for merge queue events: `merge-queue-enqueue`, `merge-queue-dequeue`, `merge-queue-resolve`, `merge-queue-fallback`. Update store.ts `EventType` union | 2h | -- | `src/lib/store.ts`, `src/orchestrator/types.ts` | [ ] |
-| MQ-T045 | Wire structured error codes (MQ-001 through MQ-020) into all ConflictResolver and MergeQueue error paths. Log to events table with `details` JSON containing `errorCode`, `filePath`, `tier`, `reason` | 3h | MQ-T044, MQ-T038 | `src/orchestrator/conflict-resolver.ts`, `src/orchestrator/merge-queue.ts` | [ ] |
-| MQ-T046 | Write tests for event logging -- each error code path produces correct event with structured details | 3h | MQ-T045 | `src/orchestrator/__tests__/merge-events.test.ts` | [ ] |
+| MQ-T044 | Add `EventType` entries for merge queue events: `merge-queue-enqueue`, `merge-queue-dequeue`, `merge-queue-resolve`, `merge-queue-fallback`. Update store.ts `EventType` union | 2h | -- | `src/lib/store.ts`, `src/orchestrator/types.ts` | [x] |
+| MQ-T045 | Wire structured error codes (MQ-001 through MQ-020) into all ConflictResolver and MergeQueue error paths. Log to events table with `details` JSON containing `errorCode`, `filePath`, `tier`, `reason` | 3h | MQ-T044, MQ-T038 | `src/orchestrator/conflict-resolver.ts`, `src/orchestrator/merge-queue.ts` | [x] |
+| MQ-T046 | Write tests for event logging -- each error code path produces correct event with structured details | 3h | MQ-T045 | `src/orchestrator/__tests__/merge-events.test.ts` | [x] |
 
 ### 2.5 Sprint 5: Overlap Clustering for Sequential Ordering (FR-3 Part 2)
 
@@ -335,10 +335,10 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T047 | Implement `ConflictCluster` module: `buildOverlapGraph(entries)` creates adjacency list from `files_modified` overlap. `findClusters(graph)` returns connected components using BFS/DFS. Each cluster is a set of queue entry IDs. Used for smart sequential ordering: process entries within the same cluster consecutively to minimize re-merge conflicts | 4h | -- | `src/orchestrator/conflict-cluster.ts` | [ ] |
-| MQ-T048 | Implement `reCluster(entries, mergedFiles)` -- after a merge commit, re-evaluate remaining entries for new overlaps with the merged files. Return updated cluster assignments for the sequential dequeue loop | 2h | MQ-T047 | `src/orchestrator/conflict-cluster.ts` | [ ] |
-| MQ-T049 | Wire cluster ordering into MergeQueue dequeue: before processing, build overlap graph and order entries so that entries within the same cluster are processed consecutively (reducing conflict likelihood). Re-cluster after each merge commit | 2h | MQ-T047, MQ-T048, MQ-T018 | `src/orchestrator/merge-queue.ts` | [ ] |
-| MQ-T050 | Write tests for clustering -- independent entries in separate clusters, overlapping entries in same cluster, re-clustering after merge creates new overlaps, empty queue, single entry, cluster-ordered sequential dequeue | 4h | MQ-T047, MQ-T048, MQ-T049 | `src/orchestrator/__tests__/conflict-cluster.test.ts` | [ ] |
+| MQ-T047 | Implement `ConflictCluster` module: `buildOverlapGraph(entries)` creates adjacency list from `files_modified` overlap. `findClusters(graph)` returns connected components using BFS/DFS. Each cluster is a set of queue entry IDs. Used for smart sequential ordering: process entries within the same cluster consecutively to minimize re-merge conflicts | 4h | -- | `src/orchestrator/conflict-cluster.ts` | [x] |
+| MQ-T048 | Implement `reCluster(entries, mergedFiles)` -- after a merge commit, re-evaluate remaining entries for new overlaps with the merged files. Return updated cluster assignments for the sequential dequeue loop | 2h | MQ-T047 | `src/orchestrator/conflict-cluster.ts` | [x] |
+| MQ-T049 | Wire cluster ordering into MergeQueue dequeue: before processing, build overlap graph and order entries so that entries within the same cluster are processed consecutively (reducing conflict likelihood). Re-cluster after each merge commit | 2h | MQ-T047, MQ-T048, MQ-T018 | `src/orchestrator/merge-queue.ts` | [x] |
+| MQ-T050 | Write tests for clustering -- independent entries in separate clusters, overlapping entries in same cluster, re-clustering after merge creates new overlaps, empty queue, single entry, cluster-ordered sequential dequeue | 4h | MQ-T047, MQ-T048, MQ-T049 | `src/orchestrator/__tests__/conflict-cluster.test.ts` | [x] |
 
 ### 2.6 Sprint 6: Worktree Commands, Dry-Run, Seeds Preservation (FR-5, FR-8, FR-6)
 
@@ -346,29 +346,29 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T054 | Implement `foreman worktree list` -- list all `foreman/*` worktrees with branch, path, run status (from store), seed ID, age. Support `--json` for structured output | 3h | -- | `src/cli/commands/worktree.ts` | [ ] |
-| MQ-T055 | Implement `foreman worktree clean` -- remove worktrees for completed/merged/failed runs (default). `--all` removes active worktrees too. `--force` uses safe branch deletion with force. Show summary with count and freed space | 3h | MQ-T004, MQ-T054 | `src/cli/commands/worktree.ts` | [ ] |
-| MQ-T056 | Register worktree subcommand in main CLI entry point | 1h | MQ-T054 | `src/cli/index.ts` |  [ ] |
-| MQ-T057 | Write tests for worktree commands -- list with various run states, clean respects active agents, force deletion, JSON output valid | 4h | MQ-T054, MQ-T055 | `src/cli/__tests__/worktree.test.ts` | [ ] |
+| MQ-T054 | Implement `foreman worktree list` -- list all `foreman/*` worktrees with branch, path, run status (from store), seed ID, age. Support `--json` for structured output | 3h | -- | `src/cli/commands/worktree.ts` | [x] |
+| MQ-T055 | Implement `foreman worktree clean` -- remove worktrees for completed/merged/failed runs (default). `--all` removes active worktrees too. `--force` uses safe branch deletion with force. Show summary with count and freed space | 3h | MQ-T004, MQ-T054 | `src/cli/commands/worktree.ts` | [x] |
+| MQ-T056 | Register worktree subcommand in main CLI entry point | 1h | MQ-T054 | `src/cli/index.ts` | [x] |
+| MQ-T057 | Write tests for worktree commands -- list with various run states, clean respects active agents, force deletion, JSON output valid | 4h | MQ-T054, MQ-T055 | `src/cli/__tests__/worktree.test.ts` | [x] |
 
 #### Story 6.2: Merge Dry-Run Mode
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T058 | Implement `foreman merge --dry-run`: for each queued/completed branch, show branch name, seed ID, `git diff --stat` output, conflict detection via `git merge-tree`. Support `--seed <id>` filter. No git state modification | 4h | MQ-T008 | `src/cli/commands/merge.ts`, `src/orchestrator/merge-queue.ts` | [ ] |
+| MQ-T058 | Implement `foreman merge --dry-run`: for each queued/completed branch, show branch name, seed ID, `git diff --stat` output, conflict detection via `git merge-tree`. Support `--seed <id>` filter. No git state modification | 4h | MQ-T008 | `src/cli/commands/merge.ts`, `src/orchestrator/merge-queue.ts` | [x] |
 | MQ-T058b | Retrofit `Refinery.createPRs()` (happy-path PRs) to use `git town propose` instead of `gh pr create`. Keep `createPrForConflict()` using `gh pr create` since conflict PRs need custom title/body with resolution metadata. Add `MQ-T058d` investigation results for URL parsing | 3h | MQ-T058d | `src/orchestrator/refinery.ts` | [ ] |
 | MQ-T058c | Write tests for dual PR creation strategy -- `git town propose` called for normal PRs, `gh pr create` called for conflict PRs with custom title/body, error handling for git-town failures, PR URL correctly extracted from both paths | 3h | MQ-T058b | `src/orchestrator/__tests__/refinery-git-town.test.ts` | [ ] |
 | MQ-T058d | Investigate `git town propose` stdout format for PR URL extraction: run `git town propose` on a test branch, capture output, determine if URL is reliably parseable. If not, implement fallback via `gh pr list --head <branch> --json url` after propose. Document findings in code comments | 1h | -- | `src/orchestrator/refinery.ts` | [ ] |
-| MQ-T059 | Add estimated resolution tier column when FR-7 conflict_patterns data is available. Gracefully omit column when no pattern data exists (no errors, no empty columns) | 2h | MQ-T058 | `src/cli/commands/merge.ts` | [ ] |
-| MQ-T060 | Write tests for dry-run -- no git state modified, conflict detection accurate, `--seed` filter works, graceful degradation without FR-7 data | 3h | MQ-T058, MQ-T059 | `src/cli/__tests__/merge-dryrun.test.ts` | [ ] |
+| MQ-T059 | Add estimated resolution tier column when FR-7 conflict_patterns data is available. Gracefully omit column when no pattern data exists (no errors, no empty columns) | 2h | MQ-T058 | `src/cli/commands/merge.ts` | [x] |
+| MQ-T060 | Write tests for dry-run -- no git state modified, conflict detection accurate, `--seed` filter works, graceful degradation without FR-7 data | 3h | MQ-T058, MQ-T059 | `src/cli/__tests__/merge-dryrun.test.ts` | [x] |
 
 #### Story 6.3: Seeds Preservation
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T061 | Implement `preserveSeedChanges(branchName, targetBranch)` in refinery.ts: extract `.seeds/` changes via `git diff {target}...{branch} -- .seeds/`, write temp patch, `git apply --index`, commit with descriptive message. Cleanup temp file in `finally` block. Error code MQ-019 on patch failure | 3h | -- | `src/orchestrator/refinery.ts` | [ ] |
-| MQ-T062 | Wire seed preservation into branch cleanup paths (refinery merge failure, worktree clean) -- call before branch deletion | 2h | MQ-T061 | `src/orchestrator/refinery.ts`, `src/cli/commands/worktree.ts` | [ ] |
-| MQ-T063 | Write tests for seeds preservation -- changes applied, only .seeds/ preserved, patch failure logs warning but does not block, temp file always cleaned | 3h | MQ-T061 | `src/orchestrator/__tests__/refinery-seeds-preserve.test.ts` | [ ] |
+| MQ-T061 | Implement `preserveSeedChanges(branchName, targetBranch)` in refinery.ts: extract `.seeds/` changes via `git diff {target}...{branch} -- .seeds/`, write temp patch, `git apply --index`, commit with descriptive message. Cleanup temp file in `finally` block. Error code MQ-019 on patch failure | 3h | -- | `src/orchestrator/refinery.ts` | [x] |
+| MQ-T062 | Wire seed preservation into branch cleanup paths (refinery merge failure, worktree clean) -- call before branch deletion | 2h | MQ-T061 | `src/orchestrator/refinery.ts`, `src/cli/commands/worktree.ts` | [x] |
+| MQ-T063 | Write tests for seeds preservation -- changes applied, only .seeds/ preserved, patch failure logs warning but does not block, temp file always cleaned | 3h | MQ-T061 | `src/orchestrator/__tests__/refinery-seeds-preserve.test.ts` | [x] |
 
 ### 2.7 Sprint 7: Pattern Learning and Cost Tracking (FR-7, Cost Tracking)
 
@@ -376,21 +376,21 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T064 | Add `conflict_patterns` table migration to store.ts | 1h | -- | `src/lib/store.ts` | [ ] |
-| MQ-T065 | Implement `ConflictPatterns` class: `recordOutcome(filePath, extension, tier, success, failureReason?, mergeQueueId?, seedId?)` -- fire-and-forget recording. `shouldSkipTier(extension, tier)` -- return true if >= 2 failures AND 0 successes. `getSuccessContext(extension, tier)` -- return past successful resolution examples as AI context | 4h | MQ-T064 | `src/orchestrator/conflict-patterns.ts` | [ ] |
-| MQ-T066 | Implement post-merge test failure pattern recording: when test fails, record all AI-resolved files with `failure_reason='post_merge_test_failure'`. `shouldPreferFallback(filePath)` returns true if file has >= 2 post-merge test failures with AI resolution | 3h | MQ-T065 | `src/orchestrator/conflict-patterns.ts` | [ ] |
-| MQ-T067 | Wire ConflictPatterns into ConflictResolver: before each tier attempt call `shouldSkipTier()` (MQ-015), before AI calls check `shouldPreferFallback()` (MQ-016), after each attempt call `recordOutcome()`, pass `getSuccessContext()` to Tier 3/4 prompts | 3h | MQ-T065, MQ-T066, MQ-T038 | `src/orchestrator/conflict-resolver.ts` | [ ] |
-| MQ-T068 | Write tests for pattern learning -- outcome recording, tier skip after threshold, success context provided, test failure recording, fallback preference, fire-and-forget (errors do not block) | 5h | MQ-T065, MQ-T066, MQ-T067 | `src/orchestrator/__tests__/conflict-patterns.test.ts` | [ ] |
+| MQ-T064 | Add `conflict_patterns` table migration to store.ts | 1h | -- | `src/lib/store.ts` | [x] |
+| MQ-T065 | Implement `ConflictPatterns` class: `recordOutcome(filePath, extension, tier, success, failureReason?, mergeQueueId?, seedId?)` -- fire-and-forget recording. `shouldSkipTier(extension, tier)` -- return true if >= 2 failures AND 0 successes. `getSuccessContext(extension, tier)` -- return past successful resolution examples as AI context | 4h | MQ-T064 | `src/orchestrator/conflict-patterns.ts` | [x] |
+| MQ-T066 | Implement post-merge test failure pattern recording: when test fails, record all AI-resolved files with `failure_reason='post_merge_test_failure'`. `shouldPreferFallback(filePath)` returns true if file has >= 2 post-merge test failures with AI resolution | 3h | MQ-T065 | `src/orchestrator/conflict-patterns.ts` | [x] |
+| MQ-T067 | Wire ConflictPatterns into ConflictResolver: before each tier attempt call `shouldSkipTier()` (MQ-015), before AI calls check `shouldPreferFallback()` (MQ-016), after each attempt call `recordOutcome()`, pass `getSuccessContext()` to Tier 3/4 prompts | 3h | MQ-T065, MQ-T066, MQ-T038 | `src/orchestrator/conflict-resolver.ts` | [x] |
+| MQ-T068 | Write tests for pattern learning -- outcome recording, tier skip after threshold, success context provided, test failure recording, fallback preference, fire-and-forget (errors do not block) | 5h | MQ-T065, MQ-T066, MQ-T067 | `src/orchestrator/__tests__/conflict-patterns.test.ts` | [x] |
 
 #### Story 7.2: Cost Tracking and Stats
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T069 | Add `merge_costs` table migration to store.ts | 1h | -- | `src/lib/store.ts` | [ ] |
-| MQ-T070 | Implement cost recording in ConflictResolver: after each Tier 3/4 SDK call, insert row to `merge_costs` with session_id, file, tier, model, tokens, estimated and actual cost. Fire-and-forget | 3h | MQ-T069, MQ-T032 | `src/orchestrator/conflict-resolver.ts` | [ ] |
-| MQ-T071 | Implement `foreman merge --stats`: query `merge_costs` for daily, weekly, monthly, all-time summaries with tier and model breakdowns. Support `--json` output | 4h | MQ-T069 | `src/cli/commands/merge.ts`, `src/orchestrator/merge-queue.ts` | [ ] |
-| MQ-T072 | Implement running success rate display after each `foreman merge` invocation: "AI resolution rate: X/Y conflicts (Z%) over last 30 days" with tier breakdown and session cost | 2h | MQ-T070 | `src/cli/commands/merge.ts` | [ ] |
-| MQ-T073 | Write tests for cost tracking -- recording accuracy, stats query aggregation, JSON output valid, running success rate calculation | 4h | MQ-T070, MQ-T071, MQ-T072 | `src/orchestrator/__tests__/merge-costs.test.ts` | [ ] |
+| MQ-T069 | Add `merge_costs` table migration to store.ts | 1h | -- | `src/lib/store.ts` | [x] |
+| MQ-T070 | Implement cost recording in ConflictResolver: after each Tier 3/4 SDK call, insert row to `merge_costs` with session_id, file, tier, model, tokens, estimated and actual cost. Fire-and-forget | 3h | MQ-T069, MQ-T032 | `src/orchestrator/conflict-resolver.ts` | [x] |
+| MQ-T071 | Implement `foreman merge --stats`: query `merge_costs` for daily, weekly, monthly, all-time summaries with tier and model breakdowns. Support `--json` output | 4h | MQ-T069 | `src/cli/commands/merge.ts`, `src/orchestrator/merge-queue.ts` | [x] |
+| MQ-T072 | Implement running success rate display after each `foreman merge` invocation: "AI resolution rate: X/Y conflicts (Z%) over last 30 days" with tier breakdown and session cost | 2h | MQ-T070 | `src/cli/commands/merge.ts` | [x] |
+| MQ-T073 | Write tests for cost tracking -- recording accuracy, stats query aggregation, JSON output valid, running success rate calculation | 4h | MQ-T070, MQ-T071, MQ-T072 | `src/orchestrator/__tests__/merge-costs.test.ts` | [x] |
 
 ### 2.8 Sprint 8: Health Checks, Edge Cases, Polish (FR-9, FR-10)
 
@@ -398,22 +398,22 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T074 | Implement untracked file detection before merge: get added files via `git diff --name-only --diff-filter=A`, check for untracked overlap. Default: delete with warning. `--stash-untracked` moves to `.foreman/stashed/`. `--abort-on-untracked` aborts with error. Error code MQ-014 | 3h | -- | `src/orchestrator/conflict-resolver.ts` | [ ] |
-| MQ-T075 | Write tests for untracked file handling -- detection, default delete, stash to recovery dir, abort mode with clear listing | 3h | MQ-T074 | `src/orchestrator/__tests__/conflict-resolver-untracked.test.ts` | [ ] |
+| MQ-T074 | Implement untracked file detection before merge: get added files via `git diff --name-only --diff-filter=A`, check for untracked overlap. Default: delete with warning. `--stash-untracked` moves to `.foreman/stashed/`. `--abort-on-untracked` aborts with error. Error code MQ-014 | 3h | -- | `src/orchestrator/conflict-resolver.ts` | [x] |
+| MQ-T075 | Write tests for untracked file handling -- detection, default delete, stash to recovery dir, abort mode with clear listing | 3h | MQ-T074 | `src/orchestrator/__tests__/conflict-resolver-untracked.test.ts` | [x] |
 
 #### Story 8.2: Merge Queue Health Checks
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T076 | Extend `Doctor` class with merge queue checks: stale pending entries (>24h, MQ-008), duplicate branch entries (MQ-009), orphaned entries referencing non-existent runs (MQ-010) | 3h | MQ-T008 | `src/orchestrator/doctor.ts` | [ ] |
-| MQ-T077 | Implement `--fix` auto-resolution for merge queue health issues: delete stale entries and reset run status, keep max(id) for duplicates, delete orphaned entries | 2h | MQ-T076 | `src/orchestrator/doctor.ts` | [ ] |
-| MQ-T078 | Write tests for merge queue health checks -- detection and fix for each condition, integration with existing DoctorReport format | 3h | MQ-T076, MQ-T077 | `src/orchestrator/__tests__/doctor-merge-queue.test.ts` | [ ] |
+| MQ-T076 | Extend `Doctor` class with merge queue checks: stale pending entries (>24h, MQ-008), duplicate branch entries (MQ-009), orphaned entries referencing non-existent runs (MQ-010) | 3h | MQ-T008 | `src/orchestrator/doctor.ts` | [x] |
+| MQ-T077 | Implement `--fix` auto-resolution for merge queue health issues: delete stale entries and reset run status, keep max(id) for duplicates, delete orphaned entries | 2h | MQ-T076 | `src/orchestrator/doctor.ts` | [x] |
+| MQ-T078 | Write tests for merge queue health checks -- detection and fix for each condition, integration with existing DoctorReport format | 3h | MQ-T076, MQ-T077 | `src/orchestrator/__tests__/doctor-merge-queue.test.ts` | [x] |
 
 #### Story 8.3: Auto-Commit State Files Hardening (MQ-020)
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T079 | Add error code MQ-020 handling to `autoCommitStateFiles()` -- log structured error when auto-commit fails, do not block merge | 1h | MQ-T001 | `src/orchestrator/refinery.ts` | [ ] |
+| MQ-T079 | Add error code MQ-020 handling to `autoCommitStateFiles()` -- log structured error when auto-commit fails, do not block merge | 1h | MQ-T001 | `src/orchestrator/refinery.ts` | [x] |
 
 ---
 
