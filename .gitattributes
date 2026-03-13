@@ -1,0 +1,2 @@
+.seeds/issues.jsonl merge=union
+.seeds/templates.jsonl merge=union
