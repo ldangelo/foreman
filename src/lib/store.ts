@@ -146,6 +146,25 @@ CREATE TABLE IF NOT EXISTS events (
   FOREIGN KEY (project_id) REFERENCES projects(id)
 );
 
+CREATE TABLE IF NOT EXISTS merge_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  branch_name TEXT NOT NULL,
+  seed_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  agent_name TEXT,
+  files_modified TEXT DEFAULT '[]',
+  enqueued_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  status TEXT DEFAULT 'pending'
+    CHECK (status IN ('pending', 'merging', 'merged', 'conflict', 'failed')),
+  resolved_tier INTEGER,
+  error TEXT,
+  FOREIGN KEY (run_id) REFERENCES runs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merge_queue_status ON merge_queue (status, enqueued_at);
+
 `;
 
 // Messages table DDL — kept separate so it can be applied after pre-flight migrations
@@ -205,6 +224,7 @@ export class ForemanStore {
     this.db = new Database(resolvedPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
+    this.db.pragma("busy_timeout = 5000");
     this.db.exec(SCHEMA);
 
     // Run idempotent migrations (errors are silently ignored — they indicate
