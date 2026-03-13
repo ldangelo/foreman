@@ -670,8 +670,8 @@ export class TmuxSpawnStrategy implements SpawnStrategy {
       log(`[foreman] Killed stale tmux session ${sessionName}`);
     }
 
-    // Build the command string for tmux
-    const command = `${tsxBin} ${workerScript} ${configPath} > ${outLog} 2> ${errLog}`;
+    // Build the command string for tmux (paths quoted to handle spaces in HOME, etc.)
+    const command = `"${tsxBin}" "${workerScript}" "${configPath}" > "${outLog}" 2> "${errLog}"`;
 
     const result = await this.tmux.createSession({
       sessionName,

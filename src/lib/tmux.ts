@@ -141,7 +141,7 @@ export class TmuxClient {
     try {
       const { stdout } = await execFileAsync(
         "tmux",
-        ["capture-pane", "-t", sessionName, "-p"],
+        ["capture-pane", "-t", sessionName, "-p", "-S", "-"],
         { timeout: TMUX_TIMEOUT },
       );
       if (!stdout.trim()) {

@@ -266,7 +266,7 @@ describe("TmuxClient", () => {
       expect(result).toEqual(["line 1", "line 2", "line 3"]);
       expect(typedMock).toHaveBeenCalledWith(
         "tmux",
-        ["capture-pane", "-t", "foreman-abc1", "-p"],
+        ["capture-pane", "-t", "foreman-abc1", "-p", "-S", "-"],
         expect.objectContaining({ timeout: 5000 }),
       );
     });
