@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as path from "node:path";
+import * as fs from "node:fs/promises";
 import type { MergeQueueConfig } from "./merge-config.js";
 import { MergeValidator } from "./merge-validator.js";
 
@@ -49,6 +50,20 @@ export interface Tier3Result {
   cost?: CostInfo;
   error?: string;
   errorCode?: string;
+}
+
+/** Result of the full per-file tier cascade. */
+export interface CascadeResult {
+  success: boolean;
+  resolvedTiers: Map<string, number>;
+  fallbackFiles: string[];
+  costs: CostInfo[];
+}
+
+/** Result of the fallback handler (conflict PR creation). */
+export interface FallbackResult {
+  prUrl?: string;
+  error?: string;
 }
 
 export interface MergeAttemptResult {
@@ -644,5 +659,195 @@ export class ConflictResolver {
       resolvedContent,
       cost,
     };
+  }
+
+  /**
+   * Run a `gh` CLI command. Returns trimmed stdout.
+   * Wrapped in its own method for easy mocking in tests.
+   */
+  private async execGh(args: string[]): Promise<string> {
+    const { stdout } = await execFileAsync("gh", args, {
+      cwd: this.projectPath,
+      maxBuffer: MAX_BUFFER,
+    });
+    return stdout.trim();
+  }
+
+  /**
+   * Per-file tier cascade orchestrator (MQ-T038).
+   *
+   * 1. Attempt a clean git merge (Tier 1).
+   * 2. For each conflicted file, cascade through Tiers 2 → 3 → 4 → Fallback.
+   * 3. If any file reaches Fallback, abort the entire merge.
+   * 4. If all files resolve, commit the merge.
+   */
+  async resolveConflicts(
+    branchName: string,
+    targetBranch: string,
+  ): Promise<CascadeResult> {
+    const resolvedTiers = new Map<string, number>();
+    const fallbackFiles: string[] = [];
+    const costs: CostInfo[] = [];
+
+    // ── Step 1: Tier 1 — standard git merge ──
+    const mergeResult = await this.attemptMerge(branchName, targetBranch);
+    if (mergeResult.success) {
+      return { success: true, resolvedTiers, fallbackFiles, costs };
+    }
+
+    // ── Step 2: Re-start merge in --no-commit mode for per-file resolution ──
+    await this.git(["checkout", targetBranch]);
+    await this.gitTry(["merge", "--no-commit", "--no-ff", branchName]);
+
+    // ── Step 3: Per-file cascade ──
+    for (const filePath of mergeResult.conflictedFiles) {
+      let resolved = false;
+
+      // Tier 2
+      const tier2 = await this.attemptTier2Resolution(
+        filePath,
+        branchName,
+        targetBranch,
+      );
+      if (tier2.success) {
+        resolvedTiers.set(filePath, 2);
+        resolved = true;
+        continue;
+      }
+
+      // Tier 3 (only if Anthropic client is available)
+      if (this.anthropicClient) {
+        // Read the conflicted file content from the working tree
+        const conflictedContent = await this.readConflictedFile(filePath);
+        const tier3 = await this.attemptTier3Resolution(
+          filePath,
+          conflictedContent,
+        );
+        if (tier3.cost) costs.push(tier3.cost);
+        if (tier3.success && tier3.resolvedContent) {
+          await this.writeResolvedFile(filePath, tier3.resolvedContent);
+          resolvedTiers.set(filePath, 3);
+          resolved = true;
+          continue;
+        }
+
+        // Tier 4
+        const tier4 = await this.attemptTier4Resolution(
+          filePath,
+          branchName,
+          targetBranch,
+        );
+        if (tier4.cost) costs.push(tier4.cost);
+        if (tier4.success && tier4.resolvedContent) {
+          await this.writeResolvedFile(filePath, tier4.resolvedContent);
+          resolvedTiers.set(filePath, 4);
+          resolved = true;
+          continue;
+        }
+      }
+
+      // Fallback
+      if (!resolved) {
+        fallbackFiles.push(filePath);
+      }
+    }
+
+    // ── Step 4: If any file reached fallback, abort ──
+    if (fallbackFiles.length > 0) {
+      await this.gitTry(["merge", "--abort"]);
+      return { success: false, resolvedTiers, fallbackFiles, costs };
+    }
+
+    // ── Step 5: All files resolved — commit the merge ──
+    await this.git(["commit", "--no-edit"]);
+    return { success: true, resolvedTiers, fallbackFiles, costs };
+  }
+
+  /**
+   * Read the content of a conflicted file from the working tree.
+   */
+  private async readConflictedFile(filePath: string): Promise<string> {
+    const fullPath = path.join(this.projectPath, filePath);
+    try {
+      return await fs.readFile(fullPath, "utf-8");
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * Write resolved content to a file and stage it.
+   */
+  private async writeResolvedFile(
+    filePath: string,
+    content: string,
+  ): Promise<void> {
+    const fullPath = path.join(this.projectPath, filePath);
+    await fs.writeFile(fullPath, content, "utf-8");
+    await this.git(["add", filePath]);
+  }
+
+  /**
+   * Fallback handler (MQ-T039).
+   *
+   * Aborts the current merge and creates a conflict PR via `gh pr create`
+   * with structured metadata about which tiers were attempted.
+   */
+  async handleFallback(
+    branchName: string,
+    targetBranch: string,
+    fallbackFiles: string[],
+    resolvedTiers: Map<string, number>,
+  ): Promise<FallbackResult> {
+    const title = `[Conflict] ${branchName}: merge conflicts require manual resolution`;
+
+    // Build PR body with per-file tier attempts and error details
+    const fileDetails = fallbackFiles
+      .map((f) => `- \`${f}\`: all tiers exhausted (Tier 2, 3, 4 failed)`)
+      .join("\n");
+
+    const resolvedDetails =
+      resolvedTiers.size > 0
+        ? Array.from(resolvedTiers.entries())
+            .map(([f, tier]) => `- \`${f}\`: resolved at Tier ${tier}`)
+            .join("\n")
+        : "None";
+
+    const body = [
+      `## Conflict Resolution Report`,
+      ``,
+      `**Error Code:** MQ-018`,
+      `**Source Branch:** \`${branchName}\``,
+      `**Target Branch:** \`${targetBranch}\``,
+      ``,
+      `### Files Requiring Manual Resolution`,
+      fileDetails,
+      ``,
+      `### Previously Resolved Files`,
+      resolvedDetails,
+      ``,
+      `### Details`,
+      `All automated resolution tiers (Tier 2: deterministic, Tier 3: AI Sonnet, Tier 4: AI Opus) ` +
+        `were attempted on the listed files but none succeeded. Manual conflict resolution is required.`,
+    ].join("\n");
+
+    try {
+      const prUrl = await this.execGh([
+        "pr",
+        "create",
+        "--head",
+        branchName,
+        "--base",
+        targetBranch,
+        "--title",
+        title,
+        "--body",
+        body,
+      ]);
+      return { prUrl };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { error: message };
+    }
   }
 }

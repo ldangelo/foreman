@@ -50,7 +50,11 @@ export type EventType =
   | "recover"
   | "conflict"
   | "test-fail"
-  | "pr-created";
+  | "pr-created"
+  | "merge-queue-enqueue"
+  | "merge-queue-dequeue"
+  | "merge-queue-resolve"
+  | "merge-queue-fallback";
 
 export interface Event {
   id: string;

@@ -116,6 +116,7 @@ export interface MergedRun {
   runId: string;
   seedId: string;
   branchName: string;
+  resolvedTiers?: Map<string, number>;
 }
 
 export interface ConflictRun {
