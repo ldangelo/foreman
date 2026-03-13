@@ -373,10 +373,17 @@ describe("Refinery.mergeCompleted()", () => {
       conflicts: ["README.md", "src/index.ts"],
     });
 
-    // git merge --abort call
+    // git calls succeed, but gh (PR creation) fails so we fall back to conflict reporting
     (execFile as any).mockImplementation(
-      (_cmd: string, _args: string[], _opts: any, callback: Function) => {
-        callback(null, { stdout: "", stderr: "" });
+      (cmd: string, _args: string[], _opts: any, callback: Function) => {
+        if (cmd === "gh") {
+          const err = new Error("gh not available") as any;
+          err.stdout = "";
+          err.stderr = "gh not available";
+          callback(err);
+        } else {
+          callback(null, { stdout: "", stderr: "" });
+        }
       },
     );
 
