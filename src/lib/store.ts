@@ -169,6 +169,40 @@ CREATE TABLE IF NOT EXISTS merge_queue (
 
 CREATE INDEX IF NOT EXISTS idx_merge_queue_status ON merge_queue (status, enqueued_at);
 
+CREATE TABLE IF NOT EXISTS conflict_patterns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_path TEXT NOT NULL,
+  file_extension TEXT NOT NULL,
+  tier INTEGER NOT NULL,
+  success INTEGER NOT NULL,
+  failure_reason TEXT,
+  merge_queue_id INTEGER,
+  seed_id TEXT,
+  recorded_at TEXT NOT NULL,
+  FOREIGN KEY (merge_queue_id) REFERENCES merge_queue(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_conflict_patterns_file ON conflict_patterns (file_extension, tier);
+CREATE INDEX IF NOT EXISTS idx_conflict_patterns_merge ON conflict_patterns (merge_queue_id);
+
+CREATE TABLE IF NOT EXISTS merge_costs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  merge_queue_id INTEGER,
+  file_path TEXT NOT NULL,
+  tier INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  estimated_cost_usd REAL NOT NULL,
+  actual_cost_usd REAL NOT NULL,
+  recorded_at TEXT NOT NULL,
+  FOREIGN KEY (merge_queue_id) REFERENCES merge_queue(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merge_costs_session ON merge_costs (session_id);
+CREATE INDEX IF NOT EXISTS idx_merge_costs_date ON merge_costs (recorded_at);
+
 `;
 
 // Messages table DDL — kept separate so it can be applied after pre-flight migrations

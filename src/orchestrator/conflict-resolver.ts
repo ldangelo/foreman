@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import type { MergeQueueConfig } from "./merge-config.js";
 import { MergeValidator } from "./merge-validator.js";
+import type { ConflictPatterns } from "./conflict-patterns.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -75,6 +76,13 @@ export interface FallbackResult {
   error?: string;
 }
 
+export interface UntrackedCheckResult {
+  conflicts: string[];
+  action: "deleted" | "stashed" | "aborted" | "none";
+  stashPath?: string;
+  errorCode?: string;
+}
+
 export interface MergeAttemptResult {
   success: boolean;
   conflictedFiles: string[];
@@ -115,6 +123,7 @@ const CHARS_PER_TOKEN = 4;
 export class ConflictResolver {
   private anthropicClient?: AnthropicClient;
   private validator?: MergeValidator;
+  private patternLearning?: ConflictPatterns;
   private sessionCostUsd: number = 0;
 
   constructor(
@@ -143,6 +152,11 @@ export class ConflictResolver {
   /** Set (or replace) the MergeValidator instance for AI output validation. */
   setValidator(validator: MergeValidator): void {
     this.validator = validator;
+  }
+
+  /** Set (or replace) the ConflictPatterns instance for pattern learning (MQ-T067). */
+  setPatternLearning(patterns: ConflictPatterns): void {
+    this.patternLearning = patterns;
   }
 
   /** Run a git command in the project directory. Returns trimmed stdout. */
@@ -176,6 +190,98 @@ export class ConflictResolver {
         stderr: (e.stderr ?? e.message ?? "").trim(),
       };
     }
+  }
+
+  /**
+   * Check for untracked files in the working tree that would conflict
+   * with files added by the incoming branch.
+   *
+   * @param branchName   The branch to be merged
+   * @param targetBranch The target branch (e.g. "main")
+   * @param mode         How to handle conflicts: 'delete' (default), 'stash', or 'abort'
+   */
+  async checkUntrackedConflicts(
+    branchName: string,
+    targetBranch: string,
+    mode: "delete" | "stash" | "abort" = "delete",
+  ): Promise<UntrackedCheckResult> {
+    // Get files added by the branch
+    const addedResult = await this.gitTry([
+      "diff",
+      "--name-only",
+      "--diff-filter=A",
+      `${targetBranch}...${branchName}`,
+    ]);
+    const addedFiles = addedResult.ok
+      ? addedResult.stdout.split("\n").map((f) => f.trim()).filter(Boolean)
+      : [];
+
+    if (addedFiles.length === 0) {
+      return { conflicts: [], action: "none" };
+    }
+
+    // Get untracked files in the working tree
+    const untrackedResult = await this.gitTry([
+      "ls-files",
+      "--others",
+      "--exclude-standard",
+    ]);
+    const untrackedFiles = new Set(
+      untrackedResult.ok
+        ? untrackedResult.stdout.split("\n").map((f) => f.trim()).filter(Boolean)
+        : [],
+    );
+
+    // Find intersection
+    const conflicts = addedFiles.filter((f) => untrackedFiles.has(f));
+
+    if (conflicts.length === 0) {
+      return { conflicts: [], action: "none" };
+    }
+
+    if (mode === "abort") {
+      return {
+        conflicts,
+        action: "aborted",
+        errorCode: "MQ-014",
+      };
+    }
+
+    if (mode === "stash") {
+      const timestamp = Date.now();
+      const stashDir = path.join(
+        this.projectPath,
+        ".foreman",
+        "stashed",
+        String(timestamp),
+      );
+      await fs.mkdir(stashDir, { recursive: true });
+
+      for (const file of conflicts) {
+        const src = path.join(this.projectPath, file);
+        const destDir = path.join(stashDir, path.dirname(file));
+        await fs.mkdir(destDir, { recursive: true });
+        const dest = path.join(stashDir, file);
+        await fs.rename(src, dest);
+      }
+
+      return {
+        conflicts,
+        action: "stashed",
+        stashPath: stashDir,
+      };
+    }
+
+    // Default: delete mode
+    for (const file of conflicts) {
+      const filePath = path.join(this.projectPath, file);
+      await fs.unlink(filePath);
+    }
+
+    return {
+      conflicts,
+      action: "deleted",
+    };
   }
 
   /**
@@ -709,8 +815,16 @@ export class ConflictResolver {
     await this.gitTry(["merge", "--no-commit", "--no-ff", branchName]);
 
     // ── Step 3: Per-file cascade ──
+    const ext = (f: string) => path.extname(f);
+
     for (const filePath of mergeResult.conflictedFiles) {
       let resolved = false;
+
+      // Pattern learning: prefer fallback if file has repeated test failures (MQ-016)
+      if (this.patternLearning?.shouldPreferFallback(filePath)) {
+        fallbackFiles.push(filePath);
+        continue;
+      }
 
       // Tier 2
       const tier2 = await this.attemptTier2Resolution(
@@ -720,38 +834,54 @@ export class ConflictResolver {
       );
       if (tier2.success) {
         resolvedTiers.set(filePath, 2);
+        this.patternLearning?.recordOutcome(filePath, ext(filePath), 2, true);
         resolved = true;
         continue;
       }
+      this.patternLearning?.recordOutcome(filePath, ext(filePath), 2, false, tier2.reason);
 
       // Tier 3 (only if Anthropic client is available)
       if (this.anthropicClient) {
-        // Read the conflicted file content from the working tree
-        const conflictedContent = await this.readConflictedFile(filePath);
-        const tier3 = await this.attemptTier3Resolution(
-          filePath,
-          conflictedContent,
-        );
-        if (tier3.cost) costs.push(tier3.cost);
-        if (tier3.success && tier3.resolvedContent) {
-          await this.writeResolvedFile(filePath, tier3.resolvedContent);
-          resolvedTiers.set(filePath, 3);
-          resolved = true;
-          continue;
+        // Pattern learning: skip Tier 3 if consistently fails for this extension (MQ-015)
+        const skipTier3 = this.patternLearning?.shouldSkipTier(ext(filePath), 3) ?? false;
+
+        if (!skipTier3) {
+          // Read the conflicted file content from the working tree
+          const conflictedContent = await this.readConflictedFile(filePath);
+          const tier3 = await this.attemptTier3Resolution(
+            filePath,
+            conflictedContent,
+          );
+          if (tier3.cost) costs.push(tier3.cost);
+          if (tier3.success && tier3.resolvedContent) {
+            await this.writeResolvedFile(filePath, tier3.resolvedContent);
+            resolvedTiers.set(filePath, 3);
+            this.patternLearning?.recordOutcome(filePath, ext(filePath), 3, true);
+            resolved = true;
+            continue;
+          }
+          this.patternLearning?.recordOutcome(filePath, ext(filePath), 3, false, tier3.error);
         }
 
-        // Tier 4
-        const tier4 = await this.attemptTier4Resolution(
-          filePath,
-          branchName,
-          targetBranch,
-        );
-        if (tier4.cost) costs.push(tier4.cost);
-        if (tier4.success && tier4.resolvedContent) {
-          await this.writeResolvedFile(filePath, tier4.resolvedContent);
-          resolvedTiers.set(filePath, 4);
-          resolved = true;
-          continue;
+        // Pattern learning: skip Tier 4 if consistently fails for this extension (MQ-015)
+        const skipTier4 = this.patternLearning?.shouldSkipTier(ext(filePath), 4) ?? false;
+
+        if (!skipTier4) {
+          // Tier 4
+          const tier4 = await this.attemptTier4Resolution(
+            filePath,
+            branchName,
+            targetBranch,
+          );
+          if (tier4.cost) costs.push(tier4.cost);
+          if (tier4.success && tier4.resolvedContent) {
+            await this.writeResolvedFile(filePath, tier4.resolvedContent);
+            resolvedTiers.set(filePath, 4);
+            this.patternLearning?.recordOutcome(filePath, ext(filePath), 4, true);
+            resolved = true;
+            continue;
+          }
+          this.patternLearning?.recordOutcome(filePath, ext(filePath), 4, false, tier4.error);
         }
       }
 

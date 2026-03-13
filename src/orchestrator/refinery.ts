@@ -136,24 +136,30 @@ export class Refinery {
    * No-op when there are no dirty state files.
    */
   private async autoCommitStateFiles(): Promise<void> {
-    // Use execFileAsync directly (not the git() helper) because git() trims
-    // stdout, which strips the leading whitespace from porcelain status codes.
-    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
-      cwd: this.projectPath,
-      maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
-    });
-    if (!stdout || !stdout.trim()) return;
+    try {
+      // Use execFileAsync directly (not the git() helper) because git() trims
+      // stdout, which strips the leading whitespace from porcelain status codes.
+      const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
+        cwd: this.projectPath,
+        maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+      });
+      if (!stdout || !stdout.trim()) return;
 
-    const lines = stdout.split("\n").filter(Boolean);
-    // Each line has format "XY path" — the path starts at column 3
-    const stateFiles = lines
-      .map((line) => line.slice(3))
-      .filter((path) => path.startsWith(".seeds/") || path.startsWith(".foreman/"));
+      const lines = stdout.split("\n").filter(Boolean);
+      // Each line has format "XY path" — the path starts at column 3
+      const stateFiles = lines
+        .map((line) => line.slice(3))
+        .filter((path) => path.startsWith(".seeds/") || path.startsWith(".foreman/"));
 
-    if (stateFiles.length === 0) return;
+      if (stateFiles.length === 0) return;
 
-    await git(["add", ...stateFiles], this.projectPath);
-    await git(["commit", "-m", "chore: auto-commit state files before merge"], this.projectPath);
+      await git(["add", ...stateFiles], this.projectPath);
+      await git(["commit", "-m", "chore: auto-commit state files before merge"], this.projectPath);
+    } catch (err: unknown) {
+      // MQ-020: Auto-commit failure is non-fatal — log and continue
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[MQ-020] Auto-commit state files failed (non-fatal): ${message}`);
+    }
   }
 
   /**

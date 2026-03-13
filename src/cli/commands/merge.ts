@@ -10,6 +10,7 @@ import { Refinery, dryRunMerge } from "../../orchestrator/refinery.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { MergeQueueStatus } from "../../orchestrator/merge-queue.js";
 import type { MergedRun, ConflictRun, FailedRun, CreatedPr } from "../../orchestrator/types.js";
+import { MergeCostTracker } from "../../orchestrator/merge-cost-tracker.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,6 +35,8 @@ export const mergeCommand = new Command("merge")
   .option("--dry-run", "Preview merge results without modifying git state")
   .option("--resolve <runId>", "Resolve a conflicting run by ID")
   .option("--strategy <strategy>", "Conflict resolution strategy: theirs|abort")
+  .option("--stats [period]", "Show merge cost statistics (daily|weekly|monthly|all)")
+  .option("--json", "Output stats in JSON format")
   .action(async (opts) => {
     try {
       const projectPath = await getRepoRoot(process.cwd());
@@ -96,6 +99,47 @@ export const mergeCommand = new Command("merge")
           console.log(chalk.yellow(`Merge aborted -- ${run.seed_id} marked as failed.`));
         } else {
           console.log(chalk.red(`Failed to resolve conflict for ${run.seed_id} -- marked as failed.`));
+        }
+
+        store.close();
+        return;
+      }
+
+      // --stats: show merge cost statistics (MQ-T071)
+      if (opts.stats !== undefined) {
+        const costTracker = new MergeCostTracker(store.getDb());
+        const period = (typeof opts.stats === "string" ? opts.stats : "all") as "daily" | "weekly" | "monthly" | "all";
+        const stats = costTracker.getStats(period);
+
+        if (opts.json) {
+          console.log(JSON.stringify(stats, null, 2));
+        } else {
+          console.log(chalk.bold(`Merge cost statistics (${period}):\n`));
+          console.log(`  Total cost:     $${stats.totalCostUsd.toFixed(4)}`);
+          console.log(`  Input tokens:   ${stats.totalInputTokens.toLocaleString()}`);
+          console.log(`  Output tokens:  ${stats.totalOutputTokens.toLocaleString()}`);
+          console.log(`  Entries:        ${stats.entryCount}`);
+
+          if (Object.keys(stats.byTier).length > 0) {
+            console.log(chalk.bold("\n  By tier:"));
+            for (const [tier, breakdown] of Object.entries(stats.byTier)) {
+              console.log(`    Tier ${tier}: ${breakdown.count} calls, $${breakdown.totalCostUsd.toFixed(4)}`);
+            }
+          }
+
+          if (Object.keys(stats.byModel).length > 0) {
+            console.log(chalk.bold("\n  By model:"));
+            for (const [model, breakdown] of Object.entries(stats.byModel)) {
+              console.log(`    ${model}: ${breakdown.count} calls, $${breakdown.totalCostUsd.toFixed(4)}`);
+            }
+          }
+
+          // Resolution rate (MQ-T072)
+          const rate = costTracker.getResolutionRate(30);
+          if (rate.total > 0) {
+            console.log(chalk.bold("\n  AI resolution rate (30 days):"));
+            console.log(`    ${rate.successes}/${rate.total} conflicts (${rate.rate.toFixed(1)}%)`);
+          }
         }
 
         store.close();
@@ -313,6 +357,21 @@ export const mergeCommand = new Command("merge")
           console.log(`    ${chalk.dim(f.error.split("\n")[0])}`);
         }
         console.log();
+      }
+
+      // Display running AI resolution rate after merge (MQ-T072)
+      if (merged.length > 0 || conflicts.length > 0) {
+        try {
+          const costTracker = new MergeCostTracker(store.getDb());
+          const rate = costTracker.getResolutionRate(30);
+          if (rate.total > 0) {
+            console.log(
+              chalk.dim(`AI resolution rate: ${rate.successes}/${rate.total} conflicts (${rate.rate.toFixed(1)}%) over last 30 days\n`),
+            );
+          }
+        } catch {
+          // Cost tracking tables may not exist yet — silently skip
+        }
       }
 
       if (merged.length === 0 && conflicts.length === 0 && testFailures.length === 0 && prsCreated.length === 0) {
