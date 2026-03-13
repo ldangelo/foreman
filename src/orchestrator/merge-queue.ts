@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { orderByCluster } from "./conflict-cluster.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -193,6 +194,41 @@ export class MergeQueue {
    */
   remove(id: number): void {
     this.db.prepare("DELETE FROM merge_queue WHERE id = ?").run(id);
+  }
+
+  /**
+   * Return all pending entries ordered by conflict cluster.
+   * Entries within the same cluster (sharing modified files) are grouped consecutively.
+   * Within each cluster, FIFO order (by enqueued_at) is maintained.
+   */
+  getOrderedPending(): MergeQueueEntry[] {
+    const pending = this.list("pending");
+    return orderByCluster(pending);
+  }
+
+  /**
+   * Atomically claim the next pending entry using cluster-aware ordering.
+   * Entries that share modified files with each other are processed consecutively
+   * to reduce merge conflict likelihood.
+   * Returns null if no pending entries exist.
+   */
+  dequeueOrdered(): MergeQueueEntry | null {
+    const ordered = this.getOrderedPending();
+    if (ordered.length === 0) return null;
+
+    const target = ordered[0];
+    const now = new Date().toISOString();
+
+    const row = this.db
+      .prepare(
+        `UPDATE merge_queue
+         SET status = 'merging', started_at = ?
+         WHERE id = ? AND status = 'pending'
+         RETURNING *`
+      )
+      .get(now, target.id) as MergeQueueRow | undefined;
+
+    return row ? rowToEntry(row) : null;
   }
 
   /**

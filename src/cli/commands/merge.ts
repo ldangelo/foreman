@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { SeedsClient } from "../../lib/seeds.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
-import { Refinery } from "../../orchestrator/refinery.js";
+import { Refinery, dryRunMerge } from "../../orchestrator/refinery.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { MergeQueueStatus } from "../../orchestrator/merge-queue.js";
 import type { MergedRun, ConflictRun, FailedRun, CreatedPr } from "../../orchestrator/types.js";
@@ -31,6 +31,7 @@ export const mergeCommand = new Command("merge")
   .option("--test-command <cmd>", "Test command to run", "npm test")
   .option("--seed <id>", "Merge a single seed by ID")
   .option("--list", "List seeds ready to merge (no merge performed)")
+  .option("--dry-run", "Preview merge results without modifying git state")
   .option("--resolve <runId>", "Resolve a conflicting run by ID")
   .option("--strategy <strategy>", "Conflict resolution strategy: theirs|abort")
   .action(async (opts) => {
@@ -97,6 +98,61 @@ export const mergeCommand = new Command("merge")
           console.log(chalk.red(`Failed to resolve conflict for ${run.seed_id} -- marked as failed.`));
         }
 
+        store.close();
+        return;
+      }
+
+      // --dry-run: preview merge without modifying git state (MQ-T058)
+      if (opts.dryRun) {
+        // Reconcile first to get current queue state
+        const reconcileResult = await mq.reconcile(store.getDb(), projectPath, execFileAsync);
+        if (reconcileResult.enqueued > 0) {
+          console.log(chalk.dim(`  (reconciled ${reconcileResult.enqueued} new entry/entries into queue)\n`));
+        }
+
+        const entries = mq.list();
+        const branches = entries.map((e) => ({
+          branchName: e.branch_name,
+          seedId: e.seed_id,
+        }));
+
+        if (branches.length === 0) {
+          console.log(chalk.yellow("No branches in merge queue to preview."));
+          store.close();
+          return;
+        }
+
+        console.log(chalk.bold("Dry-run merge preview:\n"));
+
+        const dryRunResults = await dryRunMerge(
+          projectPath,
+          opts.targetBranch,
+          branches,
+          opts.seed as string | undefined,
+        );
+
+        for (const entry of dryRunResults) {
+          const conflictIcon = entry.hasConflicts
+            ? chalk.red("CONFLICT")
+            : chalk.green("OK");
+          const tierStr =
+            entry.estimatedTier !== undefined
+              ? chalk.dim(` [tier ${entry.estimatedTier}]`)
+              : "";
+
+          console.log(`  ${conflictIcon}${tierStr} ${chalk.cyan(entry.seedId)} ${chalk.dim(entry.branchName)}`);
+
+          if (entry.error) {
+            console.log(`    ${chalk.red(entry.error)}`);
+          } else if (entry.diffStat) {
+            for (const line of entry.diffStat.split("\n")) {
+              console.log(`    ${chalk.dim(line)}`);
+            }
+          }
+          console.log();
+        }
+
+        console.log(chalk.dim("No git state was modified."));
         store.close();
         return;
       }

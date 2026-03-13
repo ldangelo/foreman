@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ForemanStore } from "../lib/store.js";
@@ -731,5 +731,166 @@ export class Refinery {
     }
 
     return { created, failed };
+  }
+}
+
+// ── Dry-run merge ─────────────────────────────────────────────────────────────
+
+export interface DryRunEntry {
+  seedId: string;
+  branchName: string;
+  diffStat: string;
+  hasConflicts: boolean;
+  estimatedTier?: number;
+  error?: string;
+}
+
+/**
+ * Preview what merging branches into the target would look like.
+ * Reads `git diff --stat` and detects conflicts via `git merge-tree`.
+ * No git state is modified.
+ *
+ * @param projectPath   Repository root
+ * @param targetBranch  Branch to merge into (e.g. "main")
+ * @param branches      List of branches to check
+ * @param filterSeedId  If set, only process this seed
+ * @param conflictPatterns  Optional map of file -> resolution tier for estimated tier column
+ */
+export async function dryRunMerge(
+  projectPath: string,
+  targetBranch: string,
+  branches: Array<{ branchName: string; seedId: string }>,
+  filterSeedId?: string,
+  conflictPatterns?: Map<string, number>,
+): Promise<DryRunEntry[]> {
+  const results: DryRunEntry[] = [];
+
+  const filtered = filterSeedId
+    ? branches.filter((b) => b.seedId === filterSeedId)
+    : branches;
+
+  for (const { branchName, seedId } of filtered) {
+    try {
+      // Get merge base
+      const mergeBase = await gitReadOnly(
+        ["merge-base", targetBranch, branchName],
+        projectPath,
+      );
+
+      // Get diff stat (read-only)
+      const diffStat = await gitReadOnly(
+        ["diff", "--stat", `${targetBranch}...${branchName}`],
+        projectPath,
+      );
+
+      // Detect conflicts via merge-tree (read-only, no state change)
+      const mergeTreeOutput = await gitReadOnly(
+        ["merge-tree", mergeBase, targetBranch, branchName],
+        projectPath,
+      );
+
+      const hasConflicts = mergeTreeOutput.includes("changed in both");
+
+      // Estimate resolution tier from conflict patterns
+      let estimatedTier: number | undefined;
+      if (hasConflicts && conflictPatterns && conflictPatterns.size > 0) {
+        // Find the highest (worst) tier among conflicting files
+        const conflictFileMatches = Array.from(conflictPatterns.entries())
+          .filter(([file]) => mergeTreeOutput.includes(file));
+        if (conflictFileMatches.length > 0) {
+          estimatedTier = Math.max(...conflictFileMatches.map(([, tier]) => tier));
+        }
+      }
+
+      results.push({ seedId, branchName, diffStat, hasConflicts, estimatedTier });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      results.push({
+        seedId,
+        branchName,
+        diffStat: "",
+        hasConflicts: false,
+        error: message,
+      });
+    }
+  }
+
+  return results;
+}
+
+/** Read-only git command — guaranteed not to modify state. */
+async function gitReadOnly(args: string[], cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, {
+    cwd,
+    maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+  });
+  return stdout.trim();
+}
+
+// ── Seeds preservation ────────────────────────────────────────────────────────
+
+export interface SeedPreservationResult {
+  preserved: boolean;
+  error?: string;
+}
+
+/**
+ * Preserve `.seeds/` changes from a branch before it is deleted.
+ * Extracts `.seeds/` changes via `git diff`, writes a temp patch file,
+ * applies it to the current index, and commits with a descriptive message.
+ *
+ * Error code MQ-019 on patch failure.
+ *
+ * @param projectPath   Repository root
+ * @param branchName    Source branch containing seed changes
+ * @param targetBranch  Target branch to apply changes to
+ */
+export async function preserveSeedChanges(
+  projectPath: string,
+  branchName: string,
+  targetBranch: string,
+): Promise<SeedPreservationResult> {
+  const tmpPatchPath = join(projectPath, `.foreman-seed-patch-${Date.now()}.patch`);
+
+  try {
+    // Extract .seeds/ changes
+    const patchContent = await gitReadOnly(
+      ["diff", `${targetBranch}...${branchName}`, "--", ".seeds/"],
+      projectPath,
+    );
+
+    if (!patchContent.trim()) {
+      return { preserved: false };
+    }
+
+    // Write temp patch
+    writeFileSync(tmpPatchPath, patchContent);
+
+    // Apply the patch to the index
+    try {
+      await git(["apply", "--index", tmpPatchPath], projectPath);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { preserved: false, error: `MQ-019: ${message}` };
+    }
+
+    // Commit the seed changes
+    const seedId = branchName.replace(/^foreman\//, "");
+    await git(
+      ["commit", "-m", `chore: preserve seed changes from ${seedId}`],
+      projectPath,
+    );
+
+    return { preserved: true };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { preserved: false, error: message };
+  } finally {
+    // Always clean up temp file
+    try {
+      unlinkSync(tmpPatchPath);
+    } catch {
+      // File may not have been created — ignore
+    }
   }
 }
