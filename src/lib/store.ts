@@ -27,6 +27,7 @@ export interface Run {
   completed_at: string | null;
   created_at: string;
   progress: string | null;
+  tmux_session: string | null;
 }
 
 export interface Cost {
@@ -234,6 +235,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_run_sender
 const MIGRATIONS = [
   `ALTER TABLE runs ADD COLUMN progress TEXT DEFAULT NULL`,
   `ALTER TABLE runs RENAME COLUMN bead_id TO seed_id`,
+  `ALTER TABLE runs ADD COLUMN tmux_session TEXT DEFAULT NULL`,
 ];
 
 // One-time destructive migrations that cannot be made idempotent via failure
@@ -381,6 +383,7 @@ export class ForemanStore {
       completed_at: null,
       created_at: now,
       progress: null,
+      tmux_session: null,
     };
     this.db
       .prepare(
@@ -393,7 +396,7 @@ export class ForemanStore {
 
   updateRun(
     id: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at">>
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "tmux_session">>
   ): void {
     const fields: string[] = [];
     const values: Record<string, unknown> = { id };

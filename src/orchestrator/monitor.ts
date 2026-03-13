@@ -3,15 +3,21 @@ import type { SeedsClient } from "../lib/seeds.js";
 import { removeWorktree, createWorktree } from "../lib/git.js";
 import type { MonitorReport } from "./types.js";
 import { PIPELINE_LIMITS } from "../lib/config.js";
+import type { TmuxClient } from "../lib/tmux.js";
 
 // ── Monitor ──────────────────────────────────────────────────────────────
 
 export class Monitor {
+  private tmux?: TmuxClient;
+
   constructor(
     private store: ForemanStore,
     private seeds: SeedsClient,
     private projectPath: string,
-  ) {}
+    tmux?: TmuxClient,
+  ) {
+    this.tmux = tmux;
+  }
 
   /**
    * Check all active runs and categorise them by status.
@@ -35,6 +41,26 @@ export class Monitor {
 
     for (const run of activeRuns) {
       try {
+        // ── Tmux liveness check (runs BEFORE seed-status check) ──────
+        if (this.tmux && run.tmux_session) {
+          const tmuxAlive = await this.tmux.hasSession(run.tmux_session);
+          if (!tmuxAlive) {
+            this.store.updateRun(run.id, { status: "stuck" });
+            this.store.logEvent(
+              run.project_id,
+              "stuck",
+              {
+                seedId: run.seed_id,
+                detectedBy: "tmux-liveness",
+                tmuxSession: run.tmux_session,
+              },
+              run.id,
+            );
+            report.stuck.push({ ...run, status: "stuck" });
+            continue;
+          }
+        }
+
         const seedDetail = await this.seeds.show(run.seed_id);
 
         if (seedDetail.status === "closed" || seedDetail.status === "completed") {

@@ -10,6 +10,7 @@ import { listWorktrees, removeWorktree } from "../lib/git.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { MergeQueue, MergeQueueEntry } from "./merge-queue.js";
+import type { TmuxClient } from "../lib/tmux.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,13 +33,16 @@ function extractPid(sessionKey: string | null): number | null {
 
 export class Doctor {
   private mergeQueue?: MergeQueue;
+  private tmux?: TmuxClient;
 
   constructor(
     private store: ForemanStore,
     private projectPath: string,
     mergeQueue?: MergeQueue,
+    tmux?: TmuxClient,
   ) {
     this.mergeQueue = mergeQueue;
+    this.tmux = tmux;
   }
 
   // ── System checks ──────────────────────────────────────────────────
@@ -671,6 +675,176 @@ export class Doctor {
     return [stale, duplicates, orphaned];
   }
 
+  // ── Session Management checks ─────────────────────────────────────
+
+  /**
+   * Check if tmux is available and at a supported version (>= 3.0).
+   */
+  async checkTmuxAvailability(): Promise<CheckResult> {
+    if (!this.tmux) {
+      return { name: "tmux availability", status: "skip", message: "No tmux client configured" };
+    }
+
+    const available = await this.tmux.isAvailable();
+    if (!available) {
+      return { name: "tmux availability", status: "warn", message: "tmux is not available on this system" };
+    }
+
+    const version = await this.tmux.getTmuxVersion();
+    if (!version) {
+      return { name: "tmux availability", status: "warn", message: "tmux available but version could not be determined" };
+    }
+
+    // Parse major version for >= 3.0 check
+    const majorMatch = version.match(/^(\d+)/);
+    const major = majorMatch ? parseInt(majorMatch[1], 10) : 0;
+    if (major < 3) {
+      return {
+        name: "tmux availability",
+        status: "warn",
+        message: `tmux version ${version} detected; version >= 3.0 recommended`,
+      };
+    }
+
+    return { name: "tmux availability", status: "pass", message: `tmux version ${version}` };
+  }
+
+  /**
+   * Detect orphaned tmux sessions: foreman-* sessions with no matching active run.
+   */
+  async checkOrphanedTmuxSessions(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
+    const { fix = false, dryRun = false } = opts;
+
+    if (!this.tmux) {
+      return [{ name: "orphaned tmux sessions", status: "skip", message: "No tmux client configured" }];
+    }
+
+    const sessions = await this.tmux.listForemanSessions();
+    if (sessions.length === 0) {
+      return [{ name: "orphaned tmux sessions", status: "pass", message: "No foreman tmux sessions found" }];
+    }
+
+    const project = this.store.getProjectByPath(this.projectPath);
+    const activeRuns = project ? this.store.getActiveRuns(project.id) : [];
+    const activeTmuxSessions = new Set(
+      activeRuns
+        .filter((r) => r.tmux_session !== null)
+        .map((r) => r.tmux_session),
+    );
+
+    const results: CheckResult[] = [];
+    for (const session of sessions) {
+      if (activeTmuxSessions.has(session.sessionName)) {
+        results.push({
+          name: `tmux session: ${session.sessionName}`,
+          status: "pass",
+          message: `Active run matches session`,
+        });
+      } else {
+        if (dryRun) {
+          results.push({
+            name: `tmux session: ${session.sessionName}`,
+            status: "warn",
+            message: `Orphaned tmux session (no matching active run). Would kill (dry-run).`,
+          });
+        } else if (fix) {
+          await this.tmux.killSession(session.sessionName);
+          results.push({
+            name: `tmux session: ${session.sessionName}`,
+            status: "fixed",
+            message: `Orphaned tmux session (no matching active run)`,
+            fixApplied: `Killed orphaned tmux session ${session.sessionName}`,
+          });
+        } else {
+          results.push({
+            name: `tmux session: ${session.sessionName}`,
+            status: "warn",
+            message: `Orphaned tmux session (no matching active run). Use --fix to kill.`,
+          });
+        }
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Detect ghost runs: active runs with tmux_session where hasSession() returns false.
+   */
+  async checkGhostRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
+    const { fix = false, dryRun = false } = opts;
+
+    if (!this.tmux) {
+      return [{ name: "ghost runs", status: "skip", message: "No tmux client configured" }];
+    }
+
+    const project = this.store.getProjectByPath(this.projectPath);
+    const activeRuns = project ? this.store.getActiveRuns(project.id) : [];
+    const tmuxRuns = activeRuns.filter((r) => r.tmux_session !== null);
+
+    if (tmuxRuns.length === 0) {
+      return [{ name: "ghost runs", status: "pass", message: "No active runs with tmux sessions" }];
+    }
+
+    const results: CheckResult[] = [];
+    let ghostCount = 0;
+
+    for (const run of tmuxRuns) {
+      const alive = await this.tmux.hasSession(run.tmux_session!);
+      if (alive) continue;
+
+      ghostCount++;
+      if (dryRun) {
+        results.push({
+          name: `ghost run: ${run.seed_id}`,
+          status: "warn",
+          message: `Ghost run — tmux session ${run.tmux_session} is dead. Would mark stuck (dry-run).`,
+        });
+      } else if (fix) {
+        this.store.updateRun(run.id, { status: "stuck" });
+        results.push({
+          name: `ghost run: ${run.seed_id}`,
+          status: "fixed",
+          message: `Ghost run — tmux session ${run.tmux_session} is dead`,
+          fixApplied: `Marked ghost run ${run.seed_id} as stuck`,
+        });
+      } else {
+        results.push({
+          name: `ghost run: ${run.seed_id}`,
+          status: "warn",
+          message: `Ghost run — tmux session ${run.tmux_session} is dead. Use --fix to mark stuck.`,
+        });
+      }
+    }
+
+    if (ghostCount === 0) {
+      results.push({
+        name: "ghost runs",
+        status: "pass",
+        message: "All tmux sessions are alive",
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Run all session management checks (tmux availability, orphans, ghosts).
+   */
+  async checkSessionManagement(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
+    if (!this.tmux) {
+      return [{ name: "session management", status: "skip", message: "No tmux client configured" }];
+    }
+
+    const [availability, orphans, ghosts] = await Promise.all([
+      this.checkTmuxAvailability(),
+      this.checkOrphanedTmuxSessions(opts),
+      this.checkGhostRuns(opts),
+    ]);
+
+    return [availability, ...orphans, ...ghosts];
+  }
+
   async checkDataIntegrity(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
 
@@ -690,6 +864,12 @@ export class Doctor {
     if (this.mergeQueue) {
       const mqResults = await this.checkMergeQueueHealth(opts);
       results.push(...mqResults);
+    }
+
+    // Session management checks (only when tmux client is configured)
+    if (this.tmux) {
+      const sessionResults = await this.checkSessionManagement(opts);
+      results.push(...sessionResults);
     }
 
     return results;
