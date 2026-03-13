@@ -48,6 +48,20 @@ function inferTaskKind(title: string): string {
   return "task";
 }
 
+const MAX_TITLE_LENGTH = 490;
+
+/**
+ * Truncate a title to fit tracker limits. If truncated, the full text
+ * should be prepended to the description.
+ */
+function truncateTitle(title: string): { title: string; truncated: boolean } {
+  if (title.length <= MAX_TITLE_LENGTH) return { title, truncated: false };
+  return {
+    title: title.slice(0, MAX_TITLE_LENGTH - 3) + "...",
+    truncated: true,
+  };
+}
+
 // ── Progress callback ────────────────────────────────────────────────────
 
 export type ProgressCallback = (
@@ -121,6 +135,8 @@ async function executeForSeeds(
   const { plan, parallel, options } = ctx;
   const result: TrackerResult = { created: 0, skipped: 0, failed: 0, epicId: null, errors: [] };
   const trdIdToSdId = new Map<string, string>();
+  const trdIdToSdSprintId = new Map<string, string>();
+  const trdIdToSdStoryId = new Map<string, string>();
 
   // Count total items for progress
   const totalTasks = plan.sprints.reduce(
@@ -178,10 +194,12 @@ async function executeForSeeds(
           `Deliverables: ${sprint.summary.deliverables}`;
       }
 
+      // sd does not support --parent; use labels for hierarchy tracking
+      sprintLabels.push(`parent:${epicId}`);
+
       const sprintSeed = await seeds.create(sprint.title, {
         type: toTrackerType("sprint"),
         priority: toTrackerPriority(sprint.priority),
-        parent: epicId,
         description: sprintDescription,
         labels: sprintLabels,
       });
@@ -191,7 +209,7 @@ async function executeForSeeds(
 
       // Stories
       for (const story of sprint.stories) {
-        const storyLabels = ["kind:story"];
+        const storyLabels = ["kind:story", `parent:${sprintSeed.id}`];
         let storyDescription = "";
         if (story.acceptanceCriteria) {
           storyDescription += `## Acceptance Criteria\n${story.acceptanceCriteria}`;
@@ -200,7 +218,6 @@ async function executeForSeeds(
         const storySeed = await seeds.create(story.title, {
           type: toTrackerType("story"),
           priority: toTrackerPriority(sprint.priority),
-          parent: sprintSeed.id,
           description: storyDescription || undefined,
           labels: storyLabels,
         });
@@ -217,24 +234,26 @@ async function executeForSeeds(
 
           try {
             const kind = inferTaskKind(task.title);
-            const taskLabels = [`trd:${task.trdId}`];
+            const taskLabels = [`trd:${task.trdId}`, `parent:${storySeed.id}`];
             if (kind !== "task") taskLabels.push(`kind:${kind}`);
             if (task.estimateHours > 0) taskLabels.push(`est:${task.estimateHours}h`);
             if (task.riskLevel && !options.noRisks) taskLabels.push(`risk:${task.riskLevel}`);
 
+            const { title: taskTitle, truncated } = truncateTitle(task.title);
             let taskDescription = task.title;
             if (task.files.length > 0) {
               taskDescription += `\n\nFiles: ${task.files.map((f) => `\`${f}\``).join(", ")}`;
             }
 
-            const taskSeed = await seeds.create(task.title, {
+            const taskSeed = await seeds.create(taskTitle, {
               type: toTrackerType(kind),
               priority: toTrackerPriority(sprint.priority),
-              parent: storySeed.id,
               description: taskDescription,
               labels: taskLabels,
             });
             trdIdToSdId.set(task.trdId, taskSeed.id);
+            trdIdToSdSprintId.set(task.trdId, sprintSeed.id);
+            trdIdToSdStoryId.set(task.trdId, storySeed.id);
             result.created++;
             created++;
 
@@ -252,8 +271,15 @@ async function executeForSeeds(
       }
     }
 
-    // Wire dependencies
-    await wireDependencies(seeds, plan, trdIdToSdId, options, result);
+    // Wire task-level dependencies
+    const depErrors = await wireDependencies(seeds, plan, trdIdToSdId, options, result);
+    result.errors.push(...depErrors);
+
+    // Wire container-level blocking deps (sprint→sprint, story→story)
+    const containerDepErrors = await wireContainerDepsSd(
+      seeds, plan, trdIdToSdSprintId, trdIdToSdStoryId,
+    );
+    result.errors.push(...containerDepErrors);
   } catch (err: unknown) {
     result.errors.push(`SLING-006: Unexpected sd error: ${(err as Error).message}`);
   }
@@ -269,6 +295,9 @@ async function executeForBeadsRust(
   const { plan, parallel, options } = ctx;
   const result: TrackerResult = { created: 0, skipped: 0, failed: 0, epicId: null, errors: [] };
   const trdIdToBrId = new Map<string, string>();
+  // Track which sprint/story tracker ID each TRD task belongs to
+  const trdIdToSprintId = new Map<string, string>();
+  const trdIdToStoryId = new Map<string, string>();
 
   const totalTasks = plan.sprints.reduce(
     (sum, s) => sum + s.stories.reduce((ss, st) => ss + st.tasks.length, 0),
@@ -366,12 +395,13 @@ async function executeForBeadsRust(
             if (kind !== "task") taskLabels.push(`kind:${kind}`);
             if (task.riskLevel && !options.noRisks) taskLabels.push(`risk:${task.riskLevel}`);
 
+            const { title: taskTitle, truncated } = truncateTitle(task.title);
             let taskDescription = task.title;
             if (task.files.length > 0) {
               taskDescription += `\n\nFiles: ${task.files.map((f) => `\`${f}\``).join(", ")}`;
             }
 
-            const taskIssue = await beadsRust.create(task.title, {
+            const taskIssue = await beadsRust.create(taskTitle, {
               type: toTrackerType(kind),
               priority: toTrackerPriority(sprint.priority),
               parent: storyIssue.id,
@@ -380,6 +410,8 @@ async function executeForBeadsRust(
               estimate: task.estimateHours > 0 ? task.estimateHours * 60 : undefined,
             });
             trdIdToBrId.set(task.trdId, taskIssue.id);
+            trdIdToSprintId.set(task.trdId, sprintIssue.id);
+            trdIdToStoryId.set(task.trdId, storyIssue.id);
             result.created++;
             created++;
 
@@ -397,8 +429,16 @@ async function executeForBeadsRust(
       }
     }
 
-    // Wire dependencies
-    await wireDependenciesBr(beadsRust, plan, trdIdToBrId, options, result);
+    // Wire task-level dependencies
+    const depErrors = await wireDependenciesBr(beadsRust, plan, trdIdToBrId, options, result);
+    result.errors.push(...depErrors);
+
+    // Wire container-level blocking deps (sprint→sprint, story→story)
+    // inferred from cross-boundary task dependencies
+    const containerDepErrors = await wireContainerDepsBr(
+      beadsRust, plan, trdIdToSprintId, trdIdToStoryId,
+    );
+    result.errors.push(...containerDepErrors);
   } catch (err: unknown) {
     result.errors.push(`SLING-006: Unexpected br error: ${(err as Error).message}`);
   }
@@ -407,6 +447,64 @@ async function executeForBeadsRust(
 }
 
 // ── Dependency wiring ────────────────────────────────────────────────────
+
+async function wireContainerDepsSd(
+  client: SeedsClient,
+  plan: SlingPlan,
+  trdIdToSprintId: Map<string, string>,
+  trdIdToStoryId: Map<string, string>,
+): Promise<string[]> {
+  const depErrors: string[] = [];
+  const sprintDeps = new Set<string>();
+  const storyDeps = new Set<string>();
+
+  for (const sprint of plan.sprints) {
+    for (const story of sprint.stories) {
+      for (const task of story.tasks) {
+        const taskSprintId = trdIdToSprintId.get(task.trdId);
+        const taskStoryId = trdIdToStoryId.get(task.trdId);
+        if (!taskSprintId || !taskStoryId) continue;
+
+        for (const depTrdId of task.dependencies) {
+          const depSprintId = trdIdToSprintId.get(depTrdId);
+          const depStoryId = trdIdToStoryId.get(depTrdId);
+          if (!depSprintId || !depStoryId) continue;
+
+          if (taskSprintId !== depSprintId) {
+            sprintDeps.add(`${taskSprintId}|${depSprintId}`);
+          }
+          if (taskStoryId !== depStoryId) {
+            storyDeps.add(`${taskStoryId}|${depStoryId}`);
+          }
+        }
+      }
+    }
+  }
+
+  for (const pair of sprintDeps) {
+    const [sprintId, depSprintId] = pair.split("|");
+    try {
+      await client.addDependency(sprintId, depSprintId);
+    } catch (err: unknown) {
+      depErrors.push(
+        `SLING-007: Failed to wire sprint dep ${sprintId} -> ${depSprintId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  for (const pair of storyDeps) {
+    const [storyId, depStoryId] = pair.split("|");
+    try {
+      await client.addDependency(storyId, depStoryId);
+    } catch (err: unknown) {
+      depErrors.push(
+        `SLING-007: Failed to wire story dep ${storyId} -> ${depStoryId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  return depErrors;
+}
 
 async function wireDependencies(
   client: SeedsClient,
@@ -483,6 +581,80 @@ async function wireDependenciesBr(
           }
         }
       }
+    }
+  }
+
+  return depErrors;
+}
+
+// ── Container dependency wiring ──────────────────────────────────────────
+
+/**
+ * Infer and wire sprint-to-sprint and story-to-story blocking deps
+ * based on cross-boundary task dependencies.
+ *
+ * If task A (in sprint X, story S1) depends on task B (in sprint Y, story S2),
+ * and X !== Y, then sprint X should block on sprint Y.
+ * If S1 !== S2, then story S1 should block on story S2.
+ */
+async function wireContainerDepsBr(
+  client: BeadsRustClient,
+  plan: SlingPlan,
+  trdIdToSprintId: Map<string, string>,
+  trdIdToStoryId: Map<string, string>,
+): Promise<string[]> {
+  const depErrors: string[] = [];
+
+  // Collect unique sprint→sprint and story→story blocking pairs
+  const sprintDeps = new Set<string>(); // "sprintId|depSprintId"
+  const storyDeps = new Set<string>();  // "storyId|depStoryId"
+
+  for (const sprint of plan.sprints) {
+    for (const story of sprint.stories) {
+      for (const task of story.tasks) {
+        const taskSprintId = trdIdToSprintId.get(task.trdId);
+        const taskStoryId = trdIdToStoryId.get(task.trdId);
+        if (!taskSprintId || !taskStoryId) continue;
+
+        for (const depTrdId of task.dependencies) {
+          const depSprintId = trdIdToSprintId.get(depTrdId);
+          const depStoryId = trdIdToStoryId.get(depTrdId);
+          if (!depSprintId || !depStoryId) continue;
+
+          // Cross-sprint dep
+          if (taskSprintId !== depSprintId) {
+            sprintDeps.add(`${taskSprintId}|${depSprintId}`);
+          }
+          // Cross-story dep (includes cross-sprint stories)
+          if (taskStoryId !== depStoryId) {
+            storyDeps.add(`${taskStoryId}|${depStoryId}`);
+          }
+        }
+      }
+    }
+  }
+
+  // Wire sprint blocking deps
+  for (const pair of sprintDeps) {
+    const [sprintId, depSprintId] = pair.split("|");
+    try {
+      await client.addDependency(sprintId, depSprintId);
+    } catch (err: unknown) {
+      depErrors.push(
+        `SLING-007: Failed to wire sprint dep ${sprintId} -> ${depSprintId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  // Wire story blocking deps
+  for (const pair of storyDeps) {
+    const [storyId, depStoryId] = pair.split("|");
+    try {
+      await client.addDependency(storyId, depStoryId);
+    } catch (err: unknown) {
+      depErrors.push(
+        `SLING-007: Failed to wire story dep ${storyId} -> ${depStoryId}: ${(err as Error).message}`,
+      );
     }
   }
 

@@ -196,8 +196,9 @@ describe("execute", () => {
 
     await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
 
-    // TP-T002 depends on TP-T001, TP-T003 depends on TP-T001
-    expect(seeds.addDependency).toHaveBeenCalledTimes(2);
+    // TP-T002 depends on TP-T001, TP-T003 depends on TP-T001 (task-level: 2)
+    // Sprint 2 depends on Sprint 1, Story 2.1 depends on Story 1.1 (container-level: 2)
+    expect(seeds.addDependency).toHaveBeenCalledTimes(4);
   });
 
   it("applies trd: labels to tasks", async () => {

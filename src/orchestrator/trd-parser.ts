@@ -74,7 +74,8 @@ export function parseTableHeader(headerRow: string): ColumnMap {
  * Split a markdown table row into cell values, trimming whitespace.
  */
 export function splitTableRow(row: string): string[] {
-  // Remove leading/trailing pipes and split
+  // Remove leading/trailing pipes, then split on | while respecting backtick spans.
+  // Pipes inside backtick code spans (e.g., `string | null`) are NOT column delimiters.
   const trimmed = row.trim();
   const withoutPipes = trimmed.startsWith("|")
     ? trimmed.slice(1)
@@ -82,7 +83,26 @@ export function splitTableRow(row: string): string[] {
   const end = withoutPipes.endsWith("|")
     ? withoutPipes.slice(0, -1)
     : withoutPipes;
-  return end.split("|").map((cell) => cell.trim());
+
+  const cells: string[] = [];
+  let current = "";
+  let inBacktick = false;
+
+  for (let i = 0; i < end.length; i++) {
+    const ch = end[i];
+    if (ch === "`") {
+      inBacktick = !inBacktick;
+      current += ch;
+    } else if (ch === "|" && !inBacktick) {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  cells.push(current.trim());
+
+  return cells;
 }
 
 /**
@@ -116,10 +136,29 @@ function parseEstimate(raw: string): number {
 function parseDeps(raw: string): string[] {
   const trimmed = raw.trim();
   if (!trimmed || trimmed === "--") return [];
-  return trimmed
+
+  const parts = trimmed
     .split(/[,;]\s*/)
     .map((d) => d.trim())
     .filter(Boolean);
+
+  // Expand range expressions like "AT-T001 through AT-T008"
+  const expanded: string[] = [];
+  for (const part of parts) {
+    const rangeMatch = part.match(/^([A-Z]+-T)(\d+)\s+through\s+\1(\d+)$/i);
+    if (rangeMatch) {
+      const prefix = rangeMatch[1];
+      const start = parseInt(rangeMatch[2], 10);
+      const end = parseInt(rangeMatch[3], 10);
+      for (let n = start; n <= end; n++) {
+        expanded.push(`${prefix}${String(n).padStart(rangeMatch[2].length, "0")}`);
+      }
+    } else {
+      expanded.push(part);
+    }
+  }
+
+  return expanded;
 }
 
 function parseFiles(raw: string): string[] {
