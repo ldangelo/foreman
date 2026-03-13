@@ -5,6 +5,9 @@ const execFileAsync = promisify(execFile);
 
 const TMUX_TIMEOUT = 5000;
 
+// Module-level cache: shared across all TmuxClient instances for the process lifetime
+let cachedAvailability: boolean | null = null;
+
 // ── Type Definitions ─────────────────────────────────────────────────────
 
 /** Options for creating a new tmux session */
@@ -46,30 +49,28 @@ export function tmuxSessionName(seedId: string): string {
 // ── TmuxClient Class ─────────────────────────────────────────────────────
 
 export class TmuxClient {
-  private availableCache: boolean | null = null;
-
   /**
    * Check if tmux is available on this system.
-   * Result is cached for the lifetime of this instance.
-   * Returns false when FOREMAN_TMUX_DISABLED=true.
+   * Result is cached at the module level for the process lifetime.
+   * Returns false when FOREMAN_TMUX_DISABLED=true (without setting the cache).
    */
   async isAvailable(): Promise<boolean> {
     if (process.env.FOREMAN_TMUX_DISABLED === "true") {
       return false;
     }
 
-    if (this.availableCache !== null) {
-      return this.availableCache;
+    if (cachedAvailability !== null) {
+      return cachedAvailability;
     }
 
     try {
       await execFileAsync("which", ["tmux"], { timeout: TMUX_TIMEOUT });
-      this.availableCache = true;
+      cachedAvailability = true;
     } catch {
-      this.availableCache = false;
+      cachedAvailability = false;
     }
 
-    return this.availableCache;
+    return cachedAvailability;
   }
 
   /**

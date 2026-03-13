@@ -136,6 +136,17 @@ describe("TmuxClient", () => {
       expect(typedMock).toHaveBeenCalledTimes(1);
     });
 
+    it("shares cache across multiple TmuxClient instances (module-level cache)", async () => {
+      typedMock.mockResolvedValueOnce({ stdout: "/usr/local/bin/tmux\n", stderr: "" });
+      const client2 = new TmuxClient();
+      const client3 = new TmuxClient();
+      await client.isAvailable();
+      await client2.isAvailable();
+      await client3.isAvailable();
+      // execFile should only be called once across all instances
+      expect(typedMock).toHaveBeenCalledTimes(1);
+    });
+
     it("does not throw on non-zero exit codes", async () => {
       const err = new Error("exit code 1") as Error & { code: number };
       err.code = 1;
