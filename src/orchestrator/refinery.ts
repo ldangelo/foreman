@@ -131,6 +131,32 @@ export class Refinery {
   }
 
   /**
+   * Detect uncommitted changes in `.seeds/` and `.foreman/` and commit them
+   * so that merge operations start from a clean state for state files.
+   * No-op when there are no dirty state files.
+   */
+  private async autoCommitStateFiles(): Promise<void> {
+    // Use execFileAsync directly (not the git() helper) because git() trims
+    // stdout, which strips the leading whitespace from porcelain status codes.
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
+      cwd: this.projectPath,
+      maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+    });
+    if (!stdout || !stdout.trim()) return;
+
+    const lines = stdout.split("\n").filter(Boolean);
+    // Each line has format "XY path" — the path starts at column 3
+    const stateFiles = lines
+      .map((line) => line.slice(3))
+      .filter((path) => path.startsWith(".seeds/") || path.startsWith(".foreman/"));
+
+    if (stateFiles.length === 0) return;
+
+    await git(["add", ...stateFiles], this.projectPath);
+    await git(["commit", "-m", "chore: auto-commit state files before merge"], this.projectPath);
+  }
+
+  /**
    * Remove report files from the working tree before merging so they can't
    * conflict. Commits the removal if any tracked files were removed.
    */
@@ -355,6 +381,9 @@ export class Refinery {
       const branchName = `foreman/${run.seed_id}`;
 
       try {
+        // Commit any dirty state files (.seeds/, .foreman/) before merge
+        await this.autoCommitStateFiles();
+
         // Remove report files so they can't cause merge conflicts
         await this.removeReportFiles();
 
