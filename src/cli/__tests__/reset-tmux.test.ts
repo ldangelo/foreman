@@ -19,9 +19,9 @@ describe("Reset — tmux cleanup (AT-T036 / AT-T037)", () => {
   it("kills all foreman tmux sessions", async () => {
     const tmux = makeTmux();
     tmux.listForemanSessions.mockResolvedValue([
-      { sessionName: "foreman-seeds-001", created: "1234", attached: false, windowCount: 1 },
-      { sessionName: "foreman-seeds-002", created: "1234", attached: false, windowCount: 1 },
-      { sessionName: "foreman-seeds-003", created: "1234", attached: false, windowCount: 1 },
+      { sessionName: "foreman-seeds-001", created: 1234, attached: false, windowCount: 1 },
+      { sessionName: "foreman-seeds-002", created: 1234, attached: false, windowCount: 1 },
+      { sessionName: "foreman-seeds-003", created: 1234, attached: false, windowCount: 1 },
     ]);
 
     const result = await cleanupTmuxSessions(tmux as unknown as TmuxClient);
@@ -57,9 +57,9 @@ describe("Reset — tmux cleanup (AT-T036 / AT-T037)", () => {
   it("individual kill failure does not abort cleanup of remaining sessions", async () => {
     const tmux = makeTmux();
     tmux.listForemanSessions.mockResolvedValue([
-      { sessionName: "foreman-seeds-001", created: "1234", attached: false, windowCount: 1 },
-      { sessionName: "foreman-seeds-002", created: "1234", attached: false, windowCount: 1 },
-      { sessionName: "foreman-seeds-003", created: "1234", attached: false, windowCount: 1 },
+      { sessionName: "foreman-seeds-001", created: 1234, attached: false, windowCount: 1 },
+      { sessionName: "foreman-seeds-002", created: 1234, attached: false, windowCount: 1 },
+      { sessionName: "foreman-seeds-003", created: 1234, attached: false, windowCount: 1 },
     ]);
     // Second kill fails
     tmux.killSession

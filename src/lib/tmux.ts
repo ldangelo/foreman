@@ -24,7 +24,7 @@ export interface TmuxCreateResult {
 /** Information about an active tmux session */
 export interface TmuxSessionInfo {
   sessionName: string;
-  created: string;
+  created: number;
   attached: boolean;
   windowCount: number;
 }
@@ -36,7 +36,7 @@ export interface TmuxSessionInfo {
  * Format: `foreman-<seedId>` with invalid characters replaced by hyphens.
  */
 export function tmuxSessionName(seedId: string): string {
-  const sanitized = seedId.replace(/[:\.\s]/g, "-").trim();
+  const sanitized = seedId.replace(/[:.\s]/g, "-").trim();
   if (!sanitized || sanitized.replace(/-/g, "").length === 0) {
     return "foreman-unknown";
   }
@@ -113,7 +113,11 @@ export class TmuxClient {
         timeout: TMUX_TIMEOUT,
       });
       return true;
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[foreman] TMUX-005: tmux kill-session failed for ${sessionName}: ${message}\n`,
+      );
       return false;
     }
   }
@@ -128,7 +132,11 @@ export class TmuxClient {
         timeout: TMUX_TIMEOUT,
       });
       return true;
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[foreman] TMUX-006: tmux has-session check failed for ${sessionName}: ${message}\n`,
+      );
       return false;
     }
   }
@@ -148,7 +156,11 @@ export class TmuxClient {
         return [];
       }
       return stdout.replace(/\n$/, "").split("\n");
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[foreman] TMUX-004: tmux capture-pane failed for ${sessionName}: ${message}\n`,
+      );
       return [];
     }
   }
@@ -164,7 +176,7 @@ export class TmuxClient {
         [
           "list-sessions",
           "-F",
-          "#{session_name} #{session_created} #{session_attached} #{session_windows}",
+          "#{session_name}\t#{session_created}\t#{session_attached}\t#{session_windows}",
         ],
         { timeout: TMUX_TIMEOUT },
       );
@@ -177,7 +189,7 @@ export class TmuxClient {
       const sessions: TmuxSessionInfo[] = [];
 
       for (const line of lines) {
-        const parts = line.split(" ");
+        const parts = line.split("\t");
         if (parts.length < 4) continue;
 
         const sessionName = parts[0];
@@ -185,14 +197,18 @@ export class TmuxClient {
 
         sessions.push({
           sessionName,
-          created: parts[1],
+          created: parseInt(parts[1], 10),
           attached: parts[2] === "1",
           windowCount: parseInt(parts[3], 10),
         });
       }
 
       return sessions;
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[foreman] TMUX-007: tmux list-sessions failed: ${message}\n`,
+      );
       return [];
     }
   }
@@ -212,7 +228,11 @@ export class TmuxClient {
         return null;
       }
       return match[1];
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[foreman] TMUX-010: tmux version check failed: ${message}\n`,
+      );
       return null;
     }
   }

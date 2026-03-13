@@ -113,7 +113,7 @@ describe("Doctor — Session Management (AT-T033 / AT-T034 / AT-T035)", () => {
     it("detects orphaned sessions (no matching active run)", async () => {
       const { store, tmux, doctor } = makeMocks();
       tmux.listForemanSessions.mockResolvedValue([
-        { sessionName: "foreman-seeds-001", created: "1234", attached: false, windowCount: 1 },
+        { sessionName: "foreman-seeds-001", created: 1234, attached: false, windowCount: 1 },
       ]);
       // No active runs reference this session
       store.getActiveRuns.mockReturnValue([]);
@@ -126,7 +126,7 @@ describe("Doctor — Session Management (AT-T033 / AT-T034 / AT-T035)", () => {
     it("passes for sessions that match active runs", async () => {
       const { store, tmux, doctor } = makeMocks();
       tmux.listForemanSessions.mockResolvedValue([
-        { sessionName: "foreman-seeds-001", created: "1234", attached: false, windowCount: 1 },
+        { sessionName: "foreman-seeds-001", created: 1234, attached: false, windowCount: 1 },
       ]);
       store.getActiveRuns.mockReturnValue([
         makeRun({ tmux_session: "foreman-seeds-001" }),
@@ -142,7 +142,7 @@ describe("Doctor — Session Management (AT-T033 / AT-T034 / AT-T035)", () => {
     it("fixes orphaned sessions with --fix", async () => {
       const { store, tmux, doctor } = makeMocks();
       tmux.listForemanSessions.mockResolvedValue([
-        { sessionName: "foreman-orphan-1", created: "1234", attached: false, windowCount: 1 },
+        { sessionName: "foreman-orphan-1", created: 1234, attached: false, windowCount: 1 },
       ]);
       store.getActiveRuns.mockReturnValue([]);
 

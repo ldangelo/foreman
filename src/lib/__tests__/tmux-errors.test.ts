@@ -185,14 +185,30 @@ describe("TMUX Error Codes", () => {
     it("hasSession returns false when session does not exist", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("session not found", 1));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const result = await client.hasSession("foreman-dead");
       expect(result).toBe(false);
+      stderrSpy.mockRestore();
     });
 
     it("does not throw on has-session failure — graceful check", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("can't find session: foreman-dead"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       await expect(client.hasSession("foreman-dead")).resolves.toBe(false);
+      stderrSpy.mockRestore();
+    });
+
+    it("logs TMUX-006 to stderr on has-session failure", async () => {
+      typedMock.mockRejectedValueOnce(makeExecError("can't find session: foreman-dead"));
+      const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      await client.hasSession("foreman-dead");
+      expect(stderrSpy).toHaveBeenCalled();
+      const output = stderrSpy.mock.calls[0][0] as string;
+      expect(output).toContain("TMUX-006");
+      expect(output).toContain("foreman-dead");
+      stderrSpy.mockRestore();
     });
   });
 
@@ -202,14 +218,31 @@ describe("TMUX Error Codes", () => {
     it("capturePaneOutput returns empty array on failure", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("session not found"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const result = await client.capturePaneOutput("foreman-gone");
       expect(result).toEqual([]);
+      stderrSpy.mockRestore();
+    });
+
+    it("logs TMUX-004 to stderr on failure", async () => {
+      typedMock.mockRejectedValueOnce(makeExecError("can't find pane"));
+      const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      await client.capturePaneOutput("foreman-gone");
+      expect(stderrSpy).toHaveBeenCalled();
+      const output = stderrSpy.mock.calls[0][0] as string;
+      expect(output).toContain("TMUX-004");
+      expect(output).toContain("foreman-gone");
+      expect(output).toContain("can't find pane");
+      stderrSpy.mockRestore();
     });
 
     it("does not throw — returns empty array gracefully", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("can't find pane"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       await expect(client.capturePaneOutput("foreman-broken")).resolves.toEqual([]);
+      stderrSpy.mockRestore();
     });
 
     it("handles timeout during capture-pane", async () => {
@@ -217,8 +250,10 @@ describe("TMUX Error Codes", () => {
       err.killed = true;
       typedMock.mockRejectedValueOnce(err);
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const result = await client.capturePaneOutput("foreman-slow");
       expect(result).toEqual([]);
+      stderrSpy.mockRestore();
     });
 
     it("returns empty array for whitespace-only output", async () => {
@@ -235,21 +270,40 @@ describe("TMUX Error Codes", () => {
     it("killSession returns false when session does not exist", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("session not found"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const result = await client.killSession("foreman-nonexistent");
       expect(result).toBe(false);
+      stderrSpy.mockRestore();
+    });
+
+    it("logs TMUX-005 to stderr on failure", async () => {
+      typedMock.mockRejectedValueOnce(makeExecError("session not found"));
+      const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      await client.killSession("foreman-nonexistent");
+      expect(stderrSpy).toHaveBeenCalled();
+      const output = stderrSpy.mock.calls[0][0] as string;
+      expect(output).toContain("TMUX-005");
+      expect(output).toContain("foreman-nonexistent");
+      expect(output).toContain("session not found");
+      stderrSpy.mockRestore();
     });
 
     it("does not throw — returns false gracefully", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("can't find session: foreman-x"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       await expect(client.killSession("foreman-x")).resolves.toBe(false);
+      stderrSpy.mockRestore();
     });
 
     it("handles tmux server not running error", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("no server running on /tmp/tmux-1000/default"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const result = await client.killSession("foreman-orphan");
       expect(result).toBe(false);
+      stderrSpy.mockRestore();
     });
 
     it("handles timeout during kill", async () => {
@@ -257,8 +311,10 @@ describe("TMUX Error Codes", () => {
       err.killed = true;
       typedMock.mockRejectedValueOnce(err);
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const result = await client.killSession("foreman-hung");
       expect(result).toBe(false);
+      stderrSpy.mockRestore();
     });
   });
 
@@ -270,15 +326,31 @@ describe("TMUX Error Codes", () => {
     it("returns false for a session that has exited", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("session not found", 1));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const result = await client.hasSession("foreman-dead-run");
       expect(result).toBe(false);
+      stderrSpy.mockRestore();
+    });
+
+    it("logs TMUX-006 to stderr for dead session", async () => {
+      typedMock.mockRejectedValueOnce(makeExecError("session not found", 1));
+      const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      await client.hasSession("foreman-dead-run");
+      expect(stderrSpy).toHaveBeenCalled();
+      const output = stderrSpy.mock.calls[0][0] as string;
+      expect(output).toContain("TMUX-006");
+      expect(output).toContain("foreman-dead-run");
+      stderrSpy.mockRestore();
     });
 
     it("handles server crash during has-session check", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("server exited unexpectedly"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const result = await client.hasSession("foreman-crashed");
       expect(result).toBe(false);
+      stderrSpy.mockRestore();
     });
   });
 
@@ -288,9 +360,9 @@ describe("TMUX Error Codes", () => {
   describe("TMUX-007: orphaned session detection", () => {
     it("listForemanSessions returns sessions that may be orphaned", async () => {
       const output = [
-        "foreman-orphan1 1710000000 0 1",
-        "foreman-orphan2 1710000100 0 1",
-        "non-foreman 1710000200 0 1",
+        "foreman-orphan1\t1710000000\t0\t1",
+        "foreman-orphan2\t1710000100\t0\t1",
+        "non-foreman\t1710000200\t0\t1",
       ].join("\n");
       typedMock.mockResolvedValueOnce({ stdout: output, stderr: "" });
 
@@ -304,8 +376,22 @@ describe("TMUX Error Codes", () => {
     it("returns empty array when tmux server is not running", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("no server running"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const sessions = await client.listForemanSessions();
       expect(sessions).toEqual([]);
+      stderrSpy.mockRestore();
+    });
+
+    it("logs TMUX-007 to stderr when listing fails", async () => {
+      typedMock.mockRejectedValueOnce(makeExecError("no server running"));
+      const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      await client.listForemanSessions();
+      expect(stderrSpy).toHaveBeenCalled();
+      const output = stderrSpy.mock.calls[0][0] as string;
+      expect(output).toContain("TMUX-007");
+      expect(output).toContain("no server running");
+      stderrSpy.mockRestore();
     });
   });
 
@@ -316,8 +402,22 @@ describe("TMUX Error Codes", () => {
     it("hasSession returns false for ghost run's session name", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("session not found"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const alive = await client.hasSession("foreman-ghost-seed");
       expect(alive).toBe(false);
+      stderrSpy.mockRestore();
+    });
+
+    it("logs TMUX-006 to stderr for ghost session check", async () => {
+      typedMock.mockRejectedValueOnce(makeExecError("session not found"));
+      const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      await client.hasSession("foreman-ghost-seed");
+      expect(stderrSpy).toHaveBeenCalled();
+      const output = stderrSpy.mock.calls[0][0] as string;
+      expect(output).toContain("TMUX-006");
+      expect(output).toContain("foreman-ghost-seed");
+      stderrSpy.mockRestore();
     });
   });
 
@@ -351,8 +451,10 @@ describe("TMUX Error Codes", () => {
     it("handles case where stale session does not exist (no-op)", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("session not found"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const killed = await client.killSession("foreman-no-stale");
       expect(killed).toBe(false);
+      stderrSpy.mockRestore();
       // Should still be able to create
       typedMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
       const result = await client.createSession({
@@ -378,8 +480,22 @@ describe("TMUX Error Codes", () => {
     it("returns null when tmux is not installed", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("command not found"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const version = await client.getTmuxVersion();
       expect(version).toBeNull();
+      stderrSpy.mockRestore();
+    });
+
+    it("logs TMUX-010 to stderr when version check fails", async () => {
+      typedMock.mockRejectedValueOnce(makeExecError("command not found"));
+      const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      await client.getTmuxVersion();
+      expect(stderrSpy).toHaveBeenCalled();
+      const output = stderrSpy.mock.calls[0][0] as string;
+      expect(output).toContain("TMUX-010");
+      expect(output).toContain("command not found");
+      stderrSpy.mockRestore();
     });
 
     it("returns null for completely unexpected output format", async () => {
@@ -495,15 +611,19 @@ describe("TMUX Error Codes", () => {
       expect(r2).toEqual(["line1", "line2"]);
 
       // Session ended mid-poll — returns empty, no throw
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const r3 = await client.capturePaneOutput("foreman-follow");
       expect(r3).toEqual([]);
+      stderrSpy.mockRestore();
     });
 
     it("hasSession returns false when session ends (follow loop exit signal)", async () => {
       typedMock.mockRejectedValueOnce(makeExecError("session not found"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const alive = await client.hasSession("foreman-follow-done");
       expect(alive).toBe(false);
+      stderrSpy.mockRestore();
     });
   });
 
@@ -529,31 +649,41 @@ describe("TMUX Error Codes", () => {
     it("killSession never throws", async () => {
       typedMock.mockRejectedValueOnce(new URIError("weird error"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       await expect(client.killSession("x")).resolves.toBe(false);
+      stderrSpy.mockRestore();
     });
 
     it("hasSession never throws", async () => {
       typedMock.mockRejectedValueOnce(new SyntaxError("parse error"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       await expect(client.hasSession("x")).resolves.toBe(false);
+      stderrSpy.mockRestore();
     });
 
     it("capturePaneOutput never throws", async () => {
       typedMock.mockRejectedValueOnce(new EvalError("eval error"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       await expect(client.capturePaneOutput("x")).resolves.toEqual([]);
+      stderrSpy.mockRestore();
     });
 
     it("listForemanSessions never throws", async () => {
       typedMock.mockRejectedValueOnce(new Error("segfault-like error"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       await expect(client.listForemanSessions()).resolves.toEqual([]);
+      stderrSpy.mockRestore();
     });
 
     it("getTmuxVersion never throws", async () => {
       typedMock.mockRejectedValueOnce(new Error("pipe broken"));
       const client = new TmuxClient();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       await expect(client.getTmuxVersion()).resolves.toBeNull();
+      stderrSpy.mockRestore();
     });
   });
 });
