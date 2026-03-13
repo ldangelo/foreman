@@ -30,6 +30,12 @@ export interface RoleConfig {
   permissionMode: PermissionMode;
   /** Report file this role produces */
   reportFile: string;
+  /**
+   * Whitelist of SDK tool names this role is allowed to use.
+   * The complement (all tools NOT in this set) is passed as disallowedTools
+   * to the SDK query() call to enforce role-based access control.
+   */
+  allowedTools: ReadonlyArray<string>;
 }
 
 // ── Plan step config ────────────────────────────────────────────────────
@@ -51,6 +57,47 @@ export const PLAN_STEP_CONFIG: PlanStepConfig = {
   // Sufficient for typical PRD/TRD generation runs; raise if plan steps hit the turn limit
   maxTurns: 50,
 };
+
+/**
+ * Complete vocabulary of Claude Code agent tools available in the running process
+ * environment. Used to compute disallowed tools as the complement of each role's
+ * allowedTools whitelist.
+ */
+export const ALL_AGENT_TOOLS: ReadonlyArray<string> = [
+  "Agent",
+  "AskUserQuestion",
+  "Bash",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "Edit",
+  "EnterPlanMode",
+  "EnterWorktree",
+  "ExitPlanMode",
+  "ExitWorktree",
+  "Glob",
+  "Grep",
+  "NotebookEdit",
+  "Read",
+  "SendMessage",
+  "TaskOutput",
+  "TaskStop",
+  "TeamCreate",
+  "TeamDelete",
+  "TodoWrite",
+  "WebFetch",
+  "WebSearch",
+  "Write",
+] as const;
+
+/**
+ * Compute the disallowed tools for a role config.
+ * Returns all SDK tools NOT in the role's allowedTools whitelist.
+ */
+export function getDisallowedTools(config: RoleConfig): string[] {
+  const allowed = new Set(config.allowedTools);
+  return ALL_AGENT_TOOLS.filter((tool) => !allowed.has(tool));
+}
 
 /**
  * All valid model selections.
@@ -119,6 +166,7 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker">
       maxBudgetUsd: getExplorerBudget(),
       permissionMode: "acceptEdits",
       reportFile: "EXPLORER_REPORT.md",
+      allowedTools: ["Glob", "Grep", "Read", "Write"],
     },
     developer: {
       role: "developer",
@@ -126,6 +174,10 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker">
       maxBudgetUsd: getDeveloperBudget(),
       permissionMode: "acceptEdits",
       reportFile: "DEVELOPER_REPORT.md",
+      allowedTools: [
+        "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+        "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+      ],
     },
     qa: {
       role: "qa",
@@ -133,6 +185,7 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker">
       maxBudgetUsd: getQaBudget(),
       permissionMode: "acceptEdits",
       reportFile: "QA_REPORT.md",
+      allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
     },
     reviewer: {
       role: "reviewer",
@@ -140,6 +193,7 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker">
       maxBudgetUsd: getReviewerBudget(),
       permissionMode: "acceptEdits",
       reportFile: "REVIEW.md",
+      allowedTools: ["Glob", "Grep", "Read", "Write"],
     },
   };
 }
@@ -169,6 +223,7 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
         maxBudgetUsd: 1.00,
         permissionMode: "acceptEdits",
         reportFile: "EXPLORER_REPORT.md",
+        allowedTools: ["Glob", "Grep", "Read", "Write"],
       },
       developer: {
         role: "developer",
@@ -176,6 +231,10 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
         maxBudgetUsd: 5.00,
         permissionMode: "acceptEdits",
         reportFile: "DEVELOPER_REPORT.md",
+        allowedTools: [
+          "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+          "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+        ],
       },
       qa: {
         role: "qa",
@@ -183,6 +242,7 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
         maxBudgetUsd: 3.00,
         permissionMode: "acceptEdits",
         reportFile: "QA_REPORT.md",
+        allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
       },
       reviewer: {
         role: "reviewer",
@@ -190,6 +250,7 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
         maxBudgetUsd: 2.00,
         permissionMode: "acceptEdits",
         reportFile: "REVIEW.md",
+        allowedTools: ["Glob", "Grep", "Read", "Write"],
       },
     };
   }

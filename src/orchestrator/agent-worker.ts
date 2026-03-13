@@ -21,6 +21,7 @@ import type { RunProgress } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS } from "../lib/config.js";
 import {
   ROLE_CONFIGS,
+  getDisallowedTools,
   explorerPrompt,
   developerPrompt,
   qaPrompt,
@@ -390,8 +391,10 @@ async function runPhase(
   progress.currentPhase = role;
   store.updateRunProgress(config.runId, progress);
 
-  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxBudgetUsd=${roleConfig.maxBudgetUsd})\n`);
-  log(`[${role.toUpperCase()}] Starting phase for ${config.seedId}`);
+  const disallowedTools = getDisallowedTools(roleConfig);
+  const allowedSummary = roleConfig.allowedTools.join(", ");
+  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxBudgetUsd=${roleConfig.maxBudgetUsd}, allowedTools=[${allowedSummary}])\n`);
+  log(`[${role.toUpperCase()}] Starting phase for ${config.seedId} (${roleConfig.allowedTools.length} allowed tools, ${disallowedTools.length} disallowed)`);
 
   const env: Record<string, string | undefined> = { ...config.env };
 
@@ -406,6 +409,7 @@ async function runPhase(
         model: roleConfig.model as any,
         permissionMode: roleConfig.permissionMode,
         maxBudgetUsd: roleConfig.maxBudgetUsd,
+        disallowedTools,
         env,
         persistSession: false,
       },
