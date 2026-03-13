@@ -11,6 +11,7 @@ import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
 import { calculateImpactScores } from "./pagerank.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
+import { TmuxClient, tmuxSessionName } from "../lib/tmux.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -165,7 +166,7 @@ export class Dispatcher {
         await this.seeds.update(seed.id, { status: "in_progress" });
 
         // 7. Spawn the coding agent
-        const sessionKey = await this.spawnAgent(
+        const { sessionKey, tmuxSession } = await this.spawnAgent(
           model,
           worktreePath,
           seedInfo,
@@ -179,11 +180,12 @@ export class Dispatcher {
           opts?.notifyUrl,
         );
 
-        // Update run with session key
+        // Update run with session key (AT-T015: persist tmux_session if present)
         this.store.updateRun(run.id, {
           session_key: sessionKey,
           status: "running",
           started_at: new Date().toISOString(),
+          ...(tmuxSession ? { tmux_session: tmuxSession } : {}),
         });
 
         dispatched.push({
@@ -304,7 +306,7 @@ export class Dispatcher {
       });
 
       // Spawn the resumed agent
-      const sessionKey = await this.resumeAgent(
+      const { sessionKey, tmuxSession } = await this.resumeAgent(
         model,
         run.worktree_path,
         { id: run.seed_id, title: run.seed_id },
@@ -318,6 +320,7 @@ export class Dispatcher {
         session_key: sessionKey,
         status: "running",
         started_at: new Date().toISOString(),
+        ...(tmuxSession ? { tmux_session: tmuxSession } : {}),
       });
 
       resumed.push({
@@ -501,7 +504,7 @@ export class Dispatcher {
       skipReview?: boolean;
     },
     notifyUrl?: string,
-  ): Promise<string> {
+  ): Promise<{ sessionKey: string; tmuxSession?: string }> {
     const prompt = [
       `Read TASK.md and implement the task described.`,
       `Use sd (seeds) to track your progress.`,
@@ -516,9 +519,9 @@ export class Dispatcher {
     const sessionKey = `foreman:sdk:${model}:${runId}`;
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
-    log(`Spawning detached ${usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}`);
+    log(`Spawning ${usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}`);
 
-    await spawnWorkerProcess({
+    const spawnResult = await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
       seedId: seed.id,
@@ -533,7 +536,7 @@ export class Dispatcher {
       skipReview: pipelineOpts?.skipReview,
     });
 
-    return sessionKey;
+    return { sessionKey, tmuxSession: spawnResult.tmuxSession };
   }
 
   // ── Session Resume ───────────────────────────────────────────────────
@@ -550,7 +553,7 @@ export class Dispatcher {
     sdkSessionId: string,
     telemetry?: boolean,
     notifyUrl?: string,
-  ): Promise<string> {
+  ): Promise<{ sessionKey: string; tmuxSession?: string }> {
     const resumePrompt = [
       `You were previously working on this task but were interrupted (likely by a rate limit).`,
       `Continue where you left off. Check your progress so far and complete the remaining work.`,
@@ -564,9 +567,9 @@ export class Dispatcher {
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;
 
-    log(`Resuming detached worker for ${seed.id} [${model}] session=${sdkSessionId}`);
+    log(`Resuming worker for ${seed.id} [${model}] session=${sdkSessionId}`);
 
-    await spawnWorkerProcess({
+    const spawnResult = await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
       seedId: seed.id,
@@ -578,7 +581,7 @@ export class Dispatcher {
       resume: sdkSessionId,
     });
 
-    return sessionKey;
+    return { sessionKey, tmuxSession: spawnResult.tmuxSession };
   }
 
   // ── Private helpers ───────────────────────────────────────────────────
@@ -598,7 +601,7 @@ export class Dispatcher {
 
 // ── Worker Config (must match agent-worker.ts interface) ────────────────
 
-interface WorkerConfig {
+export interface WorkerConfig {
   runId: string;
   projectId: string;
   seedId: string;
@@ -614,51 +617,150 @@ interface WorkerConfig {
   skipReview?: boolean;
 }
 
-/**
- * Spawn agent-worker.ts as a fully detached child process.
- *
- * Writes config to a temp JSON file, spawns tsx with detached: true,
- * then unrefs the child so the foreman process can exit freely.
- * The worker updates SQLite with progress/completion independently.
- */
-async function spawnWorkerProcess(config: WorkerConfig): Promise<void> {
-  // Write config to temp file (worker reads + deletes it)
-  const configDir = join(process.env.HOME ?? "/tmp", ".foreman", "tmp");
-  await mkdir(configDir, { recursive: true });
-  const configPath = join(configDir, `worker-${config.runId}.json`);
-  await writeFile(configPath, JSON.stringify(config), "utf-8");
+// ── Spawn Strategy Pattern ──────────────────────────────────────────────
 
-  // Resolve paths to tsx and worker script
+/** Result returned by a SpawnStrategy */
+export interface SpawnResult {
+  tmuxSession?: string;
+}
+
+/** Strategy interface for spawning worker processes */
+export interface SpawnStrategy {
+  spawn(config: WorkerConfig): Promise<SpawnResult>;
+}
+
+/**
+ * Resolve common paths needed by both spawn strategies.
+ */
+function resolveWorkerPaths(): { tsxBin: string; workerScript: string; logDir: string } {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
   const projectRoot = join(__dirname, "..", "..");
-  const tsxBin = join(projectRoot, "node_modules", ".bin", "tsx");
-  const workerScript = join(__dirname, "agent-worker.ts");
+  return {
+    tsxBin: join(projectRoot, "node_modules", ".bin", "tsx"),
+    workerScript: join(__dirname, "agent-worker.ts"),
+    logDir: join(process.env.HOME ?? "/tmp", ".foreman", "logs"),
+  };
+}
 
-  // Log worker stdout/stderr to files for debugging
-  const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
-  await mkdir(logDir, { recursive: true });
-  const outFd = await open(join(logDir, `${config.runId}.out`), "w");
-  const errFd = await open(join(logDir, `${config.runId}.err`), "w");
+/**
+ * Spawn worker inside a tmux session.
+ * Builds a shell command string that tmux will execute.
+ */
+export class TmuxSpawnStrategy implements SpawnStrategy {
+  private tmux = new TmuxClient();
 
-  // Strip CLAUDECODE env var so the worker can spawn its own Claude SDK session
-  const spawnEnv: Record<string, string | undefined> = { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` };
-  delete spawnEnv.CLAUDECODE;
+  async spawn(config: WorkerConfig): Promise<SpawnResult> {
+    const { tsxBin, workerScript, logDir } = resolveWorkerPaths();
+    const sessionName = tmuxSessionName(config.seedId);
 
-  const child = spawn(tsxBin, [workerScript, configPath], {
-    detached: true,
-    stdio: ["ignore", outFd.fd, errFd.fd],
-    cwd: config.worktreePath,
-    env: spawnEnv,
-  });
+    // Write config to temp file (worker reads + deletes it)
+    const configDir = join(process.env.HOME ?? "/tmp", ".foreman", "tmp");
+    await mkdir(configDir, { recursive: true });
+    const configPath = join(configDir, `worker-${config.runId}.json`);
+    await writeFile(configPath, JSON.stringify(config), "utf-8");
 
-  child.unref();
+    await mkdir(logDir, { recursive: true });
+    const outLog = join(logDir, `${config.runId}.out`);
+    const errLog = join(logDir, `${config.runId}.err`);
 
-  // Close parent's file handles — child process has inherited its own copies of the fds
-  await outFd.close();
-  await errFd.close();
+    // AT-T014: Kill stale session with same name before creating new one
+    const killed = await this.tmux.killSession(sessionName);
+    if (killed) {
+      log(`[foreman] Killed stale tmux session ${sessionName}`);
+    }
 
-  log(`  Worker pid=${child.pid} for ${config.seedId}`);
+    // Build the command string for tmux
+    const command = `${tsxBin} ${workerScript} ${configPath} > ${outLog} 2> ${errLog}`;
+
+    const result = await this.tmux.createSession({
+      sessionName,
+      command,
+      cwd: config.worktreePath,
+      env: config.env,
+    });
+
+    if (!result.created) {
+      // AT-T016: Log warning and signal failure so caller falls back
+      log(`[foreman] tmux session creation failed -- falling back to detached process`);
+      return {};
+    }
+
+    log(`  Worker tmux session=${sessionName} for ${config.seedId}`);
+    return { tmuxSession: sessionName };
+  }
+}
+
+/**
+ * Spawn worker as a detached child process (original behavior).
+ */
+export class DetachedSpawnStrategy implements SpawnStrategy {
+  async spawn(config: WorkerConfig): Promise<SpawnResult> {
+    const { tsxBin, workerScript, logDir } = resolveWorkerPaths();
+
+    // Write config to temp file (worker reads + deletes it)
+    const configDir = join(process.env.HOME ?? "/tmp", ".foreman", "tmp");
+    await mkdir(configDir, { recursive: true });
+    const configPath = join(configDir, `worker-${config.runId}.json`);
+    await writeFile(configPath, JSON.stringify(config), "utf-8");
+
+    await mkdir(logDir, { recursive: true });
+    const outFd = await open(join(logDir, `${config.runId}.out`), "w");
+    const errFd = await open(join(logDir, `${config.runId}.err`), "w");
+
+    // Strip CLAUDECODE env var so the worker can spawn its own Claude SDK session
+    const spawnEnv: Record<string, string | undefined> = { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` };
+    delete spawnEnv.CLAUDECODE;
+
+    const child = spawn(tsxBin, [workerScript, configPath], {
+      detached: true,
+      stdio: ["ignore", outFd.fd, errFd.fd],
+      cwd: config.worktreePath,
+      env: spawnEnv,
+    });
+
+    child.unref();
+
+    // Close parent's file handles — child process has inherited its own copies of the fds
+    await outFd.close();
+    await errFd.close();
+
+    log(`  Worker pid=${child.pid} for ${config.seedId}`);
+    return {};
+  }
+}
+
+/**
+ * Spawn agent-worker.ts using the best available strategy.
+ *
+ * Strategy selection:
+ * 1. If tmux is available, use TmuxSpawnStrategy (AT-T013)
+ * 2. If tmux creation fails, fall back to DetachedSpawnStrategy (AT-T016)
+ * 3. If tmux is unavailable, use DetachedSpawnStrategy directly
+ *
+ * Returns the spawn result including optional tmux session name.
+ */
+export async function spawnWorkerProcess(config: WorkerConfig): Promise<SpawnResult> {
+  const tmux = new TmuxClient();
+  const available = await tmux.isAvailable();
+
+  if (available) {
+    const tmuxStrategy = new TmuxSpawnStrategy();
+    const result = await tmuxStrategy.spawn(config);
+
+    // AT-T016: If tmux creation failed, fall back to detached spawn
+    if (result.tmuxSession) {
+      return result;
+    }
+
+    // Tmux was available but session creation failed — fall back
+    const detachedStrategy = new DetachedSpawnStrategy();
+    return detachedStrategy.spawn(config);
+  }
+
+  // Tmux not available — use detached spawn directly
+  const detachedStrategy = new DetachedSpawnStrategy();
+  return detachedStrategy.spawn(config);
 }
 
 /**
