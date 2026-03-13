@@ -9,6 +9,7 @@ import type { ForemanStore } from "../lib/store.js";
 import { listWorktrees, removeWorktree } from "../lib/git.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
+import type { MergeQueue, MergeQueueEntry } from "./merge-queue.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -30,10 +31,15 @@ function extractPid(sessionKey: string | null): number | null {
 // ── Doctor class ─────────────────────────────────────────────────────────
 
 export class Doctor {
+  private mergeQueue?: MergeQueue;
+
   constructor(
     private store: ForemanStore,
     private projectPath: string,
-  ) {}
+    mergeQueue?: MergeQueue,
+  ) {
+    this.mergeQueue = mergeQueue;
+  }
 
   // ── System checks ──────────────────────────────────────────────────
 
@@ -488,6 +494,183 @@ export class Doctor {
     }
   }
 
+  // ── Merge queue checks ──────────────────────────────────────────────
+
+  /**
+   * Check for merge queue entries stuck in pending/merging for >24h (MQ-008).
+   */
+  async checkStaleMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
+    if (!this.mergeQueue) {
+      return { name: "stale merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
+    }
+
+    const allEntries = this.mergeQueue.list();
+    const staleThresholdMs = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const staleEntries = allEntries.filter((e) => {
+      if (e.status !== "pending" && e.status !== "merging") return false;
+      const timestamp = e.status === "merging" && e.started_at
+        ? new Date(e.started_at).getTime()
+        : new Date(e.enqueued_at).getTime();
+      return now - timestamp > staleThresholdMs;
+    });
+
+    if (staleEntries.length === 0) {
+      return { name: "stale merge queue entries (>24h)", status: "pass", message: `No stale entries` };
+    }
+
+    if (dryRun) {
+      return {
+        name: "stale merge queue entries (>24h)",
+        status: "warn",
+        message: `MQ-008: ${staleEntries.length} stale entry(ies). Would mark failed (dry-run).`,
+      };
+    }
+
+    if (fix) {
+      for (const entry of staleEntries) {
+        this.mergeQueue.updateStatus(entry.id, "failed", {
+          error: "MQ-008: Stale entry auto-failed by doctor",
+          completedAt: new Date().toISOString(),
+        });
+      }
+      return {
+        name: "stale merge queue entries (>24h)",
+        status: "fixed",
+        message: `MQ-008: ${staleEntries.length} stale entry(ies)`,
+        fixApplied: `Marked ${staleEntries.length} entry(ies) as failed`,
+      };
+    }
+
+    return {
+      name: "stale merge queue entries (>24h)",
+      status: "warn",
+      message: `MQ-008: ${staleEntries.length} stale entry(ies) in pending/merging >24h. Use --fix to mark failed.`,
+    };
+  }
+
+  /**
+   * Check for duplicate branch entries in the merge queue (MQ-009).
+   */
+  async checkDuplicateMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
+    if (!this.mergeQueue) {
+      return { name: "duplicate merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
+    }
+
+    const pending = this.mergeQueue.list("pending");
+    const branchCounts = new Map<string, MergeQueueEntry[]>();
+    for (const entry of pending) {
+      const existing = branchCounts.get(entry.branch_name) ?? [];
+      existing.push(entry);
+      branchCounts.set(entry.branch_name, existing);
+    }
+
+    const duplicates = Array.from(branchCounts.entries()).filter(
+      ([, entries]) => entries.length > 1,
+    );
+
+    if (duplicates.length === 0) {
+      return { name: "duplicate merge queue entries", status: "pass", message: "No duplicate branch entries" };
+    }
+
+    const dupBranches = duplicates.map(([branch]) => branch).join(", ");
+
+    if (dryRun) {
+      return {
+        name: "duplicate merge queue entries",
+        status: "warn",
+        message: `MQ-009: Duplicate entries for: ${dupBranches}. Would remove duplicates (dry-run).`,
+      };
+    }
+
+    if (fix) {
+      let removed = 0;
+      for (const [, entries] of duplicates) {
+        // Keep max(id), remove others
+        const maxId = Math.max(...entries.map((e) => e.id));
+        for (const entry of entries) {
+          if (entry.id !== maxId) {
+            this.mergeQueue.remove(entry.id);
+            removed++;
+          }
+        }
+      }
+      return {
+        name: "duplicate merge queue entries",
+        status: "fixed",
+        message: `MQ-009: Duplicate entries for: ${dupBranches}`,
+        fixApplied: `Removed ${removed} duplicate entry(ies), kept latest`,
+      };
+    }
+
+    return {
+      name: "duplicate merge queue entries",
+      status: "warn",
+      message: `MQ-009: Duplicate entries for: ${dupBranches}. Use --fix to remove duplicates.`,
+    };
+  }
+
+  /**
+   * Check for merge queue entries referencing non-existent runs (MQ-010).
+   */
+  async checkOrphanedMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
+    if (!this.mergeQueue) {
+      return { name: "orphaned merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
+    }
+
+    const allEntries = this.mergeQueue.list();
+    const orphaned = allEntries.filter((e) => !this.store.getRun(e.run_id));
+
+    if (orphaned.length === 0) {
+      return { name: "orphaned merge queue entries", status: "pass", message: "All entries reference existing runs" };
+    }
+
+    if (dryRun) {
+      return {
+        name: "orphaned merge queue entries",
+        status: "warn",
+        message: `MQ-010: ${orphaned.length} orphaned entry(ies). Would delete (dry-run).`,
+      };
+    }
+
+    if (fix) {
+      for (const entry of orphaned) {
+        this.mergeQueue.remove(entry.id);
+      }
+      return {
+        name: "orphaned merge queue entries",
+        status: "fixed",
+        message: `MQ-010: ${orphaned.length} orphaned entry(ies)`,
+        fixApplied: `Deleted ${orphaned.length} entry(ies)`,
+      };
+    }
+
+    return {
+      name: "orphaned merge queue entries",
+      status: "warn",
+      message: `MQ-010: ${orphaned.length} orphaned entry(ies) referencing non-existent runs. Use --fix to delete.`,
+    };
+  }
+
+  /**
+   * Run all merge queue health checks.
+   */
+  async checkMergeQueueHealth(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
+    const [stale, duplicates, orphaned] = await Promise.all([
+      this.checkStaleMergeQueueEntries(opts),
+      this.checkDuplicateMergeQueueEntries(opts),
+      this.checkOrphanedMergeQueueEntries(opts),
+    ]);
+    return [stale, duplicates, orphaned];
+  }
+
   async checkDataIntegrity(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
 
@@ -502,6 +685,13 @@ export class Doctor {
       ]);
 
     results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult);
+
+    // Merge queue checks (only when merge queue is configured)
+    if (this.mergeQueue) {
+      const mqResults = await this.checkMergeQueueHealth(opts);
+      results.push(...mqResults);
+    }
+
     return results;
   }
 

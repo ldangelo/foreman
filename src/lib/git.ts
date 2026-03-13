@@ -19,6 +19,11 @@ export interface MergeResult {
   conflicts?: string[];
 }
 
+export interface DeleteBranchResult {
+  deleted: boolean;
+  wasFullyMerged: boolean;
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 async function git(
@@ -152,19 +157,54 @@ export async function listWorktrees(
 }
 
 /**
- * Delete a local branch. Does not fail if the branch doesn't exist.
+ * Delete a local branch with merge-safety checks.
+ *
+ * - If the branch is fully merged into targetBranch (default "main"), uses `git branch -d` (safe delete).
+ * - If NOT merged and `force: true`, uses `git branch -D` (force delete).
+ * - If NOT merged and `force: false` (default), skips deletion and returns `{ deleted: false, wasFullyMerged: false }`.
+ * - If the branch does not exist, returns `{ deleted: false, wasFullyMerged: true }` (already gone).
  */
 export async function deleteBranch(
   repoPath: string,
   branchName: string,
-): Promise<void> {
+  options?: { force?: boolean; targetBranch?: string },
+): Promise<DeleteBranchResult> {
+  const force = options?.force ?? false;
+  const targetBranch = options?.targetBranch ?? "main";
+
+  // Check if branch exists
   try {
-    await git(["branch", "-D", branchName], repoPath);
-  } catch (err: unknown) {
-    const msg = (err as Error).message ?? "";
-    if (msg.includes("not found")) return; // already deleted
-    throw err;
+    await git(["rev-parse", "--verify", branchName], repoPath);
+  } catch {
+    // Branch not found — already gone
+    return { deleted: false, wasFullyMerged: true };
   }
+
+  // Check merge status: is branchName an ancestor of targetBranch?
+  let isFullyMerged = false;
+  try {
+    await git(["merge-base", "--is-ancestor", branchName, targetBranch], repoPath);
+    isFullyMerged = true;
+  } catch {
+    // merge-base --is-ancestor exits non-zero when branch is NOT an ancestor
+    isFullyMerged = false;
+  }
+
+  if (isFullyMerged) {
+    // We verified merge status via merge-base --is-ancestor against targetBranch.
+    // Use -D because git branch -d checks against HEAD, which may differ from targetBranch.
+    await git(["branch", "-D", branchName], repoPath);
+    return { deleted: true, wasFullyMerged: true };
+  }
+
+  if (force) {
+    // Force delete — caller explicitly asked for it
+    await git(["branch", "-D", branchName], repoPath);
+    return { deleted: true, wasFullyMerged: false };
+  }
+
+  // Not merged and not forced — skip deletion
+  return { deleted: false, wasFullyMerged: false };
 }
 
 /**

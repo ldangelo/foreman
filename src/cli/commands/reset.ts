@@ -213,8 +213,8 @@ export const resetCommand = new Command("reset")
         console.log(`    ${chalk.yellow("delete")} branch ${branchName}`);
         if (!dryRun) {
           try {
-            await deleteBranch(projectPath, branchName);
-            branchesDeleted++;
+            const delResult = await deleteBranch(projectPath, branchName, { force: true });
+            if (delResult.deleted) branchesDeleted++;
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
             errors.push(`Failed to delete branch ${branchName}: ${msg}`);

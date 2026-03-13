@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
+import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ForemanStore } from "../lib/store.js";
@@ -8,19 +8,10 @@ import type { SeedsClient } from "../lib/seeds.js";
 import { mergeWorktree, removeWorktree } from "../lib/git.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
+import { ConflictResolver } from "./conflict-resolver.js";
+import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
 
 const execFileAsync = promisify(execFile);
-
-// Report files that agents produce in the worktree root
-const REPORT_FILES = [
-  "EXPLORER_REPORT.md",
-  "DEVELOPER_REPORT.md",
-  "QA_REPORT.md",
-  "REVIEW.md",
-  "FINALIZE_REPORT.md",
-  "TASK.md",
-  "AGENTS.md",
-];
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -58,21 +49,22 @@ async function runTestCommand(command: string, cwd: string): Promise<{ ok: boole
 // ── Refinery ─────────────────────────────────────────────────────────────
 
 export class Refinery {
+  private conflictResolver: ConflictResolver;
+
   constructor(
     private store: ForemanStore,
     private seeds: SeedsClient,
     private projectPath: string,
-  ) {}
+  ) {
+    this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG);
+  }
 
   /**
    * Check if a file path is a report/non-code file that can be auto-resolved.
+   * Delegates to ConflictResolver.isReportFile().
    */
   private isReportFile(f: string): boolean {
-    if (REPORT_FILES.includes(f)) return true;
-    if (f.startsWith(".foreman/reports/")) return true;
-    if (f.endsWith(".md") && REPORT_FILES.some((r) => f.startsWith(r.replace(".md", ".")))) return true;
-    if (f === ".claude/settings.local.json") return true;
-    return false;
+    return ConflictResolver.isReportFile(f);
   }
 
   /**
@@ -80,79 +72,51 @@ export class Refinery {
    * If so, auto-resolve them and continue rebase (looping until done).
    * If real code conflicts exist, abort rebase and return false.
    * Returns true if rebase completed successfully.
+   * Delegates to ConflictResolver.autoResolveRebaseConflicts().
    */
   private async autoResolveRebaseConflicts(targetBranch: string): Promise<boolean> {
-    const MAX_ITERATIONS = 50; // safety limit
-    for (let i = 0; i < MAX_ITERATIONS; i++) {
-      // Get conflicted files
-      let conflictFiles: string[];
-      try {
-        const out = await git(["diff", "--name-only", "--diff-filter=U"], this.projectPath);
-        conflictFiles = out.split("\n").map((f) => f.trim()).filter(Boolean);
-      } catch {
-        conflictFiles = [];
-      }
+    return this.conflictResolver.autoResolveRebaseConflicts(targetBranch);
+  }
 
-      if (conflictFiles.length === 0) {
-        // No conflicts — rebase may have completed or we resolved the last step
-        return true;
-      }
+  /**
+   * Detect uncommitted changes in `.seeds/` and `.foreman/` and commit them
+   * so that merge operations start from a clean state for state files.
+   * No-op when there are no dirty state files.
+   */
+  private async autoCommitStateFiles(): Promise<void> {
+    try {
+      // Use execFileAsync directly (not the git() helper) because git() trims
+      // stdout, which strips the leading whitespace from porcelain status codes.
+      const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
+        cwd: this.projectPath,
+        maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+      });
+      if (!stdout || !stdout.trim()) return;
 
-      const codeConflicts = conflictFiles.filter((f) => !this.isReportFile(f));
-      if (codeConflicts.length > 0) {
-        // Real code conflicts — abort
-        try { await git(["rebase", "--abort"], this.projectPath); } catch { /* already clean */ }
-        return false;
-      }
+      const lines = stdout.split("\n").filter(Boolean);
+      // Each line has format "XY path" — the path starts at column 3
+      const stateFiles = lines
+        .map((line) => line.slice(3))
+        .filter((path) => path.startsWith(".seeds/") || path.startsWith(".foreman/"));
 
-      // All conflicts are report files — auto-resolve by accepting ours (the branch version in rebase)
-      for (const f of conflictFiles) {
-        // In rebase context, --ours is the branch being rebased onto (target),
-        // --theirs is the branch's own commits. We want the branch's version.
-        await git(["checkout", "--theirs", f], this.projectPath).catch(() => {
-          // File may have been deleted on one side — just remove it
-          try { unlinkSync(join(this.projectPath, f)); } catch { /* gone */ }
-        });
-        await git(["add", "-f", f], this.projectPath).catch(() => {});
-      }
+      if (stateFiles.length === 0) return;
 
-      // Continue the rebase
-      try {
-        await git(["rebase", "--continue"], this.projectPath);
-        return true; // rebase completed
-      } catch {
-        // More conflicts on the next commit — loop again
-      }
+      await git(["add", ...stateFiles], this.projectPath);
+      await git(["commit", "-m", "chore: auto-commit state files before merge"], this.projectPath);
+    } catch (err: unknown) {
+      // MQ-020: Auto-commit failure is non-fatal — log and continue
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[MQ-020] Auto-commit state files failed (non-fatal): ${message}`);
     }
-
-    // Hit iteration limit — abort to be safe
-    try { await git(["rebase", "--abort"], this.projectPath); } catch { /* already clean */ }
-    return false;
   }
 
   /**
    * Remove report files from the working tree before merging so they can't
    * conflict. Commits the removal if any tracked files were removed.
+   * Delegates to ConflictResolver.removeReportFiles().
    */
   private async removeReportFiles(): Promise<void> {
-    let removed = false;
-    for (const report of REPORT_FILES) {
-      const filePath = join(this.projectPath, report);
-      if (existsSync(filePath)) {
-        await git(["rm", "-f", report], this.projectPath).catch(() => {
-          try { unlinkSync(filePath); } catch { /* already gone */ }
-        });
-        removed = true;
-      }
-    }
-    if (removed) {
-      // Only commit if there are staged changes (git rm of tracked files)
-      try {
-        await git(["commit", "-m", "Remove report files before merge"], this.projectPath);
-      } catch {
-        // Nothing staged (files were untracked) — that's fine
-      }
-    }
+    return this.conflictResolver.removeReportFiles();
   }
 
   /**
@@ -160,27 +124,10 @@ export class Refinery {
    * Moves report files from the working tree into .foreman/reports/<name>-<seedId>.md
    * and creates a follow-up commit. Called after mergeWorktree() succeeds so we
    * don't need to checkout branches or deal with dirty working trees.
+   * Delegates to ConflictResolver.archiveReportsPostMerge().
    */
   private async archiveReportsPostMerge(seedId: string): Promise<void> {
-    const reportsDir = join(this.projectPath, ".foreman", "reports");
-    mkdirSync(reportsDir, { recursive: true });
-
-    let moved = false;
-    for (const report of REPORT_FILES) {
-      const src = join(this.projectPath, report);
-      if (existsSync(src)) {
-        const baseName = report.replace(".md", "");
-        const dest = join(reportsDir, `${baseName}-${seedId}.md`);
-        renameSync(src, dest);
-        await git(["add", "-f", dest], this.projectPath);
-        await git(["rm", "--cached", report], this.projectPath).catch(() => {});
-        moved = true;
-      }
-    }
-
-    if (moved) {
-      await git(["commit", "-m", `Archive reports for ${seedId}`], this.projectPath);
-    }
+    return this.conflictResolver.archiveReportsPostMerge(seedId);
   }
 
   /**
@@ -355,6 +302,9 @@ export class Refinery {
       const branchName = `foreman/${run.seed_id}`;
 
       try {
+        // Commit any dirty state files (.seeds/, .foreman/) before merge
+        await this.autoCommitStateFiles();
+
         // Remove report files so they can't cause merge conflicts
         await this.removeReportFiles();
 
@@ -600,6 +550,26 @@ export class Refinery {
   /**
    * Find all completed runs and create PRs for their branches.
    * Pushes branches to origin and uses `gh pr create`.
+   *
+   * MQ-T058d Investigation: Why `gh pr create` instead of `git town propose`
+   * -------------------------------------------------------------------------
+   * git town propose (v22.6.0) was investigated for PR creation. Findings:
+   *   1. It DOES support --title and --body flags.
+   *   2. However, it opens a browser window (`open https://github.com/...`)
+   *      rather than creating the PR via the GitHub API.
+   *   3. No PR URL is returned in stdout -- only a GitHub compare URL is
+   *      opened in the system browser.
+   *   4. It also runs `git fetch`, `git stash`, and `git push` as side-effects,
+   *      which conflicts with our explicit push step above.
+   *
+   * Since Foreman agents run non-interactively (see CLAUDE.md critical
+   * constraints: "agents hang on interactive prompts"), and we need the PR URL
+   * returned for event logging, `gh pr create` remains the correct choice for
+   * both normal-flow and conflict PRs.
+   *
+   * Conflict PRs (ConflictResolver.handleFallback) also use `gh pr create`
+   * because they require structured titles with "[Conflict]" prefix and
+   * detailed resolution metadata in the body.
    */
   async createPRs(opts?: {
     baseBranch?: string;
@@ -702,5 +672,166 @@ export class Refinery {
     }
 
     return { created, failed };
+  }
+}
+
+// ── Dry-run merge ─────────────────────────────────────────────────────────────
+
+export interface DryRunEntry {
+  seedId: string;
+  branchName: string;
+  diffStat: string;
+  hasConflicts: boolean;
+  estimatedTier?: number;
+  error?: string;
+}
+
+/**
+ * Preview what merging branches into the target would look like.
+ * Reads `git diff --stat` and detects conflicts via `git merge-tree`.
+ * No git state is modified.
+ *
+ * @param projectPath   Repository root
+ * @param targetBranch  Branch to merge into (e.g. "main")
+ * @param branches      List of branches to check
+ * @param filterSeedId  If set, only process this seed
+ * @param conflictPatterns  Optional map of file -> resolution tier for estimated tier column
+ */
+export async function dryRunMerge(
+  projectPath: string,
+  targetBranch: string,
+  branches: Array<{ branchName: string; seedId: string }>,
+  filterSeedId?: string,
+  conflictPatterns?: Map<string, number>,
+): Promise<DryRunEntry[]> {
+  const results: DryRunEntry[] = [];
+
+  const filtered = filterSeedId
+    ? branches.filter((b) => b.seedId === filterSeedId)
+    : branches;
+
+  for (const { branchName, seedId } of filtered) {
+    try {
+      // Get merge base
+      const mergeBase = await gitReadOnly(
+        ["merge-base", targetBranch, branchName],
+        projectPath,
+      );
+
+      // Get diff stat (read-only)
+      const diffStat = await gitReadOnly(
+        ["diff", "--stat", `${targetBranch}...${branchName}`],
+        projectPath,
+      );
+
+      // Detect conflicts via merge-tree (read-only, no state change)
+      const mergeTreeOutput = await gitReadOnly(
+        ["merge-tree", mergeBase, targetBranch, branchName],
+        projectPath,
+      );
+
+      const hasConflicts = mergeTreeOutput.includes("changed in both");
+
+      // Estimate resolution tier from conflict patterns
+      let estimatedTier: number | undefined;
+      if (hasConflicts && conflictPatterns && conflictPatterns.size > 0) {
+        // Find the highest (worst) tier among conflicting files
+        const conflictFileMatches = Array.from(conflictPatterns.entries())
+          .filter(([file]) => mergeTreeOutput.includes(file));
+        if (conflictFileMatches.length > 0) {
+          estimatedTier = Math.max(...conflictFileMatches.map(([, tier]) => tier));
+        }
+      }
+
+      results.push({ seedId, branchName, diffStat, hasConflicts, estimatedTier });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      results.push({
+        seedId,
+        branchName,
+        diffStat: "",
+        hasConflicts: false,
+        error: message,
+      });
+    }
+  }
+
+  return results;
+}
+
+/** Read-only git command — guaranteed not to modify state. */
+async function gitReadOnly(args: string[], cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, {
+    cwd,
+    maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+  });
+  return stdout.trim();
+}
+
+// ── Seeds preservation ────────────────────────────────────────────────────────
+
+export interface SeedPreservationResult {
+  preserved: boolean;
+  error?: string;
+}
+
+/**
+ * Preserve `.seeds/` changes from a branch before it is deleted.
+ * Extracts `.seeds/` changes via `git diff`, writes a temp patch file,
+ * applies it to the current index, and commits with a descriptive message.
+ *
+ * Error code MQ-019 on patch failure.
+ *
+ * @param projectPath   Repository root
+ * @param branchName    Source branch containing seed changes
+ * @param targetBranch  Target branch to apply changes to
+ */
+export async function preserveSeedChanges(
+  projectPath: string,
+  branchName: string,
+  targetBranch: string,
+): Promise<SeedPreservationResult> {
+  const tmpPatchPath = join(projectPath, `.foreman-seed-patch-${Date.now()}.patch`);
+
+  try {
+    // Extract .seeds/ changes
+    const patchContent = await gitReadOnly(
+      ["diff", `${targetBranch}...${branchName}`, "--", ".seeds/"],
+      projectPath,
+    );
+
+    if (!patchContent.trim()) {
+      return { preserved: false };
+    }
+
+    // Write temp patch
+    writeFileSync(tmpPatchPath, patchContent);
+
+    // Apply the patch to the index
+    try {
+      await git(["apply", "--index", tmpPatchPath], projectPath);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { preserved: false, error: `MQ-019: ${message}` };
+    }
+
+    // Commit the seed changes
+    const seedId = branchName.replace(/^foreman\//, "");
+    await git(
+      ["commit", "-m", `chore: preserve seed changes from ${seedId}`],
+      projectPath,
+    );
+
+    return { preserved: true };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { preserved: false, error: message };
+  } finally {
+    // Always clean up temp file
+    try {
+      unlinkSync(tmpPatchPath);
+    } catch {
+      // File may not have been created — ignore
+    }
   }
 }
