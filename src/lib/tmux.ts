@@ -36,7 +36,7 @@ export interface TmuxSessionInfo {
  * Format: `foreman-<seedId>` with invalid characters replaced by hyphens.
  */
 export function tmuxSessionName(seedId: string): string {
-  const sanitized = seedId.replace(/[:\.\s]/g, "-").trim();
+  const sanitized = seedId.replace(/[:.\s]/g, "-").trim();
   if (!sanitized || sanitized.replace(/-/g, "").length === 0) {
     return "foreman-unknown";
   }
@@ -147,7 +147,7 @@ export class TmuxClient {
       if (!stdout.trim()) {
         return [];
       }
-      return stdout.replace(/\n$/, "").split("\n");
+      return stdout.trimEnd().split("\n");
     } catch {
       return [];
     }

@@ -282,6 +282,24 @@ describe("TmuxClient", () => {
       const result = await client.capturePaneOutput("foreman-empty");
       expect(result).toEqual([]);
     });
+
+    it("strips multiple trailing newlines without producing empty entries", async () => {
+      typedMock.mockResolvedValueOnce({
+        stdout: "line 1\nline 2\n\n\n",
+        stderr: "",
+      });
+      const result = await client.capturePaneOutput("foreman-abc1");
+      expect(result).toEqual(["line 1", "line 2"]);
+    });
+
+    it("handles output with blank lines in the middle", async () => {
+      typedMock.mockResolvedValueOnce({
+        stdout: "line 1\n\nline 3\n",
+        stderr: "",
+      });
+      const result = await client.capturePaneOutput("foreman-abc1");
+      expect(result).toEqual(["line 1", "", "line 3"]);
+    });
   });
 
   describe("listForemanSessions", () => {
