@@ -60,6 +60,15 @@ export interface CascadeResult {
   costs: CostInfo[];
 }
 
+/** Result of post-merge test execution. */
+export interface PostMergeTestResult {
+  passed: boolean;
+  skipped: boolean;
+  skipReason?: string;
+  output?: string;
+  errorCode?: string;
+}
+
 /** Result of the fallback handler (conflict PR creation). */
 export interface FallbackResult {
   prUrl?: string;
@@ -785,6 +794,73 @@ export class ConflictResolver {
     const fullPath = path.join(this.projectPath, filePath);
     await fs.writeFile(fullPath, content, "utf-8");
     await this.git(["add", filePath]);
+  }
+
+  /**
+   * Post-merge test runner (MQ-T042).
+   *
+   * Runs the project test suite after a merge that used AI resolution
+   * (Tier 3 or Tier 4). Skips for clean merges and deterministic-only
+   * resolution. On failure, reverts the merge commit with
+   * `git reset --hard HEAD~1`.
+   */
+  async runPostMergeTests(
+    resolvedTiers: Map<string, number>,
+    testCommand: string = "npm test",
+    noTests: boolean = false,
+  ): Promise<PostMergeTestResult> {
+    // Skip if --no-tests
+    if (noTests) {
+      return {
+        passed: true,
+        skipped: true,
+        skipReason: "Tests disabled via --no-tests",
+      };
+    }
+
+    // Check if any file used AI resolution (Tier 3 or 4)
+    const usedAI = Array.from(resolvedTiers.values()).some(
+      (tier) => tier >= 3,
+    );
+    if (!usedAI) {
+      return {
+        passed: true,
+        skipped: true,
+        skipReason: "No AI resolution used (Tier 1/2 only)",
+      };
+    }
+
+    // Run tests
+    const [cmd, ...args] = testCommand.split(/\s+/);
+    try {
+      await execFileAsync(cmd, args, {
+        cwd: this.projectPath,
+        timeout: 120_000,
+        maxBuffer: MAX_BUFFER,
+      });
+      return { passed: true, skipped: false };
+    } catch (err: unknown) {
+      const e = err as {
+        stdout?: string;
+        stderr?: string;
+        message?: string;
+      };
+      const output = (
+        (e.stdout ?? "") +
+        "\n" +
+        (e.stderr ?? e.message ?? "")
+      ).trim();
+
+      // Revert the merge commit
+      await this.git(["reset", "--hard", "HEAD~1"]);
+
+      return {
+        passed: false,
+        skipped: false,
+        output: output.slice(0, 2000),
+        errorCode: "MQ-007",
+      };
+    }
   }
 
   /**
