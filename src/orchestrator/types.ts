@@ -172,6 +172,92 @@ export interface WorkerProgressNotification {
 
 export type WorkerNotification = WorkerStatusNotification | WorkerProgressNotification;
 
+// ── Sling types ─────────────────────────────────────────────────────────
+
+export type TrdTaskStatus = "open" | "in_progress" | "completed";
+export type RiskLevel = "high" | "medium";
+
+export interface TrdTask {
+  trdId: string;
+  title: string;
+  estimateHours: number;
+  dependencies: string[];
+  files: string[];
+  status: TrdTaskStatus;
+  riskLevel?: RiskLevel;
+}
+
+export interface TrdStory {
+  title: string;
+  frNumber?: string;
+  tasks: TrdTask[];
+  acceptanceCriteria?: string;
+}
+
+export interface TrdSprint {
+  number: number;
+  title: string;
+  goal: string;
+  priority: Priority;
+  stories: TrdStory[];
+  summary?: {
+    focus: string;
+    estimatedHours: number;
+    deliverables: string;
+  };
+}
+
+export interface SlingPlan {
+  epic: {
+    title: string;
+    description: string;
+    documentId: string;
+    qualityNotes?: string;
+  };
+  sprints: TrdSprint[];
+  acceptanceCriteria: Map<string, string>;
+  riskMap: Map<string, RiskLevel>;
+}
+
+export interface ParallelGroup {
+  label: string;
+  sprintIndices: number[];
+}
+
+export interface ParallelResult {
+  groups: ParallelGroup[];
+  warnings: string[];
+}
+
+export interface SlingOptions {
+  dryRun: boolean;
+  auto: boolean;
+  json: boolean;
+  sdOnly: boolean;
+  brOnly: boolean;
+  skipCompleted: boolean;
+  closeCompleted: boolean;
+  noParallel: boolean;
+  force: boolean;
+  noRisks: boolean;
+  noQuality: boolean;
+  priorityMap?: Record<string, string>;
+}
+
+export interface TrackerResult {
+  created: number;
+  skipped: number;
+  failed: number;
+  epicId: string | null;
+  errors: string[];
+}
+
+export interface SlingResult {
+  sd: TrackerResult | null;
+  br: TrackerResult | null;
+  depErrors: string[];
+}
+
 // ── Doctor types ────────────────────────────────────────────────────────
 
 export type CheckStatus = "pass" | "warn" | "fail" | "fixed" | "skip";

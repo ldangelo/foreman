@@ -15,6 +15,7 @@ import { doctorCommand } from "./commands/doctor.js";
 import { dashboardCommand } from "./commands/dashboard.js";
 import { seedCommand } from "./commands/seed.js";
 import { worktreeCommand } from "./commands/worktree.js";
+import { slingCommand } from "./commands/sling.js";
 
 const program = new Command();
 
@@ -37,5 +38,6 @@ program.addCommand(doctorCommand);
 program.addCommand(dashboardCommand);
 program.addCommand(seedCommand);
 program.addCommand(worktreeCommand);
+program.addCommand(slingCommand);
 
 program.parse();
