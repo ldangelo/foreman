@@ -24,3 +24,12 @@ AGENTS.md
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# br (beads_rust) shell history
+.beads/.br_history/
+
+# Backup files
+*.bak
+
+# Session logs
+SessionLogs/
