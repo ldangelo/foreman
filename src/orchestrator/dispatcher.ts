@@ -11,6 +11,7 @@ import type { BvClient } from "../lib/bv.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
+import { getTaskBackend } from "../lib/feature-flags.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
 import { TmuxClient, tmuxSessionName } from "../lib/tmux.js";
 import type {
@@ -514,6 +515,43 @@ export class Dispatcher {
   // ── Agent Spawning ─────────────────────────────────────────────────────
 
   /**
+   * Build the spawn prompt for an agent (exposed for testing — TRD-012).
+   * Returns the multi-line string passed to the worker as its initial prompt.
+   */
+  buildSpawnPrompt(seedId: string, seedTitle: string, backend: "sd" | "br"): string {
+    const closeCmd = backend === "br"
+      ? `br close ${seedId} --reason "Completed"`
+      : `sd close ${seedId} --reason "Completed"`;
+    return [
+      `Read TASK.md and implement the task described.`,
+      `Use ${backend === "br" ? "br (beads_rust)" : "sd (seeds)"} to track your progress.`,
+      `When completely finished:`,
+      `  ${closeCmd}`,
+      `  git add -A`,
+      `  git commit -m "${seedTitle} (${seedId})"`,
+      `  git push -u origin foreman/${seedId}`,
+    ].join("\n");
+  }
+
+  /**
+   * Build the resume prompt for an agent (exposed for testing — TRD-012).
+   */
+  buildResumePrompt(seedId: string, seedTitle: string, backend: "sd" | "br"): string {
+    const closeCmd = backend === "br"
+      ? `br close ${seedId} --reason "Completed"`
+      : `sd close ${seedId} --reason "Completed"`;
+    return [
+      `You were previously working on this task but were interrupted (likely by a rate limit).`,
+      `Continue where you left off. Check your progress so far and complete the remaining work.`,
+      `When completely finished:`,
+      `  ${closeCmd}`,
+      `  git add -A`,
+      `  git commit -m "${seedTitle} (${seedId})"`,
+      `  git push -u origin foreman/${seedId}`,
+    ].join("\n");
+  }
+
+  /**
    * Spawn a coding agent as a detached worker process.
    *
    * Writes a WorkerConfig JSON file and spawns `agent-worker.ts` as a
@@ -534,15 +572,7 @@ export class Dispatcher {
     },
     notifyUrl?: string,
   ): Promise<{ sessionKey: string; tmuxSession?: string }> {
-    const prompt = [
-      `Read TASK.md and implement the task described.`,
-      `Use sd (seeds) to track your progress.`,
-      `When completely finished:`,
-      `  sd close ${seed.id} --reason "Completed"`,
-      `  git add -A`,
-      `  git commit -m "${seed.title} (${seed.id})"`,
-      `  git push -u origin foreman/${seed.id}`,
-    ].join("\n");
+    const prompt = this.buildSpawnPrompt(seed.id, seed.title, getTaskBackend());
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
@@ -583,15 +613,7 @@ export class Dispatcher {
     telemetry?: boolean,
     notifyUrl?: string,
   ): Promise<{ sessionKey: string; tmuxSession?: string }> {
-    const resumePrompt = [
-      `You were previously working on this task but were interrupted (likely by a rate limit).`,
-      `Continue where you left off. Check your progress so far and complete the remaining work.`,
-      `When completely finished:`,
-      `  sd close ${seed.id} --reason "Completed"`,
-      `  git add -A`,
-      `  git commit -m "${seed.title} (${seed.id})"`,
-      `  git push -u origin foreman/${seed.id}`,
-    ].join("\n");
+    const resumePrompt = this.buildResumePrompt(seed.id, seed.title, getTaskBackend());
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;

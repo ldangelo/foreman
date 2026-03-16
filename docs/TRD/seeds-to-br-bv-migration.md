@@ -335,7 +335,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Remove import of calculateImpactScores from pagerank.ts
   - [depends: TRD-002, TRD-005]
 
-- [ ] **TRD-006-TEST**: Unit tests for bv-ordered dispatch (3h) [verifies TRD-006]
+- [x] **TRD-006-TEST**: Unit tests for bv-ordered dispatch (3h) [verifies TRD-006]
   - Test dispatch calls robotTriage() before ordering
   - Test tasks dispatched in bv ranked order when available
   - Test fallback to priority sort when robotTriage returns null
@@ -351,7 +351,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Verify br binary exists before proceeding (when backend=br)
   - [depends: TRD-005]
 
-- [ ] **TRD-007-TEST**: Unit tests for run.ts client selection (1h) [verifies TRD-007]
+- [x] **TRD-007-TEST**: Unit tests for run.ts client selection (1h) [verifies TRD-007]
   - Test FOREMAN_TASK_BACKEND=br instantiates BeadsRustClient
   - Test FOREMAN_TASK_BACKEND=sd instantiates SeedsClient
   - Test default (unset) instantiates SeedsClient
@@ -364,7 +364,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Update detectAndFixMismatches() to use ITaskClient
   - [depends: TRD-005]
 
-- [ ] **TRD-008-TEST**: Unit tests for reset.ts with br backend (1h) [verifies TRD-008]
+- [x] **TRD-008-TEST**: Unit tests for reset.ts with br backend (1h) [verifies TRD-008]
   - Test reset calls brClient.update() when FOREMAN_TASK_BACKEND=br
   - Test reset calls brClient.show() when FOREMAN_TASK_BACKEND=br
   - Test detectAndFixMismatches works with BeadsRustClient
@@ -375,7 +375,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Handle "issue not found" error as transient during migration
   - [depends: TRD-005]
 
-- [ ] **TRD-009-TEST**: Unit tests for Monitor with br backend (2h) [verifies TRD-009]
+- [x] **TRD-009-TEST**: Unit tests for Monitor with br backend (2h) [verifies TRD-009]
   - Test Monitor accepts BeadsRustClient via ITaskClient
   - Test checkAll() detects closed status from brClient.show()
   - Test "issue not found" handled gracefully (not marked as failed)
@@ -387,7 +387,7 @@ All priority comparisons throughout the codebase go through this utility.
   - When backend=sd: existing sd close behavior (backward compat)
   - [depends: TRD-005]
 
-- [ ] **TRD-010-TEST**: Unit tests for finalize() with br backend (1h) [verifies TRD-010]
+- [x] **TRD-010-TEST**: Unit tests for finalize() with br backend (1h) [verifies TRD-010]
   - Test finalize calls br close when FOREMAN_TASK_BACKEND=br
   - Test finalize calls sd close when FOREMAN_TASK_BACKEND=sd
   - Test br close uses correct binary path (~/.local/bin/br)
@@ -399,18 +399,18 @@ All priority comparisons throughout the codebase go through this utility.
   - When backend=sd: existing sd update behavior
   - [depends: TRD-005]
 
-- [ ] **TRD-011-TEST**: Unit tests for markStuck() with br backend (1h) [verifies TRD-011]
+- [x] **TRD-011-TEST**: Unit tests for markStuck() with br backend (1h) [verifies TRD-011]
   - Test markStuck calls br update when FOREMAN_TASK_BACKEND=br
   - Test markStuck uses correct binary path
   - Test markStuck sets status to open
 
-- [ ] **TRD-012**: Update dispatcher inline prompts (1h) [satisfies REQ-016]
+- [x] **TRD-012**: Update dispatcher inline prompts (1h) [satisfies REQ-016]
   - Update spawnAgent() prompt string: br close instead of sd close
   - Update resumeAgent() prompt string: br close instead of sd close
   - Conditional on FOREMAN_TASK_BACKEND during transition
   - [depends: TRD-005]
 
-- [ ] **TRD-012-TEST**: Unit tests for dispatcher prompt content (1h) [verifies TRD-012]
+- [x] **TRD-012-TEST**: Unit tests for dispatcher prompt content (1h) [verifies TRD-012]
   - Test spawnAgent prompt contains "br close" when backend=br
   - Test resumeAgent prompt contains "br close" when backend=br
   - Test no "sd close" in prompts when backend=br
