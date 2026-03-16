@@ -319,7 +319,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Update buildWorkerEnv() to prepend ~/.local/bin to PATH
   - [depends: TRD-001, TRD-003]
 
-- [ ] **TRD-005-TEST**: Unit tests for Dispatcher with ITaskClient (3h) [verifies TRD-005]
+- [x] **TRD-005-TEST**: Unit tests for Dispatcher with ITaskClient (3h) [verifies TRD-005]
   - Test Dispatcher accepts BeadsRustClient via ITaskClient
   - Test Dispatcher accepts SeedsClient via ITaskClient (backward compat)
   - Test selectModel() works with numeric priority format
@@ -421,7 +421,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Default: "sd" (Sprint 2), changed to "br" in Sprint 3
   - Single source of truth for all modules checking the flag
 
-- [ ] **TRD-013-TEST**: Unit tests for feature flag (1h) [verifies TRD-013]
+- [x] **TRD-013-TEST**: Unit tests for feature flag (1h) [verifies TRD-013]
   - Test returns "sd" when env var unset
   - Test returns "br" when env var set to "br"
   - Test returns "sd" when env var set to "sd"
