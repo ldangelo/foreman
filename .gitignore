@@ -33,3 +33,4 @@ AGENTS.md
 
 # Session logs
 SessionLogs/
+.claude/settings.local.json
