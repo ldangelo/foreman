@@ -311,7 +311,7 @@ All priority comparisons throughout the codebase go through this utility.
 
 ### Sprint 2 -- Phase 1: Runtime Core (Feature-Flagged)
 
-- [ ] **TRD-005**: Update Dispatcher to accept BeadsRustClient (4h) [satisfies REQ-001]
+- [x] **TRD-005**: Update Dispatcher to accept BeadsRustClient (4h) [satisfies REQ-001]
   - Define ITaskClient interface in src/lib/task-client.ts
   - Make both SeedsClient and BeadsRustClient implement ITaskClient
   - Change Dispatcher constructor to accept ITaskClient
@@ -415,7 +415,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Test resumeAgent prompt contains "br close" when backend=br
   - Test no "sd close" in prompts when backend=br
 
-- [ ] **TRD-013**: Add FOREMAN_TASK_BACKEND feature flag infrastructure (2h)
+- [x] **TRD-013**: Add FOREMAN_TASK_BACKEND feature flag infrastructure (2h)
   - Create src/lib/feature-flags.ts with getTaskBackend(): "sd" | "br" utility
   - Read from process.env.FOREMAN_TASK_BACKEND
   - Default: "sd" (Sprint 2), changed to "br" in Sprint 3

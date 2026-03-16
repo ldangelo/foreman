@@ -5,11 +5,13 @@ import { spawn } from "node:child_process";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 
-import type { SeedsClient, Seed } from "../lib/seeds.js";
+import type { ITaskClient, Issue } from "../lib/task-client.js";
+import type { SeedGraph } from "../lib/seeds.js";
 import type { ForemanStore } from "../lib/store.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
 import { calculateImpactScores } from "./pagerank.js";
+import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
 import { TmuxClient, tmuxSessionName } from "../lib/tmux.js";
 import type {
@@ -27,7 +29,7 @@ import type {
 
 export class Dispatcher {
   constructor(
-    private seeds: SeedsClient,
+    private seeds: ITaskClient,
     private store: ForemanStore,
     private projectPath: string,
   ) {}
@@ -62,17 +64,21 @@ export class Dispatcher {
     // Falls back to original order gracefully if the graph is unavailable.
     if (!opts?.seedId) {
       try {
-        const graph = await this.seeds.getGraph();
-        const impactScores = calculateImpactScores(readySeeds, graph);
-        readySeeds = [...readySeeds].sort((a, b) => {
-          const scoreA = impactScores.get(a.id) ?? 0;
-          const scoreB = impactScores.get(b.id) ?? 0;
-          if (scoreA !== scoreB) return scoreB - scoreA;  // higher score first
-          // Tie-break by priority field (P0 < P1 < ... < P4)
-          const priorityOrder: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 };
-          return (priorityOrder[a.priority] ?? 5) - (priorityOrder[b.priority] ?? 5);
-        });
-        log(`PageRank scored ${readySeeds.length} ready seeds`);
+        // getGraph() is a SeedsClient-specific extension; ITaskClient doesn't require it.
+        // Check at runtime whether the client supports it before calling.
+        const clientWithGraph = this.seeds as ITaskClient & { getGraph?: () => Promise<SeedGraph> };
+        if (typeof clientWithGraph.getGraph === "function") {
+          const graph = await clientWithGraph.getGraph();
+          const impactScores = calculateImpactScores(readySeeds, graph);
+          readySeeds = [...readySeeds].sort((a, b) => {
+            const scoreA = impactScores.get(a.id) ?? 0;
+            const scoreB = impactScores.get(b.id) ?? 0;
+            if (scoreA !== scoreB) return scoreB - scoreA;  // higher score first
+            // Tie-break by priority using normalizePriority() for robust P0–P4 / 0–4 handling
+            return normalizePriority(a.priority) - normalizePriority(b.priority);
+          });
+          log(`PageRank scored ${readySeeds.length} ready seeds`);
+        }
       } catch (err) {
         log(`Could not fetch graph for PageRank scoring (falling back to default order): ${err}`);
       }
@@ -454,12 +460,20 @@ export class Dispatcher {
   /**
    * Pick a Claude model based on task complexity signals.
    *
-   * - Opus: refactor, architect, design, complex, multi-step features
+   * - Opus: P0 critical tasks, or keywords: refactor, architect, design, complex, migrate, overhaul
+   * - Haiku: P3/P4 low-priority tasks with light keywords, or typo/config/rename/etc.
    * - Sonnet: default for most implementation tasks
-   * - Haiku: simple config, docs-only, typo fixes
+   *
+   * Priority comparisons use normalizePriority() to handle both "P0"–"P4" and "0"–"4" formats.
    */
   selectModel(task: SeedInfo): ModelSelection {
     const text = `${task.title} ${task.description ?? ""}`.toLowerCase();
+    const priority = normalizePriority(task.priority ?? "P2");
+
+    // P0 critical tasks always get the most capable model
+    if (priority === 0) {
+      return "claude-opus-4-6";
+    }
 
     const heavy = ["refactor", "architect", "design", "complex", "migrate", "overhaul"];
     if (heavy.some((kw) => text.includes(kw))) {
@@ -467,7 +481,8 @@ export class Dispatcher {
     }
 
     const light = ["typo", "rename", "config", "bump version", "update readme"];
-    if (light.some((kw) => text.includes(kw))) {
+    // Only use haiku for non-critical (P1+) light tasks
+    if (light.some((kw) => text.includes(kw)) && priority >= 1) {
       return "claude-haiku-4-5-20251001";
     }
 
@@ -708,8 +723,9 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     const outFd = await open(join(logDir, `${config.runId}.out`), "w");
     const errFd = await open(join(logDir, `${config.runId}.err`), "w");
 
-    // Strip CLAUDECODE env var so the worker can spawn its own Claude SDK session
-    const spawnEnv: Record<string, string | undefined> = { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` };
+    // Use the fully-constructed env from config (includes ~/.local/bin prefix from buildWorkerEnv)
+    // Strip CLAUDECODE so the worker can spawn its own Claude SDK session
+    const spawnEnv: Record<string, string | undefined> = { ...config.env };
     delete spawnEnv.CLAUDECODE;
 
     const child = spawn(tsxBin, [workerScript, configPath], {
@@ -780,7 +796,8 @@ function buildWorkerEnv(
       env[key] = value;
     }
   }
-  env.PATH = `/opt/homebrew/bin:${env.PATH ?? ""}`;
+  const home = process.env.HOME ?? "/home/nobody";
+  env.PATH = `${home}/.local/bin:/opt/homebrew/bin:${env.PATH ?? ""}`;
 
   if (notifyUrl) {
     env.FOREMAN_NOTIFY_URL = notifyUrl;
@@ -814,7 +831,7 @@ function extractSessionId(sessionKey: string | null): string | null {
   return m ? m[1] : null;
 }
 
-function seedToInfo(seed: Seed): SeedInfo {
+function seedToInfo(seed: Issue): SeedInfo {
   return {
     id: seed.id,
     title: seed.title,
