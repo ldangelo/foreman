@@ -283,7 +283,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Test invalid inputs ("P5", "high", "", null) return 4
   - Test formatPriorityForBr() output
 
-- [ ] **TRD-004**: Implement foreman migrate-seeds command (4h) [satisfies REQ-021, REQ-022, REQ-023]
+- [x] **TRD-004**: Implement foreman migrate-seeds command (4h) [satisfies REQ-021, REQ-022, REQ-023]
   - Create src/cli/commands/migrate-seeds.ts
   - Register in commander CLI
   - Read .seeds/issues.jsonl line by line
