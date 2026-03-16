@@ -1,15 +1,17 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Dispatcher } from "../dispatcher.js";
 import { PLAN_STEP_CONFIG } from "../roles.js";
 import type { SeedInfo } from "../types.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
+import type { BvClient, BvTriageResult } from "../../lib/bv.js";
+import type { ForemanStore } from "../../lib/store.js";
 
 // Minimal mocks — we only need selectModel which doesn't touch store/seeds
-const mockStore = {} as any;
-const mockSeeds = {} as any;
+const mockStore = {} as unknown as ForemanStore;
+const mockSeeds = {} as unknown as ITaskClient;
 
-function makeDispatcher(client?: ITaskClient) {
-  return new Dispatcher(client ?? mockSeeds, mockStore, "/tmp");
+function makeDispatcher(client?: ITaskClient, bvClient?: BvClient | null) {
+  return new Dispatcher(client ?? mockSeeds, mockStore, "/tmp", bvClient);
 }
 
 function makeSeed(title: string, description?: string, priority?: string): SeedInfo {
@@ -115,6 +117,7 @@ describe("Dispatcher — ITaskClient injection", () => {
     // Mock ITaskClient implementation
     const mockClient: ITaskClient = {
       ready: vi.fn().mockResolvedValue([] as Issue[]),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
     };
@@ -127,6 +130,7 @@ describe("Dispatcher — ITaskClient injection", () => {
   it("exposes selectModel via injected mock ITaskClient dispatcher", () => {
     const mockClient: ITaskClient = {
       ready: vi.fn().mockResolvedValue([] as Issue[]),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
     };
@@ -140,11 +144,13 @@ describe("Dispatcher — ITaskClient injection", () => {
   it("ITaskClient interface has required methods", () => {
     const mockClient: ITaskClient = {
       ready: vi.fn().mockResolvedValue([]),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
     };
 
     expect(typeof mockClient.ready).toBe("function");
+    expect(typeof mockClient.show).toBe("function");
     expect(typeof mockClient.update).toBe("function");
     expect(typeof mockClient.close).toBe("function");
   });
@@ -186,6 +192,183 @@ describe("buildWorkerEnv — PATH includes ~/.local/bin", () => {
     const homebrewIdx = path.indexOf("/opt/homebrew/bin");
 
     expect(localBinIdx).toBeLessThan(homebrewIdx);
+  });
+});
+
+describe("Dispatcher — BvClient ordering", () => {
+  function makeIssue(id: string, priority?: string): Issue {
+    return {
+      id,
+      title: `Task ${id}`,
+      status: "open",
+      priority: priority ?? "P2",
+      type: "task",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  function makeBvClient(result: BvTriageResult | null): BvClient {
+    return {
+      robotTriage: vi.fn().mockResolvedValue(result),
+      robotNext: vi.fn(),
+      robotPlan: vi.fn(),
+      robotInsights: vi.fn(),
+      robotAlerts: vi.fn(),
+    } as unknown as BvClient;
+  }
+
+  it("orders tasks by bv score when robotTriage returns recommendations", async () => {
+    const issues: Issue[] = [
+      makeIssue("bd-001", "P2"),
+      makeIssue("bd-002", "P1"),
+      makeIssue("bd-003", "P3"),
+    ];
+
+    const triageResult: BvTriageResult = {
+      recommendations: [
+        { id: "bd-003", title: "Task bd-003", score: 0.9 },
+        { id: "bd-001", title: "Task bd-001", score: 0.7 },
+        { id: "bd-002", title: "Task bd-002", score: 0.3 },
+      ],
+    };
+
+    const bvClient = makeBvClient(triageResult);
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue(issues),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    // Should be ordered by bv score: bd-003 (0.9) > bd-001 (0.7) > bd-002 (0.3)
+    expect(result.dispatched.map((d) => d.seedId)).toEqual(["bd-003", "bd-001", "bd-002"]);
+    expect(bvClient.robotTriage).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to priority-sort when robotTriage returns null", async () => {
+    const issues: Issue[] = [
+      makeIssue("bd-001", "P3"),
+      makeIssue("bd-002", "P1"),
+      makeIssue("bd-003", "P2"),
+    ];
+
+    const bvClient = makeBvClient(null);
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue(issues),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as any;
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    // Should be sorted by priority: P1 (bd-002) < P2 (bd-003) < P3 (bd-001)
+    expect(result.dispatched.map((d) => d.seedId)).toEqual(["bd-002", "bd-003", "bd-001"]);
+    // Should log a warning about fallback
+    const warnCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
+    expect(warnCalls.some((msg) => msg.includes("bv unavailable"))).toBe(true);
+    consoleSpy.mockRestore();
+  });
+
+  it("uses priority-sort and does not error when bvClient is not provided", async () => {
+    const issues: Issue[] = [
+      makeIssue("bd-001", "P3"),
+      makeIssue("bd-002", "P1"),
+    ];
+
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue(issues),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as any;
+
+    // No bvClient passed (undefined)
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: true });
+    // P1 should come before P3
+    expect(result.dispatched[0].seedId).toBe("bd-002");
+  });
+
+  it("logs warning on null return from robotTriage", async () => {
+    const issues: Issue[] = [makeIssue("bd-001", "P2")];
+    const bvClient = makeBvClient(null);
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue(issues),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as any;
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
+    await dispatcher.dispatch({ dryRun: true });
+
+    const warnCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
+    expect(warnCalls.some((msg) => msg.includes("bv unavailable, using priority-sort fallback"))).toBe(true);
+    consoleSpy.mockRestore();
+  });
+
+  it("tasks not in bv recommendations are sorted by priority and appended after ranked tasks", async () => {
+    const issues: Issue[] = [
+      makeIssue("bd-001", "P3"),
+      makeIssue("bd-002", "P1"),
+      makeIssue("bd-003", "P2"),
+      makeIssue("bd-004", "P0"),  // not in recommendations
+    ];
+
+    const triageResult: BvTriageResult = {
+      recommendations: [
+        { id: "bd-001", title: "Task bd-001", score: 0.8 },
+        { id: "bd-003", title: "Task bd-003", score: 0.5 },
+        { id: "bd-002", title: "Task bd-002", score: 0.2 },
+        // bd-004 is NOT in recommendations
+      ],
+    };
+
+    const bvClient = makeBvClient(triageResult);
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue(issues),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    const dispatchedIds = result.dispatched.map((d) => d.seedId);
+    // bd-001, bd-003, bd-002 in bv score order; bd-004 (P0) appended
+    expect(dispatchedIds.slice(0, 3)).toEqual(["bd-001", "bd-003", "bd-002"]);
+    expect(dispatchedIds[3]).toBe("bd-004");
   });
 });
 

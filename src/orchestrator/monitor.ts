@@ -1,9 +1,25 @@
 import type { ForemanStore, Run } from "../lib/store.js";
-import type { SeedsClient } from "../lib/seeds.js";
+import type { ITaskClient } from "../lib/task-client.js";
 import { removeWorktree, createWorktree } from "../lib/git.js";
 import type { MonitorReport } from "./types.js";
 import { PIPELINE_LIMITS } from "../lib/config.js";
 import type { TmuxClient } from "../lib/tmux.js";
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Returns true when an error from taskClient.show() indicates the issue
+ * simply hasn't been created / synced yet (migration transient state).
+ *
+ * Recognises:
+ *   - "not found" (case-insensitive substring)
+ *   - "404"
+ */
+function isNotFoundError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  return lower.includes("not found") || lower.includes("404");
+}
 
 // ── Monitor ──────────────────────────────────────────────────────────────
 
@@ -12,7 +28,7 @@ export class Monitor {
 
   constructor(
     private store: ForemanStore,
-    private seeds: SeedsClient,
+    private taskClient: ITaskClient,
     private projectPath: string,
     tmux?: TmuxClient,
   ) {
@@ -61,9 +77,26 @@ export class Monitor {
           }
         }
 
-        const seedDetail = await this.seeds.show(run.seed_id);
+        // ── Completion check via taskClient.show() ────────────────────
+        let issueStatus: string | null = null;
+        try {
+          const issueDetail = await this.taskClient.show(run.seed_id);
+          issueStatus = issueDetail.status;
+        } catch (showErr: unknown) {
+          if (isNotFoundError(showErr)) {
+            // Transient during migration: issue not yet visible in new backend.
+            // Log a warning but continue to the stuck-timeout check below.
+            console.warn(
+              `[monitor] transient show() error for ${run.seed_id}: ` +
+              `${showErr instanceof Error ? showErr.message : String(showErr)}`,
+            );
+          } else {
+            // Non-transient error — re-throw so the outer catch marks this run failed.
+            throw showErr;
+          }
+        }
 
-        if (seedDetail.status === "closed" || seedDetail.status === "completed") {
+        if (issueStatus === "closed" || issueStatus === "completed") {
           // Agent finished — mark run as completed
           this.store.updateRun(run.id, {
             status: "completed",

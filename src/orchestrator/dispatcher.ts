@@ -6,11 +6,10 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
-import type { SeedGraph } from "../lib/seeds.js";
 import type { ForemanStore } from "../lib/store.js";
+import type { BvClient } from "../lib/bv.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
-import { calculateImpactScores } from "./pagerank.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
 import { TmuxClient, tmuxSessionName } from "../lib/tmux.js";
@@ -32,6 +31,7 @@ export class Dispatcher {
     private seeds: ITaskClient,
     private store: ForemanStore,
     private projectPath: string,
+    private bvClient?: BvClient | null,
   ) {}
 
   /**
@@ -60,27 +60,41 @@ export class Dispatcher {
 
     let readySeeds = await this.seeds.ready();
 
-    // Sort ready seeds by PageRank impact score so highest-value tasks are dispatched first.
-    // Falls back to original order gracefully if the graph is unavailable.
+    // Sort ready seeds using bv triage scores when available, falling back to priority sort.
     if (!opts?.seedId) {
-      try {
-        // getGraph() is a SeedsClient-specific extension; ITaskClient doesn't require it.
-        // Check at runtime whether the client supports it before calling.
-        const clientWithGraph = this.seeds as ITaskClient & { getGraph?: () => Promise<SeedGraph> };
-        if (typeof clientWithGraph.getGraph === "function") {
-          const graph = await clientWithGraph.getGraph();
-          const impactScores = calculateImpactScores(readySeeds, graph);
+      if (this.bvClient) {
+        const triageResult = await this.bvClient.robotTriage();
+        if (triageResult !== null) {
+          // Build a score map from bv recommendations
+          const scoreMap = new Map<string, number>();
+          for (const rec of triageResult.recommendations) {
+            scoreMap.set(rec.id, rec.score);
+          }
           readySeeds = [...readySeeds].sort((a, b) => {
-            const scoreA = impactScores.get(a.id) ?? 0;
-            const scoreB = impactScores.get(b.id) ?? 0;
-            if (scoreA !== scoreB) return scoreB - scoreA;  // higher score first
-            // Tie-break by priority using normalizePriority() for robust P0–P4 / 0–4 handling
+            const hasA = scoreMap.has(a.id);
+            const hasB = scoreMap.has(b.id);
+            // Tasks in recommendations come before tasks not in recommendations
+            if (hasA && !hasB) return -1;
+            if (!hasA && hasB) return 1;
+            if (hasA && hasB) {
+              // Both ranked: sort by score descending
+              return (scoreMap.get(b.id) ?? 0) - (scoreMap.get(a.id) ?? 0);
+            }
+            // Neither ranked: fall back to priority sort
             return normalizePriority(a.priority) - normalizePriority(b.priority);
           });
-          log(`PageRank scored ${readySeeds.length} ready seeds`);
+          log(`bv triage scored ${readySeeds.length} ready seeds`);
+        } else {
+          log("bv unavailable, using priority-sort fallback");
+          readySeeds = [...readySeeds].sort(
+            (a, b) => normalizePriority(a.priority) - normalizePriority(b.priority),
+          );
         }
-      } catch (err) {
-        log(`Could not fetch graph for PageRank scoring (falling back to default order): ${err}`);
+      } else {
+        // No bvClient provided — sort by priority
+        readySeeds = [...readySeeds].sort(
+          (a, b) => normalizePriority(a.priority) - normalizePriority(b.priority),
+        );
       }
     }
 

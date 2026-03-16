@@ -70,6 +70,16 @@ export interface ITaskClient {
   ready(): Promise<Issue[]>;
 
   /**
+   * Show full detail for a single issue.
+   *
+   * Used by Monitor to detect completion (status === "closed" | "completed").
+   * The return type is intentionally loose — Monitor only inspects the
+   * `status` field; concrete implementations return BrIssueDetail or
+   * SeedDetail respectively.
+   */
+  show(id: string): Promise<{ status: string }>;
+
+  /**
    * Update fields on an issue.
    */
   update(id: string, opts: UpdateOptions): Promise<void>;

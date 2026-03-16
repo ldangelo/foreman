@@ -31,6 +31,7 @@ import {
   hasActionableIssues,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
+import { closeSeed, resetSeedToOpen } from "./task-backend-ops.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
@@ -610,18 +611,10 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
     }
   }
 
-  // Close seed
-  try {
-    const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
-    execFileSync(sdPath, ["close", seedId, "--reason", "Completed via pipeline"], opts);
-    log(`[FINALIZE] Closed seed ${seedId}`);
-    report.push(`## Seed Close`, `- Status: SUCCESS`, "");
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`[FINALIZE] sd close failed: ${msg.slice(0, 200)}`);
-    await appendFile(logFile, `[FINALIZE] sd close error: ${msg}\n`);
-    report.push(`## Seed Close`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
-  }
+  // Close seed (backend-aware: br or sd depending on FOREMAN_TASK_BACKEND)
+  closeSeed(seedId);
+  log(`[FINALIZE] Closed seed ${seedId}`);
+  report.push(`## Seed Close`, `- Status: SUCCESS`, "");
 
   // Write finalize report
   try {
@@ -816,14 +809,10 @@ async function markStuck(
     rateLimit: isRateLimit,
   }, runId);
 
-  // Reset seed back to open so it appears in sd ready for retry
-  const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
-  try {
-    execFileSync(sdPath, ["update", seedId, "--status", "open"], { stdio: "pipe", timeout: PIPELINE_TIMEOUTS.seedClosureMs });
-    log(`Reset seed ${seedId} back to open`);
-  } catch {
-    log(`Warning: could not reset seed ${seedId} to open`);
-  }
+  // Reset seed back to open so it appears in the ready queue for retry
+  // (backend-aware: br or sd depending on FOREMAN_TASK_BACKEND)
+  resetSeedToOpen(seedId);
+  log(`Reset seed ${seedId} back to open`);
 
   store.close();
 }

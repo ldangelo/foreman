@@ -3,6 +3,10 @@ import { spawnSync } from "node:child_process";
 import chalk from "chalk";
 
 import { SeedsClient } from "../../lib/seeds.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { BvClient } from "../../lib/bv.js";
+import { getTaskBackend } from "../../lib/feature-flags.js";
+import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
@@ -10,6 +14,42 @@ import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js
 import { watchRunsInk, type WatchResult } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
+
+// ── Backend Client Factory (TRD-007) ─────────────────────────────────
+
+/**
+ * Result returned by createTaskClients.
+ * Contains the task client to pass to Dispatcher and an optional BvClient.
+ */
+export interface TaskClientResult {
+  taskClient: ITaskClient;
+  bvClient: BvClient | null;
+}
+
+/**
+ * Instantiate the correct task-tracking client(s) based on FOREMAN_TASK_BACKEND.
+ *
+ * - backend='sd': Returns a SeedsClient; bvClient is null.
+ * - backend='br': Returns a BeadsRustClient after verifying the binary exists;
+ *   also returns a BvClient for graph-aware triage.
+ *
+ * Throws if backend='br' and the br binary cannot be found.
+ */
+export async function createTaskClients(projectPath: string): Promise<TaskClientResult> {
+  const backend = getTaskBackend();
+
+  if (backend === "br") {
+    const brClient = new BeadsRustClient(projectPath);
+    // Verify binary exists before proceeding; throws with a friendly message if not
+    await brClient.ensureBrInstalled();
+    const bvClient = new BvClient(projectPath);
+    return { taskClient: brClient, bvClient };
+  }
+
+  // Default: 'sd' (Seeds)
+  const seedsClient = new SeedsClient(projectPath);
+  return { taskClient: seedsClient, bvClient: null };
+}
 
 // ── Auto-Attach Logic (AT-T028/AT-T029) ──────────────────────────────
 
@@ -130,9 +170,19 @@ export const runCommand = new Command("run")
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
-      const seeds = new SeedsClient(projectPath);
+      let taskClient: ITaskClient;
+      let bvClient: BvClient | null = null;
+      try {
+        const clients = await createTaskClients(projectPath);
+        taskClient = clients.taskClient;
+        bvClient = clients.bvClient;
+      } catch (clientErr: unknown) {
+        const message = clientErr instanceof Error ? clientErr.message : String(clientErr);
+        console.error(chalk.red(`Error initialising task backend: ${message}`));
+        process.exit(1);
+      }
       const store = new ForemanStore();
-      const dispatcher = new Dispatcher(seeds, store, projectPath);
+      const dispatcher = new Dispatcher(taskClient, store, projectPath, bvClient);
 
       // Resume mode: pick up stuck/failed runs from a previous dispatch
       if (resume || resumeFailed) {

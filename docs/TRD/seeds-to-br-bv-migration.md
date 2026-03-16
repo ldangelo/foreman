@@ -326,7 +326,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Test selectModel() works with "P0"-"P4" format
   - Test buildWorkerEnv() includes ~/.local/bin in PATH
 
-- [ ] **TRD-006**: Wire BvClient into dispatcher ordering (always-on) (3h) [satisfies REQ-005, REQ-006]
+- [x] **TRD-006**: Wire BvClient into dispatcher ordering (always-on) (3h) [satisfies REQ-005, REQ-006]
   - Inject BvClient into Dispatcher constructor
   - In dispatch(): call bvClient.robotTriage() for ranked ordering
   - If robotTriage returns non-null: order ready tasks by bv ranking
@@ -343,7 +343,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Test no import of pagerank.ts calculateImpactScores
   - Test dispatch proceeds normally when bv times out
 
-- [ ] **TRD-007**: Update run.ts to instantiate BeadsRustClient (2h) [satisfies REQ-007]
+- [x] **TRD-007**: Update run.ts to instantiate BeadsRustClient (2h) [satisfies REQ-007]
   - Read FOREMAN_TASK_BACKEND env var (default: "sd" in Sprint 2)
   - If "br": construct BeadsRustClient(projectPath) and BvClient(projectPath)
   - If "sd": construct SeedsClient(projectPath) (existing behavior)
@@ -357,7 +357,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Test default (unset) instantiates SeedsClient
   - Test missing br binary exits with clear error message
 
-- [ ] **TRD-008**: Update reset.ts to use BeadsRustClient (2h) [satisfies REQ-008]
+- [x] **TRD-008**: Update reset.ts to use BeadsRustClient (2h) [satisfies REQ-008]
   - Read FOREMAN_TASK_BACKEND env var
   - Replace seeds.update() with brClient.update() when backend=br
   - Replace seeds.show() with brClient.show() when backend=br
@@ -369,7 +369,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Test reset calls brClient.show() when FOREMAN_TASK_BACKEND=br
   - Test detectAndFixMismatches works with BeadsRustClient
 
-- [ ] **TRD-009**: Update Monitor to use BeadsRustClient (2h) [satisfies REQ-009]
+- [x] **TRD-009**: Update Monitor to use BeadsRustClient (2h) [satisfies REQ-009]
   - Change Monitor constructor to accept ITaskClient
   - Replace seeds.show() with taskClient.show() for completion detection
   - Handle "issue not found" error as transient during migration
@@ -381,7 +381,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Test "issue not found" handled gracefully (not marked as failed)
   - Test Monitor marks run as completed when status is closed
 
-- [ ] **TRD-010**: Update agent-worker.ts finalize() (2h) [satisfies REQ-013]
+- [x] **TRD-010**: Update agent-worker.ts finalize() (2h) [satisfies REQ-013]
   - Read FOREMAN_TASK_BACKEND env var
   - When backend=br: call ~/.local/bin/br close <seedId> --reason "Completed via pipeline"
   - When backend=sd: existing sd close behavior (backward compat)
@@ -393,7 +393,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Test br close uses correct binary path (~/.local/bin/br)
   - Test br close passes --reason flag
 
-- [ ] **TRD-011**: Update agent-worker.ts markStuck() (1h) [satisfies REQ-014]
+- [x] **TRD-011**: Update agent-worker.ts markStuck() (1h) [satisfies REQ-014]
   - Read FOREMAN_TASK_BACKEND env var
   - When backend=br: call ~/.local/bin/br update <seedId> --status open
   - When backend=sd: existing sd update behavior
