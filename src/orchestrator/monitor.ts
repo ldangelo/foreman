@@ -15,7 +15,7 @@ import type { TmuxClient } from "../lib/tmux.js";
  *   - "not found" (case-insensitive substring)
  *   - "404"
  */
-function isNotFoundError(err: unknown): boolean {
+export function isNotFoundError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   const lower = msg.toLowerCase();
   return lower.includes("not found") || lower.includes("404");

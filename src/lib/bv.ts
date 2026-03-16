@@ -8,7 +8,8 @@ const HOME = process.env.HOME ?? "~";
 const BV_PATH = join(HOME, ".local", "bin", "bv");
 const BR_PATH = join(HOME, ".local", "bin", "br");
 
-const DEFAULT_TIMEOUT_MS = 10_000;
+// TRD-NF-003: bv timeout at 3s for projects up to 500 issues
+const DEFAULT_TIMEOUT_MS = 3_000;
 
 // ── Interfaces ──────────────────────────────────────────────────────────────
 

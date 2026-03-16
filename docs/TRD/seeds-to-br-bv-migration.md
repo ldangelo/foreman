@@ -171,59 +171,59 @@ All priority comparisons throughout the codebase go through this utility.
 
 ## 4. Non-Functional Requirements Coverage
 
-- [ ] **TRD-NF-001**: Binary availability check on startup (2h) [satisfies REQ-NF-001]
+- [x] **TRD-NF-001**: Binary availability check on startup (2h) [satisfies REQ-NF-001]
   - foreman run, foreman status, foreman reset verify ~/.local/bin/br exists before proceeding
   - Clear error with cargo install beads_rust instructions on missing binary
   - bv absence is warning only (dispatch fallback), not blocking error
   - [depends: TRD-007, TRD-008, TRD-019]
 
-- [ ] **TRD-NF-001-TEST**: Verify binary checks on startup (1h) [verifies TRD-NF-001]
+- [x] **TRD-NF-001-TEST**: Verify binary checks on startup (1h) [verifies TRD-NF-001]
   - Test run/status/reset fail gracefully with missing br binary
   - Test bv absence produces warning but does not block
 
-- [ ] **TRD-NF-002**: Worker binary PATH configuration (1h) [satisfies REQ-NF-002]
+- [x] **TRD-NF-002**: Worker binary PATH configuration (1h) [satisfies REQ-NF-002]
   - buildWorkerEnv() prepends ~/.local/bin to PATH
   - [depends: TRD-005]
 
-- [ ] **TRD-NF-002-TEST**: Verify worker PATH includes br directory (1h) [verifies TRD-NF-002]
+- [x] **TRD-NF-002-TEST**: Verify worker PATH includes br directory (1h) [verifies TRD-NF-002]
   - Test buildWorkerEnv() output contains ~/.local/bin before other PATH entries
 
-- [ ] **TRD-NF-003**: Dispatch latency within 3-second budget (1h) [satisfies REQ-NF-003]
+- [x] **TRD-NF-003**: Dispatch latency within 3-second budget (1h) [satisfies REQ-NF-003]
   - bv timeout configured at 3 seconds for projects up to 500 issues
   - Timeout triggers automatic priority-sort fallback
   - [depends: TRD-002, TRD-006]
 
-- [ ] **TRD-NF-003-TEST**: Verify dispatch latency and timeout fallback (1h) [verifies TRD-NF-003]
+- [x] **TRD-NF-003-TEST**: Verify dispatch latency and timeout fallback (1h) [verifies TRD-NF-003]
   - Test bv call timeout triggers fallback within budget
   - Test priority-sort completes in under 100ms
 
-- [ ] **TRD-NF-004**: Backwards compatibility for in-flight SQLite runs (1h) [satisfies REQ-NF-004]
+- [x] **TRD-NF-004**: Backwards compatibility for in-flight SQLite runs (1h) [satisfies REQ-NF-004]
   - SQLite seed_id column stores IDs compatible with both sd and br formats
   - Monitor handles "issue not found" as transient during migration
   - [depends: TRD-009]
 
-- [ ] **TRD-NF-004-TEST**: Verify in-flight run compatibility (1h) [verifies TRD-NF-004]
+- [x] **TRD-NF-004-TEST**: Verify in-flight run compatibility (1h) [verifies TRD-NF-004]
   - Test monitor handles missing issue ID gracefully during migration
 
-- [ ] **TRD-NF-005**: Test coverage targets met (2h) [satisfies REQ-NF-005]
+- [x] **TRD-NF-005**: Test coverage targets met (2h) [satisfies REQ-NF-005]
   - Unit tests >= 80% for all new/modified files
   - Integration tests >= 70% for dispatch and migration paths
   - [depends: all TRD-NNN-TEST tasks]
 
-- [ ] **TRD-NF-005-TEST**: Coverage report validation (1h) [verifies TRD-NF-005]
+- [x] **TRD-NF-005-TEST**: Coverage report validation (1h) [verifies TRD-NF-005]
   - Run coverage report, verify thresholds
 
-- [ ] **TRD-NF-006**: TypeScript strict mode compliance (0.5h) [satisfies REQ-NF-006]
+- [x] **TRD-NF-006**: TypeScript strict mode compliance (0.5h) [satisfies REQ-NF-006]
   - npx tsc --noEmit passes with zero errors after each sprint
   - No any escape hatches in new or modified code
 
-- [ ] **TRD-NF-006-TEST**: Verify TypeScript compilation (0.5h) [verifies TRD-NF-006]
+- [x] **TRD-NF-006-TEST**: Verify TypeScript compilation (0.5h) [verifies TRD-NF-006]
   - CI gate: npx tsc --noEmit returns exit code 0
 
-- [ ] **TRD-NF-007**: ESM import compliance (0.5h) [satisfies REQ-NF-007]
+- [x] **TRD-NF-007**: ESM import compliance (0.5h) [satisfies REQ-NF-007]
   - All new imports use .js extensions per project convention
 
-- [ ] **TRD-NF-007-TEST**: Verify ESM imports (0.5h) [verifies TRD-NF-007]
+- [x] **TRD-NF-007-TEST**: Verify ESM imports (0.5h) [verifies TRD-NF-007]
   - Lint check: no imports missing .js extension in new/modified files
 
 ---
@@ -580,14 +580,14 @@ All priority comparisons throughout the codebase go through this utility.
   - Test: npm test passes with zero failures
   - Test: no SeedsClient mock references in test files
 
-- [ ] **TRD-028**: Final documentation pass (2h)
+- [x] **TRD-028**: Final documentation pass (2h)
   - Update CLAUDE.md: replace all sd references with br/bv
   - Update any README or docs referencing seeds commands
   - Verify foreman --help output references br not sd
   - Write migration guide summary in docs/
   - [depends: TRD-024, TRD-025, TRD-026]
 
-- [ ] **TRD-028-TEST**: Verify documentation accuracy (1h) [verifies TRD-028]
+- [x] **TRD-028-TEST**: Verify documentation accuracy (1h) [verifies TRD-028]
   - Test: grep for " sd " in CLAUDE.md returns only historical/comparison references
   - Test: grep for "seeds" in CLAUDE.md returns only historical references
   - Review foreman --help output
@@ -697,8 +697,8 @@ All priority comparisons throughout the codebase go through this utility.
 | TRD-026-TEST | Verify no pagerank imports | 0.5h | TRD-026 | [ ] |
 | TRD-027 | Update all test mocks to br | 3h | TRD-024, TRD-025 | [x] |
 | TRD-027-TEST | Verify test suite passes | 1h | TRD-027 | [x] |
-| TRD-028 | Final documentation pass | 2h | TRD-024-026 | [ ] |
-| TRD-028-TEST | Verify documentation accuracy | 1h | TRD-028 | [ ] |
+| TRD-028 | Final documentation pass | 2h | TRD-024-026 | [x] |
+| TRD-028-TEST | Verify documentation accuracy | 1h | TRD-028 | [x] |
 
 **Exit Criteria:**
 - grep -r "SeedsClient|execSd|~/.bun/bin/sd" src/ returns zero results

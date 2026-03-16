@@ -163,7 +163,7 @@ async function renderStatus(): Promise<void> {
 }
 
 export const statusCommand = new Command("status")
-  .description("Show project status from seeds + sqlite")
+  .description("Show project status from beads_rust (br) + sqlite")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
   .action(async (opts: { watch?: boolean | string }) => {
     if (opts.watch !== undefined) {

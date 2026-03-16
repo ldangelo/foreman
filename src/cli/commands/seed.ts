@@ -40,7 +40,7 @@ export function createSeedClient(
 // ── Command ──────────────────────────────────────────────────────────────
 
 export const seedCommand = new Command("seed")
-  .description("Create seeds from natural-language description")
+  .description("Create beads from natural-language description")
   .argument("<description>", "Natural language description (or path to a file)")
   .option("--type <type>", "Force issue type (task|bug|feature|epic|chore|decision)")
   .option("--priority <priority>", "Force priority (P0-P4)")

@@ -22,7 +22,7 @@ const program = new Command();
 
 program
   .name("foreman")
-  .description("Multi-agent coding orchestrator built on Seeds")
+  .description("Multi-agent coding orchestrator built on beads_rust (br)")
   .version("0.1.0");
 
 program.addCommand(initCommand);

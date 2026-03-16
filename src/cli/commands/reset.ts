@@ -136,7 +136,7 @@ export async function detectAndFixMismatches(
 }
 
 export const resetCommand = new Command("reset")
-  .description("Reset failed/stuck runs: kill agents, remove worktrees, reset seeds to open")
+  .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
   .option("--dry-run", "Show what would be reset without doing it")
   .action(async (opts) => {
