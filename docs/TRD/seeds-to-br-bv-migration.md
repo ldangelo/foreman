@@ -297,7 +297,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Write migration report to docs/seeds-migration-report.md
   - --dry-run flag: report what would happen without creating
 
-- [ ] **TRD-004-TEST**: Unit and integration tests for migrate-seeds (3h) [verifies TRD-004]
+- [x] **TRD-004-TEST**: Unit and integration tests for migrate-seeds (3h) [verifies TRD-004]
   - Test reads .seeds/issues.jsonl correctly
   - Test creates br issues with correct field mapping
   - Test priority "P2" maps to numeric 2 in br create
