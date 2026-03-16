@@ -21,3 +21,6 @@ REVIEW*.md
 FINALIZE_REPORT*.md
 TASK.md
 AGENTS.md
+
+# bv (beads viewer) local config and caches
+.bv/

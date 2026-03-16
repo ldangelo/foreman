@@ -4,7 +4,30 @@
       "Read(//Users/ldangelo/Development/Curantis/monorepo/**)",
       "Bash(bd show monorepo-7zd)",
       "Bash(bd show:*)",
-      "Bash(bd create:*)"
+      "Bash(bd create:*)",
+      "Bash(git rebase:*)",
+      "Bash(gh pr:*)",
+      "Bash(git rm:*)",
+      "Bash(git checkout:*)",
+      "Bash(cp:*)",
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "Bash(GIT_EDITOR=true git rebase:*)",
+      "Bash(npx tsc:*)",
+      "Bash(sd create:*)",
+      "Bash(git:*)",
+      "Bash(sd dep:*)",
+      "Bash(br create:*)",
+      "Bash(npx vitest:*)",
+      "Bash(br list:*)",
+      "Bash(sd list:*)",
+      "Bash(sd close:*)",
+      "Bash(br close:*)",
+      "Bash(npx tsx:*)",
+      "Bash(npm run:*)",
+      "Bash(br dep:*)",
+      "Bash(br ready:*)",
+      "Bash(br show:*)"
     ]
   }
 }
