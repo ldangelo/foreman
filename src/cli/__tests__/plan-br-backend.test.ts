@@ -3,8 +3,6 @@
  *
  * Verifies:
  * - When FOREMAN_TASK_BACKEND='br': BeadsRustClient is used for issue creation
- * - When FOREMAN_TASK_BACKEND='sd': SeedsClient is used for issue creation
- * - Existing sd backend behavior is not broken
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -12,22 +10,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
 const {
   mockGetTaskBackend,
-  MockSeedsClient,
   MockBeadsRustClient,
   MockDispatcher,
   MockForemanStore,
   mockGetProjectByPath,
 } = vi.hoisted(() => {
-  const mockGetTaskBackend = vi.fn().mockReturnValue("sd");
-
-  const MockSeedsClient = vi.fn(function MockSeedsClientImpl(this: Record<string, unknown>) {
-    this.create = vi.fn().mockResolvedValue({ id: "sd-001", title: "Epic" });
-    this.close = vi.fn().mockResolvedValue(undefined);
-    this.addDependency = vi.fn().mockResolvedValue(undefined);
-    this.ready = vi.fn().mockResolvedValue([]);
-    this.ensureSdInstalled = vi.fn().mockResolvedValue(undefined);
-    this.isInitialized = vi.fn().mockResolvedValue(true);
-  });
+  const mockGetTaskBackend = vi.fn().mockReturnValue("br");
 
   const MockBeadsRustClient = vi.fn(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
     this.create = vi.fn().mockResolvedValue({ id: "br-001", title: "Epic" });
@@ -50,7 +38,6 @@ const {
 
   return {
     mockGetTaskBackend,
-    MockSeedsClient,
     MockBeadsRustClient,
     MockDispatcher,
     MockForemanStore,
@@ -60,10 +47,6 @@ const {
 
 vi.mock("../../lib/feature-flags.js", () => ({
   getTaskBackend: () => mockGetTaskBackend(),
-}));
-
-vi.mock("../../lib/seeds.js", () => ({
-  SeedsClient: MockSeedsClient,
 }));
 
 vi.mock("../../lib/beads-rust.js", () => ({
@@ -90,15 +73,6 @@ describe("TRD-016: plan.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     vi.clearAllMocks();
 
     // Restore mock implementations after clearAllMocks resets call tracking
-    MockSeedsClient.mockImplementation(function MockSeedsClientImpl(this: Record<string, unknown>) {
-      this.create = vi.fn().mockResolvedValue({ id: "sd-001", title: "Epic" });
-      this.close = vi.fn().mockResolvedValue(undefined);
-      this.addDependency = vi.fn().mockResolvedValue(undefined);
-      this.ready = vi.fn().mockResolvedValue([]);
-      this.ensureSdInstalled = vi.fn().mockResolvedValue(undefined);
-      this.isInitialized = vi.fn().mockResolvedValue(true);
-    });
-
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
       this.create = vi.fn().mockResolvedValue({ id: "br-001", title: "Epic" });
       this.close = vi.fn().mockResolvedValue(undefined);
@@ -136,12 +110,6 @@ describe("TRD-016: plan.ts backend selection via FOREMAN_TASK_BACKEND", () => {
       expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
       expect(MockBeadsRustClient).toHaveBeenCalledTimes(1);
       expect(client).toBeDefined();
-    });
-
-    it("does not instantiate SeedsClient", () => {
-      createPlanClient(PROJECT_PATH);
-
-      expect(MockSeedsClient).not.toHaveBeenCalled();
     });
 
     it("returned client has a create method (BeadsRustClient API)", () => {

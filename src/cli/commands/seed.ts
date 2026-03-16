@@ -4,7 +4,6 @@ import ora from "ora";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
-import { SeedsClient } from "../../lib/seeds.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { normalizePriority } from "../../lib/priority.js";
 
@@ -34,7 +33,7 @@ interface ParsedIssuesResponse {
  */
 export function createSeedClient(
   projectPath: string,
-): SeedsClient | BeadsRustClient {
+): BeadsRustClient {
   return new BeadsRustClient(projectPath);
 }
 
@@ -76,13 +75,9 @@ export const seedCommand = new Command("seed")
       // Initialise BeadsRust task client
       const seeds = createSeedClient(projectPath);
 
-      // Validate prerequisites — both clients expose compatible methods
+      // Validate prerequisites
       try {
-        if (seeds instanceof BeadsRustClient) {
-          await seeds.ensureBrInstalled();
-        } else {
-          await seeds.ensureSdInstalled();
-        }
+        await seeds.ensureBrInstalled();
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exitCode = 1;

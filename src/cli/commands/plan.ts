@@ -3,7 +3,6 @@ import chalk from "chalk";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { SeedsClient } from "../../lib/seeds.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
@@ -20,7 +19,7 @@ import type { PlanStepDefinition } from "../../orchestrator/types.js";
  */
 export function createPlanClient(
   projectPath: string,
-): SeedsClient | BeadsRustClient {
+): BeadsRustClient {
   return new BeadsRustClient(projectPath);
 }
 

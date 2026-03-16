@@ -3,7 +3,6 @@ import chalk from "chalk";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { SeedsClient } from "../../lib/seeds.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";

@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { decomposePrd } from "../../orchestrator/decomposer.js";
 import { decomposePrdWithLlm } from "../../orchestrator/decomposer-llm.js";
 import { executePlan } from "../../orchestrator/planner.js";
-import { SeedsClient } from "../../lib/seeds.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { DecompositionPlan, TaskPlan } from "../../orchestrator/types.js";
 
 export const decomposeCommand = new Command("decompose")
@@ -71,7 +71,7 @@ export const decomposeCommand = new Command("decompose")
 
     // Execute
     console.log(chalk.bold("\nCreating seeds hierarchy..."));
-    const seeds = new SeedsClient(process.cwd());
+    const seeds = new BeadsRustClient(process.cwd());
     try {
       const result = await executePlan(plan, seeds);
       console.log(chalk.green(`\nEpic created: ${result.epicSeedId}`));

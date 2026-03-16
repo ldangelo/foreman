@@ -55,7 +55,7 @@ async function runTestCommand(command: string, cwd: string): Promise<{ ok: boole
  *   - show(id): fetch issue detail for PR title/body generation
  *   - getGraph(): optional; used to order merges by dependency graph
  *
- * Both SeedsClient and BeadsRustClient satisfy this interface.
+ * BeadsRustClient satisfies this interface.
  * BeadsRustClient does not implement getGraph(); the try/catch in
  * orderByDependencies will fall back to insertion order in that case.
  */

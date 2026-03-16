@@ -3,7 +3,6 @@
  *
  * Verifies:
  * - When FOREMAN_TASK_BACKEND='br': BeadsRustClient is used for task listing
- * - When FOREMAN_TASK_BACKEND='sd': SeedsClient / sd CLI is used (existing behavior)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -14,24 +13,21 @@ const {
   mockBrList,
   mockBrReady,
   MockBeadsRustClient,
-  MockSeedsClient,
   mockExecFileSync,
 } = vi.hoisted(() => {
-  const mockGetTaskBackend = vi.fn().mockReturnValue("sd");
+  const mockGetTaskBackend = vi.fn().mockReturnValue("br");
   const mockBrList = vi.fn().mockResolvedValue([]);
   const mockBrReady = vi.fn().mockResolvedValue([]);
   const MockBeadsRustClient = vi.fn(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
     this.list = mockBrList;
     this.ready = mockBrReady;
   });
-  const MockSeedsClient = vi.fn();
   const mockExecFileSync = vi.fn().mockReturnValue(JSON.stringify([]));
   return {
     mockGetTaskBackend,
     mockBrList,
     mockBrReady,
     MockBeadsRustClient,
-    MockSeedsClient,
     mockExecFileSync,
   };
 });
@@ -42,10 +38,6 @@ vi.mock("../../lib/feature-flags.js", () => ({
 
 vi.mock("../../lib/beads-rust.js", () => ({
   BeadsRustClient: MockBeadsRustClient,
-}));
-
-vi.mock("../../lib/seeds.js", () => ({
-  SeedsClient: MockSeedsClient,
 }));
 
 vi.mock("node:child_process", () => ({
@@ -97,10 +89,6 @@ describe("TRD-019: status.ts backend selection via FOREMAN_TASK_BACKEND", () => 
       expect(backend).toBe("br");
     });
 
-    it("does not instantiate SeedsClient for br backend", () => {
-      getStatusBackend();
-      expect(MockSeedsClient).not.toHaveBeenCalled();
-    });
   });
 
 });

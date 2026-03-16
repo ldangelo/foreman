@@ -6,7 +6,6 @@ import { createInterface } from "node:readline";
 import { parseTrd } from "../../orchestrator/trd-parser.js";
 import { analyzeParallel } from "../../orchestrator/sprint-parallel.js";
 import { execute } from "../../orchestrator/sling-executor.js";
-import { SeedsClient } from "../../lib/seeds.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { SlingPlan, SlingOptions, SlingResult, ParallelResult } from "../../orchestrator/types.js";
 
@@ -321,18 +320,8 @@ const trdSubcommand = new Command("trd")
     };
 
     // Detect available trackers
-    let seeds: SeedsClient | null = null;
+    const seeds = null;
     let beadsRust: BeadsRustClient | null = null;
-
-    if (!slingOptions.brOnly) {
-      try {
-        seeds = new SeedsClient(process.cwd());
-        await seeds.ensureSdInstalled();
-      } catch {
-        console.warn(chalk.yellow("SLING-003: sd CLI not available — skipping seeds creation"));
-        seeds = null;
-      }
-    }
 
     if (!slingOptions.sdOnly) {
       try {
@@ -344,8 +333,8 @@ const trdSubcommand = new Command("trd")
       }
     }
 
-    if (!seeds && !beadsRust) {
-      console.error(chalk.red("SLING-005: Neither sd nor br CLI available. Cannot create tasks."));
+    if (!beadsRust) {
+      console.error(chalk.red("SLING-005: br CLI not available. Cannot create tasks."));
       process.exitCode = 1;
       return;
     }

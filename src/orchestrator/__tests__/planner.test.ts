@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { executePlan } from "../planner.js";
 import type { DecompositionPlan } from "../types.js";
-import type { Seed, SeedsClient } from "../../lib/seeds.js";
+import type { BrIssue, BeadsRustClient } from "../../lib/beads-rust.js";
 
 function makeMockSeeds() {
   let counter = 0;
@@ -9,7 +9,7 @@ function makeMockSeeds() {
   const depCalls: Array<{ childId: string; parentId: string }> = [];
 
   const client = {
-    create: vi.fn(async (title: string, opts?: any): Promise<Seed> => {
+    create: vi.fn(async (title: string, opts?: any): Promise<BrIssue> => {
       counter++;
       createCalls.push({ title, opts });
       return {
@@ -29,7 +29,7 @@ function makeMockSeeds() {
     }),
   };
 
-  return { client: client as unknown as SeedsClient, createCalls, depCalls };
+  return { client: client as unknown as BeadsRustClient, createCalls, depCalls };
 }
 
 const hierarchicalPlan: DecompositionPlan = {

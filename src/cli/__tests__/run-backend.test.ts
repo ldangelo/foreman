@@ -2,7 +2,6 @@
  * Tests for TRD-007: Backend selection in run.ts based on FOREMAN_TASK_BACKEND.
  *
  * Verifies:
- * - When FOREMAN_TASK_BACKEND='sd': SeedsClient is used (existing behavior unchanged)
  * - When FOREMAN_TASK_BACKEND='br': BeadsRustClient and BvClient are instantiated
  * - When FOREMAN_TASK_BACKEND='br' and br binary missing: error thrown
  */
@@ -12,7 +11,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // ── Hoisted mocks (vi.mock factories are hoisted; vars must use vi.hoisted) ──
 const {
   mockGetTaskBackend,
-  MockSeedsClient,
   mockEnsureBrInstalled,
   MockBeadsRustClient,
   MockBvClient,
@@ -20,8 +18,7 @@ const {
   MockForemanStore,
   mockDispatch,
 } = vi.hoisted(() => {
-  const mockGetTaskBackend = vi.fn().mockReturnValue("sd");
-  const MockSeedsClient = vi.fn();
+  const mockGetTaskBackend = vi.fn().mockReturnValue("br");
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
   // Must use function keyword (not arrow) so vi.fn() can be used as a constructor with `new`
   const MockBeadsRustClient = vi.fn(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
@@ -48,7 +45,6 @@ const {
   });
   return {
     mockGetTaskBackend,
-    MockSeedsClient,
     mockEnsureBrInstalled,
     MockBeadsRustClient,
     MockBvClient,
@@ -60,10 +56,6 @@ const {
 
 vi.mock("../../lib/feature-flags.js", () => ({
   getTaskBackend: () => mockGetTaskBackend(),
-}));
-
-vi.mock("../../lib/seeds.js", () => ({
-  SeedsClient: MockSeedsClient,
 }));
 
 vi.mock("../../lib/beads-rust.js", () => ({
@@ -170,11 +162,6 @@ describe("TRD-007: run.ts backend selection via FOREMAN_TASK_BACKEND", () => {
       expect(result.bvClient).not.toBeNull();
     });
 
-    it("does not instantiate SeedsClient", async () => {
-      await createTaskClients(PROJECT_PATH);
-
-      expect(MockSeedsClient).not.toHaveBeenCalled();
-    });
   });
 
   // ── br backend with missing binary ──────────────────────────────────────

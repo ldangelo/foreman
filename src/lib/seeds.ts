@@ -91,8 +91,7 @@ export async function execSd(
   }
 }
 
-/** @deprecated Use execSd instead */
-export const execBd = execSd;
+
 
 // ── Client ──────────────────────────────────────────────────────────────
 
@@ -240,11 +239,4 @@ export class SeedsClient implements ITaskClient {
   }
 }
 
-/** @deprecated Use SeedsClient instead */
-export const BeadsClient = SeedsClient;
-/** @deprecated Use Seed instead */
-export type Bead = Seed;
-/** @deprecated Use SeedDetail instead */
-export type BeadDetail = SeedDetail;
-/** @deprecated Use SeedGraph instead */
-export type BeadGraph = SeedGraph;
+// TRD-025: deprecated aliases removed (BeadsClient, Bead, BeadDetail, BeadGraph, execBd)

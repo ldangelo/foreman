@@ -3,7 +3,6 @@
 // Dual-write execution engine: creates task hierarchies in both
 // seeds (sd) and beads_rust (br) from a parsed SlingPlan.
 
-import type { SeedsClient, Seed } from "../lib/seeds.js";
 import type { BeadsRustClient, BrIssue } from "../lib/beads-rust.js";
 import type {
   SlingPlan,
@@ -74,7 +73,7 @@ export type ProgressCallback = (
 
 export async function detectExistingEpic(
   documentId: string,
-  seeds: SeedsClient | null,
+  seeds: BeadsRustClient | null,
   beadsRust: BeadsRustClient | null,
 ): Promise<{ sdEpicId: string | null; brEpicId: string | null }> {
   let sdEpicId: string | null = null;
@@ -128,7 +127,7 @@ interface ExecuteContext {
 }
 
 async function executeForSeeds(
-  seeds: SeedsClient,
+  seeds: BeadsRustClient,
   ctx: ExecuteContext,
   existingEpicId: string | null,
 ): Promise<TrackerResult> {
@@ -449,7 +448,7 @@ async function executeForBeadsRust(
 // ── Dependency wiring ────────────────────────────────────────────────────
 
 async function wireContainerDepsSd(
-  client: SeedsClient,
+  client: BeadsRustClient,
   plan: SlingPlan,
   trdIdToSprintId: Map<string, string>,
   trdIdToStoryId: Map<string, string>,
@@ -507,7 +506,7 @@ async function wireContainerDepsSd(
 }
 
 async function wireDependencies(
-  client: SeedsClient,
+  client: BeadsRustClient,
   plan: SlingPlan,
   trdIdToTrackerId: Map<string, string>,
   options: SlingOptions,
@@ -667,7 +666,7 @@ export async function execute(
   plan: SlingPlan,
   parallel: ParallelResult,
   options: SlingOptions,
-  seeds: SeedsClient | null,
+  seeds: BeadsRustClient | null,
   beadsRust: BeadsRustClient | null,
   onProgress?: ProgressCallback,
 ): Promise<SlingResult> {

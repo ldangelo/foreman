@@ -3,7 +3,6 @@
  *
  * Verifies:
  * - When FOREMAN_TASK_BACKEND='br': BeadsRustClient is used for issue creation
- * - When FOREMAN_TASK_BACKEND='sd': SeedsClient is used for issue creation
  * - Priority input is normalized correctly via normalizePriority()
  */
 
@@ -12,29 +11,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // ── Hoisted mocks (vi.mock factories are hoisted; vars must use vi.hoisted) ──
 const {
   mockGetTaskBackend,
-  MockSeedsClient,
-  mockSeedsCreate,
-  mockSeedsEnsureInstalled,
-  mockSeedsIsInitialized,
-  mockSeedsAddDependency,
   MockBeadsRustClient,
   mockBrCreate,
   mockBrEnsureInstalled,
   mockBrIsInitialized,
   mockBrAddDependency,
 } = vi.hoisted(() => {
-  const mockGetTaskBackend = vi.fn().mockReturnValue("sd");
-
-  const mockSeedsCreate = vi.fn().mockResolvedValue({ id: "sd-001", title: "Test Issue" });
-  const mockSeedsEnsureInstalled = vi.fn().mockResolvedValue(undefined);
-  const mockSeedsIsInitialized = vi.fn().mockResolvedValue(true);
-  const mockSeedsAddDependency = vi.fn().mockResolvedValue(undefined);
-  const MockSeedsClient = vi.fn(function MockSeedsClientImpl(this: Record<string, unknown>) {
-    this.create = mockSeedsCreate;
-    this.ensureSdInstalled = mockSeedsEnsureInstalled;
-    this.isInitialized = mockSeedsIsInitialized;
-    this.addDependency = mockSeedsAddDependency;
-  });
+  const mockGetTaskBackend = vi.fn().mockReturnValue("br");
 
   const mockBrCreate = vi.fn().mockResolvedValue({ id: "br-001", title: "Test Issue" });
   const mockBrEnsureInstalled = vi.fn().mockResolvedValue(undefined);
@@ -49,11 +32,6 @@ const {
 
   return {
     mockGetTaskBackend,
-    MockSeedsClient,
-    mockSeedsCreate,
-    mockSeedsEnsureInstalled,
-    mockSeedsIsInitialized,
-    mockSeedsAddDependency,
     MockBeadsRustClient,
     mockBrCreate,
     mockBrEnsureInstalled,
@@ -64,10 +42,6 @@ const {
 
 vi.mock("../../lib/feature-flags.js", () => ({
   getTaskBackend: () => mockGetTaskBackend(),
-}));
-
-vi.mock("../../lib/seeds.js", () => ({
-  SeedsClient: MockSeedsClient,
 }));
 
 vi.mock("../../lib/beads-rust.js", () => ({
@@ -87,18 +61,6 @@ const PROJECT_PATH = "/mock/project";
 describe("TRD-015: seed.ts backend selection via FOREMAN_TASK_BACKEND", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-
-    // Restore mock implementations after clearAllMocks resets call tracking
-    MockSeedsClient.mockImplementation(function MockSeedsClientImpl(this: Record<string, unknown>) {
-      this.create = mockSeedsCreate;
-      this.ensureSdInstalled = mockSeedsEnsureInstalled;
-      this.isInitialized = mockSeedsIsInitialized;
-      this.addDependency = mockSeedsAddDependency;
-    });
-    mockSeedsCreate.mockResolvedValue({ id: "sd-001", title: "Test Issue" });
-    mockSeedsEnsureInstalled.mockResolvedValue(undefined);
-    mockSeedsIsInitialized.mockResolvedValue(true);
-    mockSeedsAddDependency.mockResolvedValue(undefined);
 
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
       this.create = mockBrCreate;
@@ -129,12 +91,6 @@ describe("TRD-015: seed.ts backend selection via FOREMAN_TASK_BACKEND", () => {
       expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
       expect(MockBeadsRustClient).toHaveBeenCalledTimes(1);
       expect(client).toBeDefined();
-    });
-
-    it("does not instantiate SeedsClient", () => {
-      createSeedClient(PROJECT_PATH);
-
-      expect(MockSeedsClient).not.toHaveBeenCalled();
     });
 
     it("returned client has a create method (BeadsRustClient API)", () => {

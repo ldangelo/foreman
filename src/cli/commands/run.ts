@@ -2,7 +2,6 @@ import { Command } from "commander";
 import { spawnSync } from "node:child_process";
 import chalk from "chalk";
 
-import { SeedsClient } from "../../lib/seeds.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient } from "../../lib/task-client.js";

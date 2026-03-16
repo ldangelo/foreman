@@ -3,7 +3,6 @@
  *
  * Verifies:
  * - When FOREMAN_TASK_BACKEND='br': createMergeTaskClient returns BeadsRustClient
- * - When FOREMAN_TASK_BACKEND='sd': createMergeTaskClient returns SeedsClient
  * - When FOREMAN_TASK_BACKEND='br' and binary missing: throws with friendly error
  */
 
@@ -12,19 +11,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
 const {
   mockGetTaskBackend,
-  MockSeedsClient,
   mockEnsureBrInstalled,
   MockBeadsRustClient,
 } = vi.hoisted(() => {
-  const mockGetTaskBackend = vi.fn().mockReturnValue("sd");
-  const MockSeedsClient = vi.fn(function MockSeedsClientImpl() { /* constructor */ });
+  const mockGetTaskBackend = vi.fn().mockReturnValue("br");
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
   const MockBeadsRustClient = vi.fn(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
     this.ensureBrInstalled = mockEnsureBrInstalled;
   });
   return {
     mockGetTaskBackend,
-    MockSeedsClient,
     mockEnsureBrInstalled,
     MockBeadsRustClient,
   };
@@ -32,10 +28,6 @@ const {
 
 vi.mock("../../lib/feature-flags.js", () => ({
   getTaskBackend: () => mockGetTaskBackend(),
-}));
-
-vi.mock("../../lib/seeds.js", () => ({
-  SeedsClient: MockSeedsClient,
 }));
 
 vi.mock("../../lib/beads-rust.js", () => ({
@@ -95,7 +87,6 @@ describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
       this.ensureBrInstalled = mockEnsureBrInstalled;
     });
-    MockSeedsClient.mockImplementation(function MockSeedsClientImpl() { /* constructor */ });
   });
 
   // ── br backend ────────────────────────────────────────────────────────────
@@ -119,11 +110,6 @@ describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_BACKEND", () => {
       expect(mockEnsureBrInstalled).toHaveBeenCalledTimes(1);
     });
 
-    it("does not instantiate SeedsClient", async () => {
-      await createMergeTaskClient(PROJECT_PATH);
-
-      expect(MockSeedsClient).not.toHaveBeenCalled();
-    });
   });
 
   // ── br backend with missing binary ────────────────────────────────────────

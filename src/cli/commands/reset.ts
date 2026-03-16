@@ -1,7 +1,6 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { SeedsClient } from "../../lib/seeds.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
@@ -12,8 +11,8 @@ import type { UpdateOptions } from "../../lib/task-client.js";
 
 /**
  * Minimal interface capturing the subset of task-client methods used by
- * detectAndFixMismatches. Both SeedsClient and BeadsRustClient satisfy
- * this interface (note: show() is not on ITaskClient, hence this local type).
+ * detectAndFixMismatches. BeadsRustClient satisfies this interface
+ * (note: show() is not on ITaskClient, hence this local type).
  */
 export interface IShowUpdateClient {
   show(id: string): Promise<{ status: string }>;

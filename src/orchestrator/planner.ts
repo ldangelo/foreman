@@ -1,4 +1,4 @@
-import type { SeedsClient, Seed } from "../lib/seeds.js";
+import type { BeadsRustClient, BrIssue } from "../lib/beads-rust.js";
 import type { DecompositionPlan } from "./types.js";
 
 export interface ExecutionResult {
@@ -56,10 +56,10 @@ function toSeedsType(type: string): string {
  */
 export async function executePlan(
   plan: DecompositionPlan,
-  seeds: SeedsClient,
+  seeds: BeadsRustClient,
 ): Promise<ExecutionResult> {
   // 1. Create the epic seed
-  const epicSeed: Seed = await seeds.create(plan.epic.title, {
+  const epicSeed: BrIssue = await seeds.create(plan.epic.title, {
     type: "epic",
     priority: "P1",
     description: plan.epic.description,
@@ -74,7 +74,7 @@ export async function executePlan(
 
   // 2. Create sprint → story → task hierarchy
   for (const sprint of plan.sprints) {
-    const sprintSeed: Seed = await seeds.create(sprint.title, {
+    const sprintSeed: BrIssue = await seeds.create(sprint.title, {
       type: toSeedsType("sprint"),
       priority: "P1",
       parent: epicSeed.id,
@@ -84,7 +84,7 @@ export async function executePlan(
     sprintSeedIds.push(sprintSeed.id);
 
     for (const story of sprint.stories) {
-      const storySeed: Seed = await seeds.create(story.title, {
+      const storySeed: BrIssue = await seeds.create(story.title, {
         type: toSeedsType("story"),
         priority: toSeedsPriority(story.priority),
         parent: sprintSeed.id,
@@ -99,7 +99,7 @@ export async function executePlan(
           labels.push(`kind:${task.type}`);
         }
 
-        const taskSeed: Seed = await seeds.create(task.title, {
+        const taskSeed: BrIssue = await seeds.create(task.title, {
           type: toSeedsType(task.type),
           priority: toSeedsPriority(task.priority),
           parent: storySeed.id,

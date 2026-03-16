@@ -1,3 +1,10 @@
+/**
+ * LEGACY: Tests for SeedsClient (seeds/sd backend).
+ *
+ * SeedsClient is retained in seeds.ts for backward compatibility but is no
+ * longer the active task backend. The primary backend is now BeadsRustClient
+ * (beads_rust/br). These tests verify the legacy sd CLI integration is intact.
+ */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Mock setup ──────────────────────────────────────────────────────────────

@@ -1,9 +1,9 @@
 /**
  * ITaskClient — common interface for task-tracking back-ends.
  *
- * Both SeedsClient (sd) and BeadsRustClient (br) implement this interface,
- * allowing the Dispatcher (and other orchestrator components) to be
- * decoupled from a specific task-tracker implementation.
+ * BeadsRustClient (br) implements this interface, allowing the Dispatcher
+ * (and other orchestrator components) to be decoupled from a specific
+ * task-tracker implementation.
  */
 
 // ── Common Issue type ────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ export interface Issue {
 /**
  * Options accepted by ITaskClient.update().
  *
- * The union of update options supported by SeedsClient and BeadsRustClient.
+ * The union of update options supported by BeadsRustClient.
  * Individual implementations may ignore unsupported fields.
  */
 export interface UpdateOptions {
@@ -57,7 +57,7 @@ export interface UpdateOptions {
 // ── ITaskClient interface ────────────────────────────────────────────────
 
 /**
- * Common interface for task-tracking back-ends (sd / br).
+ * Common interface for the task-tracking back-end (br).
  *
  * Covers the methods used by Dispatcher. Implementations must map their
  * native issue types to the common Issue type.

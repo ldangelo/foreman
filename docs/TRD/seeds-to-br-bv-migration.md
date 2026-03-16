@@ -548,35 +548,35 @@ All priority comparisons throughout the codebase go through this utility.
   - Test: grep for "getTaskBackend" in src/ returns zero matches (or only in feature-flags.ts if retained as constant)
   - Test all CLI commands work without env var set
 
-- [ ] **TRD-025**: Archive/delete seeds.ts and deprecated aliases (2h)
+- [x] **TRD-025**: Archive/delete seeds.ts and deprecated aliases (2h)
   - Delete or move src/lib/seeds.ts to src/lib/seeds.deprecated.ts
   - Remove deprecated BeadsClient, Bead, BeadDetail, BeadGraph aliases
   - Remove execSd function
   - Update any remaining imports
   - [depends: TRD-024]
 
-- [ ] **TRD-025-TEST**: Verify no seeds.ts imports remain (0.5h) [verifies TRD-025]
+- [x] **TRD-025-TEST**: Verify no seeds.ts imports remain (0.5h) [verifies TRD-025]
   - Test: grep for "SeedsClient" in src/ returns zero matches (except archived files)
   - Test: grep for "execSd" in src/ returns zero matches
   - Test: grep for "~/.bun/bin/sd" in src/ returns zero matches
 
-- [ ] **TRD-026**: Delete/archive pagerank.ts (1h)
+- [x] **TRD-026**: Delete/archive pagerank.ts (1h)
   - Delete or archive src/orchestrator/pagerank.ts
   - Remove calculateImpactScores and priorityBoost exports
   - Verify no remaining imports
   - [depends: TRD-006, TRD-024]
 
-- [ ] **TRD-026-TEST**: Verify no pagerank.ts imports remain (0.5h) [verifies TRD-026]
+- [x] **TRD-026-TEST**: Verify no pagerank.ts imports remain (0.5h) [verifies TRD-026]
   - Test: grep for "pagerank" in src/ returns zero matches (except archived)
   - Test: grep for "calculateImpactScores" in src/ returns zero matches
 
-- [ ] **TRD-027**: Update all test mocks to BeadsRustClient (3h)
+- [x] **TRD-027**: Update all test mocks to BeadsRustClient (3h)
   - Replace all SeedsClient mocks in test files with BeadsRustClient mocks
   - Update mock return types to match BrIssue / BrIssueDetail
   - Ensure all tests pass with br-only mocks
   - [depends: TRD-024, TRD-025]
 
-- [ ] **TRD-027-TEST**: Verify test suite passes with br-only mocks (1h) [verifies TRD-027]
+- [x] **TRD-027-TEST**: Verify test suite passes with br-only mocks (1h) [verifies TRD-027]
   - Test: npm test passes with zero failures
   - Test: no SeedsClient mock references in test files
 
@@ -695,8 +695,8 @@ All priority comparisons throughout the codebase go through this utility.
 | TRD-025-TEST | Verify no seeds imports | 0.5h | TRD-025 | [ ] |
 | TRD-026 | Delete/archive pagerank.ts | 1h | TRD-006, TRD-024 | [ ] |
 | TRD-026-TEST | Verify no pagerank imports | 0.5h | TRD-026 | [ ] |
-| TRD-027 | Update all test mocks to br | 3h | TRD-024, TRD-025 | [ ] |
-| TRD-027-TEST | Verify test suite passes | 1h | TRD-027 | [ ] |
+| TRD-027 | Update all test mocks to br | 3h | TRD-024, TRD-025 | [x] |
+| TRD-027-TEST | Verify test suite passes | 1h | TRD-027 | [x] |
 | TRD-028 | Final documentation pass | 2h | TRD-024-026 | [ ] |
 | TRD-028-TEST | Verify documentation accuracy | 1h | TRD-028 | [ ] |
 
