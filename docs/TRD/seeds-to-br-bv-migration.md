@@ -440,59 +440,59 @@ All priority comparisons throughout the codebase go through this utility.
   - Test: grep for "sd " in templates/worker-agent.md returns zero matches
   - Test: "br update", "br close" present in template
 
-- [ ] **TRD-015**: Update foreman seed command (2h) [satisfies REQ-017]
+- [x] **TRD-015**: Update foreman seed command (2h) [satisfies REQ-017]
   - Replace SeedsClient with BeadsRustClient in src/cli/commands/seed.ts
   - Update create calls to use br field formats (numeric priority)
   - Use normalizePriority() for any user input
   - [depends: TRD-005, TRD-003]
 
-- [ ] **TRD-015-TEST**: Unit tests for foreman seed with br (1h) [verifies TRD-015]
+- [x] **TRD-015-TEST**: Unit tests for foreman seed with br (1h) [verifies TRD-015]
   - Test seed command creates issues via BeadsRustClient
   - Test priority input normalized correctly
 
-- [ ] **TRD-016**: Update foreman plan command (2h) [satisfies REQ-018]
+- [x] **TRD-016**: Update foreman plan command (2h) [satisfies REQ-018]
   - Replace SeedsClient with BeadsRustClient in src/cli/commands/plan.ts
   - Update issue creation to use br field formats
   - Update issue closing on completion
   - [depends: TRD-005]
 
-- [ ] **TRD-016-TEST**: Unit tests for foreman plan with br (1h) [verifies TRD-016]
+- [x] **TRD-016-TEST**: Unit tests for foreman plan with br (1h) [verifies TRD-016]
   - Test plan creates issues via BeadsRustClient
   - Test plan closes issues via BeadsRustClient
 
-- [ ] **TRD-017**: Update foreman merge command (2h) [satisfies REQ-019]
+- [x] **TRD-017**: Update foreman merge command (2h) [satisfies REQ-019]
   - Replace SeedsClient with BeadsRustClient in src/cli/commands/merge.ts
   - Update task status reads/writes to use br
   - [depends: TRD-005]
 
-- [ ] **TRD-017-TEST**: Unit tests for foreman merge with br (1h) [verifies TRD-017]
+- [x] **TRD-017-TEST**: Unit tests for foreman merge with br (1h) [verifies TRD-017]
   - Test merge uses BeadsRustClient for status reads
   - Test merge uses BeadsRustClient for status writes
 
-- [ ] **TRD-018**: Update foreman init (2h) [satisfies REQ-011]
+- [x] **TRD-018**: Update foreman init (2h) [satisfies REQ-011]
   - Check for br binary at ~/.local/bin/br instead of sd at ~/.bun/bin/sd
   - Run br init when .beads/ does not exist
   - Print installation instructions for br (cargo install beads_rust)
   - Optionally check for bv and print install instructions if absent
   - [depends: TRD-001]
 
-- [ ] **TRD-018-TEST**: Unit tests for foreman init with br (1h) [verifies TRD-018]
+- [x] **TRD-018-TEST**: Unit tests for foreman init with br (1h) [verifies TRD-018]
   - Test init checks for ~/.local/bin/br
   - Test init runs br init when .beads/ absent
   - Test init prints install instructions when br missing
 
-- [ ] **TRD-019**: Update foreman status (2h) [satisfies REQ-010]
+- [x] **TRD-019**: Update foreman status (2h) [satisfies REQ-010]
   - Replace all execFileSync(sdPath, ...) with execFileSync(brPath, ...)
   - Binary path: ~/.local/bin/br instead of ~/.bun/bin/sd
   - Derive blocked count: br list --status=open minus br ready (no direct br blocked)
   - [depends: TRD-001]
 
-- [ ] **TRD-019-TEST**: Unit tests for foreman status with br (1h) [verifies TRD-019]
+- [x] **TRD-019-TEST**: Unit tests for foreman status with br (1h) [verifies TRD-019]
   - Test status calls br CLI, not sd CLI
   - Test blocked count derived correctly
   - Test output format unchanged
 
-- [ ] **TRD-020**: Update foreman doctor (2h) [satisfies REQ-012]
+- [x] **TRD-020**: Update foreman doctor (2h) [satisfies REQ-012]
   - Check ~/.local/bin/br exists and is executable (required -- failure blocks)
   - Check ~/.local/bin/bv exists and is executable (warning only -- does not block)
   - Print cargo install beads_rust for missing br
@@ -500,7 +500,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Remove sd binary check
   - [depends: TRD-001]
 
-- [ ] **TRD-020-TEST**: Unit tests for foreman doctor with br/bv (1h) [verifies TRD-020]
+- [x] **TRD-020-TEST**: Unit tests for foreman doctor with br/bv (1h) [verifies TRD-020]
   - Test doctor passes when br exists
   - Test doctor fails when br missing
   - Test doctor warns (not fails) when bv missing

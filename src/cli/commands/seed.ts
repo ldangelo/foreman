@@ -5,6 +5,9 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { SeedsClient } from "../../lib/seeds.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { getTaskBackend } from "../../lib/feature-flags.js";
+import { normalizePriority } from "../../lib/priority.js";
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -19,6 +22,26 @@ interface ParsedIssue {
 
 interface ParsedIssuesResponse {
   issues: ParsedIssue[];
+}
+
+// ── Client factory (TRD-015) ──────────────────────────────────────────────
+
+/**
+ * Instantiate the correct task-tracking client based on FOREMAN_TASK_BACKEND.
+ *
+ * - backend='sd': Returns a SeedsClient (default).
+ * - backend='br': Returns a BeadsRustClient.
+ *
+ * Exported for unit testing.
+ */
+export function createSeedClient(
+  projectPath: string,
+): SeedsClient | BeadsRustClient {
+  const backend = getTaskBackend();
+  if (backend === "br") {
+    return new BeadsRustClient(projectPath);
+  }
+  return new SeedsClient(projectPath);
 }
 
 // ── Command ──────────────────────────────────────────────────────────────
@@ -56,11 +79,16 @@ export const seedCommand = new Command("seed")
         inputText = description;
       }
 
-      // Initialise SeedsClient and validate prerequisites
-      const seeds = new SeedsClient(projectPath);
+      // Initialise the appropriate task client based on FOREMAN_TASK_BACKEND
+      const seeds = createSeedClient(projectPath);
 
+      // Validate prerequisites — both clients expose compatible methods
       try {
-        await seeds.ensureSdInstalled();
+        if (seeds instanceof BeadsRustClient) {
+          await seeds.ensureBrInstalled();
+        } else {
+          await seeds.ensureSdInstalled();
+        }
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exitCode = 1;
@@ -68,8 +96,10 @@ export const seedCommand = new Command("seed")
       }
 
       if (!(await seeds.isInitialized())) {
+        const backend = getTaskBackend();
+        const tool = backend === "br" ? "br" : "seeds";
         console.error(
-          chalk.red("Seeds not initialized in this directory. Run 'foreman init' first."),
+          chalk.red(`${tool === "br" ? "Beads" : "Seeds"} not initialized in this directory. Run 'foreman init' first.`),
         );
         process.exitCode = 1;
         return;
@@ -106,9 +136,13 @@ export const seedCommand = new Command("seed")
       }
 
       // Apply any forced overrides from CLI options
+      // Normalize priority so both sd ("P2") and br ("2") get a consistent value
+      const normalizedPriority = opts.priority
+        ? `P${normalizePriority(opts.priority)}`
+        : undefined;
       for (const issue of parsedIssues) {
         if (opts.type) issue.type = opts.type;
-        if (opts.priority) issue.priority = opts.priority;
+        if (normalizedPriority) issue.priority = normalizedPriority;
       }
 
       // ── Display planned seeds ──────────────────────────────────────────

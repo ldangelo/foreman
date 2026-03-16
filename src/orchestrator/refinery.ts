@@ -4,7 +4,7 @@ import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ForemanStore } from "../lib/store.js";
-import type { SeedsClient } from "../lib/seeds.js";
+import type { SeedGraph } from "../lib/seeds.js";
 import { mergeWorktree, removeWorktree } from "../lib/git.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -46,6 +46,24 @@ async function runTestCommand(command: string, cwd: string): Promise<{ ok: boole
   }
 }
 
+// ── IRefineryTaskClient ───────────────────────────────────────────────────
+
+/**
+ * Minimal interface for the task-tracking client used by Refinery.
+ *
+ * This covers the two methods Refinery calls:
+ *   - show(id): fetch issue detail for PR title/body generation
+ *   - getGraph(): optional; used to order merges by dependency graph
+ *
+ * Both SeedsClient and BeadsRustClient satisfy this interface.
+ * BeadsRustClient does not implement getGraph(); the try/catch in
+ * orderByDependencies will fall back to insertion order in that case.
+ */
+export interface IRefineryTaskClient {
+  show(id: string): Promise<{ title?: string; description?: string | null; status: string }>;
+  getGraph?(): Promise<SeedGraph>;
+}
+
 // ── Refinery ─────────────────────────────────────────────────────────────
 
 export class Refinery {
@@ -53,7 +71,7 @@ export class Refinery {
 
   constructor(
     private store: ForemanStore,
-    private seeds: SeedsClient,
+    private seeds: IRefineryTaskClient,
     private projectPath: string,
   ) {
     this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG);
@@ -212,6 +230,7 @@ export class Refinery {
     if (runs.length <= 1) return runs;
 
     try {
+      if (!this.seeds.getGraph) return runs; // br backend has no getGraph
       const graph = await this.seeds.getGraph();
       // Build a map of seed_id → set of dependency seed_ids
       const depMap = new Map<string, Set<string>>();

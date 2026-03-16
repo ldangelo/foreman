@@ -4,6 +4,11 @@ import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { ForemanStore } from "../../lib/store.js";
 import { renderAgentCard } from "../watch-ui.js";
+import { getTaskBackend } from "../../lib/feature-flags.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
+import type { BrIssue } from "../../lib/beads-rust.js";
+import type { TaskBackend } from "../../lib/feature-flags.js";
+import type { Issue } from "../../lib/task-client.js";
 
 interface Seed {
   id: string;
@@ -13,8 +18,70 @@ interface Seed {
 
 const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
 
-function renderStatus(): void {
-  // Fetch seed list
+// ── Exported helpers (used by tests) ─────────────────────────────────────
+
+/**
+ * Returns the active task backend. Exported for testing.
+ */
+export function getStatusBackend(): TaskBackend {
+  return getTaskBackend();
+}
+
+/**
+ * Status counts returned by fetchStatusCounts.
+ */
+export interface StatusCounts {
+  total: number;
+  ready: number;
+  inProgress: number;
+  completed: number;
+  blocked: number;
+}
+
+/**
+ * Fetch task status counts using the appropriate backend.
+ *
+ * - backend='br': Uses BeadsRustClient (br CLI) for all queries.
+ * - backend='sd': Uses execFileSync with the sd CLI (legacy behavior).
+ */
+export async function fetchStatusCounts(projectPath: string): Promise<StatusCounts> {
+  const backend = getTaskBackend();
+
+  if (backend === "br") {
+    const brClient = new BeadsRustClient(projectPath);
+
+    // Fetch open issues (all non-closed)
+    let openIssues: BrIssue[] = [];
+    try {
+      openIssues = await brClient.list();
+    } catch { /* br not initialized or binary missing — return zeros */ }
+
+    // Fetch closed issues separately (br list excludes closed by default)
+    let closedIssues: BrIssue[] = [];
+    try {
+      closedIssues = await brClient.list({ status: "closed" });
+    } catch { /* no closed issues */ }
+
+    // Fetch ready issues (open + unblocked)
+    let readyIssues: Issue[] = [];
+    try {
+      readyIssues = await brClient.ready();
+    } catch { /* br ready may fail */ }
+
+    const inProgress = openIssues.filter((i) => i.status === "in_progress").length;
+    const completed = closedIssues.length;
+    const ready = readyIssues.length;
+    // blocked = open issues that are not ready and not in_progress
+    const readyIds = new Set(readyIssues.map((i) => i.id));
+    const blocked = openIssues.filter(
+      (i) => i.status !== "in_progress" && !readyIds.has(i.id),
+    ).length;
+    const total = openIssues.length + completed;
+
+    return { total, ready, inProgress, completed, blocked };
+  }
+
+  // ── sd backend (legacy) ────────────────────────────────────────────────
   let seeds: Seed[] = [];
   try {
     const output = execFileSync(sdPath, ["list", "--json", "--limit", "0"], {
@@ -24,12 +91,7 @@ function renderStatus(): void {
     const parsed = JSON.parse(output);
     seeds = parsed.issues ?? parsed ?? [];
   } catch {
-    console.error(
-      chalk.red(
-        "Failed to read seeds. Is this a foreman project? Run 'foreman init' first.",
-      ),
-    );
-    process.exit(1);
+    throw new Error("Failed to read seeds. Is this a foreman project? Run 'foreman init' first.");
   }
 
   const inProgress = seeds.filter((b) => b.status === "in_progress").length;
@@ -47,7 +109,6 @@ function renderStatus(): void {
 
   const total = seeds.length + completed;
 
-  // "ready" and "blocked" are computed from dependencies, not stored as status
   let ready = 0;
   let blocked = 0;
   try {
@@ -66,6 +127,23 @@ function renderStatus(): void {
     const blockedParsed = JSON.parse(blockedOutput);
     blocked = (blockedParsed.issues ?? blockedParsed ?? []).length;
   } catch { /* sd blocked may fail if no issues exist */ }
+
+  return { total, ready, inProgress, completed, blocked };
+}
+
+// ── Internal render helper ────────────────────────────────────────────────
+
+async function renderStatus(): Promise<void> {
+  const projectPath = resolve(".");
+  let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+  try {
+    counts = await fetchStatusCounts(projectPath);
+  } catch (err) {
+    console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+    process.exit(1);
+  }
+
+  const { total, ready, inProgress, completed, blocked } = counts;
 
   console.log(chalk.bold("Tasks"));
   console.log(`  Total:       ${chalk.white(total)}`);
@@ -166,12 +244,12 @@ export const statusCommand = new Command("status")
         // Clear screen and move cursor to top
         process.stdout.write("\x1b[2J\x1b[H");
         console.log(chalk.bold("Project Status") + chalk.dim(`  (watching every ${seconds}s — Ctrl+C to stop)\n`));
-        renderStatus();
+        await renderStatus();
         console.log(chalk.dim(`\nLast updated: ${new Date().toLocaleTimeString()}`));
         await new Promise((r) => setTimeout(r, seconds * 1000));
       }
     } else {
       console.log(chalk.bold("Project Status\n"));
-      renderStatus();
+      await renderStatus();
     }
   });

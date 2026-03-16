@@ -4,9 +4,31 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { SeedsClient } from "../../lib/seeds.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { getTaskBackend } from "../../lib/feature-flags.js";
 import { ForemanStore } from "../../lib/store.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { PlanStepDefinition } from "../../orchestrator/types.js";
+
+// ── Client factory (TRD-016) ──────────────────────────────────────────────
+
+/**
+ * Instantiate the correct task-tracking client based on FOREMAN_TASK_BACKEND.
+ *
+ * - backend='sd': Returns a SeedsClient (default).
+ * - backend='br': Returns a BeadsRustClient.
+ *
+ * Exported for unit testing.
+ */
+export function createPlanClient(
+  projectPath: string,
+): SeedsClient | BeadsRustClient {
+  const backend = getTaskBackend();
+  if (backend === "br") {
+    return new BeadsRustClient(projectPath);
+  }
+  return new SeedsClient(projectPath);
+}
 
 export const planCommand = new Command("plan")
   .description(
@@ -59,9 +81,9 @@ export const planCommand = new Command("plan")
         productDescription = description;
       }
 
-      // Initialize clients
+      // Initialize clients — select backend based on FOREMAN_TASK_BACKEND
       const store = new ForemanStore();
-      const seeds = new SeedsClient(projectPath);
+      const seeds = createPlanClient(projectPath);
       const dispatcher = new Dispatcher(seeds, store, projectPath);
 
       try {
