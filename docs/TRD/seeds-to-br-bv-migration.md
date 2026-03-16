@@ -237,7 +237,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Calls br ready --json and parses output
   - Returns all open, unblocked issues
 
-- [ ] **TRD-001-TEST**: Unit tests for BeadsRustClient.ready() (1h) [verifies TRD-001]
+- [x] **TRD-001-TEST**: Unit tests for BeadsRustClient.ready() (1h) [verifies TRD-001]
   - Test ready() returns parsed BrIssue array
   - Test ready() handles empty result
   - Test ready() handles br binary not found
@@ -256,7 +256,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Returns null on: binary not found, timeout, non-zero exit, parse error
   - Binary path: ~/.local/bin/bv
 
-- [ ] **TRD-002-TEST**: Unit tests for BvClient (3h) [verifies TRD-002]
+- [x] **TRD-002-TEST**: Unit tests for BvClient (3h) [verifies TRD-002]
   - Test robotTriage() calls br sync before bv
   - Test robotTriage() returns parsed result on success
   - Test robotNext() returns single task on success
@@ -276,7 +276,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Return 4 (lowest) for invalid input
   - Export formatPriorityForBr(p: string | number): string (returns "0"-"4")
 
-- [ ] **TRD-003-TEST**: Unit tests for normalizePriority() (1h) [verifies TRD-003]
+- [x] **TRD-003-TEST**: Unit tests for normalizePriority() (1h) [verifies TRD-003]
   - Test "P0" through "P4" return 0 through 4
   - Test "0" through "4" return 0 through 4
   - Test numeric 0 through 4 pass-through
