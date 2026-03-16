@@ -506,31 +506,31 @@ All priority comparisons throughout the codebase go through this utility.
   - Test doctor warns (not fails) when bv missing
   - Test correct install instructions printed
 
-- [ ] **TRD-021**: Deprecate --sd-only flag in sling (1h) [satisfies REQ-028]
+- [x] **TRD-021**: Deprecate --sd-only flag in sling (1h) [satisfies REQ-028]
   - --sd-only prints deprecation warning to stderr
   - --sd-only behaves as no-op (br-only write)
   - Flag retained for backward compatibility
   - [depends: TRD-005]
 
-- [ ] **TRD-021-TEST**: Unit tests for sling --sd-only deprecation (0.5h) [verifies TRD-021]
+- [x] **TRD-021-TEST**: Unit tests for sling --sd-only deprecation (0.5h) [verifies TRD-021]
   - Test --sd-only prints deprecation warning
   - Test --sd-only still writes to br (not sd)
 
-- [ ] **TRD-022**: Make --br-only default behavior in sling (1h) [satisfies REQ-029]
+- [x] **TRD-022**: Make --br-only default behavior in sling (1h) [satisfies REQ-029]
   - When neither --sd-only nor --br-only specified: write to br only
   - --br-only flag retained but is now a no-op (already default)
   - [depends: TRD-021]
 
-- [ ] **TRD-022-TEST**: Unit tests for sling default br behavior (0.5h) [verifies TRD-022]
+- [x] **TRD-022-TEST**: Unit tests for sling default br behavior (0.5h) [verifies TRD-022]
   - Test default sling writes to br only
   - Test --br-only has same behavior as default
 
-- [ ] **TRD-023**: Set FOREMAN_TASK_BACKEND=br as default (1h)
+- [x] **TRD-023**: Set FOREMAN_TASK_BACKEND=br as default (1h)
   - Update getTaskBackend() default from "sd" to "br"
   - Update any documentation referencing the default
   - [depends: TRD-013, TRD-018, TRD-019, TRD-020]
 
-- [ ] **TRD-023-TEST**: Verify default backend is br (0.5h) [verifies TRD-023]
+- [x] **TRD-023-TEST**: Verify default backend is br (0.5h) [verifies TRD-023]
   - Test getTaskBackend() returns "br" when env var unset
   - Test foreman run uses BeadsRustClient by default
 

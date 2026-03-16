@@ -280,10 +280,11 @@ describe("reset command — backend selection via getTaskBackend()", () => {
     expect(getTaskBackend()).toBe("br");
   });
 
-  it("getTaskBackend() returns 'sd' when FOREMAN_TASK_BACKEND is unset", async () => {
+  // TRD-023: default changed from 'sd' to 'br'
+  it("getTaskBackend() returns 'br' when FOREMAN_TASK_BACKEND is unset", async () => {
     delete process.env.FOREMAN_TASK_BACKEND;
     const { getTaskBackend } = await import("../../lib/feature-flags.js");
-    expect(getTaskBackend()).toBe("sd");
+    expect(getTaskBackend()).toBe("br");
   });
 
   it("getTaskBackend() returns 'sd' when FOREMAN_TASK_BACKEND=sd", async () => {

@@ -11,8 +11,9 @@ describe("getTaskBackend — default behaviour", () => {
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("returns 'sd' when FOREMAN_TASK_BACKEND is not set", () => {
-    expect(getTaskBackend()).toBe("sd");
+  // TRD-023: default changed from 'sd' to 'br'
+  it("returns 'br' when FOREMAN_TASK_BACKEND is not set", () => {
+    expect(getTaskBackend()).toBe("br");
   });
 });
 
@@ -32,24 +33,24 @@ describe("getTaskBackend — explicit values", () => {
   });
 });
 
-describe("getTaskBackend — unrecognised values fall back to 'sd'", () => {
+describe("getTaskBackend — unrecognised values fall back to 'br' (TRD-023 default)", () => {
   afterEach(() => {
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("returns 'sd' for unrecognised value 'unknown'", () => {
+  it("returns 'br' for unrecognised value 'unknown'", () => {
     process.env.FOREMAN_TASK_BACKEND = "unknown";
-    expect(getTaskBackend()).toBe("sd");
+    expect(getTaskBackend()).toBe("br");
   });
 
-  it("returns 'sd' for empty string", () => {
+  it("returns 'br' for empty string", () => {
     process.env.FOREMAN_TASK_BACKEND = "";
-    expect(getTaskBackend()).toBe("sd");
+    expect(getTaskBackend()).toBe("br");
   });
 
-  it("returns 'sd' for value 'BR' (case-sensitive)", () => {
+  it("returns 'br' for value 'BR' (case-sensitive)", () => {
     process.env.FOREMAN_TASK_BACKEND = "BR";
-    expect(getTaskBackend()).toBe("sd");
+    expect(getTaskBackend()).toBe("br");
   });
 });
 

@@ -60,14 +60,15 @@ describe("closeSeed — sd backend (default)", () => {
     expect(cmd).toBe(`${HOME}/.bun/bin/sd`);
   });
 
-  it("defaults to sd backend when FOREMAN_TASK_BACKEND is not set", () => {
+  // TRD-023: default changed from 'sd' to 'br'
+  it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
     // env var is not set (deleted in beforeEach)
 
     closeSeed("task-xyz-999");
 
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    expect(cmd).toContain("sd");
+    expect(cmd).toContain("br");
     expect(args[0]).toBe("close");
   });
 
@@ -175,13 +176,14 @@ describe("resetSeedToOpen — sd backend (default)", () => {
     expect(cmd).toBe(`${HOME}/.bun/bin/sd`);
   });
 
-  it("defaults to sd backend when FOREMAN_TASK_BACKEND is not set", () => {
+  // TRD-023: default changed from 'sd' to 'br'
+  it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     resetSeedToOpen("task-xyz-999");
 
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    expect(cmd).toContain("sd");
+    expect(cmd).toContain("br");
     expect(args[0]).toBe("update");
     expect(args).toContain("open");
   });

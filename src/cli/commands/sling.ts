@@ -10,6 +10,40 @@ import { SeedsClient } from "../../lib/seeds.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { SlingPlan, SlingOptions, SlingResult, ParallelResult } from "../../orchestrator/types.js";
 
+// ── TRD-021: --sd-only deprecation helper (exported for testing) ─────────
+
+/**
+ * Checks if --sd-only is set; if so, prints a deprecation warning to stderr
+ * and clears the flag so the command behaves as br-only.
+ *
+ * Returns true if the warning was emitted (flag was set), false otherwise.
+ */
+/**
+ * TRD-022: br-only is now the default write target.
+ * When neither --sd-only nor --br-only is specified, br-only is used.
+ * --br-only flag is retained but is now a no-op (already the default).
+ *
+ * Exported for testing.
+ */
+export function resolveDefaultBrOnly(opts: { sdOnly?: boolean; brOnly?: boolean }): void {
+  if (!opts.sdOnly && !opts.brOnly) {
+    opts.brOnly = true;
+  }
+}
+
+export function applySdOnlyDeprecation(opts: { sdOnly?: boolean; brOnly?: boolean }): boolean {
+  if (!opts.sdOnly) return false;
+  process.stderr.write(
+    chalk.yellow(
+      "SLING-DEPRECATED: --sd-only is deprecated and will be removed in a future release. " +
+      "Foreman now uses br (beads_rust) exclusively. The flag is ignored.\n",
+    ),
+  );
+  opts.sdOnly = false;
+  opts.brOnly = true; // enforce br-only to match the deprecation message's promise
+  return true;
+}
+
 // ── Preview display ──────────────────────────────────────────────────────
 
 function printSlingPlan(plan: SlingPlan, parallel: ParallelResult): void {
@@ -242,6 +276,12 @@ const trdSubcommand = new Command("trd")
       console.log(chalk.dim("Dry run — no tasks created."));
       return;
     }
+
+    // --sd-only is deprecated: warn and treat as no-op (br-only write)
+    applySdOnlyDeprecation(opts);
+
+    // TRD-022: br-only is the default when neither flag is set
+    resolveDefaultBrOnly(opts);
 
     // Confirmation
     if (!opts.auto) {
