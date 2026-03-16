@@ -9,7 +9,6 @@ import { getRepoRoot } from "../../lib/git.js";
 import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
 import { TmuxClient } from "../../lib/tmux.js";
 import type { UpdateOptions } from "../../lib/task-client.js";
-import { getTaskBackend } from "../../lib/feature-flags.js";
 
 /**
  * Minimal interface capturing the subset of task-client methods used by
@@ -147,11 +146,7 @@ export const resetCommand = new Command("reset")
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
-      const backend = getTaskBackend();
-      const seeds: IShowUpdateClient =
-        backend === "br"
-          ? new BeadsRustClient(projectPath)
-          : new SeedsClient(projectPath);
+      const seeds: IShowUpdateClient = new BeadsRustClient(projectPath);
       const store = new ForemanStore();
       const project = store.getProjectByPath(projectPath);
 

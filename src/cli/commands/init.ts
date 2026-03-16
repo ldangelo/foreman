@@ -6,7 +6,6 @@ import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
-import { getTaskBackend } from "../../lib/feature-flags.js";
 
 // ── Backend-specific init logic (TRD-018) ─────────────────────────────────
 
@@ -23,70 +22,32 @@ export interface InitBackendOpts {
 /**
  * Initialize the task-tracking backend for the given project directory.
  *
- * When FOREMAN_TASK_BACKEND='br':
+ * TRD-024: sd backend removed. Always uses the br (beads_rust) backend.
  *   - Skips sd installation check and sd init entirely.
  *   - Runs `br init` if .beads/ does not already exist.
- *
- * When FOREMAN_TASK_BACKEND='sd' (default):
- *   - Checks that sd binary is installed.
- *   - Runs `sd init` if .seeds/ does not already exist.
  *
  * Exported for unit testing.
  */
 export async function initBackend(opts: InitBackendOpts): Promise<void> {
   const { projectDir, execSync = execFileSync, checkExists = existsSync } = opts;
-  const backend = getTaskBackend();
 
-  if (backend === "br") {
-    // br backend: skip sd entirely, initialize .beads if needed
-    const brPath = join(homedir(), ".local", "bin", "br");
+  // br backend: initialize .beads if needed
+  const brPath = join(homedir(), ".local", "bin", "br");
 
-    if (!checkExists(join(projectDir, ".beads"))) {
-      const spinner = ora("Initializing beads workspace...").start();
-      try {
-        execSync(brPath, ["init"], { stdio: "pipe" });
-        spinner.succeed("Beads workspace initialized");
-      } catch (e) {
-        spinner.fail("Failed to initialize beads workspace");
-        console.error(
-          chalk.red(e instanceof Error ? e.message : String(e)),
-        );
-        process.exit(1);
-      }
-    } else {
-      console.log(chalk.dim("Beads workspace already exists, skipping init"));
-    }
-  } else {
-    // sd backend (default): check sd binary and initialize .seeds if needed
-    const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
-
+  if (!checkExists(join(projectDir, ".beads"))) {
+    const spinner = ora("Initializing beads workspace...").start();
     try {
-      execSync(sdPath, ["--version"], { stdio: "pipe" });
-    } catch {
+      execSync(brPath, ["init"], { stdio: "pipe" });
+      spinner.succeed("Beads workspace initialized");
+    } catch (e) {
+      spinner.fail("Failed to initialize beads workspace");
       console.error(
-        chalk.red("Error: sd (seeds) CLI is not installed."),
-      );
-      console.error(
-        chalk.dim("Install: bun install -g @os-eco/seeds-cli"),
+        chalk.red(e instanceof Error ? e.message : String(e)),
       );
       process.exit(1);
     }
-
-    if (!checkExists(join(projectDir, ".seeds"))) {
-      const spinner = ora("Initializing seeds workspace...").start();
-      try {
-        execSync(sdPath, ["init"], { stdio: "pipe" });
-        spinner.succeed("Seeds workspace initialized");
-      } catch (e) {
-        spinner.fail("Failed to initialize seeds workspace");
-        console.error(
-          chalk.red(e instanceof Error ? e.message : String(e)),
-        );
-        process.exit(1);
-      }
-    } else {
-      console.log(chalk.dim("Seeds workspace already exists, skipping init"));
-    }
+  } else {
+    console.log(chalk.dim("Beads workspace already exists, skipping init"));
   }
 }
 

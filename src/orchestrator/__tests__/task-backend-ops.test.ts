@@ -38,28 +38,6 @@ describe("closeSeed — sd backend (default)", () => {
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("calls sd close with seedId and --reason flag", () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(""));
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-
-    closeSeed("task-abc-123");
-
-    expect(mockExecFileSync).toHaveBeenCalledOnce();
-    const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    expect(cmd).toContain("sd");
-    expect(args).toEqual(["close", "task-abc-123", "--reason", "Completed via pipeline"]);
-  });
-
-  it("uses ~/.bun/bin/sd path for sd backend", () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(""));
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-
-    closeSeed("task-abc-123");
-
-    const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    expect(cmd).toBe(`${HOME}/.bun/bin/sd`);
-  });
-
   // TRD-023: default changed from 'sd' to 'br'
   it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
@@ -72,13 +50,6 @@ describe("closeSeed — sd backend (default)", () => {
     expect(args[0]).toBe("close");
   });
 
-  it("does not throw when sd close fails (error suppressed)", () => {
-    mockExecFileSync.mockImplementation(() => { throw new Error("sd not found"); });
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-
-    // Must not throw — errors should be caught and logged
-    expect(() => closeSeed("task-fail-001")).not.toThrow();
-  });
 });
 
 describe("closeSeed — br backend", () => {
@@ -154,28 +125,6 @@ describe("resetSeedToOpen — sd backend (default)", () => {
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("calls sd update with --status open", () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(""));
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-
-    resetSeedToOpen("task-stuck-001");
-
-    expect(mockExecFileSync).toHaveBeenCalledOnce();
-    const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    expect(cmd).toContain("sd");
-    expect(args).toEqual(["update", "task-stuck-001", "--status", "open"]);
-  });
-
-  it("uses ~/.bun/bin/sd path for sd backend", () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(""));
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-
-    resetSeedToOpen("task-stuck-001");
-
-    const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    expect(cmd).toBe(`${HOME}/.bun/bin/sd`);
-  });
-
   // TRD-023: default changed from 'sd' to 'br'
   it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
@@ -188,12 +137,6 @@ describe("resetSeedToOpen — sd backend (default)", () => {
     expect(args).toContain("open");
   });
 
-  it("does not throw when sd update fails (error suppressed)", () => {
-    mockExecFileSync.mockImplementation(() => { throw new Error("sd not found"); });
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-
-    expect(() => resetSeedToOpen("task-fail-001")).not.toThrow();
-  });
 });
 
 describe("resetSeedToOpen — br backend", () => {
@@ -269,15 +212,6 @@ describe("closeSeed / resetSeedToOpen — homedir() path resolution", () => {
     mockHomedir.mockReturnValue("/test/home");
   });
 
-  it("closeSeed uses os.homedir() for sd path", () => {
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-
-    closeSeed("task-no-home");
-
-    const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    expect(cmd).toBe("/fallback/home/.bun/bin/sd");
-  });
-
   it("closeSeed uses os.homedir() for br path", () => {
     process.env.FOREMAN_TASK_BACKEND = "br";
 
@@ -285,15 +219,6 @@ describe("closeSeed / resetSeedToOpen — homedir() path resolution", () => {
 
     const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toBe("/fallback/home/.local/bin/br");
-  });
-
-  it("resetSeedToOpen uses os.homedir() for sd path", () => {
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-
-    resetSeedToOpen("task-no-home");
-
-    const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    expect(cmd).toBe("/fallback/home/.bun/bin/sd");
   });
 
   it("resetSeedToOpen uses os.homedir() for br path", () => {

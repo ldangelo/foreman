@@ -5,7 +5,6 @@ import chalk from "chalk";
 import { SeedsClient } from "../../lib/seeds.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
-import { getTaskBackend } from "../../lib/feature-flags.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
@@ -27,28 +26,19 @@ export interface TaskClientResult {
 }
 
 /**
- * Instantiate the correct task-tracking client(s) based on FOREMAN_TASK_BACKEND.
+ * Instantiate the br task-tracking client(s).
  *
- * - backend='sd': Returns a SeedsClient; bvClient is null.
- * - backend='br': Returns a BeadsRustClient after verifying the binary exists;
- *   also returns a BvClient for graph-aware triage.
+ * TRD-024: sd backend removed. Always returns a BeadsRustClient after verifying
+ * the binary exists, plus a BvClient for graph-aware triage.
  *
- * Throws if backend='br' and the br binary cannot be found.
+ * Throws if the br binary cannot be found.
  */
 export async function createTaskClients(projectPath: string): Promise<TaskClientResult> {
-  const backend = getTaskBackend();
-
-  if (backend === "br") {
-    const brClient = new BeadsRustClient(projectPath);
-    // Verify binary exists before proceeding; throws with a friendly message if not
-    await brClient.ensureBrInstalled();
-    const bvClient = new BvClient(projectPath);
-    return { taskClient: brClient, bvClient };
-  }
-
-  // Default: 'sd' (Seeds)
-  const seedsClient = new SeedsClient(projectPath);
-  return { taskClient: seedsClient, bvClient: null };
+  const brClient = new BeadsRustClient(projectPath);
+  // Verify binary exists before proceeding; throws with a friendly message if not
+  await brClient.ensureBrInstalled();
+  const bvClient = new BvClient(projectPath);
+  return { taskClient: brClient, bvClient };
 }
 
 // ── Auto-Attach Logic (AT-T028/AT-T029) ──────────────────────────────

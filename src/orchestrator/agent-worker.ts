@@ -611,7 +611,7 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
     }
   }
 
-  // Close seed (backend-aware: br or sd depending on FOREMAN_TASK_BACKEND)
+  // Close bead (br backend)
   closeSeed(seedId);
   log(`[FINALIZE] Closed seed ${seedId}`);
   report.push(`## Seed Close`, `- Status: SUCCESS`, "");
@@ -810,7 +810,7 @@ async function markStuck(
   }, runId);
 
   // Reset seed back to open so it appears in the ready queue for retry
-  // (backend-aware: br or sd depending on FOREMAN_TASK_BACKEND)
+  // (br backend)
   resetSeedToOpen(seedId);
   log(`Reset seed ${seedId} back to open`);
 

@@ -85,24 +85,6 @@ describe("TRD-019: status.ts backend selection via FOREMAN_TASK_BACKEND", () => 
     vi.unstubAllEnvs();
   });
 
-  // ── sd backend ────────────────────────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND='sd'", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("sd");
-    });
-
-    it("returns 'sd' from getStatusBackend()", () => {
-      const backend = getStatusBackend();
-      expect(backend).toBe("sd");
-    });
-
-    it("does not instantiate BeadsRustClient for sd backend", () => {
-      getStatusBackend();
-      expect(MockBeadsRustClient).not.toHaveBeenCalled();
-    });
-  });
-
   // ── br backend ────────────────────────────────────────────────────────────
 
   describe("when FOREMAN_TASK_BACKEND='br'", () => {
@@ -121,18 +103,6 @@ describe("TRD-019: status.ts backend selection via FOREMAN_TASK_BACKEND", () => 
     });
   });
 
-  // ── default backend ────────────────────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND is unset (defaults to sd)", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("sd");
-    });
-
-    it("getStatusBackend() returns 'sd' as default", () => {
-      const backend = getStatusBackend();
-      expect(backend).toBe("sd");
-    });
-  });
 });
 
 // ── fetchStatusCounts tests ────────────────────────────────────────────────
@@ -226,21 +196,4 @@ describe("TRD-019: fetchStatusCounts uses correct backend", () => {
     });
   });
 
-  describe("when FOREMAN_TASK_BACKEND='sd'", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("sd");
-      // sd returns JSON array
-      mockExecFileSync.mockReturnValue(JSON.stringify([]));
-    });
-
-    it("calls execFileSync (sd binary) for sd backend", async () => {
-      await fetchStatusCounts(PROJECT_PATH);
-      expect(mockExecFileSync).toHaveBeenCalled();
-    });
-
-    it("does not instantiate BeadsRustClient for sd backend", async () => {
-      await fetchStatusCounts(PROJECT_PATH);
-      expect(MockBeadsRustClient).not.toHaveBeenCalled();
-    });
-  });
 });

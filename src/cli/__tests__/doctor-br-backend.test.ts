@@ -242,23 +242,6 @@ describe("TRD-020: Doctor.checkSystem() with backend selection", () => {
     tempDirs.length = 0;
   });
 
-  it("checkSystem() includes sd check when backend='sd'", async () => {
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-    const { Doctor } = await import("../../orchestrator/doctor.js");
-    const { ForemanStore } = await import("../../lib/store.js");
-
-    const tmp = makeTempDir();
-    const tmpDb = join(tmp, "test.db");
-    const store = new ForemanStore(tmpDb);
-    const doctor = new Doctor(store, tmp);
-
-    const results = await doctor.checkSystem();
-    const names = results.map((r) => r.name);
-
-    expect(names.some((n) => n.includes("sd"))).toBe(true);
-    store.close();
-  });
-
   it("checkSystem() includes git check for both backends", async () => {
     process.env.FOREMAN_TASK_BACKEND = "sd";
     const { Doctor } = await import("../../orchestrator/doctor.js");
@@ -324,40 +307,6 @@ describe("TRD-020: Doctor.checkSystem() with backend selection", () => {
     const names = results.map((r) => r.name);
 
     expect(names.some((n) => n.toLowerCase().includes("sd (seeds)"))).toBe(false);
-    store.close();
-  });
-
-  it("checkSystem() does NOT include br/bv checks when backend='sd'", async () => {
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-    const { Doctor } = await import("../../orchestrator/doctor.js");
-    const { ForemanStore } = await import("../../lib/store.js");
-
-    const tmp = makeTempDir();
-    const tmpDb = join(tmp, "test.db");
-    const store = new ForemanStore(tmpDb);
-    const doctor = new Doctor(store, tmp);
-
-    const results = await doctor.checkSystem();
-    const names = results.map((r) => r.name);
-
-    expect(names.some((n) => n.toLowerCase().includes("beads_rust"))).toBe(false);
-    expect(names.some((n) => n.toLowerCase().includes("beads_viewer"))).toBe(false);
-    store.close();
-  });
-
-  it("checkSystem() returns exactly 2 results for sd backend (sd + git)", async () => {
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-    const { Doctor } = await import("../../orchestrator/doctor.js");
-    const { ForemanStore } = await import("../../lib/store.js");
-
-    const tmp = makeTempDir();
-    const tmpDb = join(tmp, "test.db");
-    const store = new ForemanStore(tmpDb);
-    const doctor = new Doctor(store, tmp);
-
-    const results = await doctor.checkSystem();
-
-    expect(results).toHaveLength(2);
     store.close();
   });
 

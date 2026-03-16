@@ -74,67 +74,6 @@ describe("TRD-018: initBackend() backend selection via FOREMAN_TASK_BACKEND", ()
     vi.restoreAllMocks();
   });
 
-  // ── sd backend (existing behavior) ────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND='sd'", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("sd");
-    });
-
-    it("checks that sd binary is installed (--version)", async () => {
-      const execSync = makeExecSync();
-      const checkExists = makeCheckExists(); // .seeds does not exist
-
-      await initBackend({ projectDir: PROJECT_DIR, execSync, checkExists });
-
-      // First call: sd --version
-      expect(execSync).toHaveBeenCalledWith(
-        expect.stringContaining("/sd"),
-        ["--version"],
-        expect.any(Object),
-      );
-    });
-
-    it("runs sd init when .seeds directory does not exist", async () => {
-      const execSync = makeExecSync();
-      const checkExists = makeCheckExists([]); // .seeds absent
-
-      await initBackend({ projectDir: PROJECT_DIR, execSync, checkExists });
-
-      // Second call: sd init
-      expect(execSync).toHaveBeenCalledWith(
-        expect.stringContaining("/sd"),
-        ["init"],
-        expect.any(Object),
-      );
-    });
-
-    it("skips sd init when .seeds directory already exists", async () => {
-      const execSync = makeExecSync();
-      const checkExists = makeCheckExists([".seeds"]); // .seeds exists
-
-      await initBackend({ projectDir: PROJECT_DIR, execSync, checkExists });
-
-      // Only --version was called; init should NOT be called
-      const initCalls = getCalls(execSync).filter(
-        (call) => call[1]?.includes("init"),
-      );
-      expect(initCalls).toHaveLength(0);
-    });
-
-    it("does not call execSync with the br binary path", async () => {
-      const execSync = makeExecSync();
-      const checkExists = makeCheckExists([]);
-
-      await initBackend({ projectDir: PROJECT_DIR, execSync, checkExists });
-
-      const brCalls = getCalls(execSync).filter(
-        (call) => call[0].includes("/br"),
-      );
-      expect(brCalls).toHaveLength(0);
-    });
-  });
-
   // ── br backend ────────────────────────────────────────────────────────────
 
   describe("when FOREMAN_TASK_BACKEND='br'", () => {
@@ -216,24 +155,4 @@ describe("TRD-018: initBackend() backend selection via FOREMAN_TASK_BACKEND", ()
     });
   });
 
-  // ── default / fallback ────────────────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND is absent (defaults to sd)", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("sd");
-    });
-
-    it("falls back to sd behavior — checks sd binary", async () => {
-      const execSync = makeExecSync();
-      const checkExists = makeCheckExists([]);
-
-      await initBackend({ projectDir: PROJECT_DIR, execSync, checkExists });
-
-      expect(execSync).toHaveBeenCalledWith(
-        expect.stringContaining("/sd"),
-        ["--version"],
-        expect.any(Object),
-      );
-    });
-  });
 });

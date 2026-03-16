@@ -287,9 +287,4 @@ describe("reset command — backend selection via getTaskBackend()", () => {
     expect(getTaskBackend()).toBe("br");
   });
 
-  it("getTaskBackend() returns 'sd' when FOREMAN_TASK_BACKEND=sd", async () => {
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-    const { getTaskBackend } = await import("../../lib/feature-flags.js");
-    expect(getTaskBackend()).toBe("sd");
-  });
 });

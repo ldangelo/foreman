@@ -1,30 +1,21 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { execFileSync } from "node:child_process";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { ForemanStore } from "../../lib/store.js";
 import { renderAgentCard } from "../watch-ui.js";
-import { getTaskBackend } from "../../lib/feature-flags.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { BrIssue } from "../../lib/beads-rust.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
 import type { Issue } from "../../lib/task-client.js";
 
-interface Seed {
-  id: string;
-  title: string;
-  status: string;
-}
-
-const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
-
 // ── Exported helpers (used by tests) ─────────────────────────────────────
 
 /**
  * Returns the active task backend. Exported for testing.
+ * TRD-024: Always returns 'br'; sd backend removed.
  */
 export function getStatusBackend(): TaskBackend {
-  return getTaskBackend();
+  return 'br';
 }
 
 /**
@@ -39,94 +30,40 @@ export interface StatusCounts {
 }
 
 /**
- * Fetch task status counts using the appropriate backend.
+ * Fetch task status counts using the br backend.
  *
- * - backend='br': Uses BeadsRustClient (br CLI) for all queries.
- * - backend='sd': Uses execFileSync with the sd CLI (legacy behavior).
+ * TRD-024: sd backend removed. Always uses BeadsRustClient (br CLI).
  */
 export async function fetchStatusCounts(projectPath: string): Promise<StatusCounts> {
-  const backend = getTaskBackend();
+  const brClient = new BeadsRustClient(projectPath);
 
-  if (backend === "br") {
-    const brClient = new BeadsRustClient(projectPath);
-
-    // Fetch open issues (all non-closed)
-    let openIssues: BrIssue[] = [];
-    try {
-      openIssues = await brClient.list();
-    } catch { /* br not initialized or binary missing — return zeros */ }
-
-    // Fetch closed issues separately (br list excludes closed by default)
-    let closedIssues: BrIssue[] = [];
-    try {
-      closedIssues = await brClient.list({ status: "closed" });
-    } catch { /* no closed issues */ }
-
-    // Fetch ready issues (open + unblocked)
-    let readyIssues: Issue[] = [];
-    try {
-      readyIssues = await brClient.ready();
-    } catch { /* br ready may fail */ }
-
-    const inProgress = openIssues.filter((i) => i.status === "in_progress").length;
-    const completed = closedIssues.length;
-    const ready = readyIssues.length;
-    // blocked = open issues that are not ready and not in_progress
-    const readyIds = new Set(readyIssues.map((i) => i.id));
-    const blocked = openIssues.filter(
-      (i) => i.status !== "in_progress" && !readyIds.has(i.id),
-    ).length;
-    const total = openIssues.length + completed;
-
-    return { total, ready, inProgress, completed, blocked };
-  }
-
-  // ── sd backend (legacy) ────────────────────────────────────────────────
-  let seeds: Seed[] = [];
+  // Fetch open issues (all non-closed)
+  let openIssues: BrIssue[] = [];
   try {
-    const output = execFileSync(sdPath, ["list", "--json", "--limit", "0"], {
-      stdio: ["pipe", "pipe", "pipe"],
-      encoding: "utf-8",
-    });
-    const parsed = JSON.parse(output);
-    seeds = parsed.issues ?? parsed ?? [];
-  } catch {
-    throw new Error("Failed to read seeds. Is this a foreman project? Run 'foreman init' first.");
-  }
+    openIssues = await brClient.list();
+  } catch { /* br not initialized or binary missing — return zeros */ }
 
-  const inProgress = seeds.filter((b) => b.status === "in_progress").length;
-
-  // sd list excludes closed issues by default — fetch them separately
-  let completed = 0;
+  // Fetch closed issues separately (br list excludes closed by default)
+  let closedIssues: BrIssue[] = [];
   try {
-    const closedOutput = execFileSync(sdPath, ["list", "--status=closed", "--json", "--limit", "0"], {
-      stdio: ["pipe", "pipe", "pipe"],
-      encoding: "utf-8",
-    });
-    const closedParsed = JSON.parse(closedOutput);
-    completed = (closedParsed.issues ?? closedParsed ?? []).length;
+    closedIssues = await brClient.list({ status: "closed" });
   } catch { /* no closed issues */ }
 
-  const total = seeds.length + completed;
+  // Fetch ready issues (open + unblocked)
+  let readyIssues: Issue[] = [];
+  try {
+    readyIssues = await brClient.ready();
+  } catch { /* br ready may fail */ }
 
-  let ready = 0;
-  let blocked = 0;
-  try {
-    const readyOutput = execFileSync(sdPath, ["ready", "--json"], {
-      stdio: ["pipe", "pipe", "pipe"],
-      encoding: "utf-8",
-    });
-    const readyParsed = JSON.parse(readyOutput);
-    ready = (readyParsed.issues ?? readyParsed ?? []).length;
-  } catch { /* sd ready may fail if no issues exist */ }
-  try {
-    const blockedOutput = execFileSync(sdPath, ["blocked", "--json"], {
-      stdio: ["pipe", "pipe", "pipe"],
-      encoding: "utf-8",
-    });
-    const blockedParsed = JSON.parse(blockedOutput);
-    blocked = (blockedParsed.issues ?? blockedParsed ?? []).length;
-  } catch { /* sd blocked may fail if no issues exist */ }
+  const inProgress = openIssues.filter((i) => i.status === "in_progress").length;
+  const completed = closedIssues.length;
+  const ready = readyIssues.length;
+  // blocked = open issues that are not ready and not in_progress
+  const readyIds = new Set(readyIssues.map((i) => i.id));
+  const blocked = openIssues.filter(
+    (i) => i.status !== "in_progress" && !readyIds.has(i.id),
+  ).length;
+  const total = openIssues.length + completed;
 
   return { total, ready, inProgress, completed, blocked };
 }

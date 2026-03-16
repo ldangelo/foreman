@@ -98,34 +98,6 @@ describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     MockSeedsClient.mockImplementation(function MockSeedsClientImpl() { /* constructor */ });
   });
 
-  // ── sd backend ────────────────────────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND='sd'", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("sd");
-    });
-
-    it("returns a SeedsClient as the task client", async () => {
-      const result = await createMergeTaskClient(PROJECT_PATH);
-
-      expect(MockSeedsClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(MockSeedsClient).toHaveBeenCalledTimes(1);
-      expect(result).toBeDefined();
-    });
-
-    it("does not instantiate BeadsRustClient", async () => {
-      await createMergeTaskClient(PROJECT_PATH);
-
-      expect(MockBeadsRustClient).not.toHaveBeenCalled();
-    });
-
-    it("does not call ensureBrInstalled()", async () => {
-      await createMergeTaskClient(PROJECT_PATH);
-
-      expect(mockEnsureBrInstalled).not.toHaveBeenCalled();
-    });
-  });
-
   // ── br backend ────────────────────────────────────────────────────────────
 
   describe("when FOREMAN_TASK_BACKEND='br'", () => {
@@ -173,18 +145,4 @@ describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     });
   });
 
-  // ── default / fallback ────────────────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND is absent (defaults to sd)", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("sd");
-    });
-
-    it("falls back to SeedsClient", async () => {
-      const result = await createMergeTaskClient(PROJECT_PATH);
-
-      expect(MockSeedsClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(result).toBeDefined();
-    });
-  });
 });

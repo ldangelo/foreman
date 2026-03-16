@@ -116,35 +116,6 @@ describe("TRD-015: seed.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     vi.unstubAllEnvs();
   });
 
-  // ── sd backend ──────────────────────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND='sd'", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("sd");
-    });
-
-    it("returns a SeedsClient instance", () => {
-      const client = createSeedClient(PROJECT_PATH);
-
-      expect(MockSeedsClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(MockSeedsClient).toHaveBeenCalledTimes(1);
-      expect(client).toBeDefined();
-    });
-
-    it("does not instantiate BeadsRustClient", () => {
-      createSeedClient(PROJECT_PATH);
-
-      expect(MockBeadsRustClient).not.toHaveBeenCalled();
-    });
-
-    it("returned client has a create method (SeedsClient API)", () => {
-      const client = createSeedClient(PROJECT_PATH);
-
-      // The SeedsClient mock exposes 'create'
-      expect(typeof (client as unknown as Record<string, unknown>).create).toBe("function");
-    });
-  });
-
   // ── br backend ──────────────────────────────────────────────────────────
 
   describe("when FOREMAN_TASK_BACKEND='br'", () => {
@@ -174,22 +145,6 @@ describe("TRD-015: seed.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     });
   });
 
-  // ── default / unknown backend ────────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND is absent (defaults to sd)", () => {
-    beforeEach(() => {
-      // getTaskBackend() returns 'sd' by default in feature-flags.ts
-      mockGetTaskBackend.mockReturnValue("sd");
-    });
-
-    it("falls back to SeedsClient", () => {
-      const client = createSeedClient(PROJECT_PATH);
-
-      expect(MockSeedsClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(client).toBeDefined();
-      expect(MockBeadsRustClient).not.toHaveBeenCalled();
-    });
-  });
 });
 
 // ── Priority normalization tests ────────────────────────────────────────────

@@ -123,42 +123,6 @@ describe("TRD-016: plan.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     vi.unstubAllEnvs();
   });
 
-  // ── sd backend ──────────────────────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND='sd'", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("sd");
-    });
-
-    it("returns a SeedsClient instance", () => {
-      const client = createPlanClient(PROJECT_PATH);
-
-      expect(MockSeedsClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(MockSeedsClient).toHaveBeenCalledTimes(1);
-      expect(client).toBeDefined();
-    });
-
-    it("does not instantiate BeadsRustClient", () => {
-      createPlanClient(PROJECT_PATH);
-
-      expect(MockBeadsRustClient).not.toHaveBeenCalled();
-    });
-
-    it("returned client has a create method (SeedsClient API)", () => {
-      const client = createPlanClient(PROJECT_PATH);
-
-      expect(typeof (client as unknown as Record<string, unknown>).create).toBe("function");
-    });
-
-    it("returned client has close and addDependency methods", () => {
-      const client = createPlanClient(PROJECT_PATH);
-
-      const c = client as unknown as Record<string, unknown>;
-      expect(typeof c.close).toBe("function");
-      expect(typeof c.addDependency).toBe("function");
-    });
-  });
-
   // ── br backend ──────────────────────────────────────────────────────────
 
   describe("when FOREMAN_TASK_BACKEND='br'", () => {
@@ -195,19 +159,4 @@ describe("TRD-016: plan.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     });
   });
 
-  // ── default / unknown backend ────────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND is absent (defaults to sd)", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("sd");
-    });
-
-    it("falls back to SeedsClient", () => {
-      const client = createPlanClient(PROJECT_PATH);
-
-      expect(MockSeedsClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(client).toBeDefined();
-      expect(MockBeadsRustClient).not.toHaveBeenCalled();
-    });
-  });
 });

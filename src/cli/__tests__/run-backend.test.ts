@@ -136,40 +136,6 @@ describe("TRD-007: run.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     vi.unstubAllEnvs();
   });
 
-  // ── sd backend ──────────────────────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND='sd'", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("sd");
-    });
-
-    it("returns a SeedsClient as taskClient", async () => {
-      const result = await createTaskClients(PROJECT_PATH);
-
-      expect(MockSeedsClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(MockSeedsClient).toHaveBeenCalledTimes(1);
-      expect(result.taskClient).toBeDefined();
-    });
-
-    it("does not instantiate BeadsRustClient", async () => {
-      await createTaskClients(PROJECT_PATH);
-
-      expect(MockBeadsRustClient).not.toHaveBeenCalled();
-    });
-
-    it("does not instantiate BvClient", async () => {
-      await createTaskClients(PROJECT_PATH);
-
-      expect(MockBvClient).not.toHaveBeenCalled();
-    });
-
-    it("returns null bvClient", async () => {
-      const result = await createTaskClients(PROJECT_PATH);
-
-      expect(result.bvClient).toBeNull();
-    });
-  });
-
   // ── br backend ──────────────────────────────────────────────────────────
 
   describe("when FOREMAN_TASK_BACKEND='br'", () => {
@@ -236,19 +202,4 @@ describe("TRD-007: run.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     });
   });
 
-  // ── default / unknown backend ────────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND is absent or unknown (defaults to sd)", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("sd");
-    });
-
-    it("falls back to SeedsClient for missing env var", async () => {
-      const result = await createTaskClients(PROJECT_PATH);
-
-      expect(MockSeedsClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(result.taskClient).toBeDefined();
-      expect(result.bvClient).toBeNull();
-    });
-  });
 });

@@ -6,7 +6,6 @@ import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { SeedsClient } from "../../lib/seeds.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
-import { getTaskBackend } from "../../lib/feature-flags.js";
 import { normalizePriority } from "../../lib/priority.js";
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -27,21 +26,16 @@ interface ParsedIssuesResponse {
 // ── Client factory (TRD-015) ──────────────────────────────────────────────
 
 /**
- * Instantiate the correct task-tracking client based on FOREMAN_TASK_BACKEND.
+ * Instantiate the br task-tracking client.
  *
- * - backend='sd': Returns a SeedsClient (default).
- * - backend='br': Returns a BeadsRustClient.
+ * TRD-024: sd backend removed. Always returns a BeadsRustClient.
  *
  * Exported for unit testing.
  */
 export function createSeedClient(
   projectPath: string,
 ): SeedsClient | BeadsRustClient {
-  const backend = getTaskBackend();
-  if (backend === "br") {
-    return new BeadsRustClient(projectPath);
-  }
-  return new SeedsClient(projectPath);
+  return new BeadsRustClient(projectPath);
 }
 
 // ── Command ──────────────────────────────────────────────────────────────
@@ -79,7 +73,7 @@ export const seedCommand = new Command("seed")
         inputText = description;
       }
 
-      // Initialise the appropriate task client based on FOREMAN_TASK_BACKEND
+      // Initialise BeadsRust task client
       const seeds = createSeedClient(projectPath);
 
       // Validate prerequisites — both clients expose compatible methods
@@ -96,10 +90,8 @@ export const seedCommand = new Command("seed")
       }
 
       if (!(await seeds.isInitialized())) {
-        const backend = getTaskBackend();
-        const tool = backend === "br" ? "br" : "seeds";
         console.error(
-          chalk.red(`${tool === "br" ? "Beads" : "Seeds"} not initialized in this directory. Run 'foreman init' first.`),
+          chalk.red(`Beads not initialized in this directory. Run 'foreman init' first.`),
         );
         process.exitCode = 1;
         return;

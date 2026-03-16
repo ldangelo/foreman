@@ -11,7 +11,6 @@ import type { BvClient } from "../lib/bv.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
-import { getTaskBackend } from "../lib/feature-flags.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
 import { TmuxClient, tmuxSessionName } from "../lib/tmux.js";
 import type {
@@ -572,7 +571,7 @@ export class Dispatcher {
     },
     notifyUrl?: string,
   ): Promise<{ sessionKey: string; tmuxSession?: string }> {
-    const prompt = this.buildSpawnPrompt(seed.id, seed.title, getTaskBackend());
+    const prompt = this.buildSpawnPrompt(seed.id, seed.title, 'br');
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
@@ -613,7 +612,7 @@ export class Dispatcher {
     telemetry?: boolean,
     notifyUrl?: string,
   ): Promise<{ sessionKey: string; tmuxSession?: string }> {
-    const resumePrompt = this.buildResumePrompt(seed.id, seed.title, getTaskBackend());
+    const resumePrompt = this.buildResumePrompt(seed.id, seed.title, 'br');
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;

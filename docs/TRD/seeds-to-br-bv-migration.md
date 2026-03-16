@@ -429,14 +429,14 @@ All priority comparisons throughout the codebase go through this utility.
 
 ### Sprint 3 -- Phase 2+3: Templates and Init
 
-- [ ] **TRD-014**: Update worker-agent.md template (1h) [satisfies REQ-015]
+- [x] **TRD-014**: Update worker-agent.md template (1h) [satisfies REQ-015]
   - Replace sd update SEED_ID --claim with br update SEED_ID --status in_progress
   - Replace sd close SEED_ID --reason "Completed" with br close SEED_ID --reason "Completed"
   - Replace sd update SEED_ID --notes "Blocked: ..." with br update SEED_ID --description "Blocked: ..."
   - Remove all remaining sd references
   - [depends: TRD-010, TRD-011]
 
-- [ ] **TRD-014-TEST**: Verify worker-agent.md contains no sd references (0.5h) [verifies TRD-014]
+- [x] **TRD-014-TEST**: Verify worker-agent.md contains no sd references (0.5h) [verifies TRD-014]
   - Test: grep for "sd " in templates/worker-agent.md returns zero matches
   - Test: "br update", "br close" present in template
 
@@ -536,14 +536,14 @@ All priority comparisons throughout the codebase go through this utility.
 
 ### Sprint 4 -- Phase 4: Cleanup
 
-- [ ] **TRD-024**: Remove FOREMAN_TASK_BACKEND feature flag (2h)
+- [x] **TRD-024**: Remove FOREMAN_TASK_BACKEND feature flag (2h)
   - Remove src/lib/feature-flags.ts or simplify to always return "br"
   - Remove all getTaskBackend() conditionals in run.ts, reset.ts, agent-worker.ts, etc.
   - Hardcode BeadsRustClient instantiation in all CLI commands
   - Remove SeedsClient construction from all CLI commands
   - [depends: TRD-023]
 
-- [ ] **TRD-024-TEST**: Verify no feature flag references remain (1h) [verifies TRD-024]
+- [x] **TRD-024-TEST**: Verify no feature flag references remain (1h) [verifies TRD-024]
   - Test: grep for "FOREMAN_TASK_BACKEND" in src/ returns zero matches
   - Test: grep for "getTaskBackend" in src/ returns zero matches (or only in feature-flags.ts if retained as constant)
   - Test all CLI commands work without env var set

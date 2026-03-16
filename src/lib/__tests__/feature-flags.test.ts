@@ -22,11 +22,6 @@ describe("getTaskBackend — explicit values", () => {
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("returns 'sd' when FOREMAN_TASK_BACKEND='sd'", () => {
-    process.env.FOREMAN_TASK_BACKEND = "sd";
-    expect(getTaskBackend()).toBe("sd");
-  });
-
   it("returns 'br' when FOREMAN_TASK_BACKEND='br'", () => {
     process.env.FOREMAN_TASK_BACKEND = "br";
     expect(getTaskBackend()).toBe("br");

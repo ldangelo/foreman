@@ -5,7 +5,6 @@ import { promisify } from "node:util";
 
 import { SeedsClient } from "../../lib/seeds.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
-import { getTaskBackend } from "../../lib/feature-flags.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
@@ -18,25 +17,18 @@ import { MergeCostTracker } from "../../orchestrator/merge-cost-tracker.js";
 // ── Backend Client Factory (TRD-017) ──────────────────────────────────
 
 /**
- * Instantiate the correct task-tracking client based on FOREMAN_TASK_BACKEND.
+ * Instantiate the br task-tracking client.
  *
- * - backend='sd': Returns a SeedsClient (default, existing behavior).
- * - backend='br': Returns a BeadsRustClient after verifying the binary exists.
+ * TRD-024: sd backend removed. Always returns a BeadsRustClient after verifying
+ * the binary exists.
  *
- * Throws if backend='br' and the br binary cannot be found.
+ * Throws if the br binary cannot be found.
  */
 export async function createMergeTaskClient(projectPath: string): Promise<ITaskClient> {
-  const backend = getTaskBackend();
-
-  if (backend === "br") {
-    const brClient = new BeadsRustClient(projectPath);
-    // Verify binary exists before proceeding; throws with a friendly message if not
-    await brClient.ensureBrInstalled();
-    return brClient;
-  }
-
-  // Default: 'sd' (Seeds)
-  return new SeedsClient(projectPath);
+  const brClient = new BeadsRustClient(projectPath);
+  // Verify binary exists before proceeding; throws with a friendly message if not
+  await brClient.ensureBrInstalled();
+  return brClient;
 }
 
 const execFileAsync = promisify(execFile);

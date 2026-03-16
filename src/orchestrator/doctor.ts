@@ -11,7 +11,6 @@ import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { MergeQueue, MergeQueueEntry } from "./merge-queue.js";
 import type { TmuxClient } from "../lib/tmux.js";
-import { getTaskBackend } from "../lib/feature-flags.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -120,23 +119,13 @@ export class Doctor {
   }
 
   async checkSystem(): Promise<CheckResult[]> {
-    const backend = getTaskBackend();
-
-    if (backend === "br") {
-      const [brResult, bvResult, gitResult] = await Promise.all([
-        this.checkBrBinary(),
-        this.checkBvBinary(),
-        this.checkGitBinary(),
-      ]);
-      return [brResult, bvResult, gitResult];
-    }
-
-    // Default: 'sd' backend
-    const [sdResult, gitResult] = await Promise.all([
-      this.checkSdBinary(),
+    // TRD-024: sd backend removed. Always check br and bv binaries.
+    const [brResult, bvResult, gitResult] = await Promise.all([
+      this.checkBrBinary(),
+      this.checkBvBinary(),
       this.checkGitBinary(),
     ]);
-    return [sdResult, gitResult];
+    return [brResult, bvResult, gitResult];
   }
 
   // ── Repository checks ──────────────────────────────────────────────
@@ -208,14 +197,11 @@ export class Doctor {
   }
 
   async checkRepository(): Promise<CheckResult[]> {
+    // TRD-024: sd backend removed. Always check for .beads initialization.
     const results: CheckResult[] = [];
     results.push(await this.checkDatabaseFile());
     results.push(await this.checkProjectRegistered());
-    if (getTaskBackend() === "br") {
-      results.push(await this.checkBeadsInitialized());
-    } else {
-      results.push(await this.checkSeedsInitialized());
-    }
+    results.push(await this.checkBeadsInitialized());
     return results;
   }
 
@@ -539,40 +525,12 @@ export class Doctor {
   }
 
   async checkBlockedSeeds(): Promise<CheckResult> {
-    if (getTaskBackend() === "br") {
-      // br backend: blocked detection via 'br blocked' is not yet implemented
-      return {
-        name: "blocked seeds",
-        status: "pass",
-        message: "Blocked-seed check not yet implemented for br backend. Use 'br list --status=open' to inspect manually.",
-      };
-    }
-    const sdPath = join(homedir(), ".bun", "bin", "sd");
-    try {
-      const { stdout } = await execFileAsync(sdPath, ["blocked", "--json"], {
-        cwd: this.projectPath,
-      });
-      const parsed = JSON.parse(stdout);
-      const blocked = (parsed.issues ?? parsed ?? []) as Array<{ id: string; title: string }>;
-      if (blocked.length === 0) {
-        return {
-          name: "blocked seeds",
-          status: "pass",
-          message: "No blocked seeds",
-        };
-      }
-      return {
-        name: "blocked seeds",
-        status: "warn",
-        message: `${blocked.length} blocked: ${blocked.slice(0, 5).map((b) => b.id).join(", ")}${blocked.length > 5 ? "..." : ""}. Check deps with 'sd show <id>'.`,
-      };
-    } catch {
-      return {
-        name: "blocked seeds",
-        status: "pass",
-        message: "No blocked seeds (or sd blocked unavailable)",
-      };
-    }
+    // TRD-024: sd backend removed. br blocked detection is not yet implemented.
+    return {
+      name: "blocked seeds",
+      status: "pass",
+      message: "Blocked-seed check not yet implemented for br backend. Use 'br list --status=open' to inspect manually.",
+    };
   }
 
   // ── Merge queue checks ──────────────────────────────────────────────
