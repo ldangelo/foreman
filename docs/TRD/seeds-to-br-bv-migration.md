@@ -232,7 +232,7 @@ All priority comparisons throughout the codebase go through this utility.
 
 ### Sprint 1 -- Phase 0: Foundation (No Breaking Changes)
 
-- [ ] **TRD-001**: Add ready() method to BeadsRustClient (2h) [satisfies REQ-002]
+- [x] **TRD-001**: Add ready() method to BeadsRustClient (2h) [satisfies REQ-002]
   - Add ready(): Promise<BrIssue[]> to src/lib/beads-rust.ts
   - Calls br ready --json and parses output
   - Returns all open, unblocked issues
@@ -243,7 +243,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Test ready() handles br binary not found
   - Test ready() handles malformed JSON output
 
-- [ ] **TRD-002**: Create BvClient in src/lib/bv.ts (4h) [satisfies REQ-003, REQ-004, REQ-024, REQ-025, REQ-026, REQ-027]
+- [x] **TRD-002**: Create BvClient in src/lib/bv.ts (4h) [satisfies REQ-003, REQ-004, REQ-024, REQ-025, REQ-026, REQ-027]
   - Create BvClient class with typed robot methods only
   - robotNext(opts?): returns single top-priority task or null
   - robotTriage(opts?): returns ranked list of actionable tasks or null
@@ -267,7 +267,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Test --format toon is always appended
   - Test no public method allows bare bv invocation (compile-time: no exec method exposed)
 
-- [ ] **TRD-003**: Create priority.ts with normalizePriority() (1h) [satisfies REQ-020]
+- [x] **TRD-003**: Create priority.ts with normalizePriority() (1h) [satisfies REQ-020]
   - Create src/lib/priority.ts
   - Export normalizePriority(p: string | number): number
   - Handle "P0"-"P4" string format (strip P prefix, parse int)

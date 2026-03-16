@@ -203,6 +203,12 @@ export class BeadsRustClient {
     await execBr(["dep", "add", childId, parentId], this.projectPath);
   }
 
+  /** Return all open, unblocked issues (equivalent to `br ready`). */
+  async ready(): Promise<BrIssue[]> {
+    await this.requireInit();
+    return ((await execBr(["ready"], this.projectPath)) as BrIssue[]) ?? [];
+  }
+
   /** Search issues by query string. */
   async search(query: string, opts?: {
     status?: string;
