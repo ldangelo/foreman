@@ -83,6 +83,11 @@ export function getPlanStepBudget(): number {
   return readBudgetFromEnv("FOREMAN_PLAN_STEP_BUDGET_USD", 3.00);
 }
 
+/** Budget for the Sentinel phase (default: $2.00, uses Sonnet model). */
+export function getSentinelBudget(): number {
+  return readBudgetFromEnv("FOREMAN_SENTINEL_BUDGET_USD", 2.00);
+}
+
 // ── Timeout values (milliseconds) ────────────────────────────────────────
 
 export const PIPELINE_TIMEOUTS = {
@@ -94,6 +99,8 @@ export const PIPELINE_TIMEOUTS = {
   seedClosureMs: envInt("FOREMAN_SEED_CLOSURE_TIMEOUT_MS", 10_000),
   /** Timeout for running the test suite after a merge */
   testExecutionMs: envInt("FOREMAN_TEST_EXECUTION_TIMEOUT_MS", 5 * 60 * 1000),
+  /** Timeout for running tests in the sentinel (default: 10 minutes) */
+  sentinelTestMs: envInt("FOREMAN_SENTINEL_TEST_TIMEOUT_MS", 10 * 60 * 1000),
   /** Timeout for the LLM TRD decomposition call */
   llmDecomposeMs: envInt("FOREMAN_LLM_DECOMPOSE_TIMEOUT_MS", 600_000),
   /** Watch-UI polling interval */

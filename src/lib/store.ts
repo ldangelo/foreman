@@ -55,7 +55,10 @@ export type EventType =
   | "merge-queue-enqueue"
   | "merge-queue-dequeue"
   | "merge-queue-resolve"
-  | "merge-queue-fallback";
+  | "merge-queue-fallback"
+  | "sentinel-start"
+  | "sentinel-pass"
+  | "sentinel-fail";
 
 export interface Event {
   id: string;
@@ -102,6 +105,34 @@ export interface Message {
   read: number; // 0 = unread, 1 = read (SQLite boolean)
   created_at: string;
   deleted_at: string | null;
+}
+
+// ── Sentinel interfaces ──────────────────────────────────────────────────
+
+export interface SentinelConfigRow {
+  id: number;
+  project_id: string;
+  branch: string;
+  test_command: string;
+  interval_minutes: number;
+  failure_threshold: number;
+  enabled: number; // 0 or 1
+  pid: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SentinelRunRow {
+  id: string;
+  project_id: string;
+  branch: string;
+  commit_hash: string | null;
+  status: "running" | "passed" | "failed" | "error";
+  test_command: string;
+  output: string | null;
+  failure_count: number;
+  started_at: string;
+  completed_at: string | null;
 }
 
 // ── Schema migration ────────────────────────────────────────────────────
@@ -236,6 +267,34 @@ const MIGRATIONS = [
   `ALTER TABLE runs ADD COLUMN progress TEXT DEFAULT NULL`,
   `ALTER TABLE runs RENAME COLUMN bead_id TO seed_id`,
   `ALTER TABLE runs ADD COLUMN tmux_session TEXT DEFAULT NULL`,
+  `CREATE TABLE IF NOT EXISTS sentinel_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL UNIQUE,
+    branch TEXT DEFAULT 'main',
+    test_command TEXT DEFAULT 'npm test',
+    interval_minutes INTEGER DEFAULT 30,
+    failure_threshold INTEGER DEFAULT 2,
+    enabled INTEGER DEFAULT 1,
+    pid INTEGER DEFAULT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS sentinel_runs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    commit_hash TEXT,
+    status TEXT DEFAULT 'running'
+      CHECK (status IN ('running', 'passed', 'failed', 'error')),
+    test_command TEXT NOT NULL,
+    output TEXT,
+    failure_count INTEGER DEFAULT 0,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_sentinel_runs_project ON sentinel_runs (project_id, started_at DESC)`,
 ];
 
 // One-time destructive migrations that cannot be made idempotent via failure
@@ -826,6 +885,97 @@ export class ForemanStore {
       (this.db.prepare("SELECT * FROM messages WHERE id = ?").get(messageId) as Message | undefined) ??
       null
     );
+  }
+
+  // ── Sentinel ─────────────────────────────────────────────────────────
+
+  upsertSentinelConfig(
+    projectId: string,
+    config: Partial<Omit<SentinelConfigRow, "id" | "project_id" | "created_at" | "updated_at">>
+  ): SentinelConfigRow {
+    const now = new Date().toISOString();
+    const existing = this.getSentinelConfig(projectId);
+    if (existing) {
+      const fields: string[] = ["updated_at = @updated_at"];
+      const values: Record<string, unknown> = { project_id: projectId, updated_at: now };
+      for (const [key, value] of Object.entries(config)) {
+        if (value !== undefined) {
+          fields.push(`${key} = @${key}`);
+          values[key] = value;
+        }
+      }
+      this.db.prepare(`UPDATE sentinel_configs SET ${fields.join(", ")} WHERE project_id = @project_id`).run(values);
+      return this.getSentinelConfig(projectId)!;
+    } else {
+      const row: Omit<SentinelConfigRow, "id"> = {
+        project_id: projectId,
+        branch: config.branch ?? "main",
+        test_command: config.test_command ?? "npm test",
+        interval_minutes: config.interval_minutes ?? 30,
+        failure_threshold: config.failure_threshold ?? 2,
+        enabled: config.enabled ?? 1,
+        pid: config.pid ?? null,
+        created_at: now,
+        updated_at: now,
+      };
+      this.db.prepare(
+        `INSERT INTO sentinel_configs (project_id, branch, test_command, interval_minutes, failure_threshold, enabled, pid, created_at, updated_at)
+         VALUES (@project_id, @branch, @test_command, @interval_minutes, @failure_threshold, @enabled, @pid, @created_at, @updated_at)`
+      ).run(row);
+      return this.getSentinelConfig(projectId)!;
+    }
+  }
+
+  getSentinelConfig(projectId: string): SentinelConfigRow | null {
+    return (
+      (this.db.prepare("SELECT * FROM sentinel_configs WHERE project_id = ?").get(projectId) as SentinelConfigRow | undefined) ?? null
+    );
+  }
+
+  recordSentinelRun(run: Omit<SentinelRunRow, "failure_count"> & { failureCount?: number }): void {
+    this.db.prepare(
+      `INSERT INTO sentinel_runs (id, project_id, branch, commit_hash, status, test_command, output, failure_count, started_at, completed_at)
+       VALUES (@id, @project_id, @branch, @commit_hash, @status, @test_command, @output, @failure_count, @started_at, @completed_at)`
+    ).run({
+      id: run.id,
+      project_id: run.project_id,
+      branch: run.branch,
+      commit_hash: run.commit_hash ?? null,
+      status: run.status,
+      test_command: run.test_command,
+      output: run.output ?? null,
+      failure_count: run.failureCount ?? 0,
+      started_at: run.started_at,
+      completed_at: run.completed_at ?? null,
+    });
+  }
+
+  updateSentinelRun(id: string, updates: Partial<Pick<SentinelRunRow, "status" | "output" | "completed_at" | "failure_count">>): void {
+    const fields: string[] = [];
+    const values: Record<string, unknown> = { id };
+    for (const [key, value] of Object.entries(updates)) {
+      if (value !== undefined) {
+        fields.push(`${key} = @${key}`);
+        values[key] = value;
+      }
+    }
+    if (fields.length === 0) return;
+    this.db.prepare(`UPDATE sentinel_runs SET ${fields.join(", ")} WHERE id = @id`).run(values);
+  }
+
+  getSentinelRuns(projectId?: string, limit?: number): SentinelRunRow[] {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (projectId) {
+      conditions.push("project_id = ?");
+      params.push(projectId);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const limitClause = limit ? `LIMIT ?` : "";
+    if (limit) params.push(limit);
+    return this.db
+      .prepare(`SELECT * FROM sentinel_runs ${where} ORDER BY started_at DESC ${limitClause}`)
+      .all(...params) as SentinelRunRow[];
   }
 
   // ── Metrics ─────────────────────────────────────────────────────────
