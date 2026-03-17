@@ -20,6 +20,8 @@ export interface WorktreeInfo {
 export interface CleanResult {
   removed: number;
   errors: string[];
+  /** Populated in dry-run mode: the worktrees that would have been removed. */
+  wouldRemove?: WorktreeInfo[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -79,14 +81,16 @@ export async function listForemanWorktrees(
  * - Default: only remove worktrees for completed/merged/failed runs.
  * - `all: true`: remove all foreman worktrees.
  * - `force: true`: use force branch deletion.
+ * - `dryRun: true`: show what would be removed without making changes.
  */
 export async function cleanWorktrees(
   projectPath: string,
   worktrees: WorktreeInfo[],
-  opts: { all: boolean; force: boolean },
+  opts: { all: boolean; force: boolean; dryRun?: boolean },
 ): Promise<CleanResult> {
   let removed = 0;
   const errors: string[] = [];
+  const wouldRemove: WorktreeInfo[] = [];
 
   for (const wt of worktrees) {
     const shouldClean =
@@ -95,6 +99,12 @@ export async function cleanWorktrees(
       CLEANABLE_STATUSES.has(wt.runStatus);
 
     if (!shouldClean) continue;
+
+    if (opts.dryRun) {
+      removed++;
+      wouldRemove.push(wt);
+      continue;
+    }
 
     try {
       await removeWorktree(projectPath, wt.path);
@@ -108,7 +118,7 @@ export async function cleanWorktrees(
     }
   }
 
-  return { removed, errors };
+  return { removed, errors, ...(opts.dryRun ? { wouldRemove } : {}) };
 }
 
 // ── CLI command ───────────────────────────────────────────────────────────────
@@ -162,10 +172,12 @@ const cleanSubcommand = new Command("clean")
   .description("Remove worktrees for completed/merged/failed runs")
   .option("--all", "Remove all foreman worktrees including active ones")
   .option("--force", "Force-delete branches even if not fully merged")
+  .option("--dry-run", "Show what would be removed without making changes")
   .action(async (opts) => {
     try {
       const projectPath = await getRepoRoot(process.cwd());
       const store = ForemanStore.forProject(projectPath);
+      const dryRun = (opts.dryRun as boolean | undefined) ?? false;
 
       const worktrees = await listForemanWorktrees(projectPath, store);
 
@@ -175,14 +187,27 @@ const cleanSubcommand = new Command("clean")
         return;
       }
 
+      if (dryRun) {
+        console.log(chalk.dim("(dry-run mode — no changes will be made)\n"));
+      }
+
       console.log(chalk.bold("Cleaning foreman worktrees...\n"));
 
       const result = await cleanWorktrees(projectPath, worktrees, {
         all: Boolean(opts.all),
         force: Boolean(opts.force),
+        dryRun,
       });
 
-      console.log(chalk.green.bold(`\nRemoved ${result.removed} worktree(s).`));
+      if (dryRun && result.wouldRemove && result.wouldRemove.length > 0) {
+        console.log(chalk.dim("Worktrees that would be removed:"));
+        for (const wt of result.wouldRemove) {
+          console.log(`  ${chalk.cyan(wt.seedId)}  ${chalk.dim(wt.path)}`);
+        }
+      }
+
+      const action = dryRun ? "Would remove" : "Removed";
+      console.log(chalk.green.bold(`\n${action} ${result.removed} worktree(s).`));
 
       if (result.errors.length > 0) {
         console.log(chalk.red(`\nErrors (${result.errors.length}):`));
