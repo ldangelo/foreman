@@ -383,7 +383,7 @@ interface PhaseResult {
  * Run a single pipeline phase as a separate SDK session.
  */
 async function runPhase(
-  role: Exclude<AgentRole, "lead" | "worker">,
+  role: Exclude<AgentRole, "lead" | "worker" | "sentinel">,
   prompt: string,
   config: WorkerConfig,
   progress: RunProgress,
