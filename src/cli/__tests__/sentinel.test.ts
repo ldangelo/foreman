@@ -71,6 +71,17 @@ describe("sentinel CLI smoke tests", () => {
     expect(output).toContain("run-once");
     expect(output).toContain("start");
     expect(output).toContain("status");
+    expect(output).toContain("stop");
+  }, 15_000);
+
+  it("sentinel stop --help shows options", async () => {
+    const tmp = makeTempDir();
+    const result = await run(["sentinel", "stop", "--help"], tmp);
+
+    expect(result.exitCode).toBe(0);
+    const output = result.stdout + result.stderr;
+    expect(output).toContain("stop");
+    expect(output).toContain("--force");
   }, 15_000);
 
   it("sentinel run-once --help shows options", async () => {
