@@ -5,11 +5,11 @@ import { resolve } from "node:path";
 import { decomposePrd } from "../../orchestrator/decomposer.js";
 import { decomposePrdWithLlm } from "../../orchestrator/decomposer-llm.js";
 import { executePlan } from "../../orchestrator/planner.js";
-import { SeedsClient } from "../../lib/seeds.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { DecompositionPlan, TaskPlan } from "../../orchestrator/types.js";
 
 export const decomposeCommand = new Command("decompose")
-  .description("Decompose a TRD into seeds hierarchy (epic → sprint → story → task)")
+  .description("Decompose a TRD into beads hierarchy (epic → sprint → story → task)")
   .argument("<trd>", "Path to TRD file")
   .option("--no-auto", "Prompt for confirmation before creating seeds")
   .option("--dry-run", "Show the plan without creating seeds")
@@ -70,8 +70,8 @@ export const decomposeCommand = new Command("decompose")
     }
 
     // Execute
-    console.log(chalk.bold("\nCreating seeds hierarchy..."));
-    const seeds = new SeedsClient(process.cwd());
+    console.log(chalk.bold("\nCreating beads hierarchy..."));
+    const seeds = new BeadsRustClient(process.cwd());
     try {
       const result = await executePlan(plan, seeds);
       console.log(chalk.green(`\nEpic created: ${result.epicSeedId}`));

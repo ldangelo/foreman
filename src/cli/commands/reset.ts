@@ -1,12 +1,23 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { SeedsClient } from "../../lib/seeds.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
 import { TmuxClient } from "../../lib/tmux.js";
+import type { UpdateOptions } from "../../lib/task-client.js";
+
+/**
+ * Minimal interface capturing the subset of task-client methods used by
+ * detectAndFixMismatches. BeadsRustClient satisfies this interface
+ * (note: show() is not on ITaskClient, hence this local type).
+ */
+export interface IShowUpdateClient {
+  show(id: string): Promise<{ status: string }>;
+  update(id: string, opts: UpdateOptions): Promise<void>;
+}
 
 // ── State mismatch detection ─────────────────────────────────────────────
 
@@ -61,7 +72,7 @@ export function mapRunStatusToSeedStatus(runStatus: string): string {
  */
 export async function detectAndFixMismatches(
   store: Pick<ForemanStore, "getRunsByStatus">,
-  seeds: Pick<SeedsClient, "show" | "update">,
+  seeds: IShowUpdateClient,
   projectId: string,
   resetSeedIds: ReadonlySet<string>,
   opts?: { dryRun?: boolean },
@@ -125,7 +136,7 @@ export async function detectAndFixMismatches(
 }
 
 export const resetCommand = new Command("reset")
-  .description("Reset failed/stuck runs: kill agents, remove worktrees, reset seeds to open")
+  .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
   .option("--dry-run", "Show what would be reset without doing it")
   .action(async (opts) => {
@@ -134,7 +145,7 @@ export const resetCommand = new Command("reset")
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
-      const seeds = new SeedsClient(projectPath);
+      const seeds: IShowUpdateClient = new BeadsRustClient(projectPath);
       const store = new ForemanStore();
       const project = store.getProjectByPath(projectPath);
 
@@ -146,7 +157,7 @@ export const resetCommand = new Command("reset")
       // Find runs to reset
       const statuses = all
         ? ["pending", "running", "failed", "stuck"] as const
-        : ["pending", "running", "failed", "stuck"] as const;
+        : ["failed", "stuck"] as const;
 
       const runs = statuses.flatMap((s) => store.getRunsByStatus(s, project.id));
 

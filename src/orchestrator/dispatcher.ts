@@ -5,11 +5,12 @@ import { spawn } from "node:child_process";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 
-import type { SeedsClient, Seed } from "../lib/seeds.js";
+import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
+import type { BvClient } from "../lib/bv.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
-import { calculateImpactScores } from "./pagerank.js";
+import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
 import { TmuxClient, tmuxSessionName } from "../lib/tmux.js";
 import type {
@@ -27,9 +28,10 @@ import type {
 
 export class Dispatcher {
   constructor(
-    private seeds: SeedsClient,
+    private seeds: ITaskClient,
     private store: ForemanStore,
     private projectPath: string,
+    private bvClient?: BvClient | null,
   ) {}
 
   /**
@@ -58,23 +60,41 @@ export class Dispatcher {
 
     let readySeeds = await this.seeds.ready();
 
-    // Sort ready seeds by PageRank impact score so highest-value tasks are dispatched first.
-    // Falls back to original order gracefully if the graph is unavailable.
+    // Sort ready seeds using bv triage scores when available, falling back to priority sort.
     if (!opts?.seedId) {
-      try {
-        const graph = await this.seeds.getGraph();
-        const impactScores = calculateImpactScores(readySeeds, graph);
-        readySeeds = [...readySeeds].sort((a, b) => {
-          const scoreA = impactScores.get(a.id) ?? 0;
-          const scoreB = impactScores.get(b.id) ?? 0;
-          if (scoreA !== scoreB) return scoreB - scoreA;  // higher score first
-          // Tie-break by priority field (P0 < P1 < ... < P4)
-          const priorityOrder: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 };
-          return (priorityOrder[a.priority] ?? 5) - (priorityOrder[b.priority] ?? 5);
-        });
-        log(`PageRank scored ${readySeeds.length} ready seeds`);
-      } catch (err) {
-        log(`Could not fetch graph for PageRank scoring (falling back to default order): ${err}`);
+      if (this.bvClient) {
+        const triageResult = await this.bvClient.robotTriage();
+        if (triageResult !== null) {
+          // Build a score map from bv recommendations
+          const scoreMap = new Map<string, number>();
+          for (const rec of triageResult.recommendations) {
+            scoreMap.set(rec.id, rec.score);
+          }
+          readySeeds = [...readySeeds].sort((a, b) => {
+            const hasA = scoreMap.has(a.id);
+            const hasB = scoreMap.has(b.id);
+            // Tasks in recommendations come before tasks not in recommendations
+            if (hasA && !hasB) return -1;
+            if (!hasA && hasB) return 1;
+            if (hasA && hasB) {
+              // Both ranked: sort by score descending
+              return (scoreMap.get(b.id) ?? 0) - (scoreMap.get(a.id) ?? 0);
+            }
+            // Neither ranked: fall back to priority sort
+            return normalizePriority(a.priority) - normalizePriority(b.priority);
+          });
+          log(`bv triage scored ${readySeeds.length} ready seeds`);
+        } else {
+          log("bv unavailable, using priority-sort fallback");
+          readySeeds = [...readySeeds].sort(
+            (a, b) => normalizePriority(a.priority) - normalizePriority(b.priority),
+          );
+        }
+      } else {
+        // No bvClient provided — sort by priority
+        readySeeds = [...readySeeds].sort(
+          (a, b) => normalizePriority(a.priority) - normalizePriority(b.priority),
+        );
       }
     }
 
@@ -454,12 +474,20 @@ export class Dispatcher {
   /**
    * Pick a Claude model based on task complexity signals.
    *
-   * - Opus: refactor, architect, design, complex, multi-step features
+   * - Opus: P0 critical tasks, or keywords: refactor, architect, design, complex, migrate, overhaul
+   * - Haiku: P3/P4 low-priority tasks with light keywords, or typo/config/rename/etc.
    * - Sonnet: default for most implementation tasks
-   * - Haiku: simple config, docs-only, typo fixes
+   *
+   * Priority comparisons use normalizePriority() to handle both "P0"–"P4" and "0"–"4" formats.
    */
   selectModel(task: SeedInfo): ModelSelection {
     const text = `${task.title} ${task.description ?? ""}`.toLowerCase();
+    const priority = normalizePriority(task.priority ?? "P2");
+
+    // P0 critical tasks always get the most capable model
+    if (priority === 0) {
+      return "claude-opus-4-6";
+    }
 
     const heavy = ["refactor", "architect", "design", "complex", "migrate", "overhaul"];
     if (heavy.some((kw) => text.includes(kw))) {
@@ -467,7 +495,8 @@ export class Dispatcher {
     }
 
     const light = ["typo", "rename", "config", "bump version", "update readme"];
-    if (light.some((kw) => text.includes(kw))) {
+    // Only use haiku for non-critical (P1+) light tasks
+    if (light.some((kw) => text.includes(kw)) && priority >= 1) {
       return "claude-haiku-4-5-20251001";
     }
 
@@ -483,6 +512,43 @@ export class Dispatcher {
   }
 
   // ── Agent Spawning ─────────────────────────────────────────────────────
+
+  /**
+   * Build the spawn prompt for an agent (exposed for testing — TRD-012).
+   * Returns the multi-line string passed to the worker as its initial prompt.
+   */
+  buildSpawnPrompt(seedId: string, seedTitle: string, backend: "sd" | "br"): string {
+    const closeCmd = backend === "br"
+      ? `br close ${seedId} --reason "Completed"`
+      : `sd close ${seedId} --reason "Completed"`;
+    return [
+      `Read TASK.md and implement the task described.`,
+      `Use ${backend === "br" ? "br (beads_rust)" : "sd (seeds)"} to track your progress.`,
+      `When completely finished:`,
+      `  ${closeCmd}`,
+      `  git add -A`,
+      `  git commit -m "${seedTitle} (${seedId})"`,
+      `  git push -u origin foreman/${seedId}`,
+    ].join("\n");
+  }
+
+  /**
+   * Build the resume prompt for an agent (exposed for testing — TRD-012).
+   */
+  buildResumePrompt(seedId: string, seedTitle: string, backend: "sd" | "br"): string {
+    const closeCmd = backend === "br"
+      ? `br close ${seedId} --reason "Completed"`
+      : `sd close ${seedId} --reason "Completed"`;
+    return [
+      `You were previously working on this task but were interrupted (likely by a rate limit).`,
+      `Continue where you left off. Check your progress so far and complete the remaining work.`,
+      `When completely finished:`,
+      `  ${closeCmd}`,
+      `  git add -A`,
+      `  git commit -m "${seedTitle} (${seedId})"`,
+      `  git push -u origin foreman/${seedId}`,
+    ].join("\n");
+  }
 
   /**
    * Spawn a coding agent as a detached worker process.
@@ -505,15 +571,7 @@ export class Dispatcher {
     },
     notifyUrl?: string,
   ): Promise<{ sessionKey: string; tmuxSession?: string }> {
-    const prompt = [
-      `Read TASK.md and implement the task described.`,
-      `Use sd (seeds) to track your progress.`,
-      `When completely finished:`,
-      `  sd close ${seed.id} --reason "Completed"`,
-      `  git add -A`,
-      `  git commit -m "${seed.title} (${seed.id})"`,
-      `  git push -u origin foreman/${seed.id}`,
-    ].join("\n");
+    const prompt = this.buildSpawnPrompt(seed.id, seed.title, 'br');
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
@@ -529,6 +587,7 @@ export class Dispatcher {
       seedDescription: seed.description,
       model,
       worktreePath,
+      projectPath: this.projectPath,
       prompt,
       env,
       pipeline: usePipeline,
@@ -554,15 +613,7 @@ export class Dispatcher {
     telemetry?: boolean,
     notifyUrl?: string,
   ): Promise<{ sessionKey: string; tmuxSession?: string }> {
-    const resumePrompt = [
-      `You were previously working on this task but were interrupted (likely by a rate limit).`,
-      `Continue where you left off. Check your progress so far and complete the remaining work.`,
-      `When completely finished:`,
-      `  sd close ${seed.id} --reason "Completed"`,
-      `  git add -A`,
-      `  git commit -m "${seed.title} (${seed.id})"`,
-      `  git push -u origin foreman/${seed.id}`,
-    ].join("\n");
+    const resumePrompt = this.buildResumePrompt(seed.id, seed.title, 'br');
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;
@@ -609,6 +660,8 @@ export interface WorkerConfig {
   seedDescription?: string;
   model: string;
   worktreePath: string;
+  /** Project root directory (contains .beads/). Used as cwd for br commands. */
+  projectPath?: string;
   prompt: string;
   env: Record<string, string>;
   resume?: string;
@@ -708,8 +761,9 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     const outFd = await open(join(logDir, `${config.runId}.out`), "w");
     const errFd = await open(join(logDir, `${config.runId}.err`), "w");
 
-    // Strip CLAUDECODE env var so the worker can spawn its own Claude SDK session
-    const spawnEnv: Record<string, string | undefined> = { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` };
+    // Use the fully-constructed env from config (includes ~/.local/bin prefix from buildWorkerEnv)
+    // Strip CLAUDECODE so the worker can spawn its own Claude SDK session
+    const spawnEnv: Record<string, string | undefined> = { ...config.env };
     delete spawnEnv.CLAUDECODE;
 
     const child = spawn(tsxBin, [workerScript, configPath], {
@@ -780,7 +834,8 @@ function buildWorkerEnv(
       env[key] = value;
     }
   }
-  env.PATH = `/opt/homebrew/bin:${env.PATH ?? ""}`;
+  const home = process.env.HOME ?? "/home/nobody";
+  env.PATH = `${home}/.local/bin:/opt/homebrew/bin:${env.PATH ?? ""}`;
 
   if (notifyUrl) {
     env.FOREMAN_NOTIFY_URL = notifyUrl;
@@ -814,7 +869,7 @@ function extractSessionId(sessionKey: string | null): string | null {
   return m ? m[1] : null;
 }
 
-function seedToInfo(seed: Seed): SeedInfo {
+function seedToInfo(seed: Issue): SeedInfo {
   return {
     id: seed.id,
     title: seed.title,

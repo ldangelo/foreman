@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
 import { promisify } from "node:util";
 import { join } from "node:path";
+import type { ITaskClient, Issue, UpdateOptions } from "./task-client.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -90,12 +91,11 @@ export async function execSd(
   }
 }
 
-/** @deprecated Use execSd instead */
-export const execBd = execSd;
+
 
 // ── Client ──────────────────────────────────────────────────────────────
 
-export class SeedsClient {
+export class SeedsClient implements ITaskClient {
   private projectPath: string;
 
   constructor(projectPath: string) {
@@ -171,8 +171,8 @@ export class SeedsClient {
     return ((await execSd(args, this.projectPath)) as Seed[]) ?? [];
   }
 
-  /** Return tasks whose blockers are all resolved. */
-  async ready(): Promise<Seed[]> {
+  /** Return tasks whose blockers are all resolved. Satisfies ITaskClient.ready(). */
+  async ready(): Promise<Issue[]> {
     await this.requireInit();
     return ((await execSd(["ready"], this.projectPath)) as Seed[]) ?? [];
   }
@@ -183,17 +183,10 @@ export class SeedsClient {
     return (await execSd(["show", id], this.projectPath)) as SeedDetail;
   }
 
-  /** Update fields on a seed. */
+  /** Update fields on a seed. Satisfies ITaskClient.update(). */
   async update(
     id: string,
-    opts: {
-      claim?: boolean;
-      title?: string;
-      status?: string;
-      assignee?: string;
-      description?: string;
-      notes?: string;
-    },
+    opts: UpdateOptions,
   ): Promise<void> {
     await this.requireInit();
     const args = ["update", id];
@@ -246,11 +239,4 @@ export class SeedsClient {
   }
 }
 
-/** @deprecated Use SeedsClient instead */
-export const BeadsClient = SeedsClient;
-/** @deprecated Use Seed instead */
-export type Bead = Seed;
-/** @deprecated Use SeedDetail instead */
-export type BeadDetail = SeedDetail;
-/** @deprecated Use SeedGraph instead */
-export type BeadGraph = SeedGraph;
+// TRD-025: deprecated aliases removed (BeadsClient, Bead, BeadDetail, BeadGraph, execBd)

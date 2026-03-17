@@ -26,6 +26,7 @@ function makeExecFileResponder(overrides: Record<string, object> = {}) {
       create: { id: "beads-mock-1", title: "Mock title", type: "task", priority: "P2", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
       show: { id: "beads-mock-1", title: "Mock title", type: "task", priority: "P2", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", description: null, labels: [], estimate_minutes: null, dependencies: [], children: [] },
       list: [],
+      ready: [],
       search: [],
       update: {},
       close: {},
@@ -374,6 +375,77 @@ describe("BeadsRustClient.search", () => {
     const searchArgs = (searchCall as unknown[])[1] as string[];
     expect(searchArgs).toContain("--label");
     expect(searchArgs).toContain("trd:TRD-SLING");
+  });
+});
+
+// ── BeadsRustClient.ready ───────────────────────────────────────────────────
+
+describe("BeadsRustClient.ready", () => {
+  beforeEach(() => {
+    mockExecFile.mockReset();
+  });
+
+  it("returns parsed BrIssue array of open unblocked issues", async () => {
+    const issues = [
+      { id: "beads-1", title: "First task", type: "task", priority: "P1", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+      { id: "beads-2", title: "Second task", type: "bug", priority: "P0", status: "open", assignee: null, parent: null, created_at: "2026-01-02T00:00:00Z", updated_at: "2026-01-02T00:00:00Z" },
+    ];
+    mockExecFile.mockImplementation(
+      makeExecFileResponder({ ready: issues }),
+    );
+    const client = new BeadsRustClient("/tmp/mock-project");
+    const result = await client.ready();
+
+    expect(result).toEqual(issues);
+  });
+
+  it("invokes br ready --json", async () => {
+    mockExecFile.mockImplementation(makeExecFileResponder({ ready: [] }));
+    const client = new BeadsRustClient("/tmp/mock-project");
+    await client.ready();
+
+    const readyCall = mockExecFile.mock.calls.find(
+      (call: unknown[]) => (call[1] as string[])?.[0] === "ready",
+    );
+    expect(readyCall).toBeDefined();
+    const readyArgs = (readyCall as unknown[])[1] as string[];
+    expect(readyArgs).toContain("--json");
+  });
+
+  it("returns empty array when output is empty", async () => {
+    mockExecFile.mockImplementation(
+      (_cmd: string, _args: string[], _opts: unknown, callback: Function) => {
+        callback(null, { stdout: "", stderr: "" });
+      },
+    );
+    const client = new BeadsRustClient("/tmp/mock-project");
+    const result = await client.ready();
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty array when br returns empty array", async () => {
+    mockExecFile.mockImplementation(makeExecFileResponder({ ready: [] }));
+    const client = new BeadsRustClient("/tmp/mock-project");
+    const result = await client.ready();
+    expect(result).toEqual([]);
+  });
+
+  it("throws when br binary is not found", async () => {
+    const { access: mockAccess } = await import("node:fs/promises");
+    (mockAccess as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("ENOENT"));
+
+    const client = new BeadsRustClient("/tmp/mock-project");
+    await expect(client.ready()).rejects.toThrow("br (beads_rust) CLI not found");
+  });
+
+  it("throws on malformed JSON output", async () => {
+    mockExecFile.mockImplementation(
+      (_cmd: string, _args: string[], _opts: unknown, callback: Function) => {
+        callback(null, { stdout: "not valid json {{{{", stderr: "" });
+      },
+    );
+    const client = new BeadsRustClient("/tmp/mock-project");
+    await expect(client.ready()).rejects.toThrow();
   });
 });
 

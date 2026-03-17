@@ -16,12 +16,13 @@ import { dashboardCommand } from "./commands/dashboard.js";
 import { seedCommand } from "./commands/seed.js";
 import { worktreeCommand } from "./commands/worktree.js";
 import { slingCommand } from "./commands/sling.js";
+import { migrateSeedsCommand } from "./commands/migrate-seeds.js";
 
 const program = new Command();
 
 program
   .name("foreman")
-  .description("Multi-agent coding orchestrator built on Seeds")
+  .description("Multi-agent coding orchestrator built on beads_rust (br)")
   .version("0.1.0");
 
 program.addCommand(initCommand);
@@ -39,5 +40,6 @@ program.addCommand(dashboardCommand);
 program.addCommand(seedCommand);
 program.addCommand(worktreeCommand);
 program.addCommand(slingCommand);
+program.addCommand(migrateSeedsCommand);
 
 program.parse();

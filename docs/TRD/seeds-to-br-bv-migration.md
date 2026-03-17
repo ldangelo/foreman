@@ -171,59 +171,59 @@ All priority comparisons throughout the codebase go through this utility.
 
 ## 4. Non-Functional Requirements Coverage
 
-- [ ] **TRD-NF-001**: Binary availability check on startup (2h) [satisfies REQ-NF-001]
+- [x] **TRD-NF-001**: Binary availability check on startup (2h) [satisfies REQ-NF-001]
   - foreman run, foreman status, foreman reset verify ~/.local/bin/br exists before proceeding
   - Clear error with cargo install beads_rust instructions on missing binary
   - bv absence is warning only (dispatch fallback), not blocking error
   - [depends: TRD-007, TRD-008, TRD-019]
 
-- [ ] **TRD-NF-001-TEST**: Verify binary checks on startup (1h) [verifies TRD-NF-001]
+- [x] **TRD-NF-001-TEST**: Verify binary checks on startup (1h) [verifies TRD-NF-001]
   - Test run/status/reset fail gracefully with missing br binary
   - Test bv absence produces warning but does not block
 
-- [ ] **TRD-NF-002**: Worker binary PATH configuration (1h) [satisfies REQ-NF-002]
+- [x] **TRD-NF-002**: Worker binary PATH configuration (1h) [satisfies REQ-NF-002]
   - buildWorkerEnv() prepends ~/.local/bin to PATH
   - [depends: TRD-005]
 
-- [ ] **TRD-NF-002-TEST**: Verify worker PATH includes br directory (1h) [verifies TRD-NF-002]
+- [x] **TRD-NF-002-TEST**: Verify worker PATH includes br directory (1h) [verifies TRD-NF-002]
   - Test buildWorkerEnv() output contains ~/.local/bin before other PATH entries
 
-- [ ] **TRD-NF-003**: Dispatch latency within 3-second budget (1h) [satisfies REQ-NF-003]
+- [x] **TRD-NF-003**: Dispatch latency within 3-second budget (1h) [satisfies REQ-NF-003]
   - bv timeout configured at 3 seconds for projects up to 500 issues
   - Timeout triggers automatic priority-sort fallback
   - [depends: TRD-002, TRD-006]
 
-- [ ] **TRD-NF-003-TEST**: Verify dispatch latency and timeout fallback (1h) [verifies TRD-NF-003]
+- [x] **TRD-NF-003-TEST**: Verify dispatch latency and timeout fallback (1h) [verifies TRD-NF-003]
   - Test bv call timeout triggers fallback within budget
   - Test priority-sort completes in under 100ms
 
-- [ ] **TRD-NF-004**: Backwards compatibility for in-flight SQLite runs (1h) [satisfies REQ-NF-004]
+- [x] **TRD-NF-004**: Backwards compatibility for in-flight SQLite runs (1h) [satisfies REQ-NF-004]
   - SQLite seed_id column stores IDs compatible with both sd and br formats
   - Monitor handles "issue not found" as transient during migration
   - [depends: TRD-009]
 
-- [ ] **TRD-NF-004-TEST**: Verify in-flight run compatibility (1h) [verifies TRD-NF-004]
+- [x] **TRD-NF-004-TEST**: Verify in-flight run compatibility (1h) [verifies TRD-NF-004]
   - Test monitor handles missing issue ID gracefully during migration
 
-- [ ] **TRD-NF-005**: Test coverage targets met (2h) [satisfies REQ-NF-005]
+- [x] **TRD-NF-005**: Test coverage targets met (2h) [satisfies REQ-NF-005]
   - Unit tests >= 80% for all new/modified files
   - Integration tests >= 70% for dispatch and migration paths
   - [depends: all TRD-NNN-TEST tasks]
 
-- [ ] **TRD-NF-005-TEST**: Coverage report validation (1h) [verifies TRD-NF-005]
+- [x] **TRD-NF-005-TEST**: Coverage report validation (1h) [verifies TRD-NF-005]
   - Run coverage report, verify thresholds
 
-- [ ] **TRD-NF-006**: TypeScript strict mode compliance (0.5h) [satisfies REQ-NF-006]
+- [x] **TRD-NF-006**: TypeScript strict mode compliance (0.5h) [satisfies REQ-NF-006]
   - npx tsc --noEmit passes with zero errors after each sprint
   - No any escape hatches in new or modified code
 
-- [ ] **TRD-NF-006-TEST**: Verify TypeScript compilation (0.5h) [verifies TRD-NF-006]
+- [x] **TRD-NF-006-TEST**: Verify TypeScript compilation (0.5h) [verifies TRD-NF-006]
   - CI gate: npx tsc --noEmit returns exit code 0
 
-- [ ] **TRD-NF-007**: ESM import compliance (0.5h) [satisfies REQ-NF-007]
+- [x] **TRD-NF-007**: ESM import compliance (0.5h) [satisfies REQ-NF-007]
   - All new imports use .js extensions per project convention
 
-- [ ] **TRD-NF-007-TEST**: Verify ESM imports (0.5h) [verifies TRD-NF-007]
+- [x] **TRD-NF-007-TEST**: Verify ESM imports (0.5h) [verifies TRD-NF-007]
   - Lint check: no imports missing .js extension in new/modified files
 
 ---
@@ -232,18 +232,18 @@ All priority comparisons throughout the codebase go through this utility.
 
 ### Sprint 1 -- Phase 0: Foundation (No Breaking Changes)
 
-- [ ] **TRD-001**: Add ready() method to BeadsRustClient (2h) [satisfies REQ-002]
+- [x] **TRD-001**: Add ready() method to BeadsRustClient (2h) [satisfies REQ-002]
   - Add ready(): Promise<BrIssue[]> to src/lib/beads-rust.ts
   - Calls br ready --json and parses output
   - Returns all open, unblocked issues
 
-- [ ] **TRD-001-TEST**: Unit tests for BeadsRustClient.ready() (1h) [verifies TRD-001]
+- [x] **TRD-001-TEST**: Unit tests for BeadsRustClient.ready() (1h) [verifies TRD-001]
   - Test ready() returns parsed BrIssue array
   - Test ready() handles empty result
   - Test ready() handles br binary not found
   - Test ready() handles malformed JSON output
 
-- [ ] **TRD-002**: Create BvClient in src/lib/bv.ts (4h) [satisfies REQ-003, REQ-004, REQ-024, REQ-025, REQ-026, REQ-027]
+- [x] **TRD-002**: Create BvClient in src/lib/bv.ts (4h) [satisfies REQ-003, REQ-004, REQ-024, REQ-025, REQ-026, REQ-027]
   - Create BvClient class with typed robot methods only
   - robotNext(opts?): returns single top-priority task or null
   - robotTriage(opts?): returns ranked list of actionable tasks or null
@@ -256,7 +256,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Returns null on: binary not found, timeout, non-zero exit, parse error
   - Binary path: ~/.local/bin/bv
 
-- [ ] **TRD-002-TEST**: Unit tests for BvClient (3h) [verifies TRD-002]
+- [x] **TRD-002-TEST**: Unit tests for BvClient (3h) [verifies TRD-002]
   - Test robotTriage() calls br sync before bv
   - Test robotTriage() returns parsed result on success
   - Test robotNext() returns single task on success
@@ -267,7 +267,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Test --format toon is always appended
   - Test no public method allows bare bv invocation (compile-time: no exec method exposed)
 
-- [ ] **TRD-003**: Create priority.ts with normalizePriority() (1h) [satisfies REQ-020]
+- [x] **TRD-003**: Create priority.ts with normalizePriority() (1h) [satisfies REQ-020]
   - Create src/lib/priority.ts
   - Export normalizePriority(p: string | number): number
   - Handle "P0"-"P4" string format (strip P prefix, parse int)
@@ -276,14 +276,14 @@ All priority comparisons throughout the codebase go through this utility.
   - Return 4 (lowest) for invalid input
   - Export formatPriorityForBr(p: string | number): string (returns "0"-"4")
 
-- [ ] **TRD-003-TEST**: Unit tests for normalizePriority() (1h) [verifies TRD-003]
+- [x] **TRD-003-TEST**: Unit tests for normalizePriority() (1h) [verifies TRD-003]
   - Test "P0" through "P4" return 0 through 4
   - Test "0" through "4" return 0 through 4
   - Test numeric 0 through 4 pass-through
   - Test invalid inputs ("P5", "high", "", null) return 4
   - Test formatPriorityForBr() output
 
-- [ ] **TRD-004**: Implement foreman migrate-seeds command (4h) [satisfies REQ-021, REQ-022, REQ-023]
+- [x] **TRD-004**: Implement foreman migrate-seeds command (4h) [satisfies REQ-021, REQ-022, REQ-023]
   - Create src/cli/commands/migrate-seeds.ts
   - Register in commander CLI
   - Read .seeds/issues.jsonl line by line
@@ -297,7 +297,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Write migration report to docs/seeds-migration-report.md
   - --dry-run flag: report what would happen without creating
 
-- [ ] **TRD-004-TEST**: Unit and integration tests for migrate-seeds (3h) [verifies TRD-004]
+- [x] **TRD-004-TEST**: Unit and integration tests for migrate-seeds (3h) [verifies TRD-004]
   - Test reads .seeds/issues.jsonl correctly
   - Test creates br issues with correct field mapping
   - Test priority "P2" maps to numeric 2 in br create
@@ -311,7 +311,7 @@ All priority comparisons throughout the codebase go through this utility.
 
 ### Sprint 2 -- Phase 1: Runtime Core (Feature-Flagged)
 
-- [ ] **TRD-005**: Update Dispatcher to accept BeadsRustClient (4h) [satisfies REQ-001]
+- [x] **TRD-005**: Update Dispatcher to accept BeadsRustClient (4h) [satisfies REQ-001]
   - Define ITaskClient interface in src/lib/task-client.ts
   - Make both SeedsClient and BeadsRustClient implement ITaskClient
   - Change Dispatcher constructor to accept ITaskClient
@@ -319,14 +319,14 @@ All priority comparisons throughout the codebase go through this utility.
   - Update buildWorkerEnv() to prepend ~/.local/bin to PATH
   - [depends: TRD-001, TRD-003]
 
-- [ ] **TRD-005-TEST**: Unit tests for Dispatcher with ITaskClient (3h) [verifies TRD-005]
+- [x] **TRD-005-TEST**: Unit tests for Dispatcher with ITaskClient (3h) [verifies TRD-005]
   - Test Dispatcher accepts BeadsRustClient via ITaskClient
   - Test Dispatcher accepts SeedsClient via ITaskClient (backward compat)
   - Test selectModel() works with numeric priority format
   - Test selectModel() works with "P0"-"P4" format
   - Test buildWorkerEnv() includes ~/.local/bin in PATH
 
-- [ ] **TRD-006**: Wire BvClient into dispatcher ordering (always-on) (3h) [satisfies REQ-005, REQ-006]
+- [x] **TRD-006**: Wire BvClient into dispatcher ordering (always-on) (3h) [satisfies REQ-005, REQ-006]
   - Inject BvClient into Dispatcher constructor
   - In dispatch(): call bvClient.robotTriage() for ranked ordering
   - If robotTriage returns non-null: order ready tasks by bv ranking
@@ -335,7 +335,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Remove import of calculateImpactScores from pagerank.ts
   - [depends: TRD-002, TRD-005]
 
-- [ ] **TRD-006-TEST**: Unit tests for bv-ordered dispatch (3h) [verifies TRD-006]
+- [x] **TRD-006-TEST**: Unit tests for bv-ordered dispatch (3h) [verifies TRD-006]
   - Test dispatch calls robotTriage() before ordering
   - Test tasks dispatched in bv ranked order when available
   - Test fallback to priority sort when robotTriage returns null
@@ -343,7 +343,7 @@ All priority comparisons throughout the codebase go through this utility.
   - Test no import of pagerank.ts calculateImpactScores
   - Test dispatch proceeds normally when bv times out
 
-- [ ] **TRD-007**: Update run.ts to instantiate BeadsRustClient (2h) [satisfies REQ-007]
+- [x] **TRD-007**: Update run.ts to instantiate BeadsRustClient (2h) [satisfies REQ-007]
   - Read FOREMAN_TASK_BACKEND env var (default: "sd" in Sprint 2)
   - If "br": construct BeadsRustClient(projectPath) and BvClient(projectPath)
   - If "sd": construct SeedsClient(projectPath) (existing behavior)
@@ -351,77 +351,77 @@ All priority comparisons throughout the codebase go through this utility.
   - Verify br binary exists before proceeding (when backend=br)
   - [depends: TRD-005]
 
-- [ ] **TRD-007-TEST**: Unit tests for run.ts client selection (1h) [verifies TRD-007]
+- [x] **TRD-007-TEST**: Unit tests for run.ts client selection (1h) [verifies TRD-007]
   - Test FOREMAN_TASK_BACKEND=br instantiates BeadsRustClient
   - Test FOREMAN_TASK_BACKEND=sd instantiates SeedsClient
   - Test default (unset) instantiates SeedsClient
   - Test missing br binary exits with clear error message
 
-- [ ] **TRD-008**: Update reset.ts to use BeadsRustClient (2h) [satisfies REQ-008]
+- [x] **TRD-008**: Update reset.ts to use BeadsRustClient (2h) [satisfies REQ-008]
   - Read FOREMAN_TASK_BACKEND env var
   - Replace seeds.update() with brClient.update() when backend=br
   - Replace seeds.show() with brClient.show() when backend=br
   - Update detectAndFixMismatches() to use ITaskClient
   - [depends: TRD-005]
 
-- [ ] **TRD-008-TEST**: Unit tests for reset.ts with br backend (1h) [verifies TRD-008]
+- [x] **TRD-008-TEST**: Unit tests for reset.ts with br backend (1h) [verifies TRD-008]
   - Test reset calls brClient.update() when FOREMAN_TASK_BACKEND=br
   - Test reset calls brClient.show() when FOREMAN_TASK_BACKEND=br
   - Test detectAndFixMismatches works with BeadsRustClient
 
-- [ ] **TRD-009**: Update Monitor to use BeadsRustClient (2h) [satisfies REQ-009]
+- [x] **TRD-009**: Update Monitor to use BeadsRustClient (2h) [satisfies REQ-009]
   - Change Monitor constructor to accept ITaskClient
   - Replace seeds.show() with taskClient.show() for completion detection
   - Handle "issue not found" error as transient during migration
   - [depends: TRD-005]
 
-- [ ] **TRD-009-TEST**: Unit tests for Monitor with br backend (2h) [verifies TRD-009]
+- [x] **TRD-009-TEST**: Unit tests for Monitor with br backend (2h) [verifies TRD-009]
   - Test Monitor accepts BeadsRustClient via ITaskClient
   - Test checkAll() detects closed status from brClient.show()
   - Test "issue not found" handled gracefully (not marked as failed)
   - Test Monitor marks run as completed when status is closed
 
-- [ ] **TRD-010**: Update agent-worker.ts finalize() (2h) [satisfies REQ-013]
+- [x] **TRD-010**: Update agent-worker.ts finalize() (2h) [satisfies REQ-013]
   - Read FOREMAN_TASK_BACKEND env var
   - When backend=br: call ~/.local/bin/br close <seedId> --reason "Completed via pipeline"
   - When backend=sd: existing sd close behavior (backward compat)
   - [depends: TRD-005]
 
-- [ ] **TRD-010-TEST**: Unit tests for finalize() with br backend (1h) [verifies TRD-010]
+- [x] **TRD-010-TEST**: Unit tests for finalize() with br backend (1h) [verifies TRD-010]
   - Test finalize calls br close when FOREMAN_TASK_BACKEND=br
   - Test finalize calls sd close when FOREMAN_TASK_BACKEND=sd
   - Test br close uses correct binary path (~/.local/bin/br)
   - Test br close passes --reason flag
 
-- [ ] **TRD-011**: Update agent-worker.ts markStuck() (1h) [satisfies REQ-014]
+- [x] **TRD-011**: Update agent-worker.ts markStuck() (1h) [satisfies REQ-014]
   - Read FOREMAN_TASK_BACKEND env var
   - When backend=br: call ~/.local/bin/br update <seedId> --status open
   - When backend=sd: existing sd update behavior
   - [depends: TRD-005]
 
-- [ ] **TRD-011-TEST**: Unit tests for markStuck() with br backend (1h) [verifies TRD-011]
+- [x] **TRD-011-TEST**: Unit tests for markStuck() with br backend (1h) [verifies TRD-011]
   - Test markStuck calls br update when FOREMAN_TASK_BACKEND=br
   - Test markStuck uses correct binary path
   - Test markStuck sets status to open
 
-- [ ] **TRD-012**: Update dispatcher inline prompts (1h) [satisfies REQ-016]
+- [x] **TRD-012**: Update dispatcher inline prompts (1h) [satisfies REQ-016]
   - Update spawnAgent() prompt string: br close instead of sd close
   - Update resumeAgent() prompt string: br close instead of sd close
   - Conditional on FOREMAN_TASK_BACKEND during transition
   - [depends: TRD-005]
 
-- [ ] **TRD-012-TEST**: Unit tests for dispatcher prompt content (1h) [verifies TRD-012]
+- [x] **TRD-012-TEST**: Unit tests for dispatcher prompt content (1h) [verifies TRD-012]
   - Test spawnAgent prompt contains "br close" when backend=br
   - Test resumeAgent prompt contains "br close" when backend=br
   - Test no "sd close" in prompts when backend=br
 
-- [ ] **TRD-013**: Add FOREMAN_TASK_BACKEND feature flag infrastructure (2h)
+- [x] **TRD-013**: Add FOREMAN_TASK_BACKEND feature flag infrastructure (2h)
   - Create src/lib/feature-flags.ts with getTaskBackend(): "sd" | "br" utility
   - Read from process.env.FOREMAN_TASK_BACKEND
   - Default: "sd" (Sprint 2), changed to "br" in Sprint 3
   - Single source of truth for all modules checking the flag
 
-- [ ] **TRD-013-TEST**: Unit tests for feature flag (1h) [verifies TRD-013]
+- [x] **TRD-013-TEST**: Unit tests for feature flag (1h) [verifies TRD-013]
   - Test returns "sd" when env var unset
   - Test returns "br" when env var set to "br"
   - Test returns "sd" when env var set to "sd"
@@ -429,70 +429,70 @@ All priority comparisons throughout the codebase go through this utility.
 
 ### Sprint 3 -- Phase 2+3: Templates and Init
 
-- [ ] **TRD-014**: Update worker-agent.md template (1h) [satisfies REQ-015]
+- [x] **TRD-014**: Update worker-agent.md template (1h) [satisfies REQ-015]
   - Replace sd update SEED_ID --claim with br update SEED_ID --status in_progress
   - Replace sd close SEED_ID --reason "Completed" with br close SEED_ID --reason "Completed"
   - Replace sd update SEED_ID --notes "Blocked: ..." with br update SEED_ID --description "Blocked: ..."
   - Remove all remaining sd references
   - [depends: TRD-010, TRD-011]
 
-- [ ] **TRD-014-TEST**: Verify worker-agent.md contains no sd references (0.5h) [verifies TRD-014]
+- [x] **TRD-014-TEST**: Verify worker-agent.md contains no sd references (0.5h) [verifies TRD-014]
   - Test: grep for "sd " in templates/worker-agent.md returns zero matches
   - Test: "br update", "br close" present in template
 
-- [ ] **TRD-015**: Update foreman seed command (2h) [satisfies REQ-017]
+- [x] **TRD-015**: Update foreman seed command (2h) [satisfies REQ-017]
   - Replace SeedsClient with BeadsRustClient in src/cli/commands/seed.ts
   - Update create calls to use br field formats (numeric priority)
   - Use normalizePriority() for any user input
   - [depends: TRD-005, TRD-003]
 
-- [ ] **TRD-015-TEST**: Unit tests for foreman seed with br (1h) [verifies TRD-015]
+- [x] **TRD-015-TEST**: Unit tests for foreman seed with br (1h) [verifies TRD-015]
   - Test seed command creates issues via BeadsRustClient
   - Test priority input normalized correctly
 
-- [ ] **TRD-016**: Update foreman plan command (2h) [satisfies REQ-018]
+- [x] **TRD-016**: Update foreman plan command (2h) [satisfies REQ-018]
   - Replace SeedsClient with BeadsRustClient in src/cli/commands/plan.ts
   - Update issue creation to use br field formats
   - Update issue closing on completion
   - [depends: TRD-005]
 
-- [ ] **TRD-016-TEST**: Unit tests for foreman plan with br (1h) [verifies TRD-016]
+- [x] **TRD-016-TEST**: Unit tests for foreman plan with br (1h) [verifies TRD-016]
   - Test plan creates issues via BeadsRustClient
   - Test plan closes issues via BeadsRustClient
 
-- [ ] **TRD-017**: Update foreman merge command (2h) [satisfies REQ-019]
+- [x] **TRD-017**: Update foreman merge command (2h) [satisfies REQ-019]
   - Replace SeedsClient with BeadsRustClient in src/cli/commands/merge.ts
   - Update task status reads/writes to use br
   - [depends: TRD-005]
 
-- [ ] **TRD-017-TEST**: Unit tests for foreman merge with br (1h) [verifies TRD-017]
+- [x] **TRD-017-TEST**: Unit tests for foreman merge with br (1h) [verifies TRD-017]
   - Test merge uses BeadsRustClient for status reads
   - Test merge uses BeadsRustClient for status writes
 
-- [ ] **TRD-018**: Update foreman init (2h) [satisfies REQ-011]
+- [x] **TRD-018**: Update foreman init (2h) [satisfies REQ-011]
   - Check for br binary at ~/.local/bin/br instead of sd at ~/.bun/bin/sd
   - Run br init when .beads/ does not exist
   - Print installation instructions for br (cargo install beads_rust)
   - Optionally check for bv and print install instructions if absent
   - [depends: TRD-001]
 
-- [ ] **TRD-018-TEST**: Unit tests for foreman init with br (1h) [verifies TRD-018]
+- [x] **TRD-018-TEST**: Unit tests for foreman init with br (1h) [verifies TRD-018]
   - Test init checks for ~/.local/bin/br
   - Test init runs br init when .beads/ absent
   - Test init prints install instructions when br missing
 
-- [ ] **TRD-019**: Update foreman status (2h) [satisfies REQ-010]
+- [x] **TRD-019**: Update foreman status (2h) [satisfies REQ-010]
   - Replace all execFileSync(sdPath, ...) with execFileSync(brPath, ...)
   - Binary path: ~/.local/bin/br instead of ~/.bun/bin/sd
   - Derive blocked count: br list --status=open minus br ready (no direct br blocked)
   - [depends: TRD-001]
 
-- [ ] **TRD-019-TEST**: Unit tests for foreman status with br (1h) [verifies TRD-019]
+- [x] **TRD-019-TEST**: Unit tests for foreman status with br (1h) [verifies TRD-019]
   - Test status calls br CLI, not sd CLI
   - Test blocked count derived correctly
   - Test output format unchanged
 
-- [ ] **TRD-020**: Update foreman doctor (2h) [satisfies REQ-012]
+- [x] **TRD-020**: Update foreman doctor (2h) [satisfies REQ-012]
   - Check ~/.local/bin/br exists and is executable (required -- failure blocks)
   - Check ~/.local/bin/bv exists and is executable (warning only -- does not block)
   - Print cargo install beads_rust for missing br
@@ -500,94 +500,94 @@ All priority comparisons throughout the codebase go through this utility.
   - Remove sd binary check
   - [depends: TRD-001]
 
-- [ ] **TRD-020-TEST**: Unit tests for foreman doctor with br/bv (1h) [verifies TRD-020]
+- [x] **TRD-020-TEST**: Unit tests for foreman doctor with br/bv (1h) [verifies TRD-020]
   - Test doctor passes when br exists
   - Test doctor fails when br missing
   - Test doctor warns (not fails) when bv missing
   - Test correct install instructions printed
 
-- [ ] **TRD-021**: Deprecate --sd-only flag in sling (1h) [satisfies REQ-028]
+- [x] **TRD-021**: Deprecate --sd-only flag in sling (1h) [satisfies REQ-028]
   - --sd-only prints deprecation warning to stderr
   - --sd-only behaves as no-op (br-only write)
   - Flag retained for backward compatibility
   - [depends: TRD-005]
 
-- [ ] **TRD-021-TEST**: Unit tests for sling --sd-only deprecation (0.5h) [verifies TRD-021]
+- [x] **TRD-021-TEST**: Unit tests for sling --sd-only deprecation (0.5h) [verifies TRD-021]
   - Test --sd-only prints deprecation warning
   - Test --sd-only still writes to br (not sd)
 
-- [ ] **TRD-022**: Make --br-only default behavior in sling (1h) [satisfies REQ-029]
+- [x] **TRD-022**: Make --br-only default behavior in sling (1h) [satisfies REQ-029]
   - When neither --sd-only nor --br-only specified: write to br only
   - --br-only flag retained but is now a no-op (already default)
   - [depends: TRD-021]
 
-- [ ] **TRD-022-TEST**: Unit tests for sling default br behavior (0.5h) [verifies TRD-022]
+- [x] **TRD-022-TEST**: Unit tests for sling default br behavior (0.5h) [verifies TRD-022]
   - Test default sling writes to br only
   - Test --br-only has same behavior as default
 
-- [ ] **TRD-023**: Set FOREMAN_TASK_BACKEND=br as default (1h)
+- [x] **TRD-023**: Set FOREMAN_TASK_BACKEND=br as default (1h)
   - Update getTaskBackend() default from "sd" to "br"
   - Update any documentation referencing the default
   - [depends: TRD-013, TRD-018, TRD-019, TRD-020]
 
-- [ ] **TRD-023-TEST**: Verify default backend is br (0.5h) [verifies TRD-023]
+- [x] **TRD-023-TEST**: Verify default backend is br (0.5h) [verifies TRD-023]
   - Test getTaskBackend() returns "br" when env var unset
   - Test foreman run uses BeadsRustClient by default
 
 ### Sprint 4 -- Phase 4: Cleanup
 
-- [ ] **TRD-024**: Remove FOREMAN_TASK_BACKEND feature flag (2h)
+- [x] **TRD-024**: Remove FOREMAN_TASK_BACKEND feature flag (2h)
   - Remove src/lib/feature-flags.ts or simplify to always return "br"
   - Remove all getTaskBackend() conditionals in run.ts, reset.ts, agent-worker.ts, etc.
   - Hardcode BeadsRustClient instantiation in all CLI commands
   - Remove SeedsClient construction from all CLI commands
   - [depends: TRD-023]
 
-- [ ] **TRD-024-TEST**: Verify no feature flag references remain (1h) [verifies TRD-024]
+- [x] **TRD-024-TEST**: Verify no feature flag references remain (1h) [verifies TRD-024]
   - Test: grep for "FOREMAN_TASK_BACKEND" in src/ returns zero matches
   - Test: grep for "getTaskBackend" in src/ returns zero matches (or only in feature-flags.ts if retained as constant)
   - Test all CLI commands work without env var set
 
-- [ ] **TRD-025**: Archive/delete seeds.ts and deprecated aliases (2h)
+- [x] **TRD-025**: Archive/delete seeds.ts and deprecated aliases (2h)
   - Delete or move src/lib/seeds.ts to src/lib/seeds.deprecated.ts
   - Remove deprecated BeadsClient, Bead, BeadDetail, BeadGraph aliases
   - Remove execSd function
   - Update any remaining imports
   - [depends: TRD-024]
 
-- [ ] **TRD-025-TEST**: Verify no seeds.ts imports remain (0.5h) [verifies TRD-025]
+- [x] **TRD-025-TEST**: Verify no seeds.ts imports remain (0.5h) [verifies TRD-025]
   - Test: grep for "SeedsClient" in src/ returns zero matches (except archived files)
   - Test: grep for "execSd" in src/ returns zero matches
   - Test: grep for "~/.bun/bin/sd" in src/ returns zero matches
 
-- [ ] **TRD-026**: Delete/archive pagerank.ts (1h)
+- [x] **TRD-026**: Delete/archive pagerank.ts (1h)
   - Delete or archive src/orchestrator/pagerank.ts
   - Remove calculateImpactScores and priorityBoost exports
   - Verify no remaining imports
   - [depends: TRD-006, TRD-024]
 
-- [ ] **TRD-026-TEST**: Verify no pagerank.ts imports remain (0.5h) [verifies TRD-026]
+- [x] **TRD-026-TEST**: Verify no pagerank.ts imports remain (0.5h) [verifies TRD-026]
   - Test: grep for "pagerank" in src/ returns zero matches (except archived)
   - Test: grep for "calculateImpactScores" in src/ returns zero matches
 
-- [ ] **TRD-027**: Update all test mocks to BeadsRustClient (3h)
+- [x] **TRD-027**: Update all test mocks to BeadsRustClient (3h)
   - Replace all SeedsClient mocks in test files with BeadsRustClient mocks
   - Update mock return types to match BrIssue / BrIssueDetail
   - Ensure all tests pass with br-only mocks
   - [depends: TRD-024, TRD-025]
 
-- [ ] **TRD-027-TEST**: Verify test suite passes with br-only mocks (1h) [verifies TRD-027]
+- [x] **TRD-027-TEST**: Verify test suite passes with br-only mocks (1h) [verifies TRD-027]
   - Test: npm test passes with zero failures
   - Test: no SeedsClient mock references in test files
 
-- [ ] **TRD-028**: Final documentation pass (2h)
+- [x] **TRD-028**: Final documentation pass (2h)
   - Update CLAUDE.md: replace all sd references with br/bv
   - Update any README or docs referencing seeds commands
   - Verify foreman --help output references br not sd
   - Write migration guide summary in docs/
   - [depends: TRD-024, TRD-025, TRD-026]
 
-- [ ] **TRD-028-TEST**: Verify documentation accuracy (1h) [verifies TRD-028]
+- [x] **TRD-028-TEST**: Verify documentation accuracy (1h) [verifies TRD-028]
   - Test: grep for " sd " in CLAUDE.md returns only historical/comparison references
   - Test: grep for "seeds" in CLAUDE.md returns only historical references
   - Review foreman --help output
@@ -695,10 +695,10 @@ All priority comparisons throughout the codebase go through this utility.
 | TRD-025-TEST | Verify no seeds imports | 0.5h | TRD-025 | [ ] |
 | TRD-026 | Delete/archive pagerank.ts | 1h | TRD-006, TRD-024 | [ ] |
 | TRD-026-TEST | Verify no pagerank imports | 0.5h | TRD-026 | [ ] |
-| TRD-027 | Update all test mocks to br | 3h | TRD-024, TRD-025 | [ ] |
-| TRD-027-TEST | Verify test suite passes | 1h | TRD-027 | [ ] |
-| TRD-028 | Final documentation pass | 2h | TRD-024-026 | [ ] |
-| TRD-028-TEST | Verify documentation accuracy | 1h | TRD-028 | [ ] |
+| TRD-027 | Update all test mocks to br | 3h | TRD-024, TRD-025 | [x] |
+| TRD-027-TEST | Verify test suite passes | 1h | TRD-027 | [x] |
+| TRD-028 | Final documentation pass | 2h | TRD-024-026 | [x] |
+| TRD-028-TEST | Verify documentation accuracy | 1h | TRD-028 | [x] |
 
 **Exit Criteria:**
 - grep -r "SeedsClient|execSd|~/.bun/bin/sd" src/ returns zero results

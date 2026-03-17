@@ -3,7 +3,8 @@ import chalk from "chalk";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { SeedsClient } from "../../lib/seeds.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
+import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Refinery, dryRunMerge } from "../../orchestrator/refinery.js";
@@ -11,6 +12,23 @@ import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { MergeQueueStatus } from "../../orchestrator/merge-queue.js";
 import type { MergedRun, ConflictRun, FailedRun, CreatedPr } from "../../orchestrator/types.js";
 import { MergeCostTracker } from "../../orchestrator/merge-cost-tracker.js";
+
+// ── Backend Client Factory (TRD-017) ──────────────────────────────────
+
+/**
+ * Instantiate the br task-tracking client.
+ *
+ * TRD-024: sd backend removed. Always returns a BeadsRustClient after verifying
+ * the binary exists.
+ *
+ * Throws if the br binary cannot be found.
+ */
+export async function createMergeTaskClient(projectPath: string): Promise<ITaskClient> {
+  const brClient = new BeadsRustClient(projectPath);
+  // Verify binary exists before proceeding; throws with a friendly message if not
+  await brClient.ensureBrInstalled();
+  return brClient;
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -40,7 +58,7 @@ export const mergeCommand = new Command("merge")
   .action(async (opts) => {
     try {
       const projectPath = await getRepoRoot(process.cwd());
-      const seeds = new SeedsClient(projectPath);
+      const seeds = await createMergeTaskClient(projectPath);
       const store = new ForemanStore();
       const refinery = new Refinery(store, seeds, projectPath);
       const mq = new MergeQueue(store.getDb());

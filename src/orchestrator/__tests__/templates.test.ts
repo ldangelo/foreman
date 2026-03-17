@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { workerAgentMd } from "../templates.js";
 import type { SeedInfo, ModelSelection } from "../types.js";
 
@@ -7,6 +9,36 @@ const fakeSeed: SeedInfo = {
   title: "Implement auth module",
   description: "Add JWT-based authentication",
 };
+
+// ── TRD-014-TEST: worker-agent.md template has no sd references ──────────
+
+describe("TRD-014: templates/worker-agent.md br migration", () => {
+  const templatePath = join(process.cwd(), "templates", "worker-agent.md");
+  let content: string;
+
+  content = readFileSync(templatePath, "utf-8");
+
+  it("contains no 'sd ' references (sd CLI removed)", () => {
+    // Allow 'description' etc — match word-boundary sd followed by space
+    const sdMatches = content.match(/\bsd\s/g) ?? [];
+    expect(sdMatches).toHaveLength(0);
+  });
+
+  it("contains 'br update' for claiming tasks", () => {
+    expect(content).toContain("br update");
+  });
+
+  it("contains 'br close' for completing tasks", () => {
+    expect(content).toContain("br close");
+  });
+
+  it("does not contain 'sd update' or 'sd close'", () => {
+    expect(content).not.toContain("sd update");
+    expect(content).not.toContain("sd close");
+  });
+});
+
+// ── workerAgentMd function ────────────────────────────────────────────────
 
 describe("workerAgentMd", () => {
   it("contains the seed ID", () => {

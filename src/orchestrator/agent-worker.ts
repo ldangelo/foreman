@@ -31,6 +31,7 @@ import {
   hasActionableIssues,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
+import { closeSeed, resetSeedToOpen } from "./task-backend-ops.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
@@ -89,6 +90,8 @@ interface WorkerConfig {
   seedDescription?: string;
   model: string;
   worktreePath: string;
+  /** Project root directory (contains .beads/). Used as cwd for br commands. */
+  projectPath?: string;
   prompt: string;
   env: Record<string, string>;
   resume?: string;  // SDK session ID to resume
@@ -610,18 +613,11 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
     }
   }
 
-  // Close seed
-  try {
-    const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
-    execFileSync(sdPath, ["close", seedId, "--reason", "Completed via pipeline"], opts);
-    log(`[FINALIZE] Closed seed ${seedId}`);
-    report.push(`## Seed Close`, `- Status: SUCCESS`, "");
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`[FINALIZE] sd close failed: ${msg.slice(0, 200)}`);
-    await appendFile(logFile, `[FINALIZE] sd close error: ${msg}\n`);
-    report.push(`## Seed Close`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
-  }
+  // Close bead (br backend)
+  // Pass projectPath (repo root) so br finds .beads/ — the worktree dir has none.
+  closeSeed(seedId, config.projectPath);
+  log(`[FINALIZE] Closed seed ${seedId}`);
+  report.push(`## Seed Close`, `- Status: SUCCESS`, "");
 
   // Write finalize report
   try {
@@ -663,7 +659,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     rotateReport(worktreePath, "EXPLORER_REPORT.md");
     const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store, notifyClient);
     if (!result.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed", notifyClient);
+      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed", notifyClient, config.projectPath);
       return;
     }
     store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
@@ -685,7 +681,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       config, progress, logFile, store, notifyClient,
     );
     if (!devResult.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed", notifyClient);
+      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed", notifyClient, config.projectPath);
       return;
     }
     store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
@@ -694,7 +690,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     rotateReport(worktreePath, "QA_REPORT.md");
     const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
     if (!qaResult.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed", notifyClient);
+      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed", notifyClient, config.projectPath);
       return;
     }
     store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
@@ -724,7 +720,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     rotateReport(worktreePath, "REVIEW.md");
     const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store, notifyClient);
     if (!reviewResult.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed", notifyClient);
+      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed", notifyClient, config.projectPath);
       return;
     }
     store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
@@ -800,6 +796,7 @@ async function markStuck(
   phase: string,
   reason: string,
   notifyClient?: NotificationClient,
+  projectPath?: string,
 ): Promise<void> {
   const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
   const now = new Date().toISOString();
@@ -816,14 +813,10 @@ async function markStuck(
     rateLimit: isRateLimit,
   }, runId);
 
-  // Reset seed back to open so it appears in sd ready for retry
-  const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
-  try {
-    execFileSync(sdPath, ["update", seedId, "--status", "open"], { stdio: "pipe", timeout: PIPELINE_TIMEOUTS.seedClosureMs });
-    log(`Reset seed ${seedId} back to open`);
-  } catch {
-    log(`Warning: could not reset seed ${seedId} to open`);
-  }
+  // Reset seed back to open so it appears in the ready queue for retry.
+  // Pass projectPath (repo root) so br finds .beads/ — the worktree has none.
+  resetSeedToOpen(seedId, projectPath);
+  log(`Reset seed ${seedId} back to open`);
 
   store.close();
 }

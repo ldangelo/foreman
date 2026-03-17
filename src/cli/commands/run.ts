@@ -2,7 +2,9 @@ import { Command } from "commander";
 import { spawnSync } from "node:child_process";
 import chalk from "chalk";
 
-import { SeedsClient } from "../../lib/seeds.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { BvClient } from "../../lib/bv.js";
+import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
@@ -10,6 +12,33 @@ import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js
 import { watchRunsInk, type WatchResult } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
+
+// ── Backend Client Factory (TRD-007) ─────────────────────────────────
+
+/**
+ * Result returned by createTaskClients.
+ * Contains the task client to pass to Dispatcher and an optional BvClient.
+ */
+export interface TaskClientResult {
+  taskClient: ITaskClient;
+  bvClient: BvClient | null;
+}
+
+/**
+ * Instantiate the br task-tracking client(s).
+ *
+ * TRD-024: sd backend removed. Always returns a BeadsRustClient after verifying
+ * the binary exists, plus a BvClient for graph-aware triage.
+ *
+ * Throws if the br binary cannot be found.
+ */
+export async function createTaskClients(projectPath: string): Promise<TaskClientResult> {
+  const brClient = new BeadsRustClient(projectPath);
+  // Verify binary exists before proceeding; throws with a friendly message if not
+  await brClient.ensureBrInstalled();
+  const bvClient = new BvClient(projectPath);
+  return { taskClient: brClient, bvClient };
+}
 
 // ── Auto-Attach Logic (AT-T028/AT-T029) ──────────────────────────────
 
@@ -130,9 +159,19 @@ export const runCommand = new Command("run")
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
-      const seeds = new SeedsClient(projectPath);
+      let taskClient: ITaskClient;
+      let bvClient: BvClient | null = null;
+      try {
+        const clients = await createTaskClients(projectPath);
+        taskClient = clients.taskClient;
+        bvClient = clients.bvClient;
+      } catch (clientErr: unknown) {
+        const message = clientErr instanceof Error ? clientErr.message : String(clientErr);
+        console.error(chalk.red(`Error initialising task backend: ${message}`));
+        process.exit(1);
+      }
       const store = new ForemanStore();
-      const dispatcher = new Dispatcher(seeds, store, projectPath);
+      const dispatcher = new Dispatcher(taskClient, store, projectPath, bvClient);
 
       // Resume mode: pick up stuck/failed runs from a previous dispatch
       if (resume || resumeFailed) {
@@ -235,8 +274,33 @@ export const runCommand = new Command("run")
 
         console.log(chalk.bold(`Active agents: ${result.activeAgents}/${maxAgents}`));
 
-        // Nothing dispatched — all work is done (or blocked/dry-run)
-        if (result.dispatched.length === 0 || dryRun) {
+        // dry-run: always exit immediately
+        if (dryRun) {
+          break;
+        }
+
+        // Nothing new dispatched in this iteration
+        if (result.dispatched.length === 0) {
+          // If agents are still running AND watch mode is on, wait for them to
+          // finish — they may unblock previously-blocked tasks when they complete.
+          if (watch && result.activeAgents > 0) {
+            console.log(
+              chalk.dim(
+                `No new tasks dispatched — waiting for ${result.activeAgents} active agent(s) to finish…`
+              )
+            );
+            const activeRuns = store.getActiveRuns();
+            const runIds = activeRuns.map((r) => r.id);
+            if (runIds.length > 0) {
+              const { detached } = await watchRunsInk(store, runIds, { notificationBus });
+              if (detached) {
+                break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
+              }
+            }
+            // Agents finished — loop back and check for newly-unblocked tasks
+            continue;
+          }
+          // No active agents (or --no-watch): nothing left to do
           break;
         }
 

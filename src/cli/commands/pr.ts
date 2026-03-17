@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { SeedsClient } from "../../lib/seeds.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Refinery } from "../../orchestrator/refinery.js";
@@ -13,7 +13,7 @@ export const prCommand = new Command("pr")
   .action(async (opts) => {
     try {
       const projectPath = await getRepoRoot(process.cwd());
-      const seeds = new SeedsClient(projectPath);
+      const seeds = new BeadsRustClient(projectPath);
       const store = new ForemanStore();
       const refinery = new Refinery(store, seeds, projectPath);
 

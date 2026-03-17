@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { ForemanStore, type Project, type Run, type RunProgress, type Metrics, type Event } from "../../lib/store.js";
-import { elapsed, shortModel, renderAgentCard } from "../watch-ui.js";
+import { elapsed, renderAgentCard } from "../watch-ui.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -150,13 +150,11 @@ export function renderDashboard(state: DashboardState): string {
       lines.push(chalk.bold("  RECENTLY COMPLETED:"));
       for (const run of recentCompleted) {
         const progress = state.progresses.get(run.id) ?? null;
-        const costStr = progress?.costUsd
-          ? chalk.yellow(`$${progress.costUsd.toFixed(4)}`)
-          : "";
-        const doneAt = run.completed_at ? elapsed(run.completed_at) : "?";
-        lines.push(
-          `    ${chalk.green("✓")} ${chalk.cyan(run.seed_id)} ${chalk.dim(shortModel(run.agent_type))} — ${chalk.dim(`${doneAt} ago`)} ${costStr}`,
-        );
+        const card = renderAgentCard(run, progress, false)
+          .split("\n")
+          .map((l) => "    " + l)
+          .join("\n");
+        lines.push(card);
       }
       lines.push("");
     }

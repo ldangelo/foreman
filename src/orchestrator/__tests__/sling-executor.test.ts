@@ -7,9 +7,9 @@ import type {
   Priority,
 } from "../types.js";
 
-// ── Mock SeedsClient and BeadsRustClient ─────────────────────────────────
+// ── Mock BeadsRustClient (used for both sd and br slots in execute()) ─────
 
-function createMockSeedsClient() {
+function createMockSdClient() {
   let counter = 0;
   return {
     create: vi.fn().mockImplementation(async () => ({
@@ -28,7 +28,7 @@ function createMockSeedsClient() {
     close: vi.fn().mockResolvedValue(undefined),
     addDependency: vi.fn().mockResolvedValue(undefined),
     update: vi.fn().mockResolvedValue(undefined),
-    ensureSdInstalled: vi.fn().mockResolvedValue(undefined),
+    ensureBrInstalled: vi.fn().mockResolvedValue(undefined),
     isInitialized: vi.fn().mockResolvedValue(true),
   };
 }
@@ -175,7 +175,7 @@ describe("toTrackerType", () => {
 
 describe("execute", () => {
   it("creates hierarchy in both sd and br", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const br = createMockBeadsRustClient();
     const plan = makeTestPlan();
 
@@ -191,7 +191,7 @@ describe("execute", () => {
   });
 
   it("wires dependencies", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const plan = makeTestPlan();
 
     await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
@@ -202,7 +202,7 @@ describe("execute", () => {
   });
 
   it("applies trd: labels to tasks", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const plan = makeTestPlan();
 
     await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
@@ -218,7 +218,7 @@ describe("execute", () => {
   });
 
   it("applies risk labels when enabled", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const plan = makeTestPlan();
 
     await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
@@ -233,7 +233,7 @@ describe("execute", () => {
   });
 
   it("skips risk labels when --no-risks", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const plan = makeTestPlan();
     const options = { ...DEFAULT_OPTIONS, noRisks: true };
 
@@ -248,7 +248,7 @@ describe("execute", () => {
   });
 
   it("skips completed tasks with --skip-completed", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const plan = makeTestPlan();
     const options = { ...DEFAULT_OPTIONS, skipCompleted: true };
 
@@ -260,7 +260,7 @@ describe("execute", () => {
   });
 
   it("creates then closes completed tasks with --close-completed", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const plan = makeTestPlan();
     const options = { ...DEFAULT_OPTIONS, closeCompleted: true };
 
@@ -271,7 +271,7 @@ describe("execute", () => {
   });
 
   it("uses --sd-only to skip br", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const br = createMockBeadsRustClient();
     const plan = makeTestPlan();
     const options = { ...DEFAULT_OPTIONS, sdOnly: true };
@@ -284,7 +284,7 @@ describe("execute", () => {
   });
 
   it("uses --br-only to skip sd", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const br = createMockBeadsRustClient();
     const plan = makeTestPlan();
     const options = { ...DEFAULT_OPTIONS, brOnly: true };
@@ -297,7 +297,7 @@ describe("execute", () => {
   });
 
   it("applies parallel labels to sprint issues", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const plan = makeTestPlan();
     const parallel: ParallelResult = {
       groups: [{ label: "A", sprintIndices: [0, 1] }],
@@ -338,7 +338,7 @@ describe("execute", () => {
   });
 
   it("adds quality notes to epic description when enabled", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const plan = makeTestPlan();
 
     await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
@@ -349,7 +349,7 @@ describe("execute", () => {
   });
 
   it("skips quality notes with --no-quality", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const plan = makeTestPlan();
     const options = { ...DEFAULT_OPTIONS, noQuality: true };
 
@@ -361,7 +361,7 @@ describe("execute", () => {
   });
 
   it("infers test kind from title", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const plan = makeTestPlan();
 
     await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
@@ -376,7 +376,7 @@ describe("execute", () => {
   });
 
   it("includes sprint summary in description", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const plan = makeTestPlan();
 
     await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
@@ -392,7 +392,7 @@ describe("execute", () => {
   });
 
   it("calls onProgress callback", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     const plan = makeTestPlan();
     const onProgress = vi.fn();
 
@@ -405,7 +405,7 @@ describe("execute", () => {
   });
 
   it("handles task creation failure gracefully", async () => {
-    const seeds = createMockSeedsClient();
+    const seeds = createMockSdClient();
     let callCount = 0;
     seeds.create.mockImplementation(async () => {
       callCount++;

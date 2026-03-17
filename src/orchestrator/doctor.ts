@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import type { ForemanStore } from "../lib/store.js";
+import type { ForemanStore, Run } from "../lib/store.js";
 import { listWorktrees, removeWorktree } from "../lib/git.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -65,6 +65,42 @@ export class Doctor {
     }
   }
 
+  async checkBrBinary(): Promise<CheckResult> {
+    const brPath = join(homedir(), ".local", "bin", "br");
+    try {
+      await access(brPath);
+      return {
+        name: "br (beads_rust) CLI binary",
+        status: "pass",
+        message: `Found at ${brPath}`,
+      };
+    } catch {
+      return {
+        name: "br (beads_rust) CLI binary",
+        status: "fail",
+        message: `Not found at ${brPath}. Install via: cargo install beads_rust`,
+      };
+    }
+  }
+
+  async checkBvBinary(): Promise<CheckResult> {
+    const bvPath = join(homedir(), ".local", "bin", "bv");
+    try {
+      await access(bvPath);
+      return {
+        name: "bv (beads_viewer) CLI binary",
+        status: "pass",
+        message: `Found at ${bvPath}`,
+      };
+    } catch {
+      return {
+        name: "bv (beads_viewer) CLI binary",
+        status: "fail",
+        message: `Not found at ${bvPath}. Install via: cargo install beads_viewer`,
+      };
+    }
+  }
+
   async checkGitBinary(): Promise<CheckResult> {
     try {
       await execFileAsync("git", ["--version"]);
@@ -83,11 +119,13 @@ export class Doctor {
   }
 
   async checkSystem(): Promise<CheckResult[]> {
-    const [sdResult, gitResult] = await Promise.all([
-      this.checkSdBinary(),
+    // TRD-024: sd backend removed. Always check br and bv binaries.
+    const [brResult, bvResult, gitResult] = await Promise.all([
+      this.checkBrBinary(),
+      this.checkBvBinary(),
       this.checkGitBinary(),
     ]);
-    return [sdResult, gitResult];
+    return [brResult, bvResult, gitResult];
   }
 
   // ── Repository checks ──────────────────────────────────────────────
@@ -142,11 +180,28 @@ export class Doctor {
     };
   }
 
+  async checkBeadsInitialized(): Promise<CheckResult> {
+    const beadsDir = join(this.projectPath, ".beads");
+    if (existsSync(beadsDir)) {
+      return {
+        name: "beads (.beads/) initialized",
+        status: "pass",
+        message: ".beads directory found",
+      };
+    }
+    return {
+      name: "beads (.beads/) initialized",
+      status: "fail",
+      message: `No .beads directory at ${beadsDir}. Run 'foreman init' first.`,
+    };
+  }
+
   async checkRepository(): Promise<CheckResult[]> {
+    // TRD-024: sd backend removed. Always check for .beads initialization.
     const results: CheckResult[] = [];
     results.push(await this.checkDatabaseFile());
     results.push(await this.checkProjectRegistered());
-    results.push(await this.checkSeedsInitialized());
+    results.push(await this.checkBeadsInitialized());
     return results;
   }
 
@@ -184,11 +239,11 @@ export class Doctor {
     for (const wt of foremanWorktrees) {
       const seedId = wt.branch.slice("foreman/".length);
       const runs = this.store.getRunsForSeed(seedId);
-      const activeRun = runs.find((r: any) =>
+      const activeRun = runs.find((r: Run) =>
         ["pending", "running"].includes(r.status) && r.worktree_path === wt.path,
       );
-      const completedRun = runs.find((r: any) => r.status === "completed");
-      const mergedRun = runs.find((r: any) => r.status === "merged");
+      const completedRun = runs.find((r: Run) => r.status === "completed");
+      const mergedRun = runs.find((r: Run) => r.status === "merged");
 
       if (activeRun) {
         results.push({
@@ -470,32 +525,12 @@ export class Doctor {
   }
 
   async checkBlockedSeeds(): Promise<CheckResult> {
-    const sdPath = join(homedir(), ".bun", "bin", "sd");
-    try {
-      const { stdout } = await execFileAsync(sdPath, ["blocked", "--json"], {
-        cwd: this.projectPath,
-      });
-      const parsed = JSON.parse(stdout);
-      const blocked = (parsed.issues ?? parsed ?? []) as Array<{ id: string; title: string }>;
-      if (blocked.length === 0) {
-        return {
-          name: "blocked seeds",
-          status: "pass",
-          message: "No blocked seeds",
-        };
-      }
-      return {
-        name: "blocked seeds",
-        status: "warn",
-        message: `${blocked.length} blocked: ${blocked.slice(0, 5).map((b) => b.id).join(", ")}${blocked.length > 5 ? "..." : ""}. Check deps with 'sd show <id>'.`,
-      };
-    } catch {
-      return {
-        name: "blocked seeds",
-        status: "pass",
-        message: "No blocked seeds (or sd blocked unavailable)",
-      };
-    }
+    // TRD-024: sd backend removed. br blocked detection is not yet implemented.
+    return {
+      name: "blocked seeds",
+      status: "pass",
+      message: "Blocked-seed check not yet implemented for br backend. Use 'br list --status=open' to inspect manually.",
+    };
   }
 
   // ── Merge queue checks ──────────────────────────────────────────────

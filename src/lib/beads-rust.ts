@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { ITaskClient, Issue, UpdateOptions } from "./task-client.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -85,7 +86,7 @@ export async function execBr(
 
 // ── Client ──────────────────────────────────────────────────────────────
 
-export class BeadsRustClient {
+export class BeadsRustClient implements ITaskClient {
   private projectPath: string;
 
   constructor(projectPath: string) {
@@ -166,17 +167,10 @@ export class BeadsRustClient {
     return (await execBr(["show", id], this.projectPath)) as BrIssueDetail;
   }
 
-  /** Update fields on an issue. */
+  /** Update fields on an issue. Satisfies ITaskClient.update(). */
   async update(
     id: string,
-    opts: {
-      title?: string;
-      status?: string;
-      description?: string;
-      notes?: string;
-      acceptance?: string;
-      claim?: boolean;
-    },
+    opts: UpdateOptions,
   ): Promise<void> {
     await this.requireInit();
     const args = ["update", id];
@@ -201,6 +195,12 @@ export class BeadsRustClient {
   async addDependency(childId: string, parentId: string): Promise<void> {
     await this.requireInit();
     await execBr(["dep", "add", childId, parentId], this.projectPath);
+  }
+
+  /** Return all open, unblocked issues (equivalent to `br ready`). Satisfies ITaskClient.ready(). */
+  async ready(): Promise<Issue[]> {
+    await this.requireInit();
+    return ((await execBr(["ready"], this.projectPath)) as BrIssue[]) ?? [];
   }
 
   /** Search issues by query string. */

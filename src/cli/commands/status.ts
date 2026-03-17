@@ -1,71 +1,86 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { execFileSync } from "node:child_process";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { ForemanStore } from "../../lib/store.js";
 import { renderAgentCard } from "../watch-ui.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
+import type { BrIssue } from "../../lib/beads-rust.js";
+import type { TaskBackend } from "../../lib/feature-flags.js";
+import type { Issue } from "../../lib/task-client.js";
 
-interface Seed {
-  id: string;
-  title: string;
-  status: string;
+// ── Exported helpers (used by tests) ─────────────────────────────────────
+
+/**
+ * Returns the active task backend. Exported for testing.
+ * TRD-024: Always returns 'br'; sd backend removed.
+ */
+export function getStatusBackend(): TaskBackend {
+  return 'br';
 }
 
-const sdPath = join(process.env.HOME ?? "~", ".bun", "bin", "sd");
+/**
+ * Status counts returned by fetchStatusCounts.
+ */
+export interface StatusCounts {
+  total: number;
+  ready: number;
+  inProgress: number;
+  completed: number;
+  blocked: number;
+}
 
-function renderStatus(): void {
-  // Fetch seed list
-  let seeds: Seed[] = [];
+/**
+ * Fetch task status counts using the br backend.
+ *
+ * TRD-024: sd backend removed. Always uses BeadsRustClient (br CLI).
+ */
+export async function fetchStatusCounts(projectPath: string): Promise<StatusCounts> {
+  const brClient = new BeadsRustClient(projectPath);
+
+  // Fetch open issues (all non-closed)
+  let openIssues: BrIssue[] = [];
   try {
-    const output = execFileSync(sdPath, ["list", "--json", "--limit", "0"], {
-      stdio: ["pipe", "pipe", "pipe"],
-      encoding: "utf-8",
-    });
-    const parsed = JSON.parse(output);
-    seeds = parsed.issues ?? parsed ?? [];
-  } catch {
-    console.error(
-      chalk.red(
-        "Failed to read seeds. Is this a foreman project? Run 'foreman init' first.",
-      ),
-    );
+    openIssues = await brClient.list();
+  } catch { /* br not initialized or binary missing — return zeros */ }
+
+  // Fetch closed issues separately (br list excludes closed by default)
+  let closedIssues: BrIssue[] = [];
+  try {
+    closedIssues = await brClient.list({ status: "closed" });
+  } catch { /* no closed issues */ }
+
+  // Fetch ready issues (open + unblocked)
+  let readyIssues: Issue[] = [];
+  try {
+    readyIssues = await brClient.ready();
+  } catch { /* br ready may fail */ }
+
+  const inProgress = openIssues.filter((i) => i.status === "in_progress").length;
+  const completed = closedIssues.length;
+  const ready = readyIssues.length;
+  // blocked = open issues that are not ready and not in_progress
+  const readyIds = new Set(readyIssues.map((i) => i.id));
+  const blocked = openIssues.filter(
+    (i) => i.status !== "in_progress" && !readyIds.has(i.id),
+  ).length;
+  const total = openIssues.length + completed;
+
+  return { total, ready, inProgress, completed, blocked };
+}
+
+// ── Internal render helper ────────────────────────────────────────────────
+
+async function renderStatus(): Promise<void> {
+  const projectPath = resolve(".");
+  let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+  try {
+    counts = await fetchStatusCounts(projectPath);
+  } catch (err) {
+    console.error(chalk.red(err instanceof Error ? err.message : String(err)));
     process.exit(1);
   }
 
-  const inProgress = seeds.filter((b) => b.status === "in_progress").length;
-
-  // sd list excludes closed issues by default — fetch them separately
-  let completed = 0;
-  try {
-    const closedOutput = execFileSync(sdPath, ["list", "--status=closed", "--json", "--limit", "0"], {
-      stdio: ["pipe", "pipe", "pipe"],
-      encoding: "utf-8",
-    });
-    const closedParsed = JSON.parse(closedOutput);
-    completed = (closedParsed.issues ?? closedParsed ?? []).length;
-  } catch { /* no closed issues */ }
-
-  const total = seeds.length + completed;
-
-  // "ready" and "blocked" are computed from dependencies, not stored as status
-  let ready = 0;
-  let blocked = 0;
-  try {
-    const readyOutput = execFileSync(sdPath, ["ready", "--json"], {
-      stdio: ["pipe", "pipe", "pipe"],
-      encoding: "utf-8",
-    });
-    const readyParsed = JSON.parse(readyOutput);
-    ready = (readyParsed.issues ?? readyParsed ?? []).length;
-  } catch { /* sd ready may fail if no issues exist */ }
-  try {
-    const blockedOutput = execFileSync(sdPath, ["blocked", "--json"], {
-      stdio: ["pipe", "pipe", "pipe"],
-      encoding: "utf-8",
-    });
-    const blockedParsed = JSON.parse(blockedOutput);
-    blocked = (blockedParsed.issues ?? blockedParsed ?? []).length;
-  } catch { /* sd blocked may fail if no issues exist */ }
+  const { total, ready, inProgress, completed, blocked } = counts;
 
   console.log(chalk.bold("Tasks"));
   console.log(`  Total:       ${chalk.white(total)}`);
@@ -148,7 +163,7 @@ function renderStatus(): void {
 }
 
 export const statusCommand = new Command("status")
-  .description("Show project status from seeds + sqlite")
+  .description("Show project status from beads_rust (br) + sqlite")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
   .action(async (opts: { watch?: boolean | string }) => {
     if (opts.watch !== undefined) {
@@ -166,12 +181,12 @@ export const statusCommand = new Command("status")
         // Clear screen and move cursor to top
         process.stdout.write("\x1b[2J\x1b[H");
         console.log(chalk.bold("Project Status") + chalk.dim(`  (watching every ${seconds}s — Ctrl+C to stop)\n`));
-        renderStatus();
+        await renderStatus();
         console.log(chalk.dim(`\nLast updated: ${new Date().toLocaleTimeString()}`));
         await new Promise((r) => setTimeout(r, seconds * 1000));
       }
     } else {
       console.log(chalk.bold("Project Status\n"));
-      renderStatus();
+      await renderStatus();
     }
   });
