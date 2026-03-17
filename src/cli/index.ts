@@ -16,7 +16,6 @@ import { dashboardCommand } from "./commands/dashboard.js";
 import { beadCommand } from "./commands/bead.js";
 import { worktreeCommand } from "./commands/worktree.js";
 import { slingCommand } from "./commands/sling.js";
-import { migrateBeadsCommand } from "./commands/migrate-beads.js";
 import { stopCommand } from "./commands/stop.js";
 import { sentinelCommand } from "./commands/sentinel.js";
 
@@ -42,7 +41,6 @@ program.addCommand(dashboardCommand);
 program.addCommand(beadCommand);
 program.addCommand(worktreeCommand);
 program.addCommand(slingCommand);
-program.addCommand(migrateBeadsCommand);
 program.addCommand(stopCommand);
 program.addCommand(sentinelCommand);
 
