@@ -4,7 +4,7 @@ export type RuntimeSelection = "claude-code";
 
 export type ModelSelection = "claude-opus-4-6" | "claude-sonnet-4-6" | "claude-haiku-4-5-20251001";
 
-export type AgentRole = "lead" | "explorer" | "developer" | "qa" | "reviewer" | "worker";
+export type AgentRole = "lead" | "explorer" | "developer" | "qa" | "reviewer" | "worker" | "sentinel";
 
 // ── Decomposition types ─────────────────────────────────────────────────
 
@@ -256,6 +256,37 @@ export interface SlingResult {
   sd: TrackerResult | null;
   br: TrackerResult | null;
   depErrors: string[];
+}
+
+// ── Sentinel types ───────────────────────────────────────────────────────
+
+export interface SentinelConfig {
+  branch: string;
+  testCommand: string;
+  intervalMinutes: number;
+  failureThreshold: number;
+  enabled: boolean;
+}
+
+export interface SentinelRunRecord {
+  id: string;
+  project_id: string;
+  branch: string;
+  commit_hash: string | null;
+  status: "running" | "passed" | "failed" | "error";
+  test_command: string;
+  output: string | null;
+  failure_count: number;
+  started_at: string;
+  completed_at: string | null;
+}
+
+export interface SentinelResult {
+  id: string;
+  status: "passed" | "failed" | "error";
+  commitHash: string | null;
+  output: string;
+  durationMs: number;
 }
 
 // ── Doctor types ────────────────────────────────────────────────────────

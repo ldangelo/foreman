@@ -14,6 +14,7 @@ import {
   getQaBudget,
   getReviewerBudget,
   getPlanStepBudget,
+  getSentinelBudget,
 } from "../lib/config.js";
 
 // ── Role config ─────────────────────────────────────────────────────────
@@ -139,7 +140,7 @@ function resolveModel(envVar: string, defaultModel: ModelSelection): ModelSelect
  * be used both inside `buildRoleConfigs` and as a safe fallback when the
  * module-level initialisation catches an env-var validation error.
  */
-const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker">, ModelSelection>> = {
+const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker" | "sentinel">, ModelSelection>> = {
   explorer: "claude-haiku-4-5-20251001",
   developer: "claude-sonnet-4-6",
   qa: "claude-sonnet-4-6",
@@ -158,7 +159,7 @@ const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker">, Mod
  * Each variable accepts any value from the ModelSelection union.  When a
  * variable is absent or empty the hard-coded default is used.
  */
-export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker">, RoleConfig> {
+export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" | "sentinel">, RoleConfig> {
   return {
     explorer: {
       role: "explorer",
@@ -208,7 +209,7 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker">
  * on failure it logs a warning to stderr and falls back to the hard-coded
  * defaults so the process continues and can write a proper failure record.
  */
-export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleConfig> = (() => {
+export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentinel">, RoleConfig> = (() => {
   try {
     return buildRoleConfigs();
   } catch (err) {
@@ -255,6 +256,16 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker">, RoleCon
     };
   }
 })();
+
+/** Standalone role config for the sentinel (not part of the pipeline). */
+export const SENTINEL_ROLE_CONFIG: RoleConfig = {
+  role: "sentinel",
+  model: "claude-sonnet-4-6",
+  maxBudgetUsd: getSentinelBudget(),
+  permissionMode: "acceptEdits",
+  reportFile: "SENTINEL_REPORT.md",
+  allowedTools: ["Bash", "Glob", "Grep", "Read", "Write"],
+};
 
 // ── Prompt templates ────────────────────────────────────────────────────
 
@@ -456,6 +467,47 @@ One paragraph assessment.
 - Mark **PASS** only when there are no actionable issues remaining
 - NOTEs are informational only and don't affect the verdict
 - Any issue that can reasonably be fixed by the Developer should be a WARNING, not a NOTE
+`;
+}
+
+export function sentinelPrompt(branch: string, testCommand: string): string {
+  return `# Sentinel Agent
+
+You are a **QA Sentinel** — your job is to continuously verify the health of the \`${branch}\` branch.
+
+## Instructions
+1. Run the test suite using: \`${testCommand}\`
+2. Record the results (pass/fail counts, any error messages)
+3. Write your findings to **SENTINEL_REPORT.md**
+
+## SENTINEL_REPORT.md Format
+\`\`\`markdown
+# Sentinel Report
+
+## Verdict: PASS | FAIL
+
+## Branch
+${branch}
+
+## Test Results
+- Tests passed: N
+- Tests failed: N
+- Duration: Ns
+
+## Failures (if any)
+- (list failing tests with error messages)
+
+## Output
+\`\`\`
+<test output here>
+\`\`\`
+\`\`\`
+
+## Rules
+- **DO NOT modify any source code files**
+- **DO NOT commit or push changes**
+- Focus only on running the test suite and reporting results
+- If the test command fails to start (missing dependencies, compile errors), report it as FAIL with details
 `;
 }
 

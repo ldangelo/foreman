@@ -18,6 +18,7 @@ import { worktreeCommand } from "./commands/worktree.js";
 import { slingCommand } from "./commands/sling.js";
 import { migrateSeedsCommand } from "./commands/migrate-seeds.js";
 import { stopCommand } from "./commands/stop.js";
+import { sentinelCommand } from "./commands/sentinel.js";
 
 const program = new Command();
 
@@ -43,5 +44,6 @@ program.addCommand(worktreeCommand);
 program.addCommand(slingCommand);
 program.addCommand(migrateSeedsCommand);
 program.addCommand(stopCommand);
+program.addCommand(sentinelCommand);
 
 program.parse();
