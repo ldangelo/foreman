@@ -504,24 +504,6 @@ export class Dispatcher {
   }
 
   /**
-   * Determine the workflow backend based on bead type.
-   *
-   * Type-aware routing strategy:
-   * - All modern bead types (bug, feature, task, epic, chore, docs, question) use 'br' (beads_rust)
-   * - The 'sd' backend is reserved for legacy seeds during migration
-   * - Unknown or missing types default to 'br' (safe default)
-   *
-   * @param task Task with optional type information
-   * @returns "sd" | "br" backend identifier
-   */
-  selectBackend(_task: SeedInfo): "sd" | "br" {
-    // All current bead types use the modern 'br' backend.
-    // This method provides an extension point for future type-specific routing.
-    // Example future rule: if (_task.type === "legacy") return "sd";
-    return "br";
-  }
-
-  /**
    * Build the TASK.md content for a seed (exposed for testing).
    */
   generateAgentInstructions(seed: SeedInfo, worktreePath: string): string {
@@ -535,15 +517,12 @@ export class Dispatcher {
    * Build the spawn prompt for an agent (exposed for testing — TRD-012).
    * Returns the multi-line string passed to the worker as its initial prompt.
    */
-  buildSpawnPrompt(seedId: string, seedTitle: string, backend: "sd" | "br"): string {
-    const closeCmd = backend === "br"
-      ? `br close ${seedId} --reason "Completed"`
-      : `sd close ${seedId} --reason "Completed"`;
+  buildSpawnPrompt(seedId: string, seedTitle: string): string {
     return [
       `Read TASK.md and implement the task described.`,
-      `Use ${backend === "br" ? "br (beads_rust)" : "sd (seeds)"} to track your progress.`,
+      `Use br (beads_rust) to track your progress.`,
       `When completely finished:`,
-      `  ${closeCmd}`,
+      `  br close ${seedId} --reason "Completed"`,
       `  git add -A`,
       `  git commit -m "${seedTitle} (${seedId})"`,
       `  git push -u origin foreman/${seedId}`,
@@ -553,15 +532,12 @@ export class Dispatcher {
   /**
    * Build the resume prompt for an agent (exposed for testing — TRD-012).
    */
-  buildResumePrompt(seedId: string, seedTitle: string, backend: "sd" | "br"): string {
-    const closeCmd = backend === "br"
-      ? `br close ${seedId} --reason "Completed"`
-      : `sd close ${seedId} --reason "Completed"`;
+  buildResumePrompt(seedId: string, seedTitle: string): string {
     return [
       `You were previously working on this task but were interrupted (likely by a rate limit).`,
       `Continue where you left off. Check your progress so far and complete the remaining work.`,
       `When completely finished:`,
-      `  ${closeCmd}`,
+      `  br close ${seedId} --reason "Completed"`,
       `  git add -A`,
       `  git commit -m "${seedTitle} (${seedId})"`,
       `  git push -u origin foreman/${seedId}`,
@@ -589,7 +565,7 @@ export class Dispatcher {
     },
     notifyUrl?: string,
   ): Promise<{ sessionKey: string; tmuxSession?: string }> {
-    const prompt = this.buildSpawnPrompt(seed.id, seed.title, this.selectBackend(seed));
+    const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
@@ -631,7 +607,7 @@ export class Dispatcher {
     telemetry?: boolean,
     notifyUrl?: string,
   ): Promise<{ sessionKey: string; tmuxSession?: string }> {
-    const resumePrompt = this.buildResumePrompt(seed.id, seed.title, this.selectBackend(seed));
+    const resumePrompt = this.buildResumePrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;

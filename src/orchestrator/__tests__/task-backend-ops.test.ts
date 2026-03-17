@@ -27,31 +27,6 @@ const HOME = "/test/home";
 
 // ── closeSeed ────────────────────────────────────────────────────────────────
 
-describe("closeSeed — sd backend (default)", () => {
-  beforeEach(() => {
-    mockExecFileSync.mockReset();
-    delete process.env.FOREMAN_TASK_BACKEND;
-    process.env.HOME = HOME;
-  });
-
-  afterEach(() => {
-    delete process.env.FOREMAN_TASK_BACKEND;
-  });
-
-  // TRD-023: default changed from 'sd' to 'br'
-  it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(""));
-    // env var is not set (deleted in beforeEach)
-
-    closeSeed("task-xyz-999");
-
-    const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    expect(cmd).toContain("br");
-    expect(args[0]).toBe("close");
-  });
-
-});
-
 describe("closeSeed — br backend", () => {
   beforeEach(() => {
     mockExecFileSync.mockReset();
@@ -110,34 +85,18 @@ describe("closeSeed — br backend", () => {
     expect(reasonIdx).toBeGreaterThanOrEqual(0);
     expect(args[reasonIdx + 1]).toBe("Completed via pipeline");
   });
+
+  it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", () => {
+    delete process.env.FOREMAN_TASK_BACKEND;
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+    closeSeed("task-xyz-999");
+    const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    expect(cmd).toContain("br");
+    expect(args[0]).toBe("close");
+  });
 });
 
 // ── resetSeedToOpen ──────────────────────────────────────────────────────────
-
-describe("resetSeedToOpen — sd backend (default)", () => {
-  beforeEach(() => {
-    mockExecFileSync.mockReset();
-    delete process.env.FOREMAN_TASK_BACKEND;
-    process.env.HOME = HOME;
-  });
-
-  afterEach(() => {
-    delete process.env.FOREMAN_TASK_BACKEND;
-  });
-
-  // TRD-023: default changed from 'sd' to 'br'
-  it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(""));
-
-    resetSeedToOpen("task-xyz-999");
-
-    const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    expect(cmd).toContain("br");
-    expect(args[0]).toBe("update");
-    expect(args).toContain("open");
-  });
-
-});
 
 describe("resetSeedToOpen — br backend", () => {
   beforeEach(() => {
@@ -195,6 +154,16 @@ describe("resetSeedToOpen — br backend", () => {
     const statusIdx = args.indexOf("--status");
     expect(statusIdx).toBeGreaterThanOrEqual(0);
     expect(args[statusIdx + 1]).toBe("open");
+  });
+
+  it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", () => {
+    delete process.env.FOREMAN_TASK_BACKEND;
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+    resetSeedToOpen("task-xyz-999");
+    const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    expect(cmd).toContain("br");
+    expect(args[0]).toBe("update");
+    expect(args).toContain("open");
   });
 });
 
