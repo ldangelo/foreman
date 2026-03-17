@@ -255,4 +255,183 @@ describe("cleanWorktrees()", () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain("locked");
   });
+
+  it("with --dry-run skips actual removal but counts worktrees", async () => {
+    const worktrees: WorktreeInfo[] = [
+      {
+        path: "/tmp/project/.foreman-worktrees/seed-done",
+        branch: "foreman/seed-done",
+        head: "abc",
+        seedId: "seed-done",
+        runStatus: "merged",
+        runId: "run-1",
+        createdAt: new Date().toISOString(),
+      },
+      {
+        path: "/tmp/project/.foreman-worktrees/seed-active",
+        branch: "foreman/seed-active",
+        head: "def",
+        seedId: "seed-active",
+        runStatus: "running",
+        runId: "run-2",
+        createdAt: new Date().toISOString(),
+      },
+    ];
+
+    const result = await cleanWorktrees("/tmp/project", worktrees, { all: false, force: false, dryRun: true });
+
+    expect(result.removed).toBe(1);
+    expect(result.errors).toHaveLength(0);
+    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(vi.mocked(deleteBranch)).not.toHaveBeenCalled();
+  });
+
+  it("with --dry-run populates wouldRemove with the affected worktrees", async () => {
+    const worktrees: WorktreeInfo[] = [
+      {
+        path: "/tmp/project/.foreman-worktrees/seed-done",
+        branch: "foreman/seed-done",
+        head: "abc",
+        seedId: "seed-done",
+        runStatus: "merged",
+        runId: "run-1",
+        createdAt: new Date().toISOString(),
+      },
+      {
+        path: "/tmp/project/.foreman-worktrees/seed-active",
+        branch: "foreman/seed-active",
+        head: "def",
+        seedId: "seed-active",
+        runStatus: "running",
+        runId: "run-2",
+        createdAt: new Date().toISOString(),
+      },
+    ];
+
+    const result = await cleanWorktrees("/tmp/project", worktrees, { all: false, force: false, dryRun: true });
+
+    expect(result.wouldRemove).toHaveLength(1);
+    expect(result.wouldRemove![0].seedId).toBe("seed-done");
+    expect(result.wouldRemove![0].path).toBe("/tmp/project/.foreman-worktrees/seed-done");
+  });
+
+  it("with --dry-run and --all counts all worktrees without removing", async () => {
+    const worktrees: WorktreeInfo[] = [
+      {
+        path: "/tmp/project/.foreman-worktrees/seed-done",
+        branch: "foreman/seed-done",
+        head: "abc",
+        seedId: "seed-done",
+        runStatus: "merged",
+        runId: "run-1",
+        createdAt: new Date().toISOString(),
+      },
+      {
+        path: "/tmp/project/.foreman-worktrees/seed-active",
+        branch: "foreman/seed-active",
+        head: "def",
+        seedId: "seed-active",
+        runStatus: "running",
+        runId: "run-2",
+        createdAt: new Date().toISOString(),
+      },
+    ];
+
+    const result = await cleanWorktrees("/tmp/project", worktrees, { all: true, force: false, dryRun: true });
+
+    expect(result.removed).toBe(2);
+    expect(result.errors).toHaveLength(0);
+    expect(result.wouldRemove).toHaveLength(2);
+    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(vi.mocked(deleteBranch)).not.toHaveBeenCalled();
+  });
+
+  it("with --dry-run and --all populates wouldRemove with all worktrees", async () => {
+    const worktrees: WorktreeInfo[] = [
+      {
+        path: "/tmp/project/.foreman-worktrees/seed-done",
+        branch: "foreman/seed-done",
+        head: "abc",
+        seedId: "seed-done",
+        runStatus: "merged",
+        runId: "run-1",
+        createdAt: new Date().toISOString(),
+      },
+      {
+        path: "/tmp/project/.foreman-worktrees/seed-active",
+        branch: "foreman/seed-active",
+        head: "def",
+        seedId: "seed-active",
+        runStatus: "running",
+        runId: "run-2",
+        createdAt: new Date().toISOString(),
+      },
+    ];
+
+    const result = await cleanWorktrees("/tmp/project", worktrees, { all: true, force: false, dryRun: true });
+
+    const seedIds = result.wouldRemove!.map((wt) => wt.seedId);
+    expect(seedIds).toContain("seed-done");
+    expect(seedIds).toContain("seed-active");
+  });
+
+  it("with --dry-run still respects filter criteria (skips active without --all)", async () => {
+    const worktrees: WorktreeInfo[] = [
+      {
+        path: "/tmp/project/.foreman-worktrees/seed-done",
+        branch: "foreman/seed-done",
+        head: "abc",
+        seedId: "seed-done",
+        runStatus: "completed",
+        runId: "run-1",
+        createdAt: new Date().toISOString(),
+      },
+      {
+        path: "/tmp/project/.foreman-worktrees/seed-pending",
+        branch: "foreman/seed-pending",
+        head: "def",
+        seedId: "seed-pending",
+        runStatus: "pending",
+        runId: "run-2",
+        createdAt: new Date().toISOString(),
+      },
+      {
+        path: "/tmp/project/.foreman-worktrees/seed-running",
+        branch: "foreman/seed-running",
+        head: "ghi",
+        seedId: "seed-running",
+        runStatus: "running",
+        runId: "run-3",
+        createdAt: new Date().toISOString(),
+      },
+    ];
+
+    const result = await cleanWorktrees("/tmp/project", worktrees, { all: false, force: false, dryRun: true });
+
+    // Only "completed" is cleanable without --all; "pending" and "running" are skipped
+    expect(result.removed).toBe(1);
+    expect(result.wouldRemove).toHaveLength(1);
+    expect(result.wouldRemove![0].seedId).toBe("seed-done");
+    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(vi.mocked(deleteBranch)).not.toHaveBeenCalled();
+  });
+
+  it("without --dry-run does not populate wouldRemove", async () => {
+    const worktrees: WorktreeInfo[] = [
+      {
+        path: "/tmp/project/.foreman-worktrees/seed-done",
+        branch: "foreman/seed-done",
+        head: "abc",
+        seedId: "seed-done",
+        runStatus: "completed",
+        runId: "run-1",
+        createdAt: new Date().toISOString(),
+      },
+    ];
+
+    const result = await cleanWorktrees("/tmp/project", worktrees, { all: false, force: false });
+
+    expect(result.wouldRemove).toBeUndefined();
+    expect(vi.mocked(removeWorktree)).toHaveBeenCalledTimes(1);
+  });
 });
