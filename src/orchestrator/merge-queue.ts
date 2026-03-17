@@ -190,6 +190,25 @@ export class MergeQueue {
   }
 
   /**
+   * Reset a failed/conflict entry for a given seed back to 'pending' so it
+   * can be retried. Used by `foreman merge --seed <id>` to allow re-processing
+   * entries that previously ended in a terminal failure state.
+   *
+   * Returns true if an entry was reset, false if no retryable entry was found.
+   */
+  resetForRetry(seedId: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE merge_queue
+         SET status = 'pending', error = NULL, started_at = NULL
+         WHERE seed_id = ? AND status IN ('failed', 'conflict', 'merging')
+         RETURNING id`
+      )
+      .get(seedId);
+    return result != null;
+  }
+
+  /**
    * Delete an entry from the queue.
    */
   remove(id: number): void {

@@ -275,6 +275,12 @@ export const mergeCommand = new Command("merge")
         console.log(chalk.dim(`  Reconciled ${reconcileResult.enqueued} completed run(s) into merge queue.\n`));
       }
 
+      // When retrying a specific seed, reset its failed/conflict entry back to
+      // pending so the dequeue loop can pick it up again.
+      if (opts.seed) {
+        mq.resetForRetry(opts.seed);
+      }
+
       // Step 2: Process queue via dequeue loop
       const merged: MergedRun[] = [];
       const conflicts: ConflictRun[] = [];
