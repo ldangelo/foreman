@@ -524,6 +524,28 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.merged[0].seedId).toBe("seed-conflict");
   });
 
+  it("prefers completed run over newer stuck run when both exist for same seed", async () => {
+    // Reproduces: two runs for dashboard-g7l — stuck (created later) and completed (created earlier).
+    // getRunsByStatuses returns both; we must use the completed one.
+    const { store, refinery } = makeMocks();
+    const completedRun = makeRun({ id: "run-old-completed", seed_id: "seed-dup", status: "completed" });
+    const stuckRun = makeRun({ id: "run-new-stuck", seed_id: "seed-dup", status: "failed" });
+
+    store.getRunsByStatus.mockReturnValue([]);
+    // SQLite returns stuck first (most recent created_at DESC)
+    store.getRunsByStatuses.mockReturnValue([stuckRun, completedRun]);
+
+    (mergeWorktree as any).mockResolvedValue({ success: true });
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    const report = await refinery.mergeCompleted({ runTests: false, seedId: "seed-dup" });
+
+    expect(report.merged).toHaveLength(1);
+    expect(report.merged[0].seedId).toBe("seed-dup");
+    // Must have used the completed run, not the stuck one
+    expect(report.merged[0].runId).toBe("run-old-completed");
+  });
+
   it("without seedId filter, only looks for completed runs (no retry expansion)", async () => {
     const { store, refinery } = makeMocks();
     store.getRunsByStatus.mockReturnValue([]);
