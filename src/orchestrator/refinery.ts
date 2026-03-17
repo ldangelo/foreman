@@ -213,13 +213,28 @@ export class Refinery {
 
   /**
    * Get all completed runs that are ready to merge, optionally filtered to a single seed.
+   *
+   * When a seedId filter is active (i.e. `foreman merge --seed <id>`), we also
+   * include runs in terminal failure states ("test-failed", "conflict", "failed")
+   * so that a previously-failed merge can be retried without the user having to
+   * manually reset the run's status back to "completed".
+   *
+   * Without a seedId filter we only return "completed" runs to avoid accidentally
+   * re-attempting bulk merges of runs that failed for unrelated reasons.
    */
   getCompletedRuns(projectId?: string, seedId?: string): import("../lib/store.js").Run[] {
-    const completedRuns = this.store.getRunsByStatus("completed", projectId);
     if (seedId) {
-      return completedRuns.filter((r) => r.seed_id === seedId);
+      // For targeted retries, look in completed AND terminal failure states.
+      const retryStatuses: import("../lib/store.js").Run["status"][] = [
+        "completed",
+        "test-failed",
+        "conflict",
+        "failed",
+      ];
+      const runs = this.store.getRunsByStatuses(retryStatuses, projectId);
+      return runs.filter((r) => r.seed_id === seedId);
     }
-    return completedRuns;
+    return this.store.getRunsByStatus("completed", projectId);
   }
 
   /**

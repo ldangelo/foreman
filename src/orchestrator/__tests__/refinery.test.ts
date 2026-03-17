@@ -41,6 +41,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 function makeMocks() {
   const store = {
     getRunsByStatus: vi.fn(() => [] as Run[]),
+    getRunsByStatuses: vi.fn(() => [] as Run[]),
     getRun: vi.fn(() => null as Run | null),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
@@ -461,7 +462,8 @@ describe("Refinery.mergeCompleted()", () => {
     const { store, refinery } = makeMocks();
     const runA = makeRun({ id: "run-a", seed_id: "seed-target" });
     const runB = makeRun({ id: "run-b", seed_id: "seed-other" });
-    store.getRunsByStatus.mockReturnValue([runA, runB]);
+    // When seedId is specified, getCompletedRuns uses getRunsByStatuses (not getRunsByStatus)
+    store.getRunsByStatuses.mockReturnValue([runA, runB]);
     (mergeWorktree as any).mockResolvedValue({ success: true });
     (removeWorktree as any).mockResolvedValue(undefined);
 
@@ -481,6 +483,56 @@ describe("Refinery.mergeCompleted()", () => {
 
     expect(report.testFailures).toHaveLength(1);
     expect(report.testFailures[0].error).toContain("Unexpected git failure");
+  });
+
+  it("retries a previously-failed seed: finds run in test-failed state when seedId is specified", async () => {
+    // Reproduces: "no completed run found for seed <seedid>" after a failed merge.
+    // When --seed is supplied, getCompletedRuns() must also look in terminal failure
+    // states so the user can retry without manually resetting the run.
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-retry", seed_id: "seed-retry", status: "test-failed" });
+
+    // Normal getRunsByStatus("completed") returns nothing (the run is test-failed)
+    store.getRunsByStatus.mockReturnValue([]);
+    // getRunsByStatuses with the retry-eligible statuses returns the failed run
+    store.getRunsByStatuses.mockReturnValue([run]);
+
+    (mergeWorktree as any).mockResolvedValue({ success: true });
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    const report = await refinery.mergeCompleted({ runTests: false, seedId: "seed-retry" });
+
+    expect(report.merged).toHaveLength(1);
+    expect(report.merged[0].seedId).toBe("seed-retry");
+    // Confirm getRunsByStatuses was called (not just getRunsByStatus)
+    expect(store.getRunsByStatuses).toHaveBeenCalled();
+  });
+
+  it("retries a previously-failed seed: finds run in conflict state when seedId is specified", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-conflict-retry", seed_id: "seed-conflict", status: "conflict" });
+
+    store.getRunsByStatus.mockReturnValue([]);
+    store.getRunsByStatuses.mockReturnValue([run]);
+
+    (mergeWorktree as any).mockResolvedValue({ success: true });
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    const report = await refinery.mergeCompleted({ runTests: false, seedId: "seed-conflict" });
+
+    expect(report.merged).toHaveLength(1);
+    expect(report.merged[0].seedId).toBe("seed-conflict");
+  });
+
+  it("without seedId filter, only looks for completed runs (no retry expansion)", async () => {
+    const { store, refinery } = makeMocks();
+    store.getRunsByStatus.mockReturnValue([]);
+
+    const report = await refinery.mergeCompleted({ runTests: false });
+
+    expect(report.merged).toHaveLength(0);
+    // getRunsByStatuses should NOT be called when no seedId filter is active
+    expect(store.getRunsByStatuses).not.toHaveBeenCalled();
   });
 });
 
