@@ -18,6 +18,7 @@ import { worktreeCommand } from "./commands/worktree.js";
 import { slingCommand } from "./commands/sling.js";
 import { stopCommand } from "./commands/stop.js";
 import { sentinelCommand } from "./commands/sentinel.js";
+import { retryCommand } from "./commands/retry.js";
 
 const program = new Command();
 
@@ -43,5 +44,6 @@ program.addCommand(worktreeCommand);
 program.addCommand(slingCommand);
 program.addCommand(stopCommand);
 program.addCommand(sentinelCommand);
+program.addCommand(retryCommand);
 
 program.parse();
