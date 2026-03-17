@@ -55,6 +55,51 @@ export async function getRepoRoot(path: string): Promise<string> {
 }
 
 /**
+ * Detect the default/parent branch for a repository.
+ *
+ * Resolution order:
+ * 1. `git symbolic-ref refs/remotes/origin/HEAD --short` → strips "origin/" prefix
+ *    (e.g. "origin/main" → "main"). Works when the remote has been fetched.
+ * 2. Check whether "main" exists as a local branch.
+ * 3. Check whether "master" exists as a local branch.
+ * 4. Fall back to the current branch.
+ */
+export async function detectDefaultBranch(repoPath: string): Promise<string> {
+  // 1. Try origin/HEAD symbolic ref
+  try {
+    const ref = await git(
+      ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+      repoPath,
+    );
+    // ref is e.g. "origin/main" — strip the "origin/" prefix
+    if (ref) {
+      return ref.replace(/^origin\//, "");
+    }
+  } catch {
+    // origin/HEAD not set or no remote — fall through
+  }
+
+  // 2. Check if "main" exists locally
+  try {
+    await git(["rev-parse", "--verify", "main"], repoPath);
+    return "main";
+  } catch {
+    // "main" does not exist — fall through
+  }
+
+  // 3. Check if "master" exists locally
+  try {
+    await git(["rev-parse", "--verify", "master"], repoPath);
+    return "master";
+  } catch {
+    // "master" does not exist — fall through
+  }
+
+  // 4. Fall back to the current branch
+  return getCurrentBranch(repoPath);
+}
+
+/**
  * Get the current branch name.
  */
 export async function getCurrentBranch(repoPath: string): Promise<string> {

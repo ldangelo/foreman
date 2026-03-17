@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import type { ForemanStore } from "../lib/store.js";
 import type { SeedGraph } from "../lib/seeds.js";
-import { mergeWorktree, removeWorktree } from "../lib/git.js";
+import { mergeWorktree, removeWorktree, detectDefaultBranch } from "../lib/git.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
@@ -305,7 +305,7 @@ export class Refinery {
     projectId?: string;
     seedId?: string;
   }): Promise<MergeReport> {
-    const targetBranch = opts?.targetBranch ?? "main";
+    const targetBranch = opts?.targetBranch ?? await detectDefaultBranch(this.projectPath);
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
 
@@ -495,7 +495,7 @@ export class Refinery {
     }
 
     // strategy === 'theirs' — attempt merge with -X theirs
-    const targetBranch = opts?.targetBranch ?? "main";
+    const targetBranch = opts?.targetBranch ?? await detectDefaultBranch(this.projectPath);
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
 
@@ -595,7 +595,7 @@ export class Refinery {
     draft?: boolean;
     projectId?: string;
   }): Promise<PrReport> {
-    const baseBranch = opts?.baseBranch ?? "main";
+    const baseBranch = opts?.baseBranch ?? await detectDefaultBranch(this.projectPath);
     const draft = opts?.draft ?? false;
 
     const completedRuns = this.store.getRunsByStatus("completed", opts?.projectId);

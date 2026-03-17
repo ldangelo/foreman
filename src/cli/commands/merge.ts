@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { getRepoRoot, detectDefaultBranch } from "../../lib/git.js";
 import { Refinery, dryRunMerge } from "../../orchestrator/refinery.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { MergeQueueStatus } from "../../orchestrator/merge-queue.js";
@@ -45,7 +45,7 @@ function statusLabel(status: MergeQueueStatus): string {
 
 export const mergeCommand = new Command("merge")
   .description("Merge completed agent work into target branch")
-  .option("--target-branch <branch>", "Branch to merge into", "main")
+  .option("--target-branch <branch>", "Branch to merge into (default: auto-detected)")
   .option("--no-tests", "Skip running tests after merge")
   .option("--test-command <cmd>", "Test command to run", "npm test")
   .option("--seed <id>", "Merge a single seed by ID")
@@ -58,6 +58,12 @@ export const mergeCommand = new Command("merge")
   .action(async (opts) => {
     try {
       const projectPath = await getRepoRoot(process.cwd());
+
+      // Resolve the target branch: use the explicit --target-branch flag if provided,
+      // otherwise auto-detect the repository's default branch.
+      const targetBranch: string = (opts.targetBranch as string | undefined)
+        ?? await detectDefaultBranch(projectPath);
+
       const seeds = await createMergeTaskClient(projectPath);
       const store = new ForemanStore();
       const refinery = new Refinery(store, seeds, projectPath);
@@ -106,7 +112,7 @@ export const mergeCommand = new Command("merge")
         console.log(chalk.bold(`Resolving conflict for ${chalk.cyan(run.seed_id)} (${branchName}) with strategy: ${chalk.yellow(strategy)}\n`));
 
         const success = await refinery.resolveConflict(runId, strategy as "theirs" | "abort", {
-          targetBranch: opts.targetBranch,
+          targetBranch,
           runTests: opts.tests,
           testCommand: opts.testCommand,
         });
@@ -188,7 +194,7 @@ export const mergeCommand = new Command("merge")
 
         const dryRunResults = await dryRunMerge(
           projectPath,
-          opts.targetBranch,
+          targetBranch,
           branches,
           opts.seed as string | undefined,
         );
@@ -289,7 +295,7 @@ export const mergeCommand = new Command("merge")
 
         try {
           const report = await refinery.mergeCompleted({
-            targetBranch: opts.targetBranch,
+            targetBranch,
             runTests: opts.tests,
             testCommand: opts.testCommand,
             projectId: project.id,
