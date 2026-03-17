@@ -444,6 +444,26 @@ export class ForemanStore {
       .all(status) as Run[];
   }
 
+  /**
+   * Fetch runs whose status is any of the given values.
+   * Used by Refinery.getCompletedRuns() to find retry-eligible runs when a seedId
+   * filter is active (e.g. after a test-failed or conflict).
+   */
+  getRunsByStatuses(statuses: Run["status"][], projectId?: string): Run[] {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => "?").join(", ");
+    if (projectId) {
+      return this.db
+        .prepare(
+          `SELECT * FROM runs WHERE project_id = ? AND status IN (${placeholders}) ORDER BY created_at DESC`
+        )
+        .all(projectId, ...statuses) as Run[];
+    }
+    return this.db
+      .prepare(`SELECT * FROM runs WHERE status IN (${placeholders}) ORDER BY created_at DESC`)
+      .all(...statuses) as Run[];
+  }
+
   getRunsByStatusSince(status: Run["status"], since: string, projectId?: string): Run[] {
     if (projectId) {
       return this.db
