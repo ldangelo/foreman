@@ -28,7 +28,11 @@
       "Bash(br dep:*)",
       "Bash(br ready:*)",
       "Bash(br show:*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Bash(npm test:*)",
+      "Skill(commit-commands:commit-push-pr)",
+      "Bash(git commit:*)",
+      "Bash(active agents\" path:*)"
     ]
   },
   "mcpServers": {
