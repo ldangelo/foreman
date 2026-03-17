@@ -372,6 +372,170 @@ describe("Dispatcher — BvClient ordering", () => {
   });
 });
 
+describe("Dispatcher.resumeRuns — seed in_progress marking", () => {
+  function makeRun(overrides?: Partial<{
+    id: string;
+    seed_id: string;
+    agent_type: string;
+    session_key: string | null;
+    worktree_path: string | null;
+    status: "stuck" | "failed";
+  }>) {
+    return {
+      id: "run-1",
+      project_id: "proj-1",
+      seed_id: "seed-1",
+      agent_type: "claude-sonnet-4-6",
+      session_key: "foreman:sdk:claude-sonnet-4-6:run-1:session-abc123",
+      worktree_path: "/tmp/worktree",
+      status: "stuck" as const,
+      started_at: null,
+      completed_at: null,
+      created_at: new Date().toISOString(),
+      tmux_session: null,
+      ...overrides,
+    };
+  }
+
+  function makeStore(runs: ReturnType<typeof makeRun>[]) {
+    const newRun = { ...makeRun(), id: "run-2" };
+    return {
+      getRunsByStatus: vi.fn().mockReturnValue(runs),
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      createRun: vi.fn().mockReturnValue(newRun),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+  }
+
+  function makeSeeds() {
+    return {
+      ready: vi.fn().mockResolvedValue([]),
+      show: vi.fn().mockResolvedValue({ status: "stuck" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    } as ITaskClient;
+  }
+
+  it("marks seed as in_progress before spawning resumed agent", async () => {
+    const run = makeRun();
+    const store = makeStore([run]);
+    const seeds = makeSeeds();
+
+    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+
+    // Mock private resumeAgent to avoid actual process spawning
+    vi.spyOn(dispatcher as any, "resumeAgent").mockResolvedValue({
+      sessionKey: "foreman:sdk:claude-sonnet-4-6:run-2:session-abc123",
+      tmuxSession: undefined,
+    });
+
+    const result = await dispatcher.resumeRuns({ maxAgents: 5 });
+
+    expect(result.resumed).toHaveLength(1);
+    expect(seeds.update).toHaveBeenCalledWith("seed-1", { status: "in_progress" });
+  });
+
+  it("marks in_progress using run.seed_id (not newRun id)", async () => {
+    const run = makeRun({ seed_id: "seed-xyz" });
+    const store = makeStore([run]);
+    const seeds = makeSeeds();
+
+    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    vi.spyOn(dispatcher as any, "resumeAgent").mockResolvedValue({
+      sessionKey: "foreman:sdk:claude-sonnet-4-6:run-2:session-abc123",
+    });
+
+    await dispatcher.resumeRuns({ maxAgents: 5 });
+
+    expect(seeds.update).toHaveBeenCalledWith("seed-xyz", { status: "in_progress" });
+  });
+
+  it("marks in_progress for each resumed run when multiple resumable runs exist", async () => {
+    const run1 = makeRun({ id: "run-1", seed_id: "seed-1", session_key: "foreman:sdk:claude-sonnet-4-6:run-1:session-aaa" });
+    const run2 = makeRun({ id: "run-2", seed_id: "seed-2", session_key: "foreman:sdk:claude-sonnet-4-6:run-2:session-bbb" });
+
+    const newRun1 = { ...run1, id: "run-3" };
+    const newRun2 = { ...run2, id: "run-4" };
+    const store = {
+      getRunsByStatus: vi.fn().mockReturnValue([run1, run2]),
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      createRun: vi.fn()
+        .mockReturnValueOnce(newRun1)
+        .mockReturnValueOnce(newRun2),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const seeds = makeSeeds();
+    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    vi.spyOn(dispatcher as any, "resumeAgent").mockResolvedValue({
+      sessionKey: "foreman:sdk:claude-sonnet-4-6:run-new:session-zzz",
+    });
+
+    const result = await dispatcher.resumeRuns({ maxAgents: 5 });
+
+    expect(result.resumed).toHaveLength(2);
+    expect(seeds.update).toHaveBeenCalledWith("seed-1", { status: "in_progress" });
+    expect(seeds.update).toHaveBeenCalledWith("seed-2", { status: "in_progress" });
+    expect(seeds.update).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT call seeds.update when run has no valid session ID", async () => {
+    const run = makeRun({ session_key: "foreman:sdk:claude-sonnet-4-6:run-1" }); // no :session-<id>
+    const store = makeStore([run]);
+    const seeds = makeSeeds();
+
+    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+
+    const result = await dispatcher.resumeRuns({ maxAgents: 5 });
+
+    expect(result.skipped).toHaveLength(1);
+    expect(seeds.update).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call seeds.update when run has no worktree_path", async () => {
+    const run = makeRun({ worktree_path: null });
+    const store = makeStore([run]);
+    const seeds = makeSeeds();
+
+    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+
+    const result = await dispatcher.resumeRuns({ maxAgents: 5 });
+
+    expect(result.skipped).toHaveLength(1);
+    expect(seeds.update).not.toHaveBeenCalled();
+  });
+
+  it("marks in_progress before calling resumeAgent (ordering check)", async () => {
+    const run = makeRun();
+    const store = makeStore([run]);
+    const seeds = makeSeeds();
+
+    const callOrder: string[] = [];
+    (seeds.update as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      callOrder.push("seeds.update");
+      return Promise.resolve();
+    });
+
+    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    vi.spyOn(dispatcher as any, "resumeAgent").mockImplementation(() => {
+      callOrder.push("resumeAgent");
+      return Promise.resolve({ sessionKey: "foreman:sdk:claude-sonnet-4-6:run-2:session-abc" });
+    });
+
+    await dispatcher.resumeRuns({ maxAgents: 5 });
+
+    const updateIdx = callOrder.indexOf("seeds.update");
+    const spawnIdx = callOrder.indexOf("resumeAgent");
+    expect(updateIdx).toBeGreaterThanOrEqual(0);
+    expect(spawnIdx).toBeGreaterThanOrEqual(0);
+    expect(updateIdx).toBeLessThan(spawnIdx);
+  });
+});
+
 describe("PLAN_STEP_CONFIG", () => {
   it("has a valid model", () => {
     expect(PLAN_STEP_CONFIG.model).toBe("claude-sonnet-4-6");

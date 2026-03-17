@@ -325,6 +325,9 @@ export class Dispatcher {
         completed_at: new Date().toISOString(),
       });
 
+      // Mark seed as in_progress before spawning resumed agent
+      await this.seeds.update(run.seed_id, { status: "in_progress" });
+
       // Spawn the resumed agent
       const { sessionKey, tmuxSession } = await this.resumeAgent(
         model,
