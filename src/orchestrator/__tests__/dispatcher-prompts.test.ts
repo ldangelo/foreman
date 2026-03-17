@@ -8,6 +8,8 @@
  * - buildResumePrompt() emits "sd close" when backend=sd
  * - No "sd close" in prompts when backend=br
  * - No "br close" in prompts when backend=sd
+ * - selectBackend() routes all bead types to 'br' by default
+ * - selectBackend() returns 'br' when type is missing/unknown
  */
 
 import { describe, it, expect } from "vitest";
@@ -107,5 +109,52 @@ describe("TRD-012: Dispatcher.buildResumePrompt", () => {
     const prompt = d.buildResumePrompt("bd-001", "Implement feature", "br");
 
     expect(prompt).toContain("interrupted");
+  });
+});
+
+describe("Dispatcher.selectBackend (bead-type-aware routing)", () => {
+  it("returns 'br' for type=bug", () => {
+    const d = makeDispatcher();
+    expect(d.selectBackend({ id: "bd-001", title: "Fix bug", type: "bug" })).toBe("br");
+  });
+
+  it("returns 'br' for type=feature", () => {
+    const d = makeDispatcher();
+    expect(d.selectBackend({ id: "bd-002", title: "Add feature", type: "feature" })).toBe("br");
+  });
+
+  it("returns 'br' for type=task", () => {
+    const d = makeDispatcher();
+    expect(d.selectBackend({ id: "bd-003", title: "Do task", type: "task" })).toBe("br");
+  });
+
+  it("returns 'br' for type=epic", () => {
+    const d = makeDispatcher();
+    expect(d.selectBackend({ id: "bd-004", title: "Big epic", type: "epic" })).toBe("br");
+  });
+
+  it("returns 'br' for type=chore", () => {
+    const d = makeDispatcher();
+    expect(d.selectBackend({ id: "bd-005", title: "Chore task", type: "chore" })).toBe("br");
+  });
+
+  it("returns 'br' for type=docs", () => {
+    const d = makeDispatcher();
+    expect(d.selectBackend({ id: "bd-006", title: "Write docs", type: "docs" })).toBe("br");
+  });
+
+  it("returns 'br' for type=question", () => {
+    const d = makeDispatcher();
+    expect(d.selectBackend({ id: "bd-007", title: "Ask question", type: "question" })).toBe("br");
+  });
+
+  it("returns 'br' when type is undefined (missing)", () => {
+    const d = makeDispatcher();
+    expect(d.selectBackend({ id: "bd-008", title: "Unknown type" })).toBe("br");
+  });
+
+  it("returns 'br' for unknown/unrecognized type", () => {
+    const d = makeDispatcher();
+    expect(d.selectBackend({ id: "bd-009", title: "Something", type: "unrecognized-type" })).toBe("br");
   });
 });

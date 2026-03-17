@@ -504,6 +504,24 @@ export class Dispatcher {
   }
 
   /**
+   * Determine the workflow backend based on bead type.
+   *
+   * Type-aware routing strategy:
+   * - All modern bead types (bug, feature, task, epic, chore, docs, question) use 'br' (beads_rust)
+   * - The 'sd' backend is reserved for legacy seeds during migration
+   * - Unknown or missing types default to 'br' (safe default)
+   *
+   * @param task Task with optional type information
+   * @returns "sd" | "br" backend identifier
+   */
+  selectBackend(_task: SeedInfo): "sd" | "br" {
+    // All current bead types use the modern 'br' backend.
+    // This method provides an extension point for future type-specific routing.
+    // Example future rule: if (_task.type === "legacy") return "sd";
+    return "br";
+  }
+
+  /**
    * Build the TASK.md content for a seed (exposed for testing).
    */
   generateAgentInstructions(seed: SeedInfo, worktreePath: string): string {
@@ -571,7 +589,7 @@ export class Dispatcher {
     },
     notifyUrl?: string,
   ): Promise<{ sessionKey: string; tmuxSession?: string }> {
-    const prompt = this.buildSpawnPrompt(seed.id, seed.title, 'br');
+    const prompt = this.buildSpawnPrompt(seed.id, seed.title, this.selectBackend(seed));
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
@@ -613,7 +631,7 @@ export class Dispatcher {
     telemetry?: boolean,
     notifyUrl?: string,
   ): Promise<{ sessionKey: string; tmuxSession?: string }> {
-    const resumePrompt = this.buildResumePrompt(seed.id, seed.title, 'br');
+    const resumePrompt = this.buildResumePrompt(seed.id, seed.title, this.selectBackend(seed));
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
     const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;
