@@ -593,6 +593,18 @@ describe("renderWatchDisplay", () => {
     const output = renderWatchDisplay(state, true, new Set());
     expect(output).not.toContain("'a' toggle all");
   });
+
+  it("shows notification when provided", () => {
+    const state = makeState({ allDone: false });
+    const output = renderWatchDisplay(state, true, new Set(), "[auto-dispatch] 2 new task(s)");
+    expect(output).toContain("[auto-dispatch] 2 new task(s)");
+  });
+
+  it("does NOT show notification when not provided", () => {
+    const state = makeState({ allDone: false });
+    const output = renderWatchDisplay(state, true, new Set());
+    expect(output).not.toContain("[auto-dispatch]");
+  });
 });
 
 // ── renderWatchDisplay() with expandedRunIds ──────────────────────────────

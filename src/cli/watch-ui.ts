@@ -259,7 +259,7 @@ export function poll(store: ForemanStore, runIds: string[]): WatchState {
  *   shown.  When omitted (undefined), all runs are rendered expanded and no
  *   key-binding hints are shown — safe for non-interactive output.
  */
-export function renderWatchDisplay(state: WatchState, showDetachHint = true, expandedRunIds?: Set<string>): string {
+export function renderWatchDisplay(state: WatchState, showDetachHint = true, expandedRunIds?: Set<string>, notification?: string): string {
   if (state.runs.length === 0) {
     return chalk.dim("No runs found.");
   }
@@ -283,6 +283,12 @@ export function renderWatchDisplay(state: WatchState, showDetachHint = true, exp
   }
   lines.push(`${chalk.bold("Foreman")} ${chalk.dim("— agent monitor")}${detachHint}`);
   lines.push(RULE);
+
+  // Show auto-dispatch notification if present
+  if (notification) {
+    lines.push(chalk.green.bold(`  ✦ ${notification}`));
+    lines.push("");
+  }
 
   // Agent cards
   for (let i = 0; i < state.runs.length; i++) {
@@ -337,6 +343,10 @@ export async function watchRunsInk(
     /** Optional notification bus — when provided, status/progress events wake
      *  the poll immediately instead of waiting for the next 3-second cycle. */
     notificationBus?: NotificationBus;
+    /** Optional callback invoked when an agent completes and capacity may be
+     *  available.  Returns IDs of newly-dispatched runs to add to the watch
+     *  list.  Errors from this callback are swallowed (non-fatal). */
+    autoDispatch?: () => Promise<string[]>;
   },
 ): Promise<WatchResult> {
   const POLL_MS = PIPELINE_TIMEOUTS.monitorPollMs;
@@ -366,6 +376,13 @@ export async function watchRunsInk(
     if (sleepResolve) sleepResolve();
   };
   process.on("SIGINT", onSigint);
+
+  // Local mutable list of run IDs to watch; new IDs may be appended by
+  // auto-dispatch while the loop is running.
+  const watchList = [...runIds];
+  // Track active count across poll cycles to detect completions.
+  let prevActiveCount: number | null = null;
+  let autoDispatchNotification: string | null = null;
 
   // Subscribe to worker notifications to wake the poll early.
   // When a worker reports a status or progress change for one of our watched
@@ -439,12 +456,46 @@ export async function watchRunsInk(
 
   try {
     while (!detached) {
-      const state = poll(store, runIds);
+      let state = poll(store, watchList);
+
+      // Auto-dispatch: if a run completed, try to dispatch new tasks
+      const currentActiveCount = state.runs.filter(
+        (e) => e.run.status === "pending" || e.run.status === "running",
+      ).length;
+
+      if (opts?.autoDispatch && prevActiveCount !== null && currentActiveCount < prevActiveCount) {
+        let addedNew = false;
+        let newDispatchedCount = 0;
+        try {
+          const newRunIds = await opts.autoDispatch();
+          newDispatchedCount = newRunIds.length;
+          for (const id of newRunIds) {
+            if (!watchedRunIds.has(id)) {
+              watchList.push(id);
+              watchedRunIds.add(id);
+              if (opts?.notificationBus) {
+                opts.notificationBus.onRunNotification(id, onNotification);
+              }
+              addedNew = true;
+            }
+          }
+        } catch {
+          // Non-fatal — auto-dispatch errors should not kill the watch loop
+        }
+        // Re-poll to include new runs in state
+        if (addedNew) {
+          autoDispatchNotification = `[auto-dispatch] ${newDispatchedCount} new task(s)`;
+          state = poll(store, watchList);
+        }
+      }
+      prevActiveCount = currentActiveCount;
+
       lastState = state;
 
       // Clear screen and render current state (single write to avoid flicker)
-      const display = renderWatchDisplay(state, true, expandedRunIds);
+      const display = renderWatchDisplay(state, true, expandedRunIds, autoDispatchNotification ?? undefined);
       process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
+      autoDispatchNotification = null;
 
       if (state.runs.length === 0 || state.allDone) {
         break;

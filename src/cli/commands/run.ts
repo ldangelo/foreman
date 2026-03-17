@@ -209,6 +209,7 @@ export const runCommand = new Command("run")
   .option("--attach", "Force auto-attach to tmux session after dispatch")
   .option("--no-attach", "Disable auto-attach to tmux session after dispatch")
   .option("--no-auto-merge", "Disable automatic merge queue processing after each batch")
+  .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -224,6 +225,7 @@ export const runCommand = new Command("run")
     const forceAttach = opts.attach === true;
     const noAttach = opts.attach === false;
     const enableAutoMerge = opts.autoMerge !== false;  // --no-auto-merge sets autoMerge to false
+    const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
 
     // Start notification server so workers can POST status updates immediately
     // instead of waiting for the next poll cycle. Stopped in the finally block.
@@ -257,6 +259,28 @@ export const runCommand = new Command("run")
       }
       const store = ForemanStore.forProject(projectPath);
       const dispatcher = new Dispatcher(taskClient, store, projectPath, bvClient);
+
+      /**
+       * Build the auto-dispatch callback passed to watchRunsInk.
+       * Called when an agent completes mid-watch and capacity may be available.
+       * Returns IDs of newly dispatched runs to add to the watch list.
+       */
+      const makeAutoDispatchFn = (!dryRun && watch && enableAutoDispatch)
+        ? async (): Promise<string[]> => {
+            const newResult = await dispatcher.dispatch({
+              maxAgents,
+              model,
+              dryRun,
+              telemetry,
+              pipeline,
+              skipExplore,
+              skipReview,
+              seedId: seedFilter,
+              notifyUrl,
+            });
+            return newResult.dispatched.map((t) => t.runId);
+          }
+        : undefined;
 
       // Resume mode: pick up stuck/failed runs from a previous dispatch
       if (resume || resumeFailed) {
@@ -297,6 +321,7 @@ export const runCommand = new Command("run")
 
         if (watch && result.resumed.length > 0) {
           const runIds = result.resumed.map((t) => t.runId);
+          // Resume mode is a one-shot recovery action — no continuous auto-dispatch needed.
           const { detached } = await watchRunsInk(store, runIds, { notificationBus });
           if (detached) {
             store.close();
@@ -377,7 +402,7 @@ export const runCommand = new Command("run")
             const activeRuns = store.getActiveRuns();
             const runIds = activeRuns.map((r) => r.id);
             if (runIds.length > 0) {
-              const { detached } = await watchRunsInk(store, runIds, { notificationBus });
+              const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
               if (detached) {
                 break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
               }
@@ -421,7 +446,7 @@ export const runCommand = new Command("run")
         // Watch mode: wait for this batch to finish, then loop to check for more
         if (watch) {
           const runIds = result.dispatched.map((t) => t.runId);
-          const { detached } = await watchRunsInk(store, runIds, { notificationBus });
+          const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
           if (detached) {
             break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
           }

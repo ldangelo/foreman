@@ -1,0 +1,243 @@
+/**
+ * Tests for auto-dispatch behavior in the run command.
+ *
+ * Verifies that:
+ * - watchRunsInk is called with an autoDispatch callback when auto-dispatch is enabled
+ * - watchRunsInk is called without autoDispatch when --no-auto-dispatch is passed
+ * - autoDispatch is not passed in dry-run mode
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// ── Hoisted mocks ────────────────────────────────────────────────────────────
+
+const {
+  mockEnsureBrInstalled,
+  MockBeadsRustClient,
+  MockBvClient,
+  mockDispatch,
+  MockDispatcher,
+  mockGetActiveRuns,
+  MockForemanStore,
+  mockWatchRunsInk,
+} = vi.hoisted(() => {
+  const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
+  const MockBeadsRustClient = vi.fn(function (this: Record<string, unknown>) {
+    this.ensureBrInstalled = mockEnsureBrInstalled;
+  });
+  const MockBvClient = vi.fn(function () { /* noop */ });
+
+  const mockDispatch = vi.fn();
+  const MockDispatcher = vi.fn(function (this: Record<string, unknown>) {
+    this.dispatch = mockDispatch;
+    this.resumeRuns = vi.fn().mockResolvedValue({ resumed: [], skipped: [], activeAgents: 0 });
+  });
+
+  const mockGetActiveRuns = vi.fn().mockReturnValue([]);
+  const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
+    this.close = vi.fn();
+    this.getActiveRuns = mockGetActiveRuns;
+  });
+  (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
+
+  const mockWatchRunsInk = vi.fn().mockResolvedValue({ detached: false });
+
+  return {
+    mockEnsureBrInstalled,
+    MockBeadsRustClient,
+    MockBvClient,
+    mockDispatch,
+    MockDispatcher,
+    mockGetActiveRuns,
+    MockForemanStore,
+    mockWatchRunsInk,
+  };
+});
+
+vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient }));
+vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
+vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
+vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
+vi.mock("../../lib/git.js", () => ({ getRepoRoot: vi.fn().mockResolvedValue("/mock/project") }));
+vi.mock("../../orchestrator/notification-server.js", () => ({
+  NotificationServer: vi.fn(function (this: Record<string, unknown>) {
+    this.start = vi.fn().mockResolvedValue(undefined);
+    this.stop = vi.fn().mockResolvedValue(undefined);
+    this.url = "http://127.0.0.1:9999";
+  }),
+}));
+vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }));
+vi.mock("../watch-ui.js", () => ({ watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args) }));
+
+// ── Module under test ─────────────────────────────────────────────────────────
+import { runCommand } from "../commands/run.js";
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+async function invokeRun(args: string[]): Promise<void> {
+  await runCommand.parseAsync(args, { from: "user" });
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe("auto-dispatch: passes callback to watchRunsInk", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Restore constructor implementations after clearAllMocks resets them
+    mockEnsureBrInstalled.mockResolvedValue(undefined);
+    MockBeadsRustClient.mockImplementation(function (this: Record<string, unknown>) {
+      this.ensureBrInstalled = mockEnsureBrInstalled;
+    });
+    MockBvClient.mockImplementation(function () { /* noop */ });
+    MockDispatcher.mockImplementation(function (this: Record<string, unknown>) {
+      this.dispatch = mockDispatch;
+      this.resumeRuns = vi.fn().mockResolvedValue({ resumed: [], skipped: [], activeAgents: 0 });
+    });
+    MockForemanStore.mockImplementation(function (this: Record<string, unknown>) {
+      this.close = vi.fn();
+      this.getActiveRuns = mockGetActiveRuns;
+    });
+    mockWatchRunsInk.mockResolvedValue({ detached: false });
+    mockGetActiveRuns.mockReturnValue([]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("passes autoDispatch callback to watchRunsInk by default (watch mode)", async () => {
+    // First dispatch: 1 task; second dispatch: nothing, no active agents
+    mockDispatch
+      .mockResolvedValueOnce({
+        dispatched: [
+          { seedId: "s-1", runId: "run-111", title: "Task 1", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-1", runtime: "claude-code" },
+        ],
+        skipped: [],
+        activeAgents: 1,
+      })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 });
+
+    await invokeRun([]);
+
+    // watchRunsInk should have been called with autoDispatch callback
+    expect(mockWatchRunsInk).toHaveBeenCalledWith(
+      expect.anything(), // store
+      ["run-111"],
+      expect.objectContaining({ autoDispatch: expect.any(Function) }),
+    );
+  });
+
+  it("does NOT pass autoDispatch when --no-auto-dispatch is set", async () => {
+    mockDispatch
+      .mockResolvedValueOnce({
+        dispatched: [
+          { seedId: "s-2", runId: "run-222", title: "Task 2", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-2", runtime: "claude-code" },
+        ],
+        skipped: [],
+        activeAgents: 1,
+      })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 });
+
+    await invokeRun(["--no-auto-dispatch"]);
+
+    // watchRunsInk should have been called WITHOUT autoDispatch key in opts
+    expect(mockWatchRunsInk).toHaveBeenCalledWith(
+      expect.anything(),
+      ["run-222"],
+      expect.not.objectContaining({ autoDispatch: expect.anything() }),
+    );
+  });
+
+  it("does NOT pass autoDispatch in dry-run mode", async () => {
+    mockDispatch.mockResolvedValue({ dispatched: [], skipped: [], activeAgents: 0 });
+
+    await invokeRun(["--dry-run"]);
+
+    // watchRunsInk should NOT be called at all in dry-run
+    expect(mockWatchRunsInk).not.toHaveBeenCalled();
+  });
+
+  it("does NOT pass autoDispatch when --no-watch is set", async () => {
+    mockDispatch.mockResolvedValue({
+      dispatched: [
+        { seedId: "s-3", runId: "run-333", title: "Task 3", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-3", runtime: "claude-code" },
+      ],
+      skipped: [],
+      activeAgents: 1,
+    });
+
+    await invokeRun(["--no-watch"]);
+
+    // watchRunsInk should NOT be called in --no-watch mode
+    expect(mockWatchRunsInk).not.toHaveBeenCalled();
+  });
+
+  it("autoDispatch callback calls dispatcher.dispatch when invoked", async () => {
+    let capturedAutoDispatch: (() => Promise<string[]>) | undefined;
+
+    // Capture the autoDispatch callback when watchRunsInk is called
+    mockWatchRunsInk.mockImplementation(
+      async (_store: unknown, _runIds: unknown, opts: { autoDispatch?: () => Promise<string[]> }) => {
+        capturedAutoDispatch = opts?.autoDispatch;
+        return { detached: false };
+      },
+    );
+
+    mockDispatch
+      .mockResolvedValueOnce({
+        dispatched: [
+          { seedId: "s-4", runId: "run-444", title: "Task 4", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-4", runtime: "claude-code" },
+        ],
+        skipped: [],
+        activeAgents: 1,
+      })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 });
+
+    await invokeRun([]);
+
+    expect(capturedAutoDispatch).toBeDefined();
+
+    // Now invoke the captured callback — it should call dispatcher.dispatch
+    mockDispatch.mockResolvedValueOnce({
+      dispatched: [
+        { seedId: "s-5", runId: "run-555", title: "Task 5", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-5", runtime: "claude-code" },
+      ],
+      skipped: [],
+      activeAgents: 1,
+    });
+
+    const newRunIds = await capturedAutoDispatch!();
+
+    // Should return the run IDs of newly dispatched tasks
+    expect(newRunIds).toEqual(["run-555"]);
+    // dispatch should have been called a 3rd time (for the auto-dispatch callback)
+    expect(mockDispatch).toHaveBeenCalledTimes(3);
+  });
+
+  it("passes autoDispatch in the 'waiting for active agents' watch path too", async () => {
+    const activeRunIds = ["run-aaa", "run-bbb"];
+
+    // First call: nothing dispatched but 2 active agents
+    // Second call: nothing dispatched, no active agents
+    mockDispatch
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 2 })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 });
+
+    mockGetActiveRuns.mockReturnValue([
+      { id: "run-aaa", status: "running" },
+      { id: "run-bbb", status: "running" },
+    ]);
+
+    await invokeRun([]);
+
+    // watchRunsInk should be called with autoDispatch in the waiting-for-agents path
+    expect(mockWatchRunsInk).toHaveBeenCalledWith(
+      expect.anything(),
+      activeRunIds,
+      expect.objectContaining({ autoDispatch: expect.any(Function) }),
+    );
+  });
+});
