@@ -6,9 +6,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // vi.hoisted() ensures the mock variable is initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
 
-const { mockExecFileSync, mockHomedir } = vi.hoisted(() => ({
+const { mockExecFileSync, mockHomedir, mockExecBr } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
   mockHomedir: vi.fn().mockReturnValue("/test/home"),
+  mockExecBr: vi.fn().mockResolvedValue(""),
 }));
 
 vi.mock("node:child_process", () => ({
@@ -19,7 +20,12 @@ vi.mock("node:os", () => ({
   homedir: mockHomedir,
 }));
 
-import { closeSeed, resetSeedToOpen } from "../task-backend-ops.js";
+vi.mock("../../lib/beads-rust.js", () => ({
+  execBr: mockExecBr,
+}));
+
+import { closeSeed, resetSeedToOpen, syncBeadStatusOnStartup } from "../task-backend-ops.js";
+import type { Run } from "../../lib/store.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -282,5 +288,262 @@ describe("closeSeed / resetSeedToOpen — homedir() path resolution", () => {
 
     const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toBe("/fallback/home/.local/bin/br");
+  });
+});
+
+// ── syncBeadStatusOnStartup ──────────────────────────────────────────────────
+
+function makeRun(overrides: Partial<Run> = {}): Run {
+  return {
+    id: "run-1",
+    project_id: "proj-1",
+    seed_id: "seed-abc",
+    agent_type: "claude-sonnet-4-6",
+    session_key: null,
+    worktree_path: "/tmp/wt",
+    status: "completed",
+    started_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    progress: null,
+    tmux_session: null,
+    ...overrides,
+  };
+}
+
+function makeSyncMocks() {
+  const store = {
+    getRunsByStatuses: vi.fn((): Run[] => []),
+  };
+  const taskClient = {
+    show: vi.fn(async () => ({ status: "in_progress" })),
+    update: vi.fn(async () => {}),
+  };
+  return { store, taskClient };
+}
+
+describe("syncBeadStatusOnStartup", () => {
+  beforeEach(() => {
+    mockExecBr.mockReset();
+    mockExecBr.mockResolvedValue("");
+  });
+
+  it("returns empty result when no terminal runs exist", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    store.getRunsByStatuses.mockReturnValue([]);
+
+    const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+    expect(result.synced).toBe(0);
+    expect(result.mismatches).toHaveLength(0);
+    expect(result.errors).toHaveLength(0);
+    expect(taskClient.show).not.toHaveBeenCalled();
+    expect(mockExecBr).not.toHaveBeenCalled();
+  });
+
+  it("detects mismatch when completed run has seed still in_progress", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    const run = makeRun({ status: "completed" });
+    store.getRunsByStatuses.mockReturnValue([run]);
+    taskClient.show.mockResolvedValue({ status: "in_progress" });
+
+    const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+    expect(result.mismatches).toHaveLength(1);
+    expect(result.mismatches[0]).toMatchObject({
+      seedId: "seed-abc",
+      runId: "run-1",
+      runStatus: "completed",
+      actualSeedStatus: "in_progress",
+      expectedSeedStatus: "closed",
+    });
+  });
+
+  it("fixes mismatch by calling taskClient.update and counts synced", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    const run = makeRun({ status: "completed" });
+    store.getRunsByStatuses.mockReturnValue([run]);
+    taskClient.show.mockResolvedValue({ status: "in_progress" });
+
+    const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+    expect(taskClient.update).toHaveBeenCalledWith("seed-abc", { status: "closed" });
+    expect(result.synced).toBe(1);
+  });
+
+  it("calls br sync --flush-only after updates when synced > 0", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    const run = makeRun({ status: "completed" });
+    store.getRunsByStatuses.mockReturnValue([run]);
+    taskClient.show.mockResolvedValue({ status: "in_progress" });
+
+    await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], undefined);
+  });
+
+  it("passes projectPath to br sync --flush-only", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    const run = makeRun({ status: "completed" });
+    store.getRunsByStatuses.mockReturnValue([run]);
+    taskClient.show.mockResolvedValue({ status: "in_progress" });
+
+    await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1", {
+      projectPath: "/my/project",
+    });
+
+    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], "/my/project");
+  });
+
+  it("does not call br sync --flush-only when nothing was synced", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    const run = makeRun({ status: "completed" });
+    store.getRunsByStatuses.mockReturnValue([run]);
+    // Seed already has correct status — no mismatch
+    taskClient.show.mockResolvedValue({ status: "closed" });
+
+    await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+    expect(mockExecBr).not.toHaveBeenCalled();
+  });
+
+  it("does not update seeds in dry-run mode", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    const run = makeRun({ status: "completed" });
+    store.getRunsByStatuses.mockReturnValue([run]);
+    taskClient.show.mockResolvedValue({ status: "in_progress" });
+
+    const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1", {
+      dryRun: true,
+    });
+
+    expect(taskClient.update).not.toHaveBeenCalled();
+    expect(result.synced).toBe(0);
+    expect(result.mismatches).toHaveLength(1);
+    expect(mockExecBr).not.toHaveBeenCalled();
+  });
+
+  it("silently skips seeds that no longer exist in br (not found error)", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    const run = makeRun({ status: "completed" });
+    store.getRunsByStatuses.mockReturnValue([run]);
+    taskClient.show.mockRejectedValue(new Error("Issue not found: seed-abc"));
+
+    const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+    expect(result.mismatches).toHaveLength(0);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("records error when show fails with unexpected error", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    const run = makeRun({ status: "completed" });
+    store.getRunsByStatuses.mockReturnValue([run]);
+    taskClient.show.mockRejectedValue(new Error("Connection refused"));
+
+    const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("seed-abc");
+  });
+
+  it("records error when update fails, does not count as synced", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    const run = makeRun({ status: "completed" });
+    store.getRunsByStatuses.mockReturnValue([run]);
+    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    taskClient.update.mockRejectedValue(new Error("Update failed"));
+
+    const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+    expect(result.mismatches).toHaveLength(1);
+    expect(result.synced).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("seed-abc");
+  });
+
+  it("deduplicates by seed_id, using the most recent run", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    const olderRun = makeRun({
+      id: "run-old",
+      seed_id: "seed-shared",
+      status: "completed",
+      created_at: "2026-01-01T00:00:00.000Z",
+    });
+    const newerRun = makeRun({
+      id: "run-new",
+      seed_id: "seed-shared",
+      status: "failed",
+      created_at: "2026-01-02T00:00:00.000Z",
+    });
+    store.getRunsByStatuses.mockReturnValue([olderRun, newerRun]);
+    taskClient.show.mockResolvedValue({ status: "closed" });
+
+    const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+    // Should only call show once (deduplicated)
+    expect(taskClient.show).toHaveBeenCalledTimes(1);
+    // Should use the newer run's status (failed → open)
+    expect(result.mismatches[0]).toMatchObject({
+      runStatus: "failed",
+      expectedSeedStatus: "open",
+    });
+  });
+
+  it("handles multiple seeds with different statuses", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    const run1 = makeRun({ id: "run-1", seed_id: "seed-a", status: "completed" });
+    const run2 = makeRun({ id: "run-2", seed_id: "seed-b", status: "failed" });
+    store.getRunsByStatuses.mockReturnValue([run1, run2]);
+    taskClient.show.mockImplementation(async (id: string) => {
+      if (id === "seed-a") return { status: "in_progress" };
+      if (id === "seed-b") return { status: "in_progress" };
+      return { status: "open" };
+    });
+
+    const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+    expect(result.mismatches).toHaveLength(2);
+    expect(result.synced).toBe(2);
+  });
+
+  it("covers failed/stuck/conflict/test-failed → open mapping", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    for (const status of ["failed", "stuck", "conflict", "test-failed"] as const) {
+      const run = makeRun({ seed_id: `seed-${status}`, status });
+      store.getRunsByStatuses.mockReturnValue([run]);
+      taskClient.show.mockResolvedValue({ status: "closed" }); // mismatch: expected open
+
+      const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+      expect(result.mismatches[0]?.expectedSeedStatus).toBe("open");
+    }
+  });
+
+  it("covers merged/pr-created → closed mapping", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    for (const status of ["merged", "pr-created"] as const) {
+      const run = makeRun({ seed_id: `seed-${status}`, status });
+      store.getRunsByStatuses.mockReturnValue([run]);
+      taskClient.show.mockResolvedValue({ status: "in_progress" }); // mismatch: expected closed
+
+      const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+      expect(result.mismatches[0]?.expectedSeedStatus).toBe("closed");
+    }
+  });
+
+  it("records error when br sync --flush-only fails, still returns results", async () => {
+    const { store, taskClient } = makeSyncMocks();
+    const run = makeRun({ status: "completed" });
+    store.getRunsByStatuses.mockReturnValue([run]);
+    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    mockExecBr.mockRejectedValue(new Error("br sync failed"));
+
+    const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+    expect(result.synced).toBe(1); // update succeeded
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("br sync --flush-only failed");
   });
 });

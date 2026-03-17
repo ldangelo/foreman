@@ -9,6 +9,11 @@ import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
 import { TmuxClient } from "../../lib/tmux.js";
 import type { UpdateOptions } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
+import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
+import type { StateMismatch } from "../../lib/run-status.js";
+// Re-export for callers that import these from this module (backward compatibility).
+export { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
+export type { StateMismatch } from "../../lib/run-status.js";
 
 /**
  * Minimal interface capturing the subset of task-client methods used by
@@ -22,43 +27,10 @@ export interface IShowUpdateClient {
 
 // ── State mismatch detection ─────────────────────────────────────────────
 
-export interface StateMismatch {
-  seedId: string;
-  runId: string;
-  runStatus: string;
-  actualSeedStatus: string;
-  expectedSeedStatus: string;
-}
-
 export interface MismatchResult {
   mismatches: StateMismatch[];
   fixed: number;
   errors: string[];
-}
-
-/**
- * Map a run status to the expected seed status.
- * This defines the correct seed state given a run's terminal state.
- */
-export function mapRunStatusToSeedStatus(runStatus: string): string {
-  switch (runStatus) {
-    case "pending":
-    case "running":
-      return "in_progress";
-    case "completed":
-      return "closed";
-    case "failed":
-    case "stuck":
-      return "open";
-    case "merged":
-    case "pr-created":
-      return "closed";
-    case "conflict":
-    case "test-failed":
-      return "open";
-    default:
-      return "open";
-  }
 }
 
 /**

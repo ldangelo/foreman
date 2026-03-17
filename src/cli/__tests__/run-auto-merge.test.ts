@@ -25,6 +25,7 @@ const {
   MockDispatcher,
   mockGetActiveRuns,
   mockGetProjectByPath,
+  mockGetRunsByStatuses,
   mockGetDb,
   MockForemanStore,
   mockWatchRunsInk,
@@ -49,11 +50,13 @@ const {
 
   const mockGetActiveRuns = vi.fn().mockReturnValue([]);
   const mockGetProjectByPath = vi.fn().mockReturnValue(null);
+  const mockGetRunsByStatuses = vi.fn().mockReturnValue([]);
   const mockGetDb = vi.fn().mockReturnValue({});
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
     this.close = vi.fn();
     this.getActiveRuns = mockGetActiveRuns;
     this.getProjectByPath = mockGetProjectByPath;
+    this.getRunsByStatuses = mockGetRunsByStatuses;
     this.getDb = mockGetDb;
   });
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
@@ -87,6 +90,7 @@ const {
     MockDispatcher,
     mockGetActiveRuns,
     mockGetProjectByPath,
+    mockGetRunsByStatuses,
     mockGetDb,
     MockForemanStore,
     mockWatchRunsInk,
@@ -145,6 +149,7 @@ function resetMocks(): void {
     this.close = vi.fn();
     this.getActiveRuns = mockGetActiveRuns;
     this.getProjectByPath = mockGetProjectByPath;
+    this.getRunsByStatuses = mockGetRunsByStatuses;
     this.getDb = mockGetDb;
   });
   MockMergeQueue.mockImplementation(function (this: Record<string, unknown>) {
@@ -159,6 +164,7 @@ function resetMocks(): void {
   mockWatchRunsInk.mockResolvedValue({ detached: false });
   mockGetActiveRuns.mockReturnValue([]);
   mockGetProjectByPath.mockReturnValue(null);
+  mockGetRunsByStatuses.mockReturnValue([]);
   mockGetDb.mockReturnValue({});
   mockMergeQueueReconcile.mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
   mockMergeQueueDequeue.mockReturnValue(null);

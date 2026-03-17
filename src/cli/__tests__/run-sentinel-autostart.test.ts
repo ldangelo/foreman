@@ -24,6 +24,7 @@ const {
   mockGetActiveRuns,
   mockGetProjectByPath,
   mockGetSentinelConfig,
+  mockGetRunsByStatuses,
   MockForemanStore,
   mockWatchRunsInk,
   mockSentinelStart,
@@ -46,12 +47,14 @@ const {
   const mockGetActiveRuns = vi.fn().mockReturnValue([]);
   const mockGetProjectByPath = vi.fn().mockReturnValue(null);
   const mockGetSentinelConfig = vi.fn().mockReturnValue(null);
+  const mockGetRunsByStatuses = vi.fn().mockReturnValue([]);
 
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
     this.close = vi.fn();
     this.getActiveRuns = mockGetActiveRuns;
     this.getProjectByPath = mockGetProjectByPath;
     this.getSentinelConfig = mockGetSentinelConfig;
+    this.getRunsByStatuses = mockGetRunsByStatuses;
   });
   (MockForemanStore as any).forProject = vi.fn(
     (...args: unknown[]) => new (MockForemanStore as any)(...args)
@@ -77,6 +80,7 @@ const {
     mockGetActiveRuns,
     mockGetProjectByPath,
     mockGetSentinelConfig,
+    mockGetRunsByStatuses,
     MockForemanStore,
     mockWatchRunsInk,
     mockSentinelStart,
@@ -158,6 +162,7 @@ describe("sentinel auto-start in foreman run", () => {
       this.getActiveRuns = mockGetActiveRuns;
       this.getProjectByPath = mockGetProjectByPath;
       this.getSentinelConfig = mockGetSentinelConfig;
+      this.getRunsByStatuses = mockGetRunsByStatuses;
     });
     (MockForemanStore as any).forProject = vi.fn(
       (...args: unknown[]) => new (MockForemanStore as any)(...args)
@@ -166,6 +171,7 @@ describe("sentinel auto-start in foreman run", () => {
     mockGetActiveRuns.mockReturnValue([]);
     mockGetProjectByPath.mockReturnValue(null);
     mockGetSentinelConfig.mockReturnValue(null);
+    mockGetRunsByStatuses.mockReturnValue([]);
 
     mockSentinelStart.mockImplementation(() => {});
     mockSentinelStop.mockImplementation(() => {});

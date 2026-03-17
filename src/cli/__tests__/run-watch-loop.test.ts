@@ -36,9 +36,11 @@ const {
   });
 
   const mockGetActiveRuns = vi.fn().mockReturnValue([]);
+  const mockGetProjectByPath = vi.fn().mockReturnValue(null);
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
     this.close = vi.fn();
     this.getActiveRuns = mockGetActiveRuns;
+    this.getProjectByPath = mockGetProjectByPath;
   });
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
@@ -102,9 +104,11 @@ describe("dispatch loop: watch-and-continue when nothing dispatched but agents a
     MockForemanStore.mockImplementation(function (this: Record<string, unknown>) {
       this.close = vi.fn();
       this.getActiveRuns = mockGetActiveRuns;
+      this.getProjectByPath = mockGetProjectByPath;
     });
     mockWatchRunsInk.mockResolvedValue({ detached: false });
     mockGetActiveRuns.mockReturnValue([]);
+    mockGetProjectByPath.mockReturnValue(null);
   });
 
   afterEach(() => {
