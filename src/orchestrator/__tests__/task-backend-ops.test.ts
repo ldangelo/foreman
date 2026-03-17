@@ -19,7 +19,7 @@ vi.mock("node:os", () => ({
   homedir: mockHomedir,
 }));
 
-import { closeSeed, resetSeedToOpen } from "../task-backend-ops.js";
+import { closeSeed, resetSeedToOpen, addLabelsToBead } from "../task-backend-ops.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -251,5 +251,78 @@ describe("closeSeed / resetSeedToOpen — homedir() path resolution", () => {
 
     const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toBe("/fallback/home/.local/bin/br");
+  });
+});
+
+// ── addLabelsToBead ───────────────────────────────────────────────────────────
+
+describe("addLabelsToBead — br backend", () => {
+  beforeEach(() => {
+    mockExecFileSync.mockReset();
+    process.env.HOME = HOME;
+    delete process.env.FOREMAN_TASK_BACKEND;
+  });
+
+  it("calls br update with --labels flag and comma-separated labels", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addLabelsToBead("bd-abc-001", ["phase:explorer"]);
+
+    expect(mockExecFileSync).toHaveBeenCalledOnce();
+    const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    expect(cmd).toContain("br");
+    expect(args).toEqual(["update", "bd-abc-001", "--labels", "phase:explorer"]);
+  });
+
+  it("joins multiple labels with comma", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addLabelsToBead("bd-abc-002", ["phase:developer", "phase:qa"]);
+
+    const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    const labelsIdx = args.indexOf("--labels");
+    expect(labelsIdx).toBeGreaterThanOrEqual(0);
+    expect(args[labelsIdx + 1]).toBe("phase:developer,phase:qa");
+  });
+
+  it("uses ~/.local/bin/br path", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addLabelsToBead("bd-abc-003", ["phase:reviewer"]);
+
+    const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    expect(cmd).toBe(`${HOME}/.local/bin/br`);
+  });
+
+  it("does not throw when br update --labels fails (error suppressed)", () => {
+    mockExecFileSync.mockImplementation(() => { throw new Error("br binary missing"); });
+
+    expect(() => addLabelsToBead("bd-fail-003", ["phase:explorer"])).not.toThrow();
+  });
+
+  it("does nothing when labels array is empty", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addLabelsToBead("bd-abc-004", []);
+
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it("passes projectPath as cwd to execFileSync", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addLabelsToBead("bd-cwd-003", ["phase:explorer"], "/my/project/root");
+
+    const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(opts.cwd).toBe("/my/project/root");
+  });
+
+  it("omits cwd when projectPath is not provided", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addLabelsToBead("bd-cwd-004", ["phase:qa"]);
+
+    const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(opts.cwd).toBeUndefined();
   });
 });

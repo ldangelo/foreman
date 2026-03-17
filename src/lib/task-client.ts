@@ -52,6 +52,7 @@ export interface UpdateOptions {
   description?: string;
   notes?: string;
   acceptance?: string;
+  labels?: string[];
 }
 
 // ── ITaskClient interface ────────────────────────────────────────────────

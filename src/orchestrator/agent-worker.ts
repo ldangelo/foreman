@@ -31,7 +31,7 @@ import {
   hasActionableIssues,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { closeSeed, resetSeedToOpen } from "./task-backend-ops.js";
+import { closeSeed, resetSeedToOpen, addLabelsToBead } from "./task-backend-ops.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
@@ -673,6 +673,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         return;
       }
       store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
+      addLabelsToBead(seedId, ["phase:explorer"], config.projectPath);
     }
   }
 
@@ -702,6 +703,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         return;
       }
       store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
+      addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
     }
 
     // QA — skip on first pass if artifact already exists (resume after crash)
@@ -718,6 +720,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         return;
       }
       store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
+      addLabelsToBead(seedId, ["phase:qa"], config.projectPath);
     }
 
     const qaReport = readReport(worktreePath, "QA_REPORT.md");
@@ -755,6 +758,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         return;
       }
       store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
+      addLabelsToBead(seedId, ["phase:reviewer"], config.projectPath);
     }
 
     const reviewReport = readReport(worktreePath, "REVIEW.md");
@@ -778,11 +782,13 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       );
       if (devResult.success) {
         store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
+        addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
 
         rotateReport(worktreePath, "QA_REPORT.md");
         const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
         if (qaResult.success) {
           store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
+          addLabelsToBead(seedId, ["phase:qa"], config.projectPath);
         }
       }
     } else if (reviewVerdict === "fail") {
