@@ -7,11 +7,20 @@ import { getRepoRoot } from "../../lib/git.js";
 import { Monitor } from "../../orchestrator/monitor.js";
 
 export const monitorCommand = new Command("monitor")
-  .description("Check agent progress and detect stuck runs")
+  .description("[deprecated] Check agent progress and detect stuck runs. Use 'foreman reset --detect-stuck' instead.")
   .option("--recover", "Auto-recover stuck agents")
   .option("--timeout <minutes>", "Stuck detection timeout in minutes", "15")
   .action(async (opts) => {
     const timeoutMinutes = parseInt(opts.timeout, 10);
+
+    // Deprecation warning
+    console.warn(
+      chalk.yellow(
+        "⚠  'foreman monitor' is deprecated. Use 'foreman reset --detect-stuck' instead.\n" +
+        "   Recovery: foreman reset --detect-stuck\n" +
+        "   Preview:  foreman reset --detect-stuck --dry-run\n",
+      ),
+    );
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
