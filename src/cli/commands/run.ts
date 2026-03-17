@@ -274,8 +274,33 @@ export const runCommand = new Command("run")
 
         console.log(chalk.bold(`Active agents: ${result.activeAgents}/${maxAgents}`));
 
-        // Nothing dispatched — all work is done (or blocked/dry-run)
-        if (result.dispatched.length === 0 || dryRun) {
+        // dry-run: always exit immediately
+        if (dryRun) {
+          break;
+        }
+
+        // Nothing new dispatched in this iteration
+        if (result.dispatched.length === 0) {
+          // If agents are still running AND watch mode is on, wait for them to
+          // finish — they may unblock previously-blocked tasks when they complete.
+          if (watch && result.activeAgents > 0) {
+            console.log(
+              chalk.dim(
+                `No new tasks dispatched — waiting for ${result.activeAgents} active agent(s) to finish…`
+              )
+            );
+            const activeRuns = store.getActiveRuns();
+            const runIds = activeRuns.map((r) => r.id);
+            if (runIds.length > 0) {
+              const { detached } = await watchRunsInk(store, runIds, { notificationBus });
+              if (detached) {
+                break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
+              }
+            }
+            // Agents finished — loop back and check for newly-unblocked tasks
+            continue;
+          }
+          // No active agents (or --no-watch): nothing left to do
           break;
         }
 
