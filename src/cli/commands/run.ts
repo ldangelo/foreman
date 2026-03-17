@@ -15,6 +15,7 @@ import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import { Refinery } from "../../orchestrator/refinery.js";
+import { SentinelAgent } from "../../orchestrator/sentinel.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
 
@@ -260,6 +261,61 @@ export const runCommand = new Command("run")
       const store = ForemanStore.forProject(projectPath);
       const dispatcher = new Dispatcher(taskClient, store, projectPath, bvClient);
 
+      // ── Sentinel Auto-Start ──────────────────────────────────────────────
+      // If sentinel.enabled=1 in the DB config, start the sentinel agent
+      // automatically alongside foreman run. Non-fatal — if anything fails,
+      // log a warning and continue without sentinel.
+      let sentinelAgent: SentinelAgent | null = null;
+      if (!dryRun) {
+        try {
+          const project = store.getProjectByPath(projectPath);
+          if (project) {
+            const sentinelConfig = store.getSentinelConfig(project.id);
+            if (sentinelConfig && sentinelConfig.enabled === 1) {
+              const brClient = new BeadsRustClient(projectPath);
+              sentinelAgent = new SentinelAgent(store, brClient, project.id, projectPath);
+              sentinelAgent.start(
+                {
+                  branch: sentinelConfig.branch,
+                  testCommand: sentinelConfig.test_command,
+                  intervalMinutes: sentinelConfig.interval_minutes,
+                  failureThreshold: sentinelConfig.failure_threshold,
+                },
+                (result) => {
+                  const now = new Date().toLocaleTimeString();
+                  const icon = result.status === "passed" ? chalk.green("✓") : chalk.red("✗");
+                  const statusLabel =
+                    result.status === "passed"
+                      ? chalk.green("PASS")
+                      : result.status === "failed"
+                        ? chalk.red("FAIL")
+                        : chalk.yellow("ERR");
+                  const dur = `${(result.durationMs / 1000).toFixed(1)}s`;
+                  const hash = result.commitHash ? chalk.dim(` [${result.commitHash.slice(0, 8)}]`) : "";
+                  console.log(`[sentinel ${now}] ${icon} ${statusLabel} ${dur}${hash}`);
+                },
+              );
+              console.log(
+                chalk.dim(
+                  `[sentinel] Auto-started on branch ${sentinelConfig.branch} (every ${sentinelConfig.interval_minutes}m)`
+                )
+              );
+            }
+          }
+        } catch (sentinelErr: unknown) {
+          const msg = sentinelErr instanceof Error ? sentinelErr.message : String(sentinelErr);
+          console.warn(chalk.yellow(`[sentinel] Failed to auto-start (non-fatal): ${msg}`));
+        }
+      }
+
+      /** Stop the sentinel agent if it is running. Non-fatal cleanup helper. */
+      const stopSentinel = (): void => {
+        if (sentinelAgent?.isRunning()) {
+          sentinelAgent.stop();
+          console.log(chalk.dim("[sentinel] Stopped."));
+        }
+      };
+
       /**
        * Build the auto-dispatch callback passed to watchRunsInk.
        * Called when an agent completes mid-watch and capacity may be available.
@@ -324,11 +380,13 @@ export const runCommand = new Command("run")
           // Resume mode is a one-shot recovery action — no continuous auto-dispatch needed.
           const { detached } = await watchRunsInk(store, runIds, { notificationBus });
           if (detached) {
+            stopSentinel();
             store.close();
             return;
           }
         }
 
+        stopSentinel();
         store.close();
         return;
       }
@@ -477,6 +535,7 @@ export const runCommand = new Command("run")
         break;
       }
 
+      stopSentinel();
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
