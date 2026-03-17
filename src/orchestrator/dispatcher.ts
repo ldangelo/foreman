@@ -587,6 +587,7 @@ export class Dispatcher {
       seedDescription: seed.description,
       model,
       worktreePath,
+      projectPath: this.projectPath,
       prompt,
       env,
       pipeline: usePipeline,
@@ -659,6 +660,8 @@ export interface WorkerConfig {
   seedDescription?: string;
   model: string;
   worktreePath: string;
+  /** Project root directory (contains .beads/). Used as cwd for br commands. */
+  projectPath?: string;
   prompt: string;
   env: Record<string, string>;
   resume?: string;

@@ -198,6 +198,60 @@ describe("resetSeedToOpen — br backend", () => {
   });
 });
 
+// ── projectPath (cwd) — the core bug fix ─────────────────────────────────────
+//
+// br reads .beads/ from the CWD. Worker processes run from the worktree
+// directory, which has no .beads/ directory.  Without an explicit cwd the
+// br subprocess silently fails (error is caught), so beads are never closed.
+// Fix: closeSeed / resetSeedToOpen must accept a projectPath and forward it
+// as the cwd in execFileSync options.
+
+describe("closeSeed — projectPath forwarded as cwd", () => {
+  beforeEach(() => {
+    mockExecFileSync.mockReset();
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+    process.env.HOME = HOME;
+    delete process.env.FOREMAN_TASK_BACKEND;
+  });
+
+  it("passes projectPath as cwd to execFileSync", () => {
+    closeSeed("bd-cwd-001", "/my/project/root");
+
+    const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(opts.cwd).toBe("/my/project/root");
+  });
+
+  it("omits cwd when projectPath is not provided", () => {
+    closeSeed("bd-cwd-002");
+
+    const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(opts.cwd).toBeUndefined();
+  });
+});
+
+describe("resetSeedToOpen — projectPath forwarded as cwd", () => {
+  beforeEach(() => {
+    mockExecFileSync.mockReset();
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+    process.env.HOME = HOME;
+    delete process.env.FOREMAN_TASK_BACKEND;
+  });
+
+  it("passes projectPath as cwd to execFileSync", () => {
+    resetSeedToOpen("bd-reset-cwd-001", "/my/project/root");
+
+    const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(opts.cwd).toBe("/my/project/root");
+  });
+
+  it("omits cwd when projectPath is not provided", () => {
+    resetSeedToOpen("bd-reset-cwd-002");
+
+    const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(opts.cwd).toBeUndefined();
+  });
+});
+
 // ── HOME fallback ────────────────────────────────────────────────────────────
 
 describe("closeSeed / resetSeedToOpen — homedir() path resolution", () => {
