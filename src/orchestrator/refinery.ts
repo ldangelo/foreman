@@ -232,7 +232,12 @@ export class Refinery {
         "failed",
       ];
       const runs = this.store.getRunsByStatuses(retryStatuses, projectId);
-      return runs.filter((r) => r.seed_id === seedId);
+      const matching = runs.filter((r) => r.seed_id === seedId);
+      // Prefer a completed run over newer stuck/failed runs for the same seed.
+      // SQLite returns rows ordered by created_at DESC so stuck/failed may appear
+      // first even though a completed run exists from an earlier attempt.
+      const completedRun = matching.find((r) => r.status === "completed");
+      return completedRun ? [completedRun] : matching.slice(0, 1);
     }
     return this.store.getRunsByStatus("completed", projectId);
   }
