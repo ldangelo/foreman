@@ -656,13 +656,19 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
   // ── Phase 1: Explorer ──────────────────────────────────────────────
   if (!config.skipExplore) {
-    rotateReport(worktreePath, "EXPLORER_REPORT.md");
-    const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store, notifyClient);
-    if (!result.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed", notifyClient, config.projectPath);
-      return;
+    const explorerArtifact = join(worktreePath, "EXPLORER_REPORT.md");
+    if (existsSync(explorerArtifact)) {
+      log(`[EXPLORER] Skipping — EXPLORER_REPORT.md already exists (resuming from previous run)`);
+      await appendFile(logFile, `\n[PHASE: EXPLORER] SKIPPED (artifact already present)\n`);
+    } else {
+      rotateReport(worktreePath, "EXPLORER_REPORT.md");
+      const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store, notifyClient);
+      if (!result.success) {
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed", notifyClient, config.projectPath);
+        return;
+      }
+      store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
     }
-    store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
   }
 
   const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
@@ -673,27 +679,41 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   let qaVerdict: "pass" | "fail" | "unknown" = "unknown";
 
   while (devRetries <= MAX_DEV_RETRIES) {
-    // Developer
-    rotateReport(worktreePath, "DEVELOPER_REPORT.md");
-    const devResult = await runPhase(
-      "developer",
-      developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext),
-      config, progress, logFile, store, notifyClient,
-    );
-    if (!devResult.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed", notifyClient, config.projectPath);
-      return;
+    // Developer — skip on first pass if artifact already exists (resume after crash)
+    const developerArtifact = join(worktreePath, "DEVELOPER_REPORT.md");
+    const developerAlreadyDone = devRetries === 0 && existsSync(developerArtifact);
+    if (developerAlreadyDone) {
+      log(`[DEVELOPER] Skipping — DEVELOPER_REPORT.md already exists (resuming from previous run)`);
+      await appendFile(logFile, `\n[PHASE: DEVELOPER] SKIPPED (artifact already present)\n`);
+    } else {
+      rotateReport(worktreePath, "DEVELOPER_REPORT.md");
+      const devResult = await runPhase(
+        "developer",
+        developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext),
+        config, progress, logFile, store, notifyClient,
+      );
+      if (!devResult.success) {
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed", notifyClient, config.projectPath);
+        return;
+      }
+      store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
     }
-    store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
 
-    // QA
-    rotateReport(worktreePath, "QA_REPORT.md");
-    const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
-    if (!qaResult.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed", notifyClient, config.projectPath);
-      return;
+    // QA — skip on first pass if artifact already exists (resume after crash)
+    const qaArtifact = join(worktreePath, "QA_REPORT.md");
+    const qaAlreadyDone = devRetries === 0 && existsSync(qaArtifact);
+    if (qaAlreadyDone) {
+      log(`[QA] Skipping — QA_REPORT.md already exists (resuming from previous run)`);
+      await appendFile(logFile, `\n[PHASE: QA] SKIPPED (artifact already present)\n`);
+    } else {
+      rotateReport(worktreePath, "QA_REPORT.md");
+      const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
+      if (!qaResult.success) {
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed", notifyClient, config.projectPath);
+        return;
+      }
+      store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
     }
-    store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
 
     const qaReport = readReport(worktreePath, "QA_REPORT.md");
     qaVerdict = qaReport ? parseVerdict(qaReport) : "unknown";
@@ -717,13 +737,20 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
   // ── Phase 4: Reviewer ──────────────────────────────────────────────
   if (!config.skipReview) {
-    rotateReport(worktreePath, "REVIEW.md");
-    const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store, notifyClient);
-    if (!reviewResult.success) {
-      await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed", notifyClient, config.projectPath);
-      return;
+    const reviewerArtifact = join(worktreePath, "REVIEW.md");
+    const reviewerAlreadyDone = existsSync(reviewerArtifact);
+    if (reviewerAlreadyDone) {
+      log(`[REVIEWER] Skipping — REVIEW.md already exists (resuming from previous run)`);
+      await appendFile(logFile, `\n[PHASE: REVIEWER] SKIPPED (artifact already present)\n`);
+    } else {
+      rotateReport(worktreePath, "REVIEW.md");
+      const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store, notifyClient);
+      if (!reviewResult.success) {
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed", notifyClient, config.projectPath);
+        return;
+      }
+      store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
     }
-    store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
 
     const reviewReport = readReport(worktreePath, "REVIEW.md");
     const reviewVerdict = reviewReport ? parseVerdict(reviewReport) : "unknown";

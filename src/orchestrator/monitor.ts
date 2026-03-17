@@ -1,9 +1,31 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { ForemanStore, Run } from "../lib/store.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { removeWorktree, createWorktree } from "../lib/git.js";
 import type { MonitorReport } from "./types.js";
 import { PIPELINE_LIMITS } from "../lib/config.js";
 import type { TmuxClient } from "../lib/tmux.js";
+
+/**
+ * Pipeline artifact filenames written by each phase.
+ * Used to detect which phases have already completed when recovering a stuck run.
+ */
+const PIPELINE_ARTIFACTS: ReadonlyArray<string> = [
+  "EXPLORER_REPORT.md",
+  "DEVELOPER_REPORT.md",
+  "QA_REPORT.md",
+  "REVIEW.md",
+];
+
+/**
+ * Return true when a worktree at `worktreePath` contains at least one
+ * completed-phase artifact, indicating partial pipeline progress that
+ * should be preserved rather than wiped on recovery.
+ */
+export function worktreeHasProgress(worktreePath: string): boolean {
+  return PIPELINE_ARTIFACTS.some((artifact) => existsSync(join(worktreePath, artifact)));
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -174,7 +196,37 @@ export class Monitor {
       return false;
     }
 
-    // Kill existing worktree
+    // If the worktree has partial pipeline progress (artifact files from completed phases),
+    // preserve it so the pipeline can skip already-completed phases on re-dispatch.
+    // Only remove and recreate the worktree when there is no prior progress to resume.
+    const hasProgress = run.worktree_path ? worktreeHasProgress(run.worktree_path) : false;
+
+    if (hasProgress && run.worktree_path) {
+      // Preserve the worktree — artifact-based phase-skipping in runPipeline will handle
+      // resuming from the correct phase when the run is re-dispatched.
+      this.store.updateRun(run.id, {
+        status: "pending",
+        started_at: null,
+        completed_at: null,
+      });
+
+      this.store.logEvent(
+        run.project_id,
+        "recover",
+        {
+          seedId: run.seed_id,
+          attempt: retryCount + 1,
+          maxRetries,
+          worktreePreserved: true,
+          worktreePath: run.worktree_path,
+        },
+        run.id,
+      );
+
+      return true;
+    }
+
+    // No prior progress — remove the old worktree and recreate it fresh.
     if (run.worktree_path) {
       try {
         await removeWorktree(this.projectPath, run.worktree_path);
@@ -197,7 +249,7 @@ export class Monitor {
       this.store.logEvent(
         run.project_id,
         "recover",
-        { seedId: run.seed_id, attempt: retryCount + 1, maxRetries },
+        { seedId: run.seed_id, attempt: retryCount + 1, maxRetries, worktreePreserved: false },
         run.id,
       );
 
