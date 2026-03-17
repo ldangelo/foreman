@@ -73,7 +73,7 @@ The full Foreman pipeline:
 foreman plan "Build auth system"     # Ensemble: description → PRD → TRD
 foreman decompose docs/TRD.md       # TRD → beads task hierarchy
 foreman run                          # Dispatch agents to ready tasks
-foreman monitor                      # Check progress, recover stuck agents
+foreman reset --detect-stuck         # Detect and reset stuck agents
 foreman merge                        # Merge completed branches + run tests
 foreman dashboard                    # Real-time web UI on :3850
 ```
@@ -134,13 +134,24 @@ Each agent gets:
 
 After dispatching, Foreman enters **watch mode** — polling agent status every 5 seconds with a live-updating display. Ctrl+C detaches without killing agents. Use `--no-watch` to skip.
 
-### `foreman monitor`
-Check agent progress and detect stuck agents.
+### `foreman reset`
+Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open.
 
 ```bash
-foreman monitor                 # Show status
-foreman monitor --recover       # Auto-recover stuck agents
-foreman monitor --timeout 20    # Stuck after 20 minutes
+foreman reset                           # Reset failed/stuck runs
+foreman reset --all                     # Reset ALL active runs
+foreman reset --dry-run                 # Preview without making changes
+foreman reset --detect-stuck            # Detect stuck runs first, then reset
+foreman reset --detect-stuck --dry-run  # Preview stuck detection + reset
+foreman reset --detect-stuck --timeout 20  # Stuck after 20 minutes
+```
+
+### `foreman monitor` (deprecated)
+> **Deprecated.** Use `foreman reset --detect-stuck` instead.
+
+```bash
+foreman monitor                 # Show status (deprecated)
+foreman monitor --recover       # Auto-recover stuck agents (deprecated)
 ```
 
 ### `foreman merge`

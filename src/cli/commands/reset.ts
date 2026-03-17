@@ -8,6 +8,7 @@ import { getRepoRoot } from "../../lib/git.js";
 import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
 import { TmuxClient } from "../../lib/tmux.js";
 import type { UpdateOptions } from "../../lib/task-client.js";
+import { PIPELINE_LIMITS } from "../../lib/config.js";
 
 /**
  * Minimal interface capturing the subset of task-client methods used by
@@ -135,13 +136,123 @@ export async function detectAndFixMismatches(
   return { mismatches, fixed, errors };
 }
 
+// ── Stuck-run detection ───────────────────────────────────────────────────
+
+export interface StuckDetectionResult {
+  /** Runs newly identified as stuck during detection. */
+  stuck: Run[];
+  /** Any errors that occurred during detection (non-fatal). */
+  errors: string[];
+}
+
+/**
+ * Detect stuck active runs by:
+ *  1. Tmux liveness check — if a tmux session is dead, the run is stuck.
+ *  2. Timeout check — if elapsed time > stuckTimeoutMinutes, the run is stuck.
+ *
+ * Updates the store for each newly-detected stuck run and returns the list.
+ * Runs that are already in "stuck" status are not re-detected here (they will
+ * be picked up by the main reset loop).
+ */
+export async function detectStuckRuns(
+  store: Pick<ForemanStore, "getActiveRuns" | "updateRun" | "logEvent">,
+  projectId: string,
+  opts?: {
+    stuckTimeoutMinutes?: number;
+    tmux?: Pick<TmuxClient, "hasSession">;
+    dryRun?: boolean;
+  },
+): Promise<StuckDetectionResult> {
+  const stuckTimeout = opts?.stuckTimeoutMinutes ?? PIPELINE_LIMITS.stuckDetectionMinutes;
+  const dryRun = opts?.dryRun ?? false;
+  const tmux = opts?.tmux;
+
+  // Only look at "running" (not pending/failed/stuck — those are handled elsewhere)
+  const activeRuns = store.getActiveRuns(projectId).filter((r) => r.status === "running");
+
+  const stuck: Run[] = [];
+  const errors: string[] = [];
+  const now = Date.now();
+
+  for (const run of activeRuns) {
+    try {
+      // 1. Tmux liveness check (runs BEFORE seed-status check, matching Monitor priority)
+      if (tmux && run.tmux_session) {
+        const tmuxAlive = await tmux.hasSession(run.tmux_session);
+        if (!tmuxAlive) {
+          if (!dryRun) {
+            store.updateRun(run.id, { status: "stuck" });
+            store.logEvent(
+              run.project_id,
+              "stuck",
+              {
+                seedId: run.seed_id,
+                detectedBy: "tmux-liveness",
+                tmuxSession: run.tmux_session,
+              },
+              run.id,
+            );
+          }
+          stuck.push({ ...run, status: "stuck" });
+          continue;
+        }
+      }
+
+      // 2. Timeout check — if elapsed time exceeds stuckTimeout
+      if (run.started_at) {
+        const startedAt = new Date(run.started_at).getTime();
+        const elapsedMinutes = (now - startedAt) / (1000 * 60);
+
+        if (elapsedMinutes > stuckTimeout) {
+          if (!dryRun) {
+            store.updateRun(run.id, { status: "stuck" });
+            store.logEvent(
+              run.project_id,
+              "stuck",
+              { seedId: run.seed_id, elapsedMinutes: Math.round(elapsedMinutes), detectedBy: "timeout" },
+              run.id,
+            );
+          }
+          stuck.push({ ...run, status: "stuck" });
+          continue;
+        }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`Could not check run ${run.seed_id}: ${msg}`);
+    }
+  }
+
+  return { stuck, errors };
+}
+
 export const resetCommand = new Command("reset")
   .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
+  .option("--detect-stuck", "Run stuck detection first, adding newly-detected stuck runs to the reset list")
+  .option(
+    "--timeout <minutes>",
+    "Stuck detection timeout in minutes (used with --detect-stuck)",
+    String(PIPELINE_LIMITS.stuckDetectionMinutes),
+  )
   .option("--dry-run", "Show what would be reset without doing it")
-  .action(async (opts) => {
+  .action(async (opts, cmd) => {
     const dryRun = opts.dryRun as boolean | undefined;
     const all = opts.all as boolean | undefined;
+    const detectStuck = opts.detectStuck as boolean | undefined;
+    const timeoutMinutes = parseInt(opts.timeout as string, 10);
+
+    if (isNaN(timeoutMinutes)) {
+      console.error(
+        chalk.red(`Error: --timeout must be a positive integer, got "${opts.timeout as string}"`),
+      );
+      process.exit(1);
+    }
+
+    // Warn if --timeout is explicitly set but --detect-stuck is not (it would be a no-op)
+    if (!detectStuck && cmd.getOptionValueSource("timeout") === "user") {
+      console.warn(chalk.yellow("Warning: --timeout has no effect without --detect-stuck\n"));
+    }
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
@@ -152,6 +263,42 @@ export const resetCommand = new Command("reset")
       if (!project) {
         console.error(chalk.red("No project registered for this path. Run 'foreman init' first."));
         process.exit(1);
+      }
+
+      // Shared TmuxClient — used for both stuck detection and session cleanup
+      const tmux = new TmuxClient();
+      const tmuxAvailable = await tmux.isAvailable();
+
+      // Optional: run stuck detection first, mark newly-stuck runs in the store
+      if (detectStuck) {
+        console.log(chalk.bold("Detecting stuck runs...\n"));
+        const detectionResult = await detectStuckRuns(store, project.id, {
+          stuckTimeoutMinutes: timeoutMinutes,
+          tmux: tmuxAvailable ? tmux : undefined,
+          dryRun,
+        });
+
+        if (detectionResult.stuck.length > 0) {
+          console.log(chalk.yellow.bold(`Found ${detectionResult.stuck.length} newly stuck run(s):`));
+          for (const run of detectionResult.stuck) {
+            const elapsed = run.started_at
+              ? Math.round((Date.now() - new Date(run.started_at).getTime()) / 60000)
+              : 0;
+            console.log(
+              `  ${chalk.yellow(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)} ${elapsed}m`,
+            );
+          }
+          console.log();
+        } else {
+          console.log(chalk.dim("  No newly stuck runs detected.\n"));
+        }
+
+        if (detectionResult.errors.length > 0) {
+          for (const err of detectionResult.errors) {
+            console.log(chalk.red(`  Warning: ${err}`));
+          }
+          console.log();
+        }
       }
 
       // Find runs to reset
@@ -282,7 +429,6 @@ export const resetCommand = new Command("reset")
 
       // 7. Kill all foreman tmux sessions
       if (!dryRun) {
-        const tmux = new TmuxClient();
         const tmuxResult = await cleanupTmuxSessions(tmux);
         if (!tmuxResult.skipped && tmuxResult.killed > 0) {
           console.log(`\n  ${chalk.yellow("Killed")} ${tmuxResult.killed} tmux session(s)`);
