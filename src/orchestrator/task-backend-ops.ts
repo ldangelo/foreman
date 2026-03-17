@@ -3,9 +3,10 @@
  *
  * Task lifecycle operations for the pipeline worker using the br backend.
  *
- * Provides two operations used by agent-worker.ts:
+ * Provides three operations used by agent-worker.ts:
  *   - closeSeed()       — marks a task complete (finalize phase)
  *   - resetSeedToOpen() — resets a task back to open (markStuck path)
+ *   - addLabelsToBead() — appends phase-tracking labels after each pipeline phase
  *
  * TRD-024: sd backend removed. Always uses Beads Rust CLI at ~/.local/bin/br.
  *
@@ -86,5 +87,31 @@ export function resetSeedToOpen(seedId: string, projectPath?: string): void {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[task-backend-ops] Warning: br update failed for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Add labels to a bead in the br backend.
+ * Called after each pipeline phase completes to track phase progress.
+ *
+ * br update <seedId> --labels <label1>,<label2>,...
+ *
+ * Errors are caught and logged to stderr; the function never throws.
+ *
+ * @param projectPath - The project root directory that contains .beads/.
+ */
+export function addLabelsToBead(seedId: string, labels: string[], projectPath?: string): void {
+  if (labels.length === 0) return;
+  const bin = brPath();
+  // NOTE: br update --labels appends labels; if it ever replaces instead,
+  // callers must pre-fetch existing labels and merge before calling this function.
+  const args = ["update", seedId, "--labels", labels.join(",")];
+
+  try {
+    execFileSync(bin, args, execOpts(projectPath));
+    console.error(`[task-backend-ops] Added labels [${labels.join(", ")}] to seed ${seedId} via br`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: br update --labels failed for ${seedId}: ${msg.slice(0, 200)}`);
   }
 }
