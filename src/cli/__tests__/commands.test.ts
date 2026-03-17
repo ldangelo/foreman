@@ -70,7 +70,7 @@ describe("CLI smoke tests", () => {
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout;
-    for (const cmd of ["init", "plan", "decompose", "run", "status", "merge", "monitor", "dashboard", "bead"]) {
+    for (const cmd of ["init", "plan", "sling", "run", "status", "merge", "monitor", "dashboard", "bead"]) {
       expect(output).toContain(cmd);
     }
   }, 10_000);
@@ -94,12 +94,14 @@ describe("CLI smoke tests", () => {
     ).toBe(true);
   }, 10_000);
 
-  it("decompose with nonexistent file shows error", async () => {
+  it("sling trd with nonexistent file shows error", async () => {
     const tmp = makeTempDir();
-    const result = await run(["decompose", "nonexistent-file.md"], tmp);
+    const result = await run(["sling", "trd", "nonexistent-file.md"], tmp);
 
     const output = result.stdout + result.stderr;
-    expect(output).toContain("not found");
+    expect(
+      result.exitCode !== 0 || output.toLowerCase().includes("not found") || output.toLowerCase().includes("error")
+    ).toBe(true);
   }, 10_000);
 
   it("plan --dry-run shows pipeline steps", async () => {

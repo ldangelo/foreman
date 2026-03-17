@@ -24,21 +24,17 @@ Requires Dolt running, Beads CLI, optionally Claude. Manual or CI-gated.
 
 ## Layer 1: Unit Tests
 
-### 1.1 Decomposer (`src/orchestrator/decomposer.ts`)
-**File:** `src/orchestrator/__tests__/decomposer.test.ts`
+### 1.1 TRD Parser (`src/orchestrator/trd-parser.ts`)
+**File:** `src/orchestrator/__tests__/trd-parser.test.ts`
 
 | # | Test | What to verify |
 |---|------|---------------|
-| 1 | Extracts tasks from checkbox lists | `- [ ] item` → task with title |
-| 2 | Extracts tasks from numbered lists | `1. item` → task with title |
-| 3 | Extracts tasks from H2 sections | `## Section` with list items → epic section |
-| 4 | Infers priority from keywords | "critical", "must", "required" → critical/high |
-| 5 | Infers complexity from keywords | "refactor", "migrate" → high; "config", "fix" → low |
-| 6 | Chains sequential dependencies | Task N depends on task N-1 within a section |
-| 7 | Handles empty PRD gracefully | Empty string → empty tasks array |
-| 8 | Handles PRD with no extractable tasks | Prose-only markdown → falls back to section-level tasks |
-| 9 | Sets epic title from first H1 | `# My Feature` → epic.title = "My Feature" |
-| 10 | Limits description length | Long descriptions get truncated |
+| 1 | Parses sprint sections (H3/H4) | Sprint numbers and titles extracted |
+| 2 | Parses story sections | Stories under each sprint |
+| 3 | Parses task table rows | Task ID, title, estimates, deps, files |
+| 4 | Extracts explicit dependencies | Dep column → dependency list |
+| 5 | Handles missing optional fields | Missing estimates/files handled gracefully |
+| 6 | Sets epic from document header | First H1/H2 → epic.title |
 
 ### 1.2 Templates (`src/orchestrator/templates.ts`)
 **File:** `src/orchestrator/__tests__/templates.test.ts`
@@ -63,18 +59,18 @@ Requires Dolt running, Beads CLI, optionally Claude. Manual or CI-gated.
 | 6 | Default → claude-code | selectRuntime({title: "Implement user registration"}) === "claude-code" |
 | 7 | Case insensitive | selectRuntime({title: "FIX THE BUG"}) === "pi" |
 
-### 1.4 Planner (`src/orchestrator/planner.ts`)
-**File:** `src/orchestrator/__tests__/planner.test.ts`
+### 1.4 Sling Executor (`src/orchestrator/sling-executor.ts`)
+**File:** `src/orchestrator/__tests__/sling-executor.test.ts`
 
-Mock BeadsClient, verify:
+Mock SeedsClient + BeadsRustClient, verify:
 
 | # | Test | What to verify |
 |---|------|---------------|
-| 1 | Creates epic bead first | beads.create called with type: "epic" |
-| 2 | Creates child beads with parent ref | beads.create called with parent: epic.id |
-| 3 | Sets up dependencies | beads.addDependency called for each dep pair |
-| 4 | Returns all created bead IDs | Result contains epicBeadId + taskBeadIds |
-| 5 | Handles empty task list | No child beads created, only epic |
+| 1 | Creates epic in both trackers | sd.create + br.create called with type: "epic" |
+| 2 | Creates tasks with parent ref | Both trackers receive parent IDs |
+| 3 | Sets up explicit dependencies | Dep column values wired as blocks deps |
+| 4 | Returns dual TrackerResult | SlingResult has sd + br fields |
+| 5 | Handles empty task list | No child tasks created, only epic |
 
 ### 1.5 Monitor (`src/orchestrator/monitor.ts`)
 **File:** `src/orchestrator/__tests__/monitor.test.ts`
@@ -156,7 +152,7 @@ Spawn `tsx src/cli/index.ts <command>` as child process:
 | 1 | `--help` exits 0 | Shows all 8 commands |
 | 2 | `--version` prints version | Outputs "0.1.0" |
 | 3 | `status` without init exits with error | Helpful error message |
-| 4 | `decompose nonexistent.md` exits with error | File not found message |
+| 4 | `sling trd nonexistent.md` exits with error | File not found or error message |
 | 5 | `plan --dry-run "test"` shows pipeline | 4 steps listed |
 | 6 | `run --dry-run` without init exits with error | Helpful error message |
 
@@ -176,8 +172,8 @@ git init && echo "# Test Project" > README.md && git add -A && git commit -m "in
 foreman init --name "e2e-test"
 # Verify: .beads/ exists, project in ~/.foreman/foreman.db
 
-# 2. Decompose (using sample TRD)
-foreman decompose ~/Development/Fortium/foreman/docs/sample-prd.md --auto
+# 2. Sling TRD (using sample TRD)
+foreman sling trd ~/Development/Fortium/foreman/docs/TRD/sling-trd.md --auto
 # Verify: bd list shows beads, epic + tasks created
 
 # 3. Status
@@ -266,7 +262,7 @@ foreman test          # or: npm test
 npm run test:watch
 
 # Specific test file
-npx vitest run src/orchestrator/__tests__/decomposer.test.ts
+npx vitest run src/orchestrator/__tests__/trd-parser.test.ts
 
 # With coverage
 npx vitest run --coverage

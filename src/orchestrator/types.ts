@@ -6,41 +6,7 @@ export type ModelSelection = "claude-opus-4-6" | "claude-sonnet-4-6" | "claude-h
 
 export type AgentRole = "lead" | "explorer" | "developer" | "qa" | "reviewer" | "worker" | "sentinel";
 
-// ── Decomposition types ─────────────────────────────────────────────────
-
-export type TaskComplexity = "low" | "medium" | "high";
-export type IssueType = "task" | "spike" | "test";
 export type Priority = "critical" | "high" | "medium" | "low";
-
-export interface TaskPlan {
-  title: string;
-  description: string;
-  type: IssueType;
-  priority: Priority;
-  dependencies: string[]; // titles of other tasks this depends on
-  estimatedComplexity: TaskComplexity;
-}
-
-export interface StoryPlan {
-  title: string;
-  description: string;
-  priority: Priority;
-  tasks: TaskPlan[];
-}
-
-export interface SprintPlan {
-  title: string;
-  goal: string;
-  stories: StoryPlan[];
-}
-
-export interface DecompositionPlan {
-  epic: {
-    title: string;
-    description: string;
-  };
-  sprints: SprintPlan[];
-}
 
 export interface SeedInfo {
   id: string;

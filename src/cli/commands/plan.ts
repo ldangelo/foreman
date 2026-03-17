@@ -138,7 +138,7 @@ export const planCommand = new Command("plan")
           console.log(chalk.dim("  1. Create an epic seed with child seeds (sequential dependencies)"));
           console.log(chalk.dim("  2. Dispatch each step via Claude Code + Ensemble"));
           console.log(chalk.dim("  3. Track progress in SQLite"));
-          console.log(chalk.dim("  4. Suggest 'foreman decompose' on completion"));
+          console.log(chalk.dim("  4. Suggest 'foreman sling trd <output-dir>/TRD.md' on completion"));
           return;
         }
 
@@ -248,7 +248,7 @@ export const planCommand = new Command("plan")
         if (!opts.prdOnly) {
           console.log(
             chalk.dim(
-              `\nNext step: foreman decompose ${outputDir}/TRD.md`,
+              `\nNext step: foreman sling trd ${outputDir}/TRD.md`,
             ),
           );
         }

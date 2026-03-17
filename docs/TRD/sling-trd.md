@@ -13,7 +13,7 @@
 
 ### 1.1 Architecture Overview
 
-The sling-trd system introduces four new modules that convert a structured TRD markdown document into task hierarchies in both seeds (sd) and beads_rust (br) tracking systems. The architecture follows the existing decompose/planner pattern but with a purpose-built table parser, dual-tracker executor, and sprint parallelization analyzer.
+The sling-trd system introduces four new modules that convert a structured TRD markdown document into task hierarchies in both seeds (sd) and beads_rust (br) tracking systems. It replaces the retired `decompose` command with a purpose-built table parser, dual-tracker executor, and sprint parallelization analyzer.
 
 ```
 foreman sling trd <file> (CLI)
@@ -298,7 +298,7 @@ All sling errors use structured codes `SLING-001` through `SLING-012`. Error cod
 |----|------|------|------|-------|--------|
 | SL-T025 | Implement `detectExistingEpic()` — search sd (via `sd list --labels trd:<doc-id>`) and br (via `br list --label trd:<doc-id>`) for existing epic. Return epic IDs if found. SLING-009 on duplicate | 3h | SL-T001, SL-T004 | `src/orchestrator/sling-executor.ts` | [ ] |
 | SL-T026 | Implement `executeForTracker()` — sequential creation of epic → sprints → stories → tasks for a single tracker (sd or br). Build `trdIdToTrackerId` lookup map during creation. Apply labels: `trd:<ID>`, `kind:sprint/story/test/spike`, `est:<N>h`, `parallel:<group>`, `risk:<level>`. Use `--parent` for hierarchy. Emit progress callbacks for spinner | 5h | SL-T025, SL-T004 | `src/orchestrator/sling-executor.ts` | [ ] |
-| SL-T027 | Implement type/priority mapping — reuse `toSeedsType()` and `toSeedsPriority()` from planner.ts. Add `toBrType()` and `toBrPriority()` for br (same logic since br accepts same type names). Handle task type inference from title (same as decomposer: "test" → kind:test, "spike" → kind:spike) | 2h | -- | `src/orchestrator/sling-executor.ts` | [ ] |
+| SL-T027 | Implement type/priority mapping — `toSeedsType()`, `toSeedsPriority()`, `toBrType()`, `toBrPriority()` in sling-executor.ts (br accepts same type names as sd). Handle task type inference from title: "test" → kind:test, "spike" → kind:spike | 2h | -- | `src/orchestrator/sling-executor.ts` | [ ] |
 | SL-T028 | Implement `wireDependencies()` — second pass after all issues created. For each task with deps, look up `trdIdToTrackerId` map, call `addDependency()`. Warn on missing targets (SLING-007). Detect cycles (SLING-008) | 3h | SL-T026 | `src/orchestrator/sling-executor.ts` | [ ] |
 
 #### Story 4.2: Completed Task Handling
@@ -339,9 +339,9 @@ All sling errors use structured codes `SLING-001` through `SLING-012`. Error cod
 |----|------|------|------|-------|--------|
 | SL-T039 | Implement `sling` parent command with `trd` subcommand using commander.js. Parse all CLI options from PRD Section 6. Wire argument parsing to `SlingOptions` type | 3h | SL-T004 | `src/cli/commands/sling.ts` | [ ] |
 | SL-T040 | Implement TRD file reading and validation — resolve path, check existence (SLING-001), read content, print summary (lines/chars), call `parseTrd()`, handle SLING-002 | 2h | SL-T011 | `src/cli/commands/sling.ts` | [ ] |
-| SL-T041 | Implement preview display — `printSlingPlan()` function showing hierarchy with task counts, hour totals, completion status per sprint/story, parallel group visual grouping (║ prefix), TRD task IDs, dep chains. Adapt from decompose.ts `printPlan()` | 4h | SL-T011, SL-T023 | `src/cli/commands/sling.ts` | [ ] |
+| SL-T041 | Implement preview display — `printSlingPlan()` function showing hierarchy with task counts, hour totals, completion status per sprint/story, parallel group visual grouping (║ prefix), TRD task IDs, dep chains (implemented in `src/cli/commands/sling.ts`) | 4h | SL-T011, SL-T023 | `src/cli/commands/sling.ts` | [ ] |
 | SL-T042 | Implement `--json` output — serialize SlingPlan + ParallelResult to JSON. Validate output matches expected schema | 1h | SL-T041 | `src/cli/commands/sling.ts` | [ ] |
-| SL-T043 | Implement confirmation prompt and `--auto` bypass — reuse confirm() pattern from decompose.ts | 1h | SL-T041 | `src/cli/commands/sling.ts` | [ ] |
+| SL-T043 | Implement confirmation prompt and `--auto` bypass — `confirm()` helper in `src/cli/commands/sling.ts` | 1h | SL-T041 | `src/cli/commands/sling.ts` | [ ] |
 | SL-T044 | Implement spinner with counter progress UX — single-line spinner updating: `Creating tasks... 42/79 (sd: 42, br: 0)`. Use `readline.clearLine()` + `readline.cursorTo()` for in-place updates. Wire progress callbacks from executor | 3h | SL-T026 | `src/cli/commands/sling.ts` | [ ] |
 | SL-T045 | Implement summary output — final report: "Created: X (sd: Y, br: Z), Skipped: N, Failed: M" with error details if any | 1h | SL-T044 | `src/cli/commands/sling.ts` | [ ] |
 | SL-T046 | Wire CLI tracker availability checks — detect sd and br CLIs. Handle `--sd-only` and `--br-only` flags. Implement SLING-003, SLING-004, SLING-005 error handling | 2h | SL-T001, SL-T039 | `src/cli/commands/sling.ts` | [ ] |

@@ -22,9 +22,9 @@
 | Prioritization | Manual P0-P4 priorities | PageRank-weighted automatic prioritization |
 | UI | CLI (`foreman status`, `sd list`) | Beads Viewer — keyboard-driven terminal UI |
 | Dependencies | Explicit `blocks` dep type | Structural via PageRank graph |
-| Decomposition | LLM-powered (`foreman decompose`, `foreman plan`) | Implicit through beads prioritization |
+| Decomposition | Structured TRD parser (`foreman sling trd`, `foreman plan`) | Implicit through beads prioritization |
 
-**Takeaway**: Flywheel's PageRank prioritization is more sophisticated — tasks bubble up based on graph centrality rather than manual priority assignment. Foreman has stronger LLM-powered decomposition (PRD → TRD → task hierarchy).
+**Takeaway**: Flywheel's PageRank prioritization is more sophisticated — tasks bubble up based on graph centrality rather than manual priority assignment. Foreman has stronger structured TRD decomposition (PRD → TRD → task hierarchy via `sling trd`).
 
 ### Agent Orchestration
 
@@ -93,7 +93,7 @@
 | # | Feature | Foreman Component | Rationale |
 |---|---------|-------------------|-----------|
 | 1 | Structured pipeline phases | agent-worker.ts | Explicit Explorer → Developer → QA → Reviewer flow with retry loops |
-| 2 | LLM-powered decomposition | `foreman decompose` / `foreman plan` | PRD → TRD → task hierarchy with dependency wiring |
+| 2 | Structured TRD decomposition | `foreman sling trd` / `foreman plan` | PRD → TRD → task hierarchy with explicit dependency wiring |
 | 3 | Budget-based phase limits | `maxBudgetUsd` per role | Cost control per phase rather than just turn limits |
 | 4 | Git worktree isolation | `foreman run` | True filesystem isolation per task vs file leasing |
 | 5 | Automated code review verdicts | Reviewer phase | PASS/FAIL with CRITICAL/WARNING/NOTE issue classification |
