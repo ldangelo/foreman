@@ -71,7 +71,11 @@ export const mergeCommand = new Command("merge")
 
       const project = store.getProjectByPath(projectPath);
       if (!project) {
-        console.error(chalk.red("No project registered. Run 'foreman init' first."));
+        if (opts.json) {
+          console.error(JSON.stringify({ error: "No project registered. Run 'foreman init' first." }));
+        } else {
+          console.error(chalk.red("No project registered. Run 'foreman init' first."));
+        }
         process.exit(1);
       }
 
@@ -229,11 +233,18 @@ export const mergeCommand = new Command("merge")
       if (opts.list) {
         // Reconcile first to ensure queue is up to date
         const reconcileResult = await mq.reconcile(store.getDb(), projectPath, execFileAsync);
+
+        const entries = mq.list();
+
+        if (opts.json) {
+          console.log(JSON.stringify({ entries }, null, 2));
+          store.close();
+          return;
+        }
+
         if (reconcileResult.enqueued > 0) {
           console.log(chalk.dim(`  (reconciled ${reconcileResult.enqueued} new entry/entries into queue)\n`));
         }
-
-        const entries = mq.list();
 
         if (entries.length === 0) {
           console.log(chalk.yellow("No seeds in merge queue."));
@@ -416,7 +427,11 @@ export const mergeCommand = new Command("merge")
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(`Error: ${message}`));
+      if (opts.json) {
+        console.error(JSON.stringify({ error: message }));
+      } else {
+        console.error(chalk.red(`Error: ${message}`));
+      }
       process.exit(1);
     }
   });

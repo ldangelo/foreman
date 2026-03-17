@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
+import type { Metrics, Run, RunProgress } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { renderAgentCard } from "../watch-ui.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
@@ -165,7 +166,66 @@ async function renderStatus(): Promise<void> {
 export const statusCommand = new Command("status")
   .description("Show project status from beads_rust (br) + sqlite")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
-  .action(async (opts: { watch?: boolean | string }) => {
+  .option("--json", "Output status as JSON")
+  .action(async (opts: { watch?: boolean | string; json?: boolean }) => {
+    if (opts.json) {
+      // JSON output path — gather data and serialize
+      try {
+        const projectPath = await getRepoRoot(process.cwd());
+        let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+        try {
+          counts = await fetchStatusCounts(projectPath);
+        } catch { /* return zeros on error */ }
+
+        const store = ForemanStore.forProject(projectPath);
+        const project = store.getProjectByPath(projectPath);
+
+        let failed = 0;
+        let stuck = 0;
+        let activeRuns: Array<{ run: Run; progress: RunProgress | null }> = [];
+        let metrics: Metrics = { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] };
+
+        if (project) {
+          const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+          failed = store.getRunsByStatusSince("failed", since, project.id).length;
+          stuck = store.getRunsByStatusSince("stuck", since, project.id).length;
+          const runs = store.getActiveRuns(project.id);
+          activeRuns = runs.map((run) => ({ run, progress: store.getRunProgress(run.id) }));
+          metrics = store.getMetrics(project.id);
+        }
+
+        store.close();
+
+        const output = {
+          tasks: {
+            total: counts.total,
+            ready: counts.ready,
+            inProgress: counts.inProgress,
+            completed: counts.completed,
+            blocked: counts.blocked,
+            failed,
+            stuck,
+          },
+          agents: {
+            active: activeRuns.map(({ run, progress }) => ({ ...run, progress })),
+          },
+          costs: {
+            totalCost: metrics.totalCost,
+            totalTokens: metrics.totalTokens,
+            byPhase: metrics.costByPhase ?? {},
+            byModel: metrics.agentCostBreakdown ?? {},
+          },
+        };
+
+        console.log(JSON.stringify(output, null, 2));
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(JSON.stringify({ error: message }));
+        process.exit(1);
+      }
+      return;
+    }
+
     if (opts.watch !== undefined) {
       const interval = typeof opts.watch === "string" ? parseInt(opts.watch, 10) : 10;
       const seconds = Number.isFinite(interval) && interval > 0 ? interval : 10;
