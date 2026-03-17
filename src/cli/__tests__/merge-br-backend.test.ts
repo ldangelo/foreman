@@ -44,6 +44,7 @@ vi.mock("../../lib/store.js", () => ({
 
 vi.mock("../../lib/git.js", () => ({
   getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
 }));
 
 vi.mock("../../orchestrator/refinery.js", () => ({

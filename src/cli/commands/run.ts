@@ -7,7 +7,7 @@ import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { getRepoRoot, detectDefaultBranch } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk, type WatchResult } from "../watch-ui.js";
@@ -118,7 +118,7 @@ export interface AutoMergeOpts {
   store: ForemanStore;
   taskClient: ITaskClient;
   projectPath: string;
-  /** Default merge target branch (default: "main"). */
+  /** Merge target branch. When omitted, auto-detected via detectDefaultBranch(). */
   targetBranch?: string;
 }
 
@@ -135,7 +135,8 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<{
   conflicts: number;
   failed: number;
 }> {
-  const { store, taskClient, projectPath, targetBranch = "main" } = opts;
+  const { store, taskClient, projectPath } = opts;
+  const targetBranch = opts.targetBranch ?? await detectDefaultBranch(projectPath);
 
   const project = store.getProjectByPath(projectPath);
   if (!project) {

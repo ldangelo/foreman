@@ -9,6 +9,7 @@ import {
   listWorktrees,
   mergeWorktree,
   getRepoRoot,
+  detectDefaultBranch,
 } from "../git.js";
 
 function makeTempRepo(): string {
@@ -138,5 +139,74 @@ describe("git worktree manager", () => {
 
     const root = await getRepoRoot(subdir);
     expect(root).toBe(repo);
+  });
+});
+
+describe("detectDefaultBranch", () => {
+  it("returns 'main' when the local branch is named 'main'", async () => {
+    // makeTempRepo uses --initial-branch=main, so 'main' exists locally
+    const repo = makeTempRepo();
+    tempDirs.push(repo);
+
+    const branch = await detectDefaultBranch(repo);
+    expect(branch).toBe("main");
+  });
+
+  it("returns 'master' when only 'master' exists (no 'main', no remote)", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-git-master-")));
+    tempDirs.push(dir);
+    execFileSync("git", ["init", "--initial-branch=master"], { cwd: dir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+    writeFileSync(join(dir, "README.md"), "# init\n");
+    execFileSync("git", ["add", "."], { cwd: dir });
+    execFileSync("git", ["commit", "-m", "initial commit"], { cwd: dir });
+
+    const branch = await detectDefaultBranch(dir);
+    expect(branch).toBe("master");
+  });
+
+  it("returns custom branch name when origin/HEAD points to it", async () => {
+    // Create a non-bare 'remote' repo with a commit on 'develop' branch
+    const remoteDir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-git-remote-")));
+    tempDirs.push(remoteDir);
+    execFileSync("git", ["init", "--initial-branch=develop"], { cwd: remoteDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: remoteDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: remoteDir });
+    writeFileSync(join(remoteDir, "README.md"), "# remote\n");
+    execFileSync("git", ["add", "."], { cwd: remoteDir });
+    execFileSync("git", ["commit", "-m", "initial commit"], { cwd: remoteDir });
+
+    // Clone it so origin/HEAD is set (git clones a non-bare repo and sets origin/HEAD)
+    const cloneDir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-git-clone-")));
+    tempDirs.push(cloneDir);
+    execFileSync("git", ["clone", remoteDir, cloneDir]);
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: cloneDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: cloneDir });
+
+    // Confirm symbolic-ref is set by the clone
+    const symRef = execFileSync(
+      "git", ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+      { cwd: cloneDir },
+    ).toString().trim();
+    // symRef should be "origin/develop"
+    expect(symRef).toBe("origin/develop");
+
+    const branch = await detectDefaultBranch(cloneDir);
+    expect(branch).toBe("develop");
+  });
+
+  it("falls back to current branch when no main/master and no remote", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-git-custom-")));
+    tempDirs.push(dir);
+    execFileSync("git", ["init", "--initial-branch=trunk"], { cwd: dir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+    writeFileSync(join(dir, "README.md"), "# init\n");
+    execFileSync("git", ["add", "."], { cwd: dir });
+    execFileSync("git", ["commit", "-m", "initial commit"], { cwd: dir });
+
+    const branch = await detectDefaultBranch(dir);
+    expect(branch).toBe("trunk");
   });
 });

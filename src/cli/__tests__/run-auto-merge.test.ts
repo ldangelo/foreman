@@ -102,7 +102,10 @@ vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
-vi.mock("../../lib/git.js", () => ({ getRepoRoot: vi.fn().mockResolvedValue("/mock/project") }));
+vi.mock("../../lib/git.js", () => ({
+  getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+}));
 vi.mock("../../orchestrator/notification-server.js", () => ({
   NotificationServer: vi.fn(function (this: Record<string, unknown>) {
     this.start = vi.fn().mockResolvedValue(undefined);

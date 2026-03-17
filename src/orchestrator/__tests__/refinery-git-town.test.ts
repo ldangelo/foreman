@@ -29,6 +29,7 @@ vi.mock("node:child_process", () => ({
 vi.mock("../../lib/git.js", () => ({
   mergeWorktree: vi.fn(),
   removeWorktree: vi.fn(),
+  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
 }));
 
 import { execFile } from "node:child_process";
