@@ -1,5 +1,6 @@
 import { Command } from "commander";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import chalk from "chalk";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
@@ -12,6 +13,8 @@ import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js
 import { watchRunsInk, type WatchResult } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
+import { MergeQueue } from "../../orchestrator/merge-queue.js";
+import { Refinery } from "../../orchestrator/refinery.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
 
@@ -108,6 +111,85 @@ export async function autoAttach(opts: AutoAttachOpts): Promise<boolean> {
   return false;
 }
 
+// ── Auto-Merge Logic ─────────────────────────────────────────────────
+
+/** Options for the autoMerge function. */
+export interface AutoMergeOpts {
+  store: ForemanStore;
+  taskClient: ITaskClient;
+  projectPath: string;
+  /** Default merge target branch (default: "main"). */
+  targetBranch?: string;
+}
+
+/**
+ * Process the merge queue after a batch of agents completes.
+ *
+ * Reconciles completed runs into the queue, then drains the pending entries
+ * via the Refinery. Non-fatal — errors are logged and the caller continues.
+ *
+ * Returns a summary of what happened (for logging / testing).
+ */
+export async function autoMerge(opts: AutoMergeOpts): Promise<{
+  merged: number;
+  conflicts: number;
+  failed: number;
+}> {
+  const { store, taskClient, projectPath, targetBranch = "main" } = opts;
+
+  const project = store.getProjectByPath(projectPath);
+  if (!project) {
+    // No project registered — skip silently (init not run yet)
+    return { merged: 0, conflicts: 0, failed: 0 };
+  }
+
+  const execFileAsync = promisify(execFile);
+  const mq = new MergeQueue(store.getDb());
+  const refinery = new Refinery(store, taskClient, projectPath);
+
+  // Reconcile completed runs into the queue
+  await mq.reconcile(store.getDb(), projectPath, execFileAsync);
+
+  let mergedCount = 0;
+  let conflictCount = 0;
+  let failedCount = 0;
+
+  let entry = mq.dequeue();
+  while (entry) {
+    try {
+      const report = await refinery.mergeCompleted({
+        targetBranch,
+        runTests: true,
+        testCommand: "npm test",
+        projectId: project.id,
+        seedId: entry.seed_id,
+      });
+
+      if (report.merged.length > 0) {
+        mq.updateStatus(entry.id, "merged", { completedAt: new Date().toISOString() });
+        mergedCount += report.merged.length;
+      } else if (report.conflicts.length > 0 || report.prsCreated.length > 0) {
+        mq.updateStatus(entry.id, "conflict", { error: "Code conflicts" });
+        conflictCount += report.conflicts.length + report.prsCreated.length;
+      } else if (report.testFailures.length > 0) {
+        mq.updateStatus(entry.id, "failed", { error: "Test failures" });
+        failedCount += report.testFailures.length;
+      } else {
+        mq.updateStatus(entry.id, "failed", { error: "No completed run found" });
+        failedCount++;
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      mq.updateStatus(entry.id, "failed", { error: message });
+      failedCount++;
+    }
+
+    entry = mq.dequeue();
+  }
+
+  return { merged: mergedCount, conflicts: conflictCount, failed: failedCount };
+}
+
 // ── Run Command ──────────────────────────────────────────────────────
 
 export const runCommand = new Command("run")
@@ -125,6 +207,7 @@ export const runCommand = new Command("run")
   .option("--seed <id>", "Dispatch only this specific seed (must be ready)")
   .option("--attach", "Force auto-attach to tmux session after dispatch")
   .option("--no-attach", "Disable auto-attach to tmux session after dispatch")
+  .option("--no-auto-merge", "Disable automatic merge queue processing after each batch")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -139,6 +222,7 @@ export const runCommand = new Command("run")
     const seedFilter = opts.seed as string | undefined;
     const forceAttach = opts.attach === true;
     const noAttach = opts.attach === false;
+    const enableAutoMerge = opts.autoMerge !== false;  // --no-auto-merge sets autoMerge to false
 
     // Start notification server so workers can POST status updates immediately
     // instead of waiting for the next poll cycle. Stopped in the finally block.
@@ -297,6 +381,25 @@ export const runCommand = new Command("run")
                 break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
               }
             }
+            // Auto-merge completed branches before looping back
+            if (enableAutoMerge) {
+              console.log(chalk.dim("Auto-merging completed branches..."));
+              try {
+                const mergeResult = await autoMerge({ store, taskClient, projectPath });
+                if (mergeResult.merged > 0) {
+                  console.log(chalk.green(`  Auto-merged ${mergeResult.merged} branch(es).`));
+                }
+                if (mergeResult.conflicts > 0) {
+                  console.log(chalk.yellow(`  ${mergeResult.conflicts} conflict(s) — run 'foreman merge' to resolve.`));
+                }
+                if (mergeResult.failed > 0) {
+                  console.log(chalk.dim(`  ${mergeResult.failed} merge(s) failed — run 'foreman merge' for details.`));
+                }
+              } catch (mergeErr: unknown) {
+                const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+                console.error(chalk.yellow(`  Auto-merge error (non-fatal): ${msg}`));
+              }
+            }
             // Agents finished — loop back and check for newly-unblocked tasks
             continue;
           }
@@ -320,6 +423,25 @@ export const runCommand = new Command("run")
           const { detached } = await watchRunsInk(store, runIds, { notificationBus });
           if (detached) {
             break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
+          }
+          // Auto-merge completed branches before dispatching the next batch
+          if (enableAutoMerge) {
+            console.log(chalk.dim("Auto-merging completed branches..."));
+            try {
+              const mergeResult = await autoMerge({ store, taskClient, projectPath });
+              if (mergeResult.merged > 0) {
+                console.log(chalk.green(`  Auto-merged ${mergeResult.merged} branch(es).`));
+              }
+              if (mergeResult.conflicts > 0) {
+                console.log(chalk.yellow(`  ${mergeResult.conflicts} conflict(s) — run 'foreman merge' to resolve.`));
+              }
+              if (mergeResult.failed > 0) {
+                console.log(chalk.dim(`  ${mergeResult.failed} merge(s) failed — run 'foreman merge' for details.`));
+              }
+            } catch (mergeErr: unknown) {
+              const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+              console.error(chalk.yellow(`  Auto-merge error (non-fatal): ${msg}`));
+            }
           }
           // After batch completes, loop back to dispatch the next batch
           continue;
