@@ -19,6 +19,7 @@ import { slingCommand } from "./commands/sling.js";
 import { migrateBeadsCommand } from "./commands/migrate-beads.js";
 import { stopCommand } from "./commands/stop.js";
 import { sentinelCommand } from "./commands/sentinel.js";
+import { retryCommand } from "./commands/retry.js";
 
 const program = new Command();
 
@@ -45,5 +46,6 @@ program.addCommand(slingCommand);
 program.addCommand(migrateBeadsCommand);
 program.addCommand(stopCommand);
 program.addCommand(sentinelCommand);
+program.addCommand(retryCommand);
 
 program.parse();
