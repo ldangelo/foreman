@@ -40,6 +40,7 @@ const {
     this.close = vi.fn();
     this.getActiveRuns = mockGetActiveRuns;
   });
+  (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
   const mockWatchRunsInk = vi.fn().mockResolvedValue({ detached: false });
 

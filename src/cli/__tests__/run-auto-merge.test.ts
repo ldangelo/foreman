@@ -56,6 +56,7 @@ const {
     this.getProjectByPath = mockGetProjectByPath;
     this.getDb = mockGetDb;
   });
+  (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
   const mockWatchRunsInk = vi.fn().mockResolvedValue({ detached: false });
 
