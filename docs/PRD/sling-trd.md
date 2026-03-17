@@ -80,7 +80,7 @@ A new `foreman sling trd <file>` command (subcommand pattern: `sling` parent, `t
 
 - **Modifying the TRD file** — sling-trd is read-only on the input document
 - **LLM-based parsing** — TRD tables are structured enough for deterministic parsing
-- **Replacing `decompose`** — `decompose` handles loosely-structured PRDs; `sling-trd` handles structured TRDs
+- **Replacing `decompose`** — `decompose` has been retired; `sling-trd` is now the canonical TRD → task hierarchy command
 - **Syncing updates** — sling-trd is a one-shot import; subsequent updates are manual
 - **Creating the TRD** — use `/ensemble:create-trd` for that
 
@@ -396,15 +396,15 @@ Options:
 
 | Command | Input | Parser | Output | Difference |
 |---------|-------|--------|--------|------------|
-| `foreman decompose` | PRD/TRD (loose markdown) | Heuristic (H2→stories, checklists→tasks) | sd only | Infers deps from position |
+| `foreman decompose` | PRD/TRD (loose markdown) | Heuristic (H2→stories, checklists→tasks) | sd only | **Retired** — use `sling trd` instead |
 | `foreman sling trd` | TRD (structured tables) | Table parser (columns: ID, Task, Est, Deps, Files, Status) | sd + br | Uses explicit deps from table, stores ACs on stories |
 
 ### 9.2 Reuse Opportunities
 
-- **Type mappings**: Reuse `toSeedsType()` and `toSeedsPriority()` from `src/orchestrator/planner.ts`
-- **Execution pattern**: Adapt `executePlan()` from planner.ts for dual-write
-- **DecompositionPlan type**: Extend with `trdTaskId`, `estimate`, `files`, `status`, `parallelGroup` fields
-- **Display helpers**: Reuse `printPlan()`, `priorityBadge()`, `complexityBadge()` from decompose.ts
+- **Type mappings**: Implement `toSeedsType()`, `toSeedsPriority()`, `toBrType()`, `toBrPriority()` in sling-executor.ts
+- **Execution pattern**: Dual-write executor pattern in sling-executor.ts
+- **SlingPlan type**: Defined in `src/orchestrator/types.ts` with sprint/story/task hierarchy
+- **Display helpers**: `printSlingPlan()`, `priorityBadge()`, `complexityBadge()` in sling.ts
 
 ### 9.3 New Files
 

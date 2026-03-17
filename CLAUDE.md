@@ -20,7 +20,7 @@ foreman run --seed X   # Dispatch specific task
 foreman status         # Show tasks + active agents
 foreman monitor        # Check agent health
 foreman reset          # Clean up failed/stuck runs
-foreman decompose X    # TRD -> task hierarchy
+foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
 foreman plan X         # PRD -> TRD pipeline
 foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
@@ -85,7 +85,7 @@ Dev <-> QA retries up to 2x before proceeding to Review. Reviewer FAILs on CRITI
 ## Critical Constraints
 
 - **Non-interactive shell commands**: Always use `cp -f`, `mv -f`, `rm -f` (agents hang on `-i` prompts)
-- **No nested Claude sessions**: Can't run `foreman decompose --llm` inside Claude Code
+- **No nested Claude sessions**: Can't run Claude-invoked commands inside Claude Code (use `--no-llm` variants or run from terminal)
 - **TASK.md not AGENTS.md**: Foreman writes per-task context to `TASK.md` in worktrees (not AGENTS.md, which is the project file)
 - **CLAUDECODE env var**: Must be stripped from worker spawn env to avoid nested session errors
 - **FileHandle cleanup**: Always close `fs.promises.open()` handles after spawn inherits fds (Node v25+)

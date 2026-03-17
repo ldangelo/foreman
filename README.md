@@ -71,7 +71,7 @@ The full Foreman pipeline:
 
 ```
 foreman plan "Build auth system"     # Ensemble: description → PRD → TRD
-foreman decompose docs/TRD.md       # TRD → beads task hierarchy
+foreman sling trd docs/TRD.md       # TRD → beads task hierarchy
 foreman run                          # Dispatch agents to ready tasks
 foreman monitor                      # Check progress, recover stuck agents
 foreman merge                        # Merge completed branches + run tests
@@ -104,13 +104,13 @@ Pipeline steps:
 3. `/ensemble:create-trd` — Technical architecture, task breakdown
 4. `/ensemble:refine-trd` — Validate decisions, refine estimates
 
-### `foreman decompose`
-Decompose a TRD into a beads task hierarchy.
+### `foreman sling trd`
+Sling a structured TRD into a dual-tracked task hierarchy (seeds + beads).
 
 ```bash
-foreman decompose docs/TRD.md           # Parse and create beads
-foreman decompose docs/TRD.md --dry-run # Preview without creating
-foreman decompose docs/TRD.md --auto    # Skip confirmation
+foreman sling trd docs/TRD.md           # Parse and create tasks
+foreman sling trd docs/TRD.md --dry-run # Preview without creating
+foreman sling trd docs/TRD.md --auto    # Skip confirmation
 ```
 
 ### `foreman run`
@@ -250,12 +250,11 @@ foreman/
 │   │   ├── index.ts
 │   │   └── commands/
 │   ├── orchestrator/           # Core orchestration engine
-│   │   ├── decomposer.ts      # TRD → task tree (heuristic)
-│   │   ├── decomposer-llm.ts  # TRD → task tree (LLM, stub)
 │   │   ├── dispatcher.ts      # Task → agent spawning
 │   │   ├── monitor.ts         # Progress tracking + recovery
-│   │   ├── planner.ts         # Task tree → beads creation
 │   │   ├── refinery.ts        # Merge + test + cleanup
+│   │   ├── trd-parser.ts      # Structured TRD table parser
+│   │   ├── sling-executor.ts  # TRD plan → seeds + beads dual-write
 │   │   └── templates.ts       # Agent instruction generation
 │   ├── dashboard/              # Web UI
 │   │   ├── server.ts          # Hono REST API + static serving
@@ -268,8 +267,7 @@ foreman/
 ├── skills/foreman/SKILL.md     # OpenClaw skill definition
 ├── templates/                  # Agent instruction templates
 │   ├── worker-agent.md
-│   ├── refinery-agent.md
-│   └── decomposer-prompt.md
+│   └── refinery-agent.md
 └── docs/
     ├── PRD.md                 # Full product requirements
     └── sample-prd.md          # Example PRD for testing

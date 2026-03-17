@@ -1,6 +1,6 @@
 ---
 name: foreman
-description: "Multi-agent coding orchestrator. Use when: (1) user wants to plan and build features from a description, (2) user wants to run multiple AI coding agents on a codebase, (3) user asks about Foreman project status or agent progress, (4) user says 'foreman plan/decompose/run/status/merge/monitor/dashboard'."
+description: "Multi-agent coding orchestrator. Use when: (1) user wants to plan and build features from a description, (2) user wants to run multiple AI coding agents on a codebase, (3) user asks about Foreman project status or agent progress, (4) user says 'foreman plan/sling/run/status/merge/monitor/dashboard'."
 metadata:
   openclaw:
     emoji: "👷"
@@ -17,7 +17,7 @@ Foreman decomposes development work into parallelizable tasks (via Beads), dispa
 - User asks to build/implement something from a product description, PRD, or TRD
 - User wants to run multiple AI agents on a codebase in parallel
 - User asks about agent progress, stuck agents, or project status
-- User says anything like "foreman plan/decompose/run/status/merge"
+- User says anything like "foreman plan/sling/run/status/merge"
 
 ## Prerequisites
 
@@ -38,7 +38,7 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts <command>
 
 ```
 foreman plan        →  Ensemble pipeline  →  Product description → PRD → TRD
-foreman decompose   →  Heuristic parser   →  TRD → Beads task hierarchy
+foreman sling trd   →  Structured parser  →  TRD → Seeds + Beads task hierarchy
 foreman run         →  Agent dispatcher   →  Spawn agents on ready tasks
 foreman monitor     →  Progress checker   →  Detect stuck/completed agents
 foreman merge       →  Refinery           →  Merge completed branches + test
@@ -86,20 +86,21 @@ through the dispatcher with full tracking in SQLite:
 The dispatch loop automatically waits for each step to complete before unblocking the next.
 All steps visible in the dashboard alongside coding agents.
 
-### 3. Decompose (TRD → Beads)
+### 3. Sling TRD (TRD → Seeds + Beads)
 
 ```bash
-# Decompose a TRD into beads
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts decompose docs/TRD.md
+# Sling a structured TRD into seeds + beads
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts sling trd docs/TRD.md
 
-# Preview without creating beads
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts decompose docs/TRD.md --dry-run
+# Preview without creating tasks
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts sling trd docs/TRD.md --dry-run
 
 # Skip confirmation
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts decompose docs/TRD.md --auto
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts sling trd docs/TRD.md --auto
 ```
 
-Parses the TRD and creates a bead hierarchy (epic → tasks with dependencies).
+Parses a structured TRD (with table sections, explicit metadata) and dual-writes to both
+seeds (`sd`) and beads_rust (`br`) with explicit dependencies.
 
 ### 4. Run (Dispatch Agents)
 
@@ -178,7 +179,7 @@ When orchestrating from the main OpenClaw session:
 ```
 1. User: "Build the auth module from this description"
 2. Jarvis: Run foreman plan with the description → generates PRD → TRD
-3. Jarvis: Run foreman decompose on the TRD → creates beads
+3. Jarvis: Run foreman sling trd on the TRD → creates seeds + beads
 4. Jarvis: Run foreman run (or manually spawn via sessions_spawn)
 5. Jarvis: Periodically run foreman monitor to check progress
 6. Jarvis: When tasks complete, run foreman merge
@@ -191,5 +192,5 @@ When orchestrating from the main OpenClaw session:
 - Max 5 concurrent agents by default (configurable)
 - Each agent gets its own git worktree — no conflicts
 - Agents must `bd close` their bead when done
-- TRDs from Ensemble contain structured task breakdowns that decompose well
+- TRDs from Ensemble contain structured task breakdowns ready for `foreman sling trd`
 - The dashboard at `:3850` shows all projects and agents in real-time
