@@ -31,7 +31,7 @@ function brPath(): string {
 function execOpts(projectPath?: string): { stdio: "pipe"; timeout: number; cwd?: string } {
   return {
     stdio: "pipe" as const,
-    timeout: PIPELINE_TIMEOUTS.seedClosureMs,
+    timeout: PIPELINE_TIMEOUTS.beadClosureMs,
     ...(projectPath ? { cwd: projectPath } : {}),
   };
 }

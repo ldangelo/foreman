@@ -136,8 +136,8 @@ describe("PIPELINE_TIMEOUTS defaults", () => {
     expect(PIPELINE_TIMEOUTS.gitOperationMs).toBe(30_000);
   });
 
-  it("seedClosureMs defaults to 10000", () => {
-    expect(PIPELINE_TIMEOUTS.seedClosureMs).toBe(10_000);
+  it("beadClosureMs defaults to 10000", () => {
+    expect(PIPELINE_TIMEOUTS.beadClosureMs).toBe(10_000);
   });
 
   it("testExecutionMs defaults to 300000", () => {

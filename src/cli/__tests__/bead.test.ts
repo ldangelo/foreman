@@ -54,11 +54,11 @@ async function run(args: string[], cwd: string): Promise<ExecResult> {
   }
 }
 
-describe("seed command", () => {
+describe("bead command", () => {
   const tempDirs: string[] = [];
 
   function makeTempDir(): string {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-seed-test-")));
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-bead-test-")));
     tempDirs.push(dir);
     return dir;
   }
@@ -70,13 +70,13 @@ describe("seed command", () => {
     tempDirs.length = 0;
   });
 
-  it("seed --help shows description and options", async () => {
+  it("bead --help shows description and options", async () => {
     const tmp = makeTempDir();
-    const result = await run(["seed", "--help"], tmp);
+    const result = await run(["bead", "--help"], tmp);
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout;
-    expect(output).toContain("seed");
+    expect(output).toContain("bead");
     expect(output).toContain("natural-language");
     expect(output).toContain("--dry-run");
     expect(output).toContain("--no-llm");
@@ -85,9 +85,9 @@ describe("seed command", () => {
     expect(output).toContain("--parent");
   }, 15_000);
 
-  it("seed without arguments shows missing argument error", async () => {
+  it("bead without arguments shows missing argument error", async () => {
     const tmp = makeTempDir();
-    const result = await run(["seed"], tmp);
+    const result = await run(["bead"], tmp);
 
     expect(result.exitCode).not.toBe(0);
     const output = result.stdout + result.stderr;
@@ -95,48 +95,48 @@ describe("seed command", () => {
     expect(output.toLowerCase()).toMatch(/missing|required|argument|error/i);
   }, 15_000);
 
-  it("seed fails without foreman init (no .seeds directory)", async () => {
+  it("bead fails without foreman init (no .beads directory)", async () => {
     const tmp = makeTempDir();
-    // No foreman init — seeds CLI may or may not be present, but .seeds won't exist
+    // No foreman init — br CLI may or may not be present, but .beads won't exist
     const result = await run(
-      ["seed", "--no-llm", "Create a login page"],
+      ["bead", "--no-llm", "Create a login page"],
       tmp,
     );
 
     const output = result.stdout + result.stderr;
     // Should fail with a helpful message about initialization
     expect(result.exitCode).not.toBe(0);
-    expect(output).toMatch(/not (found|installed|initializ)|init|sd|seeds/i);
+    expect(output).toMatch(/not (found|installed|initializ)|init|br|beads/i);
   }, 15_000);
 
-  it("seed --dry-run --no-llm shows planned seeds without creating them", async () => {
+  it("bead --dry-run --no-llm shows planned beads without creating them", async () => {
     const tmp = makeTempDir();
 
-    // We cannot run this without sd being installed & initialized,
-    // but we can verify it fails gracefully when sd is not present
+    // We cannot run this without br being installed & initialized,
+    // but we can verify it fails gracefully when br is not present
     const result = await run(
-      ["seed", "--no-llm", "--dry-run", "Add user authentication"],
+      ["bead", "--no-llm", "--dry-run", "Add user authentication"],
       tmp,
     );
 
     const output = result.stdout + result.stderr;
-    // Either it shows the planned seed (if sd is installed) or shows an error
+    // Either it shows the planned bead (if br is installed) or shows an error
     if (result.exitCode === 0) {
       expect(output).toContain("dry-run");
       expect(output).toContain("Add user authentication");
     } else {
-      // No sd installed: graceful error
-      expect(output).toMatch(/not (found|installed|initializ)|init|sd|seeds/i);
+      // No br installed: graceful error
+      expect(output).toMatch(/not (found|installed|initializ)|init|br|beads/i);
     }
   }, 15_000);
 
-  it("seed --dry-run --no-llm reads description from a file", async () => {
+  it("bead --dry-run --no-llm reads description from a file", async () => {
     const tmp = makeTempDir();
     const descFile = join(tmp, "desc.txt");
     writeFileSync(descFile, "Implement OAuth2 login flow with Google provider");
 
     const result = await run(
-      ["seed", "--no-llm", "--dry-run", descFile],
+      ["bead", "--no-llm", "--dry-run", descFile],
       tmp,
     );
 
@@ -146,27 +146,27 @@ describe("seed command", () => {
       expect(output).toContain("Implement OAuth2");
       expect(output).toContain("dry-run");
     } else {
-      // No sd installed: graceful error
-      expect(output).toMatch(/not (found|installed|initializ)|init|sd|seeds/i);
+      // No br installed: graceful error
+      expect(output).toMatch(/not (found|installed|initializ)|init|br|beads/i);
     }
   }, 15_000);
 });
 
 // ── Unit tests for internal helpers ─────────────────────────────────────
 
-describe("seed command internal helpers (via module import)", () => {
+describe("bead command internal helpers (via module import)", () => {
   // We test the parseLlmResponse and normaliseIssue logic indirectly
   // by importing and calling with known inputs via a test wrapper.
 
-  it("seedCommand is a Commander Command named 'seed'", async () => {
-    const { seedCommand } = await import("../commands/seed.js");
-    expect(seedCommand.name()).toBe("seed");
-    expect(seedCommand.description()).toContain("natural-language");
+  it("beadCommand is a Commander Command named 'bead'", async () => {
+    const { beadCommand } = await import("../commands/bead.js");
+    expect(beadCommand.name()).toBe("bead");
+    expect(beadCommand.description()).toContain("natural-language");
   });
 
-  it("seedCommand has the expected options", async () => {
-    const { seedCommand } = await import("../commands/seed.js");
-    const optionNames = seedCommand.options.map((o) => o.long);
+  it("beadCommand has the expected options", async () => {
+    const { beadCommand } = await import("../commands/bead.js");
+    const optionNames = beadCommand.options.map((o) => o.long);
     expect(optionNames).toContain("--type");
     expect(optionNames).toContain("--priority");
     expect(optionNames).toContain("--parent");
@@ -176,9 +176,9 @@ describe("seed command internal helpers (via module import)", () => {
     expect(optionNames).toContain("--no-llm");
   });
 
-  it("seedCommand accepts a description argument", async () => {
-    const { seedCommand } = await import("../commands/seed.js");
-    const argDef = seedCommand.registeredArguments[0];
+  it("beadCommand accepts a description argument", async () => {
+    const { beadCommand } = await import("../commands/bead.js");
+    const argDef = beadCommand.registeredArguments[0];
     expect(argDef).toBeDefined();
     expect(argDef.required).toBe(true);
   });
@@ -190,7 +190,7 @@ describe("parseLlmResponse", () => {
   let parseLlmResponse: (raw: string) => { issues: any[] };
 
   beforeEach(async () => {
-    ({ parseLlmResponse } = await import("../commands/seed.js"));
+    ({ parseLlmResponse } = await import("../commands/bead.js"));
   });
 
   it("parses a plain JSON object", () => {
@@ -237,7 +237,7 @@ describe("normaliseIssue", () => {
   let normaliseIssue: (raw: Partial<any>) => any;
 
   beforeEach(async () => {
-    ({ normaliseIssue } = await import("../commands/seed.js"));
+    ({ normaliseIssue } = await import("../commands/bead.js"));
   });
 
   it("defaults type to 'task' when missing", () => {
@@ -300,7 +300,7 @@ describe("repairTruncatedJson", () => {
   let repairTruncatedJson: (json: string) => string;
 
   beforeEach(async () => {
-    ({ repairTruncatedJson } = await import("../commands/seed.js"));
+    ({ repairTruncatedJson } = await import("../commands/bead.js"));
   });
 
   it("returns unchanged string when already valid (no open brackets)", () => {
@@ -332,13 +332,13 @@ describe("repairTruncatedJson", () => {
 
 describe("--no-llm description slice behaviour", () => {
   it("sets description to slice(200) when input exceeds 200 chars", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "foreman-seed-nollm-"));
+    const tmp = mkdtempSync(join(tmpdir(), "foreman-bead-nollm-"));
     const longInput = "A".repeat(200) + "REMAINDER_TEXT";
     const descFile = join(tmp, "long.txt");
     writeFileSync(descFile, longInput);
 
-    // We can only observe --dry-run output; skip if sd not installed
-    const result = await run(["seed", "--no-llm", "--dry-run", descFile], tmp);
+    // We can only observe --dry-run output; skip if br not installed
+    const result = await run(["bead", "--no-llm", "--dry-run", descFile], tmp);
     rmSync(tmp, { recursive: true, force: true });
 
     if (result.exitCode === 0) {
@@ -348,16 +348,16 @@ describe("--no-llm description slice behaviour", () => {
       // It should NOT start the description with the same 'A's that are already in the title
       // (i.e. description != full inputText, it's only the trailing portion)
     }
-    // If sd not installed, test passes — we just can't observe the output
+    // If br not installed, test passes — we just can't observe the output
   }, 15_000);
 
   it("sets description to undefined when input is exactly 200 chars", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "foreman-seed-nollm-exact-"));
+    const tmp = mkdtempSync(join(tmpdir(), "foreman-bead-nollm-exact-"));
     const exactInput = "B".repeat(200);
     const descFile = join(tmp, "exact.txt");
     writeFileSync(descFile, exactInput);
 
-    const result = await run(["seed", "--no-llm", "--dry-run", descFile], tmp);
+    const result = await run(["bead", "--no-llm", "--dry-run", descFile], tmp);
     rmSync(tmp, { recursive: true, force: true });
 
     if (result.exitCode === 0) {

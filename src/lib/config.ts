@@ -95,8 +95,8 @@ export const PIPELINE_TIMEOUTS = {
   progressFlushMs: envInt("FOREMAN_PROGRESS_FLUSH_MS", 2_000),
   /** Timeout for git add/commit/push during pipeline finalization */
   gitOperationMs: envInt("FOREMAN_GIT_OPERATION_TIMEOUT_MS", 30_000),
-  /** Timeout for resetting a seed back to open after stuck/failed */
-  seedClosureMs: envInt("FOREMAN_SEED_CLOSURE_TIMEOUT_MS", 10_000),
+  /** Timeout for resetting a bead back to open after stuck/failed */
+  beadClosureMs: envInt("FOREMAN_BEAD_CLOSURE_TIMEOUT_MS", 10_000),
   /** Timeout for running the test suite after a merge */
   testExecutionMs: envInt("FOREMAN_TEST_EXECUTION_TIMEOUT_MS", 5 * 60 * 1000),
   /** Timeout for running tests in the sentinel (default: 10 minutes) */

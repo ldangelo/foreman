@@ -15,12 +15,12 @@ import type { BrIssue } from "../../lib/beads-rust.js";
 // ── Test helpers ──────────────────────────────────────────────────────────
 
 function makeTempDir(): string {
-  return realpathSync(mkdtempSync(join(tmpdir(), "foreman-migrate-seeds-")));
+  return realpathSync(mkdtempSync(join(tmpdir(), "foreman-migrate-beads-")));
 }
 
-function writeSeedsJsonl(dir: string, seeds: object[]): void {
+function writeSeedsJsonl(dir: string, beads: object[]): void {
   mkdirSync(join(dir, ".seeds"), { recursive: true });
-  const content = seeds.map((s) => JSON.stringify(s)).join("\n") + "\n";
+  const content = beads.map((b) => JSON.stringify(b)).join("\n") + "\n";
   writeFileSync(join(dir, ".seeds", "issues.jsonl"), content);
 }
 
@@ -43,45 +43,45 @@ function makeClient(overrides: Partial<{
 
 // ── Unit tests for exported helpers ──────────────────────────────────────
 
-describe("migrate-seeds module exports", () => {
-  it("migrateSeedsCommand is a Commander Command named 'migrate-seeds'", async () => {
-    const { migrateSeedsCommand } = await import("../commands/migrate-seeds.js");
-    expect(migrateSeedsCommand.name()).toBe("migrate-seeds");
+describe("migrate-beads module exports", () => {
+  it("migrateBeadsCommand is a Commander Command named 'migrate-beads'", async () => {
+    const { migrateBeadsCommand } = await import("../commands/migrate-beads.js");
+    expect(migrateBeadsCommand.name()).toBe("migrate-beads");
   });
 
-  it("migrateSeedsCommand has --dry-run option", async () => {
-    const { migrateSeedsCommand } = await import("../commands/migrate-seeds.js");
-    const optionNames = migrateSeedsCommand.options.map((o) => o.long);
+  it("migrateBeadsCommand has --dry-run option", async () => {
+    const { migrateBeadsCommand } = await import("../commands/migrate-beads.js");
+    const optionNames = migrateBeadsCommand.options.map((o) => o.long);
     expect(optionNames).toContain("--dry-run");
   });
 
-  it("migrateSeedsCommand has a meaningful description", async () => {
-    const { migrateSeedsCommand } = await import("../commands/migrate-seeds.js");
-    expect(migrateSeedsCommand.description()).toMatch(/seed|migrat/i);
+  it("migrateBeadsCommand has a meaningful description", async () => {
+    const { migrateBeadsCommand } = await import("../commands/migrate-beads.js");
+    expect(migrateBeadsCommand.description()).toMatch(/bead|migrat/i);
   });
 });
 
-describe("normalizeSeedType", () => {
+describe("normalizeBeadType", () => {
   it("passes through valid br types unchanged", async () => {
-    const { normalizeSeedType } = await import("../commands/migrate-seeds.js");
+    const { normalizeBeadType } = await import("../commands/migrate-beads.js");
     for (const t of ["task", "bug", "feature", "epic", "chore", "decision"]) {
-      expect(normalizeSeedType(t)).toBe(t);
+      expect(normalizeBeadType(t)).toBe(t);
     }
   });
 
   it("defaults to 'task' for unknown type", async () => {
-    const { normalizeSeedType } = await import("../commands/migrate-seeds.js");
-    expect(normalizeSeedType("unknown_type")).toBe("task");
-    expect(normalizeSeedType("")).toBe("task");
-    expect(normalizeSeedType(undefined as unknown as string)).toBe("task");
+    const { normalizeBeadType } = await import("../commands/migrate-beads.js");
+    expect(normalizeBeadType("unknown_type")).toBe("task");
+    expect(normalizeBeadType("")).toBe("task");
+    expect(normalizeBeadType(undefined as unknown as string)).toBe("task");
   });
 });
 
-describe("parseSeedsJsonl", () => {
-  let parseSeedsJsonl: (content: string) => unknown[];
+describe("parseBeadsJsonl", () => {
+  let parseBeadsJsonl: (content: string) => unknown[];
 
   beforeEach(async () => {
-    ({ parseSeedsJsonl } = await import("../commands/migrate-seeds.js"));
+    ({ parseBeadsJsonl } = await import("../commands/migrate-beads.js"));
   });
 
   it("parses a single valid JSONL line", () => {
@@ -92,7 +92,7 @@ describe("parseSeedsJsonl", () => {
       priority: "P2",
       status: "open",
     });
-    const result = parseSeedsJsonl(line + "\n");
+    const result = parseBeadsJsonl(line + "\n");
     expect(result).toHaveLength(1);
     expect((result[0] as { title: string }).title).toBe("Do a thing");
   });
@@ -102,7 +102,7 @@ describe("parseSeedsJsonl", () => {
       JSON.stringify({ id: "sd-1", title: "A", type: "task", priority: "P2", status: "open" }),
       JSON.stringify({ id: "sd-2", title: "B", type: "bug", priority: "P1", status: "closed" }),
     ].join("\n");
-    const result = parseSeedsJsonl(lines);
+    const result = parseBeadsJsonl(lines);
     expect(result).toHaveLength(2);
   });
 
@@ -112,13 +112,13 @@ describe("parseSeedsJsonl", () => {
       "",
       "   ",
     ].join("\n");
-    const result = parseSeedsJsonl(lines);
+    const result = parseBeadsJsonl(lines);
     expect(result).toHaveLength(1);
   });
 
   it("returns empty array for empty content", () => {
-    expect(parseSeedsJsonl("")).toHaveLength(0);
-    expect(parseSeedsJsonl("   \n  \n")).toHaveLength(0);
+    expect(parseBeadsJsonl("")).toHaveLength(0);
+    expect(parseBeadsJsonl("   \n  \n")).toHaveLength(0);
   });
 });
 
@@ -129,13 +129,13 @@ describe("runMigration (unit-level via injected client)", () => {
   let runMigration: (
     projectPath: string,
     opts: { dryRun: boolean; client?: ReturnType<typeof makeClient> },
-  ) => Promise<import("../commands/migrate-seeds.js").MigrationResult>;
+  ) => Promise<import("../commands/migrate-beads.js").MigrationResult>;
 
   beforeEach(async () => {
     tmpDir = makeTempDir();
     // Create .beads so real BeadsRustClient.isInitialized() would pass
     mkdirSync(join(tmpDir, ".beads"), { recursive: true });
-    ({ runMigration } = await import("../commands/migrate-seeds.js"));
+    ({ runMigration } = await import("../commands/migrate-beads.js"));
   });
 
   afterEach(() => {
@@ -164,7 +164,7 @@ describe("runMigration (unit-level via injected client)", () => {
     expect(result.failed).toBe(0);
   });
 
-  it("creates seeds with correct br fields (title, type, priority)", async () => {
+  it("creates beads with correct br fields (title, type, priority)", async () => {
     writeSeedsJsonl(tmpDir, [
       {
         id: "sd-1",
@@ -189,7 +189,7 @@ describe("runMigration (unit-level via injected client)", () => {
     expect(opts.description).toBe("Add user login flow");
   });
 
-  it("creates 'in_progress' seeds as status: open (no close call)", async () => {
+  it("creates 'in_progress' beads as status: open (no close call)", async () => {
     writeSeedsJsonl(tmpDir, [
       { id: "sd-1", title: "WIP task", type: "task", priority: "P2", status: "in_progress" },
     ]);
@@ -206,7 +206,7 @@ describe("runMigration (unit-level via injected client)", () => {
     expect(result.created).toBe(1);
   });
 
-  it("creates 'closed' seeds then immediately closes them", async () => {
+  it("creates 'closed' beads then immediately closes them", async () => {
     writeSeedsJsonl(tmpDir, [
       { id: "sd-1", title: "Done task", type: "task", priority: "P3", status: "closed" },
     ]);
@@ -245,7 +245,7 @@ describe("runMigration (unit-level via injected client)", () => {
     expect(mockAddDependency).toHaveBeenCalledTimes(1);
   });
 
-  it("skips seeds whose title already exists in br (idempotency)", async () => {
+  it("skips beads whose title already exists in br (idempotency)", async () => {
     writeSeedsJsonl(tmpDir, [
       { id: "sd-1", title: "Existing task", type: "task", priority: "P2", status: "open" },
       { id: "sd-2", title: "New task", type: "task", priority: "P2", status: "open" },
@@ -277,7 +277,7 @@ describe("runMigration (unit-level via injected client)", () => {
     );
   });
 
-  it("writes migration report to docs/seeds-migration-report.md", async () => {
+  it("writes migration report to docs/beads-migration-report.md", async () => {
     writeSeedsJsonl(tmpDir, [
       { id: "sd-1", title: "Report test task", type: "task", priority: "P2", status: "open" },
     ]);
@@ -288,7 +288,7 @@ describe("runMigration (unit-level via injected client)", () => {
 
     const result = await runMigration(tmpDir, { dryRun: false, client });
 
-    const reportPath = join(tmpDir, "docs", "seeds-migration-report.md");
+    const reportPath = join(tmpDir, "docs", "beads-migration-report.md");
     expect(existsSync(reportPath)).toBe(true);
 
     const reportContent = readFileSync(reportPath, "utf-8");
@@ -326,7 +326,7 @@ describe("runMigration (unit-level via injected client)", () => {
 
     await runMigration(tmpDir, { dryRun: true, client });
 
-    const reportPath = join(tmpDir, "docs", "seeds-migration-report.md");
+    const reportPath = join(tmpDir, "docs", "beads-migration-report.md");
     expect(existsSync(reportPath)).toBe(false);
   });
 });

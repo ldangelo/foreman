@@ -1,5 +1,5 @@
 /**
- * Tests for TRD-015: Backend selection in seed.ts based on FOREMAN_TASK_BACKEND.
+ * Tests for TRD-015: Backend selection in bead.ts based on FOREMAN_TASK_BACKEND.
  *
  * Verifies:
  * - When FOREMAN_TASK_BACKEND='br': BeadsRustClient is used for issue creation
@@ -49,16 +49,16 @@ vi.mock("../../lib/beads-rust.js", () => ({
 }));
 
 // ── Module under test ──────────────────────────────────────────────────────
-// We import seedCommand to verify it loads without error; actual logic tested
+// We import beadCommand to verify it loads without error; actual logic tested
 // by calling the action handler directly via the exported factory helpers.
-// We test the backend selection by calling createSeedClient (exported for testing).
-import { createSeedClient } from "../commands/seed.js";
+// We test the backend selection by calling createBeadClient (exported for testing).
+import { createBeadClient } from "../commands/bead.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 const PROJECT_PATH = "/mock/project";
 
-describe("TRD-015: seed.ts backend selection via FOREMAN_TASK_BACKEND", () => {
+describe("TRD-015: bead.ts backend selection via FOREMAN_TASK_BACKEND", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
@@ -86,7 +86,7 @@ describe("TRD-015: seed.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     });
 
     it("returns a BeadsRustClient instance", () => {
-      const client = createSeedClient(PROJECT_PATH);
+      const client = createBeadClient(PROJECT_PATH);
 
       expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
       expect(MockBeadsRustClient).toHaveBeenCalledTimes(1);
@@ -94,7 +94,7 @@ describe("TRD-015: seed.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     });
 
     it("returned client has a create method (BeadsRustClient API)", () => {
-      const client = createSeedClient(PROJECT_PATH);
+      const client = createBeadClient(PROJECT_PATH);
 
       // The BeadsRustClient mock exposes 'create'
       expect(typeof (client as unknown as Record<string, unknown>).create).toBe("function");
@@ -105,7 +105,7 @@ describe("TRD-015: seed.ts backend selection via FOREMAN_TASK_BACKEND", () => {
 
 // ── Priority normalization tests ────────────────────────────────────────────
 
-describe("TRD-015: seed.ts priority normalization", () => {
+describe("TRD-015: bead.ts priority normalization", () => {
   it("normalizePriority accepts P0-P4 notation", async () => {
     const { normalizePriority } = await import("../../lib/priority.js");
 

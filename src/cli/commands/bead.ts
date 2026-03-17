@@ -31,7 +31,7 @@ interface ParsedIssuesResponse {
  *
  * Exported for unit testing.
  */
-export function createSeedClient(
+export function createBeadClient(
   projectPath: string,
 ): BeadsRustClient {
   return new BeadsRustClient(projectPath);
@@ -39,14 +39,14 @@ export function createSeedClient(
 
 // ── Command ──────────────────────────────────────────────────────────────
 
-export const seedCommand = new Command("seed")
+export const beadCommand = new Command("bead")
   .description("Create beads from natural-language description")
   .argument("<description>", "Natural language description (or path to a file)")
   .option("--type <type>", "Force issue type (task|bug|feature|epic|chore|decision)")
   .option("--priority <priority>", "Force priority (P0-P4)")
-  .option("--parent <id>", "Parent seed ID")
-  .option("--dry-run", "Show what would be created without creating seeds")
-  .option("--no-llm", "Skip LLM parsing — create a single seed with the text as title")
+  .option("--parent <id>", "Parent bead ID")
+  .option("--dry-run", "Show what would be created without creating beads")
+  .option("--no-llm", "Skip LLM parsing — create a single bead with the text as title")
   .option("--model <model>", "Claude model to use for parsing")
   .action(
     async (
@@ -73,18 +73,18 @@ export const seedCommand = new Command("seed")
       }
 
       // Initialise BeadsRust task client
-      const seeds = createSeedClient(projectPath);
+      const beads = createBeadClient(projectPath);
 
       // Validate prerequisites
       try {
-        await seeds.ensureBrInstalled();
+        await beads.ensureBrInstalled();
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exitCode = 1;
         return;
       }
 
-      if (!(await seeds.isInitialized())) {
+      if (!(await beads.isInitialized())) {
         console.error(
           chalk.red(`Beads not initialized in this directory. Run 'foreman init' first.`),
         );
@@ -97,7 +97,7 @@ export const seedCommand = new Command("seed")
       let parsedIssues: ParsedIssue[];
 
       if (!opts.llm) {
-        // --no-llm: create a single seed directly
+        // --no-llm: create a single bead directly
         parsedIssues = [
           {
             title: inputText.slice(0, 200),
@@ -132,9 +132,9 @@ export const seedCommand = new Command("seed")
         if (normalizedPriority) issue.priority = normalizedPriority;
       }
 
-      // ── Display planned seeds ──────────────────────────────────────────
+      // ── Display planned beads ──────────────────────────────────────────
 
-      console.log(chalk.bold.cyan(`\n Seeds to create:\n`));
+      console.log(chalk.bold.cyan(`\n Beads to create:\n`));
       for (const issue of parsedIssues) {
         console.log(`  ${chalk.bold(issue.title)}`);
         if (issue.description) {
@@ -152,57 +152,57 @@ export const seedCommand = new Command("seed")
       }
 
       if (opts.dryRun) {
-        console.log(chalk.yellow("\n--dry-run: No seeds were created."));
+        console.log(chalk.yellow("\n--dry-run: No beads were created."));
         return;
       }
 
-      // ── Create seeds ───────────────────────────────────────────────────
+      // ── Create beads ───────────────────────────────────────────────────
 
-      const createSpinner = ora("Creating seeds...").start();
-      const createdSeeds: { id: string; title: string }[] = [];
+      const createSpinner = ora("Creating beads...").start();
+      const createdBeads: { id: string; title: string }[] = [];
       const titleToId = new Map<string, string>();
 
       try {
         for (const issue of parsedIssues) {
-          const seed = await seeds.create(issue.title, {
+          const bead = await beads.create(issue.title, {
             type: issue.type,
             priority: issue.priority,
             parent: opts.parent,
             description: issue.description,
             labels: issue.labels,
           });
-          createdSeeds.push({ id: seed.id, title: seed.title });
-          titleToId.set(issue.title, seed.id);
-          createSpinner.text = `Creating seeds… (${createdSeeds.length}/${parsedIssues.length})`;
+          createdBeads.push({ id: bead.id, title: bead.title });
+          titleToId.set(issue.title, bead.id);
+          createSpinner.text = `Creating beads… (${createdBeads.length}/${parsedIssues.length})`;
         }
 
-        // Add dependencies in a second pass (all seeds must exist first)
+        // Add dependencies in a second pass (all beads must exist first)
         for (const issue of parsedIssues) {
           if (!issue.dependencies?.length) continue;
-          const seedId = titleToId.get(issue.title);
-          if (!seedId) continue;
+          const beadId = titleToId.get(issue.title);
+          if (!beadId) continue;
           for (const depTitle of issue.dependencies) {
             const depId = titleToId.get(depTitle);
             if (depId) {
-              await seeds.addDependency(seedId, depId);
+              await beads.addDependency(beadId, depId);
             } else {
               createSpinner.warn(
-                `Warning: dependency "${depTitle}" for "${issue.title}" was not found in the created seeds — skipped.`,
+                `Warning: dependency "${depTitle}" for "${issue.title}" was not found in the created beads — skipped.`,
               );
             }
           }
         }
 
-        createSpinner.succeed(`Created ${createdSeeds.length} seed(s)`);
+        createSpinner.succeed(`Created ${createdBeads.length} bead(s)`);
       } catch (err) {
-        createSpinner.fail("Failed to create seeds");
+        createSpinner.fail("Failed to create beads");
         console.error(
           chalk.red(err instanceof Error ? err.message : String(err)),
         );
-        if (createdSeeds.length > 0) {
-          console.error(chalk.yellow(`\nSeeds created before failure:`));
-          for (const s of createdSeeds) {
-            console.error(chalk.dim(`  ${s.id} — ${s.title}`));
+        if (createdBeads.length > 0) {
+          console.error(chalk.yellow(`\nBeads created before failure:`));
+          for (const b of createdBeads) {
+            console.error(chalk.dim(`  ${b.id} — ${b.title}`));
           }
         }
         process.exitCode = 1;
@@ -211,12 +211,12 @@ export const seedCommand = new Command("seed")
 
       // ── Display results ────────────────────────────────────────────────
 
-      console.log(chalk.bold.green("\n Created seeds:\n"));
-      for (const seed of createdSeeds) {
-        console.log(`  ${chalk.cyan(seed.id)} — ${seed.title}`);
+      console.log(chalk.bold.green("\n Created beads:\n"));
+      for (const bead of createdBeads) {
+        console.log(`  ${chalk.cyan(bead.id)} — ${bead.title}`);
       }
       console.log();
-      console.log(chalk.dim("Next: foreman run  — to dispatch work on ready seeds"));
+      console.log(chalk.dim("Next: foreman run  — to dispatch work on ready beads"));
     },
   );
 

@@ -7,7 +7,7 @@ import { formatPriorityForBr } from "../../lib/priority.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
-interface SeedIssue {
+interface BeadIssue {
   id: string;
   title: string;
   type: string;
@@ -53,31 +53,31 @@ const VALID_BR_TYPES = new Set([
 ]);
 
 /**
- * Ensure the seed type is a valid br type.
- * Seeds types map 1:1 to br types; fall back to "task" for unknown values.
+ * Ensure the bead type is a valid br type.
+ * Bead types map 1:1 to br types; fall back to "task" for unknown values.
  */
-export function normalizeSeedType(type: string | undefined): string {
+export function normalizeBeadType(type: string | undefined): string {
   if (type && VALID_BR_TYPES.has(type)) return type;
   return "task";
 }
 
 /**
  * Parse the raw content of a .seeds/issues.jsonl file.
- * Returns an array of parsed seed objects, skipping blank lines.
+ * Returns an array of parsed bead objects, skipping blank lines.
  */
-export function parseSeedsJsonl(content: string): SeedIssue[] {
-  const seeds: SeedIssue[] = [];
+export function parseBeadsJsonl(content: string): BeadIssue[] {
+  const beads: BeadIssue[] = [];
   for (const rawLine of content.split("\n")) {
     const line = rawLine.trim();
     if (!line) continue;
     try {
-      const parsed = JSON.parse(line) as SeedIssue;
-      seeds.push(parsed);
+      const parsed = JSON.parse(line) as BeadIssue;
+      beads.push(parsed);
     } catch {
       // silently skip malformed lines
     }
   }
-  return seeds;
+  return beads;
 }
 
 // ── Core migration logic ──────────────────────────────────────────────────
@@ -100,32 +100,32 @@ export async function runMigration(
   }
 
   const content = readFileSync(seedsJsonlPath, "utf-8");
-  const seeds = parseSeedsJsonl(content);
-  const reportPath = join(projectPath, "docs", "seeds-migration-report.md");
+  const beads = parseBeadsJsonl(content);
+  const reportPath = join(projectPath, "docs", "beads-migration-report.md");
 
   // ── Dry-run: report what would happen ──────────────────────────────────
 
   if (opts.dryRun) {
-    console.log(chalk.bold.cyan("\n[dry-run] Seeds that would be migrated:\n"));
-    for (const seed of seeds) {
-      const priority = formatPriorityForBr(seed.priority);
+    console.log(chalk.bold.cyan("\n[dry-run] Beads that would be migrated:\n"));
+    for (const bead of beads) {
+      const priority = formatPriorityForBr(bead.priority);
       console.log(
-        `  ${chalk.cyan(seed.id)} — ${chalk.bold(seed.title)} ` +
-          chalk.dim(`[${normalizeSeedType(seed.type)} P${priority} ${seed.status}]`),
+        `  ${chalk.cyan(bead.id)} — ${chalk.bold(bead.title)} ` +
+          chalk.dim(`[${normalizeBeadType(bead.type)} P${priority} ${bead.status}]`),
       );
-      if (seed.dependencies?.length) {
-        console.log(chalk.dim(`    depends on: ${seed.dependencies.join(", ")}`));
+      if (bead.dependencies?.length) {
+        console.log(chalk.dim(`    depends on: ${bead.dependencies.join(", ")}`));
       }
     }
     console.log();
-    console.log(chalk.yellow(`--dry-run: no issues created. Would process ${seeds.length} seed(s).`));
+    console.log(chalk.yellow(`--dry-run: no issues created. Would process ${beads.length} bead(s).`));
 
     return {
       created: 0,
       skipped: 0,
       failed: 0,
       closed: 0,
-      planned: seeds.length,
+      planned: beads.length,
       reportPath,
     };
   }
@@ -139,7 +139,7 @@ export async function runMigration(
   const existingIssues = await br.list({ limit: 0 });
   const existingTitles = new Set(existingIssues.map((i) => i.title));
 
-  // old-seed-id → new-br-id mapping (used for dependency replay)
+  // old-bead-id → new-br-id mapping (used for dependency replay)
   const idMap = new Map<string, string>();
 
   let created = 0;
@@ -149,68 +149,68 @@ export async function runMigration(
 
   // Track migration details for report
   const reportLines: string[] = [];
-  const createdEntries: { seedId: string; brId: string; title: string; wasClosed: boolean }[] = [];
-  const skippedEntries: { seedId: string; title: string }[] = [];
-  const failedEntries: { seedId: string; title: string; error: string }[] = [];
+  const createdEntries: { beadId: string; brId: string; title: string; wasClosed: boolean }[] = [];
+  const skippedEntries: { beadId: string; title: string }[] = [];
+  const failedEntries: { beadId: string; title: string; error: string }[] = [];
 
   // ── Phase 1: create issues ─────────────────────────────────────────────
 
-  for (const seed of seeds) {
-    if (existingTitles.has(seed.title)) {
-      console.log(chalk.dim(`  skip  ${seed.id} — "${seed.title}" (already exists in br)`));
+  for (const bead of beads) {
+    if (existingTitles.has(bead.title)) {
+      console.log(chalk.dim(`  skip  ${bead.id} — "${bead.title}" (already exists in br)`));
       // Still track the mapping so deps can reference skipped existing items
-      const existingIssue = existingIssues.find((i) => i.title === seed.title);
+      const existingIssue = existingIssues.find((i) => i.title === bead.title);
       if (existingIssue) {
-        idMap.set(seed.id, existingIssue.id);
+        idMap.set(bead.id, existingIssue.id);
       }
       skipped++;
-      skippedEntries.push({ seedId: seed.id, title: seed.title });
+      skippedEntries.push({ beadId: bead.id, title: bead.title });
       continue;
     }
 
     try {
-      const issue = await br.create(seed.title, {
-        type: normalizeSeedType(seed.type),
-        priority: formatPriorityForBr(seed.priority),
-        description: seed.description,
+      const issue = await br.create(bead.title, {
+        type: normalizeBeadType(bead.type),
+        priority: formatPriorityForBr(bead.priority),
+        description: bead.description,
       });
 
-      idMap.set(seed.id, issue.id);
+      idMap.set(bead.id, issue.id);
       created++;
 
-      const wasClosed = seed.status === "closed";
+      const wasClosed = bead.status === "closed";
       if (wasClosed) {
-        await br.close(issue.id, "Migrated from seeds (was closed)");
+        await br.close(issue.id, "Migrated from beads (was closed)");
         closed++;
       }
 
-      createdEntries.push({ seedId: seed.id, brId: issue.id, title: seed.title, wasClosed });
+      createdEntries.push({ beadId: bead.id, brId: issue.id, title: bead.title, wasClosed });
       console.log(
-        chalk.green(`  create ${seed.id} → ${issue.id} — "${seed.title}"`) +
+        chalk.green(`  create ${bead.id} → ${issue.id} — "${bead.title}"`) +
           (wasClosed ? chalk.dim(" [closed]") : ""),
       );
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(`  fail   ${seed.id} — "${seed.title}": ${errorMsg}`));
+      console.error(chalk.red(`  fail   ${bead.id} — "${bead.title}": ${errorMsg}`));
       failed++;
-      failedEntries.push({ seedId: seed.id, title: seed.title, error: errorMsg });
+      failedEntries.push({ beadId: bead.id, title: bead.title, error: errorMsg });
     }
   }
 
   // ── Phase 2: replay dependency edges ──────────────────────────────────
 
   let depsAdded = 0;
-  for (const seed of seeds) {
-    if (!seed.dependencies?.length) continue;
-    const childBrId = idMap.get(seed.id);
+  for (const bead of beads) {
+    if (!bead.dependencies?.length) continue;
+    const childBrId = idMap.get(bead.id);
     if (!childBrId) continue;
 
-    for (const depSeedId of seed.dependencies) {
-      const blockerBrId = idMap.get(depSeedId);
+    for (const depBeadId of bead.dependencies) {
+      const blockerBrId = idMap.get(depBeadId);
       if (!blockerBrId) {
         console.warn(
           chalk.yellow(
-            `  warn   dependency ${depSeedId} for ${seed.id} has no br mapping — skipped`,
+            `  warn   dependency ${depBeadId} for ${bead.id} has no br mapping — skipped`,
           ),
         );
         continue;
@@ -232,7 +232,7 @@ export async function runMigration(
 
   // ── Phase 3: write migration report ───────────────────────────────────
 
-  reportLines.push("# Seeds Migration Report");
+  reportLines.push("# Beads Migration Report");
   reportLines.push("");
   reportLines.push(`**Date:** ${new Date().toISOString()}`);
   reportLines.push(`**Source:** \`.seeds/issues.jsonl\``);
@@ -251,10 +251,10 @@ export async function runMigration(
   if (createdEntries.length > 0) {
     reportLines.push("## Created Issues");
     reportLines.push("");
-    reportLines.push("| Seeds ID | BR ID | Title | Closed |");
+    reportLines.push("| Beads ID | BR ID | Title | Closed |");
     reportLines.push("|----------|-------|-------|--------|");
     for (const e of createdEntries) {
-      reportLines.push(`| ${e.seedId} | ${e.brId} | ${e.title} | ${e.wasClosed ? "yes" : "no"} |`);
+      reportLines.push(`| ${e.beadId} | ${e.brId} | ${e.title} | ${e.wasClosed ? "yes" : "no"} |`);
     }
     reportLines.push("");
   }
@@ -262,10 +262,10 @@ export async function runMigration(
   if (skippedEntries.length > 0) {
     reportLines.push("## Skipped Issues (Already Exist)");
     reportLines.push("");
-    reportLines.push("| Seeds ID | Title |");
+    reportLines.push("| Beads ID | Title |");
     reportLines.push("|----------|-------|");
     for (const e of skippedEntries) {
-      reportLines.push(`| ${e.seedId} | ${e.title} |`);
+      reportLines.push(`| ${e.beadId} | ${e.title} |`);
     }
     reportLines.push("");
   }
@@ -273,10 +273,10 @@ export async function runMigration(
   if (failedEntries.length > 0) {
     reportLines.push("## Failed Issues");
     reportLines.push("");
-    reportLines.push("| Seeds ID | Title | Error |");
+    reportLines.push("| Beads ID | Title | Error |");
     reportLines.push("|----------|-------|-------|");
     for (const e of failedEntries) {
-      reportLines.push(`| ${e.seedId} | ${e.title} | ${e.error} |`);
+      reportLines.push(`| ${e.beadId} | ${e.title} | ${e.error} |`);
     }
     reportLines.push("");
   }
@@ -284,21 +284,21 @@ export async function runMigration(
   mkdirSync(join(projectPath, "docs"), { recursive: true });
   writeFileSync(reportPath, reportLines.join("\n"), "utf-8");
 
-  return { created, skipped, failed, closed, planned: seeds.length, reportPath };
+  return { created, skipped, failed, closed, planned: beads.length, reportPath };
 }
 
 // ── CLI Command ───────────────────────────────────────────────────────────
 
-export const migrateSeedsCommand = new Command("migrate-seeds")
+export const migrateBeadsCommand = new Command("migrate-beads")
   .description(
-    "Migrate seeds (.seeds/issues.jsonl) to beads_rust (br). " +
+    "Migrate beads (.seeds/issues.jsonl) to beads_rust (br). " +
       "Creates corresponding issues in br, replays dependency edges, and writes a migration report.",
   )
   .option("--dry-run", "Report what would be migrated without creating anything")
   .action(async (opts: { dryRun?: boolean }) => {
     const projectPath = resolve(".");
 
-    console.log(chalk.bold.cyan("foreman migrate-seeds\n"));
+    console.log(chalk.bold.cyan("foreman migrate-beads\n"));
 
     let result: MigrationResult;
     try {
@@ -318,7 +318,7 @@ export const migrateSeedsCommand = new Command("migrate-seeds")
       console.log(chalk.bold("Migration complete:"));
       console.log(`  Created: ${chalk.green(String(result.created))}`);
       if (result.closed > 0) {
-        console.log(`  Closed:  ${chalk.dim(String(result.closed))} (were closed in seeds)`);
+        console.log(`  Closed:  ${chalk.dim(String(result.closed))} (were closed in beads)`);
       }
       console.log(
         `  Skipped: ${chalk.yellow(String(result.skipped))} (already exist)`,

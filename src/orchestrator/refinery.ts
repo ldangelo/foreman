@@ -4,7 +4,7 @@ import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ForemanStore } from "../lib/store.js";
-import type { SeedGraph } from "../lib/seeds.js";
+import type { BeadGraph } from "../lib/beads.js";
 import { mergeWorktree, removeWorktree, detectDefaultBranch } from "../lib/git.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -61,7 +61,7 @@ async function runTestCommand(command: string, cwd: string): Promise<{ ok: boole
  */
 export interface IRefineryTaskClient {
   show(id: string): Promise<{ title?: string; description?: string | null; status: string }>;
-  getGraph?(): Promise<SeedGraph>;
+  getGraph?(): Promise<BeadGraph>;
 }
 
 // ── Refinery ─────────────────────────────────────────────────────────────
@@ -807,9 +807,9 @@ async function gitReadOnly(args: string[], cwd: string): Promise<string> {
   return stdout.trim();
 }
 
-// ── Seeds preservation ────────────────────────────────────────────────────────
+// ── Beads preservation ────────────────────────────────────────────────────────
 
-export interface SeedPreservationResult {
+export interface BeadPreservationResult {
   preserved: boolean;
   error?: string;
 }
@@ -825,11 +825,11 @@ export interface SeedPreservationResult {
  * @param branchName    Source branch containing seed changes
  * @param targetBranch  Target branch to apply changes to
  */
-export async function preserveSeedChanges(
+export async function preserveBeadChanges(
   projectPath: string,
   branchName: string,
   targetBranch: string,
-): Promise<SeedPreservationResult> {
+): Promise<BeadPreservationResult> {
   const tmpPatchPath = join(projectPath, `.foreman-seed-patch-${Date.now()}.patch`);
 
   try {

@@ -1,7 +1,7 @@
 /**
- * LEGACY: Tests for SeedsClient (seeds/sd backend).
+ * LEGACY: Tests for BeadsClient (beads/sd backend).
  *
- * SeedsClient is retained in seeds.ts for backward compatibility but is no
+ * BeadsClient is retained in beads.ts for backward compatibility but is no
  * longer the active task backend. The primary backend is now BeadsRustClient
  * (beads_rust/br). These tests verify the legacy sd CLI integration is intact.
  */
@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // We mock node:fs/promises so that ensureSdInstalled() and isInitialized()
 // succeed without touching the filesystem.
 //
-// We mock node:child_process to capture the args that SeedsClient passes to
+// We mock node:child_process to capture the args that BeadsClient passes to
 // `sd` without launching a real process.  vi.hoisted() ensures the mock
 // variable is initialised before the module factory runs (vitest hoists
 // vi.mock() calls to the top of the file, so plain variable declarations
@@ -30,13 +30,13 @@ vi.mock("node:child_process", () => ({
   execFile: mockExecFile,
 }));
 
-import { SeedsClient } from "../seeds.js";
+import { BeadsClient } from "../beads.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Build a fake sd response for a given command sub-set.
  *
- * Note: seeds.ts uses `promisify(execFile)` and destructures `{ stdout }` from
+ * Note: beads.ts uses `promisify(execFile)` and destructures `{ stdout }` from
  * the result. Node's built-in execFile has a `util.promisify.custom` that
  * resolves with `{ stdout, stderr }`, but a plain mock function loses that
  * custom symbol.  We therefore mock `execFile` so that it calls the callback
@@ -45,7 +45,7 @@ import { SeedsClient } from "../seeds.js";
  */
 function makeExecFileResponder(overrides: Record<string, object> = {}) {
   return (_cmd: string, args: string[], _opts: unknown, callback: Function) => {
-    // args includes the sd sub-command plus "--json" appended by execSd
+    // args includes the sd sub-command plus "--json" appended by execBd
     const subCmd = args[0];
 
     const defaults: Record<string, object> = {
@@ -75,7 +75,7 @@ function makeExecFileResponder(overrides: Record<string, object> = {}) {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-describe("SeedsClient.create", () => {
+describe("BeadsClient.create", () => {
   beforeEach(() => {
     mockExecFile.mockReset();
   });
@@ -83,7 +83,7 @@ describe("SeedsClient.create", () => {
   it("passes --parent flag to sd when parent option is provided", async () => {
     mockExecFile.mockImplementation(makeExecFileResponder());
 
-    const client = new SeedsClient("/tmp/mock-project");
+    const client = new BeadsClient("/tmp/mock-project");
     await client.create("My task", { parent: "foreman-parent-42" });
 
     // Find the `create` invocation (first call, before the `show` follow-up)
@@ -99,7 +99,7 @@ describe("SeedsClient.create", () => {
   it("does NOT pass --parent flag when parent option is absent", async () => {
     mockExecFile.mockImplementation(makeExecFileResponder());
 
-    const client = new SeedsClient("/tmp/mock-project");
+    const client = new BeadsClient("/tmp/mock-project");
     await client.create("My task");
 
     const createCall = mockExecFile.mock.calls.find(
@@ -113,7 +113,7 @@ describe("SeedsClient.create", () => {
   it("passes --type and --priority flags", async () => {
     mockExecFile.mockImplementation(makeExecFileResponder());
 
-    const client = new SeedsClient("/tmp/mock-project");
+    const client = new BeadsClient("/tmp/mock-project");
     await client.create("My bug", { type: "bug", priority: "P0" });
 
     const createCall = mockExecFile.mock.calls.find(
@@ -129,7 +129,7 @@ describe("SeedsClient.create", () => {
   it("passes --description flag when description is provided", async () => {
     mockExecFile.mockImplementation(makeExecFileResponder());
 
-    const client = new SeedsClient("/tmp/mock-project");
+    const client = new BeadsClient("/tmp/mock-project");
     await client.create("Task with description", {
       description: "Detailed explanation here",
     });
@@ -145,7 +145,7 @@ describe("SeedsClient.create", () => {
   it("passes --labels flag when labels are provided", async () => {
     mockExecFile.mockImplementation(makeExecFileResponder());
 
-    const client = new SeedsClient("/tmp/mock-project");
+    const client = new BeadsClient("/tmp/mock-project");
     await client.create("Task with labels", {
       labels: ["frontend", "urgent"],
     });
@@ -161,7 +161,7 @@ describe("SeedsClient.create", () => {
   it("includes --parent alongside other options", async () => {
     mockExecFile.mockImplementation(makeExecFileResponder());
 
-    const client = new SeedsClient("/tmp/mock-project");
+    const client = new BeadsClient("/tmp/mock-project");
     await client.create("Child task", {
       type: "task",
       priority: "P1",

@@ -13,10 +13,10 @@ import { resetCommand } from "./commands/reset.js";
 import { attachCommand } from "./commands/attach.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { dashboardCommand } from "./commands/dashboard.js";
-import { seedCommand } from "./commands/seed.js";
+import { beadCommand } from "./commands/bead.js";
 import { worktreeCommand } from "./commands/worktree.js";
 import { slingCommand } from "./commands/sling.js";
-import { migrateSeedsCommand } from "./commands/migrate-seeds.js";
+import { migrateBeadsCommand } from "./commands/migrate-beads.js";
 import { stopCommand } from "./commands/stop.js";
 import { sentinelCommand } from "./commands/sentinel.js";
 
@@ -39,10 +39,10 @@ program.addCommand(resetCommand);
 program.addCommand(attachCommand);
 program.addCommand(doctorCommand);
 program.addCommand(dashboardCommand);
-program.addCommand(seedCommand);
+program.addCommand(beadCommand);
 program.addCommand(worktreeCommand);
 program.addCommand(slingCommand);
-program.addCommand(migrateSeedsCommand);
+program.addCommand(migrateBeadsCommand);
 program.addCommand(stopCommand);
 program.addCommand(sentinelCommand);
 

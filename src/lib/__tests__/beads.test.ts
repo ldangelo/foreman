@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { unwrapSdResponse } from "../seeds.js";
+import { unwrapBdResponse } from "../beads.js";
 
-describe("unwrapSdResponse", () => {
+describe("unwrapBdResponse", () => {
   it("unwraps list response to issues array", () => {
     const raw = {
       success: true,
@@ -11,7 +11,7 @@ describe("unwrapSdResponse", () => {
         { id: "foreman-def", title: "Task 2", status: "closed" },
       ],
     };
-    const result = unwrapSdResponse(raw);
+    const result = unwrapBdResponse(raw);
     expect(result).toEqual(raw.issues);
     expect(Array.isArray(result)).toBe(true);
     expect(result).toHaveLength(2);
@@ -23,7 +23,7 @@ describe("unwrapSdResponse", () => {
       command: "ready",
       issues: [{ id: "foreman-abc", title: "Task 1", status: "open" }],
     };
-    const result = unwrapSdResponse(raw);
+    const result = unwrapBdResponse(raw);
     expect(result).toEqual(raw.issues);
   });
 
@@ -34,7 +34,7 @@ describe("unwrapSdResponse", () => {
       issues: [],
       count: 0,
     };
-    const result = unwrapSdResponse(raw);
+    const result = unwrapBdResponse(raw);
     expect(result).toEqual([]);
   });
 
@@ -49,7 +49,7 @@ describe("unwrapSdResponse", () => {
         description: "Details",
       },
     };
-    const result = unwrapSdResponse(raw);
+    const result = unwrapBdResponse(raw);
     expect(result).toEqual(raw.issue);
     expect(result.id).toBe("foreman-abc");
   });
@@ -60,24 +60,24 @@ describe("unwrapSdResponse", () => {
       command: "create",
       id: "foreman-xyz",
     };
-    const result = unwrapSdResponse(raw);
+    const result = unwrapBdResponse(raw);
     // create returns { success, command, id } — no issues/issue key
     // so we return the envelope itself
     expect(result).toEqual(raw);
   });
 
   it("returns undefined as-is", () => {
-    expect(unwrapSdResponse(undefined)).toBeUndefined();
+    expect(unwrapBdResponse(undefined)).toBeUndefined();
   });
 
   it("returns non-object values as-is", () => {
-    expect(unwrapSdResponse("hello")).toBe("hello");
-    expect(unwrapSdResponse(42)).toBe(42);
+    expect(unwrapBdResponse("hello")).toBe("hello");
+    expect(unwrapBdResponse(42)).toBe(42);
   });
 
   it("returns bare arrays as-is (backward compat)", () => {
     const arr = [{ id: "1" }, { id: "2" }];
-    expect(unwrapSdResponse(arr)).toEqual(arr);
+    expect(unwrapBdResponse(arr)).toEqual(arr);
   });
 
   it("throws on failed sd response", () => {
@@ -86,6 +86,6 @@ describe("unwrapSdResponse", () => {
       command: "show",
       error: "Issue not found: bad-id",
     };
-    expect(() => unwrapSdResponse(raw)).toThrow("Issue not found: bad-id");
+    expect(() => unwrapBdResponse(raw)).toThrow("Issue not found: bad-id");
   });
 });

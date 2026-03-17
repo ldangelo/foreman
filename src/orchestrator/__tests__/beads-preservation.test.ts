@@ -16,7 +16,7 @@ vi.mock("node:fs", () => ({
 
 import { execFile } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
-import { preserveSeedChanges } from "../refinery.js";
+import { preserveBeadChanges } from "../refinery.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -53,15 +53,15 @@ function mockGitSequence(results: Array<{ stdout?: string; error?: Error }>) {
   );
 }
 
-// ── preserveSeedChanges() tests ───────────────────────────────────────────────
+// ── preserveBeadChanges() tests ───────────────────────────────────────────────
 
-describe("preserveSeedChanges()", () => {
+describe("preserveBeadChanges()", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it("extracts .seeds/ changes and applies them to target", async () => {
-    const patchContent = "diff --git a/.seeds/issues.jsonl b/.seeds/issues.jsonl\n+some seed data\n";
+    const patchContent = "diff --git a/.seeds/issues.jsonl b/.seeds/issues.jsonl\n+some bead data\n";
 
     mockGitSuccess({
       "diff main...foreman/seed-abc -- .seeds/": patchContent,
@@ -69,7 +69,7 @@ describe("preserveSeedChanges()", () => {
       "commit -m": "",
     });
 
-    const result = await preserveSeedChanges(
+    const result = await preserveBeadChanges(
       "/tmp/project",
       "foreman/seed-abc",
       "main",
@@ -84,7 +84,7 @@ describe("preserveSeedChanges()", () => {
       "diff main...foreman/seed-abc -- .seeds/": "",
     });
 
-    const result = await preserveSeedChanges(
+    const result = await preserveBeadChanges(
       "/tmp/project",
       "foreman/seed-abc",
       "main",
@@ -117,7 +117,7 @@ describe("preserveSeedChanges()", () => {
       },
     );
 
-    const result = await preserveSeedChanges(
+    const result = await preserveBeadChanges(
       "/tmp/project",
       "foreman/seed-fail",
       "main",
@@ -146,7 +146,7 @@ describe("preserveSeedChanges()", () => {
       },
     );
 
-    await preserveSeedChanges("/tmp/project", "foreman/seed-cleanup", "main");
+    await preserveBeadChanges("/tmp/project", "foreman/seed-cleanup", "main");
 
     // unlinkSync should be called for temp file cleanup
     expect(vi.mocked(unlinkSync)).toHaveBeenCalled();
@@ -162,7 +162,7 @@ describe("preserveSeedChanges()", () => {
       },
     );
 
-    await preserveSeedChanges("/tmp/project", "foreman/seed-only", "main");
+    await preserveBeadChanges("/tmp/project", "foreman/seed-only", "main");
 
     const diffCall = calls.find((c) => c.includes("diff"));
     expect(diffCall).toBeDefined();

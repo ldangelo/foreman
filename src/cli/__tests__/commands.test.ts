@@ -64,13 +64,13 @@ describe("CLI smoke tests", () => {
     tempDirs.length = 0;
   });
 
-  it("--help exits 0 and shows all commands including dashboard and seed", async () => {
+  it("--help exits 0 and shows all commands including dashboard and bead", async () => {
     const tmp = makeTempDir();
     const result = await run(["--help"], tmp);
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout;
-    for (const cmd of ["init", "plan", "decompose", "run", "status", "merge", "monitor", "dashboard", "seed"]) {
+    for (const cmd of ["init", "plan", "decompose", "run", "status", "merge", "monitor", "dashboard", "bead"]) {
       expect(output).toContain(cmd);
     }
   }, 10_000);

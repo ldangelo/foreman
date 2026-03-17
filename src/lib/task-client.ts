@@ -11,16 +11,16 @@
 /**
  * Normalized representation of a task-tracker issue.
  *
- * Maps fields that exist on both Seed (sd) and BrIssue (br):
- *   Seed.id          ↔ BrIssue.id
- *   Seed.title       ↔ BrIssue.title
- *   Seed.type        ↔ BrIssue.type
- *   Seed.priority    ↔ BrIssue.priority  (string, e.g. "P0"–"P4" or "0"–"4")
- *   Seed.status      ↔ BrIssue.status
- *   Seed.assignee    ↔ BrIssue.assignee
- *   Seed.parent      ↔ BrIssue.parent
- *   Seed.created_at  ↔ BrIssue.created_at
- *   Seed.updated_at  ↔ BrIssue.updated_at
+ * Maps fields that exist on both Bead (sd) and BrIssue (br):
+ *   Bead.id          ↔ BrIssue.id
+ *   Bead.title       ↔ BrIssue.title
+ *   Bead.type        ↔ BrIssue.type
+ *   Bead.priority    ↔ BrIssue.priority  (string, e.g. "P0"–"P4" or "0"–"4")
+ *   Bead.status      ↔ BrIssue.status
+ *   Bead.assignee    ↔ BrIssue.assignee
+ *   Bead.parent      ↔ BrIssue.parent
+ *   Bead.created_at  ↔ BrIssue.created_at
+ *   Bead.updated_at  ↔ BrIssue.updated_at
  */
 export interface Issue {
   id: string;
@@ -75,7 +75,7 @@ export interface ITaskClient {
    * Used by Monitor to detect completion (status === "closed" | "completed").
    * The return type is intentionally loose — Monitor only inspects the
    * `status` field; concrete implementations return BrIssueDetail or
-   * SeedDetail respectively.
+   * BeadDetail respectively.
    */
   show(id: string): Promise<{ status: string }>;
 
