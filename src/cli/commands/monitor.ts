@@ -16,7 +16,7 @@ export const monitorCommand = new Command("monitor")
     try {
       const projectPath = await getRepoRoot(process.cwd());
       const seeds = new BeadsRustClient(projectPath);
-      const store = new ForemanStore();
+      const store = ForemanStore.forProject(projectPath);
       const monitor = new Monitor(store, seeds, projectPath);
 
       console.log(chalk.bold("Checking agent status...\n"));

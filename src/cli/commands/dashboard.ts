@@ -250,7 +250,7 @@ export const dashboardCommand = new Command("dashboard")
   .option("--no-watch", "Single snapshot, no polling")
   .option("--events <n>", "Number of recent events to show per project", "8")
   .action(async (opts: { interval: string; project?: string; watch: boolean; events: string }) => {
-    const store = new ForemanStore();
+    const store = ForemanStore.forProject(process.cwd());
     const intervalMs = Math.max(1000, parseInt(opts.interval, 10) || 3000);
     const projectId = opts.project;
     const watch = opts.watch !== false;

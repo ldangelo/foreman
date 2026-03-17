@@ -255,7 +255,7 @@ export const runCommand = new Command("run")
         console.error(chalk.red(`Error initialising task backend: ${message}`));
         process.exit(1);
       }
-      const store = new ForemanStore();
+      const store = ForemanStore.forProject(projectPath);
       const dispatcher = new Dispatcher(taskClient, store, projectPath, bvClient);
 
       // Resume mode: pick up stuck/failed runs from a previous dispatch

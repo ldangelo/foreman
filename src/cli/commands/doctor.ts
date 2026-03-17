@@ -90,7 +90,7 @@ export const doctorCommand = new Command("doctor")
 
     let store: ForemanStore | null = null;
     try {
-      store = new ForemanStore();
+      store = ForemanStore.forProject(projectPath);
       const doctor = new Doctor(store, projectPath);
 
       const report = await doctor.runAll({ fix, dryRun });

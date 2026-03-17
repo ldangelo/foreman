@@ -366,7 +366,7 @@ export const attachCommand = new Command("attach")
   .option("--kill", "Kill the tmux session for this run")
   .option("--worktree", "Open a shell in the agent's worktree instead of attaching")
   .action(async (id: string | undefined, opts: AttachOpts) => {
-    const store = new ForemanStore();
+    const store = ForemanStore.forProject(process.cwd());
 
     if (opts.list) {
       listSessionsEnhanced(store, process.cwd());

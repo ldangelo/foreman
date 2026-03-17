@@ -68,7 +68,7 @@ export const initCommand = new Command("init")
     await initBackend({ projectDir });
 
     // Register project in state store
-    const store = new ForemanStore();
+    const store = ForemanStore.forProject(projectDir);
     const existing = store.getProjectByPath(projectDir);
     if (existing) {
       console.log(chalk.dim(`Project already registered (${existing.id})`));

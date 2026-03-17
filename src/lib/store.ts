@@ -316,6 +316,18 @@ DROP INDEX IF EXISTS idx_messages_run_status;
 export class ForemanStore {
   private db: Database.Database;
 
+  /**
+   * Create a ForemanStore backed by a project-local SQLite database.
+   *
+   * The database is stored at `<projectPath>/.foreman/foreman.db`, keeping
+   * all state scoped to the project rather than the user's home directory.
+   *
+   * @param projectPath - Absolute path to the project root directory.
+   */
+  static forProject(projectPath: string): ForemanStore {
+    return new ForemanStore(join(projectPath, ".foreman", "foreman.db"));
+  }
+
   constructor(dbPath?: string) {
     const resolvedPath = dbPath ?? join(homedir(), ".foreman", "foreman.db");
     mkdirSync(join(resolvedPath, ".."), { recursive: true });

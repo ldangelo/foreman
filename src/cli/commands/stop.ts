@@ -301,29 +301,33 @@ export const stopCommand = new Command("stop")
   .option("--force", "Force kill with SIGKILL instead of SIGTERM")
   .option("--dry-run", "Show what would be stopped without doing it")
   .action(async (id: string | undefined, opts: StopOpts) => {
-    const store = new ForemanStore();
+    // Resolve project path first so the store is opened at the project-local location.
+    let projectPath: string;
+    let isGitRepo = true;
+    try {
+      projectPath = await getRepoRoot(process.cwd());
+    } catch {
+      // Fall back to cwd for --list (shows runs even outside a git repo), but
+      // for all other operations we require a git repo below.
+      projectPath = process.cwd();
+      isGitRepo = false;
+    }
+
+    const store = ForemanStore.forProject(projectPath);
 
     if (opts.list) {
-      try {
-        const projectPath = await getRepoRoot(process.cwd());
-        listActiveRuns(store, projectPath);
-      } catch {
-        listActiveRuns(store, process.cwd());
-      }
+      listActiveRuns(store, projectPath);
       store.close();
       return;
     }
 
-    let projectPath: string;
-    try {
-      projectPath = await getRepoRoot(process.cwd());
-    } catch {
+    if (!isGitRepo) {
       console.error(chalk.red("Not in a git repository. Run from within a foreman project."));
       store.close();
       process.exit(1);
     }
 
-    const exitCode = await stopAction(id, opts, store, projectPath!);
+    const exitCode = await stopAction(id, opts, store, projectPath);
     store.close();
     process.exit(exitCode);
   });

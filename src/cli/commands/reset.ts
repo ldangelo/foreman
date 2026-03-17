@@ -146,7 +146,7 @@ export const resetCommand = new Command("reset")
     try {
       const projectPath = await getRepoRoot(process.cwd());
       const seeds: IShowUpdateClient = new BeadsRustClient(projectPath);
-      const store = new ForemanStore();
+      const store = ForemanStore.forProject(projectPath);
       const project = store.getProjectByPath(projectPath);
 
       if (!project) {

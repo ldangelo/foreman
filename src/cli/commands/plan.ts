@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
+import { getRepoRoot } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { PlanStepDefinition } from "../../orchestrator/types.js";
 
@@ -62,7 +63,7 @@ export const planCommand = new Command("plan")
       },
     ) => {
       const outputDir = resolve(opts.outputDir);
-      const projectPath = resolve(".");
+      const projectPath = await getRepoRoot(process.cwd());
 
       // Determine input
       let productDescription: string;
@@ -75,7 +76,7 @@ export const planCommand = new Command("plan")
       }
 
       // Initialize BeadsRust client
-      const store = new ForemanStore();
+      const store = ForemanStore.forProject(projectPath);
       const seeds = createPlanClient(projectPath);
       const dispatcher = new Dispatcher(seeds, store, projectPath);
 

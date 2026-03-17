@@ -14,7 +14,7 @@ export const prCommand = new Command("pr")
     try {
       const projectPath = await getRepoRoot(process.cwd());
       const seeds = new BeadsRustClient(projectPath);
-      const store = new ForemanStore();
+      const store = ForemanStore.forProject(projectPath);
       const refinery = new Refinery(store, seeds, projectPath);
 
       const project = store.getProjectByPath(projectPath);

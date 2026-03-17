@@ -113,7 +113,11 @@ async function main(): Promise<void> {
   const config: WorkerConfig = JSON.parse(readFileSync(configPath, "utf-8"));
   try { unlinkSync(configPath); } catch { /* already deleted */ }
 
-  const { runId, projectId, seedId, seedTitle, model, worktreePath, prompt, resume, pipeline } = config;
+  const { runId, projectId, seedId, seedTitle, model, worktreePath, projectPath: configProjectPath, prompt, resume, pipeline } = config;
+
+  // Resolve the project-local store path from the config, falling back to the
+  // parent of the worktree directory if projectPath is not provided.
+  const storeProjectPath = configProjectPath ?? join(worktreePath, "..", "..");
 
   // Set up logging
   const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
@@ -137,8 +141,8 @@ async function main(): Promise<void> {
 
   log(`Worker started for ${seedId} [${model}] pid=${process.pid} mode=${mode}`);
 
-  // Open store connection
-  const store = new ForemanStore();
+  // Open store connection (project-local database)
+  const store = ForemanStore.forProject(storeProjectPath);
 
   // Apply worker env vars.
   // NOTE: `ROLE_CONFIGS` in roles.ts is materialised at module load time,
@@ -520,6 +524,7 @@ function rotateReport(worktreePath: string, filename: string): void {
  */
 async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   const { seedId, seedTitle, worktreePath } = config;
+  const storeProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
   const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
 
   const report: string[] = [
@@ -586,7 +591,7 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   // Enqueue to merge queue (fire-and-forget — must not block finalization)
   if (pushSucceeded) {
     try {
-      const enqueueStore = new ForemanStore();
+      const enqueueStore = ForemanStore.forProject(storeProjectPath);
       const enqueueResult = enqueueToMergeQueue({
         db: enqueueStore.getDb(),
         seedId,

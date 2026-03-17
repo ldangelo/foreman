@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { resolve } from "node:path";
 import { ForemanStore } from "../../lib/store.js";
+import { getRepoRoot } from "../../lib/git.js";
 import { renderAgentCard } from "../watch-ui.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { BrIssue } from "../../lib/beads-rust.js";
@@ -71,7 +71,7 @@ export async function fetchStatusCounts(projectPath: string): Promise<StatusCoun
 // ── Internal render helper ────────────────────────────────────────────────
 
 async function renderStatus(): Promise<void> {
-  const projectPath = resolve(".");
+  const projectPath = await getRepoRoot(process.cwd());
   let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
   try {
     counts = await fetchStatusCounts(projectPath);
@@ -90,8 +90,8 @@ async function renderStatus(): Promise<void> {
   console.log(`  Blocked:     ${chalk.red(blocked)}`);
 
   // Show active agents from sqlite
-  const store = new ForemanStore();
-  const project = store.getProjectByPath(resolve("."));
+  const store = ForemanStore.forProject(projectPath);
+  const project = store.getProjectByPath(projectPath);
 
   // Show failed/stuck run counts from SQLite (only recent — last 24h)
   if (project) {

@@ -119,7 +119,7 @@ const listSubcommand = new Command("list")
   .action(async (opts) => {
     try {
       const projectPath = await getRepoRoot(process.cwd());
-      const store = new ForemanStore();
+      const store = ForemanStore.forProject(projectPath);
 
       const worktrees = await listForemanWorktrees(projectPath, store);
 
@@ -165,7 +165,7 @@ const cleanSubcommand = new Command("clean")
   .action(async (opts) => {
     try {
       const projectPath = await getRepoRoot(process.cwd());
-      const store = new ForemanStore();
+      const store = ForemanStore.forProject(projectPath);
 
       const worktrees = await listForemanWorktrees(projectPath, store);
 

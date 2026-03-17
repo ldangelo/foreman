@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../store.js";
@@ -16,6 +16,57 @@ describe("ForemanStore", () => {
   afterEach(() => {
     store.close();
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // ── forProject factory ─────────────────────────────────────────────
+
+  describe("forProject", () => {
+    it("creates database at <projectPath>/.foreman/foreman.db", () => {
+      const projectDir = mkdtempSync(join(tmpdir(), "foreman-project-"));
+      try {
+        const projectStore = ForemanStore.forProject(projectDir);
+        // Verify the database file is at the project-local location
+        const expectedDbPath = join(projectDir, ".foreman", "foreman.db");
+        expect(existsSync(expectedDbPath)).toBe(true);
+        // Verify it's functional — can register a project and retrieve it
+        const project = projectStore.registerProject("my-project", projectDir);
+        expect(project.name).toBe("my-project");
+        expect(projectStore.getProjectByPath(projectDir)).toEqual(project);
+        projectStore.close();
+      } finally {
+        rmSync(projectDir, { recursive: true, force: true });
+      }
+    });
+
+    it("creates .foreman directory if it does not exist", () => {
+      const projectDir = mkdtempSync(join(tmpdir(), "foreman-project-"));
+      try {
+        const foremanDir = join(projectDir, ".foreman");
+        expect(existsSync(foremanDir)).toBe(false);
+        const projectStore = ForemanStore.forProject(projectDir);
+        expect(existsSync(foremanDir)).toBe(true);
+        projectStore.close();
+      } finally {
+        rmSync(projectDir, { recursive: true, force: true });
+      }
+    });
+
+    it("two stores for the same project share data", () => {
+      const projectDir = mkdtempSync(join(tmpdir(), "foreman-project-"));
+      try {
+        const store1 = ForemanStore.forProject(projectDir);
+        const project = store1.registerProject("shared-project", projectDir);
+        store1.close();
+
+        const store2 = ForemanStore.forProject(projectDir);
+        const fetched = store2.getProjectByPath(projectDir);
+        expect(fetched).not.toBeNull();
+        expect(fetched!.id).toBe(project.id);
+        store2.close();
+      } finally {
+        rmSync(projectDir, { recursive: true, force: true });
+      }
+    });
   });
 
   // ── Projects ──────────────────────────────────────────────────────

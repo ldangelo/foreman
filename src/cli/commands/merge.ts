@@ -65,7 +65,7 @@ export const mergeCommand = new Command("merge")
         ?? await detectDefaultBranch(projectPath);
 
       const seeds = await createMergeTaskClient(projectPath);
-      const store = new ForemanStore();
+      const store = ForemanStore.forProject(projectPath);
       const refinery = new Refinery(store, seeds, projectPath);
       const mq = new MergeQueue(store.getDb());
 
