@@ -68,11 +68,15 @@ export function mapRunStatusToSeedStatus(runStatus: string): string {
  * stuck in "in_progress". Seeds that are already included in the `resetSeedIds`
  * set are skipped — those will be handled by the main reset loop.
  *
+ * Seeds with active (pending/running) runs are skipped to avoid the race
+ * condition where auto-dispatch has just marked a seed as in_progress but the
+ * reset sees the old terminal run and incorrectly overwrites the status.
+ *
  * For each mismatch found, the seed status is updated to the expected value
  * (unless dryRun is true).
  */
 export async function detectAndFixMismatches(
-  store: Pick<ForemanStore, "getRunsByStatus">,
+  store: Pick<ForemanStore, "getRunsByStatus" | "getActiveRuns">,
   seeds: IShowUpdateClient,
   projectId: string,
   resetSeedIds: ReadonlySet<string>,
@@ -84,11 +88,22 @@ export async function detectAndFixMismatches(
   const checkStatuses = ["completed", "merged", "pr-created", "conflict", "test-failed"] as const;
   const terminalRuns = checkStatuses.flatMap((s) => store.getRunsByStatus(s, projectId));
 
+  // Short-circuit: nothing to check, skip the extra DB read for active runs.
+  if (terminalRuns.length === 0) return { mismatches: [], fixed: 0, errors: [] };
+
+  // Build a set of seed IDs that have active (pending/running) runs.
+  // We skip those to avoid clobbering seeds that were just dispatched.
+  const activeRuns = store.getActiveRuns(projectId);
+  const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
+
   // Deduplicate by seed_id: keep the most recently created run per seed
   const latestBySeed = new Map<string, Run>();
   for (const run of terminalRuns) {
     // Skip seeds already being reset by the main loop
     if (resetSeedIds.has(run.seed_id)) continue;
+
+    // Skip seeds that have an active run — they are being dispatched right now
+    if (activeSeedIds.has(run.seed_id)) continue;
 
     const existing = latestBySeed.get(run.seed_id);
     if (!existing || run.created_at > existing.created_at) {

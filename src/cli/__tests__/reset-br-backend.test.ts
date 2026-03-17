@@ -54,15 +54,20 @@ function makeBrDetail(status: string): BrIssueDetail {
 }
 
 // Type alias for the store pick used by detectAndFixMismatches.
-type StoreMock = Pick<ForemanStore, "getRunsByStatus">;
+type StoreMock = Pick<ForemanStore, "getRunsByStatus" | "getActiveRuns">;
 
 function makeBrMocks() {
   const storeFn = vi.fn((_status: string, _projectId?: string): Run[] => []);
+  const activeRunsFn = vi.fn((_projectId?: string): Run[] => []);
   // Cast the mock store to satisfy StoreMock for the function under test.
   // The vi.fn signature is compatible at runtime; the cast is needed because
   // vi.fn wraps the function in a Mock type.
-  const store = { getRunsByStatus: storeFn } as unknown as StoreMock & {
+  const store = {
+    getRunsByStatus: storeFn,
+    getActiveRuns: activeRunsFn,
+  } as unknown as StoreMock & {
     getRunsByStatus: typeof storeFn;
+    getActiveRuns: typeof activeRunsFn;
   };
   const brClient = {
     show: vi.fn(async (_id: string): Promise<BrIssueDetail> => makeBrDetail("in_progress")),
