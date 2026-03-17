@@ -28,6 +28,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 function makeMocks() {
   const store = {
     getRunsByStatus: vi.fn((): Run[] => []),
+    getActiveRuns: vi.fn((): Run[] => []),
   };
   const seeds = {
     show: vi.fn(async () => ({ status: "in_progress" })),
@@ -93,6 +94,8 @@ describe("detectAndFixMismatches", () => {
     expect(result.fixed).toBe(0);
     expect(result.errors).toHaveLength(0);
     expect(seeds.show).not.toHaveBeenCalled();
+    // Short-circuit: getActiveRuns should not be called when there are no terminal runs
+    expect(store.getActiveRuns).not.toHaveBeenCalled();
   });
 
   it("detects mismatch when completed run has seed still in_progress", async () => {
@@ -280,5 +283,85 @@ describe("detectAndFixMismatches", () => {
 
     expect(result.mismatches).toHaveLength(2);
     expect(result.fixed).toBe(2);
+  });
+
+  // ── Race condition tests ────────────────────────────────────────────────
+
+  it("skips seed with active (pending) run — race condition guard", async () => {
+    const { store, seeds } = makeMocks();
+    // Terminal run R0 (completed) for seed-xyz
+    const terminalRun = makeRun({ id: "run-old", seed_id: "seed-xyz", status: "completed" });
+    // Active run R1 (pending) for same seed — auto-dispatch just created it
+    const activeRun = makeRun({ id: "run-new", seed_id: "seed-xyz", status: "pending" });
+
+    store.getRunsByStatus.mockImplementation((...args: any[]) =>
+      args[0] === "completed" ? [terminalRun] : []
+    );
+    store.getActiveRuns.mockReturnValue([activeRun]);
+    // Seed is in_progress (set by auto-dispatch)
+    seeds.show.mockResolvedValue({ status: "in_progress" });
+
+    const result = await detectAndFixMismatches(store as any, seeds as any, "proj-1", new Set());
+
+    // Should NOT attempt to update the seed — active run means dispatcher is working
+    expect(seeds.show).not.toHaveBeenCalled();
+    expect(seeds.update).not.toHaveBeenCalled();
+    expect(result.mismatches).toHaveLength(0);
+    expect(result.fixed).toBe(0);
+  });
+
+  it("skips seed with active (running) run — race condition guard", async () => {
+    const { store, seeds } = makeMocks();
+    const terminalRun = makeRun({ id: "run-old", seed_id: "seed-xyz", status: "merged" });
+    const activeRun = makeRun({ id: "run-new", seed_id: "seed-xyz", status: "running" });
+
+    store.getRunsByStatus.mockImplementation((...args: any[]) =>
+      args[0] === "merged" ? [terminalRun] : []
+    );
+    store.getActiveRuns.mockReturnValue([activeRun]);
+    seeds.show.mockResolvedValue({ status: "in_progress" });
+
+    const result = await detectAndFixMismatches(store as any, seeds as any, "proj-1", new Set());
+
+    expect(seeds.update).not.toHaveBeenCalled();
+    expect(result.mismatches).toHaveLength(0);
+  });
+
+  it("fixes seed with no active runs even when other seeds have active runs", async () => {
+    const { store, seeds } = makeMocks();
+    // seed-safe: terminal run, no active run → should be fixed
+    const terminalRunSafe = makeRun({ id: "run-safe", seed_id: "seed-safe", status: "completed" });
+    // seed-busy: terminal run, but also has active run → should be skipped
+    const terminalRunBusy = makeRun({ id: "run-busy-old", seed_id: "seed-busy", status: "completed" });
+    const activeRunBusy = makeRun({ id: "run-busy-new", seed_id: "seed-busy", status: "pending" });
+
+    store.getRunsByStatus.mockImplementation((...args: any[]) =>
+      args[0] === "completed" ? [terminalRunSafe, terminalRunBusy] : []
+    );
+    store.getActiveRuns.mockReturnValue([activeRunBusy]);
+    seeds.show.mockResolvedValue({ status: "in_progress" });
+
+    const result = await detectAndFixMismatches(store as any, seeds as any, "proj-1", new Set());
+
+    // Only seed-safe should be checked and fixed
+    expect(seeds.show).toHaveBeenCalledTimes(1);
+    expect(seeds.show).toHaveBeenCalledWith("seed-safe");
+    expect(seeds.update).toHaveBeenCalledWith("seed-safe", { status: "closed" });
+    expect(result.mismatches).toHaveLength(1);
+    expect(result.fixed).toBe(1);
+  });
+
+  it("calls getActiveRuns with the correct projectId when terminal runs exist", async () => {
+    const { store, seeds } = makeMocks();
+    // Provide at least one terminal run so we don't short-circuit before getActiveRuns
+    const run = makeRun({ status: "completed" });
+    store.getRunsByStatus.mockImplementation((...args: any[]) =>
+      args[0] === "completed" ? [run] : []
+    );
+    seeds.show.mockResolvedValue({ status: "closed" }); // no mismatch, but still reaches getActiveRuns
+
+    await detectAndFixMismatches(store as any, seeds as any, "my-project", new Set());
+
+    expect(store.getActiveRuns).toHaveBeenCalledWith("my-project");
   });
 });
