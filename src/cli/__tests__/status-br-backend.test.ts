@@ -42,17 +42,20 @@ vi.mock("../../lib/beads-rust.js", () => ({
 
 vi.mock("node:child_process", () => ({
   execFileSync: mockExecFileSync,
+  execFile: vi.fn(),
 }));
 
-vi.mock("../../lib/store.js", () => ({
-  ForemanStore: vi.fn(function MockForemanStore(this: Record<string, unknown>) {
+vi.mock("../../lib/store.js", () => {
+  const Ctor = vi.fn(function MockForemanStore(this: Record<string, unknown>) {
     this.getProjectByPath = vi.fn().mockReturnValue(null);
     this.getActiveRuns = vi.fn().mockReturnValue([]);
     this.getMetrics = vi.fn().mockReturnValue({ totalCost: 0, totalTokens: 0 });
     this.getRunsByStatusSince = vi.fn().mockReturnValue([]);
     this.close = vi.fn();
-  }),
-}));
+  });
+  (Ctor as any).forProject = vi.fn((...args: unknown[]) => new (Ctor as any)(...args));
+  return { ForemanStore: Ctor };
+});
 
 // Import after mocks are set up
 import { getStatusBackend } from "../commands/status.js";

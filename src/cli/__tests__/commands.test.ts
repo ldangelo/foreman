@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtempSync, rmSync, realpathSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -105,9 +105,13 @@ describe("CLI smoke tests", () => {
   it("plan --dry-run shows pipeline steps", async () => {
     const tmp = makeTempDir();
 
+    // Initialize a git repo so getRepoRoot() succeeds
+    execFileSync("git", ["init"], { cwd: tmp });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: tmp });
+
     // Register the temp dir as a project so plan can proceed past the init check
     const storeMod = await import("../../lib/store.js");
-    const store = new storeMod.ForemanStore();
+    const store = storeMod.ForemanStore.forProject(tmp);
     store.registerProject("test-project", tmp);
     store.close();
 
