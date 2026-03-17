@@ -8,19 +8,27 @@ import { Monitor } from "../../orchestrator/monitor.js";
 
 export const monitorCommand = new Command("monitor")
   .description("[deprecated] Check agent progress and detect stuck runs. Use 'foreman reset --detect-stuck' instead.")
-  .option("--recover", "Auto-recover stuck agents")
+  .option("--recover", "Auto-recover stuck agents (ignored when --json is used)")
   .option("--timeout <minutes>", "Stuck detection timeout in minutes", "15")
+  .option("--json", "Output monitor report as JSON (note: --recover is ignored in this mode)")
   .action(async (opts) => {
     const timeoutMinutes = parseInt(opts.timeout, 10);
 
-    // Deprecation warning
-    console.warn(
-      chalk.yellow(
-        "⚠  'foreman monitor' is deprecated. Use 'foreman reset --detect-stuck' instead.\n" +
-        "   Recovery: foreman reset --detect-stuck\n" +
-        "   Preview:  foreman reset --detect-stuck --dry-run\n",
-      ),
-    );
+    // Warn when --json and --recover are combined — recovery is silently skipped in JSON mode
+    if (opts.json && opts.recover) {
+      console.warn("Warning: --recover is ignored when --json is used; recovery actions will not be performed.");
+    }
+
+    // Deprecation warning (skip when --json is used for clean automation output)
+    if (!opts.json) {
+      console.warn(
+        chalk.yellow(
+          "⚠  'foreman monitor' is deprecated. Use 'foreman reset --detect-stuck' instead.\n" +
+          "   Recovery: foreman reset --detect-stuck\n" +
+          "   Preview:  foreman reset --detect-stuck --dry-run\n",
+        ),
+      );
+    }
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
@@ -28,11 +36,20 @@ export const monitorCommand = new Command("monitor")
       const store = ForemanStore.forProject(projectPath);
       const monitor = new Monitor(store, seeds, projectPath);
 
-      console.log(chalk.bold("Checking agent status...\n"));
+      if (!opts.json) {
+        console.log(chalk.bold("Checking agent status...\n"));
+      }
 
       const report = await monitor.checkAll({
         stuckTimeoutMinutes: timeoutMinutes,
       });
+
+      // JSON output path — serialize MonitorReport directly
+      if (opts.json) {
+        console.log(JSON.stringify(report, null, 2));
+        store.close();
+        return;
+      }
 
       // Active
       if (report.active.length > 0) {
@@ -109,7 +126,11 @@ export const monitorCommand = new Command("monitor")
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(`Error: ${message}`));
+      if (opts.json) {
+        console.error(JSON.stringify({ error: message }));
+      } else {
+        console.error(chalk.red(`Error: ${message}`));
+      }
       process.exit(1);
     }
   });
