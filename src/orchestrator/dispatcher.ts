@@ -538,7 +538,7 @@ export class Dispatcher {
       `  Save your session log to SessionLogs/session-$(date +%d%m%y-%H:%M).md (mkdir -p SessionLogs first)`,
       `  br close ${seedId} --reason "Completed"`,
       `  br sync --flush-only`,
-      `  git add -A`,
+      `  git add .`,
       `  git commit -m "${seedTitle} (${seedId})"`,
       `  git push -u origin foreman/${seedId}`,
     ].join("\n");
@@ -555,7 +555,7 @@ export class Dispatcher {
       `  Save your session log to SessionLogs/session-$(date +%d%m%y-%H:%M).md (mkdir -p SessionLogs first)`,
       `  br close ${seedId} --reason "Completed"`,
       `  br sync --flush-only`,
-      `  git add -A`,
+      `  git add .`,
       `  git commit -m "${seedTitle} (${seedId})"`,
       `  git push -u origin foreman/${seedId}`,
     ].join("\n");
