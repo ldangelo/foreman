@@ -36,6 +36,8 @@ const HOME = "/test/home";
 describe("closeSeed — br backend", () => {
   beforeEach(() => {
     mockExecFileSync.mockReset();
+    mockExecBr.mockReset();
+    mockExecBr.mockResolvedValue("");
     process.env.FOREMAN_TASK_BACKEND = "br";
     process.env.HOME = HOME;
   });
@@ -44,10 +46,10 @@ describe("closeSeed — br backend", () => {
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("calls br close with seedId and --reason flag", () => {
+  it("calls br close with seedId and --reason flag", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
-    closeSeed("bd-abc-001");
+    await closeSeed("bd-abc-001");
 
     expect(mockExecFileSync).toHaveBeenCalledOnce();
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
@@ -55,36 +57,36 @@ describe("closeSeed — br backend", () => {
     expect(args).toEqual(["close", "bd-abc-001", "--reason", "Completed via pipeline"]);
   });
 
-  it("uses ~/.local/bin/br path for br backend", () => {
+  it("uses ~/.local/bin/br path for br backend", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
-    closeSeed("bd-abc-001");
+    await closeSeed("bd-abc-001");
 
     const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toBe(`${HOME}/.local/bin/br`);
   });
 
-  it("does not call sd when backend is br", () => {
+  it("does not call sd when backend is br", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
-    closeSeed("bd-abc-001");
+    await closeSeed("bd-abc-001");
 
     const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).not.toContain("sd");
     expect(cmd).not.toContain(".bun");
   });
 
-  it("does not throw when br close fails (error suppressed)", () => {
+  it("does not throw when br close fails (error suppressed)", async () => {
     mockExecFileSync.mockImplementation(() => { throw new Error("br binary missing"); });
 
-    // Must not throw — errors should be caught and logged
-    expect(() => closeSeed("bd-fail-002")).not.toThrow();
+    // Must not reject — errors should be caught and logged
+    await expect(closeSeed("bd-fail-002")).resolves.toBeUndefined();
   });
 
-  it("passes the correct --reason text", () => {
+  it("passes the correct --reason text", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
-    closeSeed("bd-reason-test");
+    await closeSeed("bd-reason-test");
 
     const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     const reasonIdx = args.indexOf("--reason");
@@ -92,13 +94,45 @@ describe("closeSeed — br backend", () => {
     expect(args[reasonIdx + 1]).toBe("Completed via pipeline");
   });
 
-  it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", () => {
+  it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", async () => {
     delete process.env.FOREMAN_TASK_BACKEND;
     mockExecFileSync.mockReturnValue(Buffer.from(""));
-    closeSeed("task-xyz-999");
+    await closeSeed("task-xyz-999");
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toContain("br");
     expect(args[0]).toBe("close");
+  });
+
+  it("calls br sync --flush-only after closing seed", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    await closeSeed("bd-flush-test", "/my/project");
+
+    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], "/my/project");
+  });
+
+  it("calls br sync --flush-only with undefined projectPath when not provided", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    await closeSeed("bd-flush-no-path");
+
+    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], undefined);
+  });
+
+  it("does not throw when br sync --flush-only fails (flush is non-fatal)", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+    mockExecBr.mockRejectedValue(new Error("sync failed"));
+
+    // Must not reject even if flush fails
+    await expect(closeSeed("bd-fail-sync", "/my/project")).resolves.toBeUndefined();
+  });
+
+  it("does not call br sync --flush-only when br close fails", async () => {
+    mockExecFileSync.mockImplementation(() => { throw new Error("br binary missing"); });
+
+    await closeSeed("bd-close-fail-no-flush");
+
+    expect(mockExecBr).not.toHaveBeenCalled();
   });
 });
 
@@ -107,6 +141,8 @@ describe("closeSeed — br backend", () => {
 describe("resetSeedToOpen — br backend", () => {
   beforeEach(() => {
     mockExecFileSync.mockReset();
+    mockExecBr.mockReset();
+    mockExecBr.mockResolvedValue("");
     process.env.FOREMAN_TASK_BACKEND = "br";
     process.env.HOME = HOME;
   });
@@ -115,10 +151,10 @@ describe("resetSeedToOpen — br backend", () => {
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("calls br update with --status open", () => {
+  it("calls br update with --status open", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
-    resetSeedToOpen("bd-stuck-001");
+    await resetSeedToOpen("bd-stuck-001");
 
     expect(mockExecFileSync).toHaveBeenCalledOnce();
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
@@ -126,35 +162,36 @@ describe("resetSeedToOpen — br backend", () => {
     expect(args).toEqual(["update", "bd-stuck-001", "--status", "open"]);
   });
 
-  it("uses ~/.local/bin/br path for br backend", () => {
+  it("uses ~/.local/bin/br path for br backend", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
-    resetSeedToOpen("bd-stuck-001");
+    await resetSeedToOpen("bd-stuck-001");
 
     const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toBe(`${HOME}/.local/bin/br`);
   });
 
-  it("does not call sd when backend is br", () => {
+  it("does not call sd when backend is br", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
-    resetSeedToOpen("bd-stuck-001");
+    await resetSeedToOpen("bd-stuck-001");
 
     const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).not.toContain("sd");
     expect(cmd).not.toContain(".bun");
   });
 
-  it("does not throw when br update fails (error suppressed)", () => {
+  it("does not throw when br update fails (error suppressed)", async () => {
     mockExecFileSync.mockImplementation(() => { throw new Error("br binary missing"); });
 
-    expect(() => resetSeedToOpen("bd-fail-002")).not.toThrow();
+    // Must not reject — errors should be caught and logged
+    await expect(resetSeedToOpen("bd-fail-002")).resolves.toBeUndefined();
   });
 
-  it("passes --status open as the status value", () => {
+  it("passes --status open as the status value", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
-    resetSeedToOpen("bd-status-test");
+    await resetSeedToOpen("bd-status-test");
 
     const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     const statusIdx = args.indexOf("--status");
@@ -162,14 +199,46 @@ describe("resetSeedToOpen — br backend", () => {
     expect(args[statusIdx + 1]).toBe("open");
   });
 
-  it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", () => {
+  it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", async () => {
     delete process.env.FOREMAN_TASK_BACKEND;
     mockExecFileSync.mockReturnValue(Buffer.from(""));
-    resetSeedToOpen("task-xyz-999");
+    await resetSeedToOpen("task-xyz-999");
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toContain("br");
     expect(args[0]).toBe("update");
     expect(args).toContain("open");
+  });
+
+  it("calls br sync --flush-only after resetting seed to open", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    await resetSeedToOpen("bd-reset-flush-test", "/my/project");
+
+    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], "/my/project");
+  });
+
+  it("calls br sync --flush-only with undefined projectPath when not provided", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    await resetSeedToOpen("bd-reset-flush-no-path");
+
+    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], undefined);
+  });
+
+  it("does not throw when br sync --flush-only fails (flush is non-fatal)", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+    mockExecBr.mockRejectedValue(new Error("sync failed"));
+
+    // Must not reject even if flush fails
+    await expect(resetSeedToOpen("bd-reset-fail-sync", "/my/project")).resolves.toBeUndefined();
+  });
+
+  it("does not call br sync --flush-only when br update fails", async () => {
+    mockExecFileSync.mockImplementation(() => { throw new Error("br binary missing"); });
+
+    await resetSeedToOpen("bd-reset-update-fail-no-flush");
+
+    expect(mockExecBr).not.toHaveBeenCalled();
   });
 });
 
@@ -184,20 +253,22 @@ describe("resetSeedToOpen — br backend", () => {
 describe("closeSeed — projectPath forwarded as cwd", () => {
   beforeEach(() => {
     mockExecFileSync.mockReset();
+    mockExecBr.mockReset();
     mockExecFileSync.mockReturnValue(Buffer.from(""));
+    mockExecBr.mockResolvedValue("");
     process.env.HOME = HOME;
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("passes projectPath as cwd to execFileSync", () => {
-    closeSeed("bd-cwd-001", "/my/project/root");
+  it("passes projectPath as cwd to execFileSync", async () => {
+    await closeSeed("bd-cwd-001", "/my/project/root");
 
     const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
     expect(opts.cwd).toBe("/my/project/root");
   });
 
-  it("omits cwd when projectPath is not provided", () => {
-    closeSeed("bd-cwd-002");
+  it("omits cwd when projectPath is not provided", async () => {
+    await closeSeed("bd-cwd-002");
 
     const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
     expect(opts.cwd).toBeUndefined();
@@ -207,20 +278,22 @@ describe("closeSeed — projectPath forwarded as cwd", () => {
 describe("resetSeedToOpen — projectPath forwarded as cwd", () => {
   beforeEach(() => {
     mockExecFileSync.mockReset();
+    mockExecBr.mockReset();
     mockExecFileSync.mockReturnValue(Buffer.from(""));
+    mockExecBr.mockResolvedValue("");
     process.env.HOME = HOME;
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("passes projectPath as cwd to execFileSync", () => {
-    resetSeedToOpen("bd-reset-cwd-001", "/my/project/root");
+  it("passes projectPath as cwd to execFileSync", async () => {
+    await resetSeedToOpen("bd-reset-cwd-001", "/my/project/root");
 
     const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
     expect(opts.cwd).toBe("/my/project/root");
   });
 
-  it("omits cwd when projectPath is not provided", () => {
-    resetSeedToOpen("bd-reset-cwd-002");
+  it("omits cwd when projectPath is not provided", async () => {
+    await resetSeedToOpen("bd-reset-cwd-002");
 
     const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
     expect(opts.cwd).toBeUndefined();
@@ -232,7 +305,9 @@ describe("resetSeedToOpen — projectPath forwarded as cwd", () => {
 describe("closeSeed / resetSeedToOpen — homedir() path resolution", () => {
   beforeEach(() => {
     mockExecFileSync.mockReset();
+    mockExecBr.mockReset();
     mockExecFileSync.mockReturnValue(Buffer.from(""));
+    mockExecBr.mockResolvedValue("");
     mockHomedir.mockReturnValue("/fallback/home");
   });
 
@@ -241,19 +316,19 @@ describe("closeSeed / resetSeedToOpen — homedir() path resolution", () => {
     mockHomedir.mockReturnValue("/test/home");
   });
 
-  it("closeSeed uses os.homedir() for br path", () => {
+  it("closeSeed uses os.homedir() for br path", async () => {
     process.env.FOREMAN_TASK_BACKEND = "br";
 
-    closeSeed("bd-no-home");
+    await closeSeed("bd-no-home");
 
     const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toBe("/fallback/home/.local/bin/br");
   });
 
-  it("resetSeedToOpen uses os.homedir() for br path", () => {
+  it("resetSeedToOpen uses os.homedir() for br path", async () => {
     process.env.FOREMAN_TASK_BACKEND = "br";
 
-    resetSeedToOpen("bd-no-home");
+    await resetSeedToOpen("bd-no-home");
 
     const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toBe("/fallback/home/.local/bin/br");
