@@ -11,9 +11,10 @@ const { mockExecFileSync, mockHomedir } = vi.hoisted(() => ({
   mockHomedir: vi.fn().mockReturnValue("/test/home"),
 }));
 
-vi.mock("node:child_process", () => ({
-  execFileSync: mockExecFileSync,
-}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, execFileSync: mockExecFileSync };
+});
 
 vi.mock("node:os", () => ({
   homedir: mockHomedir,
