@@ -803,10 +803,14 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   store.updateRunProgress(runId, progress);
   await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: FINALIZE]\n`);
 
-  await finalize(config, logFile);
-
+  // Mark run as completed BEFORE finalize so that if the process crashes
+  // during git push or enqueue, reconcile() can still find and recover the
+  // pushed branch (it queries for runs with status = "completed").
   const now = new Date().toISOString();
   store.updateRun(runId, { status: "completed", completed_at: now });
+
+  await finalize(config, logFile);
+
   notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
   store.logEvent(projectId, "complete", {
     seedId,

@@ -411,16 +411,166 @@ describe("MergeQueue.reconcile", () => {
     expect(entries[0].files_modified).toEqual([]);
   });
 
-  it("does not enqueue non-completed runs", async () => {
+  it("does not enqueue non-completed runs without a pushed remote branch", async () => {
     insertRun(db, "run-1", "seed-1", "running");
     insertRun(db, "run-2", "seed-2", "failed");
 
-    const mockExecFileAsync = vi.fn();
+    // Secondary pass will check for remote branches; reject all to simulate no push
+    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === "rev-parse") {
+        return Promise.reject(new Error("fatal: not a valid ref"));
+      }
+      return Promise.resolve({ stdout: "", stderr: "" });
+    });
     const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
 
     expect(result.enqueued).toBe(0);
     expect(result.skipped).toBe(0);
     expect(result.invalidBranch).toBe(0);
-    expect(mockExecFileAsync).not.toHaveBeenCalled();
+    // Secondary pass checks the remote branch only for "running" runs — not "failed".
+    // Assert on the specific args (not just call count) so that adding a preliminary
+    // step (e.g. a git fetch) before rev-parse does not break this test.
+    expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
+    expect(mockExecFileAsync).toHaveBeenCalledWith(
+      "git",
+      ["rev-parse", "--verify", "refs/remotes/origin/foreman/seed-1"],
+      { cwd: "/tmp/repo" }
+    );
+  });
+
+  it("recovers a running run whose branch was pushed before process crashed", async () => {
+    insertRun(db, "run-1", "seed-1", "running");
+
+    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[2] === "refs/remotes/origin/foreman/seed-1") {
+        // Remote branch exists — push succeeded before crash
+        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
+      }
+      if (args[0] === "diff") {
+        return Promise.resolve({ stdout: "src/foo.ts\nsrc/bar.ts\n", stderr: "" });
+      }
+      return Promise.reject(new Error("unexpected git call"));
+    });
+
+    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+
+    expect(result.enqueued).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(result.invalidBranch).toBe(0);
+
+    // Branch should be in merge queue
+    const entries = queue.list("pending");
+    expect(entries).toHaveLength(1);
+    expect(entries[0].branch_name).toBe("foreman/seed-1");
+    expect(entries[0].run_id).toBe("run-1");
+
+    // Run status should be updated to completed
+    const updatedRun = db.prepare("SELECT status FROM runs WHERE id = ?").get("run-1") as { status: string };
+    expect(updatedRun.status).toBe("completed");
+  });
+
+  it("recovers a pending run whose branch was pushed before process crashed", async () => {
+    insertRun(db, "run-1", "seed-1", "pending");
+
+    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[2] === "refs/remotes/origin/foreman/seed-1") {
+        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
+      }
+      if (args[0] === "diff") {
+        return Promise.resolve({ stdout: "src/changed.ts\n", stderr: "" });
+      }
+      return Promise.reject(new Error("unexpected git call"));
+    });
+
+    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+
+    expect(result.enqueued).toBe(1);
+    const entries = queue.list("pending");
+    expect(entries[0].files_modified).toEqual(["src/changed.ts"]);
+
+    const updatedRun = db.prepare("SELECT status FROM runs WHERE id = ?").get("run-1") as { status: string };
+    expect(updatedRun.status).toBe("completed");
+  });
+
+  it("does not recover a running run already in merge_queue", async () => {
+    insertRun(db, "run-1", "seed-1", "running");
+    queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+
+    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === "rev-parse") {
+        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
+      }
+      return Promise.resolve({ stdout: "", stderr: "" });
+    });
+
+    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+
+    // Already in queue — skipped in secondary pass
+    expect(result.enqueued).toBe(0);
+    expect(queue.list()).toHaveLength(1);
+  });
+
+  it("recovers completed run and running run with pushed branch in single reconcile", async () => {
+    insertRun(db, "run-1", "seed-1", "completed");
+    insertRun(db, "run-2", "seed-2", "running");
+
+    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === "rev-parse") {
+        // Both local (completed first-pass) and remote (secondary pass) branches exist
+        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
+      }
+      if (args[0] === "diff") {
+        return Promise.resolve({ stdout: "src/foo.ts\n", stderr: "" });
+      }
+      return Promise.reject(new Error("unexpected git call"));
+    });
+
+    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+
+    expect(result.enqueued).toBe(2);
+    expect(queue.list("pending")).toHaveLength(2);
+  });
+
+  it("deduplicates by seed_id in the secondary pass — only recovers the oldest run, not a newer one for the same seed", async () => {
+    // Simulate: old run crashed after push (status stuck at "running"),
+    // dispatcher later created a new run for the same seed (also "running", not yet pushed).
+    // Both share the same seed_id → same remote branch name.
+    db.prepare(
+      `INSERT INTO runs (id, project_id, seed_id, agent_type, status, created_at)
+       VALUES (?, 'proj-1', 'seed-1', 'worker', 'running', '2026-01-01T00:00:00.000Z')`
+    ).run("run-old");
+    db.prepare(
+      `INSERT INTO runs (id, project_id, seed_id, agent_type, status, created_at)
+       VALUES (?, 'proj-1', 'seed-1', 'worker', 'running', '2026-01-02T00:00:00.000Z')`
+    ).run("run-new");
+
+    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[2] === "refs/remotes/origin/foreman/seed-1") {
+        // Remote branch exists — pushed by the old run before it crashed
+        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
+      }
+      if (args[0] === "diff") {
+        return Promise.resolve({ stdout: "src/foo.ts\n", stderr: "" });
+      }
+      return Promise.reject(new Error("unexpected git call"));
+    });
+
+    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+
+    // Only one entry should be enqueued (deduplicated by seed_id)
+    expect(result.enqueued).toBe(1);
+    const entries = queue.list("pending");
+    expect(entries).toHaveLength(1);
+
+    // The oldest run (run-old, created 2026-01-01) should be the one recovered
+    expect(entries[0].run_id).toBe("run-old");
+
+    // run-old should be marked completed (recovered)
+    const oldRun = db.prepare("SELECT status FROM runs WHERE id = ?").get("run-old") as { status: string };
+    expect(oldRun.status).toBe("completed");
+
+    // run-new should remain "running" — it was NOT falsely marked completed
+    const newRun = db.prepare("SELECT status FROM runs WHERE id = ?").get("run-new") as { status: string };
+    expect(newRun.status).toBe("running");
   });
 });

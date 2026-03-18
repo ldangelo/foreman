@@ -318,6 +318,81 @@ export class MergeQueue {
       enqueued++;
     }
 
+    // Secondary pass: recover runs that pushed a branch but crashed before the
+    // run status was updated to "completed". We check for a remote-tracking ref
+    // (refs/remotes/origin/foreman/<seedId>) which only exists after a successful
+    // git push. This is defense-in-depth on top of the primary fix that marks runs
+    // as "completed" before calling finalize().
+    const interruptedRuns = db
+      .prepare(
+        "SELECT * FROM runs WHERE status IN ('pending', 'running') ORDER BY created_at ASC"
+      )
+      .all() as Array<{ id: string; seed_id: string }>;
+
+    // Deduplicate by seed_id: only process the oldest run per seed. A seed maps
+    // 1-to-1 with a branch name (foreman/<seedId>), so if multiple runs exist for
+    // the same seed (e.g. a crashed old run and a newly-dispatched replacement),
+    // we must not falsely mark the newer run "completed" just because the old
+    // remote-tracking ref is still present. Taking the oldest (created_at ASC)
+    // ensures we recover the run that actually pushed the branch.
+    const seenSeedIds = new Set<string>();
+
+    for (const run of interruptedRuns) {
+      if (existingRunIds.has(run.id)) {
+        // Already in merge queue — skip (enqueue is idempotent, but avoid double-counting)
+        continue;
+      }
+
+      // Only recover one run per seed to avoid marking a newer in-progress run
+      // as "completed" when the old remote ref is still present.
+      if (seenSeedIds.has(run.seed_id)) {
+        continue;
+      }
+      seenSeedIds.add(run.seed_id);
+
+      const branchName = `foreman/${run.seed_id}`;
+
+      // Check if the remote branch exists (indicates push succeeded before crash)
+      try {
+        await execFileAsync(
+          "git",
+          ["rev-parse", "--verify", `refs/remotes/origin/${branchName}`],
+          { cwd: repoPath }
+        );
+      } catch {
+        // No remote branch — run is genuinely in-progress or never pushed
+        continue;
+      }
+
+      // Remote branch exists but run status was never updated — recover it
+      const recoveredAt = new Date().toISOString();
+      db.prepare("UPDATE runs SET status = 'completed', completed_at = ? WHERE id = ?").run(
+        recoveredAt,
+        run.id
+      );
+
+      // Get modified files
+      let recoveredFiles: string[] = [];
+      try {
+        const { stdout } = await execFileAsync(
+          "git",
+          ["diff", "--name-only", `main...${branchName}`],
+          { cwd: repoPath }
+        );
+        recoveredFiles = stdout.trim().split("\n").filter(Boolean);
+      } catch {
+        // If diff fails, proceed with empty files list
+      }
+
+      this.enqueue({
+        branchName,
+        seedId: run.seed_id,
+        runId: run.id,
+        filesModified: recoveredFiles,
+      });
+      enqueued++;
+    }
+
     return { enqueued, skipped, invalidBranch };
   }
 }
