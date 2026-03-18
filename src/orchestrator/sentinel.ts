@@ -8,9 +8,27 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import type { ForemanStore } from "../lib/store.js";
+import type { SentinelRunRow, EventType } from "../lib/store.js";
 import type { BeadsRustClient } from "../lib/beads-rust.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
+
+/**
+ * Minimal store interface that SentinelAgent requires.
+ * Using a structural sub-type keeps test mocks clean (no `as any` needed).
+ */
+export interface SentinelStore {
+  logEvent(
+    projectId: string,
+    eventType: EventType,
+    details?: Record<string, unknown> | string,
+    runId?: string,
+  ): void;
+  recordSentinelRun(run: Omit<SentinelRunRow, "failure_count">): void;
+  updateSentinelRun(
+    id: string,
+    updates: Partial<Pick<SentinelRunRow, "status" | "output" | "completed_at" | "failure_count">>,
+  ): void;
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -40,8 +58,8 @@ export interface SentinelRunResult {
  *   agent.stop();
  */
 export class SentinelAgent {
-  private store: ForemanStore;
-  private seeds: BeadsRustClient;
+  private store: SentinelStore;
+  private seeds: Pick<BeadsRustClient, "create">;
   private projectId: string;
   private projectPath: string;
   private running = false;
@@ -49,8 +67,8 @@ export class SentinelAgent {
   private consecutiveFailures = 0;
 
   constructor(
-    store: ForemanStore,
-    seeds: BeadsRustClient,
+    store: SentinelStore,
+    seeds: Pick<BeadsRustClient, "create">,
     projectId: string,
     projectPath: string,
   ) {

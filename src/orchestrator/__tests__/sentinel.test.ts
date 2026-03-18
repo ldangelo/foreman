@@ -1,21 +1,27 @@
 import { describe, it, expect, vi } from "vitest";
+import { tmpdir } from "node:os";
 import { SentinelAgent } from "../sentinel.js";
-import type { SentinelConfigRow } from "../../lib/store.js";
+import type { SentinelStore } from "../sentinel.js";
+import type { BeadsRustClient } from "../../lib/beads-rust.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 function makeMocks() {
+  // Cast to SentinelStore (targeted minimal interface) rather than the full
+  // ForemanStore type, so the mock only needs the 3 methods SentinelAgent uses.
   const store = {
     logEvent: vi.fn(),
     recordSentinelRun: vi.fn(),
     updateSentinelRun: vi.fn(),
-    upsertSentinelConfig: vi.fn(),
-    getSentinelConfig: vi.fn(() => null as SentinelConfigRow | null),
-  };
+  } as unknown as SentinelStore;
+
+  // seeds mock — cast to BeadsRustClient to satisfy the constructor type
   const seeds = {
     create: vi.fn(async () => ({ id: "bd-001", title: "bug" })),
-  };
-  const agent = new SentinelAgent(store as any, seeds as any, "proj-1", "/tmp/project");
+  } as unknown as BeadsRustClient;
+
+  // Use tmpdir() as the project path so non-dry-run tests can spawn processes.
+  const agent = new SentinelAgent(store, seeds, "proj-1", tmpdir());
   return { store, seeds, agent };
 }
 
@@ -145,12 +151,9 @@ describe("SentinelAgent", () => {
   });
 
   describe("failure threshold and bug creation", () => {
-    it("creates bug task after reaching failure threshold", async () => {
-      const { store, seeds, agent } = makeMocks();
+    it("does NOT create bug task in dry-run mode (always passes)", async () => {
+      const { seeds, agent } = makeMocks();
 
-      // Simulate consecutive failures by calling recordSentinelRun with failed status
-      // We need to bypass the actual test execution. Use a threshold of 1 so first failure triggers.
-      // In dry-run mode tests pass, so we test the branch indirectly by checking seeds.create NOT called.
       const opts = {
         branch: "main",
         testCommand: "false",
@@ -161,6 +164,53 @@ describe("SentinelAgent", () => {
 
       await agent.runOnce(opts);
       expect(seeds.create).not.toHaveBeenCalled();
+    });
+
+    it("records failed status and sentinel-fail event on non-zero test exit", async () => {
+      const { store, seeds, agent } = makeMocks();
+
+      // Use /usr/bin/false (or /bin/false) which always exits with code 1.
+      // High failure threshold so bug creation does not trigger.
+      const result = await agent.runOnce({
+        branch: "main",
+        testCommand: "/usr/bin/false",
+        intervalMinutes: 0,
+        failureThreshold: 10,
+        dryRun: false,
+      });
+
+      expect(["failed", "error"]).toContain(result.status);
+      expect(store.logEvent).toHaveBeenCalledWith(
+        "proj-1",
+        "sentinel-fail",
+        expect.objectContaining({ status: result.status }),
+      );
+      expect(store.updateSentinelRun).toHaveBeenCalledWith(
+        result.id,
+        expect.objectContaining({ status: result.status }),
+      );
+      // Below threshold — no bug task
+      expect(seeds.create).not.toHaveBeenCalled();
+    });
+
+    it("creates bug task after consecutive failures reach threshold", async () => {
+      const { seeds, agent } = makeMocks();
+
+      // threshold of 1 means first failure triggers bug creation
+      const opts = {
+        branch: "main",
+        testCommand: "/usr/bin/false",
+        intervalMinutes: 0,
+        failureThreshold: 1,
+        dryRun: false,
+      };
+
+      await agent.runOnce(opts);
+      expect(seeds.create).toHaveBeenCalledOnce();
+      expect(seeds.create).toHaveBeenCalledWith(
+        expect.stringContaining("[Sentinel]"),
+        expect.objectContaining({ type: "bug", priority: "P0" }),
+      );
     });
   });
 
@@ -178,7 +228,7 @@ describe("SentinelAgent", () => {
       });
 
       // updateSentinelRun should have been called with output
-      const call = store.updateSentinelRun.mock.calls[0];
+      const call = (store.updateSentinelRun as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(call).toBeDefined();
       const updates = call[1] as { output?: string };
       expect(typeof updates.output).toBe("string");
