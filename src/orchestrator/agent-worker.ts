@@ -535,23 +535,51 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
     "",
   ];
 
-  // Bug scan (pre-commit type check) — 60 s timeout to handle TypeScript cold-start
-  const buildOpts = { ...opts, timeout: 60_000 };
+  // Dependency install — required before type check so tsc can resolve module types.
+  // Use npm ci (clean install) for deterministic, lock-file-based installs.
+  // Allow up to 120 s to handle slow network / large dependency trees.
+  const installOpts = { ...opts, timeout: 120_000 };
+  let installSucceeded = false;
   try {
-    execFileSync("npx", ["tsc", "--noEmit"], buildOpts);
-    log(`[FINALIZE] Type check passed`);
-    report.push(`## Build / Type Check`, `- Status: SUCCESS`, "");
+    execFileSync("npm", ["ci"], installOpts);
+    log(`[FINALIZE] npm ci succeeded`);
+    report.push(`## Dependency Install`, `- Status: SUCCESS`, "");
+    installSucceeded = true;
   } catch (err: unknown) {
     const rawMsg = err instanceof Error ? err.message : String(err);
-    // execFileSync throws with stderr in the message when stdio:"pipe"
     const stderr =
       err instanceof Error && "stderr" in err
         ? String((err as NodeJS.ErrnoException & { stderr?: Buffer }).stderr ?? "")
         : "";
     const detail = (stderr || rawMsg).slice(0, 500);
-    log(`[FINALIZE] Type check failed: ${detail.slice(0, 200)}`);
-    await appendFile(logFile, `[FINALIZE] Type check error:\n${detail}\n`);
-    report.push(`## Build / Type Check`, `- Status: FAILED`, `- Errors:`, "```", detail, "```", "");
+    log(`[FINALIZE] npm ci failed: ${detail.slice(0, 200)}`);
+    await appendFile(logFile, `[FINALIZE] npm ci error:\n${detail}\n`);
+    report.push(`## Dependency Install`, `- Status: FAILED`, `- Errors:`, "```", detail, "```", "");
+  }
+
+  // Bug scan (pre-commit type check) — 60 s timeout to handle TypeScript cold-start.
+  // Skip if npm ci failed: without node_modules tsc will always fail with "Cannot find module".
+  const buildOpts = { ...opts, timeout: 60_000 };
+  if (!installSucceeded) {
+    log(`[FINALIZE] Skipping type check — dependency install failed`);
+    report.push(`## Build / Type Check`, `- Status: SKIPPED (dependency install failed)`, "");
+  } else {
+    try {
+      execFileSync("npx", ["tsc", "--noEmit"], buildOpts);
+      log(`[FINALIZE] Type check passed`);
+      report.push(`## Build / Type Check`, `- Status: SUCCESS`, "");
+    } catch (err: unknown) {
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      // execFileSync throws with stderr in the message when stdio:"pipe"
+      const stderr =
+        err instanceof Error && "stderr" in err
+          ? String((err as NodeJS.ErrnoException & { stderr?: Buffer }).stderr ?? "")
+          : "";
+      const detail = (stderr || rawMsg).slice(0, 500);
+      log(`[FINALIZE] Type check failed: ${detail.slice(0, 200)}`);
+      await appendFile(logFile, `[FINALIZE] Type check error:\n${detail}\n`);
+      report.push(`## Build / Type Check`, `- Status: FAILED`, `- Errors:`, "```", detail, "```", "");
+    }
   }
 
   // Commit
