@@ -47,6 +47,13 @@ describe("TRD-012: Dispatcher.buildSpawnPrompt", () => {
 
     expect(prompt).toContain("git push -u origin foreman/bd-abc");
   });
+
+  it("includes sessionlog instruction", () => {
+    const d = makeDispatcher();
+    const prompt = d.buildSpawnPrompt("bd-001", "Implement feature");
+
+    expect(prompt).toContain("SessionLogs/session-");
+  });
 });
 
 describe("TRD-012: Dispatcher.buildResumePrompt", () => {
@@ -69,5 +76,12 @@ describe("TRD-012: Dispatcher.buildResumePrompt", () => {
     const prompt = d.buildResumePrompt("bd-001", "Implement feature");
 
     expect(prompt).toContain("interrupted");
+  });
+
+  it("includes sessionlog instruction", () => {
+    const d = makeDispatcher();
+    const prompt = d.buildResumePrompt("bd-001", "Implement feature");
+
+    expect(prompt).toContain("SessionLogs/session-");
   });
 });
