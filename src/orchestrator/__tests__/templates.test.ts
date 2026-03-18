@@ -35,6 +35,12 @@ describe("workerAgentMd", () => {
     expect(md).toContain("Agent Team");
   });
 
+  it("contains session logging instructions", () => {
+    const md = workerAgentMd(fakeSeed, "/tmp/wt", "claude-sonnet-4-6");
+    expect(md).toContain("Session Logging");
+    expect(md).toContain("SessionLogs/session-");
+  });
+
   it("produces valid non-empty output for all models", () => {
     const models: ModelSelection[] = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"];
     for (const model of models) {
