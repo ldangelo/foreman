@@ -536,7 +536,13 @@ function rotateReport(worktreePath: string, filename: string): void {
  * Run git finalization: add, commit, push, and close the seed.
  * Uses execFileSync for safety — no shell interpolation.
  */
-async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
+async function finalize(
+  config: WorkerConfig,
+  logFile: string,
+  progress: RunProgress,
+  pipelineStartedAt: string,
+  pipelineStatus = "ALL_CHECKS_PASSED",
+): Promise<void> {
   const { seedId, seedTitle, worktreePath } = config;
   const storeProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
   const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
@@ -710,6 +716,17 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   // refinery.mergeCompleted() and the merge succeeds). Closing here would
   // falsely mark the bead as done even if the merge later fails with conflicts
   // or test failures. See: refinery.ts mergeCompleted() and resolveConflict().
+
+  // Create session transcript in SessionLogs/
+  const sessionLogResult = await createSessionLog(config, progress, pipelineStartedAt, commitHash, logFile, pipelineStatus);
+  if (sessionLogResult.success) {
+    log(`[FINALIZE] Session log written: ${sessionLogResult.path}`);
+    report.push(`## Session Log`, `- Status: CREATED`, `- Path: ${sessionLogResult.path}`, "");
+  } else {
+    log(`[FINALIZE] Session log creation failed (non-fatal): ${sessionLogResult.error}`);
+    report.push(`## Session Log`, `- Status: FAILED (non-fatal)`, `- Error: ${sessionLogResult.error?.slice(0, 300)}`, "");
+  }
+
   // Write finalize report
   try {
     rotateReport(worktreePath, "FINALIZE_REPORT.md");
@@ -742,6 +759,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     lastActivity: new Date().toISOString(),
     currentPhase: "explorer",
   };
+
+  const pipelineStartedAt = new Date().toISOString();
 
   log(`Pipeline starting for ${seedId} [phases: ${config.skipExplore ? "skip-explore" : "explore"} → dev → qa → ${config.skipReview ? "skip-review" : "review"} → finalize]`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n`);
@@ -786,6 +805,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   let devRetries = 0;
   let feedbackContext: string | undefined;
   let qaVerdict: "pass" | "fail" | "unknown" = "unknown";
+  let pipelineStatus = "ALL_CHECKS_PASSED";
 
   while (devRetries <= MAX_DEV_RETRIES) {
     // Developer — skip on first pass if artifact already exists (resume after crash)
@@ -939,6 +959,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       }
     } else if (reviewVerdict === "fail") {
       log(`[REVIEW] FAIL — max retries exhausted, finalizing with current state`);
+      pipelineStatus = "PIPELINE_COMPLETE (REVIEWER FAIL — no retries remaining)";
     } else {
       log(`[REVIEW] Verdict: ${reviewVerdict} (no actionable issues)`);
     }
@@ -977,12 +998,17 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     await appendFile(logFile, `[SESSION LOG] Write failed (non-fatal): ${msg}\n`);
   }
 
+  // Downgrade status if QA never passed (retries exhausted)
+  if (qaVerdict === "fail" && pipelineStatus === "ALL_CHECKS_PASSED") {
+    pipelineStatus = "PIPELINE_COMPLETE (QA FAILED — retries exhausted)";
+  }
+
   // ── Phase 5: Finalize ──────────────────────────────────────────────
   progress.currentPhase = "finalize";
   store.updateRunProgress(runId, progress);
   await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: FINALIZE]\n`);
 
-  await finalize(config, logFile);
+  await finalize(config, logFile, progress, pipelineStartedAt, pipelineStatus);
 
   const now = new Date().toISOString();
   store.updateRun(runId, { status: "completed", completed_at: now });
