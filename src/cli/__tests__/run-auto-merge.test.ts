@@ -58,6 +58,7 @@ const {
     this.getProjectByPath = mockGetProjectByPath;
     this.getRunsByStatuses = mockGetRunsByStatuses;
     this.getDb = mockGetDb;
+    this.getSentinelConfig = vi.fn().mockReturnValue(null);
   });
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
@@ -151,6 +152,7 @@ function resetMocks(): void {
     this.getProjectByPath = mockGetProjectByPath;
     this.getRunsByStatuses = mockGetRunsByStatuses;
     this.getDb = mockGetDb;
+    this.getSentinelConfig = vi.fn().mockReturnValue(null);
   });
   MockMergeQueue.mockImplementation(function (this: Record<string, unknown>) {
     this.reconcile = mockMergeQueueReconcile;
