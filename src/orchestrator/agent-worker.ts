@@ -31,7 +31,7 @@ import {
   hasActionableIssues,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { resetSeedToOpen, addLabelsToBead } from "./task-backend-ops.js";
+import { resetSeedToOpen, addLabelsToBead, addNotesToBead } from "./task-backend-ops.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
@@ -1111,6 +1111,14 @@ async function markStuck(
   // Pass projectPath (repo root) so br finds .beads/ — the worktree has none.
   await resetSeedToOpen(seedId, projectPath);
   log(`Reset seed ${seedId} back to open`);
+
+  // Add failure reason as a note on the bead for visibility.
+  // This allows anyone looking at the bead to see why it was reset without
+  // having to dig into log files or SQLite.
+  const notePrefix = isRateLimit ? "[RATE_LIMITED]" : "[FAILED]";
+  const failureNote = `${notePrefix} [${phase.toUpperCase()}] ${reason}`;
+  addNotesToBead(seedId, failureNote, projectPath);
+  log(`Added failure note to seed ${seedId}`);
 
   store.close();
 }

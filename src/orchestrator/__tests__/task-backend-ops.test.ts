@@ -24,7 +24,7 @@ vi.mock("../../lib/beads-rust.js", () => ({
   execBr: mockExecBr,
 }));
 
-import { closeSeed, resetSeedToOpen, addLabelsToBead } from "../task-backend-ops.js";
+import { closeSeed, resetSeedToOpen, addLabelsToBead, addNotesToBead } from "../task-backend-ops.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -345,6 +345,133 @@ describe("closeSeed / resetSeedToOpen — homedir() path resolution", () => {
 
     const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toBe("/fallback/home/.local/bin/br");
+  });
+});
+
+// ── addNotesToBead ────────────────────────────────────────────────────────────
+
+describe("addNotesToBead — br backend", () => {
+  beforeEach(() => {
+    mockExecFileSync.mockReset();
+    process.env.HOME = HOME;
+    delete process.env.FOREMAN_TASK_BACKEND;
+  });
+
+  it("calls br update with --notes flag and the provided text", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addNotesToBead("bd-notes-001", "Some failure reason");
+
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      `${HOME}/.local/bin/br`,
+      ["update", "bd-notes-001", "--notes", "Some failure reason"],
+      expect.objectContaining({ stdio: "pipe" }),
+    );
+  });
+
+  it("uses ~/.local/bin/br path", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addNotesToBead("bd-notes-002", "Failure note");
+
+    const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    expect(cmd).toBe(`${HOME}/.local/bin/br`);
+  });
+
+  it("does nothing when notes string is empty", () => {
+    addNotesToBead("bd-notes-003", "");
+
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when br update --notes fails (error suppressed)", () => {
+    mockExecFileSync.mockImplementation(() => { throw new Error("br binary missing"); });
+
+    expect(() => addNotesToBead("bd-notes-004", "Some note")).not.toThrow();
+  });
+
+  it("calls br sync --flush-only after adding notes", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addNotesToBead("bd-notes-005", "Some note", "/my/project");
+
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
+    expect(syncArgs).toEqual(["sync", "--flush-only"]);
+    expect(syncOpts).toMatchObject({ cwd: "/my/project" });
+  });
+
+  it("calls br sync --flush-only without cwd when projectPath not provided", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addNotesToBead("bd-notes-006", "Some note");
+
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
+    expect(syncArgs).toEqual(["sync", "--flush-only"]);
+    expect(syncOpts).not.toHaveProperty("cwd");
+  });
+
+  it("does not throw when br sync --flush-only fails (flush is non-fatal)", () => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "sync") throw new Error("sync failed");
+      return Buffer.from("");
+    });
+
+    expect(() => addNotesToBead("bd-notes-007", "Some note", "/my/project")).not.toThrow();
+  });
+
+  it("does not call br sync --flush-only when br update fails", () => {
+    mockExecFileSync.mockImplementation(() => { throw new Error("br binary missing"); });
+
+    addNotesToBead("bd-notes-008", "Some note");
+
+    const syncCalls = mockExecFileSync.mock.calls.filter(
+      (call) => Array.isArray(call[1]) && (call[1] as string[])[0] === "sync",
+    );
+    expect(syncCalls).toHaveLength(0);
+  });
+
+  it("passes projectPath as cwd to execFileSync", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addNotesToBead("bd-notes-009", "Failure note", "/my/project/root");
+
+    const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(opts.cwd).toBe("/my/project/root");
+  });
+
+  it("omits cwd when projectPath is not provided", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addNotesToBead("bd-notes-010", "Failure note");
+
+    const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(opts.cwd).toBeUndefined();
+  });
+
+  it("truncates very long notes to 2000 characters with ellipsis", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    const longNote = "x".repeat(3000);
+    addNotesToBead("bd-notes-011", longNote);
+
+    const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    const notesIdx = args.indexOf("--notes");
+    const noteValue = args[notesIdx + 1];
+    expect(noteValue.length).toBe(2001); // 2000 chars + "…"
+    expect(noteValue.endsWith("…")).toBe(true);
+  });
+
+  it("passes notes without truncation when under 2000 characters", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    const note = "Short failure reason";
+    addNotesToBead("bd-notes-012", note);
+
+    const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    const notesIdx = args.indexOf("--notes");
+    expect(args[notesIdx + 1]).toBe(note);
   });
 });
 
