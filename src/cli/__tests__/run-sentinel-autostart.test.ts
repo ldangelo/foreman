@@ -145,6 +145,7 @@ describe("sentinel auto-start in foreman run", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
     // Default: no tasks dispatched, no active agents
+    // Use --no-watch so tests exit immediately without polling loop
     mockDispatch.mockResolvedValue({ dispatched: [], skipped: [], activeAgents: 0 });
 
     // Restore constructor implementations after clearAllMocks
@@ -191,7 +192,7 @@ describe("sentinel auto-start in foreman run", () => {
     mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
     mockGetSentinelConfig.mockReturnValue(MOCK_SENTINEL_CONFIG);
 
-    await invokeRun([]);
+    await invokeRun(["--no-watch"]);
 
     expect(MockSentinelAgent).toHaveBeenCalledOnce();
     expect(MockSentinelAgent).toHaveBeenCalledWith(
@@ -216,7 +217,7 @@ describe("sentinel auto-start in foreman run", () => {
     mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
     mockGetSentinelConfig.mockReturnValue({ ...MOCK_SENTINEL_CONFIG, enabled: 0 });
 
-    await invokeRun([]);
+    await invokeRun(["--no-watch"]);
 
     expect(MockSentinelAgent).not.toHaveBeenCalled();
     expect(mockSentinelStart).not.toHaveBeenCalled();
@@ -226,7 +227,7 @@ describe("sentinel auto-start in foreman run", () => {
     mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
     mockGetSentinelConfig.mockReturnValue(null);
 
-    await invokeRun([]);
+    await invokeRun(["--no-watch"]);
 
     expect(MockSentinelAgent).not.toHaveBeenCalled();
     expect(mockSentinelStart).not.toHaveBeenCalled();
@@ -235,7 +236,7 @@ describe("sentinel auto-start in foreman run", () => {
   it("does NOT start SentinelAgent when project is not initialized", async () => {
     mockGetProjectByPath.mockReturnValue(null);
 
-    await invokeRun([]);
+    await invokeRun(["--no-watch"]);
 
     expect(MockSentinelAgent).not.toHaveBeenCalled();
     expect(mockSentinelStart).not.toHaveBeenCalled();
@@ -257,7 +258,7 @@ describe("sentinel auto-start in foreman run", () => {
     // isRunning returns true after start
     mockSentinelIsRunning.mockReturnValue(true);
 
-    await invokeRun([]);
+    await invokeRun(["--no-watch"]);
 
     expect(mockSentinelStop).toHaveBeenCalledOnce();
   });
@@ -267,7 +268,7 @@ describe("sentinel auto-start in foreman run", () => {
     mockGetProjectByPath.mockReturnValue(null);
     mockSentinelIsRunning.mockReturnValue(false);
 
-    await invokeRun([]);
+    await invokeRun(["--no-watch"]);
 
     expect(mockSentinelStop).not.toHaveBeenCalled();
   });
@@ -280,7 +281,7 @@ describe("sentinel auto-start in foreman run", () => {
     });
 
     // Should not throw; foreman run continues normally
-    await expect(invokeRun([])).resolves.not.toThrow();
+    await expect(invokeRun(["--no-watch"])).resolves.not.toThrow();
 
     expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining("[sentinel] Failed to auto-start"),
@@ -298,7 +299,7 @@ describe("sentinel auto-start in foreman run", () => {
     mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
     mockGetSentinelConfig.mockReturnValue(customConfig);
 
-    await invokeRun([]);
+    await invokeRun(["--no-watch"]);
 
     expect(mockSentinelStart).toHaveBeenCalledWith(
       {

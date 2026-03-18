@@ -696,7 +696,6 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   // refinery.mergeCompleted() and the merge succeeds). Closing here would
   // falsely mark the bead as done even if the merge later fails with conflicts
   // or test failures. See: refinery.ts mergeCompleted() and resolveConflict().
-
   // Write finalize report
   try {
     rotateReport(worktreePath, "FINALIZE_REPORT.md");
