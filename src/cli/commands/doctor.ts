@@ -4,6 +4,7 @@ import { getRepoRoot } from "../../lib/git.js";
 import { ForemanStore } from "../../lib/store.js";
 import { Doctor } from "../../orchestrator/doctor.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { CheckResult, CheckStatus } from "../../orchestrator/types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -96,7 +97,8 @@ export const doctorCommand = new Command("doctor")
     try {
       store = ForemanStore.forProject(projectPath);
       const mq = new MergeQueue(store.getDb());
-      const doctor = new Doctor(store, projectPath, mq);
+      const taskClient = new BeadsRustClient(projectPath);
+      const doctor = new Doctor(store, projectPath, mq, undefined, taskClient);
 
       const report = await doctor.runAll({ fix, dryRun });
 

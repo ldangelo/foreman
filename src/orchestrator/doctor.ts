@@ -12,6 +12,7 @@ import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { MergeQueue, MergeQueueEntry } from "./merge-queue.js";
 import type { TmuxClient } from "../lib/tmux.js";
+import type { ITaskClient } from "../lib/task-client.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -46,15 +47,18 @@ function isSDKBasedRun(sessionKey: string | null): boolean {
 export class Doctor {
   private mergeQueue?: MergeQueue;
   private tmux?: TmuxClient;
+  private taskClient?: ITaskClient;
 
   constructor(
     private store: ForemanStore,
     private projectPath: string,
     mergeQueue?: MergeQueue,
     tmux?: TmuxClient,
+    taskClient?: ITaskClient,
   ) {
     this.mergeQueue = mergeQueue;
     this.tmux = tmux;
+    this.taskClient = taskClient;
   }
 
   // ── System checks ──────────────────────────────────────────────────
@@ -590,11 +594,45 @@ export class Doctor {
   }
 
   async checkBlockedSeeds(): Promise<CheckResult> {
-    // TRD-024: sd backend removed. br blocked detection is not yet implemented.
+    if (!this.taskClient) {
+      return {
+        name: "blocked seeds",
+        status: "skip",
+        message: "No task client configured",
+      };
+    }
+
+    let openSeeds: Awaited<ReturnType<typeof this.taskClient.list>>;
+    let readySeeds: Awaited<ReturnType<typeof this.taskClient.ready>>;
+    try {
+      [openSeeds, readySeeds] = await Promise.all([
+        this.taskClient.list({ status: "open" }),
+        this.taskClient.ready(),
+      ]);
+    } catch {
+      return {
+        name: "blocked seeds",
+        status: "warn",
+        message: "Could not list seeds (skipping check)",
+      };
+    }
+
+    const readyIds = new Set(readySeeds.map((s) => s.id));
+    const blockedSeeds = openSeeds.filter((s) => !readyIds.has(s.id));
+
+    if (blockedSeeds.length === 0) {
+      return {
+        name: "blocked seeds",
+        status: "pass",
+        message: "No blocked seeds",
+      };
+    }
+
+    const list = blockedSeeds.map((s) => `${s.id} (${s.title})`).join(", ");
     return {
       name: "blocked seeds",
-      status: "pass",
-      message: "Blocked-seed check not yet implemented for br backend. Use 'br list --status=open' to inspect manually.",
+      status: "warn",
+      message: `${blockedSeeds.length} blocked seed(s): ${list}`,
     };
   }
 
