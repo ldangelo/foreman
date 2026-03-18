@@ -5,6 +5,7 @@
  * - Doctor checks for br binary and bv binary (and git)
  * - Doctor does NOT check for the legacy sd (seeds) binary
  * - checkSystem() returns exactly 3 results (br + bv + git)
+ * - Doctor.checkBrRecoveryArtifacts(): detects and optionally removes .br_recovery/ artifacts
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -13,10 +14,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
-const { mockAccess, mockStat } = vi.hoisted(() => {
+const { mockAccess, mockStat, mockRm } = vi.hoisted(() => {
   const mockAccess = vi.fn().mockResolvedValue(undefined);
   const mockStat = vi.fn().mockResolvedValue({});
-  return { mockAccess, mockStat };
+  const mockRm = vi.fn().mockResolvedValue(undefined);
+  return { mockAccess, mockStat, mockRm };
 });
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -25,6 +27,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     ...actual,
     access: mockAccess,
     stat: mockStat,
+    rm: mockRm,
   };
 });
 
@@ -319,6 +322,214 @@ describe("TRD-020: Doctor.checkSystem() checks (br backend only)", () => {
     const results = await doctor.checkSystem();
 
     expect(results).toHaveLength(3);
+    store.close();
+  });
+});
+
+// ── Unit tests: Doctor.checkBrRecoveryArtifacts() ─────────────────────────
+
+describe("Doctor.checkBrRecoveryArtifacts()", () => {
+  const tempDirs: string[] = [];
+
+  function makeTempDir(): string {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-doctor-recovery-")));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    for (const dir of tempDirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    tempDirs.length = 0;
+  });
+
+  it("returns pass when .br_recovery/ does not exist", async () => {
+    const { Doctor } = await import("../../orchestrator/doctor.js");
+    const { ForemanStore } = await import("../../lib/store.js");
+
+    const tmp = makeTempDir();
+    const tmpDb = join(tmp, "test.db");
+    const store = new ForemanStore(tmpDb);
+    const doctor = new Doctor(store, tmp);
+
+    // stat throws ENOENT — directory does not exist
+    mockStat.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+
+    const result = await doctor.checkBrRecoveryArtifacts();
+
+    expect(result.status).toBe("pass");
+    expect(result.message).toContain("No stale recovery artifacts");
+
+    store.close();
+  });
+
+  it("returns warn when .br_recovery/ exists (no flags)", async () => {
+    const { Doctor } = await import("../../orchestrator/doctor.js");
+    const { ForemanStore } = await import("../../lib/store.js");
+
+    const tmp = makeTempDir();
+    const tmpDb = join(tmp, "test.db");
+    const store = new ForemanStore(tmpDb);
+    const doctor = new Doctor(store, tmp);
+
+    // stat resolves — directory exists
+    mockStat.mockResolvedValueOnce({});
+
+    const result = await doctor.checkBrRecoveryArtifacts();
+
+    expect(result.status).toBe("warn");
+    expect(result.name).toContain(".br_recovery");
+    expect(result.message).toContain(".br_recovery/");
+
+    store.close();
+  });
+
+  it("returns warn (dry-run) when .br_recovery/ exists with dryRun=true", async () => {
+    const { Doctor } = await import("../../orchestrator/doctor.js");
+    const { ForemanStore } = await import("../../lib/store.js");
+
+    const tmp = makeTempDir();
+    const tmpDb = join(tmp, "test.db");
+    const store = new ForemanStore(tmpDb);
+    const doctor = new Doctor(store, tmp);
+
+    mockStat.mockResolvedValueOnce({});
+
+    const result = await doctor.checkBrRecoveryArtifacts({ dryRun: true });
+
+    expect(result.status).toBe("warn");
+    expect(result.message).toContain("dry-run");
+    expect(mockRm).not.toHaveBeenCalled();
+
+    store.close();
+  });
+
+  it("returns fixed and calls rm when .br_recovery/ exists with fix=true", async () => {
+    const { Doctor } = await import("../../orchestrator/doctor.js");
+    const { ForemanStore } = await import("../../lib/store.js");
+
+    const tmp = makeTempDir();
+    const tmpDb = join(tmp, "test.db");
+    const store = new ForemanStore(tmpDb);
+    const doctor = new Doctor(store, tmp);
+
+    mockStat.mockResolvedValueOnce({});
+    mockRm.mockResolvedValueOnce(undefined);
+
+    const result = await doctor.checkBrRecoveryArtifacts({ fix: true });
+
+    expect(result.status).toBe("fixed");
+    expect(result.fixApplied).toBeDefined();
+    expect(result.fixApplied).toContain(".br_recovery");
+    expect(mockRm).toHaveBeenCalledWith(
+      expect.stringContaining(".br_recovery"),
+      { recursive: true, force: true },
+    );
+
+    store.close();
+  });
+
+  it("returns warn when fix=true but rm throws an error", async () => {
+    const { Doctor } = await import("../../orchestrator/doctor.js");
+    const { ForemanStore } = await import("../../lib/store.js");
+
+    const tmp = makeTempDir();
+    const tmpDb = join(tmp, "test.db");
+    const store = new ForemanStore(tmpDb);
+    const doctor = new Doctor(store, tmp);
+
+    mockStat.mockResolvedValueOnce({});
+    mockRm.mockRejectedValueOnce(new Error("EPERM: operation not permitted"));
+
+    const result = await doctor.checkBrRecoveryArtifacts({ fix: true });
+
+    expect(result.status).toBe("warn");
+    expect(result.message).toContain("could not auto-remove");
+
+    store.close();
+  });
+
+  it("dryRun takes precedence over fix when both are true (no rm called, returns warn)", async () => {
+    const { Doctor } = await import("../../orchestrator/doctor.js");
+    const { ForemanStore } = await import("../../lib/store.js");
+
+    const tmp = makeTempDir();
+    const tmpDb = join(tmp, "test.db");
+    const store = new ForemanStore(tmpDb);
+    const doctor = new Doctor(store, tmp);
+
+    mockStat.mockResolvedValueOnce({});
+
+    // Both fix and dryRun are true — dryRun must win
+    const result = await doctor.checkBrRecoveryArtifacts({ fix: true, dryRun: true });
+
+    expect(result.status).toBe("warn");
+    expect(result.message).toContain("dry-run");
+    expect(mockRm).not.toHaveBeenCalled();
+
+    store.close();
+  });
+
+  it("warn message (no flags) tells user to use --fix or run br doctor --repair", async () => {
+    const { Doctor } = await import("../../orchestrator/doctor.js");
+    const { ForemanStore } = await import("../../lib/store.js");
+
+    const tmp = makeTempDir();
+    const tmpDb = join(tmp, "test.db");
+    const store = new ForemanStore(tmpDb);
+    const doctor = new Doctor(store, tmp);
+
+    mockStat.mockResolvedValueOnce({});
+
+    const result = await doctor.checkBrRecoveryArtifacts();
+
+    expect(result.status).toBe("warn");
+    // Message should guide users to either --fix (if recovery succeeded) or br doctor --repair (to retry)
+    expect(result.message).toMatch(/--fix/);
+    expect(result.message).toMatch(/br doctor --repair/);
+
+    store.close();
+  });
+
+  it("checkBrRecoveryArtifacts result name contains '.br_recovery'", async () => {
+    const { Doctor } = await import("../../orchestrator/doctor.js");
+    const { ForemanStore } = await import("../../lib/store.js");
+
+    const tmp = makeTempDir();
+    const tmpDb = join(tmp, "test.db");
+    const store = new ForemanStore(tmpDb);
+    const doctor = new Doctor(store, tmp);
+
+    mockStat.mockResolvedValueOnce({});
+
+    const result = await doctor.checkBrRecoveryArtifacts();
+
+    expect(result.name).toContain(".br_recovery");
+
+    store.close();
+  });
+
+  it("checkDataIntegrity() includes br recovery artifacts check", async () => {
+    const { Doctor } = await import("../../orchestrator/doctor.js");
+    const { ForemanStore } = await import("../../lib/store.js");
+
+    const tmp = makeTempDir();
+    const tmpDb = join(tmp, "test.db");
+    const store = new ForemanStore(tmpDb);
+    store.registerProject("test", tmp);
+    const doctor = new Doctor(store, tmp);
+
+    // Allow all stat/access calls to succeed or ENOENT as needed
+    mockStat.mockResolvedValue({});
+    mockAccess.mockResolvedValue(undefined);
+
+    const results = await doctor.checkDataIntegrity();
+    const names = results.map((r) => r.name);
+
+    expect(names.some((n) => n.includes(".br_recovery"))).toBe(true);
+
     store.close();
   });
 });

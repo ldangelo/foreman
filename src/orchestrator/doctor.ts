@@ -1,4 +1,4 @@
-import { access, stat } from "node:fs/promises";
+import { access, stat, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -531,6 +531,57 @@ export class Doctor {
     return results;
   }
 
+  async checkBrRecoveryArtifacts(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
+    // br doctor --repair creates .br_recovery/ at the project root as a sibling to .beads/
+    // It should be removed after successful recovery; stale artifacts indicate incomplete recovery.
+    // NOTE: verify this path matches beads_rust behavior — it may also appear at .beads/.br_recovery/
+    const recoveryPath = join(this.projectPath, ".br_recovery");
+    try {
+      await stat(recoveryPath);
+      // Directory exists — stale recovery artifacts
+      // dryRun takes precedence over fix
+      if (dryRun) {
+        return {
+          name: "br recovery artifacts (.br_recovery/)",
+          status: "warn",
+          message: `.br_recovery/ directory exists — stale artifacts from incomplete recovery. Would remove (dry-run).`,
+        };
+      }
+      if (fix) {
+        try {
+          await rm(recoveryPath, { recursive: true, force: true });
+          return {
+            name: "br recovery artifacts (.br_recovery/)",
+            status: "fixed",
+            message: "Stale .br_recovery/ directory from incomplete recovery",
+            fixApplied: `Removed ${recoveryPath}`,
+          };
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            name: "br recovery artifacts (.br_recovery/)",
+            status: "warn",
+            message: `.br_recovery/ exists but could not auto-remove: ${msg}`,
+          };
+        }
+      }
+      return {
+        name: "br recovery artifacts (.br_recovery/)",
+        status: "warn",
+        message: `.br_recovery/ directory exists — stale artifacts detected. If recovery completed successfully, use --fix to remove stale artifacts; otherwise run 'br doctor --repair' to retry.`,
+      };
+    } catch {
+      // Directory does not exist — no stale artifacts
+      return {
+        name: "br recovery artifacts (.br_recovery/)",
+        status: "pass",
+        message: "No stale recovery artifacts found",
+      };
+    }
+  }
+
   async checkBlockedSeeds(): Promise<CheckResult> {
     // TRD-024: sd backend removed. br blocked detection is not yet implemented.
     return {
@@ -925,7 +976,7 @@ export class Doctor {
   async checkDataIntegrity(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
 
-    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult] =
+    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult] =
       await Promise.all([
         this.checkOrphanedWorktrees(opts),
         this.checkZombieRuns(opts),
@@ -933,9 +984,10 @@ export class Doctor {
         this.checkFailedStuckRuns(),
         this.checkRunStateConsistency(opts),
         this.checkBlockedSeeds(),
+        this.checkBrRecoveryArtifacts(opts),
       ]);
 
-    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult);
+    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult, recoveryResult);
 
     // Merge queue checks (only when merge queue is configured)
     if (this.mergeQueue) {
