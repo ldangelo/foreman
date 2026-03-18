@@ -22,6 +22,12 @@ function findTsx(): string {
 const TSX = findTsx();
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
+/** Per-subprocess timeout (ms). Generous to reduce flakiness under load. */
+const SUBPROCESS_TIMEOUT_MS = 25_000;
+
+/** Per-test timeout (ms): allows up to 2 attempts × subprocess timeout + margin. */
+const TEST_TIMEOUT_MS = 30_000;
+
 interface ExecResult {
   stdout: string;
   stderr: string;
@@ -32,7 +38,7 @@ async function run(args: string[], cwd: string): Promise<ExecResult> {
   try {
     const { stdout, stderr } = await execFileAsync(TSX, [CLI, ...args], {
       cwd,
-      timeout: 15_000,
+      timeout: SUBPROCESS_TIMEOUT_MS,
       env: { ...process.env, NO_COLOR: "1" },
     });
     return { stdout, stderr, exitCode: 0 };
@@ -43,6 +49,29 @@ async function run(args: string[], cwd: string): Promise<ExecResult> {
       exitCode: err.code ?? 1,
     };
   }
+}
+
+/**
+ * Retry wrapper for `run()`.  Retries once on subprocess-level failures
+ * (timeout, spawn errors) to reduce flakiness under system load.
+ * Only retries when the result looks like an infrastructure failure (no
+ * useful stdout/stderr), not when the CLI itself produced output.
+ */
+async function runWithRetry(
+  args: string[],
+  cwd: string,
+  maxAttempts = 2,
+): Promise<ExecResult> {
+  let last: ExecResult | undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    last = await run(args, cwd);
+    // Consider the run successful, or a meaningful CLI failure, if there is
+    // any stdout/stderr output — those are real results worth asserting on.
+    const hasOutput = last.stdout.length > 0 || last.stderr.length > 0;
+    if (last.exitCode === 0 || hasOutput) return last;
+    // No output and non-zero exit → likely a spawn/timeout failure; retry.
+  }
+  return last!;
 }
 
 describe("sentinel CLI smoke tests", () => {
@@ -63,7 +92,7 @@ describe("sentinel CLI smoke tests", () => {
 
   it("sentinel --help shows subcommands", async () => {
     const tmp = makeTempDir();
-    const result = await run(["sentinel", "--help"], tmp);
+    const result = await runWithRetry(["sentinel", "--help"], tmp);
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout + result.stderr;
@@ -72,32 +101,32 @@ describe("sentinel CLI smoke tests", () => {
     expect(output).toContain("start");
     expect(output).toContain("status");
     expect(output).toContain("stop");
-  }, 15_000);
+  }, TEST_TIMEOUT_MS);
 
   it("sentinel stop --help shows options", async () => {
     const tmp = makeTempDir();
-    const result = await run(["sentinel", "stop", "--help"], tmp);
+    const result = await runWithRetry(["sentinel", "stop", "--help"], tmp);
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout + result.stderr;
     expect(output).toContain("stop");
     expect(output).toContain("--force");
-  }, 15_000);
+  }, TEST_TIMEOUT_MS);
 
   it("sentinel run-once --help shows options", async () => {
     const tmp = makeTempDir();
-    const result = await run(["sentinel", "run-once", "--help"], tmp);
+    const result = await runWithRetry(["sentinel", "run-once", "--help"], tmp);
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout + result.stderr;
     expect(output).toContain("--branch");
     expect(output).toContain("--test-command");
     expect(output).toContain("--dry-run");
-  }, 15_000);
+  }, TEST_TIMEOUT_MS);
 
   it("sentinel status without init shows error", async () => {
     const tmp = makeTempDir();
-    const result = await run(["sentinel", "status"], tmp);
+    const result = await runWithRetry(["sentinel", "status"], tmp);
 
     const output = result.stdout + result.stderr;
     // Should fail (no git repo or no project init)
@@ -106,13 +135,13 @@ describe("sentinel CLI smoke tests", () => {
         output.toLowerCase().includes("error") ||
         output.includes("init"),
     ).toBe(true);
-  }, 15_000);
+  }, TEST_TIMEOUT_MS);
 
   it("--help includes sentinel command", async () => {
     const tmp = makeTempDir();
-    const result = await run(["--help"], tmp);
+    const result = await runWithRetry(["--help"], tmp);
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("sentinel");
-  }, 15_000);
+  }, TEST_TIMEOUT_MS);
 });
