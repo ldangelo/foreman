@@ -27,6 +27,7 @@ const {
   mockGetProjectByPath,
   mockGetRunsByStatuses,
   mockGetDb,
+  mockGetSentinelConfig,
   MockForemanStore,
   mockWatchRunsInk,
   mockMergeQueueReconcile,
@@ -52,12 +53,14 @@ const {
   const mockGetProjectByPath = vi.fn().mockReturnValue(null);
   const mockGetRunsByStatuses = vi.fn().mockReturnValue([]);
   const mockGetDb = vi.fn().mockReturnValue({});
+  const mockGetSentinelConfig = vi.fn().mockReturnValue(null);
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
     this.close = vi.fn();
     this.getActiveRuns = mockGetActiveRuns;
     this.getProjectByPath = mockGetProjectByPath;
     this.getRunsByStatuses = mockGetRunsByStatuses;
     this.getDb = mockGetDb;
+    this.getSentinelConfig = mockGetSentinelConfig;
   });
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
@@ -92,6 +95,7 @@ const {
     mockGetProjectByPath,
     mockGetRunsByStatuses,
     mockGetDb,
+    mockGetSentinelConfig,
     MockForemanStore,
     mockWatchRunsInk,
     mockMergeQueueReconcile,
@@ -122,6 +126,17 @@ vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }
 vi.mock("../watch-ui.js", () => ({ watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args) }));
 vi.mock("../../orchestrator/merge-queue.js", () => ({ MergeQueue: MockMergeQueue }));
 vi.mock("../../orchestrator/refinery.js", () => ({ Refinery: MockRefinery }));
+// Prevent real SentinelAgent from spawning subprocesses if a future test enables
+// sentinel config. Currently safe because mockGetSentinelConfig returns null by
+// default, but the guard makes future test authors safe too.
+vi.mock("../../orchestrator/sentinel.js", () => ({
+  SentinelAgent: vi.fn(function (this: Record<string, unknown>) {
+    this.start = vi.fn();
+    this.stop = vi.fn();
+    this.isRunning = vi.fn().mockReturnValue(false);
+    this.runOnce = vi.fn().mockResolvedValue({ id: "mock-run", status: "passed", commitHash: null, output: "", durationMs: 0 });
+  }),
+}));
 
 import { runCommand, autoMerge, type AutoMergeOpts } from "../commands/run.js";
 
@@ -151,6 +166,7 @@ function resetMocks(): void {
     this.getProjectByPath = mockGetProjectByPath;
     this.getRunsByStatuses = mockGetRunsByStatuses;
     this.getDb = mockGetDb;
+    this.getSentinelConfig = mockGetSentinelConfig;
   });
   MockMergeQueue.mockImplementation(function (this: Record<string, unknown>) {
     this.reconcile = mockMergeQueueReconcile;
@@ -166,6 +182,7 @@ function resetMocks(): void {
   mockGetProjectByPath.mockReturnValue(null);
   mockGetRunsByStatuses.mockReturnValue([]);
   mockGetDb.mockReturnValue({});
+  mockGetSentinelConfig.mockReturnValue(null);
   mockMergeQueueReconcile.mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
   mockMergeQueueDequeue.mockReturnValue(null);
   mockMergeQueueUpdateStatus.mockReturnValue(undefined);

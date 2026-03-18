@@ -19,6 +19,8 @@ const {
   MockDispatcher,
   mockGetActiveRuns,
   mockGetProjectByPath,
+  mockGetRunsByStatuses,
+  mockGetSentinelConfig,
   MockForemanStore,
   mockWatchRunsInk,
 } = vi.hoisted(() => {
@@ -36,10 +38,14 @@ const {
 
   const mockGetActiveRuns = vi.fn().mockReturnValue([]);
   const mockGetProjectByPath = vi.fn().mockReturnValue(null);
+  const mockGetRunsByStatuses = vi.fn().mockReturnValue([]);
+  const mockGetSentinelConfig = vi.fn().mockReturnValue(null);
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
     this.close = vi.fn();
     this.getActiveRuns = mockGetActiveRuns;
     this.getProjectByPath = mockGetProjectByPath;
+    this.getRunsByStatuses = mockGetRunsByStatuses;
+    this.getSentinelConfig = mockGetSentinelConfig;
   });
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
@@ -53,6 +59,8 @@ const {
     MockDispatcher,
     mockGetActiveRuns,
     mockGetProjectByPath,
+    mockGetRunsByStatuses,
+    mockGetSentinelConfig,
     MockForemanStore,
     mockWatchRunsInk,
   };
@@ -72,6 +80,17 @@ vi.mock("../../orchestrator/notification-server.js", () => ({
 }));
 vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }));
 vi.mock("../watch-ui.js", () => ({ watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args) }));
+// Prevent real SentinelAgent from spawning subprocesses if a future test enables
+// sentinel config. Currently safe because mockGetSentinelConfig returns null by
+// default, but the guard makes future test authors safe too.
+vi.mock("../../orchestrator/sentinel.js", () => ({
+  SentinelAgent: vi.fn(function (this: Record<string, unknown>) {
+    this.start = vi.fn();
+    this.stop = vi.fn();
+    this.isRunning = vi.fn().mockReturnValue(false);
+    this.runOnce = vi.fn().mockResolvedValue({ id: "mock-run", status: "passed", commitHash: null, output: "", durationMs: 0 });
+  }),
+}));
 
 // ── Module under test ─────────────────────────────────────────────────────────
 import { runCommand } from "../commands/run.js";
@@ -104,10 +123,14 @@ describe("auto-dispatch: passes callback to watchRunsInk", () => {
       this.close = vi.fn();
       this.getActiveRuns = mockGetActiveRuns;
       this.getProjectByPath = mockGetProjectByPath;
+      this.getRunsByStatuses = mockGetRunsByStatuses;
+      this.getSentinelConfig = mockGetSentinelConfig;
     });
     mockWatchRunsInk.mockResolvedValue({ detached: false });
     mockGetActiveRuns.mockReturnValue([]);
     mockGetProjectByPath.mockReturnValue(null);
+    mockGetRunsByStatuses.mockReturnValue([]);
+    mockGetSentinelConfig.mockReturnValue(null);
   });
 
   afterEach(() => {

@@ -22,8 +22,14 @@ function findTsx(): string {
 const TSX = findTsx();
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
-/** Per-subprocess timeout (ms). Generous to reduce flakiness under load. */
-const SUBPROCESS_TIMEOUT_MS = 25_000;
+/**
+ * Per-subprocess timeout (ms).
+ * Kept well under half of TEST_TIMEOUT_MS so that two attempts (the maximum
+ * retry count in runWithRetry) fit comfortably within the per-test budget.
+ * --help subcommands complete in milliseconds; 12s is still generous for a
+ * slow CI machine while leaving 6s of headroom for a second attempt.
+ */
+const SUBPROCESS_TIMEOUT_MS = 12_000;
 
 /** Per-test timeout (ms): allows up to 2 attempts × subprocess timeout + margin. */
 const TEST_TIMEOUT_MS = 30_000;
