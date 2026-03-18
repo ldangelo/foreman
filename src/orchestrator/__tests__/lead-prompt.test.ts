@@ -39,7 +39,7 @@ describe("leadPrompt", () => {
     expect(prompt).toContain("tsc --noEmit");
     expect(prompt).toContain("git commit");
     expect(prompt).toContain("git push");
-    expect(prompt).toContain("sd close");
+    expect(prompt).toContain("br close");
   });
 
   it("includes max retry guidance", () => {
