@@ -222,6 +222,9 @@ export class Doctor {
       );
       const completedRun = runs.find((r: Run) => r.status === "completed");
       const mergedRun = runs.find((r: Run) => r.status === "merged");
+      const failableRun = runs.find((r: Run) =>
+        (["failed", "stuck", "conflict", "test-failed"] as Run["status"][]).includes(r.status),
+      );
 
       if (activeRun) {
         results.push({
@@ -267,6 +270,17 @@ export class Doctor {
           name: `worktree: ${seedId}`,
           status: "warn",
           message: `Needs merge. Run: foreman merge --seed ${seedId}`,
+        });
+      } else if (failableRun) {
+        const hint = failableRun.status === "failed" || failableRun.status === "test-failed"
+          ? "use 'foreman reset' to retry"
+          : failableRun.status === "stuck"
+            ? "use 'foreman reset' to recover"
+            : "resolve merge conflict manually";
+        results.push({
+          name: `worktree: ${seedId}`,
+          status: "warn",
+          message: `Run in '${failableRun.status}' state — ${hint}`,
         });
       } else {
         if (dryRun) {
