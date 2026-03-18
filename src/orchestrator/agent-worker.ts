@@ -11,7 +11,7 @@
 
 import { readFileSync, writeFileSync, unlinkSync, existsSync, renameSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { execFileSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -32,6 +32,8 @@ import {
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import { resetSeedToOpen, addLabelsToBead } from "./task-backend-ops.js";
+import { writeSessionLog } from "./session-log.js";
+import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
@@ -742,15 +744,29 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   log(`Pipeline starting for ${seedId} [phases: ${config.skipExplore ? "skip-explore" : "explore"} → dev → qa → ${config.skipReview ? "skip-review" : "review"} → finalize]`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n`);
 
+  // Accumulate phase records for the session log written at pipeline completion.
+  // /ensemble:sessionlog is a human-only Claude Code skill (not reachable from
+  // SDK query()), so the pipeline generates the session log directly from this data.
+  const phaseRecords: PhaseRecord[] = [];
+
   // ── Phase 1: Explorer ──────────────────────────────────────────────
   if (!config.skipExplore) {
     const explorerArtifact = join(worktreePath, "EXPLORER_REPORT.md");
     if (existsSync(explorerArtifact)) {
       log(`[EXPLORER] Skipping — EXPLORER_REPORT.md already exists (resuming from previous run)`);
       await appendFile(logFile, `\n[PHASE: EXPLORER] SKIPPED (artifact already present)\n`);
+      phaseRecords.push({ name: "explorer", skipped: true });
     } else {
       rotateReport(worktreePath, "EXPLORER_REPORT.md");
       const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description), config, progress, logFile, store, notifyClient);
+      phaseRecords.push({
+        name: "explorer",
+        skipped: false,
+        success: result.success,
+        costUsd: result.costUsd,
+        turns: result.turns,
+        error: result.error,
+      });
       if (!result.success) {
         await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed", notifyClient, config.projectPath);
         return;
@@ -758,6 +774,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
       addLabelsToBead(seedId, ["phase:explorer"], config.projectPath);
     }
+  } else {
+    phaseRecords.push({ name: "explorer", skipped: true });
   }
 
   const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
@@ -774,6 +792,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     if (developerAlreadyDone) {
       log(`[DEVELOPER] Skipping — DEVELOPER_REPORT.md already exists (resuming from previous run)`);
       await appendFile(logFile, `\n[PHASE: DEVELOPER] SKIPPED (artifact already present)\n`);
+      phaseRecords.push({ name: "developer", skipped: true });
     } else {
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
       const devResult = await runPhase(
@@ -781,6 +800,14 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext),
         config, progress, logFile, store, notifyClient,
       );
+      phaseRecords.push({
+        name: devRetries === 0 ? "developer" : `developer (retry ${devRetries})`,
+        skipped: false,
+        success: devResult.success,
+        costUsd: devResult.costUsd,
+        turns: devResult.turns,
+        error: devResult.error,
+      });
       if (!devResult.success) {
         await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed", notifyClient, config.projectPath);
         return;
@@ -795,9 +822,18 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     if (qaAlreadyDone) {
       log(`[QA] Skipping — QA_REPORT.md already exists (resuming from previous run)`);
       await appendFile(logFile, `\n[PHASE: QA] SKIPPED (artifact already present)\n`);
+      phaseRecords.push({ name: "qa", skipped: true });
     } else {
       rotateReport(worktreePath, "QA_REPORT.md");
       const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
+      phaseRecords.push({
+        name: devRetries === 0 ? "qa" : `qa (retry ${devRetries})`,
+        skipped: false,
+        success: qaResult.success,
+        costUsd: qaResult.costUsd,
+        turns: qaResult.turns,
+        error: qaResult.error,
+      });
       if (!qaResult.success) {
         await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed", notifyClient, config.projectPath);
         return;
@@ -833,9 +869,18 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     if (reviewerAlreadyDone) {
       log(`[REVIEWER] Skipping — REVIEW.md already exists (resuming from previous run)`);
       await appendFile(logFile, `\n[PHASE: REVIEWER] SKIPPED (artifact already present)\n`);
+      phaseRecords.push({ name: "reviewer", skipped: true });
     } else {
       rotateReport(worktreePath, "REVIEW.md");
       const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description), config, progress, logFile, store, notifyClient);
+      phaseRecords.push({
+        name: "reviewer",
+        skipped: false,
+        success: reviewResult.success,
+        costUsd: reviewResult.costUsd,
+        turns: reviewResult.turns,
+        error: reviewResult.error,
+      });
       if (!reviewResult.success) {
         await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed", notifyClient, config.projectPath);
         return;
@@ -863,12 +908,28 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback),
         config, progress, logFile, store, notifyClient,
       );
+      phaseRecords.push({
+        name: `developer (review-feedback)`,
+        skipped: false,
+        success: devResult.success,
+        costUsd: devResult.costUsd,
+        turns: devResult.turns,
+        error: devResult.error,
+      });
       if (devResult.success) {
         store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
         addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
 
         rotateReport(worktreePath, "QA_REPORT.md");
         const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
+        phaseRecords.push({
+          name: `qa (review-feedback)`,
+          skipped: false,
+          success: qaResult.success,
+          costUsd: qaResult.costUsd,
+          turns: qaResult.turns,
+          error: qaResult.error,
+        });
         if (qaResult.success) {
           store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
           addLabelsToBead(seedId, ["phase:qa"], config.projectPath);
@@ -879,6 +940,39 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     } else {
       log(`[REVIEW] Verdict: ${reviewVerdict} (no actionable issues)`);
     }
+  } else {
+    phaseRecords.push({ name: "reviewer", skipped: true });
+  }
+
+  // ── Session log ────────────────────────────────────────────────────
+  // Write before finalize() so `git add -A` picks it up and commits it.
+  // This replaces /ensemble:sessionlog which is only available in interactive
+  // Claude Code (not reachable from the SDK's query() method).
+  try {
+    const sessionLogData: SessionLogData = {
+      seedId,
+      seedTitle,
+      seedDescription: description,
+      branchName: `foreman/${seedId}`,
+      // Foreman worktrees live at <project>/.foreman-worktrees/<seed-id>/,
+      // so ascending two levels from the worktree path reaches the project root
+      // when config.projectPath is not explicitly set.
+      projectName: basename(config.projectPath ?? join(worktreePath, "..", "..")),
+      phases: phaseRecords,
+      totalCostUsd: progress.costUsd,
+      totalTurns: progress.turns,
+      filesChanged: progress.filesChanged,
+      devRetries,
+      qaVerdict,
+    };
+    const sessionLogPath = await writeSessionLog(worktreePath, sessionLogData);
+    log(`[SESSION LOG] Written: ${sessionLogPath}`);
+    await appendFile(logFile, `[SESSION LOG] Written: ${sessionLogPath}\n`);
+  } catch (err: unknown) {
+    // Non-fatal — session log failure must not block finalization
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[SESSION LOG] Failed to write (non-fatal): ${msg}`);
+    await appendFile(logFile, `[SESSION LOG] Write failed (non-fatal): ${msg}\n`);
   }
 
   // ── Phase 5: Finalize ──────────────────────────────────────────────
