@@ -131,7 +131,7 @@ export class Doctor {
   // ── Repository checks ──────────────────────────────────────────────
 
   async checkDatabaseFile(): Promise<CheckResult> {
-    const dbPath = join(homedir(), ".foreman", "foreman.db");
+    const dbPath = join(this.projectPath, ".foreman", "foreman.db");
     try {
       await stat(dbPath);
       return {

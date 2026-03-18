@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { Doctor } from "../doctor.js";
 import type { Run } from "../../lib/store.js";
 
@@ -236,6 +239,51 @@ describe("Doctor", () => {
       const results = await doctor.checkRunStateConsistency();
 
       expect(results).toHaveLength(0);
+    });
+  });
+
+  describe("checkDatabaseFile", () => {
+    it("returns warn when database file does not exist", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-test-"));
+      try {
+        const { doctor } = makeMocks(tmpDir);
+        const result = await doctor.checkDatabaseFile();
+        expect(result.name).toBe("foreman database");
+        expect(result.status).toBe("warn");
+        expect(result.message).toContain(tmpDir);
+        expect(result.message).toContain("foreman.db");
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("returns pass when database file exists", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-test-"));
+      try {
+        const foremanDir = join(tmpDir, ".foreman");
+        await mkdir(foremanDir, { recursive: true });
+        await writeFile(join(foremanDir, "foreman.db"), "");
+        const { doctor } = makeMocks(tmpDir);
+        const result = await doctor.checkDatabaseFile();
+        expect(result.name).toBe("foreman database");
+        expect(result.status).toBe("pass");
+        expect(result.message).toContain(tmpDir);
+        expect(result.message).toContain("foreman.db");
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("checks project-local path, not global ~/.foreman/foreman.db", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-test-"));
+      try {
+        const { doctor } = makeMocks(tmpDir);
+        const result = await doctor.checkDatabaseFile();
+        // The message should reference the project path, not the home directory
+        expect(result.message).toContain(tmpDir);
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
     });
   });
 
