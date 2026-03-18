@@ -3,6 +3,7 @@ import chalk from "chalk";
 import { getRepoRoot } from "../../lib/git.js";
 import { ForemanStore } from "../../lib/store.js";
 import { Doctor } from "../../orchestrator/doctor.js";
+import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { CheckResult, CheckStatus } from "../../orchestrator/types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -33,6 +34,9 @@ function printCheck(result: CheckResult): void {
   console.log(`  ${icon(result.status)} ${nameCol} ${label(result.status)}`);
   if (result.status !== "pass") {
     console.log(`      ${chalk.dim(result.message)}`);
+  }
+  if (result.details) {
+    console.log(`      ${chalk.dim(result.details)}`);
   }
   if (result.fixApplied) {
     console.log(`      ${chalk.cyan("→ " + result.fixApplied)}`);
@@ -91,7 +95,8 @@ export const doctorCommand = new Command("doctor")
     let store: ForemanStore | null = null;
     try {
       store = ForemanStore.forProject(projectPath);
-      const doctor = new Doctor(store, projectPath);
+      const mq = new MergeQueue(store.getDb());
+      const doctor = new Doctor(store, projectPath, mq);
 
       const report = await doctor.runAll({ fix, dryRun });
 

@@ -50,6 +50,89 @@ describe("Reconcile detects missing entries", () => {
   });
 });
 
+// ── Test 1b: missingFromQueue detection ────────────────────────────
+
+describe("missingFromQueue detects completed runs not in queue", () => {
+  let db: Database.Database;
+  let mq: MergeQueue;
+  beforeEach(() => { db = mkDb(); mq = new MergeQueue(db); });
+  afterEach(() => { db.close(); });
+
+  it("returns empty array when no completed runs exist", () => {
+    expect(mq.missingFromQueue()).toHaveLength(0);
+  });
+
+  it("returns empty array when all completed runs are already queued", () => {
+    addRun(db, "r1", "s1", "completed");
+    mq.enqueue({ branchName: "foreman/s1", seedId: "s1", runId: "r1" });
+    expect(mq.missingFromQueue()).toHaveLength(0);
+  });
+
+  it("returns completed runs that are not in the merge queue", () => {
+    addRun(db, "r1", "s1", "completed");
+    addRun(db, "r2", "s2", "completed");
+    const missing = mq.missingFromQueue();
+    expect(missing).toHaveLength(2);
+    expect(missing.map((r) => r.seed_id).sort()).toEqual(["s1", "s2"]);
+    expect(missing[0]).toHaveProperty("run_id");
+  });
+
+  it("does not include runs in non-completed statuses", () => {
+    addRun(db, "r1", "s1", "running");
+    addRun(db, "r2", "s2", "failed");
+    addRun(db, "r3", "s3", "merged");
+    expect(mq.missingFromQueue()).toHaveLength(0);
+  });
+
+  it("does not include completed run already queued but includes unqueued one", () => {
+    addRun(db, "r1", "s1", "completed");
+    addRun(db, "r2", "s2", "completed");
+    mq.enqueue({ branchName: "foreman/s1", seedId: "s1", runId: "r1" });
+    const missing = mq.missingFromQueue();
+    expect(missing).toHaveLength(1);
+    expect(missing[0].seed_id).toBe("s2");
+  });
+});
+
+// ── Test 1c: Reconcile invalid branch reporting ─────────────────────
+
+describe("Reconcile reports invalid branches in failedToEnqueue", () => {
+  let db: Database.Database;
+  let mq: MergeQueue;
+  beforeEach(() => { db = mkDb(); mq = new MergeQueue(db); });
+  afterEach(() => { db.close(); });
+
+  it("populates failedToEnqueue when branch does not exist", async () => {
+    addRun(db, "r1", "s1", "completed");
+    const mockFail = vi.fn().mockRejectedValue(new Error("fatal: not a valid branch"));
+    const r = await mq.reconcile(db, "/tmp", mockFail);
+    expect(r.invalidBranch).toBe(1);
+    expect(r.enqueued).toBe(0);
+    expect(r.failedToEnqueue).toHaveLength(1);
+    expect(r.failedToEnqueue[0].seed_id).toBe("s1");
+    expect(r.failedToEnqueue[0].run_id).toBe("r1");
+    expect(r.failedToEnqueue[0].reason).toContain("foreman/s1");
+  });
+
+  it("returns empty failedToEnqueue when all branches exist", async () => {
+    addRun(db, "r1", "s1", "completed");
+    const r = await mq.reconcile(db, "/tmp", mockGit());
+    expect(r.failedToEnqueue).toHaveLength(0);
+    expect(r.enqueued).toBe(1);
+  });
+
+  it("reports multiple failed branches separately", async () => {
+    addRun(db, "r1", "s1", "completed");
+    addRun(db, "r2", "s2", "completed");
+    const mockFail = vi.fn().mockRejectedValue(new Error("fatal: not a valid branch"));
+    const r = await mq.reconcile(db, "/tmp", mockFail);
+    expect(r.invalidBranch).toBe(2);
+    expect(r.failedToEnqueue).toHaveLength(2);
+    const seedIds = r.failedToEnqueue.map((f) => f.seed_id).sort();
+    expect(seedIds).toEqual(["s1", "s2"]);
+  });
+});
+
 // ── Test 2: FIFO Dequeue ────────────────────────────────────────────
 
 describe("Dequeue processes in FIFO order", () => {

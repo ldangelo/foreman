@@ -44,10 +44,16 @@ interface EnqueueInput {
   filesModified?: string[];
 }
 
-interface ReconcileResult {
+export interface MissingFromQueueEntry {
+  run_id: string;
+  seed_id: string;
+}
+
+export interface ReconcileResult {
   enqueued: number;
   skipped: number;
   invalidBranch: number;
+  failedToEnqueue: Array<{ run_id: string; seed_id: string; reason: string }>;
 }
 
 /** Signature for an injected execFile-style async function. */
@@ -251,6 +257,23 @@ export class MergeQueue {
   }
 
   /**
+   * Return completed runs that are NOT present in the merge queue.
+   * Used to detect runs that completed but were never enqueued (e.g. due to
+   * missing branches, reconciliation failures, or system crashes).
+   */
+  missingFromQueue(): MissingFromQueueEntry[] {
+    return this.db
+      .prepare(
+        `SELECT r.id AS run_id, r.seed_id
+         FROM runs r
+         WHERE r.status = 'completed'
+         AND r.id NOT IN (SELECT run_id FROM merge_queue)
+         ORDER BY r.created_at ASC`
+      )
+      .all() as MissingFromQueueEntry[];
+  }
+
+  /**
    * Reconcile completed runs with the merge queue.
    * For each completed run not already queued, validate its branch exists
    * and enqueue it with the list of modified files.
@@ -277,6 +300,7 @@ export class MergeQueue {
     let enqueued = 0;
     let skipped = 0;
     let invalidBranch = 0;
+    const failedToEnqueue: Array<{ run_id: string; seed_id: string; reason: string }> = [];
 
     for (const run of completedRuns) {
       if (existingRunIds.has(run.id)) {
@@ -293,6 +317,11 @@ export class MergeQueue {
         });
       } catch {
         invalidBranch++;
+        failedToEnqueue.push({
+          run_id: run.id,
+          seed_id: run.seed_id,
+          reason: `branch '${branchName}' not found`,
+        });
         continue;
       }
 
@@ -318,6 +347,6 @@ export class MergeQueue {
       enqueued++;
     }
 
-    return { enqueued, skipped, invalidBranch };
+    return { enqueued, skipped, invalidBranch, failedToEnqueue };
   }
 }
