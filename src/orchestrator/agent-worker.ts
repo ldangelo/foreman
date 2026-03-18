@@ -199,7 +199,9 @@ async function main(): Promise<void> {
     // DCG (Destructive Command Guard): use acceptEdits instead of bypassPermissions.
     // This guards against destructive tool calls (rm -rf, DROP TABLE, etc.) while
     // still allowing file edits and reads that agent tasks legitimately require.
-    const queryOpts: Parameters<typeof query>[0] = resume
+    // sessionLogDir is a valid SDK option but not yet present in the type definitions.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const queryOpts = (resume
       ? {
           prompt,
           options: {
@@ -209,6 +211,7 @@ async function main(): Promise<void> {
             env,
             resume,
             persistSession: true,
+            sessionLogDir: worktreePath,
           },
         }
       : {
@@ -219,8 +222,9 @@ async function main(): Promise<void> {
             permissionMode: "acceptEdits",
             env,
             persistSession: true,
+            sessionLogDir: worktreePath,
           },
-        };
+        }) as unknown as Parameters<typeof query>[0];
 
     // NOTE: Single-agent (non-pipeline) mode emits only terminal status notifications
     // (completed, failed, stuck) — not progress notifications after each assistant turn.
@@ -410,7 +414,7 @@ async function runPhase(
     let phaseResult: SDKResultSuccess | SDKResultError | undefined;
 
     // DCG: use the role's configured permissionMode instead of blanket bypassPermissions.
-    for await (const message of query({
+    for await (const message of query(({
       prompt,
       options: {
         cwd: config.worktreePath,
@@ -420,8 +424,9 @@ async function runPhase(
         disallowedTools,
         env,
         persistSession: false,
+        sessionLogDir: config.worktreePath,
       },
-    })) {
+    }) as unknown as Parameters<typeof query>[0])) {
       await logMessage(logFile, message);
       progress.lastActivity = new Date().toISOString();
 
