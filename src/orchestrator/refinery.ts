@@ -12,7 +12,7 @@ import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedP
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
-import { closeSeed } from "./task-backend-ops.js";
+import { closeSeed, resetSeedToOpen } from "./task-backend-ops.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -391,7 +391,8 @@ export class Refinery {
           try { await git(["checkout", targetBranch], this.projectPath); } catch { /* best effort */ }
 
           if (!rebaseOk) {
-            // Rebase failed — create a PR for manual conflict resolution
+            // Rebase failed — reset seed to open so it can be retried, then create a PR for manual conflict resolution
+            await resetSeedToOpen(run.seed_id, this.projectPath);
             const pr = await this.createPrForConflict(run, branchName, targetBranch, "Rebase conflicts");
             if (pr) {
               prsCreated.push(pr);
@@ -420,6 +421,9 @@ export class Refinery {
             } catch {
               // merge --abort may fail if already clean
             }
+
+            // Reset seed to open so it can be retried after manual conflict resolution
+            await resetSeedToOpen(run.seed_id, this.projectPath);
 
             const pr = await this.createPrForConflict(run, branchName, targetBranch,
               `Conflicts in: ${codeConflicts.join(", ")}`);
@@ -450,6 +454,9 @@ export class Refinery {
           if (!testResult.ok) {
             // Revert the merge + archive commits
             await git(["reset", "--hard", preMergeHead], this.projectPath);
+
+            // Reset seed to open so it can be retried
+            await resetSeedToOpen(run.seed_id, this.projectPath);
 
             this.store.updateRun(run.id, { status: "test-failed" });
             this.store.logEvent(
@@ -573,6 +580,8 @@ export class Refinery {
       } catch {
         // merge --abort may fail if there is nothing to abort
       }
+      // Reset seed to open so it can be retried
+      await resetSeedToOpen(run.seed_id, this.projectPath);
       const message = err instanceof Error ? err.message : String(err);
       this.store.updateRun(run.id, {
         status: "failed",
@@ -595,6 +604,9 @@ export class Refinery {
       if (!testResult.ok) {
         // Revert the merge
         await git(["reset", "--hard", "HEAD~1"], this.projectPath);
+
+        // Reset seed to open so it can be retried
+        await resetSeedToOpen(run.seed_id, this.projectPath);
 
         this.store.updateRun(run.id, {
           status: "test-failed",
