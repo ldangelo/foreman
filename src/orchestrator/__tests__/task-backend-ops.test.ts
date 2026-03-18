@@ -6,10 +6,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // vi.hoisted() ensures the mock variable is initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
 
-const { mockExecFileSync, mockHomedir, mockExecBr } = vi.hoisted(() => ({
+const { mockExecFileSync, mockHomedir } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
   mockHomedir: vi.fn().mockReturnValue("/test/home"),
-  mockExecBr: vi.fn().mockResolvedValue(""),
 }));
 
 vi.mock("node:child_process", () => ({
@@ -18,10 +17,6 @@ vi.mock("node:child_process", () => ({
 
 vi.mock("node:os", () => ({
   homedir: mockHomedir,
-}));
-
-vi.mock("../../lib/beads-rust.js", () => ({
-  execBr: mockExecBr,
 }));
 
 import { closeSeed, resetSeedToOpen, addLabelsToBead, syncBeadStatusOnStartup } from "../task-backend-ops.js";
@@ -366,8 +361,8 @@ function makeSyncMocks() {
 
 describe("syncBeadStatusOnStartup", () => {
   beforeEach(() => {
-    mockExecBr.mockReset();
-    mockExecBr.mockResolvedValue("");
+    mockExecFileSync.mockReset();
+    mockExecFileSync.mockReturnValue(undefined);
   });
 
   it("returns empty result when no terminal runs exist", async () => {
@@ -380,7 +375,7 @@ describe("syncBeadStatusOnStartup", () => {
     expect(result.mismatches).toHaveLength(0);
     expect(result.errors).toHaveLength(0);
     expect(taskClient.show).not.toHaveBeenCalled();
-    expect(mockExecBr).not.toHaveBeenCalled();
+    expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 
   it("detects mismatch when completed run has seed still in_progress", async () => {
@@ -421,7 +416,12 @@ describe("syncBeadStatusOnStartup", () => {
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
-    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], undefined);
+    // Uses execFileSync directly (NOT execBr) to avoid --json flag that causes silent no-op
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      expect.stringContaining("br"),
+      ["sync", "--flush-only"],
+      expect.any(Object),
+    );
   });
 
   it("passes projectPath to br sync --flush-only", async () => {
@@ -434,7 +434,11 @@ describe("syncBeadStatusOnStartup", () => {
       projectPath: "/my/project",
     });
 
-    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], "/my/project");
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      expect.stringContaining("br"),
+      ["sync", "--flush-only"],
+      expect.objectContaining({ cwd: "/my/project" }),
+    );
   });
 
   it("does not call br sync --flush-only when nothing was synced", async () => {
@@ -446,7 +450,7 @@ describe("syncBeadStatusOnStartup", () => {
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
-    expect(mockExecBr).not.toHaveBeenCalled();
+    expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 
   it("does not update seeds in dry-run mode", async () => {
@@ -462,7 +466,7 @@ describe("syncBeadStatusOnStartup", () => {
     expect(taskClient.update).not.toHaveBeenCalled();
     expect(result.synced).toBe(0);
     expect(result.mismatches).toHaveLength(1);
-    expect(mockExecBr).not.toHaveBeenCalled();
+    expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 
   it("silently skips seeds that no longer exist in br (not found error)", async () => {
@@ -580,7 +584,7 @@ describe("syncBeadStatusOnStartup", () => {
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
     taskClient.show.mockResolvedValue({ status: "in_progress" });
-    mockExecBr.mockRejectedValue(new Error("br sync failed"));
+    mockExecFileSync.mockImplementation(() => { throw new Error("br sync failed"); });
 
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 

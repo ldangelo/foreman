@@ -11,8 +11,10 @@
  *
  * TRD-024: sd backend removed. Always uses Beads Rust CLI at ~/.local/bin/br.
  *
- * CLI calls are made via execFileSync (no shell interpolation) for synchronous
- * operations and execBr for async operations.
+ * CLI calls are made via execFileSync (no shell interpolation) for all
+ * subprocess operations. execBr is intentionally NOT used for sync commands
+ * because execBr auto-appends --json which interferes with br's dirty flag
+ * mechanism causing br sync --flush-only to silently no-op.
  * Errors from the CLI subprocess are caught and logged; they must not
  * propagate to callers since a failed close/reset is non-fatal for the
  * pipeline worker itself.
@@ -24,7 +26,6 @@ import { homedir } from "node:os";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { ForemanStore } from "../lib/store.js";
 import type { ITaskClient } from "../lib/task-client.js";
-import { execBr } from "../lib/beads-rust.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
 import type { StateMismatch } from "../lib/run-status.js";
 
@@ -223,10 +224,13 @@ export async function syncBeadStatusOnStartup(
     }
   }
 
-  // Flush .beads/beads.jsonl to persist all updates
+  // Flush .beads/beads.jsonl to persist all updates.
+  // NOTE: We use execFileSync directly (NOT execBr) because execBr auto-appends
+  // --json to every command, which interferes with br's internal dirty flag
+  // mechanism and causes `br sync --flush-only` to silently no-op.
   if (!dryRun && synced > 0) {
     try {
-      await execBr(["sync", "--flush-only"], projectPath);
+      execFileSync(brPath(), ["sync", "--flush-only"], execOpts(projectPath));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`br sync --flush-only failed: ${msg}`);
