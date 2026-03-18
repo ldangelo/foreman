@@ -31,7 +31,7 @@ import {
   hasActionableIssues,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { closeSeed, resetSeedToOpen, addLabelsToBead } from "./task-backend-ops.js";
+import { resetSeedToOpen, addLabelsToBead } from "./task-backend-ops.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
@@ -618,11 +618,11 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
     }
   }
 
-  // Close bead (br backend)
-  // Pass projectPath (repo root) so br finds .beads/ — the worktree dir has none.
-  await closeSeed(seedId, config.projectPath);
-  log(`[FINALIZE] Closed seed ${seedId}`);
-  report.push(`## Seed Close`, `- Status: SUCCESS`, "");
+  // NOTE: We do NOT close the bead here. The bead is closed only after the code
+  // has successfully landed in main branch (i.e., after autoMerge() calls
+  // refinery.mergeCompleted() and the merge succeeds). Closing here would
+  // falsely mark the bead as done even if the merge later fails with conflicts
+  // or test failures. See: refinery.ts mergeCompleted() and resolveConflict().
 
   // Write finalize report
   try {
