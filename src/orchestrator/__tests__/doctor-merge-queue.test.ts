@@ -53,6 +53,7 @@ function makeMocks(projectPath = "/tmp/project") {
     list: vi.fn(() => [] as MergeQueueEntry[]),
     remove: vi.fn(),
     updateStatus: vi.fn(),
+    missingFromQueue: vi.fn(() => [] as Array<{ run_id: string; seed_id: string }>),
   };
   const doctor = new Doctor(store as any, projectPath, mergeQueue as any);
   return { store, mergeQueue, doctor };
@@ -224,7 +225,7 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
       const results = await doctor.checkMergeQueueHealth();
 
-      expect(results).toHaveLength(3);
+      expect(results).toHaveLength(4);
       expect(results.every((r) => r.status === "pass")).toBe(true);
     });
 

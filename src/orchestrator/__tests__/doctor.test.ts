@@ -33,6 +33,15 @@ function makeMocks(projectPath = "/tmp/project") {
   return { store, doctor };
 }
 
+function makeMergeQueueMock(missingEntries: Array<{ run_id: string; seed_id: string }> = []) {
+  return {
+    missingFromQueue: vi.fn(() => missingEntries),
+    list: vi.fn(() => []),
+    updateStatus: vi.fn(),
+    remove: vi.fn(),
+  };
+}
+
 describe("Doctor", () => {
   describe("checkGitBinary", () => {
     it("returns pass when git is available", async () => {
@@ -261,6 +270,59 @@ describe("Doctor", () => {
       const results = await doctor.checkFailedStuckRuns();
 
       expect(results.some((r) => r.name === "failed runs" && r.status === "warn")).toBe(true);
+    });
+  });
+
+  describe("checkCompletedRunsNotQueued", () => {
+    it("returns skip when no merge queue configured", async () => {
+      const { doctor } = makeMocks();
+      const result = await doctor.checkCompletedRunsNotQueued();
+      expect(result.status).toBe("skip");
+      expect(result.name).toBe("completed runs queued");
+    });
+
+    it("returns pass when all completed runs are queued", async () => {
+      const { store } = makeMocks();
+      const mq = makeMergeQueueMock([]);
+      const doctor = new Doctor(store as any, "/tmp/project", mq as any);
+      const result = await doctor.checkCompletedRunsNotQueued();
+      expect(result.status).toBe("pass");
+      expect(result.message).toContain("All completed runs");
+    });
+
+    it("returns warn when completed runs are missing from queue", async () => {
+      const { store } = makeMocks();
+      const mq = makeMergeQueueMock([
+        { run_id: "r1", seed_id: "seed-abc" },
+        { run_id: "r2", seed_id: "seed-xyz" },
+      ]);
+      const doctor = new Doctor(store as any, "/tmp/project", mq as any);
+      const result = await doctor.checkCompletedRunsNotQueued();
+      expect(result.status).toBe("warn");
+      expect(result.message).toContain("2 completed run(s) not in merge queue");
+      expect(result.message).toContain("foreman merge");
+      expect(result.details).toContain("seed-abc");
+      expect(result.details).toContain("seed-xyz");
+    });
+
+    it("includes MQ-011 code in warning message", async () => {
+      const { store } = makeMocks();
+      const mq = makeMergeQueueMock([{ run_id: "r1", seed_id: "s1" }]);
+      const doctor = new Doctor(store as any, "/tmp/project", mq as any);
+      const result = await doctor.checkCompletedRunsNotQueued();
+      expect(result.message).toContain("MQ-011");
+    });
+  });
+
+  describe("checkMergeQueueHealth includes completed runs check", () => {
+    it("includes checkCompletedRunsNotQueued in results", async () => {
+      const { store } = makeMocks();
+      const mq = makeMergeQueueMock([{ run_id: "r1", seed_id: "seed-abc" }]);
+      const doctor = new Doctor(store as any, "/tmp/project", mq as any);
+      const results = await doctor.checkMergeQueueHealth();
+      const notQueuedCheck = results.find((r) => r.name === "completed runs queued");
+      expect(notQueuedCheck).toBeDefined();
+      expect(notQueuedCheck!.status).toBe("warn");
     });
   });
 

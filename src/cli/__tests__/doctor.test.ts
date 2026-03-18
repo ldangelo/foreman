@@ -264,3 +264,82 @@ describe("doctor unit: zombie run detection", () => {
     store.close();
   });
 });
+
+// ── MQ-011: completed runs missing from merge queue details rendering ──────
+
+describe("doctor MQ-011: details line rendered in CLI output", () => {
+  const tempDirs: string[] = [];
+
+  function makeTempDir(): string {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-doctor-mq011-")));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  afterEach(() => {
+    for (const dir of tempDirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    tempDirs.length = 0;
+  });
+
+  it("checkCompletedRunsNotQueued returns details containing seed IDs", async () => {
+    const { ForemanStore } = await import("../../lib/store.js");
+    const { MergeQueue } = await import("../../orchestrator/merge-queue.js");
+    const { Doctor } = await import("../../orchestrator/doctor.js");
+
+    const tmpDb = join(makeTempDir(), "test.db");
+    const store = new ForemanStore(tmpDb);
+    const project = store.registerProject("test", "/tmp/fake-project");
+
+    // Create two completed runs that are NOT in the merge queue
+    const run1 = store.createRun(project.id, "seed-mq011-a", "developer");
+    store.updateRun(run1.id, { status: "completed", completed_at: new Date().toISOString() });
+
+    const run2 = store.createRun(project.id, "seed-mq011-b", "developer");
+    store.updateRun(run2.id, { status: "completed", completed_at: new Date().toISOString() });
+
+    const mq = new MergeQueue(store.getDb());
+    const doctor = new Doctor(store, "/tmp/fake-project", mq);
+
+    const result = await doctor.checkCompletedRunsNotQueued();
+
+    expect(result.status).toBe("warn");
+    expect(result.message).toContain("MQ-011");
+    expect(result.message).toContain("2 completed run(s) not in merge queue");
+    // The details field must be present and list the affected seeds
+    expect(result.details).toBeDefined();
+    expect(result.details).toContain("seed-mq011-a");
+    expect(result.details).toContain("seed-mq011-b");
+    // Each entry should include the run ID
+    expect(result.details).toContain(run1.id);
+    expect(result.details).toContain(run2.id);
+
+    store.close();
+  });
+
+  it("checkCompletedRunsNotQueued returns pass when all completed runs are queued", async () => {
+    const { ForemanStore } = await import("../../lib/store.js");
+    const { MergeQueue } = await import("../../orchestrator/merge-queue.js");
+    const { Doctor } = await import("../../orchestrator/doctor.js");
+
+    const tmpDb = join(makeTempDir(), "test.db");
+    const store = new ForemanStore(tmpDb);
+    const project = store.registerProject("test", "/tmp/fake-project-2");
+
+    const run = store.createRun(project.id, "seed-queued", "developer");
+    store.updateRun(run.id, { status: "completed", completed_at: new Date().toISOString() });
+
+    const mq = new MergeQueue(store.getDb());
+    // Enqueue the completed run
+    mq.enqueue({ branchName: "foreman/seed-queued", seedId: "seed-queued", runId: run.id });
+
+    const doctor = new Doctor(store, "/tmp/fake-project-2", mq);
+    const result = await doctor.checkCompletedRunsNotQueued();
+
+    expect(result.status).toBe("pass");
+    expect(result.details).toBeUndefined();
+
+    store.close();
+  });
+});

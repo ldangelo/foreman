@@ -699,15 +699,50 @@ export class Doctor {
   }
 
   /**
+   * Check for completed runs that are not present in the merge queue (MQ-011).
+   * Detects runs that completed but were never enqueued — e.g. because their
+   * branch was deleted before reconciliation ran, or because a system crash
+   * prevented reconciliation from completing.
+   */
+  async checkCompletedRunsNotQueued(): Promise<CheckResult> {
+    if (!this.mergeQueue) {
+      return {
+        name: "completed runs queued",
+        status: "skip",
+        message: "No merge queue configured (skipping)",
+      };
+    }
+
+    const missing = this.mergeQueue.missingFromQueue();
+
+    if (missing.length === 0) {
+      return {
+        name: "completed runs queued",
+        status: "pass",
+        message: "All completed runs are in the merge queue",
+      };
+    }
+
+    const details = missing.map((r) => `${r.seed_id} (run ${r.run_id})`).join(", ");
+    return {
+      name: "completed runs queued",
+      status: "warn",
+      message: `MQ-011: ${missing.length} completed run(s) not in merge queue. Run: foreman merge`,
+      details,
+    };
+  }
+
+  /**
    * Run all merge queue health checks.
    */
   async checkMergeQueueHealth(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
-    const [stale, duplicates, orphaned] = await Promise.all([
+    const [stale, duplicates, orphaned, notQueued] = await Promise.all([
       this.checkStaleMergeQueueEntries(opts),
       this.checkDuplicateMergeQueueEntries(opts),
       this.checkOrphanedMergeQueueEntries(opts),
+      this.checkCompletedRunsNotQueued(),
     ]);
-    return [stale, duplicates, orphaned];
+    return [stale, duplicates, orphaned, notQueued];
   }
 
   // ── Session Management checks ─────────────────────────────────────

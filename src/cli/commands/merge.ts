@@ -285,6 +285,13 @@ export const mergeCommand = new Command("merge")
       if (reconcileResult.enqueued > 0) {
         console.log(chalk.dim(`  Reconciled ${reconcileResult.enqueued} completed run(s) into merge queue.\n`));
       }
+      if (reconcileResult.failedToEnqueue.length > 0) {
+        console.log(chalk.yellow(`  Warning: ${reconcileResult.failedToEnqueue.length} completed run(s) could not be enqueued (branch missing):`));
+        for (const failed of reconcileResult.failedToEnqueue) {
+          console.log(chalk.yellow(`    - ${failed.seed_id}: ${failed.reason}`));
+        }
+        console.log();
+      }
 
       // When retrying a specific seed, reset its failed/conflict entry back to
       // pending so the dequeue loop can pick it up again.

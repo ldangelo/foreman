@@ -264,6 +264,7 @@ export interface CheckResult {
   status: CheckStatus;
   message: string;
   fixApplied?: string;
+  details?: string;
 }
 
 export interface DoctorReport {
