@@ -366,6 +366,16 @@ export class Refinery {
         // Remove report files so they can't cause merge conflicts
         await this.removeReportFiles();
 
+        // Ensure branch is in local refs — sentinel/remote branches may only exist
+        // on origin and not be fetched yet. Silently skip if the fetch fails (the
+        // reconcile step already validates the branch exists).
+        try {
+          await git(["fetch", "origin", `${branchName}:${branchName}`], this.projectPath);
+        } catch {
+          // Fetch failure is non-fatal: branch may already be local, or the remote
+          // may be unreachable. The subsequent rebase/merge will surface any real error.
+        }
+
         // Rebase branch onto current target so it picks up all prior merges.
         // Auto-resolves report-file conflicts during rebase; aborts on real code conflicts.
         {

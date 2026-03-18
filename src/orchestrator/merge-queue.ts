@@ -288,14 +288,14 @@ export class MergeQueue {
       .prepare("SELECT * FROM runs WHERE status = 'completed' ORDER BY created_at ASC")
       .all() as Array<{ id: string; seed_id: string }>;
 
-    // Get all run_ids already in merge_queue
-    const existingRunIds = new Set(
-      (
-        db
-          .prepare("SELECT run_id FROM merge_queue")
-          .all() as Array<{ run_id: string }>
-      ).map((r) => r.run_id)
-    );
+    // Get all run_ids AND seed_ids already in merge_queue.
+    // Dedup by seed_id so that sentinel-created duplicate completed runs for
+    // the same seed don't each create a separate queue entry.
+    const mqRows = db
+      .prepare("SELECT run_id, seed_id FROM merge_queue")
+      .all() as Array<{ run_id: string; seed_id: string }>;
+    const existingRunIds = new Set(mqRows.map((r) => r.run_id));
+    const existingSeedIds = new Set(mqRows.map((r) => r.seed_id));
 
     let enqueued = 0;
     let skipped = 0;
@@ -303,7 +303,13 @@ export class MergeQueue {
     const failedToEnqueue: Array<{ run_id: string; seed_id: string; reason: string }> = [];
 
     for (const run of completedRuns) {
+      // Skip if this exact run is already queued
       if (existingRunIds.has(run.id)) {
+        skipped++;
+        continue;
+      }
+      // Skip if any run for this seed is already queued (dedup sentinel retries)
+      if (existingSeedIds.has(run.seed_id)) {
         skipped++;
         continue;
       }
@@ -344,6 +350,8 @@ export class MergeQueue {
         runId: run.id,
         filesModified,
       });
+      // Track newly enqueued seed so further duplicates in this batch are skipped
+      existingSeedIds.add(run.seed_id);
       enqueued++;
     }
 
