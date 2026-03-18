@@ -29,6 +29,17 @@ function extractPid(sessionKey: string | null): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
+/**
+ * Returns true if the run was spawned as an SDK-based agent worker.
+ * SDK workers use session_key format: "foreman:sdk:<model>:<runId>[:<suffix>]"
+ * These workers do not have a PID in the session_key, so PID-based liveness
+ * checks do not apply. Liveness for SDK workers with tmux_session is handled
+ * by checkGhostRuns(); those without tmux_session are detected by stale timeouts.
+ */
+function isSDKBasedRun(sessionKey: string | null): boolean {
+  return sessionKey?.startsWith("foreman:sdk:") ?? false;
+}
+
 // ── Doctor class ─────────────────────────────────────────────────────────
 
 export class Doctor {
@@ -345,6 +356,19 @@ export class Doctor {
 
     const results: CheckResult[] = [];
     for (const run of runningRuns) {
+      // SDK-based workers do not store a PID in session_key.
+      // If they have a tmux_session, checkGhostRuns() handles liveness.
+      // If they have no tmux_session, they can only be detected by stale timeouts.
+      // Either way, PID-based zombie detection does not apply to SDK runs.
+      if (isSDKBasedRun(run.session_key)) {
+        results.push({
+          name: `run: ${run.seed_id} [${run.agent_type}]`,
+          status: "pass",
+          message: `SDK-based worker — liveness checked via tmux/timeout, not PID`,
+        });
+        continue;
+      }
+
       const pid = extractPid(run.session_key);
       const isAlive = pid !== null && isProcessAlive(pid);
 

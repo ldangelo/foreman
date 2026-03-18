@@ -158,6 +158,101 @@ describe("Doctor", () => {
       expect(results[0].message).toContain("dry-run");
       expect(store.updateRun).not.toHaveBeenCalled();
     });
+
+    it("does NOT mark SDK-based run (no tmux_session) as zombie", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      // SDK worker without tmux: session_key starts with "foreman:sdk:", no tmux_session
+      const run = makeRun({
+        session_key: "foreman:sdk:claude-sonnet-4-6:run-1",
+        tmux_session: null,
+      });
+      store.getRunsByStatus.mockReturnValue([run]);
+
+      const results = await doctor.checkZombieRuns();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("pass");
+      expect(results[0].message).toContain("SDK-based worker");
+    });
+
+    it("does NOT mark SDK-based run with session suffix (no tmux_session) as zombie", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      // SDK worker with session suffix (after first agent message), still no PID
+      const run = makeRun({
+        session_key: "foreman:sdk:claude-sonnet-4-6:run-1:session-abc123",
+        tmux_session: null,
+      });
+      store.getRunsByStatus.mockReturnValue([run]);
+
+      const results = await doctor.checkZombieRuns();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("pass");
+      expect(results[0].message).toContain("SDK-based worker");
+    });
+
+    it("does NOT mark SDK-based run with tmux_session as zombie (deferred to checkGhostRuns)", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      // SDK worker with tmux session: liveness checked by checkGhostRuns(), not here
+      const run = makeRun({
+        session_key: "foreman:sdk:claude-opus-4-6:run-2",
+        tmux_session: "foreman-bd-krew",
+      });
+      store.getRunsByStatus.mockReturnValue([run]);
+
+      const results = await doctor.checkZombieRuns();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("pass");
+      expect(results[0].message).toContain("SDK-based worker");
+      // Crucially: updateRun should NOT have been called
+      expect(store.updateRun).not.toHaveBeenCalled();
+    });
+
+    it("does NOT fix SDK-based runs even when fix=true", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      const run = makeRun({
+        session_key: "foreman:sdk:claude-sonnet-4-6:run-3",
+        tmux_session: null,
+      });
+      store.getRunsByStatus.mockReturnValue([run]);
+
+      const results = await doctor.checkZombieRuns({ fix: true });
+
+      expect(results[0].status).toBe("pass");
+      expect(store.updateRun).not.toHaveBeenCalled();
+    });
+
+    it("still detects zombie for traditional (PID-based) run with null session_key alongside SDK run", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      const sdkRun = makeRun({
+        id: "run-sdk",
+        seed_id: "bd-sdk",
+        session_key: "foreman:sdk:claude-sonnet-4-6:run-sdk",
+        tmux_session: null,
+      });
+      const zombieRun = makeRun({
+        id: "run-zombie",
+        seed_id: "bd-zombie",
+        session_key: null, // no PID = zombie
+        tmux_session: null,
+      });
+      store.getRunsByStatus.mockReturnValue([sdkRun, zombieRun]);
+
+      const results = await doctor.checkZombieRuns();
+
+      expect(results).toHaveLength(2);
+      const sdkResult = results.find((r) => r.name.includes("bd-sdk"));
+      const zombieResult = results.find((r) => r.name.includes("bd-zombie"));
+      expect(sdkResult?.status).toBe("pass");
+      expect(zombieResult?.status).toBe("warn");
+      expect(zombieResult?.message).toContain("Zombie run");
+    });
   });
 
   describe("checkStalePendingRuns", () => {
