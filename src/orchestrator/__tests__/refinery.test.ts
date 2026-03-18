@@ -49,6 +49,7 @@ function makeMocks() {
   const seeds = {
     getGraph: vi.fn(async () => ({ edges: [] })),
     show: vi.fn(async () => null),
+    update: vi.fn(async () => undefined),
   };
   const refinery = new Refinery(store as any, seeds as any, "/tmp/project");
   return { store, seeds, refinery };
@@ -92,7 +93,7 @@ describe("Refinery.resolveConflict()", () => {
   });
 
   it("abort strategy marks run as failed and returns false", async () => {
-    const { store, refinery } = makeMocks();
+    const { store, seeds, refinery } = makeMocks();
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
@@ -108,6 +109,10 @@ describe("Refinery.resolveConflict()", () => {
       "fail",
       expect.objectContaining({ reason: expect.stringContaining("abort") }),
       run.id,
+    );
+    expect(seeds.update).toHaveBeenCalledWith(
+      run.seed_id,
+      expect.objectContaining({ notes: expect.stringContaining("aborted") }),
     );
   });
 
@@ -144,7 +149,7 @@ describe("Refinery.resolveConflict()", () => {
   });
 
   it("theirs strategy marks run as failed if git merge fails", async () => {
-    const { store, refinery } = makeMocks();
+    const { store, seeds, refinery } = makeMocks();
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
@@ -169,6 +174,10 @@ describe("Refinery.resolveConflict()", () => {
     const calls: string[][] = (execFile as any).mock.calls.map((c: any[]) => c[1]);
     const abortCall = calls.find((args) => Array.isArray(args) && args.includes("--abort"));
     expect(abortCall).toBeDefined();
+    expect(seeds.update).toHaveBeenCalledWith(
+      run.seed_id,
+      expect.objectContaining({ notes: expect.stringContaining("Merge failed") }),
+    );
   });
 
   it("theirs strategy uses provided targetBranch in git checkout", async () => {
@@ -210,7 +219,7 @@ describe("Refinery.resolveConflict()", () => {
   });
 
   it("theirs strategy marks run as test-failed and reverts when tests fail after merge", async () => {
-    const { store, refinery } = makeMocks();
+    const { store, seeds, refinery } = makeMocks();
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
@@ -245,6 +254,10 @@ describe("Refinery.resolveConflict()", () => {
       (args) => Array.isArray(args) && args.includes("reset") && args.includes("--hard"),
     );
     expect(resetCall).toBeDefined();
+    expect(seeds.update).toHaveBeenCalledWith(
+      run.seed_id,
+      expect.objectContaining({ notes: expect.stringContaining("tests failed") }),
+    );
   });
 
   it("theirs strategy marks run as merged when tests pass after merge", async () => {
@@ -400,8 +413,89 @@ describe("Refinery.mergeCompleted()", () => {
     );
   });
 
+  it("adds failure note when code-conflict PR creation fails", async () => {
+    const { store, seeds, refinery } = makeMocks();
+    const run = makeRun();
+    store.getRunsByStatus.mockReturnValue([run]);
+    (mergeWorktree as any).mockResolvedValue({
+      success: false,
+      conflicts: ["src/index.ts"],
+    });
+
+    // git calls succeed, but gh (PR creation) fails
+    (execFile as any).mockImplementation(
+      (cmd: string, _args: string[], _opts: any, callback: Function) => {
+        if (cmd === "gh") {
+          const err = new Error("gh not available") as any;
+          err.stdout = "";
+          err.stderr = "gh not available";
+          callback(err);
+        } else {
+          callback(null, { stdout: "", stderr: "" });
+        }
+      },
+    );
+
+    const report = await refinery.mergeCompleted({ runTests: false });
+
+    expect(report.conflicts).toHaveLength(1);
+    // Must add a note explaining what happened since there's no PR URL to reference
+    expect(seeds.update).toHaveBeenCalledWith(
+      run.seed_id,
+      expect.objectContaining({
+        notes: expect.stringContaining("PR creation also failed"),
+      }),
+    );
+  });
+
+  it("adds failure note when rebase-conflict PR creation fails", async () => {
+    const { store, seeds, refinery } = makeMocks();
+    const run = makeRun();
+    store.getRunsByStatus.mockReturnValue([run]);
+
+    // Sequence of git calls:
+    //   1. git status --porcelain         → "" (autoCommitStateFiles: no dirty files)
+    //   2. git rebase main foreman/seed-abc → CONFLICT (rebase fails)
+    //   3. git diff --name-only --diff-filter=U → "src/index.ts" (real code conflict)
+    //   4. git rebase --abort             → success
+    //   5. git checkout main              → success (return to target branch)
+    //   6. git push (for PR creation)     → fails (gh not available)
+    // → createPrForConflict returns null → addFailureNote must be called
+    (execFile as any).mockImplementation(
+      (cmd: string, args: string[], _opts: any, callback: Function) => {
+        if (cmd === "gh") {
+          const err = new Error("gh not available") as any;
+          err.stdout = "";
+          err.stderr = "gh not available";
+          callback(err);
+        } else if (Array.isArray(args) && args[0] === "rebase" && args.length > 1 && args[1] !== "--abort") {
+          // git rebase <target> <branch> — fail with conflict
+          const err = new Error("CONFLICT during rebase") as any;
+          err.stdout = "";
+          err.stderr = "CONFLICT during rebase";
+          callback(err);
+        } else if (Array.isArray(args) && args[0] === "diff" && args.includes("--diff-filter=U")) {
+          // git diff --name-only --diff-filter=U → real code conflict file
+          callback(null, { stdout: "src/index.ts\n", stderr: "" });
+        } else {
+          callback(null, { stdout: "", stderr: "" });
+        }
+      },
+    );
+
+    const report = await refinery.mergeCompleted({ runTests: false });
+
+    expect(report.conflicts).toHaveLength(1);
+    expect(seeds.update).toHaveBeenCalledWith(
+      run.seed_id,
+      expect.objectContaining({
+        notes: expect.stringContaining("PR creation also failed"),
+      }),
+    );
+  });
+
   it("marks run as test-failed when tests fail after merge", async () => {
-    const { store, refinery } = makeMocks();
+    const { store, seeds, refinery } = makeMocks();
     const run = makeRun();
     store.getRunsByStatus.mockReturnValue([run]);
     (mergeWorktree as any).mockResolvedValue({ success: true });
@@ -434,6 +528,10 @@ describe("Refinery.mergeCompleted()", () => {
     expect(store.updateRun).toHaveBeenCalledWith(
       run.id,
       expect.objectContaining({ status: "test-failed" }),
+    );
+    expect(seeds.update).toHaveBeenCalledWith(
+      run.seed_id,
+      expect.objectContaining({ notes: expect.stringContaining("tests failed") }),
     );
   });
 
@@ -474,7 +572,7 @@ describe("Refinery.mergeCompleted()", () => {
   });
 
   it("catches unexpected errors and puts run in testFailures", async () => {
-    const { store, refinery } = makeMocks();
+    const { store, seeds, refinery } = makeMocks();
     const run = makeRun();
     store.getRunsByStatus.mockReturnValue([run]);
     (mergeWorktree as any).mockRejectedValue(new Error("Unexpected git failure"));
@@ -483,6 +581,10 @@ describe("Refinery.mergeCompleted()", () => {
 
     expect(report.testFailures).toHaveLength(1);
     expect(report.testFailures[0].error).toContain("Unexpected git failure");
+    expect(seeds.update).toHaveBeenCalledWith(
+      run.seed_id,
+      expect.objectContaining({ notes: expect.stringContaining("Merge failed") }),
+    );
   });
 
   it("retries a previously-failed seed: finds run in test-failed state when seedId is specified", async () => {
