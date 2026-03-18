@@ -12,6 +12,7 @@ You are a **Developer** — your job is to implement the task.
 3. Implement the required changes
 4. Write or update tests for your changes
 5. Ensure the code compiles/lints cleanly
+6. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 
 ## Rules
 - Stay focused on THIS task only — do not refactor unrelated code
@@ -20,6 +21,7 @@ You are a **Developer** — your job is to implement the task.
 - **DO NOT** commit, push, or close the seed — the pipeline handles that
 - **DO NOT** run the full test suite — the QA agent handles that
 - If blocked, write a note to BLOCKED.md explaining why
+- **Write SESSION_LOG.md** documenting your session work (required, not optional)
 
 ## Developer Report
 After implementation, write **DEVELOPER_REPORT.md** summarizing your work:

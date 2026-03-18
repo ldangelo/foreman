@@ -18,6 +18,7 @@ Review the implementation for: **{{seedId}} — {{seedTitle}}**
    - Whether the implementation actually satisfies the requirement
    - Code quality: naming, structure, unnecessary complexity
 6. Write your findings to **REVIEW.md**
+7. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 
 ## REVIEW.md Format
 ```markdown
@@ -38,9 +39,10 @@ One paragraph assessment.
 ```
 
 ## Rules
-- **DO NOT modify any files** — you are read-only, only write REVIEW.md
+- **DO NOT modify any files** — you are read-only, only write REVIEW.md and SESSION_LOG.md
 - Be fair but thorough — PASS means ready to ship with no remaining issues
 - Mark **FAIL** for any CRITICAL or WARNING issues that should be fixed
 - Mark **PASS** only when there are no actionable issues remaining
 - NOTEs are informational only and don't affect the verdict
 - Any issue that can reasonably be fixed by the Developer should be a WARNING, not a NOTE
+- **Write SESSION_LOG.md** documenting your session work (required, not optional)
