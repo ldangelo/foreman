@@ -197,7 +197,7 @@ describe("agent-worker team mode: prompt is suitable for SDK query()", () => {
     expect(prompt).toContain("tsc --noEmit");
     expect(prompt).toContain("git commit");
     expect(prompt).toContain("git push");
-    expect(prompt).toContain("sd close");
+    expect(prompt).toContain("br close");
   });
 
   it("does not alter model selection (model stays as configured)", () => {
