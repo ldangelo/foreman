@@ -16,7 +16,8 @@ You are a Foreman worker agent. You have ONE task — implement it fully, then c
 3. Implement the feature/fix described
 4. Write tests for your implementation
 5. Ensure existing tests still pass
-6. When complete:
+6. Run /ensemble:sessionlog to save a transcript of your work.
+7. When complete:
 
    ```bash
    br close {{SEED_ID}} --reason "Completed"
