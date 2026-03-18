@@ -18,6 +18,7 @@ const {
   mockDispatch,
   MockDispatcher,
   mockGetActiveRuns,
+  mockGetProjectByPath,
   MockForemanStore,
   mockWatchRunsInk,
 } = vi.hoisted(() => {
@@ -51,6 +52,7 @@ const {
     mockDispatch,
     MockDispatcher,
     mockGetActiveRuns,
+    mockGetProjectByPath,
     MockForemanStore,
     mockWatchRunsInk,
   };
