@@ -572,6 +572,15 @@ export class ForemanStore {
     return result.changes;
   }
 
+  /**
+   * Delete a single run record by ID.
+   * Returns true if a row was deleted, false if no such run existed.
+   */
+  deleteRun(runId: string): boolean {
+    const result = this.db.prepare("DELETE FROM runs WHERE id = ?").run(runId);
+    return result.changes > 0;
+  }
+
   getRunsForSeed(seedId: string, projectId?: string): Run[] {
     if (projectId) {
       return this.db
