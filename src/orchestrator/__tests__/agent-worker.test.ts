@@ -109,4 +109,37 @@ describe("agent-worker.ts", () => {
     // If log file doesn't exist, the worker crashed before logging
     // (e.g., store init failure) — that's acceptable for this test
   });
+
+  describe("seed reset to open on failure — source regression tests", () => {
+    /**
+     * These tests verify by source inspection that resetSeedToOpen() is called
+     * in the critical failure paths of agent-worker.ts.
+     *
+     * Source-inspection is used here because the integration approach (spawning
+     * the worker with a bad API key) fails before reaching resetSeedToOpen due to
+     * SQLite FOREIGN KEY constraints on the unregistered project_id. The source
+     * inspection approach is lighter and catches the same regression risk: that
+     * a refactor accidentally removes the resetSeedToOpen calls.
+     */
+    const WORKER_SRC_PATH = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
+
+    it("catch block (main error path) calls resetSeedToOpen", () => {
+      const source = readFileSync(WORKER_SRC_PATH, "utf-8");
+      // The main catch block must call resetSeedToOpen after the error log
+      // Pattern: "ERROR": ... then resetSeedToOpen
+      expect(source).toContain("await resetSeedToOpen(seedId, storeProjectPath)");
+    });
+
+    it("resetSeedToOpen is imported from task-backend-ops", () => {
+      const source = readFileSync(WORKER_SRC_PATH, "utf-8");
+      expect(source).toMatch(/import.*resetSeedToOpen.*from.*task-backend-ops/);
+    });
+
+    it("resetSeedToOpen is called at least once after a failed result", () => {
+      const source = readFileSync(WORKER_SRC_PATH, "utf-8");
+      // Count occurrences — there should be at least 2 (catch block + failed result block)
+      const matches = source.match(/await resetSeedToOpen\(/g) ?? [];
+      expect(matches.length).toBeGreaterThanOrEqual(2);
+    });
+  });
 });

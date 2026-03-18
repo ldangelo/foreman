@@ -314,6 +314,8 @@ async function main(): Promise<void> {
             resumed: !!resume,
           }, runId);
           log(`${isRateLimit ? "RATE LIMITED" : "FAILED"}: ${reason.slice(0, 300)}`);
+          // Reset seed back to open so it can be retried
+          await resetSeedToOpen(seedId, storeProjectPath);
         }
       }
     }
@@ -336,6 +338,8 @@ async function main(): Promise<void> {
       }, runId);
       log(`STUCK: SDK stream ended without result after ${progress.turns} turns — can resume later`);
       await appendFile(logFile, `\n[foreman-worker] STUCK: SDK generator ended without result.\n`);
+      // Reset seed back to open so it can be retried
+      await resetSeedToOpen(seedId, storeProjectPath);
     }
   } catch (err: unknown) {
     clearInterval(progressTimer);
@@ -368,6 +372,8 @@ async function main(): Promise<void> {
     }, runId);
     log(`${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason.slice(0, 200)}`);
     await appendFile(logFile, `\n[foreman-worker] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason}\n`);
+    // Reset seed back to open so it can be retried
+    await resetSeedToOpen(seedId, storeProjectPath);
   }
 
   store.close();
