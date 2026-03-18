@@ -1,9 +1,10 @@
 /**
- * Tests for TRD-020: doctor.ts backend selection based on FOREMAN_TASK_BACKEND.
+ * Tests for TRD-020: doctor.ts binary checks after sd→br migration.
  *
  * Verifies:
- * - When FOREMAN_TASK_BACKEND='br': Doctor checks for br binary and bv binary
- * - When FOREMAN_TASK_BACKEND='sd': Doctor checks for sd binary (existing behavior)
+ * - Doctor checks for br binary and bv binary (and git)
+ * - Doctor does NOT check for the legacy sd (seeds) binary
+ * - checkSystem() returns exactly 3 results (br + bv + git)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -217,9 +218,9 @@ describe("TRD-020: Doctor.checkBvBinary()", () => {
   });
 });
 
-// ── Doctor.checkSystem() backend-aware dispatch ───────────────────────────
+// ── Doctor.checkSystem() checks ───────────────────────────────────────────
 
-describe("TRD-020: Doctor.checkSystem() with backend selection", () => {
+describe("TRD-020: Doctor.checkSystem() checks (br backend only)", () => {
   const tempDirs: string[] = [];
 
   function makeTempDir(): string {
@@ -242,8 +243,7 @@ describe("TRD-020: Doctor.checkSystem() with backend selection", () => {
     tempDirs.length = 0;
   });
 
-  it("checkSystem() includes git check for both backends", async () => {
-    process.env.FOREMAN_TASK_BACKEND = "sd";
+  it("checkSystem() includes git check", async () => {
     const { Doctor } = await import("../../orchestrator/doctor.js");
     const { ForemanStore } = await import("../../lib/store.js");
 
@@ -259,8 +259,7 @@ describe("TRD-020: Doctor.checkSystem() with backend selection", () => {
     store.close();
   });
 
-  it("checkSystem() includes br check when backend='br'", async () => {
-    process.env.FOREMAN_TASK_BACKEND = "br";
+  it("checkSystem() includes br check", async () => {
     const { Doctor } = await import("../../orchestrator/doctor.js");
     const { ForemanStore } = await import("../../lib/store.js");
 
@@ -276,8 +275,7 @@ describe("TRD-020: Doctor.checkSystem() with backend selection", () => {
     store.close();
   });
 
-  it("checkSystem() includes bv check when backend='br'", async () => {
-    process.env.FOREMAN_TASK_BACKEND = "br";
+  it("checkSystem() includes bv check", async () => {
     const { Doctor } = await import("../../orchestrator/doctor.js");
     const { ForemanStore } = await import("../../lib/store.js");
 
@@ -293,8 +291,7 @@ describe("TRD-020: Doctor.checkSystem() with backend selection", () => {
     store.close();
   });
 
-  it("checkSystem() does NOT include sd check when backend='br'", async () => {
-    process.env.FOREMAN_TASK_BACKEND = "br";
+  it("checkSystem() does NOT include legacy sd (seeds) check", async () => {
     const { Doctor } = await import("../../orchestrator/doctor.js");
     const { ForemanStore } = await import("../../lib/store.js");
 
@@ -310,8 +307,7 @@ describe("TRD-020: Doctor.checkSystem() with backend selection", () => {
     store.close();
   });
 
-  it("checkSystem() returns exactly 3 results for br backend (br + bv + git)", async () => {
-    process.env.FOREMAN_TASK_BACKEND = "br";
+  it("checkSystem() returns exactly 3 results (br + bv + git)", async () => {
     const { Doctor } = await import("../../orchestrator/doctor.js");
     const { ForemanStore } = await import("../../lib/store.js");
 
