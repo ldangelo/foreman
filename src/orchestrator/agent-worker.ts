@@ -582,6 +582,14 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
     }
   }
 
+  // Close bead (br backend) BEFORE committing so br sync --flush-only updates
+  // .beads/beads.jsonl before git add -A stages it. This ensures the committed
+  // state reflects the closed bead, matching the session protocol in CLAUDE.md.
+  // Pass projectPath (repo root) so br finds .beads/ — the worktree dir has none.
+  await closeSeed(seedId, config.projectPath);
+  log(`[FINALIZE] Closed seed ${seedId}`);
+  report.push(`## Seed Close`, `- Status: SUCCESS`, "");
+
   // Commit
   let commitHash = "(none)";
   try {
@@ -696,7 +704,6 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   // refinery.mergeCompleted() and the merge succeeds). Closing here would
   // falsely mark the bead as done even if the merge later fails with conflicts
   // or test failures. See: refinery.ts mergeCompleted() and resolveConflict().
-
   // Write finalize report
   try {
     rotateReport(worktreePath, "FINALIZE_REPORT.md");

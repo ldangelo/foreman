@@ -54,6 +54,34 @@ describe("TRD-012: Dispatcher.buildSpawnPrompt", () => {
 
     expect(prompt).toContain("SessionLogs/session-");
   });
+
+  it("includes 'br sync --flush-only' before git add (session protocol)", () => {
+    const d = makeDispatcher();
+    const prompt = d.buildSpawnPrompt("bd-001", "Implement feature");
+
+    expect(prompt).toContain("br sync --flush-only");
+
+    // Verify ordering: br sync must appear before git add -A so beads JSONL
+    // is flushed to disk before it gets staged and committed.
+    const syncIdx = prompt.indexOf("br sync --flush-only");
+    const addIdx = prompt.indexOf("git add -A");
+    expect(syncIdx).toBeGreaterThan(-1);
+    expect(addIdx).toBeGreaterThan(-1);
+    expect(syncIdx).toBeLessThan(addIdx);
+  });
+
+  it("flushes beads JSONL between br close and git add", () => {
+    const d = makeDispatcher();
+    const prompt = d.buildSpawnPrompt("bd-xyz", "My feature");
+
+    const closeIdx = prompt.indexOf("br close bd-xyz");
+    const syncIdx = prompt.indexOf("br sync --flush-only");
+    const addIdx = prompt.indexOf("git add -A");
+
+    // Order must be: br close → br sync → git add
+    expect(closeIdx).toBeLessThan(syncIdx);
+    expect(syncIdx).toBeLessThan(addIdx);
+  });
 });
 
 describe("TRD-012: Dispatcher.buildResumePrompt", () => {
@@ -83,5 +111,33 @@ describe("TRD-012: Dispatcher.buildResumePrompt", () => {
     const prompt = d.buildResumePrompt("bd-001", "Implement feature");
 
     expect(prompt).toContain("SessionLogs/session-");
+  });
+
+  it("includes 'br sync --flush-only' before git add (session protocol)", () => {
+    const d = makeDispatcher();
+    const prompt = d.buildResumePrompt("bd-001", "Implement feature");
+
+    expect(prompt).toContain("br sync --flush-only");
+
+    // Verify ordering: br sync must appear before git add -A so beads JSONL
+    // is flushed to disk before it gets staged and committed.
+    const syncIdx = prompt.indexOf("br sync --flush-only");
+    const addIdx = prompt.indexOf("git add -A");
+    expect(syncIdx).toBeGreaterThan(-1);
+    expect(addIdx).toBeGreaterThan(-1);
+    expect(syncIdx).toBeLessThan(addIdx);
+  });
+
+  it("flushes beads JSONL between br close and git add", () => {
+    const d = makeDispatcher();
+    const prompt = d.buildResumePrompt("bd-xyz", "My feature");
+
+    const closeIdx = prompt.indexOf("br close bd-xyz");
+    const syncIdx = prompt.indexOf("br sync --flush-only");
+    const addIdx = prompt.indexOf("git add -A");
+
+    // Order must be: br close → br sync → git add
+    expect(closeIdx).toBeLessThan(syncIdx);
+    expect(syncIdx).toBeLessThan(addIdx);
   });
 });
