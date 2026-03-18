@@ -35,6 +35,8 @@ function makeMqEntry(overrides: Partial<MergeQueueEntry> = {}): MergeQueueEntry 
     status: "pending",
     resolved_tier: null,
     error: null,
+    retry_count: 0,
+    last_attempted_at: null,
     ...overrides,
   };
 }
@@ -54,6 +56,7 @@ function makeMocks(projectPath = "/tmp/project") {
     remove: vi.fn(),
     updateStatus: vi.fn(),
     missingFromQueue: vi.fn(() => [] as Array<{ run_id: string; seed_id: string }>),
+    reEnqueue: vi.fn(),
   };
   const doctor = new Doctor(store as any, projectPath, mergeQueue as any);
   return { store, mergeQueue, doctor };
@@ -242,6 +245,115 @@ describe("Doctor - Merge Queue Health Checks", () => {
       // Should have at least some fixed results
       const fixedResults = results.filter((r) => r.status === "fixed");
       expect(fixedResults.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("checkStuckConflictFailedEntries", () => {
+    it("returns pass when no stuck conflict/failed entries", async () => {
+      const { doctor, mergeQueue } = makeMocks();
+      mergeQueue.list.mockReturnValue([
+        makeMqEntry({ status: "merged", enqueued_at: new Date().toISOString() }),
+      ]);
+
+      const result = await doctor.checkStuckConflictFailedEntries();
+      expect(result.status).toBe("pass");
+      expect(result.name).toContain("stuck conflict/failed");
+    });
+
+    it("warns about conflict entries stuck >1h", async () => {
+      const { doctor, mergeQueue } = makeMocks();
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      mergeQueue.list.mockReturnValue([
+        makeMqEntry({ status: "conflict", error: "Code conflicts", enqueued_at: twoHoursAgo }),
+      ]);
+
+      const result = await doctor.checkStuckConflictFailedEntries();
+      expect(result.status).toBe("warn");
+      expect(result.message).toContain("MQ-011");
+    });
+
+    it("warns about failed entries stuck >1h", async () => {
+      const { doctor, mergeQueue } = makeMocks();
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      mergeQueue.list.mockReturnValue([
+        makeMqEntry({ status: "failed", error: "Test failures", enqueued_at: twoHoursAgo }),
+      ]);
+
+      const result = await doctor.checkStuckConflictFailedEntries();
+      expect(result.status).toBe("warn");
+    });
+
+    it("does not warn about recent conflict entries", async () => {
+      const { doctor, mergeQueue } = makeMocks();
+      mergeQueue.list.mockReturnValue([
+        makeMqEntry({ status: "conflict", error: "conflicts", enqueued_at: new Date().toISOString() }),
+      ]);
+
+      const result = await doctor.checkStuckConflictFailedEntries();
+      expect(result.status).toBe("pass");
+    });
+
+    it("returns pass when no merge queue configured", async () => {
+      const store = {
+        getProjectByPath: vi.fn(() => null),
+        getRunsByStatus: vi.fn(() => []),
+        getRunsForSeed: vi.fn(() => []),
+        getActiveRuns: vi.fn(() => []),
+        updateRun: vi.fn(),
+        logEvent: vi.fn(),
+        getRun: vi.fn(() => null),
+      };
+      const doctor = new Doctor(store as any, "/tmp/project");
+      const result = await doctor.checkStuckConflictFailedEntries();
+      expect(result.status).toBe("pass");
+      expect(result.message).toContain("skipping");
+    });
+
+    it("dry-run returns warn without making changes", async () => {
+      const { doctor, mergeQueue } = makeMocks();
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      mergeQueue.list.mockReturnValue([
+        makeMqEntry({ status: "failed", error: "err", enqueued_at: twoHoursAgo }),
+      ]);
+
+      const result = await doctor.checkStuckConflictFailedEntries({ dryRun: true });
+      expect(result.status).toBe("warn");
+      expect(result.message).toContain("dry-run");
+    });
+
+    it("fix: true re-enqueues stuck entries and reports fixApplied", async () => {
+      const { doctor, mergeQueue } = makeMocks();
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      mergeQueue.list.mockReturnValue([
+        makeMqEntry({ id: 10, status: "conflict", error: "Code conflicts", enqueued_at: twoHoursAgo }),
+        makeMqEntry({ id: 11, status: "failed", error: "Test failures", enqueued_at: twoHoursAgo }),
+      ]);
+      // reEnqueue returns true for each call (successful re-enqueue)
+      mergeQueue.reEnqueue.mockReturnValue(true);
+
+      const result = await doctor.checkStuckConflictFailedEntries({ fix: true });
+
+      expect(result.status).toBe("fixed");
+      expect(result.fixApplied).toContain("Re-enqueued 2 entry(ies)");
+      expect(mergeQueue.reEnqueue).toHaveBeenCalledWith(10);
+      expect(mergeQueue.reEnqueue).toHaveBeenCalledWith(11);
+      expect(mergeQueue.reEnqueue).toHaveBeenCalledTimes(2);
+    });
+
+    it("fix: true counts only successfully re-enqueued entries", async () => {
+      const { doctor, mergeQueue } = makeMocks();
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      mergeQueue.list.mockReturnValue([
+        makeMqEntry({ id: 10, status: "conflict", enqueued_at: twoHoursAgo }),
+        makeMqEntry({ id: 11, status: "failed", enqueued_at: twoHoursAgo }),
+      ]);
+      // Only first entry succeeds (e.g., second has exhausted retries)
+      mergeQueue.reEnqueue.mockReturnValueOnce(true).mockReturnValueOnce(false);
+
+      const result = await doctor.checkStuckConflictFailedEntries({ fix: true });
+
+      expect(result.status).toBe("fixed");
+      expect(result.fixApplied).toContain("Re-enqueued 1 entry(ies)");
     });
   });
 

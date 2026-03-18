@@ -53,6 +53,7 @@ export const mergeCommand = new Command("merge")
   .option("--dry-run", "Preview merge results without modifying git state")
   .option("--resolve <runId>", "Resolve a conflicting run by ID")
   .option("--strategy <strategy>", "Conflict resolution strategy: theirs|abort")
+  .option("--auto-retry", "Automatically retry failed/conflict entries using exponential backoff")
   .option("--stats [period]", "Show merge cost statistics (daily|weekly|monthly|all)")
   .option("--json", "Output stats in JSON format")
   .action(async (opts) => {
@@ -375,6 +376,54 @@ export const mergeCommand = new Command("merge")
       // Reset skipped entries back to pending (for --seed filter)
       for (const id of skippedIds) {
         mq.updateStatus(id, "pending");
+      }
+
+      // ── Auto-retry loop ──────────────────────────────────────────────────
+      if (opts.autoRetry && !opts.seed) {
+        const retryable = mq.getRetryableEntries();
+        if (retryable.length > 0) {
+          console.log(chalk.dim(`\n  Retrying ${retryable.length} failed/conflict entry(ies)...\n`));
+          for (const retryEntry of retryable) {
+            if (mq.reEnqueue(retryEntry.id)) {
+              console.log(`Retrying: ${chalk.cyan(retryEntry.seed_id)} (attempt ${retryEntry.retry_count + 1})`);
+              const toProcess = mq.dequeue();
+              if (!toProcess) continue;
+
+              try {
+                const report = await refinery.mergeCompleted({
+                  targetBranch,
+                  runTests: opts.tests,
+                  testCommand: opts.testCommand,
+                  projectId: project.id,
+                  seedId: toProcess.seed_id,
+                });
+
+                if (report.merged.length > 0) {
+                  mq.updateStatus(toProcess.id, "merged", { completedAt: new Date().toISOString() });
+                  merged.push(...report.merged);
+                } else if (report.conflicts.length > 0 || report.prsCreated.length > 0) {
+                  mq.updateStatus(toProcess.id, "conflict", { error: "Code conflicts" });
+                  conflicts.push(...report.conflicts);
+                  prsCreated.push(...report.prsCreated);
+                } else if (report.testFailures.length > 0) {
+                  mq.updateStatus(toProcess.id, "failed", { error: "Test failures" });
+                  testFailures.push(...report.testFailures);
+                } else {
+                  mq.updateStatus(toProcess.id, "failed", { error: "No completed run found" });
+                }
+              } catch (err: unknown) {
+                const message = err instanceof Error ? err.message : String(err);
+                mq.updateStatus(toProcess.id, "failed", { error: message });
+                testFailures.push({
+                  runId: toProcess.run_id,
+                  seedId: toProcess.seed_id,
+                  branchName: toProcess.branch_name,
+                  error: message,
+                });
+              }
+            }
+          }
+        }
       }
 
       // ── Display results ─────────────────────────────────────────────

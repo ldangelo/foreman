@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS merge_queue (
     CHECK (status IN ('pending', 'merging', 'merged', 'conflict', 'failed')),
   resolved_tier INTEGER,
   error TEXT,
+  retry_count INTEGER DEFAULT 0,
+  last_attempted_at TEXT DEFAULT NULL,
   FOREIGN KEY (run_id) REFERENCES runs(id)
 );
 
@@ -308,6 +310,160 @@ describe("MergeQueue", () => {
       // Also verify via list
       const listed = queue.list();
       expect(listed[0].files_modified).toEqual(files);
+    });
+  });
+
+  // ── resetForRetry ──────────────────────────────────────────────────
+  describe("resetForRetry", () => {
+    it("resets a failed entry back to pending", () => {
+      const entry = queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      queue.updateStatus(entry.id, "failed", { error: "some error" });
+
+      const result = queue.resetForRetry("seed-1");
+      expect(result).toBe(true);
+
+      const pending = queue.list("pending");
+      expect(pending).toHaveLength(1);
+      expect(pending[0].error).toBeNull();
+      expect(pending[0].last_attempted_at).not.toBeNull();
+    });
+
+    it("resets a conflict entry back to pending", () => {
+      const entry = queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      queue.updateStatus(entry.id, "conflict", { error: "Code conflicts" });
+
+      const result = queue.resetForRetry("seed-1");
+      expect(result).toBe(true);
+
+      const pending = queue.list("pending");
+      expect(pending).toHaveLength(1);
+    });
+
+    it("returns false when no retryable entry exists for seed", () => {
+      const entry = queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      queue.updateStatus(entry.id, "merged", { completedAt: new Date().toISOString() });
+
+      const result = queue.resetForRetry("seed-1");
+      expect(result).toBe(false);
+    });
+
+    it("returns false for nonexistent seed", () => {
+      expect(queue.resetForRetry("nonexistent")).toBe(false);
+    });
+  });
+
+  // ── reEnqueue and retry logic ──────────────────────────────────────
+  describe("reEnqueue", () => {
+    it("re-enqueues a failed entry and increments retry_count", () => {
+      const entry = queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      queue.updateStatus(entry.id, "failed", { error: "Test failures" });
+
+      const result = queue.reEnqueue(entry.id);
+      expect(result).toBe(true);
+
+      const pending = queue.list("pending");
+      expect(pending).toHaveLength(1);
+      expect(pending[0].retry_count).toBe(1);
+      expect(pending[0].error).toBeNull();
+      expect(pending[0].last_attempted_at).toBeTruthy();
+    });
+
+    it("re-enqueues a conflict entry", () => {
+      const entry = queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      queue.updateStatus(entry.id, "conflict", { error: "Code conflicts" });
+
+      const result = queue.reEnqueue(entry.id);
+      expect(result).toBe(true);
+
+      const pending = queue.list("pending");
+      expect(pending[0].retry_count).toBe(1);
+    });
+
+    it("returns false for entries at max retry limit", () => {
+      const entry = queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+
+      // Exhaust retries
+      queue.reEnqueue(entry.id); // retry_count → 1
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+      queue.reEnqueue(entry.id); // retry_count → 2
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+      queue.reEnqueue(entry.id); // retry_count → 3 (= maxRetries)
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+
+      const result = queue.reEnqueue(entry.id); // should fail: retry_count >= maxRetries
+      expect(result).toBe(false);
+      expect(queue.list("failed")).toHaveLength(1);
+    });
+
+    it("returns false for non-failed/conflict entries", () => {
+      const entry = queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      // status is 'pending'
+      const result = queue.reEnqueue(entry.id);
+      expect(result).toBe(false);
+    });
+
+    it("returns false for nonexistent id", () => {
+      expect(queue.reEnqueue(9999)).toBe(false);
+    });
+  });
+
+  // ── shouldRetry and getRetryableEntries ────────────────────────────
+  describe("shouldRetry", () => {
+    it("returns true for a fresh failed entry with no retry history", () => {
+      const entry = queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+      const failed = queue.list("failed");
+
+      expect(queue.shouldRetry(failed[0])).toBe(true);
+    });
+
+    it("returns false when retry_count >= maxRetries", () => {
+      const entry = queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+      // Manually simulate maxed out retries
+      queue.reEnqueue(entry.id);
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+      queue.reEnqueue(entry.id);
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+      queue.reEnqueue(entry.id);
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+
+      const failed = queue.list("failed");
+      expect(queue.shouldRetry(failed[0])).toBe(false);
+    });
+  });
+
+  describe("getRetryableEntries", () => {
+    it("returns failed/conflict entries eligible for retry", () => {
+      const e1 = queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      const e2 = queue.enqueue({ branchName: "foreman/seed-2", seedId: "seed-2", runId: "run-2" });
+      queue.updateStatus(e1.id, "failed", { error: "err" });
+      queue.updateStatus(e2.id, "conflict", { error: "conflict" });
+
+      const retryable = queue.getRetryableEntries();
+      expect(retryable).toHaveLength(2);
+      expect(retryable.map(e => e.seed_id)).toContain("seed-1");
+      expect(retryable.map(e => e.seed_id)).toContain("seed-2");
+    });
+
+    it("excludes entries that have exhausted retry limit", () => {
+      const entry = queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+      queue.reEnqueue(entry.id);
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+      queue.reEnqueue(entry.id);
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+      queue.reEnqueue(entry.id);
+      queue.updateStatus(entry.id, "failed", { error: "err" });
+
+      const retryable = queue.getRetryableEntries();
+      expect(retryable).toHaveLength(0);
+    });
+
+    it("returns empty array when no failed/conflict entries", () => {
+      queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      expect(queue.getRetryableEntries()).toHaveLength(0);
     });
   });
 });
