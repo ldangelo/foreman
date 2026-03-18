@@ -422,6 +422,9 @@ export const runCommand = new Command("run")
       // Dispatch loop: dispatch a batch, watch until done, then check for more work.
       // Exits when no new tasks are dispatched (all work complete or all remaining blocked).
       let iteration = 0;
+      // Track whether the user explicitly detached (Ctrl+C). When detached, agents
+      // continue running in the background so we skip the final merge drain.
+      let userDetached = false;
       while (true) {
         iteration++;
         if (iteration > 1) {
@@ -486,6 +489,7 @@ export const runCommand = new Command("run")
             if (runIds.length > 0) {
               const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
               if (detached) {
+                userDetached = true;
                 break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
               }
             }
@@ -530,6 +534,7 @@ export const runCommand = new Command("run")
           const runIds = result.dispatched.map((t) => t.runId);
           const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
           if (detached) {
+            userDetached = true;
             break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
           }
           // Auto-merge completed branches before dispatching the next batch
@@ -557,6 +562,37 @@ export const runCommand = new Command("run")
 
         // No-watch mode: dispatch once and exit
         break;
+      }
+
+      // ── Final merge drain ───────────────────────────────────────────────────
+      // After the dispatch loop exits, process any merge queue entries that
+      // accumulated while agents were running. This covers two scenarios:
+      //   1. Race window: an agent completed after the last in-loop autoMerge call
+      //      but before the loop exit, leaving an entry in the queue.
+      //   2. No-watch mode: autoMerge was never called during the loop, but
+      //      previously-completed agents may have pending queue entries.
+      //
+      // Skipped when the user detached (Ctrl+C) — agents are still running in
+      // the background and the user did not intend to block on merging.
+      if (enableAutoMerge && !dryRun && !userDetached) {
+        console.log(chalk.dim("Processing remaining merge queue entries..."));
+        try {
+          const mergeResult = await autoMerge({ store, taskClient, projectPath });
+          if (mergeResult.merged > 0 || mergeResult.conflicts > 0 || mergeResult.failed > 0) {
+            if (mergeResult.merged > 0) {
+              console.log(chalk.green(`  Auto-merged ${mergeResult.merged} branch(es).`));
+            }
+            if (mergeResult.conflicts > 0) {
+              console.log(chalk.yellow(`  ${mergeResult.conflicts} conflict(s) — run 'foreman merge' to resolve.`));
+            }
+            if (mergeResult.failed > 0) {
+              console.log(chalk.dim(`  ${mergeResult.failed} merge(s) failed — run 'foreman merge' for details.`));
+            }
+          }
+        } catch (mergeErr: unknown) {
+          const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+          console.error(chalk.yellow(`  Auto-merge error (non-fatal): ${msg}`));
+        }
       }
 
       stopSentinel();
