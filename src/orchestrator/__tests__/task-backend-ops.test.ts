@@ -51,7 +51,7 @@ describe("closeSeed — br backend", () => {
 
     await closeSeed("bd-abc-001");
 
-    expect(mockExecFileSync).toHaveBeenCalledOnce();
+    // First call is close, second is sync --flush-only
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toContain("br");
     expect(args).toEqual(["close", "bd-abc-001", "--reason", "Completed via pipeline"]);
@@ -108,7 +108,11 @@ describe("closeSeed — br backend", () => {
 
     await closeSeed("bd-flush-test", "/my/project");
 
-    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], "/my/project");
+    // execFileSync called twice: first for close, then for sync --flush-only
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
+    expect(syncArgs).toEqual(["sync", "--flush-only"]);
+    expect(syncOpts).toMatchObject({ cwd: "/my/project" });
   });
 
   it("calls br sync --flush-only with undefined projectPath when not provided", async () => {
@@ -116,12 +120,17 @@ describe("closeSeed — br backend", () => {
 
     await closeSeed("bd-flush-no-path");
 
-    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], undefined);
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
+    expect(syncArgs).toEqual(["sync", "--flush-only"]);
+    expect(syncOpts).not.toHaveProperty("cwd");
   });
 
   it("does not throw when br sync --flush-only fails (flush is non-fatal)", async () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(""));
-    mockExecBr.mockRejectedValue(new Error("sync failed"));
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "sync") throw new Error("sync failed");
+      return Buffer.from("");
+    });
 
     // Must not reject even if flush fails
     await expect(closeSeed("bd-fail-sync", "/my/project")).resolves.toBeUndefined();
@@ -132,7 +141,11 @@ describe("closeSeed — br backend", () => {
 
     await closeSeed("bd-close-fail-no-flush");
 
-    expect(mockExecBr).not.toHaveBeenCalled();
+    // Only the (failed) close call was made — sync should not have been called
+    const syncCalls = mockExecFileSync.mock.calls.filter(
+      (call) => Array.isArray(call[1]) && (call[1] as string[])[0] === "sync",
+    );
+    expect(syncCalls).toHaveLength(0);
   });
 });
 
@@ -156,7 +169,7 @@ describe("resetSeedToOpen — br backend", () => {
 
     await resetSeedToOpen("bd-stuck-001");
 
-    expect(mockExecFileSync).toHaveBeenCalledOnce();
+    // First call is update, second is sync --flush-only
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toContain("br");
     expect(args).toEqual(["update", "bd-stuck-001", "--status", "open"]);
@@ -214,7 +227,10 @@ describe("resetSeedToOpen — br backend", () => {
 
     await resetSeedToOpen("bd-reset-flush-test", "/my/project");
 
-    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], "/my/project");
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
+    expect(syncArgs).toEqual(["sync", "--flush-only"]);
+    expect(syncOpts).toMatchObject({ cwd: "/my/project" });
   });
 
   it("calls br sync --flush-only with undefined projectPath when not provided", async () => {
@@ -222,12 +238,17 @@ describe("resetSeedToOpen — br backend", () => {
 
     await resetSeedToOpen("bd-reset-flush-no-path");
 
-    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], undefined);
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
+    expect(syncArgs).toEqual(["sync", "--flush-only"]);
+    expect(syncOpts).not.toHaveProperty("cwd");
   });
 
   it("does not throw when br sync --flush-only fails (flush is non-fatal)", async () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(""));
-    mockExecBr.mockRejectedValue(new Error("sync failed"));
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "sync") throw new Error("sync failed");
+      return Buffer.from("");
+    });
 
     // Must not reject even if flush fails
     await expect(resetSeedToOpen("bd-reset-fail-sync", "/my/project")).resolves.toBeUndefined();
@@ -238,7 +259,10 @@ describe("resetSeedToOpen — br backend", () => {
 
     await resetSeedToOpen("bd-reset-update-fail-no-flush");
 
-    expect(mockExecBr).not.toHaveBeenCalled();
+    const syncCalls = mockExecFileSync.mock.calls.filter(
+      (call) => Array.isArray(call[1]) && (call[1] as string[])[0] === "sync",
+    );
+    expect(syncCalls).toHaveLength(0);
   });
 });
 
@@ -441,6 +465,8 @@ function makeSyncMocks() {
 
 describe("syncBeadStatusOnStartup", () => {
   beforeEach(() => {
+    mockExecFileSync.mockReset();
+    mockExecFileSync.mockReturnValue(undefined);
     mockExecBr.mockReset();
     mockExecBr.mockResolvedValue("");
   });
@@ -493,10 +519,17 @@ describe("syncBeadStatusOnStartup", () => {
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
     taskClient.show.mockResolvedValue({ status: "in_progress" });
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
-    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], undefined);
+    // syncBeadStatusOnStartup uses execFileSync directly (not execBr) for the flush
+    const flushCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "sync" && call[1][1] === "--flush-only",
+    );
+    expect(flushCall).toBeDefined();
+    // No cwd when projectPath is undefined
+    expect(flushCall![2]).not.toHaveProperty("cwd");
   });
 
   it("passes projectPath to br sync --flush-only", async () => {
@@ -504,12 +537,17 @@ describe("syncBeadStatusOnStartup", () => {
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
     taskClient.show.mockResolvedValue({ status: "in_progress" });
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1", {
       projectPath: "/my/project",
     });
 
-    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], "/my/project");
+    const flushCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "sync" && call[1][1] === "--flush-only",
+    );
+    expect(flushCall).toBeDefined();
+    expect(flushCall![2]).toMatchObject({ cwd: "/my/project" });
   });
 
   it("does not call br sync --flush-only when nothing was synced", async () => {
@@ -655,7 +693,11 @@ describe("syncBeadStatusOnStartup", () => {
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
     taskClient.show.mockResolvedValue({ status: "in_progress" });
-    mockExecBr.mockRejectedValue(new Error("br sync failed"));
+    // syncBeadStatusOnStartup uses execFileSync for flush — make it throw only on sync
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "sync") throw new Error("br sync failed");
+      return Buffer.from("");
+    });
 
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 

@@ -11,8 +11,9 @@
  *
  * TRD-024: sd backend removed. Always uses Beads Rust CLI at ~/.local/bin/br.
  *
- * CLI calls are made via execFileSync (no shell interpolation) for synchronous
- * operations and execBr for async operations.
+ * CLI calls are made via execFileSync (no shell interpolation) for all
+ * subprocess operations to avoid auto-appending --json (which execBr does)
+ * and to ensure the br dirty flag is set correctly on each call.
  * Errors from the CLI subprocess are caught and logged; they must not
  * propagate to callers since a failed close/reset is non-fatal for the
  * pipeline worker itself.
@@ -24,7 +25,6 @@ import { homedir } from "node:os";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { ForemanStore } from "../lib/store.js";
 import type { ITaskClient } from "../lib/task-client.js";
-import { execBr } from "../lib/beads-rust.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
 import type { StateMismatch } from "../lib/run-status.js";
 
@@ -70,8 +70,9 @@ export async function closeSeed(seedId: string, projectPath?: string): Promise<v
     console.error(`[task-backend-ops] Closed seed ${seedId} via br`);
 
     // Flush changes to .beads/beads.jsonl so the close survives a process restart.
+    // Uses execFileSync (not execBr) to avoid the auto-appended --json flag.
     try {
-      await execBr(["sync", "--flush-only"], projectPath);
+      execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
       console.error(`[task-backend-ops] Flushed JSONL for seed ${seedId}`);
     } catch (flushErr: unknown) {
       const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
@@ -108,8 +109,9 @@ export async function resetSeedToOpen(seedId: string, projectPath?: string): Pro
     console.error(`[task-backend-ops] Reset seed ${seedId} to open via br`);
 
     // Flush changes to .beads/beads.jsonl so the reset survives a process restart.
+    // Uses execFileSync (not execBr) to avoid the auto-appended --json flag.
     try {
-      await execBr(["sync", "--flush-only"], projectPath);
+      execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
       console.error(`[task-backend-ops] Flushed JSONL for reset seed ${seedId}`);
     } catch (flushErr: unknown) {
       const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
@@ -247,10 +249,12 @@ export async function syncBeadStatusOnStartup(
     }
   }
 
-  // Flush .beads/beads.jsonl to persist all updates
+  // Flush .beads/beads.jsonl to persist all updates.
+  // Uses execFileSync (not execBr) to avoid the auto-appended --json flag
+  // which bypasses br's dirty-flag mechanism and causes silent no-ops.
   if (!dryRun && synced > 0) {
     try {
-      await execBr(["sync", "--flush-only"], projectPath);
+      execFileSync(brPath(), ["sync", "--flush-only"], execOpts(projectPath));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`br sync --flush-only failed: ${msg}`);

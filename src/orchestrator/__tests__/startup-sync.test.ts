@@ -11,17 +11,18 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Mock setup ──────────────────────────────────────────────────────────────
 //
-// Mock execBr so no real subprocess is spawned during tests.
-// vi.hoisted() ensures the mock variable is ready before the module factory runs.
+// Mock execFileSync so no real subprocess is spawned during tests.
+// syncBeadStatusOnStartup uses execFileSync directly (not execBr) for the
+// flush call to avoid the auto-appended --json flag that bypasses br's dirty flag.
 
-const { mockExecBr } = vi.hoisted(() => ({
-  mockExecBr: vi.fn().mockResolvedValue(undefined),
+const { mockExecFileSync } = vi.hoisted(() => ({
+  mockExecFileSync: vi.fn().mockReturnValue(undefined),
 }));
 
-vi.mock("../../lib/beads-rust.js", () => ({
-  execBr: mockExecBr,
-  unwrapBrResponse: vi.fn((x: unknown) => x),
-}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, execFileSync: mockExecFileSync };
+});
 
 import { syncBeadStatusOnStartup } from "../task-backend-ops.js";
 import type { SyncResult } from "../task-backend-ops.js";
@@ -62,8 +63,8 @@ function makeMocks() {
 
 describe("syncBeadStatusOnStartup", () => {
   beforeEach(() => {
-    mockExecBr.mockReset();
-    mockExecBr.mockResolvedValue(undefined);
+    mockExecFileSync.mockReset();
+    mockExecFileSync.mockReturnValue(undefined);
   });
 
   it("returns empty result when no terminal runs exist", async () => {
@@ -283,10 +284,14 @@ describe("syncBeadStatusOnStartup", () => {
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
-    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], undefined);
+    // execFileSync should be called with br path and ["sync", "--flush-only"]
+    const flushCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "sync" && call[1][1] === "--flush-only",
+    );
+    expect(flushCall).toBeDefined();
   });
 
-  it("passes projectPath to execBr sync call", async () => {
+  it("passes projectPath to execFileSync sync call", async () => {
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
@@ -296,7 +301,12 @@ describe("syncBeadStatusOnStartup", () => {
       projectPath: "/my/project",
     });
 
-    expect(mockExecBr).toHaveBeenCalledWith(["sync", "--flush-only"], "/my/project");
+    const flushCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "sync",
+    );
+    expect(flushCall).toBeDefined();
+    // Third arg is the options object with cwd
+    expect(flushCall![2]).toMatchObject({ cwd: "/my/project" });
   });
 
   it("does not call br sync --flush-only when no seeds were synced", async () => {
@@ -308,7 +318,10 @@ describe("syncBeadStatusOnStartup", () => {
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
-    expect(mockExecBr).not.toHaveBeenCalled();
+    const flushCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "sync",
+    );
+    expect(flushCall).toBeUndefined();
   });
 
   it("does not call br sync --flush-only in dry-run mode", async () => {
@@ -319,7 +332,10 @@ describe("syncBeadStatusOnStartup", () => {
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1", { dryRun: true });
 
-    expect(mockExecBr).not.toHaveBeenCalled();
+    const flushCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "sync",
+    );
+    expect(flushCall).toBeUndefined();
   });
 
   it("records error when br sync --flush-only fails but still returns result", async () => {
@@ -327,7 +343,10 @@ describe("syncBeadStatusOnStartup", () => {
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
     taskClient.show.mockResolvedValue({ status: "in_progress" });
-    mockExecBr.mockRejectedValue(new Error("br sync failed"));
+    mockExecFileSync.mockImplementation((bin: string, args: string[]) => {
+      if (args[0] === "sync") throw new Error("br sync failed");
+      return undefined;
+    });
 
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
