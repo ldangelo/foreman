@@ -129,7 +129,7 @@ For each ready bead:
 For each ready task from bd ready --json:
   sessions_spawn(
     runtime: "acp",
-    task: "Read AGENTS.md and implement the task. Use bd to track progress. When done: bd close <bead-id> && git add -A && git commit && git push",
+    task: "Read AGENTS.md and implement the task. Use br to track progress. When done: br close <bead-id> && git add . && git commit && git push",
     cwd: "<worktree-path>",
     mode: "run"
   )

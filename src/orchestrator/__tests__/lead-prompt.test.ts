@@ -42,6 +42,12 @@ describe("leadPrompt", () => {
     expect(prompt).toContain("br close");
   });
 
+  it("uses 'git add .' (not 'git add -A') to limit staging scope to current directory in worktrees", () => {
+    const prompt = leadPrompt(baseOpts);
+    expect(prompt).toContain("git add .");
+    expect(prompt).not.toContain("git add -A");
+  });
+
   it("includes max retry guidance", () => {
     const prompt = leadPrompt(baseOpts);
     expect(prompt).toContain("2 retries");

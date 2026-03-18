@@ -88,7 +88,7 @@ After QA finishes, read QA_REPORT.md.
 ## Finalize
 Once all agents have passed (or you've decided the work is good enough after retries):
 1. Run pre-commit bug scan (`npx tsc --noEmit`) to catch type errors before committing
-2. `git add -A`
+2. `git add .`
 3. `git commit -m "{{seedTitle}} ({{seedId}})"`
 4. `git push -u origin foreman/{{seedId}}`
 5. `br close {{seedId}} --reason "Completed via agent team"`
