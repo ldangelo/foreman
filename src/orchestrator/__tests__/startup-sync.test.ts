@@ -52,7 +52,7 @@ function makeMocks() {
     getRunsByStatuses: vi.fn((): MinimalRun[] => []),
   };
   const taskClient = {
-    show: vi.fn(async () => ({ status: "in_progress" })),
+    show: vi.fn(async (_id: string) => ({ status: "in_progress" })),
     update: vi.fn(async () => {}),
   };
   return { store, taskClient };
@@ -85,7 +85,7 @@ describe("syncBeadStatusOnStartup", () => {
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
     expect(store.getRunsByStatuses).toHaveBeenCalledOnce();
-    const [statuses] = store.getRunsByStatuses.mock.calls[0] as [string[]];
+    const [statuses] = store.getRunsByStatuses.mock.calls[0] as unknown as [string[]];
     expect(statuses).toContain("completed");
     expect(statuses).toContain("merged");
     expect(statuses).toContain("pr-created");
@@ -101,7 +101,7 @@ describe("syncBeadStatusOnStartup", () => {
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-xyz");
 
-    const [, projectId] = store.getRunsByStatuses.mock.calls[0] as [string[], string];
+    const [, projectId] = store.getRunsByStatuses.mock.calls[0] as unknown as [string[], string];
     expect(projectId).toBe("proj-xyz");
   });
 
