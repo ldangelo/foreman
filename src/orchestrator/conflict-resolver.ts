@@ -6,21 +6,14 @@ import { existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import type { MergeQueueConfig } from "./merge-config.js";
 import { MergeValidator } from "./merge-validator.js";
 import type { ConflictPatterns } from "./conflict-patterns.js";
+import { REPORT_FILES } from "../lib/archive-reports.js";
 
 const execFileAsync = promisify(execFile);
 
 const MAX_BUFFER = 10 * 1024 * 1024;
 
-// Report files that agents produce in the worktree root
-export const REPORT_FILES = [
-  "EXPLORER_REPORT.md",
-  "DEVELOPER_REPORT.md",
-  "QA_REPORT.md",
-  "REVIEW.md",
-  "FINALIZE_REPORT.md",
-  "TASK.md",
-  "AGENTS.md",
-];
+// Re-export for backwards compatibility
+export { REPORT_FILES };
 
 /** Shape of the Anthropic Messages API response (subset). */
 export interface AnthropicMessage {

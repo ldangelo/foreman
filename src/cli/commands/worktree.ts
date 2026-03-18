@@ -4,6 +4,7 @@ import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
 import { getRepoRoot, listWorktrees, removeWorktree, deleteBranch } from "../../lib/git.js";
+import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -107,6 +108,7 @@ export async function cleanWorktrees(
     }
 
     try {
+      await archiveWorktreeReports(projectPath, wt.path, wt.seedId);
       await removeWorktree(projectPath, wt.path);
       await deleteBranch(projectPath, wt.branch, {
         force: opts.force,

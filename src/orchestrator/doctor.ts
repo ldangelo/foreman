@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 
 import type { ForemanStore, Run } from "../lib/store.js";
 import { listWorktrees, removeWorktree } from "../lib/git.js";
+import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { MergeQueue, MergeQueueEntry } from "./merge-queue.js";
@@ -237,6 +238,7 @@ export class Doctor {
           });
         } else if (fix) {
           try {
+            await archiveWorktreeReports(this.projectPath, wt.path, seedId).catch(() => {});
             await removeWorktree(this.projectPath, wt.path);
             try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
             results.push({
@@ -275,6 +277,7 @@ export class Doctor {
           });
         } else if (fix) {
           try {
+            await archiveWorktreeReports(this.projectPath, wt.path, seedId).catch(() => {});
             await removeWorktree(this.projectPath, wt.path);
             try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
             results.push({
