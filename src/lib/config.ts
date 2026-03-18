@@ -88,6 +88,11 @@ export function getSentinelBudget(): number {
   return readBudgetFromEnv("FOREMAN_SENTINEL_BUDGET_USD", 2.00);
 }
 
+/** Budget for the session-log SDK query (default: $0.50, uses Haiku model). */
+export function getSessionLogBudget(): number {
+  return readBudgetFromEnv("FOREMAN_SESSION_LOG_BUDGET_USD", 0.50);
+}
+
 // ── Timeout values (milliseconds) ────────────────────────────────────────
 
 export const PIPELINE_TIMEOUTS = {
