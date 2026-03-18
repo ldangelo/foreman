@@ -58,24 +58,6 @@ export class Doctor {
 
   // ── System checks ──────────────────────────────────────────────────
 
-  async checkSdBinary(): Promise<CheckResult> {
-    const sdPath = join(homedir(), ".bun", "bin", "sd");
-    try {
-      await access(sdPath);
-      return {
-        name: "sd (seeds) CLI binary",
-        status: "pass",
-        message: `Found at ${sdPath}`,
-      };
-    } catch {
-      return {
-        name: "sd (seeds) CLI binary",
-        status: "fail",
-        message: `Not found at ${sdPath}. Install via: bun install -g @os-eco/seeds-cli`,
-      };
-    }
-  }
-
   async checkBrBinary(): Promise<CheckResult> {
     const brPath = join(homedir(), ".local", "bin", "br");
     try {
@@ -172,22 +154,6 @@ export class Doctor {
       name: "project registered in foreman",
       status: "fail",
       message: `No project registered for ${this.projectPath}. Run 'foreman init' first.`,
-    };
-  }
-
-  async checkSeedsInitialized(): Promise<CheckResult> {
-    const seedsDir = join(this.projectPath, ".seeds");
-    if (existsSync(seedsDir)) {
-      return {
-        name: "seeds (.seeds/) initialized",
-        status: "pass",
-        message: ".seeds directory found",
-      };
-    }
-    return {
-      name: "seeds (.seeds/) initialized",
-      status: "fail",
-      message: `No .seeds directory at ${seedsDir}. Run 'foreman init' first.`,
     };
   }
 

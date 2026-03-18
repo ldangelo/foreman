@@ -145,7 +145,7 @@ describe("doctor command", () => {
 
     expect(output).toContain("project registered in foreman");
     // The project is registered so this check should not contain "fail" for that line
-    // The overall may still fail due to missing sd binary in CI
+    // The overall may still fail due to missing br/bv/git binaries in CI
     expect(output).toContain("Summary");
   }, 15_000);
 
