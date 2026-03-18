@@ -586,6 +586,51 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
   let commitHash = "(none)";
   try {
     execFileSync("git", ["add", "-A"], opts);
+
+    // Detect silently-ignored new files (files skipped by git add -A due to .gitignore)
+    try {
+      const ignoredOutput = execFileSync(
+        "git",
+        ["ls-files", "--others", "--ignored", "--exclude-standard"],
+        opts,
+      )
+        .toString()
+        .trim();
+      if (ignoredOutput) {
+        const ignoredFiles = ignoredOutput.split("\n").filter(Boolean);
+        // Fast-path guard: if the list is very large (e.g., node_modules/ was enumerated),
+        // skip detailed reporting to avoid slow log writes and high memory use.
+        // The inner try/catch ensures this is non-fatal either way.
+        if (ignoredFiles.length > 500) {
+          log(`[FINALIZE] Detected ${ignoredFiles.length} silently-ignored file(s) — too many to log individually`);
+          report.push(
+            `## Silently Ignored Files`,
+            `- Count: ${ignoredFiles.length} (truncated — too many to display)`,
+            `- Note: A large ignored directory (e.g. node_modules/) may be present in the worktree`,
+            "",
+          );
+        } else {
+          // Truncate to avoid bloating the report
+          const displayFiles = ignoredFiles.slice(0, 50);
+          const truncated = ignoredFiles.length > 50 ? ` (showing first 50 of ${ignoredFiles.length})` : "";
+          log(`[FINALIZE] Detected ${ignoredFiles.length} silently-ignored file(s)${truncated}`);
+          await appendFile(logFile, `[FINALIZE] Silently-ignored files:\n${ignoredFiles.join("\n")}\n`);
+          report.push(
+            `## Silently Ignored Files`,
+            `- Count: ${ignoredFiles.length}${truncated}`,
+            `- Files:`,
+            ...displayFiles.map((f) => `  - ${f}`),
+            "",
+          );
+        }
+      } else {
+        report.push(`## Silently Ignored Files`, `- Count: 0`, "");
+      }
+    } catch {
+      // Detection is non-fatal — log and continue
+      log(`[FINALIZE] Could not detect silently-ignored files (non-fatal)`);
+    }
+
     execFileSync("git", ["commit", "-m", `${seedTitle} (${seedId})`], opts);
     commitHash = execFileSync("git", ["rev-parse", "--short", "HEAD"], opts).toString().trim();
     log(`[FINALIZE] Committed ${commitHash}`);
