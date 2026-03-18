@@ -33,6 +33,8 @@ export interface Issue {
   parent: string | null;
   created_at: string;
   updated_at: string;
+  /** Full description text. Populated when fetched via show(); absent on list/ready() results. */
+  description?: string | null;
 }
 
 // ── Update options ───────────────────────────────────────────────────────
@@ -73,12 +75,12 @@ export interface ITaskClient {
   /**
    * Show full detail for a single issue.
    *
-   * Used by Monitor to detect completion (status === "closed" | "completed").
-   * The return type is intentionally loose — Monitor only inspects the
-   * `status` field; concrete implementations return BrIssueDetail or
-   * BeadDetail respectively.
+   * Used by Monitor to detect completion (status === "closed" | "completed")
+   * and by Dispatcher to fetch the description for agent prompts.
+   * The return type is intentionally loose — concrete implementations return
+   * BrIssueDetail or BeadDetail respectively, both of which include these fields.
    */
-  show(id: string): Promise<{ status: string }>;
+  show(id: string): Promise<{ status: string; description?: string | null }>;
 
   /**
    * Update fields on an issue.

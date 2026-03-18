@@ -536,6 +536,113 @@ describe("Dispatcher.resumeRuns — seed in_progress marking", () => {
   });
 });
 
+describe("Dispatcher.dispatch — description fetching", () => {
+  function makeIssue(id: string, priority?: string): Issue {
+    return {
+      id,
+      title: `Task ${id}`,
+      status: "open",
+      priority: priority ?? "P2",
+      type: "task",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  it("fetches description via show() and passes it to dispatched task model selection", async () => {
+    const issue = makeIssue("bd-001", "P2");
+
+    // show() returns a description
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue({ status: "open", description: "This requires a complex overhaul" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    // show() must have been called to fetch the description
+    expect(seedsClient.show).toHaveBeenCalledWith("bd-001");
+    // The description "complex overhaul" should trigger opus model selection
+    expect(result.dispatched[0].model).toBe("claude-opus-4-6");
+  });
+
+  it("calls show() for each ready seed to fetch description", async () => {
+    const issues: Issue[] = [
+      makeIssue("bd-001", "P2"),
+      makeIssue("bd-002", "P2"),
+    ];
+
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue(issues),
+      show: vi.fn().mockResolvedValue({ status: "open", description: "Some description" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    await dispatcher.dispatch({ dryRun: true });
+
+    expect(seedsClient.show).toHaveBeenCalledWith("bd-001");
+    expect(seedsClient.show).toHaveBeenCalledWith("bd-002");
+    expect(seedsClient.show).toHaveBeenCalledTimes(2);
+  });
+
+  it("gracefully handles show() failure and continues with no description", async () => {
+    const issue = makeIssue("bd-001", "P2");
+
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockRejectedValue(new Error("network error")),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    // Should not throw even when show() fails
+    const result = await dispatcher.dispatch({ dryRun: true });
+    expect(result.dispatched).toHaveLength(1);
+    // Without description, title-only task defaults to sonnet
+    expect(result.dispatched[0].model).toBe("claude-sonnet-4-6");
+  });
+
+  it("does not overwrite description when show() returns null description", async () => {
+    const issue = makeIssue("bd-001", "P2");
+
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue({ status: "open", description: null }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: true });
+    // null description → no description-based opus upgrade, stays sonnet
+    expect(result.dispatched[0].model).toBe("claude-sonnet-4-6");
+  });
+});
+
 describe("PLAN_STEP_CONFIG", () => {
   it("has a valid model", () => {
     expect(PLAN_STEP_CONFIG.model).toBe("claude-sonnet-4-6");

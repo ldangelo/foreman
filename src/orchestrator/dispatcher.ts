@@ -137,6 +137,16 @@ export class Dispatcher {
         continue;
       }
 
+      // Fetch full issue details to get the description (ready() only returns basic fields)
+      try {
+        const detail = await this.seeds.show(seed.id);
+        if (detail.description != null) {
+          seed.description = detail.description;
+        }
+      } catch (err) {
+        log(`warn: could not fetch description for ${seed.id}: ${err}`);
+      }
+
       const seedInfo = seedToInfo(seed);
       const runtime: RuntimeSelection = "claude-code";
       const model = opts?.model ?? this.selectModel(seedInfo);
@@ -870,6 +880,7 @@ function seedToInfo(seed: Issue): SeedInfo {
   return {
     id: seed.id,
     title: seed.title,
+    description: seed.description ?? undefined,
     priority: seed.priority,
     type: seed.type,
   };
