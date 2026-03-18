@@ -509,7 +509,12 @@ describe("dispatch loop: auto-merge after each batch", () => {
     await invokeRun(["--no-watch"]);
 
     const logCalls = consoleSpy.mock.calls.map((c) => String(c[0]));
-    const hasAutoMergeHeader = logCalls.some((m) => m.includes("Auto-merging completed branches"));
+    // In --no-watch mode, the final drain prints "Processing remaining merge queue entries..."
+    // rather than "Auto-merging completed branches..." (which is for the in-loop autoMerge).
+    const hasAutoMergeHeader = logCalls.some((m) =>
+      m.includes("Auto-merging completed branches") ||
+      m.includes("Processing remaining merge queue entries")
+    );
     const hasMergedCount = logCalls.some((m) => m.includes("Auto-merged 2 branch(es)"));
 
     expect(hasAutoMergeHeader).toBe(true);
