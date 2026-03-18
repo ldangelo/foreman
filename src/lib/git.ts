@@ -5,6 +5,56 @@ import { existsSync } from "node:fs";
 
 const execFileAsync = promisify(execFile);
 
+// ── Dependency Installation ──────────────────────────────────────────────
+
+/**
+ * Detect which package manager to use based on lock files present in a directory.
+ * Returns the package manager command ("npm", "yarn", or "pnpm").
+ * Priority order: pnpm > yarn > npm (explicit lock-file check for each).
+ */
+export function detectPackageManager(dir: string): "npm" | "yarn" | "pnpm" {
+  if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm";
+  if (existsSync(join(dir, "yarn.lock"))) return "yarn";
+  if (existsSync(join(dir, "package-lock.json"))) return "npm";
+  // Default to npm when no lock file is present (e.g. freshly created projects)
+  return "npm";
+}
+
+/**
+ * Install Node.js dependencies in the given directory.
+ *
+ * - Detects the package manager from lock files.
+ * - Skips silently if no `package.json` is present (non-Node repos).
+ * - Uses `--prefer-offline` and `--no-audit` for speed when npm is used.
+ * - Throws if the installation fails.
+ */
+export async function installDependencies(dir: string): Promise<void> {
+  // Skip if no package.json — not a Node.js project
+  if (!existsSync(join(dir, "package.json"))) {
+    return;
+  }
+
+  const pm = detectPackageManager(dir);
+  console.error(`[git] Running ${pm} install in ${dir} …`);
+
+  const args: string[] =
+    pm === "npm"
+      ? ["install", "--prefer-offline", "--no-audit"]
+      : pm === "yarn"
+        ? ["install", "--prefer-offline"]
+        : ["install", "--prefer-offline"]; // pnpm
+
+  try {
+    await execFileAsync(pm, args, { cwd: dir, maxBuffer: 10 * 1024 * 1024 });
+  } catch (err: any) {
+    const combined = [err.stdout, err.stderr]
+      .map((s: string | undefined) => (s ?? "").trim())
+      .filter(Boolean)
+      .join("\n") || err.message;
+    throw new Error(`${pm} install failed in ${dir}: ${combined}`);
+  }
+}
+
 // ── Interfaces ──────────────────────────────────────────────────────────
 
 export interface Worktree {
@@ -127,9 +177,13 @@ export async function createWorktree(
     // Update the branch to the latest base so it picks up new code
     try {
       await git(["rebase", base], worktreePath);
-    } catch {
+    } catch (err) {
       // Rebase may fail if there are conflicts — that's OK, use as-is
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[git] Rebase failed in ${worktreePath} (continuing): ${msg.slice(0, 200)}`);
     }
+    // Reinstall in case dependencies changed after rebase
+    await installDependencies(worktreePath);
     return { worktreePath, branchName };
   }
 
@@ -148,6 +202,9 @@ export async function createWorktree(
       throw err;
     }
   }
+
+  // Install Node.js dependencies in the new worktree
+  await installDependencies(worktreePath);
 
   return { worktreePath, branchName };
 }

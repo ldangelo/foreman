@@ -10,6 +10,8 @@ import {
   mergeWorktree,
   getRepoRoot,
   detectDefaultBranch,
+  detectPackageManager,
+  installDependencies,
 } from "../git.js";
 
 function makeTempRepo(): string {
@@ -19,6 +21,20 @@ function makeTempRepo(): string {
   execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
   execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
   writeFileSync(join(dir, "README.md"), "# init\n");
+  execFileSync("git", ["add", "."], { cwd: dir });
+  execFileSync("git", ["commit", "-m", "initial commit"], { cwd: dir });
+  return dir;
+}
+
+/** Make a temp repo that includes a package.json (no dependencies) for npm install tests. */
+function makeTempRepoWithPackageJson(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-git-npm-test-")));
+  execFileSync("git", ["init", "--initial-branch=main"], { cwd: dir });
+  execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+  writeFileSync(join(dir, "README.md"), "# init\n");
+  // Minimal package.json with no dependencies so `npm install` is nearly instant
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "test-pkg", version: "1.0.0" }, null, 2) + "\n");
   execFileSync("git", ["add", "."], { cwd: dir });
   execFileSync("git", ["commit", "-m", "initial commit"], { cwd: dir });
   return dir;
@@ -140,6 +156,110 @@ describe("git worktree manager", () => {
     const root = await getRepoRoot(subdir);
     expect(root).toBe(repo);
   });
+});
+
+describe("detectPackageManager", () => {
+  it("returns 'npm' when package-lock.json is present (explicit lock-file detection)", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-pm-npm-")));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, "package-lock.json"), "{}");
+    expect(detectPackageManager(dir)).toBe("npm");
+  });
+
+  it("returns 'yarn' when yarn.lock is present", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-pm-yarn-")));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, "yarn.lock"), "");
+    expect(detectPackageManager(dir)).toBe("yarn");
+  });
+
+  it("returns 'pnpm' when pnpm-lock.yaml is present", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-pm-pnpm-")));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, "pnpm-lock.yaml"), "");
+    expect(detectPackageManager(dir)).toBe("pnpm");
+  });
+
+  it("prefers pnpm over yarn when both lock files exist", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-pm-both-")));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, "pnpm-lock.yaml"), "");
+    writeFileSync(join(dir, "yarn.lock"), "");
+    expect(detectPackageManager(dir)).toBe("pnpm");
+  });
+
+  it("prefers yarn over npm when yarn.lock and package-lock.json both exist", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-pm-yarn-npm-")));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, "yarn.lock"), "");
+    writeFileSync(join(dir, "package-lock.json"), "{}");
+    expect(detectPackageManager(dir)).toBe("yarn");
+  });
+
+  it("defaults to 'npm' when no lock file is present", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-pm-none-")));
+    tempDirs.push(dir);
+    expect(detectPackageManager(dir)).toBe("npm");
+  });
+});
+
+describe("installDependencies", () => {
+  it("skips silently when no package.json exists", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-install-skip-")));
+    tempDirs.push(dir);
+    // Should not throw
+    await expect(installDependencies(dir)).resolves.toBeUndefined();
+  });
+
+  it("runs npm install and creates node_modules when package.json exists", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-install-npm-")));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "test", version: "1.0.0" }, null, 2));
+    await installDependencies(dir);
+    // npm install creates node_modules even for projects with no dependencies
+    expect(existsSync(join(dir, "node_modules"))).toBe(true);
+  }, 60_000);
+});
+
+describe("createWorktree with npm install", () => {
+  it("installs node_modules in newly created worktree when package.json is present", async () => {
+    const repo = makeTempRepoWithPackageJson();
+    tempDirs.push(repo);
+
+    const { worktreePath } = await createWorktree(repo, "seed-npm-001");
+
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(existsSync(join(worktreePath, "node_modules"))).toBe(true);
+  }, 60_000);
+
+  it("does not fail when no package.json exists in the worktree", async () => {
+    // makeTempRepo has no package.json — install should be skipped gracefully
+    const repo = makeTempRepo();
+    tempDirs.push(repo);
+
+    const { worktreePath } = await createWorktree(repo, "seed-no-pkg-001");
+
+    expect(existsSync(worktreePath)).toBe(true);
+    // node_modules should NOT be created since there's no package.json
+    expect(existsSync(join(worktreePath, "node_modules"))).toBe(false);
+  });
+
+  it("reinstalls node_modules when reusing an existing worktree", async () => {
+    const repo = makeTempRepoWithPackageJson();
+    tempDirs.push(repo);
+
+    // Create the worktree the first time
+    const { worktreePath } = await createWorktree(repo, "seed-npm-reuse");
+    expect(existsSync(join(worktreePath, "node_modules"))).toBe(true);
+
+    // Remove node_modules to simulate stale state
+    rmSync(join(worktreePath, "node_modules"), { recursive: true, force: true });
+    expect(existsSync(join(worktreePath, "node_modules"))).toBe(false);
+
+    // Reuse the existing worktree — should reinstall
+    await createWorktree(repo, "seed-npm-reuse");
+    expect(existsSync(join(worktreePath, "node_modules"))).toBe(true);
+  }, 60_000);
 });
 
 describe("detectDefaultBranch", () => {
