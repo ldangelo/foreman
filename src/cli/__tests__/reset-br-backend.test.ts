@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   detectAndFixMismatches,
+  resetSeedToOpen,
 } from "../commands/reset.js";
 import type { IShowUpdateClient } from "../commands/reset.js";
 import type { ForemanStore, Run } from "../../lib/store.js";
@@ -259,6 +260,119 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
     expect(result.mismatches).toHaveLength(1);
     expect(result.mismatches[0].expectedSeedStatus).toBe("closed");
     expect(brClient.update).toHaveBeenCalledWith("bd-abc", { status: "closed" });
+  });
+});
+
+// ── resetSeedToOpen — closed-seed guard ──────────────────────────────────
+
+describe("resetSeedToOpen", () => {
+  function makeSeedsClient(status: string) {
+    return {
+      show: vi.fn(async (_id: string) => ({ status })),
+      update: vi.fn(async (_id: string, _opts: UpdateOptions): Promise<void> => {}),
+    };
+  }
+
+  it("does NOT reopen a seed that is already closed (the core bug fix)", async () => {
+    const seeds = makeSeedsClient("closed");
+
+    const result = await resetSeedToOpen("bd-completed", seeds);
+
+    expect(result.action).toBe("skipped-closed");
+    expect(result.previousStatus).toBe("closed");
+    expect(seeds.update).not.toHaveBeenCalled();
+  });
+
+  it("resets a seed that is in_progress to open", async () => {
+    const seeds = makeSeedsClient("in_progress");
+
+    const result = await resetSeedToOpen("bd-active", seeds);
+
+    expect(result.action).toBe("reset");
+    expect(result.previousStatus).toBe("in_progress");
+    expect(seeds.update).toHaveBeenCalledWith("bd-active", { status: "open" });
+  });
+
+  it("returns already-open without calling update when seed is already open", async () => {
+    const seeds = makeSeedsClient("open");
+
+    const result = await resetSeedToOpen("bd-open", seeds);
+
+    expect(result.action).toBe("already-open");
+    expect(result.previousStatus).toBe("open");
+    expect(seeds.update).not.toHaveBeenCalled();
+  });
+
+  it("returns not-found when seed does not exist (not found error)", async () => {
+    const seeds = {
+      show: vi.fn(async (_id: string) => { throw new Error("Issue not found: bd-gone"); }),
+      update: vi.fn(async (_id: string, _opts: UpdateOptions): Promise<void> => {}),
+    };
+
+    const result = await resetSeedToOpen("bd-gone", seeds);
+
+    expect(result.action).toBe("not-found");
+    expect(seeds.update).not.toHaveBeenCalled();
+  });
+
+  it("returns error when show fails with unexpected error", async () => {
+    const seeds = {
+      show: vi.fn(async (_id: string) => { throw new Error("Database connection lost"); }),
+      update: vi.fn(async (_id: string, _opts: UpdateOptions): Promise<void> => {}),
+    };
+
+    const result = await resetSeedToOpen("bd-abc", seeds);
+
+    expect(result.action).toBe("error");
+    expect(result.error).toContain("Database connection lost");
+    expect(seeds.update).not.toHaveBeenCalled();
+  });
+
+  it("returns error when update fails", async () => {
+    const seeds = {
+      show: vi.fn(async (_id: string) => ({ status: "in_progress" })),
+      update: vi.fn(async (_id: string, _opts: UpdateOptions): Promise<void> => {
+        throw new Error("br update failed: permission denied");
+      }),
+    };
+
+    const result = await resetSeedToOpen("bd-abc", seeds);
+
+    expect(result.action).toBe("error");
+    expect(result.error).toContain("permission denied");
+  });
+
+  // ── dry-run mode ─────────────────────────────────────────────────────
+
+  it("dry-run: returns 'reset' action but does NOT call update for in_progress seed", async () => {
+    const seeds = makeSeedsClient("in_progress");
+
+    const result = await resetSeedToOpen("bd-active", seeds, { dryRun: true });
+
+    expect(result.action).toBe("reset");
+    expect(result.previousStatus).toBe("in_progress");
+    // update must NOT be called in dry-run mode
+    expect(seeds.update).not.toHaveBeenCalled();
+  });
+
+  it("dry-run: returns 'skipped-closed' for a closed seed (consistent with non-dry-run)", async () => {
+    const seeds = makeSeedsClient("closed");
+
+    const result = await resetSeedToOpen("bd-completed", seeds, { dryRun: true });
+
+    expect(result.action).toBe("skipped-closed");
+    expect(result.previousStatus).toBe("closed");
+    expect(seeds.update).not.toHaveBeenCalled();
+  });
+
+  it("dry-run: returns 'already-open' for an open seed (consistent with non-dry-run)", async () => {
+    const seeds = makeSeedsClient("open");
+
+    const result = await resetSeedToOpen("bd-open", seeds, { dryRun: true });
+
+    expect(result.action).toBe("already-open");
+    expect(result.previousStatus).toBe("open");
+    expect(seeds.update).not.toHaveBeenCalled();
   });
 });
 

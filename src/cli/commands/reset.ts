@@ -213,6 +213,57 @@ export async function detectStuckRuns(
   return { stuck, errors };
 }
 
+// ── Seed status reset helper ─────────────────────────────────────────────
+
+export interface ResetSeedResult {
+  /** "reset" — seed was updated to open */
+  action: "reset" | "skipped-closed" | "already-open" | "not-found" | "error";
+  seedId: string;
+  previousStatus?: string;
+  error?: string;
+}
+
+/**
+ * Reset a single seed back to "open" status, but ONLY if it is not already
+ * closed (terminal state).
+ *
+ * - If the seed is "closed", the update is skipped entirely.
+ * - If the seed is already "open", the update is also skipped (idempotent).
+ * - If the seed is in any other state (e.g. "in_progress"), it is reset.
+ * - If the seed is not found, returns "not-found" without throwing.
+ * - In dry-run mode, the `show()` check still runs (read-only) but `update()`
+ *   is skipped — the returned `action` accurately reflects what would happen.
+ */
+export async function resetSeedToOpen(
+  seedId: string,
+  seeds: IShowUpdateClient,
+  opts?: { dryRun?: boolean },
+): Promise<ResetSeedResult> {
+  const dryRun = opts?.dryRun ?? false;
+  try {
+    const seedDetail = await seeds.show(seedId);
+
+    if (seedDetail.status === "closed") {
+      return { action: "skipped-closed", seedId, previousStatus: seedDetail.status };
+    }
+
+    if (seedDetail.status === "open") {
+      return { action: "already-open", seedId, previousStatus: seedDetail.status };
+    }
+
+    if (!dryRun) {
+      await seeds.update(seedId, { status: "open" });
+    }
+    return { action: "reset", seedId, previousStatus: seedDetail.status };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("not found")) {
+      return { action: "not-found", seedId };
+    }
+    return { action: "error", seedId, error: msg };
+  }
+}
+
 export const resetCommand = new Command("reset")
   .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
@@ -384,22 +435,30 @@ export const resetCommand = new Command("reset")
         console.log();
       }
 
-      // 5. Reset seeds to open
+      // 5. Reset seeds to open (only if not already closed)
       for (const seedId of seedIds) {
-        console.log(`  ${chalk.yellow("reset")} seed ${chalk.cyan(seedId)} → open`);
-        if (!dryRun) {
-          try {
-            await seeds.update(seedId, { status: "open" });
+        const result = await resetSeedToOpen(seedId, seeds, { dryRun });
+        switch (result.action) {
+          case "skipped-closed":
+            console.log(
+              `  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already closed — not reopening`,
+            );
+            break;
+          case "already-open":
+            // Seed was already open — no update was made (or would be made).
+            console.log(`  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already open`);
+            break;
+          case "reset":
+            console.log(`  ${chalk.yellow("reset")} seed ${chalk.cyan(seedId)} → open`);
             seedsReset++;
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (msg.includes("not found") || msg.includes("Issue not found")) {
-              console.log(`    ${chalk.dim("skip")} seed ${seedId} no longer exists`);
-            } else {
-              errors.push(`Failed to reset seed ${seedId}: ${msg}`);
-              console.log(`    ${chalk.red("error")} resetting seed: ${msg}`);
-            }
-          }
+            break;
+          case "not-found":
+            console.log(`    ${chalk.dim("skip")} seed ${seedId} no longer exists`);
+            break;
+          case "error":
+            errors.push(`Failed to reset seed ${seedId}: ${result.error ?? "unknown error"}`);
+            console.log(`    ${chalk.red("error")} resetting seed: ${result.error ?? "unknown error"}`);
+            break;
         }
       }
 
