@@ -50,21 +50,33 @@ function execOpts(projectPath?: string): { stdio: "pipe"; timeout: number; cwd?:
  * Close (complete) a bead in the br backend.
  *
  * br close <seedId> --reason "Completed via pipeline"
+ * br sync --flush-only  (persists the change to .beads/beads.jsonl)
  *
  * TRD-024: sd backend removed. Always uses br.
  * Errors are caught and logged to stderr; the function never throws.
+ * The flush step is non-fatal: if it fails the close is still in br's memory
+ * and may be recovered by syncBeadStatusOnStartup on the next restart.
  *
  * @param projectPath - The project root directory that contains .beads/.
  *   Must be provided so br auto-discovers the correct database when called
  *   from a worktree that has no .beads/ of its own.
  */
-export function closeSeed(seedId: string, projectPath?: string): void {
+export async function closeSeed(seedId: string, projectPath?: string): Promise<void> {
   const bin = brPath();
   const args = ["close", seedId, "--reason", "Completed via pipeline"];
 
   try {
     execFileSync(bin, args, execOpts(projectPath));
     console.error(`[task-backend-ops] Closed seed ${seedId} via br`);
+
+    // Flush changes to .beads/beads.jsonl so the close survives a process restart.
+    try {
+      await execBr(["sync", "--flush-only"], projectPath);
+      console.error(`[task-backend-ops] Flushed JSONL for seed ${seedId}`);
+    } catch (flushErr: unknown) {
+      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
+      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[task-backend-ops] Warning: br close failed for ${seedId}: ${msg.slice(0, 200)}`);
@@ -76,21 +88,33 @@ export function closeSeed(seedId: string, projectPath?: string): void {
  * Called by markStuck() so the task reappears in the ready queue for retry.
  *
  * br update <seedId> --status open
+ * br sync --flush-only  (persists the change to .beads/beads.jsonl)
  *
  * TRD-024: sd backend removed. Always uses br.
  * Errors are caught and logged to stderr; the function never throws.
+ * The flush step is non-fatal: if it fails the update is still in br's memory
+ * and may be recovered by syncBeadStatusOnStartup on the next restart.
  *
  * @param projectPath - The project root directory that contains .beads/.
  *   Must be provided so br auto-discovers the correct database when called
  *   from a worktree that has no .beads/ of its own.
  */
-export function resetSeedToOpen(seedId: string, projectPath?: string): void {
+export async function resetSeedToOpen(seedId: string, projectPath?: string): Promise<void> {
   const bin = brPath();
   const args = ["update", seedId, "--status", "open"];
 
   try {
     execFileSync(bin, args, execOpts(projectPath));
     console.error(`[task-backend-ops] Reset seed ${seedId} to open via br`);
+
+    // Flush changes to .beads/beads.jsonl so the reset survives a process restart.
+    try {
+      await execBr(["sync", "--flush-only"], projectPath);
+      console.error(`[task-backend-ops] Flushed JSONL for reset seed ${seedId}`);
+    } catch (flushErr: unknown) {
+      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
+      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[task-backend-ops] Warning: br update failed for ${seedId}: ${msg.slice(0, 200)}`);

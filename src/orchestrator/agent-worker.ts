@@ -620,7 +620,7 @@ async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
 
   // Close bead (br backend)
   // Pass projectPath (repo root) so br finds .beads/ — the worktree dir has none.
-  closeSeed(seedId, config.projectPath);
+  await closeSeed(seedId, config.projectPath);
   log(`[FINALIZE] Closed seed ${seedId}`);
   report.push(`## Seed Close`, `- Status: SUCCESS`, "");
 
@@ -853,7 +853,7 @@ async function markStuck(
 
   // Reset seed back to open so it appears in the ready queue for retry.
   // Pass projectPath (repo root) so br finds .beads/ — the worktree has none.
-  resetSeedToOpen(seedId, projectPath);
+  await resetSeedToOpen(seedId, projectPath);
   log(`Reset seed ${seedId} back to open`);
 
   store.close();
