@@ -130,3 +130,45 @@ describe("loadAndInterpolate", () => {
     expect(result).not.toContain("{{seedTitle}}");
   });
 });
+
+describe("Session logging requirement in agent prompts", () => {
+  beforeEach(() => clearTemplateCache());
+  afterEach(() => clearTemplateCache());
+
+  it("explorer-prompt.md requires SESSION_LOG.md", () => {
+    const content = loadTemplate("explorer-prompt.md");
+    expect(content).toContain("SESSION_LOG.md");
+  });
+
+  it("developer-prompt.md requires SESSION_LOG.md", () => {
+    const content = loadTemplate("developer-prompt.md");
+    expect(content).toContain("SESSION_LOG.md");
+  });
+
+  it("qa-prompt.md requires SESSION_LOG.md", () => {
+    const content = loadTemplate("qa-prompt.md");
+    expect(content).toContain("SESSION_LOG.md");
+  });
+
+  it("reviewer-prompt.md requires SESSION_LOG.md", () => {
+    const content = loadTemplate("reviewer-prompt.md");
+    expect(content).toContain("SESSION_LOG.md");
+  });
+
+  // Lead-prompt inline sub-agent instructions must also carry SESSION_LOG.md
+  // so that lead-spawned agents receive the same enforcement as directly-typed agents.
+  it("lead-prompt-explorer.md inline instructions mention SESSION_LOG.md", () => {
+    const content = loadTemplate("lead-prompt-explorer.md");
+    expect(content).toContain("SESSION_LOG.md");
+  });
+
+  it("lead-prompt.md inline Developer instructions mention SESSION_LOG.md", () => {
+    const content = loadTemplate("lead-prompt.md");
+    expect(content).toContain("SESSION_LOG.md");
+  });
+
+  it("lead-prompt-reviewer.md inline instructions mention SESSION_LOG.md", () => {
+    const content = loadTemplate("lead-prompt-reviewer.md");
+    expect(content).toContain("SESSION_LOG.md");
+  });
+});

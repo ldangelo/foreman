@@ -150,6 +150,45 @@ git commit -m "..."     # Commit everything
 git push                # Push to remote
 ```
 
+### Session Logging
+
+**All agents MUST create a `SESSION_LOG.md` file in the worktree root** documenting their work. This provides an audit trail and aids debugging of individual pipeline phases.
+
+The worker process automatically streams all activity to `~/.foreman/logs/{runId}.log`, but agents should also write a human-readable summary.
+
+**Required format** for `SESSION_LOG.md`:
+
+```markdown
+# Session Log: <role> agent for <seedId>
+
+## Metadata
+- Start: <ISO timestamp>
+- Role: <explorer|developer|qa|reviewer>
+- Seed: <seedId>
+- Status: <in-progress|completed|failed>
+
+## Key Activities
+- Activity 1: description and reasoning
+- Activity 2: decisions made
+- ...
+
+## Artifacts Created
+- EXPLORER_REPORT.md (if explorer)
+- Changes to <file> (if developer)
+- Test results (if QA)
+- REVIEW.md (if reviewer)
+
+## End
+- Completion time: <ISO timestamp>
+- Next phase: <phase name>
+```
+
+**Requirements:**
+- Create SESSION_LOG.md at the **start** of your session (status: in-progress) and update it at the **end** (status: completed or failed)
+- Log is **required**, not optional — write it even if your session fails early
+- File lives in the **worktree root** (same level as EXPLORER_REPORT.md, TASK.md, etc.)
+- Each pipeline phase writes its own SESSION_LOG.md (phases run separately)
+
 ### Best Practices
 
 - Check `br ready` at session start to find available work

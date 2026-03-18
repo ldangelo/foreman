@@ -25,8 +25,9 @@ EXPLORER_REPORT.md must include:
 
 Rules:
 - DO NOT modify any source code files — you are read-only
-- DO NOT create new source files — only write EXPLORER_REPORT.md
+- DO NOT create new source files — only write EXPLORER_REPORT.md and SESSION_LOG.md
 - Be specific — reference actual file paths and line numbers
+- Write SESSION_LOG.md documenting your session work (required — see CLAUDE.md Session Logging section)
 ```
 
 After the Explorer finishes, read EXPLORER_REPORT.md and review the findings.

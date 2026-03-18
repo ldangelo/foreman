@@ -33,6 +33,7 @@ Instructions:
 3. Implement the required changes
 4. Write or update tests for your changes
 5. Ensure the code compiles/lints cleanly
+6. Write SESSION_LOG.md documenting your session (see CLAUDE.md Session Logging section)
 
 Rules:
 - Stay focused on THIS task only — do not refactor unrelated code
@@ -41,6 +42,7 @@ Rules:
 - DO NOT commit, push, or close the seed — the lead handles that
 - DO NOT run the full test suite — the QA agent handles that
 - After implementation, write DEVELOPER_REPORT.md summarizing: approach, files changed, tests added, decisions, and known limitations
+- Write SESSION_LOG.md documenting your session work (required, not optional)
 ```
 
 After the Developer finishes, read DEVELOPER_REPORT.md and review what was changed (check git diff).
@@ -60,6 +62,7 @@ Instructions:
 4. If tests fail due to the changes, attempt to fix them
 5. Write any additional tests needed for uncovered edge cases
 6. Write findings to QA_REPORT.md
+7. Write SESSION_LOG.md documenting your session (see CLAUDE.md Session Logging section)
 
 QA_REPORT.md format:
 # QA Report: {{seedTitle}}
@@ -73,6 +76,7 @@ Rules:
 - Focus on correctness and regressions, not style
 - Be specific about failures — include error messages
 - DO NOT commit, push, or close the seed
+- Write SESSION_LOG.md documenting your session work (required, not optional)
 ```
 
 After QA finishes, read QA_REPORT.md.

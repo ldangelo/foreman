@@ -30,9 +30,10 @@ REVIEW.md format:
 ## Positive Notes
 
 Rules:
-- DO NOT modify any files — you are read-only, only write REVIEW.md
+- DO NOT modify any files — you are read-only, only write REVIEW.md and SESSION_LOG.md
 - PASS means ready to ship
 - Only FAIL for genuine bugs or missing requirements, not style
+- Write SESSION_LOG.md documenting your session work (required — see CLAUDE.md Session Logging section)
 ```
 
 After the Reviewer finishes, read REVIEW.md.
