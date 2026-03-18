@@ -166,10 +166,15 @@ export function addNotesToBead(seedId: string, notes: string, projectPath?: stri
  * Called after each pipeline phase completes to track phase progress.
  *
  * br update <seedId> --labels <label1>,<label2>,...
+ * br sync --flush-only  (persists the change to .beads/beads.jsonl)
  *
  * Errors are caught and logged to stderr; the function never throws.
+ * The flush step is non-fatal: if it fails the label update is still in br's
+ * memory and may be recovered by syncBeadStatusOnStartup on the next restart.
  *
  * @param projectPath - The project root directory that contains .beads/.
+ *   Must be provided so br auto-discovers the correct database when called
+ *   from a worktree that has no .beads/ of its own.
  */
 export function addLabelsToBead(seedId: string, labels: string[], projectPath?: string): void {
   if (labels.length === 0) return;
@@ -179,6 +184,16 @@ export function addLabelsToBead(seedId: string, labels: string[], projectPath?: 
   try {
     execFileSync(bin, args, execOpts(projectPath));
     console.error(`[task-backend-ops] Added labels [${labels.join(", ")}] to seed ${seedId} via br`);
+
+    // Flush changes to .beads/beads.jsonl so the label update survives a process restart.
+    // Uses execFileSync (not execBr) to avoid the auto-appended --json flag.
+    try {
+      execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
+      console.error(`[task-backend-ops] Flushed JSONL for label update on seed ${seedId}`);
+    } catch (flushErr: unknown) {
+      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
+      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[task-backend-ops] Warning: br update --labels failed for ${seedId}: ${msg.slice(0, 200)}`);
@@ -213,14 +228,14 @@ export interface SyncResult {
  * persist changes to .beads/beads.jsonl.
  *
  * @param store       - SQLite store to query runs from.
- * @param taskClient  - br client providing show() and update() methods.
+ * @param taskClient  - br client providing show() method for status queries.
  * @param projectId   - Project ID to scope the run query.
  * @param opts.dryRun       - Detect mismatches but do not fix them.
  * @param opts.projectPath  - Project root for br cwd (required so br finds .beads/).
  */
 export async function syncBeadStatusOnStartup(
   store: Pick<ForemanStore, "getRunsByStatuses">,
-  taskClient: Pick<ITaskClient, "show" | "update">,
+  taskClient: Pick<ITaskClient, "show">,
   projectId: string,
   opts?: { dryRun?: boolean; projectPath?: string },
 ): Promise<SyncResult> {
@@ -270,7 +285,10 @@ export async function syncBeadStatusOnStartup(
 
         if (!dryRun) {
           try {
-            await taskClient.update(run.seed_id, { status: expectedSeedStatus });
+            // Use execFileSync directly (not taskClient.update / execBr) so the br
+            // dirty flag is set. execBr auto-appends --json which bypasses the dirty
+            // flag, causing the subsequent sync --flush-only to be a silent no-op.
+            execFileSync(brPath(), ["update", run.seed_id, "--status", expectedSeedStatus], execOpts(projectPath));
             synced++;
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
