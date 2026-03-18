@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import type { ForemanStore, Run } from "../lib/store.js";
-import { listWorktrees, removeWorktree } from "../lib/git.js";
+import { listWorktrees, removeWorktree, branchExistsOnOrigin } from "../lib/git.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -234,6 +234,9 @@ export class Doctor {
           message: `Active run (${activeRun.status}) for seed ${seedId}`,
         });
       } else if (mergedRun) {
+        // Intentionally skipping origin check here: a merged run means the work
+        // is already integrated into the main branch, so removing the local
+        // worktree is safe regardless of whether the branch still exists on origin.
         if (dryRun) {
           results.push({
             name: `worktree: ${seedId}`,
@@ -290,11 +293,25 @@ export class Doctor {
           message: `Run in '${failableRun.status}' state — ${hint}`,
         });
       } else {
-        if (dryRun) {
+        // Check if the branch exists on origin before removing locally.
+        // NOTE: This check uses locally-cached remote-tracking refs (origin/<branch>)
+        // and does NOT perform a network fetch. The result may be stale if origin
+        // has been updated since the last `git fetch`. Run `git fetch` first if
+        // you need an authoritative answer.
+        const onOrigin = await branchExistsOnOrigin(this.projectPath, wt.branch);
+        if (onOrigin) {
+          // Branch exists on origin — never auto-remove regardless of fix/dryRun mode.
+          const dryRunSuffix = dryRun ? " (dry-run: would not remove either way)" : "";
           results.push({
             name: `worktree: ${seedId}`,
             status: "warn",
-            message: `Orphaned worktree at ${wt.path} (no runs). Would remove (dry-run).`,
+            message: `Orphaned worktree at ${wt.path} (no runs) but branch exists on origin — skipping auto-removal${dryRunSuffix}. Verify and remove manually if safe.`,
+          });
+        } else if (dryRun) {
+          results.push({
+            name: `worktree: ${seedId}`,
+            status: "warn",
+            message: `Orphaned worktree at ${wt.path} (no runs, not on origin). Would remove (dry-run).`,
           });
         } else if (fix) {
           try {
@@ -304,7 +321,7 @@ export class Doctor {
             results.push({
               name: `worktree: ${seedId}`,
               status: "fixed",
-              message: `Orphaned worktree (no runs)`,
+              message: `Orphaned worktree (no runs, not on origin)`,
               fixApplied: `Removed worktree at ${wt.path}`,
             });
           } catch (err: unknown) {
@@ -319,7 +336,7 @@ export class Doctor {
           results.push({
             name: `worktree: ${seedId}`,
             status: "warn",
-            message: `Orphaned worktree at ${wt.path} (no runs). Use --fix to remove.`,
+            message: `Orphaned worktree at ${wt.path} (no runs, not on origin). Use --fix to remove.`,
           });
         }
       }

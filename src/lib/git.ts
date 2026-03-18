@@ -310,6 +310,25 @@ export async function deleteBranch(
 }
 
 /**
+ * Check whether a branch exists on the origin remote.
+ *
+ * Uses `git rev-parse origin/<branchName>` against local remote-tracking refs.
+ * Returns `false` if there is no remote, the branch doesn't exist on origin,
+ * or any other error occurs (fail-safe: unknown → don't delete).
+ */
+export async function branchExistsOnOrigin(
+  repoPath: string,
+  branchName: string,
+): Promise<boolean> {
+  try {
+    await git(["rev-parse", "--verify", `origin/${branchName}`], repoPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Merge a branch into the target branch.
  * Returns success status and any conflicting file paths.
  */
