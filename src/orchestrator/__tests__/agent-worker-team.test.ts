@@ -159,6 +159,7 @@ describe("agent-worker team mode: prompt transformation", () => {
   });
 });
 
+
 describe("agent-worker team mode: prompt is suitable for SDK query()", () => {
   it("generated prompt instructs the lead to use Agent tool for sub-agents", () => {
     const config = makeConfig();

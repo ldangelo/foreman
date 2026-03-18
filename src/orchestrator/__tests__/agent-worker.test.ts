@@ -143,3 +143,46 @@ describe("agent-worker.ts", () => {
     });
   });
 });
+
+/**
+ * Structural regression tests: verify that sessionLogDir is configured in agent-worker.ts.
+ *
+ * These tests read the source file directly to catch regressions where the
+ * sessionLogDir option is accidentally removed from a query() call. They are
+ * a lightweight alternative to spy-based tests that would require refactoring
+ * the module structure.
+ */
+describe("agent-worker.ts: sessionLogDir option regression tests", () => {
+  const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
+
+  it("agent-worker.ts source file exists", () => {
+    expect(existsSync(WORKER_SRC)).toBe(true);
+  });
+
+  it("single-agent resume branch includes sessionLogDir: worktreePath", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    // The resume branch (with persistSession: true, resume: ...) must include sessionLogDir
+    // Find the resume branch options block and verify sessionLogDir is present
+    const resumeBlockMatch = source.match(
+      /resume,\s*\n\s*persistSession: true,\s*\n\s*sessionLogDir:\s*worktreePath/
+    );
+    expect(resumeBlockMatch).not.toBeNull();
+  });
+
+  it("single-agent non-resume branch includes sessionLogDir: worktreePath", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    // The non-resume branch (with persistSession: true, no resume) must include sessionLogDir
+    const nonResumeBlockMatch = source.match(
+      /persistSession: true,\s*\n\s*sessionLogDir:\s*worktreePath/
+    );
+    expect(nonResumeBlockMatch).not.toBeNull();
+  });
+
+  it("pipeline runPhase() includes sessionLogDir: config.worktreePath", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    // The runPhase() function must include sessionLogDir: config.worktreePath
+    const pipelineMatch = source.match(/sessionLogDir:\s*config\.worktreePath/);
+    expect(pipelineMatch).not.toBeNull();
+  });
+
+});
