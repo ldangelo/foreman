@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import type { ForemanStore } from "../lib/store.js";
 import type { BeadGraph } from "../lib/beads.js";
+import type { UpdateOptions } from "../lib/task-client.js";
 import { mergeWorktree, removeWorktree, detectDefaultBranch } from "../lib/git.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -62,6 +63,7 @@ async function runTestCommand(command: string, cwd: string): Promise<{ ok: boole
 export interface IRefineryTaskClient {
   show(id: string): Promise<{ title?: string; description?: string | null; status: string }>;
   getGraph?(): Promise<BeadGraph>;
+  update?(id: string, opts: UpdateOptions): Promise<void>;
 }
 
 // ── Refinery ─────────────────────────────────────────────────────────────
@@ -146,6 +148,21 @@ export class Refinery {
    */
   private async archiveReportsPostMerge(seedId: string): Promise<void> {
     return this.conflictResolver.archiveReportsPostMerge(seedId);
+  }
+
+  /**
+   * Attempt to add a note to a bead explaining what went wrong.
+   * Non-fatal — a failure to annotate the bead must not mask the original error.
+   */
+  private async addFailureNote(seedId: string, note: string): Promise<void> {
+    if (!this.seeds.update) return;
+    try {
+      await this.seeds.update(seedId, { notes: note.slice(0, 500) });
+    } catch (err: unknown) {
+      // Non-fatal: best-effort annotation
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[Refinery] Failed to add failure note to bead ${seedId}: ${message}`);
+    }
   }
 
   /**
@@ -367,6 +384,7 @@ export class Refinery {
             if (pr) {
               prsCreated.push(pr);
             } else {
+              await this.addFailureNote(run.seed_id, "Merge conflict: rebase failed. PR creation also failed — manual intervention required.");
               conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
             }
             continue;
@@ -396,6 +414,7 @@ export class Refinery {
             if (pr) {
               prsCreated.push(pr);
             } else {
+              await this.addFailureNote(run.seed_id, `Merge conflict: code conflicts in ${codeConflicts.join(", ")}. PR creation also failed — manual intervention required.`);
               conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: codeConflicts });
             }
             continue;
@@ -427,6 +446,7 @@ export class Refinery {
               { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
               run.id,
             );
+            await this.addFailureNote(run.seed_id, `Merge failed: tests failed after merge. ${testResult.output.slice(0, 300)}`);
             testFailures.push({
               runId: run.id,
               seedId: run.seed_id,
@@ -469,6 +489,7 @@ export class Refinery {
           { seedId: run.seed_id, branchName, error: message },
           run.id,
         );
+        await this.addFailureNote(run.seed_id, `Merge failed: ${message.slice(0, 400)}`);
         testFailures.push({
           runId: run.id,
           seedId: run.seed_id,
@@ -511,6 +532,7 @@ export class Refinery {
         { seedId: run.seed_id, reason: "Conflict resolution aborted by user" },
         run.id,
       );
+      await this.addFailureNote(run.seed_id, "Merge conflict resolution aborted by user.");
       return false;
     }
 
@@ -540,6 +562,7 @@ export class Refinery {
         { seedId: run.seed_id, error: message },
         run.id,
       );
+      await this.addFailureNote(run.seed_id, `Merge failed (theirs strategy): ${message.slice(0, 400)}`);
       return false;
     }
 
@@ -561,6 +584,7 @@ export class Refinery {
           { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
           run.id,
         );
+        await this.addFailureNote(run.seed_id, `Merge failed: tests failed after conflict resolution. ${testResult.output.slice(0, 300)}`);
         return false;
       }
     }
