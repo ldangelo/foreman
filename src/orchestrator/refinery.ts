@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { ForemanStore } from "../lib/store.js";
 import type { BeadGraph } from "../lib/beads.js";
 import { mergeWorktree, removeWorktree, detectDefaultBranch } from "../lib/git.js";
+import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
@@ -440,6 +441,11 @@ export class Refinery {
         // All good — clean up worktree and mark as merged
         if (run.worktree_path) {
           try {
+            await archiveWorktreeReports(this.projectPath, run.worktree_path, run.seed_id);
+          } catch {
+            // Archive is best-effort — don't block worktree removal
+          }
+          try {
             await removeWorktree(this.projectPath, run.worktree_path);
           } catch {
             // Non-fatal — worktree may already be gone
@@ -566,6 +572,11 @@ export class Refinery {
     }
 
     if (run.worktree_path) {
+      try {
+        await archiveWorktreeReports(this.projectPath, run.worktree_path, run.seed_id);
+      } catch {
+        // Archive is best-effort — don't block worktree removal
+      }
       try {
         await removeWorktree(this.projectPath, run.worktree_path);
       } catch {

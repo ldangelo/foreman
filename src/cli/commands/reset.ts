@@ -6,6 +6,7 @@ import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
+import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import { TmuxClient } from "../../lib/tmux.js";
 import type { UpdateOptions } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
@@ -391,6 +392,7 @@ export const resetCommand = new Command("reset")
           console.log(`    ${chalk.yellow("remove")} worktree ${run.worktree_path}`);
           if (!dryRun) {
             try {
+              await archiveWorktreeReports(projectPath, run.worktree_path, run.seed_id).catch(() => {});
               await removeWorktree(projectPath, run.worktree_path);
               worktreesRemoved++;
             } catch (err: unknown) {

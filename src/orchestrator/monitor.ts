@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { ForemanStore, Run } from "../lib/store.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { removeWorktree, createWorktree } from "../lib/git.js";
+import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { MonitorReport } from "./types.js";
 import { PIPELINE_LIMITS } from "../lib/config.js";
 import type { TmuxClient } from "../lib/tmux.js";
@@ -228,6 +229,11 @@ export class Monitor {
 
     // No prior progress — remove the old worktree and recreate it fresh.
     if (run.worktree_path) {
+      try {
+        await archiveWorktreeReports(this.projectPath, run.worktree_path, run.seed_id);
+      } catch {
+        // Archive is best-effort — don't block worktree removal
+      }
       try {
         await removeWorktree(this.projectPath, run.worktree_path);
       } catch {
