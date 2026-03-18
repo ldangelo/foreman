@@ -13,9 +13,15 @@ vi.mock("../../lib/git.js", () => ({
   detectDefaultBranch: vi.fn().mockResolvedValue("main"),
 }));
 
+// Mock task-backend-ops so closeSeed() doesn't try to execute the real `br` binary.
+vi.mock("../task-backend-ops.js", () => ({
+  closeSeed: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Import mocked modules AFTER vi.mock declarations
 import { execFile } from "node:child_process";
 import { mergeWorktree, removeWorktree } from "../../lib/git.js";
+import { closeSeed } from "../task-backend-ops.js";
 import { Refinery } from "../refinery.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -657,6 +663,160 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.merged).toHaveLength(0);
     // getRunsByStatuses should NOT be called when no seedId filter is active
     expect(store.getRunsByStatuses).not.toHaveBeenCalled();
+  });
+
+  // ── bead close-after-merge tests (bd-jpt4 fix) ───────────────────────────
+
+  it("calls closeSeed after successful merge in mergeCompleted()", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ seed_id: "seed-closeme" });
+    store.getRunsByStatus.mockReturnValue([run]);
+    (mergeWorktree as any).mockResolvedValue({ success: true });
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    await refinery.mergeCompleted({ runTests: false });
+
+    expect(closeSeed).toHaveBeenCalledWith("seed-closeme", "/tmp/project");
+  });
+
+  it("does NOT call closeSeed when merge has code conflicts", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ seed_id: "seed-conflict" });
+    store.getRunsByStatus.mockReturnValue([run]);
+    (mergeWorktree as any).mockResolvedValue({
+      success: false,
+      conflicts: ["src/index.ts"],
+    });
+    // git and gh calls fail (gh not available → fallback to conflict tracking)
+    (execFile as any).mockImplementation(
+      (cmd: string, _args: string[], _opts: any, callback: Function) => {
+        if (cmd === "gh") {
+          callback(new Error("gh not available"), { stdout: "", stderr: "" });
+        } else {
+          callback(null, { stdout: "", stderr: "" });
+        }
+      },
+    );
+
+    const report = await refinery.mergeCompleted({ runTests: false });
+
+    expect(report.conflicts).toHaveLength(1);
+    expect(closeSeed).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call closeSeed when tests fail after merge in mergeCompleted()", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ seed_id: "seed-testfail" });
+    store.getRunsByStatus.mockReturnValue([run]);
+    (mergeWorktree as any).mockResolvedValue({ success: true });
+
+    // git rev-parse succeeds, test command fails, git reset succeeds
+    (execFile as any).mockImplementation(
+      (cmd: string, args: string[], _opts: any, callback: Function) => {
+        if (Array.isArray(args) && args.includes("test")) {
+          const err = new Error("Tests failed") as any;
+          err.stdout = "FAIL";
+          err.stderr = "Tests failed";
+          callback(err);
+        } else {
+          callback(null, { stdout: "", stderr: "" });
+        }
+      },
+    );
+
+    const report = await refinery.mergeCompleted({ runTests: true, testCommand: "npm test" });
+
+    expect(report.testFailures).toHaveLength(1);
+    expect(closeSeed).not.toHaveBeenCalled();
+  });
+});
+
+// ── resolveConflict() bead close tests (bd-jpt4 fix) ─────────────────────────
+
+describe("Refinery.resolveConflict() — bead close after merge", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls closeSeed after successful resolveConflict (theirs)", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-1", seed_id: "seed-resolve", status: "conflict" });
+    store.getRun.mockReturnValue(run);
+
+    (execFile as any).mockImplementation(
+      (_cmd: string, _args: string[], _opts: any, callback: Function) => {
+        callback(null, { stdout: "", stderr: "" });
+      },
+    );
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    const result = await refinery.resolveConflict("run-1", "theirs", { runTests: false });
+
+    expect(result).toBe(true);
+    expect(closeSeed).toHaveBeenCalledWith("seed-resolve", "/tmp/project");
+  });
+
+  it("does NOT call closeSeed when resolveConflict uses abort strategy", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-1", seed_id: "seed-abort", status: "conflict" });
+    store.getRun.mockReturnValue(run);
+
+    const result = await refinery.resolveConflict("run-1", "abort");
+
+    expect(result).toBe(false);
+    expect(closeSeed).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call closeSeed when resolveConflict git merge fails", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-1", seed_id: "seed-mergefail", status: "conflict" });
+    store.getRun.mockReturnValue(run);
+
+    (execFile as any).mockImplementation(
+      (_cmd: string, args: string[], _opts: any, callback: Function) => {
+        if (Array.isArray(args) && args.includes("merge") && !args.includes("--abort")) {
+          const err = new Error("Merge conflict") as any;
+          err.stdout = "";
+          err.stderr = "Merge conflict";
+          callback(err);
+        } else {
+          callback(null, { stdout: "", stderr: "" });
+        }
+      },
+    );
+
+    const result = await refinery.resolveConflict("run-1", "theirs");
+
+    expect(result).toBe(false);
+    expect(closeSeed).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call closeSeed when tests fail after resolveConflict merge", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-1", seed_id: "seed-testfail-resolve", status: "conflict" });
+    store.getRun.mockReturnValue(run);
+
+    (execFile as any).mockImplementation(
+      (cmd: string, args: string[], _opts: any, callback: Function) => {
+        if (Array.isArray(args) && args.includes("test")) {
+          const err = new Error("Tests failed") as any;
+          err.stdout = "FAIL";
+          err.stderr = "Tests failed";
+          callback(err);
+        } else {
+          callback(null, { stdout: "", stderr: "" });
+        }
+      },
+    );
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    const result = await refinery.resolveConflict("run-1", "theirs", {
+      runTests: true,
+      testCommand: "npm test",
+    });
+
+    expect(result).toBe(false);
+    expect(closeSeed).not.toHaveBeenCalled();
   });
 });
 

@@ -11,6 +11,7 @@ import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedP
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
+import { closeSeed } from "./task-backend-ops.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -476,6 +477,11 @@ export class Refinery {
           { seedId: run.seed_id, branchName, targetBranch },
           run.id,
         );
+
+        // Close the bead NOW — after the code has actually landed in main.
+        // projectPath (repo root) is where .beads/ lives; not the worktree dir.
+        await closeSeed(run.seed_id, this.projectPath);
+
         merged.push({
           runId: run.id,
           seedId: run.seed_id,
@@ -607,6 +613,10 @@ export class Refinery {
       { seedId: run.seed_id, branchName, strategy: "theirs", targetBranch },
       run.id,
     );
+
+    // Close the bead after successful conflict-resolution merge.
+    await closeSeed(run.seed_id, this.projectPath);
+
     return true;
   }
 
