@@ -17,6 +17,7 @@ import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import { Refinery } from "../../orchestrator/refinery.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
 import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
+import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
 
@@ -425,6 +426,8 @@ export const runCommand = new Command("run")
       // Track whether the user explicitly detached (Ctrl+C). When detached, agents
       // continue running in the background so we skip the final merge drain.
       let userDetached = false;
+      // Suppress repeated "No ready tasks" log messages — only print once per wait period.
+      let waitingForTasksLogged = false;
       while (true) {
         iteration++;
         if (iteration > 1) {
@@ -479,6 +482,7 @@ export const runCommand = new Command("run")
           // If agents are still running AND watch mode is on, wait for them to
           // finish — they may unblock previously-blocked tasks when they complete.
           if (watch && result.activeAgents > 0) {
+            waitingForTasksLogged = false; // Reset: leaving "no tasks" wait state
             console.log(
               chalk.dim(
                 `No new tasks dispatched — waiting for ${result.activeAgents} active agent(s) to finish…`
@@ -515,9 +519,28 @@ export const runCommand = new Command("run")
             // Agents finished — loop back and check for newly-unblocked tasks
             continue;
           }
-          // No active agents (or --no-watch): nothing left to do
+          // Watch mode with no active agents: poll for new tasks to become ready
+          if (watch) {
+            if (!waitingForTasksLogged) {
+              console.log(
+                chalk.dim(
+                  `No ready tasks — waiting for tasks to become available…`
+                )
+              );
+              waitingForTasksLogged = true;
+            }
+            await new Promise<void>((resolve) =>
+              setTimeout(resolve, PIPELINE_TIMEOUTS.monitorPollMs)
+            );
+            continue;
+          }
+          // No active agents and --no-watch: nothing left to do
           break;
         }
+
+        // Tasks were dispatched — reset flag so the "waiting" message reappears
+        // if we later enter another no-tasks polling period.
+        waitingForTasksLogged = false;
 
         // AT-T028: Auto-attach to tmux session after dispatch
         await autoAttach({

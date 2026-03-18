@@ -115,16 +115,16 @@ describe("auto-dispatch: passes callback to watchRunsInk", () => {
   });
 
   it("passes autoDispatch callback to watchRunsInk by default (watch mode)", async () => {
-    // First dispatch: 1 task; second dispatch: nothing, no active agents
-    mockDispatch
-      .mockResolvedValueOnce({
-        dispatched: [
-          { seedId: "s-1", runId: "run-111", title: "Task 1", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-1", runtime: "claude-code" },
-        ],
-        skipped: [],
-        activeAgents: 1,
-      })
-      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 });
+    // Dispatch 1 task; watchRunsInk returns detached=true to exit cleanly
+    // (without detaching, the loop would continue polling for new tasks)
+    mockDispatch.mockResolvedValueOnce({
+      dispatched: [
+        { seedId: "s-1", runId: "run-111", title: "Task 1", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-1", runtime: "claude-code" },
+      ],
+      skipped: [],
+      activeAgents: 1,
+    });
+    mockWatchRunsInk.mockResolvedValue({ detached: true });
 
     await invokeRun([]);
 
@@ -137,15 +137,15 @@ describe("auto-dispatch: passes callback to watchRunsInk", () => {
   });
 
   it("does NOT pass autoDispatch when --no-auto-dispatch is set", async () => {
-    mockDispatch
-      .mockResolvedValueOnce({
-        dispatched: [
-          { seedId: "s-2", runId: "run-222", title: "Task 2", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-2", runtime: "claude-code" },
-        ],
-        skipped: [],
-        activeAgents: 1,
-      })
-      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 });
+    // Dispatch 1 task; watchRunsInk returns detached=true to exit cleanly
+    mockDispatch.mockResolvedValueOnce({
+      dispatched: [
+        { seedId: "s-2", runId: "run-222", title: "Task 2", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-2", runtime: "claude-code" },
+      ],
+      skipped: [],
+      activeAgents: 1,
+    });
+    mockWatchRunsInk.mockResolvedValue({ detached: true });
 
     await invokeRun(["--no-auto-dispatch"]);
 
@@ -184,23 +184,23 @@ describe("auto-dispatch: passes callback to watchRunsInk", () => {
   it("autoDispatch callback calls dispatcher.dispatch when invoked", async () => {
     let capturedAutoDispatch: (() => Promise<string[]>) | undefined;
 
-    // Capture the autoDispatch callback when watchRunsInk is called
+    // Capture the autoDispatch callback when watchRunsInk is called;
+    // return detached=true so the main loop exits after first watch
     mockWatchRunsInk.mockImplementation(
       async (_store: unknown, _runIds: unknown, opts: { autoDispatch?: () => Promise<string[]> }) => {
         capturedAutoDispatch = opts?.autoDispatch;
-        return { detached: false };
+        return { detached: true };
       },
     );
 
-    mockDispatch
-      .mockResolvedValueOnce({
-        dispatched: [
-          { seedId: "s-4", runId: "run-444", title: "Task 4", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-4", runtime: "claude-code" },
-        ],
-        skipped: [],
-        activeAgents: 1,
-      })
-      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 });
+    // 1st dispatch returns a task → watchRunsInk captures callback and returns detached=true
+    mockDispatch.mockResolvedValueOnce({
+      dispatched: [
+        { seedId: "s-4", runId: "run-444", title: "Task 4", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-4", runtime: "claude-code" },
+      ],
+      skipped: [],
+      activeAgents: 1,
+    });
 
     await invokeRun([]);
 
@@ -219,23 +219,23 @@ describe("auto-dispatch: passes callback to watchRunsInk", () => {
 
     // Should return the run IDs of newly dispatched tasks
     expect(newRunIds).toEqual(["run-555"]);
-    // dispatch should have been called a 3rd time (for the auto-dispatch callback)
-    expect(mockDispatch).toHaveBeenCalledTimes(3);
+    // dispatch called once by main loop + once by auto-dispatch callback = 2 total
+    expect(mockDispatch).toHaveBeenCalledTimes(2);
   });
 
   it("passes autoDispatch in the 'waiting for active agents' watch path too", async () => {
     const activeRunIds = ["run-aaa", "run-bbb"];
 
-    // First call: nothing dispatched but 2 active agents
-    // Second call: nothing dispatched, no active agents
-    mockDispatch
-      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 2 })
-      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 });
+    // First call: nothing dispatched but 2 active agents → watchRunsInk (returns detached=true to exit)
+    mockDispatch.mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 2 });
 
     mockGetActiveRuns.mockReturnValue([
       { id: "run-aaa", status: "running" },
       { id: "run-bbb", status: "running" },
     ]);
+
+    // Return detached=true so the loop exits after watching agents (no 2nd dispatch)
+    mockWatchRunsInk.mockResolvedValue({ detached: true });
 
     await invokeRun([]);
 
