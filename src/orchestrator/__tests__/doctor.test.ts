@@ -469,6 +469,143 @@ describe("Doctor", () => {
     });
   });
 
+  describe("checkBlockedSeeds", () => {
+    function makeIssue(id: string, title = "Some issue") {
+      return {
+        id,
+        title,
+        type: "task",
+        priority: "P2",
+        status: "open",
+        assignee: null,
+        parent: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+    }
+
+    it("returns skip when no task client is configured", async () => {
+      const { doctor } = makeMocks();
+      const result = await doctor.checkBlockedSeeds();
+      expect(result.status).toBe("skip");
+      expect(result.name).toBe("blocked seeds");
+    });
+
+    it("returns pass when all open seeds are ready (no blocked seeds)", async () => {
+      const { store } = makeMocks();
+      const issue = makeIssue("bd-001");
+      const taskClient = {
+        list: vi.fn().mockResolvedValue([issue]),
+        ready: vi.fn().mockResolvedValue([issue]),
+        show: vi.fn(),
+        update: vi.fn(),
+        close: vi.fn(),
+      };
+      const doctor = new Doctor(store as any, "/tmp/project", undefined, undefined, taskClient as any);
+
+      const result = await doctor.checkBlockedSeeds();
+
+      expect(result.status).toBe("pass");
+      expect(result.message).toBe("No blocked seeds");
+    });
+
+    it("returns pass when there are no open seeds at all", async () => {
+      const { store } = makeMocks();
+      const taskClient = {
+        list: vi.fn().mockResolvedValue([]),
+        ready: vi.fn().mockResolvedValue([]),
+        show: vi.fn(),
+        update: vi.fn(),
+        close: vi.fn(),
+      };
+      const doctor = new Doctor(store as any, "/tmp/project", undefined, undefined, taskClient as any);
+
+      const result = await doctor.checkBlockedSeeds();
+
+      expect(result.status).toBe("pass");
+      expect(result.message).toBe("No blocked seeds");
+    });
+
+    it("returns warn when some open seeds are blocked", async () => {
+      const { store } = makeMocks();
+      const unblocked = makeIssue("bd-001", "Unblocked task");
+      const blocked = makeIssue("bd-002", "Blocked task");
+      const taskClient = {
+        list: vi.fn().mockResolvedValue([unblocked, blocked]),
+        ready: vi.fn().mockResolvedValue([unblocked]),
+        show: vi.fn(),
+        update: vi.fn(),
+        close: vi.fn(),
+      };
+      const doctor = new Doctor(store as any, "/tmp/project", undefined, undefined, taskClient as any);
+
+      const result = await doctor.checkBlockedSeeds();
+
+      expect(result.status).toBe("warn");
+      expect(result.name).toBe("blocked seeds");
+      expect(result.message).toContain("1 blocked seed(s)");
+      expect(result.message).toContain("bd-002");
+      expect(result.message).toContain("Blocked task");
+    });
+
+    it("returns warn listing all blocked seeds when multiple are blocked", async () => {
+      const { store } = makeMocks();
+      const blocked1 = makeIssue("bd-002", "Blocked task A");
+      const blocked2 = makeIssue("bd-003", "Blocked task B");
+      const taskClient = {
+        list: vi.fn().mockResolvedValue([blocked1, blocked2]),
+        ready: vi.fn().mockResolvedValue([]),
+        show: vi.fn(),
+        update: vi.fn(),
+        close: vi.fn(),
+      };
+      const doctor = new Doctor(store as any, "/tmp/project", undefined, undefined, taskClient as any);
+
+      const result = await doctor.checkBlockedSeeds();
+
+      expect(result.status).toBe("warn");
+      expect(result.message).toContain("2 blocked seed(s)");
+      expect(result.message).toContain("bd-002");
+      expect(result.message).toContain("bd-003");
+    });
+
+    it("returns warn when taskClient.list rejects (br unavailable)", async () => {
+      const { store } = makeMocks();
+      const taskClient = {
+        list: vi.fn().mockRejectedValue(new Error("br: command not found")),
+        ready: vi.fn().mockResolvedValue([]),
+        show: vi.fn(),
+        update: vi.fn(),
+        close: vi.fn(),
+      };
+      const doctor = new Doctor(store as any, "/tmp/project", undefined, undefined, taskClient as any);
+
+      const result = await doctor.checkBlockedSeeds();
+
+      expect(result.status).toBe("warn");
+      expect(result.name).toBe("blocked seeds");
+      expect(result.message).toContain("Could not list seeds");
+    });
+
+    it("returns warn when taskClient.ready rejects (br unavailable)", async () => {
+      const { store } = makeMocks();
+      const taskClient = {
+        list: vi.fn().mockResolvedValue([makeIssue("bd-001")]),
+        ready: vi.fn().mockRejectedValue(new Error("br: not initialized")),
+        show: vi.fn(),
+        update: vi.fn(),
+        close: vi.fn(),
+      };
+      const doctor = new Doctor(store as any, "/tmp/project", undefined, undefined, taskClient as any);
+
+      const result = await doctor.checkBlockedSeeds();
+
+      expect(result.status).toBe("warn");
+      expect(result.name).toBe("blocked seeds");
+      expect(result.message).toContain("Could not list seeds");
+    });
+  });
+
   describe("runAll", () => {
     it("returns a DoctorReport with all sections", async () => {
       const { store, doctor } = makeMocks();

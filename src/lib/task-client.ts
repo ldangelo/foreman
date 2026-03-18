@@ -67,6 +67,11 @@ export interface UpdateOptions {
  */
 export interface ITaskClient {
   /**
+   * List issues with optional filters.
+   */
+  list(opts?: { status?: string; type?: string }): Promise<Issue[]>;
+
+  /**
    * Return issues that are open and have no unresolved blockers
    * (i.e. are immediately actionable).
    */
