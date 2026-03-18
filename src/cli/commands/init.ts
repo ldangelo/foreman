@@ -51,6 +51,41 @@ export async function initBackend(opts: InitBackendOpts): Promise<void> {
   }
 }
 
+// ── Store init logic ──────────────────────────────────────────────────────
+
+/**
+ * Register project and seed default sentinel config if not already present.
+ * Exported for unit testing.
+ */
+export async function initProjectStore(
+  projectDir: string,
+  projectName: string,
+  store: ForemanStore,
+): Promise<void> {
+  let projectId: string;
+  const existing = store.getProjectByPath(projectDir);
+  if (existing) {
+    console.log(chalk.dim(`Project already registered (${existing.id})`));
+    projectId = existing.id;
+  } else {
+    const project = store.registerProject(projectName, projectDir);
+    console.log(chalk.dim(`Registered in store: ${project.id}`));
+    projectId = project.id;
+  }
+
+  // Seed default sentinel config only on first init
+  if (!store.getSentinelConfig(projectId)) {
+    store.upsertSentinelConfig(projectId, {
+      branch: "main",
+      test_command: "npm test",
+      interval_minutes: 30,
+      failure_threshold: 2,
+      enabled: 1,
+    });
+    console.log(chalk.dim("  Sentinel: enabled (npm test every 30m on main)"));
+  }
+}
+
 // ── Command ────────────────────────────────────────────────────────────────
 
 export const initCommand = new Command("init")
@@ -64,18 +99,12 @@ export const initCommand = new Command("init")
       chalk.bold(`Initializing foreman project: ${chalk.cyan(projectName)}`),
     );
 
-    // Initialize the task-tracking backend (sd or br depending on env)
+    // Initialize the task-tracking backend
     await initBackend({ projectDir });
 
-    // Register project in state store
+    // Register project and seed sentinel config
     const store = ForemanStore.forProject(projectDir);
-    const existing = store.getProjectByPath(projectDir);
-    if (existing) {
-      console.log(chalk.dim(`Project already registered (${existing.id})`));
-    } else {
-      const project = store.registerProject(projectName, projectDir);
-      console.log(chalk.dim(`Registered in store: ${project.id}`));
-    }
+    await initProjectStore(projectDir, projectName, store);
     store.close();
 
     console.log();

@@ -27,6 +27,8 @@ vi.mock("../../lib/store.js", () => ({
     this.close = vi.fn();
     this.getProjectByPath = vi.fn().mockReturnValue(null);
     this.registerProject = vi.fn().mockReturnValue({ id: "proj-1" });
+    this.getSentinelConfig = vi.fn().mockReturnValue(null);
+    this.upsertSentinelConfig = vi.fn().mockReturnValue({});
   }),
 }));
 
