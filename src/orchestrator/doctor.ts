@@ -222,6 +222,7 @@ export class Doctor {
       );
       const completedRun = runs.find((r: Run) => r.status === "completed");
       const mergedRun = runs.find((r: Run) => r.status === "merged");
+      const prCreatedRun = runs.find((r: Run) => r.status === "pr-created");
       const failableRun = runs.find((r: Run) =>
         (["failed", "stuck", "conflict", "test-failed"] as Run["status"][]).includes(r.status),
       );
@@ -270,6 +271,12 @@ export class Doctor {
           name: `worktree: ${seedId}`,
           status: "warn",
           message: `Needs merge. Run: foreman merge --seed ${seedId}`,
+        });
+      } else if (prCreatedRun) {
+        results.push({
+          name: `worktree: ${seedId}`,
+          status: "warn",
+          message: `PR open — awaiting manual review/merge (run ${prCreatedRun.id.slice(0, 8)})`,
         });
       } else if (failableRun) {
         const hint = failableRun.status === "failed" || failableRun.status === "test-failed"
