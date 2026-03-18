@@ -50,7 +50,8 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 - `src/cli/commands/` — 10 CLI commands
 - `src/orchestrator/` — dispatcher, agent-worker, roles, planner, refinery
 - `src/lib/` — beads-rust.ts (br wrapper), bv.ts (bv client), git.ts (worktrees), store.ts (SQLite)
-- `templates/` — worker-agent.md, refinery-agent.md
+- `src/orchestrator/roles.ts` — agent role prompts (explorerPrompt, developerPrompt, qaPrompt, reviewerPrompt, sentinelPrompt) generated as inline TypeScript functions
+- `src/orchestrator/templates.ts` — TASK.md template generated via workerAgentMd() function
 
 **Agent pipeline** (orchestrated by TypeScript, not AI):
 1. **Explorer** (Haiku, 30 turns) — read-only codebase analysis -> EXPLORER_REPORT.md

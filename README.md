@@ -276,9 +276,6 @@ foreman/
 │       ├── git.ts             # Git worktree management
 │       └── store.ts           # SQLite state store
 ├── skills/foreman/SKILL.md     # OpenClaw skill definition
-├── templates/                  # Agent instruction templates
-│   ├── worker-agent.md
-│   └── refinery-agent.md
 └── docs/
     ├── PRD.md                 # Full product requirements
     └── sample-prd.md          # Example PRD for testing
