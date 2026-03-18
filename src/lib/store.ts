@@ -295,6 +295,8 @@ const MIGRATIONS = [
     FOREIGN KEY (project_id) REFERENCES projects(id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_sentinel_runs_project ON sentinel_runs (project_id, started_at DESC)`,
+  `ALTER TABLE merge_queue ADD COLUMN retry_count INTEGER DEFAULT 0`,
+  `ALTER TABLE merge_queue ADD COLUMN last_attempted_at TEXT DEFAULT NULL`,
 ];
 
 // One-time destructive migrations that cannot be made idempotent via failure

@@ -798,16 +798,74 @@ export class Doctor {
   }
 
   /**
+   * Check for merge queue entries stuck in conflict/failed for >1h (MQ-012).
+   */
+  async checkStuckConflictFailedEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
+    if (!this.mergeQueue) {
+      return { name: "stuck conflict/failed entries", status: "pass", message: "No merge queue configured (skipping)" };
+    }
+
+    const allEntries = this.mergeQueue.list();
+    const stuckThresholdMs = 60 * 60 * 1000; // 1 hour
+    const now = Date.now();
+
+    const stuckEntries = allEntries.filter((e) => {
+      if (e.status !== "conflict" && e.status !== "failed") return false;
+      const timestamp = e.completed_at
+        ? new Date(e.completed_at).getTime()
+        : new Date(e.enqueued_at).getTime();
+      return now - timestamp > stuckThresholdMs;
+    });
+
+    if (stuckEntries.length === 0) {
+      return { name: "stuck conflict/failed entries (>1h)", status: "pass", message: "No stuck entries" };
+    }
+
+    if (dryRun) {
+      return {
+        name: "stuck conflict/failed entries (>1h)",
+        status: "warn",
+        message: `MQ-012: ${stuckEntries.length} entry(ies) stuck in conflict/failed >1h. Would suggest retry (dry-run).`,
+      };
+    }
+
+    if (fix) {
+      let requeued = 0;
+      for (const entry of stuckEntries) {
+        if (this.mergeQueue.reEnqueue(entry.id)) {
+          requeued++;
+        }
+      }
+      return {
+        name: "stuck conflict/failed entries (>1h)",
+        status: "fixed",
+        message: `MQ-012: ${stuckEntries.length} stuck entry(ies)`,
+        fixApplied: `Re-enqueued ${requeued} entry(ies) for retry`,
+      };
+    }
+
+    const seedIds = stuckEntries.map((e) => e.seed_id).join(", ");
+    return {
+      name: "stuck conflict/failed entries (>1h)",
+      status: "warn",
+      message: `MQ-012: ${stuckEntries.length} entry(ies) stuck in conflict/failed >1h (${seedIds}). Use --fix to retry or 'foreman merge --auto-retry'.`,
+    };
+  }
+
+  /**
    * Run all merge queue health checks.
    */
   async checkMergeQueueHealth(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
-    const [stale, duplicates, orphaned, notQueued] = await Promise.all([
+    const [stale, duplicates, orphaned, notQueued, stuckConflictFailed] = await Promise.all([
       this.checkStaleMergeQueueEntries(opts),
       this.checkDuplicateMergeQueueEntries(opts),
       this.checkOrphanedMergeQueueEntries(opts),
       this.checkCompletedRunsNotQueued(),
+      this.checkStuckConflictFailedEntries(opts),
     ]);
-    return [stale, duplicates, orphaned, notQueued];
+    return [stale, duplicates, orphaned, notQueued, stuckConflictFailed];
   }
 
   // ── Session Management checks ─────────────────────────────────────

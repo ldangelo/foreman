@@ -18,6 +18,8 @@ export interface MergeQueueEntry {
   status: MergeQueueStatus;
   resolved_tier: number | null;
   error: string | null;
+  retry_count: number;
+  last_attempted_at: string | null;
 }
 
 /** Raw row shape from SQLite (files_modified is a JSON string). */
@@ -34,6 +36,8 @@ interface MergeQueueRow {
   status: MergeQueueStatus;
   resolved_tier: number | null;
   error: string | null;
+  retry_count: number;
+  last_attempted_at: string | null;
 }
 
 interface EnqueueInput {
@@ -63,12 +67,23 @@ export type ExecFileAsyncFn = (
   options?: { cwd?: string }
 ) => Promise<{ stdout: string; stderr: string }>;
 
+// ── Retry Policy ───────────────────────────────────────────────────────
+
+export const RETRY_CONFIG = {
+  maxRetries: 3,
+  initialDelayMs: 60_000,       // 1 minute
+  maxDelayMs: 3_600_000,        // 1 hour
+  backoffMultiplier: 2,
+};
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 function rowToEntry(row: MergeQueueRow): MergeQueueEntry {
   return {
     ...row,
     files_modified: JSON.parse(row.files_modified) as string[],
+    retry_count: row.retry_count ?? 0,
+    last_attempted_at: row.last_attempted_at ?? null,
   };
 }
 
@@ -171,7 +186,7 @@ export class MergeQueue {
   updateStatus(
     id: number,
     status: MergeQueueStatus,
-    extra?: { resolvedTier?: number; error?: string; completedAt?: string }
+    extra?: { resolvedTier?: number; error?: string; completedAt?: string; lastAttemptedAt?: string; retryCount?: number }
   ): void {
     const fields = ["status = ?"];
     const params: unknown[] = [status];
@@ -188,6 +203,14 @@ export class MergeQueue {
       fields.push("completed_at = ?");
       params.push(extra.completedAt);
     }
+    if (extra?.lastAttemptedAt !== undefined) {
+      fields.push("last_attempted_at = ?");
+      params.push(extra.lastAttemptedAt);
+    }
+    if (extra?.retryCount !== undefined) {
+      fields.push("retry_count = ?");
+      params.push(extra.retryCount);
+    }
 
     params.push(id);
     this.db
@@ -203,14 +226,63 @@ export class MergeQueue {
    * Returns true if an entry was reset, false if no retryable entry was found.
    */
   resetForRetry(seedId: string): boolean {
+    const now = new Date().toISOString();
     const result = this.db
       .prepare(
         `UPDATE merge_queue
-         SET status = 'pending', error = NULL, started_at = NULL
+         SET status = 'pending', error = NULL, started_at = NULL, last_attempted_at = ?
          WHERE seed_id = ? AND status IN ('failed', 'conflict', 'merging')
          RETURNING id`
       )
-      .get(seedId);
+      .get(now, seedId);
+    return result != null;
+  }
+
+  /**
+   * Calculate the delay (in ms) before the next retry attempt using exponential backoff.
+   */
+  private retryDelayMs(retryCount: number): number {
+    const delay = RETRY_CONFIG.initialDelayMs * Math.pow(RETRY_CONFIG.backoffMultiplier, retryCount);
+    return Math.min(delay, RETRY_CONFIG.maxDelayMs);
+  }
+
+  /**
+   * Determine whether an entry is eligible for automatic retry.
+   * Returns true if retry_count < maxRetries AND enough time has passed since last attempt.
+   */
+  shouldRetry(entry: MergeQueueEntry): boolean {
+    if (entry.retry_count >= RETRY_CONFIG.maxRetries) return false;
+    if (!entry.last_attempted_at) return true;
+    const elapsed = Date.now() - new Date(entry.last_attempted_at).getTime();
+    return elapsed >= this.retryDelayMs(entry.retry_count);
+  }
+
+  /**
+   * Return all conflict/failed entries that are eligible for automatic retry.
+   */
+  getRetryableEntries(): MergeQueueEntry[] {
+    const rows = this.db
+      .prepare("SELECT * FROM merge_queue WHERE status IN ('conflict', 'failed') ORDER BY enqueued_at ASC")
+      .all() as MergeQueueRow[];
+    return rows.map(rowToEntry).filter((e) => this.shouldRetry(e));
+  }
+
+  /**
+   * Re-enqueue a failed/conflict entry by resetting it to pending.
+   * Increments retry_count and records last_attempted_at.
+   * Returns true if successful, false if entry not found or max retries exceeded.
+   */
+  reEnqueue(id: number): boolean {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE merge_queue
+         SET status = 'pending', error = NULL, started_at = NULL,
+             retry_count = retry_count + 1, last_attempted_at = ?
+         WHERE id = ? AND status IN ('conflict', 'failed') AND retry_count < ${RETRY_CONFIG.maxRetries}
+         RETURNING id`
+      )
+      .get(now, id);
     return result != null;
   }
 
