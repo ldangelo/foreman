@@ -20,6 +20,8 @@ QA_REPORT*.md
 REVIEW*.md
 FINALIZE_REPORT*.md
 TASK.md
+# Exception: template source files in src/orchestrator/templates/ are tracked
+!src/orchestrator/templates/*.md
 AGENTS.md
 
 # bv (beads viewer) local config and caches

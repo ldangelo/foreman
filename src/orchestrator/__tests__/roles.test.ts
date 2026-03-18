@@ -8,6 +8,7 @@ import {
   developerPrompt,
   qaPrompt,
   reviewerPrompt,
+  sentinelPrompt,
   parseVerdict,
   extractIssues,
 } from "../roles.js";
@@ -123,6 +124,13 @@ describe("prompt templates", () => {
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("REVIEW.md");
     expect(prompt).toContain("DO NOT modify");
+  });
+
+  it("sentinelPrompt includes branch, testCommand, and report reference", () => {
+    const prompt = sentinelPrompt("main", "npm test");
+    expect(prompt).toContain("main");
+    expect(prompt).toContain("npm test");
+    expect(prompt).toContain("SENTINEL_REPORT.md");
   });
 });
 
