@@ -9,7 +9,7 @@
  * Usage: tsx agent-worker.ts <config-file>
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, renameSync } from "node:fs";
+import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -514,27 +514,9 @@ function readReport(worktreePath: string, filename: string): string | null {
 }
 
 /**
- * Rotate a report file before a phase overwrites it.
- * Renames e.g. REVIEW.md → REVIEW.2026-03-12T19-40-24.md
- * so previous reports are preserved for debugging.
- */
-function rotateReport(worktreePath: string, filename: string): void {
-  const p = join(worktreePath, filename);
-  if (!existsSync(p)) return;
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const ext = filename.endsWith(".md") ? ".md" : "";
-  const base = ext ? filename.slice(0, -3) : filename;
-  const rotated = join(worktreePath, `${base}.${stamp}${ext}`);
-  try {
-    renameSync(p, rotated);
-  } catch {
-    // Non-fatal — report will just be overwritten
-  }
-}
-
-/**
  * Run git finalization: add, commit, push, and close the seed.
  * Uses execFileSync for safety — no shell interpolation.
+ * Returns true when push succeeded, false otherwise.
  */
 async function finalize(
   config: WorkerConfig,
@@ -542,7 +524,7 @@ async function finalize(
   progress: RunProgress,
   pipelineStartedAt: string,
   pipelineStatus = "ALL_CHECKS_PASSED",
-): Promise<void> {
+): Promise<boolean> {
   const { seedId, seedTitle, worktreePath } = config;
   const storeProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
   const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
@@ -734,6 +716,195 @@ async function finalize(
   } catch {
     // Non-fatal — finalize report is for debugging
   }
+}
+||||||| parent of 54f2b67 (finalize() calls closeSeed() unconditionally even when git push fails (bd-ytzv))
+/**
+ * Run git finalization: add, commit, push, and close the seed.
+ * Uses execFileSync for safety — no shell interpolation.
+ */
+async function finalize(config: WorkerConfig, logFile: string): Promise<void> {
+  const { seedId, seedTitle, worktreePath } = config;
+  const storeProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
+  const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
+
+  const report: string[] = [
+    `# Finalize Report: ${seedTitle}`,
+    "",
+    `## Seed: ${seedId}`,
+    `## Timestamp: ${new Date().toISOString()}`,
+    "",
+  ];
+
+  // Dependency install — required before type check so tsc can resolve module types.
+  // Use npm ci (clean install) for deterministic, lock-file-based installs.
+  // Allow up to 120 s to handle slow network / large dependency trees.
+  const installOpts = { ...opts, timeout: 120_000 };
+  let installSucceeded = false;
+  try {
+    execFileSync("npm", ["ci"], installOpts);
+    log(`[FINALIZE] npm ci succeeded`);
+    report.push(`## Dependency Install`, `- Status: SUCCESS`, "");
+    installSucceeded = true;
+  } catch (err: unknown) {
+    const rawMsg = err instanceof Error ? err.message : String(err);
+    const stderr =
+      err instanceof Error && "stderr" in err
+        ? String((err as NodeJS.ErrnoException & { stderr?: Buffer }).stderr ?? "")
+        : "";
+    const detail = (stderr || rawMsg).slice(0, 500);
+    log(`[FINALIZE] npm ci failed: ${detail.slice(0, 200)}`);
+    await appendFile(logFile, `[FINALIZE] npm ci error:\n${detail}\n`);
+    report.push(`## Dependency Install`, `- Status: FAILED`, `- Errors:`, "```", detail, "```", "");
+  }
+
+  // Bug scan (pre-commit type check) — 60 s timeout to handle TypeScript cold-start.
+  // Skip if npm ci failed: without node_modules tsc will always fail with "Cannot find module".
+  const buildOpts = { ...opts, timeout: 60_000 };
+  if (!installSucceeded) {
+    log(`[FINALIZE] Skipping type check — dependency install failed`);
+    report.push(`## Build / Type Check`, `- Status: SKIPPED (dependency install failed)`, "");
+  } else {
+    try {
+      execFileSync("npx", ["tsc", "--noEmit"], buildOpts);
+      log(`[FINALIZE] Type check passed`);
+      report.push(`## Build / Type Check`, `- Status: SUCCESS`, "");
+    } catch (err: unknown) {
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      // execFileSync throws with stderr in the message when stdio:"pipe"
+      const stderr =
+        err instanceof Error && "stderr" in err
+          ? String((err as NodeJS.ErrnoException & { stderr?: Buffer }).stderr ?? "")
+          : "";
+      const detail = (stderr || rawMsg).slice(0, 500);
+      log(`[FINALIZE] Type check failed: ${detail.slice(0, 200)}`);
+      await appendFile(logFile, `[FINALIZE] Type check error:\n${detail}\n`);
+      report.push(`## Build / Type Check`, `- Status: FAILED`, `- Errors:`, "```", detail, "```", "");
+    }
+  }
+
+  // Commit
+  let commitHash = "(none)";
+  try {
+    execFileSync("git", ["add", "-A"], opts);
+
+    // Detect silently-ignored new files (files skipped by git add -A due to .gitignore)
+    try {
+      const ignoredOutput = execFileSync(
+        "git",
+        ["ls-files", "--others", "--ignored", "--exclude-standard"],
+        opts,
+      )
+        .toString()
+        .trim();
+      if (ignoredOutput) {
+        const ignoredFiles = ignoredOutput.split("\n").filter(Boolean);
+        // Fast-path guard: if the list is very large (e.g., node_modules/ was enumerated),
+        // skip detailed reporting to avoid slow log writes and high memory use.
+        // The inner try/catch ensures this is non-fatal either way.
+        if (ignoredFiles.length > 500) {
+          log(`[FINALIZE] Detected ${ignoredFiles.length} silently-ignored file(s) — too many to log individually`);
+          report.push(
+            `## Silently Ignored Files`,
+            `- Count: ${ignoredFiles.length} (truncated — too many to display)`,
+            `- Note: A large ignored directory (e.g. node_modules/) may be present in the worktree`,
+            "",
+          );
+        } else {
+          // Truncate to avoid bloating the report
+          const displayFiles = ignoredFiles.slice(0, 50);
+          const truncated = ignoredFiles.length > 50 ? ` (showing first 50 of ${ignoredFiles.length})` : "";
+          log(`[FINALIZE] Detected ${ignoredFiles.length} silently-ignored file(s)${truncated}`);
+          await appendFile(logFile, `[FINALIZE] Silently-ignored files:\n${ignoredFiles.join("\n")}\n`);
+          report.push(
+            `## Silently Ignored Files`,
+            `- Count: ${ignoredFiles.length}${truncated}`,
+            `- Files:`,
+            ...displayFiles.map((f) => `  - ${f}`),
+            "",
+          );
+        }
+      } else {
+        report.push(`## Silently Ignored Files`, `- Count: 0`, "");
+      }
+    } catch {
+      // Detection is non-fatal — log and continue
+      log(`[FINALIZE] Could not detect silently-ignored files (non-fatal)`);
+    }
+
+    execFileSync("git", ["commit", "-m", `${seedTitle} (${seedId})`], opts);
+    commitHash = execFileSync("git", ["rev-parse", "--short", "HEAD"], opts).toString().trim();
+    log(`[FINALIZE] Committed ${commitHash}`);
+    report.push(`## Commit`, `- Status: SUCCESS`, `- Hash: ${commitHash}`, "");
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("nothing to commit")) {
+      log(`[FINALIZE] Nothing to commit`);
+      report.push(`## Commit`, `- Status: SKIPPED (nothing to commit)`, "");
+    } else {
+      log(`[FINALIZE] Commit failed: ${msg.slice(0, 200)}`);
+      await appendFile(logFile, `[FINALIZE] Commit error: ${msg}\n`);
+      report.push(`## Commit`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
+    }
+  }
+
+  // Push
+  let pushSucceeded = false;
+  try {
+    execFileSync("git", ["push", "-u", "origin", `foreman/${seedId}`], opts);
+    log(`[FINALIZE] Pushed to origin`);
+    report.push(`## Push`, `- Status: SUCCESS`, `- Branch: foreman/${seedId}`, "");
+    pushSucceeded = true;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[FINALIZE] Push failed: ${msg.slice(0, 200)}`);
+    await appendFile(logFile, `[FINALIZE] Push error: ${msg}\n`);
+    report.push(`## Push`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
+  }
+
+  // Enqueue to merge queue (fire-and-forget — must not block finalization)
+  if (pushSucceeded) {
+    try {
+      const enqueueStore = ForemanStore.forProject(storeProjectPath);
+      const enqueueResult = enqueueToMergeQueue({
+        db: enqueueStore.getDb(),
+        seedId,
+        runId: config.runId,
+        worktreePath,
+        getFilesModified: () => {
+          const output = execFileSync("git", ["diff", "--name-only", "main...HEAD"], opts).toString().trim();
+          return output ? output.split("\n") : [];
+        },
+      });
+      enqueueStore.close();
+
+      if (enqueueResult.success) {
+        log(`[FINALIZE] Enqueued to merge queue`);
+        report.push(`## Merge Queue`, `- Status: ENQUEUED`, "");
+      } else {
+        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error}`);
+        report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueResult.error?.slice(0, 300)}`, "");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${msg}`);
+      report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
+    }
+  }
+
+  // NOTE: We do NOT close the bead here. The bead is closed only after the code
+  // has successfully landed in main branch (i.e., after autoMerge() calls
+  // refinery.mergeCompleted() and the merge succeeds). Closing here would
+  // falsely mark the bead as done even if the merge later fails with conflicts
+  // or test failures. See: refinery.ts mergeCompleted() and resolveConflict().
+  // Write finalize report
+  try {
+    rotateReport(worktreePath, "FINALIZE_REPORT.md");
+    writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), report.join("\n"));
+  } catch {
+    // Non-fatal — finalize report is for debugging
+  }
+
+  return pushSucceeded;
 }
 
 const MAX_DEV_RETRIES = PIPELINE_LIMITS.maxDevRetries;
@@ -1008,18 +1179,29 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   store.updateRunProgress(runId, progress);
   await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: FINALIZE]\n`);
 
-  await finalize(config, logFile, progress, pipelineStartedAt, pipelineStatus);
+  const finalizeSucceeded = await finalize(config, logFile, progress, pipelineStartedAt, pipelineStatus);
 
   const now = new Date().toISOString();
-  store.updateRun(runId, { status: "completed", completed_at: now });
-  notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
+  if (finalizeSucceeded) {
+    store.updateRun(runId, { status: "completed", completed_at: now });
+    notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
+  } else {
+    // Push failed — mark the run as stuck so it can be retried.
+    // The seed is left open in the br backend (closeSeed was skipped).
+    store.updateRun(runId, { status: "stuck", completed_at: now });
+    notifyClient.send({ type: "status", runId, status: "stuck", timestamp: now });
+    await resetSeedToOpen(seedId, config.projectPath);
+  }
   const phaseList: string[] = [];
   if (!config.skipExplore) phaseList.push("explore");
   phaseList.push("dev", "qa");
   if (!config.skipReview) phaseList.push("review");
   phaseList.push("finalize");
   const completedPhases = phaseList.join("→");
-  store.logEvent(projectId, "complete", {
+
+  // Log the terminal event with the correct type so analytics / retry logic
+  // can distinguish completed runs from stuck ones by querying the event log.
+  store.logEvent(projectId, finalizeSucceeded ? "complete" : "stuck", {
     seedId,
     title: seedTitle,
     costUsd: progress.costUsd,
@@ -1031,8 +1213,13 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     qaVerdict,
   }, runId);
 
-  log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
-  await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
+  if (finalizeSucceeded) {
+    log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
+    await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
+  } else {
+    log(`PIPELINE STUCK for ${seedId} — push failed (${progress.turns} turns, $${progress.costUsd.toFixed(4)})`);
+    await appendFile(logFile, `\n[PIPELINE] STUCK — push failed ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
+  }
 }
 
 async function markStuck(
