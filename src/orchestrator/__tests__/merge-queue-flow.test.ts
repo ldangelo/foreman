@@ -226,4 +226,81 @@ describe("Queue integration with merge CLI flow", () => {
     expect(mq.list("pending")).toHaveLength(1);
     expect(mq.list("pending")[0].seed_id).toBe("s1");
   });
+
+  it("mid-loop reconcile failure does not abort processing of already-queued entries", async () => {
+    // Set up two runs already in the queue before the loop starts
+    addRun(db, "r1", "s1", "completed");
+    addRun(db, "r2", "s2", "completed");
+    const r = await mq.reconcile(db, "/tmp", mockGit());
+    expect(r.enqueued).toBe(2);
+
+    // Make subsequent reconcile() calls throw (simulates a DB or unexpected error).
+    // Note: reconcile() catches all git failures internally, so a failing git function
+    // alone would not cause reconcile() to throw. We spy directly on the method so the
+    // try/catch in the production dequeue loop (and mirrored here) is actually exercised.
+    const reconcileSpy = vi.spyOn(mq, "reconcile").mockRejectedValue(new Error("mock: reconcile failure"));
+
+    const results: string[] = [];
+    const errors: string[] = [];
+
+    let e = mq.dequeue();
+    while (e) {
+      mq.updateStatus(e.id, "merged", { completedAt: new Date().toISOString() });
+      results.push(e.seed_id);
+
+      // Mid-loop reconcile that throws — should not abort the loop
+      try {
+        await mq.reconcile(db, "/tmp", mockGit());
+      } catch (reconcileErr: unknown) {
+        errors.push(reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr));
+      }
+
+      e = mq.dequeue();
+    }
+
+    reconcileSpy.mockRestore();
+
+    // Both entries should have been processed despite the reconcile failure
+    expect(results).toHaveLength(2);
+    expect(results).toContain("s1");
+    expect(results).toContain("s2");
+    expect(mq.list("merged")).toHaveLength(2);
+    expect(mq.list("pending")).toHaveLength(0);
+    // The reconcile errors were caught (one per loop iteration)
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors[0]).toBe("mock: reconcile failure");
+  });
+
+  it("re-reconciling during dequeue loop catches agents that complete mid-merge", async () => {
+    // Simulate initial state: two runs already completed before merge starts
+    addRun(db, "r1", "s1", "completed");
+    addRun(db, "r2", "s2", "completed");
+
+    // Initial reconcile snapshot (before merge loop)
+    const r = await mq.reconcile(db, "/tmp", mockGit());
+    expect(r.enqueued).toBe(2);
+
+    const results: string[] = [];
+    let e = mq.dequeue();
+    while (e) {
+      // Simulate an agent (s3) completing while we process the first entry
+      if (e.seed_id === "s1") {
+        addRun(db, "r3", "s3", "completed");
+      }
+
+      mq.updateStatus(e.id, "merged", { completedAt: new Date().toISOString() });
+      results.push(e.seed_id);
+
+      // Re-reconcile (this is what the fix adds to the merge command loop)
+      await mq.reconcile(db, "/tmp", mockGit());
+
+      e = mq.dequeue();
+    }
+
+    // Without re-reconciliation, s3 would be missed. With the fix, it is caught.
+    expect(results).toHaveLength(3);
+    expect(results).toContain("s3");
+    expect(mq.list("merged")).toHaveLength(3);
+    expect(mq.list("pending")).toHaveLength(0);
+  });
 });

@@ -349,6 +349,19 @@ export const mergeCommand = new Command("merge")
           break;
         }
 
+        // Re-reconcile to catch agents that completed during this merge iteration.
+        // This handles the race condition where an agent finishes after the initial
+        // reconcile snapshot but before the dequeue loop exhausts the queue.
+        try {
+          const midLoopResult = await mq.reconcile(store.getDb(), projectPath, execFileAsync);
+          if (midLoopResult.enqueued > 0) {
+            console.log(chalk.dim(`  Reconciled ${midLoopResult.enqueued} additional completed run(s) into merge queue.\n`));
+          }
+        } catch (reconcileErr: unknown) {
+          const reconcileMessage = reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr);
+          console.warn(chalk.yellow(`  Warning: mid-loop reconcile failed (${reconcileMessage}); continuing with existing queue entries.`));
+        }
+
         entry = mq.dequeue();
       }
 
