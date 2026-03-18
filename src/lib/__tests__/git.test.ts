@@ -216,8 +216,8 @@ describe("installDependencies", () => {
     tempDirs.push(dir);
     writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "test", version: "1.0.0" }, null, 2));
     await installDependencies(dir);
-    // npm install creates node_modules even for projects with no dependencies
-    expect(existsSync(join(dir, "node_modules"))).toBe(true);
+    // npm install creates package-lock.json (node_modules is only created when there are deps)
+    expect(existsSync(join(dir, "package-lock.json"))).toBe(true);
   }, 60_000);
 });
 
@@ -229,7 +229,8 @@ describe("createWorktree with npm install", () => {
     const { worktreePath } = await createWorktree(repo, "seed-npm-001");
 
     expect(existsSync(worktreePath)).toBe(true);
-    expect(existsSync(join(worktreePath, "node_modules"))).toBe(true);
+    // npm install creates package-lock.json (node_modules is only created when there are deps)
+    expect(existsSync(join(worktreePath, "package-lock.json"))).toBe(true);
   }, 60_000);
 
   it("does not fail when no package.json exists in the worktree", async () => {
@@ -244,21 +245,22 @@ describe("createWorktree with npm install", () => {
     expect(existsSync(join(worktreePath, "node_modules"))).toBe(false);
   });
 
-  it("reinstalls node_modules when reusing an existing worktree", async () => {
+  it("reinstalls package-lock.json when reusing an existing worktree", async () => {
     const repo = makeTempRepoWithPackageJson();
     tempDirs.push(repo);
 
     // Create the worktree the first time
     const { worktreePath } = await createWorktree(repo, "seed-npm-reuse");
-    expect(existsSync(join(worktreePath, "node_modules"))).toBe(true);
+    // npm install creates package-lock.json (node_modules is only created when there are deps)
+    expect(existsSync(join(worktreePath, "package-lock.json"))).toBe(true);
 
-    // Remove node_modules to simulate stale state
-    rmSync(join(worktreePath, "node_modules"), { recursive: true, force: true });
-    expect(existsSync(join(worktreePath, "node_modules"))).toBe(false);
+    // Remove package-lock.json to simulate stale state
+    rmSync(join(worktreePath, "package-lock.json"), { force: true });
+    expect(existsSync(join(worktreePath, "package-lock.json"))).toBe(false);
 
-    // Reuse the existing worktree — should reinstall
+    // Reuse the existing worktree — should reinstall and recreate package-lock.json
     await createWorktree(repo, "seed-npm-reuse");
-    expect(existsSync(join(worktreePath, "node_modules"))).toBe(true);
+    expect(existsSync(join(worktreePath, "package-lock.json"))).toBe(true);
   }, 60_000);
 });
 
