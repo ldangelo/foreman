@@ -6,6 +6,7 @@ import {
   getQaBudget,
   getReviewerBudget,
   getPlanStepBudget,
+  getSessionLogBudget,
   PIPELINE_TIMEOUTS,
   PIPELINE_LIMITS,
   PIPELINE_BUFFERS,
@@ -94,6 +95,11 @@ describe("budget getter functions (defaults)", () => {
     vi.stubEnv("FOREMAN_PLAN_STEP_BUDGET_USD", undefined as unknown as string);
     expect(getPlanStepBudget()).toBe(3.00);
   });
+
+  it("getSessionLogBudget returns $0.50 by default", () => {
+    vi.stubEnv("FOREMAN_SESSION_LOG_BUDGET_USD", undefined as unknown as string);
+    expect(getSessionLogBudget()).toBe(0.50);
+  });
 });
 
 describe("budget getter functions (custom env vars)", () => {
@@ -124,6 +130,11 @@ describe("budget getter functions (custom env vars)", () => {
   it("getPlanStepBudget reads FOREMAN_PLAN_STEP_BUDGET_USD", () => {
     vi.stubEnv("FOREMAN_PLAN_STEP_BUDGET_USD", "5.00");
     expect(getPlanStepBudget()).toBe(5.00);
+  });
+
+  it("getSessionLogBudget reads FOREMAN_SESSION_LOG_BUDGET_USD", () => {
+    vi.stubEnv("FOREMAN_SESSION_LOG_BUDGET_USD", "1.00");
+    expect(getSessionLogBudget()).toBe(1.00);
   });
 });
 

@@ -18,7 +18,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
-import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS } from "../lib/config.js";
+import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS, getSessionLogBudget } from "../lib/config.js";
 import {
   ROLE_CONFIGS,
   getDisallowedTools,
@@ -808,6 +808,12 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   const now = new Date().toISOString();
   store.updateRun(runId, { status: "completed", completed_at: now });
   notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
+  const phaseList: string[] = [];
+  if (!config.skipExplore) phaseList.push("explore");
+  phaseList.push("dev", "qa");
+  if (!config.skipReview) phaseList.push("review");
+  phaseList.push("finalize");
+  const completedPhases = phaseList.join("→");
   store.logEvent(projectId, "complete", {
     seedId,
     title: seedTitle,
@@ -815,13 +821,86 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     numTurns: progress.turns,
     toolCalls: progress.toolCalls,
     filesChanged: progress.filesChanged.length,
-    phases: config.skipExplore ? "dev→qa→review→finalize" : "explore→dev→qa→review→finalize",
+    phases: completedPhases,
     devRetries,
     qaVerdict,
   }, runId);
 
   log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
   await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
+
+  // ── Session log ──────────────────────────────────────────────────────
+  // Invoke /ensemble:sessionlog to create a permanent audit trail in SessionLogs/.
+  // Fire-and-forget: failure here must never affect pipeline status.
+  await invokeSessionLog(config, {
+    seedId,
+    seedTitle,
+    status: "completed",
+    phases: completedPhases,
+    costUsd: progress.costUsd,
+    turns: progress.turns,
+    toolCalls: progress.toolCalls,
+    filesChanged: progress.filesChanged.length,
+    devRetries,
+    qaVerdict,
+  }, logFile);
+}
+
+// ── Session log ─────────────────────────────────────────────────────────
+// Types and prompt builder are in agent-worker-session-log.ts (separate module
+// so tests can import them without triggering the main() entry-point).
+import { buildSessionLogPrompt } from "./agent-worker-session-log.js";
+import type { SessionLogData } from "./agent-worker-session-log.js";
+export type { SessionLogData } from "./agent-worker-session-log.js";
+export { buildSessionLogPrompt } from "./agent-worker-session-log.js";
+
+/**
+ * Invoke /ensemble:sessionlog after pipeline completion to create a permanent
+ * audit trail in the SessionLogs/ directory.
+ *
+ * Fire-and-forget: errors are logged but never propagate — a sessionlog failure
+ * must never cause the pipeline to fail or mark a seed as stuck.
+ */
+async function invokeSessionLog(
+  config: WorkerConfig,
+  data: SessionLogData,
+  logFile: string,
+): Promise<void> {
+  // Session logs live in the project root, not the worktree
+  const projectPath = config.projectPath ?? join(config.worktreePath, "..", "..");
+  const prompt = buildSessionLogPrompt(data);
+  const env: Record<string, string | undefined> = { ...config.env };
+
+  try {
+    for await (const message of query({
+      prompt,
+      options: {
+        cwd: projectPath,
+        model: "claude-haiku-4-5-20251001",
+        permissionMode: "acceptEdits",
+        maxBudgetUsd: getSessionLogBudget(),
+        persistSession: false,
+        env,
+      },
+    })) {
+      if (message.type === "result") {
+        const result = message as SDKResultSuccess | SDKResultError;
+        if (result.subtype === "success") {
+          log(`[SESSIONLOG] Written ($${result.total_cost_usd.toFixed(4)})`);
+          await appendFile(logFile, `[SESSIONLOG] Session log written ($${result.total_cost_usd.toFixed(4)})\n`);
+        } else {
+          const errResult = result as SDKResultError;
+          const reason = errResult.errors?.join("; ") ?? errResult.subtype;
+          log(`[SESSIONLOG] Failed (non-fatal): ${reason.slice(0, 200)}`);
+          await appendFile(logFile, `[SESSIONLOG] Failed (non-fatal): ${reason}\n`);
+        }
+      }
+    }
+  } catch (err: unknown) {
+    const reason = err instanceof Error ? err.message : String(err);
+    log(`[SESSIONLOG] Error (non-fatal): ${reason.slice(0, 200)}`);
+    await appendFile(logFile, `[SESSIONLOG] Error (non-fatal): ${reason}\n`);
+  }
 }
 
 async function markStuck(
