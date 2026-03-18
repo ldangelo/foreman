@@ -14,15 +14,15 @@ dist/
 .foreman-worktrees/
 
 # Agent report files (archived to .foreman/reports/ on merge)
-EXPLORER_REPORT*.md
-DEVELOPER_REPORT*.md
-QA_REPORT*.md
-REVIEW*.md
-FINALIZE_REPORT*.md
-TASK.md
-# Exception: template source files in src/orchestrator/templates/ are tracked
-!src/orchestrator/templates/*.md
-AGENTS.md
+# Leading / anchors each pattern to the repo root so it cannot accidentally
+# match source files in subdirectories (e.g. templates/reviewer-prompt.md).
+/EXPLORER_REPORT*.md
+/DEVELOPER_REPORT*.md
+/QA_REPORT*.md
+/REVIEW*.md
+/FINALIZE_REPORT*.md
+/TASK.md
+/AGENTS.md
 
 # bv (beads viewer) local config and caches
 .bv/
