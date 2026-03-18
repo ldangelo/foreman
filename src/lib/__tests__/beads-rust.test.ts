@@ -24,7 +24,7 @@ function makeExecFileResponder(overrides: Record<string, object> = {}) {
 
     const defaults: Record<string, object> = {
       create: { id: "beads-mock-1", title: "Mock title", type: "task", priority: "P2", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
-      show: { id: "beads-mock-1", title: "Mock title", type: "task", priority: "P2", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", description: null, labels: [], estimate_minutes: null, dependencies: [], children: [] },
+      show: { id: "beads-mock-1", title: "Mock title", type: "task", priority: "P2", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", description: null, notes: null, labels: [], estimate_minutes: null, dependencies: [], children: [] },
       list: [],
       ready: [],
       search: [],

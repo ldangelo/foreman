@@ -31,6 +31,9 @@ export function workerAgentMd(
   const templatePath = join(__dirname, "../templates/worker-agent.md");
   const template = readFileSync(templatePath, "utf8");
   const description = seed.description ?? "(no description provided)";
+  const commentsSection = seed.comments
+    ? `\n## Additional Context\n${seed.comments}\n`
+    : "";
 
   return renderTemplate(template, {
     seedId: seed.id,
@@ -38,5 +41,6 @@ export function workerAgentMd(
     description,
     model,
     worktreePath,
+    commentsSection,
   });
 }

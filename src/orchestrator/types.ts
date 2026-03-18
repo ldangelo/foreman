@@ -14,6 +14,7 @@ export interface SeedInfo {
   description?: string;
   priority?: string;
   type?: string;
+  comments?: string | null;
 }
 
 /** @deprecated Use SeedInfo instead */

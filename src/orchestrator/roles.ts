@@ -270,8 +270,9 @@ export const SENTINEL_ROLE_CONFIG: RoleConfig = {
 
 // ── Prompt templates ────────────────────────────────────────────────────
 
-export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string): string {
-  return loadAndInterpolate("explorer-prompt.md", { seedId, seedTitle, seedDescription });
+export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string): string {
+  const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
+  return loadAndInterpolate("explorer-prompt.md", { seedId, seedTitle, seedDescription, commentsSection });
 }
 
 export function developerPrompt(
@@ -280,6 +281,7 @@ export function developerPrompt(
   seedDescription: string,
   hasExplorerReport: boolean,
   feedbackContext?: string,
+  seedComments?: string,
 ): string {
   // NOTE: These strings are injected at the {{explorerInstruction}} placeholder in
   // developer-prompt.md, which appears between hardcoded step 1 and step 3 in the
@@ -294,12 +296,15 @@ export function developerPrompt(
     ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${feedbackContext}\n`
     : "";
 
+  const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
+
   return loadAndInterpolate("developer-prompt.md", {
     seedId,
     seedTitle,
     seedDescription,
     explorerInstruction,
     feedbackSection,
+    commentsSection,
   });
 }
 
@@ -307,8 +312,9 @@ export function qaPrompt(seedId: string, seedTitle: string): string {
   return loadAndInterpolate("qa-prompt.md", { seedId, seedTitle });
 }
 
-export function reviewerPrompt(seedId: string, seedTitle: string, seedDescription: string): string {
-  return loadAndInterpolate("reviewer-prompt.md", { seedId, seedTitle, seedDescription });
+export function reviewerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string): string {
+  const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
+  return loadAndInterpolate("reviewer-prompt.md", { seedId, seedTitle, seedDescription, commentsSection });
 }
 
 export function sentinelPrompt(branch: string, testCommand: string): string {

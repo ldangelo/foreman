@@ -643,6 +643,132 @@ describe("Dispatcher.dispatch — description fetching", () => {
   });
 });
 
+describe("Dispatcher.generateAgentInstructions — comments propagation", () => {
+  it("includes comments in agent instructions when seedInfo has comments", () => {
+    const dispatcher = makeDispatcher();
+    const seed: SeedInfo = {
+      id: "seed-001",
+      title: "Add auth module",
+      description: "Implement JWT authentication",
+      comments: "Please also add refresh token support per discussion in thread.",
+    };
+    const instructions = dispatcher.generateAgentInstructions(seed, "/tmp/wt");
+    expect(instructions).toContain("Additional Context");
+    expect(instructions).toContain("Please also add refresh token support per discussion in thread.");
+  });
+
+  it("does NOT include Additional Context section when seedInfo has no comments", () => {
+    const dispatcher = makeDispatcher();
+    const seed: SeedInfo = {
+      id: "seed-001",
+      title: "Add auth module",
+      description: "Implement JWT authentication",
+    };
+    const instructions = dispatcher.generateAgentInstructions(seed, "/tmp/wt");
+    expect(instructions).not.toContain("Additional Context");
+  });
+
+  it("does NOT include Additional Context section when seedInfo comments is null", () => {
+    const dispatcher = makeDispatcher();
+    const seed: SeedInfo = {
+      id: "seed-001",
+      title: "Add auth module",
+      comments: null,
+    };
+    const instructions = dispatcher.generateAgentInstructions(seed, "/tmp/wt");
+    expect(instructions).not.toContain("Additional Context");
+  });
+});
+
+describe("Dispatcher.dispatch — fetches seed details via show()", () => {
+  it("calls show() for each dispatched seed to get description and notes", async () => {
+    const issue: Issue = {
+      id: "bd-001",
+      title: "Fix bug",
+      status: "open",
+      priority: "P2",
+      type: "task",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const showResult = {
+      ...issue,
+      description: "Detailed description",
+      notes: "Some comment context",
+      labels: [],
+      estimate_minutes: null,
+      dependencies: [],
+      children: [],
+    };
+
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue(showResult),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    await dispatcher.dispatch({ dryRun: true });
+
+    expect(seedsClient.show).toHaveBeenCalledWith("bd-001");
+
+    // End-to-end: verify that notes from show() flow through to agent instructions.
+    // generateAgentInstructions uses seedToInfo(seed, detail) which maps detail.notes → seedInfo.comments,
+    // and workerAgentMd() renders it as an "Additional Context" section.
+    const seedInfo = {
+      id: "bd-001",
+      title: "Fix bug",
+      priority: "P2",
+      type: "task",
+      description: "Detailed description",
+      comments: "Some comment context",
+    };
+    const instructions = dispatcher.generateAgentInstructions(seedInfo, "/tmp/wt");
+    expect(instructions).toContain("Additional Context");
+    expect(instructions).toContain("Some comment context");
+  });
+
+  it("proceeds without error when show() throws (non-fatal)", async () => {
+    const issue: Issue = {
+      id: "bd-001",
+      title: "Fix bug",
+      status: "open",
+      priority: "P2",
+      type: "task",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockRejectedValue(new Error("show failed")),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    // Should still dispatch despite show() failure
+    expect(result.dispatched).toHaveLength(1);
+    consoleSpy.mockRestore();
+  });
+});
+
 describe("PLAN_STEP_CONFIG", () => {
   it("has a valid model", () => {
     expect(PLAN_STEP_CONFIG.model).toBe("claude-sonnet-4-6");

@@ -6,7 +6,7 @@ You are an Explorer agent. Your job is to understand the codebase before impleme
 
 Task: {{seedId}} — {{seedTitle}}
 Description: {{seedDescription}}
-
+{{commentsSection}}
 Instructions:
 1. Read TASK.md for task context
 2. Explore the codebase to understand relevant architecture:

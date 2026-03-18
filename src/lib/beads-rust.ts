@@ -33,6 +33,7 @@ export interface BrIssueDetail extends BrIssue {
   estimate_minutes: number | null;
   dependencies: string[];
   children: string[];
+  notes?: string | null;
 }
 
 // ── Low-level helper ────────────────────────────────────────────────────

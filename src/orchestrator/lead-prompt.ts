@@ -13,16 +13,18 @@ export interface LeadPromptOptions {
   seedId: string;
   seedTitle: string;
   seedDescription: string;
+  seedComments?: string;
   skipExplore?: boolean;
   skipReview?: boolean;
 }
 
 export function leadPrompt(opts: LeadPromptOptions): string {
-  const { seedId, seedTitle, seedDescription, skipExplore, skipReview } = opts;
+  const { seedId, seedTitle, seedDescription, seedComments, skipExplore, skipReview } = opts;
+  const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
 
   const explorerSection = skipExplore
     ? `### Explorer — SKIPPED (--skip-explore)`
-    : loadAndInterpolate("lead-prompt-explorer.md", { seedId, seedTitle, seedDescription });
+    : loadAndInterpolate("lead-prompt-explorer.md", { seedId, seedTitle, seedDescription, commentsSection });
 
   const reviewerSection = skipReview
     ? `### Reviewer — SKIPPED (--skip-review)`
@@ -32,6 +34,7 @@ export function leadPrompt(opts: LeadPromptOptions): string {
     seedId,
     seedTitle,
     seedDescription,
+    commentsSection,
     explorerSection,
     reviewerSection,
   });

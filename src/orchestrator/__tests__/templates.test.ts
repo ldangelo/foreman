@@ -68,4 +68,28 @@ describe("workerAgentMd", () => {
     const md = workerAgentMd(fakeSeed, "/tmp/wt", "claude-sonnet-4-6");
     expect(md).not.toMatch(/\{\{\w+\}\}/);
   });
+
+  it("includes Additional Context section when seed.comments is present", () => {
+    const seedWithComments: SeedInfo = {
+      ...fakeSeed,
+      comments: "Please also add rate limiting to the auth endpoints.",
+    };
+    const md = workerAgentMd(seedWithComments, "/tmp/wt", "claude-sonnet-4-6");
+    expect(md).toContain("## Additional Context");
+    expect(md).toContain("Please also add rate limiting to the auth endpoints.");
+  });
+
+  it("does NOT include Additional Context section when seed.comments is undefined", () => {
+    const md = workerAgentMd(fakeSeed, "/tmp/wt", "claude-sonnet-4-6");
+    expect(md).not.toContain("## Additional Context");
+  });
+
+  it("does NOT include Additional Context section when seed.comments is null", () => {
+    const seedWithNullComments: SeedInfo = {
+      ...fakeSeed,
+      comments: null,
+    };
+    const md = workerAgentMd(seedWithNullComments, "/tmp/wt", "claude-sonnet-4-6");
+    expect(md).not.toContain("## Additional Context");
+  });
 });

@@ -137,17 +137,15 @@ export class Dispatcher {
         continue;
       }
 
-      // Fetch full issue details to get the description (ready() only returns basic fields)
+      // Fetch full issue details (description, notes/comments) for agent context
+      let seedDetail: { description?: string | null; notes?: string | null } | undefined;
       try {
-        const detail = await this.seeds.show(seed.id);
-        if (detail.description != null) {
-          seed.description = detail.description;
-        }
-      } catch (err) {
-        log(`warn: could not fetch description for ${seed.id}: ${err}`);
+        seedDetail = await this.seeds.show(seed.id);
+      } catch {
+        // Non-fatal: if show() fails, proceed without detail context
+        log(`Warning: failed to fetch details for seed ${seed.id}`);
       }
-
-      const seedInfo = seedToInfo(seed);
+      const seedInfo = seedToInfo(seed, seedDetail);
       const runtime: RuntimeSelection = "claude-code";
       const model = opts?.model ?? this.selectModel(seedInfo);
 
@@ -596,6 +594,7 @@ export class Dispatcher {
       seedId: seed.id,
       seedTitle: seed.title,
       seedDescription: seed.description,
+      seedComments: seed.comments ?? undefined,
       model,
       worktreePath,
       projectPath: this.projectPath,
@@ -669,6 +668,7 @@ export interface WorkerConfig {
   seedId: string;
   seedTitle: string;
   seedDescription?: string;
+  seedComments?: string;
   model: string;
   worktreePath: string;
   /** Project root directory (contains .beads/). Used as cwd for br commands. */
@@ -880,12 +880,13 @@ function extractSessionId(sessionKey: string | null): string | null {
   return m ? m[1] : null;
 }
 
-function seedToInfo(seed: Issue): SeedInfo {
+function seedToInfo(seed: Issue, detail?: { description?: string | null; notes?: string | null }): SeedInfo {
   return {
     id: seed.id,
     title: seed.title,
-    description: seed.description ?? undefined,
+    description: detail?.description ?? seed.description ?? undefined,
     priority: seed.priority,
     type: seed.type,
+    comments: detail?.notes ?? undefined,
   };
 }
