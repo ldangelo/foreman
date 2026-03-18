@@ -953,7 +953,7 @@ export class ForemanStore {
     );
   }
 
-  recordSentinelRun(run: Omit<SentinelRunRow, "failure_count"> & { failureCount?: number }): void {
+  recordSentinelRun(run: Omit<SentinelRunRow, "failure_count"> & { failure_count?: number }): void {
     this.db.prepare(
       `INSERT INTO sentinel_runs (id, project_id, branch, commit_hash, status, test_command, output, failure_count, started_at, completed_at)
        VALUES (@id, @project_id, @branch, @commit_hash, @status, @test_command, @output, @failure_count, @started_at, @completed_at)`
@@ -965,7 +965,7 @@ export class ForemanStore {
       status: run.status,
       test_command: run.test_command,
       output: run.output ?? null,
-      failure_count: run.failureCount ?? 0,
+      failure_count: run.failure_count ?? 0,
       started_at: run.started_at,
       completed_at: run.completed_at ?? null,
     });
