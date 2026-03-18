@@ -16,6 +16,7 @@ import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import { Refinery } from "../../orchestrator/refinery.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
+import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
 
@@ -259,6 +260,7 @@ export const runCommand = new Command("run")
         process.exit(1);
       }
       const store = ForemanStore.forProject(projectPath);
+      const project = store.getProjectByPath(projectPath);
       const dispatcher = new Dispatcher(taskClient, store, projectPath, bvClient);
 
       // ── Sentinel Auto-Start ──────────────────────────────────────────────
@@ -268,7 +270,6 @@ export const runCommand = new Command("run")
       let sentinelAgent: SentinelAgent | null = null;
       if (!dryRun) {
         try {
-          const project = store.getProjectByPath(projectPath);
           if (project) {
             const sentinelConfig = store.getSentinelConfig(project.id);
             if (sentinelConfig && sentinelConfig.enabled === 1) {
@@ -315,6 +316,29 @@ export const runCommand = new Command("run")
           console.log(chalk.dim("[sentinel] Stopped."));
         }
       };
+
+      // ── Startup Bead Sync ────────────────────────────────────────────────
+      // Reconcile br seed statuses against SQLite run statuses before dispatching.
+      // Fixes drift caused by interrupted foreman sessions. Non-fatal.
+      if (!dryRun && project) {
+        try {
+          const syncResult = await syncBeadStatusOnStartup(store, taskClient, project.id, { projectPath });
+          if (syncResult.synced > 0 || syncResult.mismatches.length > 0) {
+            console.log(
+              chalk.dim(
+                `[startup] Reconciled ${syncResult.synced} bead(s), ` +
+                `${syncResult.mismatches.length} mismatch(es) detected`
+              )
+            );
+          }
+          for (const err of syncResult.errors) {
+            console.warn(chalk.yellow(`[startup] Sync warning: ${err}`));
+          }
+        } catch (syncErr: unknown) {
+          const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
+          console.warn(chalk.yellow(`[startup] Bead sync failed (non-fatal): ${msg}`));
+        }
+      }
 
       /**
        * Build the auto-dispatch callback passed to watchRunsInk.

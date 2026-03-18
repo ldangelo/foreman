@@ -34,9 +34,11 @@ const {
   });
 
   const mockGetActiveRuns = vi.fn().mockReturnValue([]);
+  const mockGetProjectByPath = vi.fn().mockReturnValue(null);
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
     this.close = vi.fn();
     this.getActiveRuns = mockGetActiveRuns;
+    this.getProjectByPath = mockGetProjectByPath;
   });
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
@@ -99,9 +101,11 @@ describe("auto-dispatch: passes callback to watchRunsInk", () => {
     MockForemanStore.mockImplementation(function (this: Record<string, unknown>) {
       this.close = vi.fn();
       this.getActiveRuns = mockGetActiveRuns;
+      this.getProjectByPath = mockGetProjectByPath;
     });
     mockWatchRunsInk.mockResolvedValue({ detached: false });
     mockGetActiveRuns.mockReturnValue([]);
+    mockGetProjectByPath.mockReturnValue(null);
   });
 
   afterEach(() => {
