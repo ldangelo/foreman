@@ -40,7 +40,7 @@ vi.mock("../../lib/store.js", () => ({
 }));
 
 import { finalize, rotateReport } from "../agent-worker-finalize.js";
-import type { FinalizeConfig } from "../agent-worker-finalize.js";
+import type { FinalizeConfig, FinalizeResult } from "../agent-worker-finalize.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -115,9 +115,9 @@ describe("finalize() — push succeeds", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns true when git push succeeds", async () => {
+  it("returns success=true when git push succeeds", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    expect(result).toBe(true);
+    expect(result.success).toBe(true);
   });
 
   it("calls closeSeed when push succeeds", async () => {
@@ -179,9 +179,14 @@ describe("finalize() — push FAILS", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns false when git push fails", async () => {
+  it("returns success=false when git push fails", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    expect(result).toBe(false);
+    expect(result.success).toBe(false);
+  });
+
+  it("returns retryable=true for transient push failures (e.g. permissions)", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result.retryable).toBe(true);
   });
 
   it("does NOT call closeSeed when push fails", async () => {
@@ -206,7 +211,8 @@ describe("finalize() — push FAILS", () => {
   });
 
   it("does not throw even when push fails", async () => {
-    await expect(finalize(makeConfig({ worktreePath: tmpDir }), logFile)).resolves.toBe(false);
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result.success).toBe(false);
   });
 });
 
@@ -239,9 +245,9 @@ describe("finalize() — type check failure is non-fatal", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns true (push succeeded) even when type check fails", async () => {
+  it("returns success=true (push succeeded) even when type check fails", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    expect(result).toBe(true);
+    expect(result.success).toBe(true);
   });
 
   it("still calls closeSeed when type check fails but push succeeds", async () => {
@@ -286,9 +292,9 @@ describe("finalize() — nothing to commit", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns true and still pushes/closes when nothing to commit", async () => {
+  it("returns success=true and still pushes/closes when nothing to commit", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    expect(result).toBe(true);
+    expect(result.success).toBe(true);
     expect(mockCloseSeed).toHaveBeenCalledOnce();
   });
 
@@ -333,6 +339,298 @@ describe("finalize() — projectPath forwarded to closeSeed", () => {
   it("passes undefined projectPath to closeSeed when not provided", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir, projectPath: undefined }), logFile);
     expect(mockCloseSeed).toHaveBeenCalledWith("bd-test-001", undefined);
+  });
+});
+
+// ── finalize — non-fast-forward push failure (bd-zwtr regression) ─────────────
+//
+// When git push fails with "non-fast-forward", finalize() should:
+//  1. Detect the error
+//  2. Attempt git pull --rebase
+//  3a. If rebase succeeds → retry push; return { success: true, retryable: true }
+//      (retryable is irrelevant when success=true, but the flag stays true)
+//  3b. If rebase fails   → abort rebase; return { success: false, retryable: false }
+//      (retryable=false prevents resetSeedToOpen() from causing an infinite loop)
+//  3c. If rebase succeeds but retry push fails (transient) →
+//      return { success: false, retryable: true } (allow a subsequent retry)
+
+describe("finalize() — non-fast-forward push: rebase succeeds → push succeeds", () => {
+  let logFile: string;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-nff-ok-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    mockExecFileSync.mockReset();
+    mockCloseSeed.mockReset().mockResolvedValue(undefined);
+    mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+
+    // First push throws non-fast-forward; pull --rebase and second push succeed.
+    let pushCallCount = 0;
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "push") {
+        pushCallCount++;
+        if (pushCallCount === 1) {
+          throw Object.assign(
+            new Error(
+              "To origin\n ! [rejected] foreman/bd-test-001 -> foreman/bd-test-001 (non-fast-forward)\nerror: failed to push some refs",
+            ),
+            { stderr: Buffer.from("") },
+          );
+        }
+        return Buffer.from(""); // second push succeeds
+      }
+      if (Array.isArray(args) && args[0] === "pull") return Buffer.from(""); // rebase succeeds
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns success=true after successful rebase + retry push", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result.success).toBe(true);
+  });
+
+  it("returns retryable=true after successful rebase + retry push", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result.retryable).toBe(true);
+  });
+
+  it("attempts git pull --rebase when push is rejected as non-fast-forward", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const rebaseCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "pull" && call[1].includes("--rebase"),
+    );
+    expect(rebaseCall).toBeDefined();
+  });
+
+  it("calls closeSeed after rebase + push succeeds", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(mockCloseSeed).toHaveBeenCalledOnce();
+  });
+
+  it("writes FINALIZE_REPORT.md with rebase success and push success", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
+    expect(content).toContain("## Rebase");
+    expect(content).toContain("Status: SUCCESS");
+    expect(content).toContain("SUCCESS (after rebase)");
+  });
+});
+
+describe("finalize() — non-fast-forward push: rebase FAILS → deterministic failure", () => {
+  let logFile: string;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-nff-fail-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    mockExecFileSync.mockReset();
+    mockCloseSeed.mockReset().mockResolvedValue(undefined);
+    mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+
+    // push throws non-fast-forward; pull --rebase also throws (conflict).
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "push") {
+        throw Object.assign(
+          new Error(
+            "To origin\n ! [rejected] foreman/bd-test-001 -> foreman/bd-test-001 (non-fast-forward)\nerror: failed to push some refs",
+          ),
+          { stderr: Buffer.from("") },
+        );
+      }
+      if (Array.isArray(args) && args[0] === "pull") {
+        throw new Error("CONFLICT (content): Merge conflict in src/foo.ts\nerror: could not apply abc1234");
+      }
+      // git rebase --abort succeeds silently
+      if (Array.isArray(args) && args[0] === "rebase" && args[1] === "--abort") return Buffer.from("");
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns success=false when rebase fails", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result.success).toBe(false);
+  });
+
+  it("returns retryable=false (prevents infinite loop) when rebase fails", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result.retryable).toBe(false);
+  });
+
+  it("does NOT call closeSeed when rebase fails", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(mockCloseSeed).not.toHaveBeenCalled();
+  });
+
+  it("calls git rebase --abort to clean up partial rebase", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const abortCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "rebase" && call[1][1] === "--abort",
+    );
+    expect(abortCall).toBeDefined();
+  });
+
+  it("writes FINALIZE_REPORT.md with rebase FAILED and push FAILED entries", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
+    expect(content).toContain("## Rebase");
+    expect(content).toContain("Status: FAILED");
+    expect(content).toContain("rebase could not resolve diverged history");
+  });
+
+  it("does not throw even when rebase fails", async () => {
+    await expect(finalize(makeConfig({ worktreePath: tmpDir }), logFile)).resolves.toMatchObject({
+      success: false,
+      retryable: false,
+    });
+  });
+});
+
+// ── finalize — non-fast-forward push: rebase OK but retry push fails (transient)
+//
+// After a successful rebase, the retry push may fail transiently (e.g. a network
+// blip). This must NOT be treated as a deterministic failure — retryable must be
+// true so the seed is reset to open for a subsequent dispatch attempt.
+
+describe("finalize() — non-fast-forward push: rebase succeeds but retry push fails (transient)", () => {
+  let logFile: string;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-nff-retrypush-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    mockExecFileSync.mockReset();
+    mockCloseSeed.mockReset().mockResolvedValue(undefined);
+    mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+
+    // All push calls throw (first non-fast-forward, second transient network).
+    let pushCallCount = 0;
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "push") {
+        pushCallCount++;
+        if (pushCallCount === 1) {
+          throw Object.assign(
+            new Error(
+              "To origin\n ! [rejected] foreman/bd-test-001 -> foreman/bd-test-001 (non-fast-forward)\nerror: failed to push some refs",
+            ),
+            { stderr: Buffer.from("") },
+          );
+        }
+        // Retry push: transient network error (not a deterministic failure)
+        throw new Error("fatal: unable to connect to origin\nerror: failed to push some refs");
+      }
+      if (Array.isArray(args) && args[0] === "pull") return Buffer.from(""); // rebase succeeds
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns success=false when retry push fails after rebase", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result.success).toBe(false);
+  });
+
+  it("returns retryable=true for transient retry push failure (not a rebase conflict)", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result.retryable).toBe(true);
+  });
+
+  it("does NOT call closeSeed when retry push fails", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(mockCloseSeed).not.toHaveBeenCalled();
+  });
+
+  it("writes FINALIZE_REPORT.md noting push failed after rebase", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
+    expect(content).toContain("## Rebase");
+    expect(content).toContain("Status: SUCCESS");
+    expect(content).toContain("FAILED (after rebase)");
+  });
+
+  it("does not call git rebase --abort when rebase itself succeeded", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const abortCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "rebase" && call[1][1] === "--abort",
+    );
+    expect(abortCall).toBeUndefined();
+  });
+});
+
+// ── finalize — "fetch first" push rejection (alternate NFF phrasing) ─────────
+//
+// Some git versions or configurations emit "fetch first" instead of
+// "non-fast-forward" when the push is rejected due to a diverged remote.
+// finalize() must treat this the same way.
+
+describe("finalize() — push rejected with 'fetch first' phrasing → rebase + retry", () => {
+  let logFile: string;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-fetchfirst-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    mockExecFileSync.mockReset();
+    mockCloseSeed.mockReset().mockResolvedValue(undefined);
+    mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+
+    let pushCallCount = 0;
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "push") {
+        pushCallCount++;
+        if (pushCallCount === 1) {
+          throw Object.assign(
+            new Error(
+              "To origin\n ! [rejected] foreman/bd-test-001 -> foreman/bd-test-001 (fetch first)\nerror: failed to push some refs",
+            ),
+            { stderr: Buffer.from("") },
+          );
+        }
+        return Buffer.from(""); // second push succeeds
+      }
+      if (Array.isArray(args) && args[0] === "pull") return Buffer.from(""); // rebase succeeds
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("triggers rebase when push is rejected with 'fetch first' phrasing", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const rebaseCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "pull" && call[1].includes("--rebase"),
+    );
+    expect(rebaseCall).toBeDefined();
+  });
+
+  it("returns success=true after 'fetch first' rejection + rebase + retry push", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result.success).toBe(true);
   });
 });
 
@@ -499,7 +797,7 @@ describe("finalize() — type-check step (conditional on installSucceeded)", () 
 
   it("does NOT run type check when npm ci failed — guards against false module errors", () => {
     // This is the critical regression guard: without node_modules, tsc would fail
-    // with "Cannot find module" even if the TypeScript code itself is correct.
+    // with "Cannot find Module" even if the TypeScript code itself is correct.
     const install = simulateInstall(true);
     const typeCheck = simulateTypeCheck(install.succeeded, false);
 
