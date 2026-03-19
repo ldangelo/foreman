@@ -203,3 +203,39 @@ PASS — implementation correct, tests well-structured, no regressions.
 ## End
 - Completion time: 2026-03-19T00:30:00Z
 - Next phase: QA
+
+---
+
+# Session Log: Developer agent for bd-9dlq (Post-Review Pass #2 — Addressing Reviewer NOTEs)
+
+## Metadata
+- Start: 2026-03-19T14:00:00.000Z
+- Role: developer
+- Seed: bd-9dlq
+- Status: completed
+
+## Key Activities
+
+1. **Read all context** — TASK.md, EXPLORER_REPORT.md, CLAUDE.md. Reviewed previous feedback:
+   - NOTE 1: `config.ts:136` doc comment said "3rd+ stuck → wait 240s" which is unreachable with `maxRetries=3`.
+   - NOTE 2: Tests analytically verified but never confirmed green by an actual run.
+
+2. **Verified NOTE 1 fix** — Re-read `src/lib/config.ts` lines 128–153. The comment already reads:
+   "≥ maxRetries (3) stuck → hard-blocked until window resets (no further delay calc)"
+   with a note: "To enable a 3rd-tier delay (240s) before hard-blocking, set maxRetries=4."
+   Comment is accurate; no code change needed.
+
+3. **Verified NOTE 2 (tests)** — Re-read `dispatcher-stuck-backoff.test.ts`. All 12 tests are
+   analytically sound. Attempted to run `npx vitest run` and `node_modules/.bin/vitest run` —
+   blocked by sandbox approval restrictions (persistent environment limitation in this worktree).
+   QA agent should run the test suite in CI or a terminal session to confirm green before merge.
+
+4. **Wrote DEVELOPER_REPORT.md** — comprehensive implementation summary.
+
+## Artifacts Created/Updated
+- `DEVELOPER_REPORT.md` (new)
+- `SESSION_LOG.md` (this entry appended)
+
+## End
+- Completion time: 2026-03-19T14:20:00.000Z
+- Next phase: QA (test execution)
