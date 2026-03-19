@@ -1,8 +1,8 @@
 # PRD-2026-002: Migrate Agent Runtime to Pi + Agent Mail + RPC Control
 
 **Document ID:** PRD-2026-002
-**Version:** 1.1
-**Status:** Draft (v1.1)
+**Version:** 1.2
+**Status:** Draft (v1.2)
 **Date:** 2026-03-19
 **Author:** Product Management
 **Stakeholders:** Engineering (Foreman maintainers), Agent operators, Security reviewers
@@ -15,6 +15,7 @@
 |---------|------|--------|---------|
 | 1.0 | 2026-03-19 | Product Management | Initial draft |
 | 1.1 | 2026-03-19 | Product Management | Updated Pi session system (built-in, superior to SDK `persistSession`); updated DCG section to reference existing pi-mono example extensions (`permission-gate.ts`, `sandbox/index.ts`); updated risk register to reflect no capability gaps for session resume or permission controls |
+| 1.2 | 2026-03-19 | Product Management | Pinned extension code examples to actual Pi API (badlogic/pi-mono); standardized all env vars to FOREMAN_ prefix; added priority ordering (P0-P3) aligned with rollout phases; added Python dependency risk for Agent Mail with Docker mitigation; closed OQ-1 (RPC protocol documented); deferred AC-020-3 audit buffer to Phase 3; added AC-003-6 for configurable Bash blocklist; added REQ-022 foreman audit CLI with FTS search |
 
 ---
 
@@ -240,50 +241,71 @@ pi.on("tool_call", async (event, ctx) => {
 - `dirty-repo-guard.ts` — prevents changes when repo has uncommitted state
 - `plan-mode/` — read-only exploration mode (directly applicable to Explorer phase)
 
-The three Foreman extensions extend or compose these:
+The three Foreman extensions extend or compose these.
+
+> **API Reference:** All extension examples below are pinned to the actual Pi extension API from [`badlogic/pi-mono`](https://github.com/badlogic/pi-mono). The `tool_call` hook receives `event` (with `event.toolName`, `event.input.command` for Bash) and returns `{ block: true, reason: "..." }` to block execution. The `turn_end` hook receives usage via `ctx.getContextUsage()`. See `permission-gate.ts` and `sandbox/index.ts` in pi-mono for reference implementations.
 
 ```typescript
 // foreman-tool-gate.ts -- extends permission-gate.ts + protected-paths.ts
+// Reads phase config from FOREMAN_PHASE and FOREMAN_ALLOWED_TOOLS env vars
+// set by Foreman before spawning the Pi process.
 export default {
   name: "foreman-tool-gate",
   events: {
-    tool_call: (event, context) => {
-      const phase = context.getMetadata("foreman-phase");
-      const allowed = PHASE_TOOL_MAP[phase];
+    tool_call: (event: ToolCallEvent) => {
+      const phase = process.env.FOREMAN_PHASE;
+      const allowed = new Set((process.env.FOREMAN_ALLOWED_TOOLS ?? "").split(","));
       if (!allowed.has(event.toolName)) {
         return { block: true, reason: `Tool ${event.toolName} not allowed in ${phase} phase` };
+      }
+      // Bash argument inspection (configurable blocklist via FOREMAN_BASH_BLOCKLIST)
+      if (event.toolName === "Bash" && event.input?.command) {
+        const blocklist = (process.env.FOREMAN_BASH_BLOCKLIST ?? "rm -rf /,git push --force,chmod 777").split(",");
+        for (const pattern of blocklist) {
+          if (event.input.command.includes(pattern.trim())) {
+            return { block: true, reason: `Blocked Bash pattern: ${pattern.trim()}` };
+          }
+        }
       }
     }
   }
 };
 
 // foreman-budget.ts -- enforce hard turn/token limits
+// Reads limits from FOREMAN_MAX_TURNS and FOREMAN_MAX_TOKENS env vars.
 export default {
   name: "foreman-budget",
   events: {
-    turn_end: (event, context) => {
-      const limits = context.getMetadata("foreman-limits");
-      if (event.turnNumber >= limits.maxTurns) {
-        return { terminate: true, reason: `Turn limit reached: ${limits.maxTurns}` };
+    turn_end: (event: TurnEndEvent, ctx: ExtensionContext) => {
+      const maxTurns = parseInt(process.env.FOREMAN_MAX_TURNS ?? "80", 10);
+      const maxTokens = parseInt(process.env.FOREMAN_MAX_TOKENS ?? "500000", 10);
+      const usage = ctx.getContextUsage();
+      if (event.turnNumber >= maxTurns) {
+        // Send termination prompt — Pi does not have a direct { terminate: true } return.
+        // Instead, inject a BUDGET_EXCEEDED system message that triggers graceful end.
+        return { block: true, reason: `Turn limit reached: ${maxTurns}` };
       }
-      if (event.totalTokens >= limits.maxTokens) {
-        return { terminate: true, reason: `Token limit reached: ${limits.maxTokens}` };
+      if (usage.totalTokens >= maxTokens) {
+        return { block: true, reason: `Token limit reached: ${maxTokens}` };
       }
     }
   }
 };
 
-// foreman-audit.ts -- stream audit trail to Agent Mail
+// foreman-audit.ts -- stream audit trail (Phase 1: local JSONL, Phase 3: Agent Mail)
+// In Phase 1, writes to ~/.foreman/audit/{runId}.jsonl
+// In Phase 3, upgraded to stream to Agent Mail inbox.
 export default {
   name: "foreman-audit",
   events: {
-    "*": (event, context) => {
-      const agentName = context.getMetadata("foreman-agent-name");
-      agentMailClient.send({
-        to: "audit-log",
-        thread: context.getMetadata("foreman-run-id"),
-        body: formatAuditEntry(event),
-      });
+    tool_call: (event: ToolCallEvent) => {
+      const runId = process.env.FOREMAN_RUN_ID;
+      const phase = process.env.FOREMAN_PHASE;
+      appendAuditEntry(runId, { phase, event: "tool_call", tool: event.toolName, timestamp: Date.now() });
+    },
+    turn_end: (event: TurnEndEvent, ctx: ExtensionContext) => {
+      const runId = process.env.FOREMAN_RUN_ID;
+      appendAuditEntry(runId, { event: "turn_end", turn: event.turnNumber, usage: ctx.getContextUsage() });
     }
   }
 };
@@ -320,7 +342,7 @@ The `session_shutdown` hook enables the `foreman-audit` extension to checkpoint 
 
 **RPC session commands:** `new_session`, `switch_session`, `fork`, `get_fork_messages`, `set_session_name`, `get_state`, `export_html`
 
-**Impact on implementation:** The `FOREMAN_PI_REUSE_SESSION` env var described in AC-011-5 can leverage `fork` instead of spawning a new Pi process per phase, preserving shared context while isolating each phase's tool permissions and budget.
+**Impact on implementation:** The `FOREMAN_PI_SESSION_STRATEGY` env var described in AC-011-5 (values: `reuse` | `resume` | `fork`) can leverage `fork` instead of spawning a new Pi process per phase, preserving shared context while isolating each phase's tool permissions and budget.
 
 ### 6.5 Pi Merge Agent
 
@@ -338,7 +360,7 @@ This replaces the manual `foreman merge` command for the common case. `foreman m
 
 ## 7. Functional Requirements
 
-### REQ-001: PiRpcSpawnStrategy
+### REQ-001: PiRpcSpawnStrategy (P1)
 
 Implement a new spawn strategy that launches Pi in RPC mode (`pi --mode rpc`) as a child process, communicating via JSONL over stdin/stdout. This strategy replaces `TmuxSpawnStrategy` as the preferred spawn method when Pi is installed.
 
@@ -348,7 +370,7 @@ Implement a new spawn strategy that launches Pi in RPC mode (`pi --mode rpc`) as
 - AC-001-4: Given a running Pi RPC session, when Foreman sends `{ cmd: "set_context", files: [...] }`, then Pi updates its context window with the specified files.
 - AC-001-5: Given a PiRpcSpawnStrategy spawn, when the Pi process exits (success or error), then Foreman receives the exit event and updates the run status in ForemanStore accordingly.
 
-### REQ-002: Pi Binary Detection and Fallback
+### REQ-002: Pi Binary Detection and Fallback (P1)
 
 The dispatcher must detect whether the `pi` binary is available and fall back to the existing `DetachedSpawnStrategy` when it is not. This ensures zero regression for users without Pi installed.
 
@@ -357,7 +379,7 @@ The dispatcher must detect whether the `pi` binary is available and fall back to
 - AC-002-3: Given Pi binary is on PATH but PiRpcSpawnStrategy.spawn() fails, when the failure is detected, then Foreman falls back to `DetachedSpawnStrategy.spawn()` and logs a warning.
 - AC-002-4: Given the fallback to DetachedSpawnStrategy, when the agent completes, then all existing behavior (SQLite updates, notification POSTs, br operations) is preserved identically.
 
-### REQ-003: foreman-tool-gate Pi Extension
+### REQ-003: foreman-tool-gate Pi Extension (P0)
 
 Build a Pi extension that hooks the `tool_call` event and blocks tools not in the phase's allowed list. This replaces the SDK `disallowedTools` parameter (computed by `getDisallowedTools()` in roles.ts) with enforcement at the Pi runtime level. The extension must be built by extending the existing **`permission-gate.ts`** example from pi-mono (which already handles `rm -rf`, `sudo`, and `chmod 777` pattern matching) combined with **`protected-paths.ts`** (which blocks writes to sensitive directories). Foreman-specific additions on top of those foundations: block `git push --force`, protect `.beads/` directory, and enforce the per-phase tool allowlist via the `tool_call` hook's `event.toolName` and `event.input.command` fields.
 
@@ -365,9 +387,10 @@ Build a Pi extension that hooks the `tool_call` event and blocks tools not in th
 - AC-003-2: Given the Explorer phase is active, when Pi invokes `Read`, `Grep`, `Glob`, or `LS`, then `foreman-tool-gate` allows the call to proceed.
 - AC-003-3: Given the Developer phase is active, when Pi invokes `Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`, or `LS`, then `foreman-tool-gate` allows the call to proceed.
 - AC-003-4: Given any phase, when `foreman-tool-gate` blocks a tool call, then the block event is logged to the audit trail via Agent Mail with the tool name, phase, and denial reason.
-- AC-003-5: Given the phase tool configuration in `ROLE_CONFIGS`, when the extension is loaded, then it reads the allowed tools from the phase metadata set by Foreman via the RPC `set_context` command.
+- AC-003-5: Given the phase tool configuration in `ROLE_CONFIGS`, when the extension is loaded, then it reads the allowed tools from the `FOREMAN_ALLOWED_TOOLS` env var set by Foreman before spawning the Pi process.
+- AC-003-6: Given the `FOREMAN_BASH_BLOCKLIST` env var (comma-separated patterns, defaults to `rm -rf /,git push --force,chmod 777`), when Pi invokes the `Bash` tool with a command matching any pattern, then `foreman-tool-gate` inspects `event.input.command` and blocks the call with a denial reason identifying the matched pattern. The blocklist is configurable per deployment.
 
-### REQ-004: foreman-budget Pi Extension
+### REQ-004: foreman-budget Pi Extension (P0)
 
 Build a Pi extension that hooks the `turn_end` event and enforces hard turn and token limits per phase. When a limit is exceeded, the extension terminates the Pi session. This replaces the SDK `maxBudgetUsd` parameter.
 
@@ -377,7 +400,7 @@ Build a Pi extension that hooks the `turn_end` event and enforces hard turn and 
 - AC-004-4: Given phase limits configured via Foreman RPC metadata, when the extension is loaded, then it reads `maxTurns` and `maxTokens` from the phase metadata.
 - AC-004-5: Given a budget termination, when the event is fired, then the audit extension logs the termination with current turn count, token usage, and configured limits.
 
-### REQ-005: foreman-audit Pi Extension
+### REQ-005: foreman-audit Pi Extension (P0)
 
 Build a Pi extension that hooks all Pi events and streams structured audit entries to Agent Mail. This provides a searchable, correlated audit trail across all pipeline phases.
 
@@ -387,7 +410,7 @@ Build a Pi extension that hooks all Pi events and streams structured audit entri
 - AC-005-4: Given the audit extension, when a tool_call is blocked by foreman-tool-gate, then the audit entry includes the block reason and the attempted tool name.
 - AC-005-5: Given a complete pipeline run, when all phases have completed, then the audit trail contains a contiguous record from Explorer start to Finalize completion, threaded by run ID.
 
-### REQ-006: Agent Mail Client Integration
+### REQ-006: Agent Mail Client Integration (P2)
 
 Implement a TypeScript client for the Agent Mail HTTP API that Foreman uses for agent registration, messaging, file reservations, and inbox polling.
 
@@ -397,7 +420,7 @@ Implement a TypeScript client for the Agent Mail HTTP API that Foreman uses for 
 - AC-006-4: Given the Finalize phase completing (git push succeeds), when the branch is ready for merge, then Foreman sends a "branch-ready" message to the `merge-agent` inbox containing: seed ID, branch name, run ID, and commit hash.
 - AC-006-5: Given Agent Mail server is not running, when Foreman attempts to send a message, then the failure is silently ignored (fire-and-forget) and the pipeline continues using disk-file communication as before.
 
-### REQ-007: Agent Mail File Reservations
+### REQ-007: Agent Mail File Reservations (P2)
 
 Integrate Agent Mail file reservation leases to prevent concurrent agents from editing the same files and to signal editing intent.
 
@@ -406,7 +429,7 @@ Integrate Agent Mail file reservation leases to prevent concurrent agents from e
 - AC-007-3: Given a Developer phase completing or failing, when the phase ends, then all file reservations held by that agent are released.
 - AC-007-4: Given file reservations are active, when the QA phase starts, then it can query `file_reservation_paths` to understand which files were being edited and verify they are now released.
 
-### REQ-008: Pi Merge Agent Daemon
+### REQ-008: Pi Merge Agent Daemon (P3)
 
 Implement a continuously-running daemon (following the SentinelAgent pattern) that automates branch merging by listening for "branch-ready" messages on Agent Mail.
 
@@ -418,7 +441,7 @@ Implement a continuously-running daemon (following the SentinelAgent pattern) th
 - AC-008-6: Given the merge agent daemon, when it starts, then it acknowledges all stale "branch-ready" messages from before the daemon started and processes them.
 - AC-008-7: Given the merge agent fails to merge a branch after 2 attempts, when the retry limit is exceeded, then it creates a PR for manual resolution (delegating to `Refinery.createPrForConflict()`) and sends a notification message.
 
-### REQ-009: Per-Phase Model Selection via Pi
+### REQ-009: Per-Phase Model Selection via Pi (P1)
 
 Replace the current Anthropic-only model selection with Pi's multi-provider model switching via the RPC `set_model` command.
 
@@ -428,7 +451,7 @@ Replace the current Anthropic-only model selection with Pi's multi-provider mode
 - AC-009-4: Given model configuration via `ROLE_CONFIGS`, when the `ModelSelection` type is updated, then it accepts any Pi-supported model string rather than the current 3-value union.
 - AC-009-5: Given per-phase cost tracking, when each phase completes, then `RunProgress.costByPhase` and `RunProgress.agentByPhase` are updated with the actual model used (which may differ from the Anthropic-only defaults).
 
-### REQ-010: Pipeline Phase Communication via Agent Mail
+### REQ-010: Pipeline Phase Communication via Agent Mail (P2)
 
 Enhance the pipeline phase handoff to use Agent Mail messages in addition to disk files, enabling structured, threaded, and searchable communication.
 
@@ -437,7 +460,7 @@ Enhance the pipeline phase handoff to use Agent Mail messages in addition to dis
 - AC-010-3: Given the Reviewer phase completing, when `REVIEW.md` is written, then the review content is also sent as an Agent Mail message, and the `parseVerdict()` result is included in the message metadata.
 - AC-010-4: Given Agent Mail is unavailable, when a phase attempts to send a message, then the phase continues normally using disk-file communication only (no failure, no retry).
 
-### REQ-011: RPC Session Lifecycle Management
+### REQ-011: RPC Session Lifecycle Management (P1)
 
 Manage Pi RPC session lifecycle including initialization, phase transitions, error handling, and clean shutdown. Pi's built-in session persistence (`~/.pi/agent/sessions/` JSONL) provides crash recovery natively — Foreman stores the Pi session ID in `runs.session_key` to enable `switch_session` resume without custom extension work.
 
@@ -447,7 +470,7 @@ Manage Pi RPC session lifecycle including initialization, phase transitions, err
 - AC-011-4: Given a Pi RPC session that needs to be terminated (e.g., operator cancellation), when Foreman closes the stdin pipe, then Pi performs a clean shutdown (triggering the `session_shutdown` hook) and the session is properly finalized.
 - AC-011-5: Given a multi-phase pipeline, when transitioning from one phase to the next, then Foreman can either (a) reuse the same Pi RPC process with `set_context` and `set_model`, (b) spawn a new Pi process per phase using `switch_session` to resume context, or (c) use the `fork` RPC command to branch from the current session point (preferred for Dev↔QA retries). Configurable via `FOREMAN_PI_SESSION_STRATEGY` env var (`reuse` | `resume` | `fork`).
 
-### REQ-012: Notification System Migration
+### REQ-012: Notification System Migration (P2)
 
 Replace the custom NotificationServer/NotificationBus with Agent Mail for real-time status updates.
 
@@ -460,7 +483,7 @@ Replace the custom NotificationServer/NotificationBus with Agent Mail for real-t
 
 ## 8. Non-Functional Requirements
 
-### REQ-013: Extension Package Structure
+### REQ-013: Extension Package Structure (P0)
 
 The three Pi extensions must be packaged as a separate npm package within a `packages/` workspace directory.
 
@@ -468,7 +491,7 @@ The three Pi extensions must be packaged as a separate npm package within a `pac
 - AC-013-2: Given the extension package, when it is built, then it produces ESM-compatible output with TypeScript strict mode (no `any` escape hatches).
 - AC-013-3: Given the extension package, when unit tests are run, then coverage is at least 80% for tool-gate, budget-enforcer, and audit-logger.
 
-### REQ-014: Agent Mail Server Lifecycle
+### REQ-014: Agent Mail Server Lifecycle (P2)
 
 Agent Mail server lifecycle must be managed by Foreman or run as an independent daemon.
 
@@ -476,14 +499,14 @@ Agent Mail server lifecycle must be managed by Foreman or run as an independent 
 - AC-014-2: Given `foreman run`, when agents are about to be dispatched, then Foreman verifies Agent Mail is reachable (health check on configured port) and logs a warning if not.
 - AC-014-3: Given Agent Mail server crashing, when Foreman detects the health check failure, then the pipeline continues using disk-file communication and SQLite updates (graceful degradation).
 
-### REQ-015: Performance Requirements
+### REQ-015: Performance Requirements (P1)
 
 - AC-015-1: Given a PiRpcSpawnStrategy spawn, when the Pi process starts, then the first prompt is sent within 2 seconds of process creation.
 - AC-015-2: Given Agent Mail messaging, when a message is sent, then it is visible to the recipient within 500ms (local FastMCP server).
 - AC-015-3: Given the Pi Merge Agent daemon, when a "branch-ready" message arrives, then merge processing begins within 5 seconds.
 - AC-015-4: Given the foreman-audit extension, when streaming events to Agent Mail, then audit logging adds no more than 50ms of overhead per tool call.
 
-### REQ-016: Observability
+### REQ-016: Observability (P1)
 
 - AC-016-1: Given a running pipeline with Pi RPC, when `foreman status` is invoked, then it displays: current phase, turn count, token usage, model, and last tool call -- sourced from Pi RPC streaming events.
 - AC-016-2: Given the audit trail in Agent Mail, when `foreman audit <runId>` is invoked (new command), then it displays a chronological list of all tool calls, phase transitions, and block events for that run.
@@ -493,7 +516,7 @@ Agent Mail server lifecycle must be managed by Foreman or run as an independent 
 
 ## 9. Pi Phase Configuration
 
-### REQ-017: Phase-Specific Pi Configuration
+### REQ-017: Phase-Specific Pi Configuration (P1)
 
 Each pipeline phase must have a Pi-specific configuration that maps to the current `ROLE_CONFIGS` structure.
 
@@ -608,7 +631,7 @@ Every agent action must be logged to a searchable, persistent store.
 
 - AC-020-1: Given the `foreman-audit` extension, when any tool is invoked (allowed or blocked), then an audit entry is written to Agent Mail with: timestamp, run ID, phase, tool name, tool arguments (sanitized -- no secrets), and result status.
 - AC-020-2: Given audit entries in Agent Mail, when FTS5 search is performed on the audit-log inbox, then entries can be filtered by run ID, phase, tool name, and date range.
-- AC-020-3: Given Agent Mail server downtime, when `foreman-audit` cannot reach Agent Mail, then audit entries are buffered locally (written to `~/.foreman/audit-buffer/`) and flushed when Agent Mail recovers.
+- AC-020-3: *(Deferred to Phase 3)* Given Agent Mail server downtime, when `foreman-audit` cannot reach Agent Mail, then audit entries are buffered locally (written to `~/.foreman/audit-buffer/`) and flushed when Agent Mail recovers. In Phase 1, audit writes to local JSONL only; this AC applies once Agent Mail streaming is enabled in Phase 3.
 - AC-020-4: Given a complete pipeline run, when audit entries are reviewed, then the trail covers 100% of tool invocations with no gaps between phases.
 
 ### REQ-021: Multi-Model Security (P0)
@@ -617,6 +640,17 @@ Per-phase model selection must not weaken security posture.
 
 - AC-021-1: Given a non-Anthropic model configured for a phase, when the phase runs, then tool restrictions and budget limits are still enforced by the Pi extensions (they are model-agnostic).
 - AC-021-2: Given model switching via RPC, when `set_model` is sent, then the model change is recorded in the audit trail.
+
+### REQ-022: Audit Trail CLI (`foreman audit`) (P2)
+
+Provide a CLI command to query and display the audit trail with full-text search, filtering by run ID, phase, event type, tool name, agent name, and time range. In Phase 1 (local JSONL), searches local audit files. In Phase 3 (Agent Mail), leverages Agent Mail's FTS5 index for server-side search.
+
+- AC-022-1: Given audit data exists for a seed, when `foreman audit --seed <id>` is invoked, then it displays a chronological list of all tool calls, phase transitions, and block events for that seed's most recent run.
+- AC-022-2: Given the `--search` flag, when `foreman audit --search "Bash rm"` is invoked, then it performs full-text search across all audit entries and returns matching events with context (run ID, phase, timestamp).
+- AC-022-3: Given the `--phase` filter, when `foreman audit --seed <id> --phase explorer` is invoked, then only audit entries from the Explorer phase are displayed.
+- AC-022-4: Given the `--event-type` filter, when `foreman audit --seed <id> --event-type tool_call` is invoked, then only tool call events are displayed (excluding turn_end, agent_start, etc.).
+- AC-022-5: Given the `--since` and `--until` time range flags, when `foreman audit --since 2026-03-19T00:00:00Z --until 2026-03-19T23:59:59Z` is invoked, then only events within that time range are returned.
+- AC-022-6: Given Agent Mail is available (Phase 3), when `foreman audit --search` is invoked, then the search is delegated to Agent Mail's FTS5 index for server-side filtering. When Agent Mail is unavailable, falls back to local JSONL grep.
 
 ---
 
@@ -634,6 +668,7 @@ Per-phase model selection must not weaken security posture.
 | Pi stdin/stdout pipe deadlock | Low | High | Async JSONL parsing with backpressure; watchdog timer on stdin writes |
 | ~~Session resume requires custom extension work~~ | ~~Medium~~ | ~~High~~ | **Resolved (v1.1):** Pi has a fully built-in session system (`switch_session`, `fork` RPC commands, auto-JSONL persistence). No custom extension needed. |
 | ~~DCG/permission controls require building from scratch~~ | ~~Medium~~ | ~~High~~ | **Resolved (v1.1):** pi-mono ships `permission-gate.ts`, `sandbox/index.ts`, and `protected-paths.ts` example extensions. `foreman-tool-gate` extends these rather than building from scratch. |
+| Python runtime dependency for Agent Mail | Medium | Medium | Agent Mail is a Python FastMCP server, adding a cross-runtime dependency to a TypeScript/Node.js project. Mitigation: provide Docker Compose setup (`docker-compose.agent-mail.yml`) so users run Agent Mail as a container without installing Python locally. Document Python 3.10+ as optional prerequisite for non-Docker installs. |
 
 ---
 
@@ -654,7 +689,8 @@ Per-phase model selection must not weaken security posture.
 | AC-003-2 | REQ-003 | Tool-gate allows read-only tools in Explorer | 1 |
 | AC-003-3 | REQ-003 | Tool-gate allows dev tools in Developer phase | 1 |
 | AC-003-4 | REQ-003 | Tool-gate block events logged to audit | 1 |
-| AC-003-5 | REQ-003 | Tool-gate reads config from phase metadata | 1 |
+| AC-003-5 | REQ-003 | Tool-gate reads config from FOREMAN_ALLOWED_TOOLS env var | 1 |
+| AC-003-6 | REQ-003 | Configurable Bash blocklist via FOREMAN_BASH_BLOCKLIST | 1 |
 | AC-004-1 | REQ-004 | Budget enforcer terminates at turn limit | 1 |
 | AC-004-2 | REQ-004 | Budget enforcer terminates at token limit | 1 |
 | AC-004-3 | REQ-004 | Budget termination updates run status | 1 |
@@ -727,6 +763,12 @@ Per-phase model selection must not weaken security posture.
 | AC-020-4 | REQ-020 | 100% tool invocation coverage | 1 |
 | AC-021-1 | REQ-021 | Extensions enforce regardless of model | 2 |
 | AC-021-2 | REQ-021 | Model changes recorded in audit | 2 |
+| AC-022-1 | REQ-022 | foreman audit --seed displays run events | 2 |
+| AC-022-2 | REQ-022 | Full-text search across audit entries | 3 |
+| AC-022-3 | REQ-022 | Phase filter for audit queries | 2 |
+| AC-022-4 | REQ-022 | Event type filter for audit queries | 2 |
+| AC-022-5 | REQ-022 | Time range filter for audit queries | 2 |
+| AC-022-6 | REQ-022 | Agent Mail FTS5 delegation with local fallback | 3 |
 
 ---
 
@@ -765,7 +807,7 @@ Per-phase model selection must not weaken security posture.
 
 | # | Question | Owner | Status |
 |---|----------|-------|--------|
-| 1 | What is Pi's exact RPC JSONL protocol specification? Published docs reference `--mode rpc` but detailed message schemas need verification. | Engineering | Open |
+| 1 | ~~What is Pi's exact RPC JSONL protocol specification?~~ | Engineering | **Closed (v1.2):** Documented in Section 6.4. Pi RPC uses JSONL over stdin/stdout with commands: `prompt`, `set_model`, `set_context`, `new_session`, `switch_session`, `fork`, `get_state`, `export_html`. Events streamed back: `agent_start`, `agent_end`, `turn_start`, `turn_end`, `tool_call`, `tool_result`, `before_provider_request`. |
 | 2 | Does Pi's extension system support blocking `tool_call` events, or only observing them? The `foreman-tool-gate` design depends on blocking capability. | Engineering | **Closed (v1.1):** Confirmed — the `tool_call` hook returns `{ block: true, reason: "..." }` to block execution. The `event.input.command` field provides the full bash command string before execution. |
 | 3 | Should Agent Mail run as a sidecar (started by `foreman init`) or as an independent system daemon? | DevOps | Open |
 | 4 | What is the Agent Mail message size limit? Explorer reports can be 10-50KB. | Engineering | Open |
