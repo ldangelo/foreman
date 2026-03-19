@@ -1,8 +1,8 @@
 # PRD-2026-002: Migrate Agent Runtime to Pi + Agent Mail + RPC Control
 
 **Document ID:** PRD-2026-002
-**Version:** 1.0
-**Status:** Draft
+**Version:** 1.1
+**Status:** Draft (v1.1)
 **Date:** 2026-03-19
 **Author:** Product Management
 **Stakeholders:** Engineering (Foreman maintainers), Agent operators, Security reviewers
@@ -14,6 +14,7 @@
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-03-19 | Product Management | Initial draft |
+| 1.1 | 2026-03-19 | Product Management | Updated Pi session system (built-in, superior to SDK `persistSession`); updated DCG section to reference existing pi-mono example extensions (`permission-gate.ts`, `sandbox/index.ts`); updated risk register to reflect no capability gaps for session resume or permission controls |
 
 ---
 
@@ -182,6 +183,21 @@ Workers receive a `WorkerConfig` JSON file containing: `runId`, `projectId`, `se
 
 ## 6. Solution Overview
 
+### 6.0 SDK Feature Coverage
+
+All Claude SDK features used by Foreman are fully covered by Pi equivalents. No capability gaps remain.
+
+| SDK Feature | Pi Equivalent | Coverage Status |
+|---|---|---|
+| `disallowedTools` per phase | `tool_call` hook (block by `event.toolName`) | Covered — `foreman-tool-gate` extension (extends `permission-gate.ts`) |
+| `permissionMode: "acceptEdits"` (DCG) | `permission-gate.ts` + `sandbox/index.ts` example extensions | **Better than SDK** — OS-level sandbox available (`sandbox-exec` / `bubblewrap`) |
+| `maxBudgetUsd` | `foreman-budget` extension + `ctx.getContextUsage()` | Covered — token-based approximation (tokens x pricing) |
+| Session resume / `persistSession` | `switch_session` RPC + auto-JSONL persistence to `~/.pi/agent/sessions/` | **Better than SDK** — native, built-in, crash-recovery on restart |
+| `sessionLogDir` transcript | Pi native JSONL sessions + `foreman-audit` extension | Covered |
+| Rate limit → stuck detection | `agent_end` error mapping | Covered |
+| Cost/token per phase | `ctx.getContextUsage()` on `turn_end` event | Covered |
+| `filesChanged` tracking | `tool_call` hook intercepts Write/Edit events | Covered |
+
 ### 6.1 Architecture: Foreman Controls Pi via RPC
 
 ```
@@ -207,10 +223,27 @@ Foreman (TypeScript orchestrator)
 
 ### 6.2 Pi Extension Architecture
 
-Pi extensions subscribe to events and can block or modify behavior:
+Pi extensions subscribe to events and can block or modify behavior. The `tool_call` hook API provides the full tool input before execution:
 
 ```typescript
-// foreman-tool-gate.ts -- block disallowed tools per phase
+pi.on("tool_call", async (event, ctx) => {
+  // event.toolName: "bash" | "read" | "edit" | "write" | "grep" etc.
+  // event.input: full input object (event.input.command for bash)
+  // Returns { block: true, reason: "message" } to block, or undefined to allow
+});
+```
+
+**Existing pi-mono example extensions** (do not rebuild from scratch):
+- `permission-gate.ts` — pattern-matches dangerous bash commands and blocks via `tool_call` hook
+- `sandbox/index.ts` — OS-level sandboxing (`sandbox-exec` on macOS, `bubblewrap` on Linux); restricts filesystem writes to CWD + `/tmp`, blocks SSH/AWS credential access, limits network to npm/PyPI/GitHub
+- `protected-paths.ts` — blocks writes to sensitive directories
+- `dirty-repo-guard.ts` — prevents changes when repo has uncommitted state
+- `plan-mode/` — read-only exploration mode (directly applicable to Explorer phase)
+
+The three Foreman extensions extend or compose these:
+
+```typescript
+// foreman-tool-gate.ts -- extends permission-gate.ts + protected-paths.ts
 export default {
   name: "foreman-tool-gate",
   events: {
@@ -268,7 +301,28 @@ Agent Mail (`mcp_agent_mail`) runs as a FastMCP HTTP server on port 8765. Forema
 
 4. **Audit trail**: The `foreman-audit` extension streams all tool calls, block decisions, and phase transitions to a dedicated "audit-log" agent inbox. FTS5 indexing makes the audit trail searchable.
 
-### 6.4 Pi Merge Agent
+### 6.4 Pi Session System (Native — No Custom Extension Required)
+
+Pi ships a **fully built-in session system** that is superior to the Claude SDK's `persistSession` parameter. Session resume is a native capability, not a gap requiring custom extension work.
+
+**How it works:**
+- Sessions auto-persist to `~/.pi/agent/sessions/` as versioned JSONL (tree structure with `id`/`parentId`; v1→v2→v3 auto-migrated)
+- `switch_session` RPC command resumes a session by ID — Foreman stores the session ID in `runs.session_key` for crash recovery
+- `fork` RPC command branches from the current session point — directly applicable to Dev↔QA retry cycles (each retry is a fork, preserving the shared exploration context)
+- Pi auto-loads the last session on restart, providing crash recovery without Foreman intervention
+
+**Session lifecycle hooks** available for `foreman-audit` extension:
+- `session_start`, `session_before_switch`, `session_switch`, `session_shutdown`
+- `session_before_fork`, `session_fork`
+- `session_before_compact`, `session_compact`
+
+The `session_shutdown` hook enables the `foreman-audit` extension to checkpoint Foreman-specific metadata (runId, phase, costAccumulator) into the session file before termination.
+
+**RPC session commands:** `new_session`, `switch_session`, `fork`, `get_fork_messages`, `set_session_name`, `get_state`, `export_html`
+
+**Impact on implementation:** The `FOREMAN_PI_REUSE_SESSION` env var described in AC-011-5 can leverage `fork` instead of spawning a new Pi process per phase, preserving shared context while isolating each phase's tool permissions and budget.
+
+### 6.5 Pi Merge Agent
 
 The Pi Merge Agent is a continuously-running daemon (following the `SentinelAgent` pattern from sentinel.ts) that:
 
@@ -305,7 +359,7 @@ The dispatcher must detect whether the `pi` binary is available and fall back to
 
 ### REQ-003: foreman-tool-gate Pi Extension
 
-Build a Pi extension that hooks the `tool_call` event and blocks tools not in the phase's allowed list. This replaces the SDK `disallowedTools` parameter (computed by `getDisallowedTools()` in roles.ts) with enforcement at the Pi runtime level.
+Build a Pi extension that hooks the `tool_call` event and blocks tools not in the phase's allowed list. This replaces the SDK `disallowedTools` parameter (computed by `getDisallowedTools()` in roles.ts) with enforcement at the Pi runtime level. The extension must be built by extending the existing **`permission-gate.ts`** example from pi-mono (which already handles `rm -rf`, `sudo`, and `chmod 777` pattern matching) combined with **`protected-paths.ts`** (which blocks writes to sensitive directories). Foreman-specific additions on top of those foundations: block `git push --force`, protect `.beads/` directory, and enforce the per-phase tool allowlist via the `tool_call` hook's `event.toolName` and `event.input.command` fields.
 
 - AC-003-1: Given the Explorer phase is active, when Pi attempts to invoke the `Bash` tool, then `foreman-tool-gate` blocks the call and returns a denial reason to Pi.
 - AC-003-2: Given the Explorer phase is active, when Pi invokes `Read`, `Grep`, `Glob`, or `LS`, then `foreman-tool-gate` allows the call to proceed.
@@ -385,13 +439,13 @@ Enhance the pipeline phase handoff to use Agent Mail messages in addition to dis
 
 ### REQ-011: RPC Session Lifecycle Management
 
-Manage Pi RPC session lifecycle including initialization, phase transitions, error handling, and clean shutdown.
+Manage Pi RPC session lifecycle including initialization, phase transitions, error handling, and clean shutdown. Pi's built-in session persistence (`~/.pi/agent/sessions/` JSONL) provides crash recovery natively — Foreman stores the Pi session ID in `runs.session_key` to enable `switch_session` resume without custom extension work.
 
 - AC-011-1: Given Foreman starting a pipeline, when the Pi RPC process is spawned, then Foreman sends an initialization sequence: extensions config, phase metadata (role, allowed tools, budget limits), system prompt, and initial prompt.
 - AC-011-2: Given a Pi RPC session running, when the session completes normally, then Foreman receives the `agent_end` event with final statistics (turns, tokens, cost) and updates `RunProgress`.
-- AC-011-3: Given a Pi RPC session running, when the Pi process crashes or stdin/stdout pipe breaks, then Foreman detects the broken pipe within 5 seconds, marks the run as "stuck", and resets the seed to open.
-- AC-011-4: Given a Pi RPC session that needs to be terminated (e.g., operator cancellation), when Foreman closes the stdin pipe, then Pi performs a clean shutdown and the session is properly finalized.
-- AC-011-5: Given a multi-phase pipeline, when transitioning from one phase to the next, then Foreman can either reuse the same Pi RPC process (with `set_context` and `set_model`) or spawn a new one per phase, configurable via `FOREMAN_PI_REUSE_SESSION` env var.
+- AC-011-3: Given a Pi RPC session running, when the Pi process crashes or stdin/stdout pipe breaks, then Foreman detects the broken pipe within 5 seconds, marks the run as "stuck", resets the seed to open, and stores the session ID in `runs.session_key` for subsequent `switch_session` resume.
+- AC-011-4: Given a Pi RPC session that needs to be terminated (e.g., operator cancellation), when Foreman closes the stdin pipe, then Pi performs a clean shutdown (triggering the `session_shutdown` hook) and the session is properly finalized.
+- AC-011-5: Given a multi-phase pipeline, when transitioning from one phase to the next, then Foreman can either (a) reuse the same Pi RPC process with `set_context` and `set_model`, (b) spawn a new Pi process per phase using `switch_session` to resume context, or (c) use the `fork` RPC command to branch from the current session point (preferred for Dev↔QA retries). Configurable via `FOREMAN_PI_SESSION_STRATEGY` env var (`reuse` | `resume` | `fork`).
 
 ### REQ-012: Notification System Migration
 
@@ -460,14 +514,14 @@ Each pipeline phase must have a Pi-specific configuration that maps to the curre
 
 ### Phase 1: Pi Extensions Package (Week 1-2)
 
-**Scope**: Build the three Pi extensions as a standalone package.
+**Scope**: Build the three Pi extensions as a standalone package. The `foreman-tool-gate` extension does **not** start from scratch — it extends the existing `permission-gate.ts` and `protected-paths.ts` example extensions from pi-mono, adding Foreman-specific patterns on top. The `sandbox/index.ts` example (OS-level sandboxing via `sandbox-exec`/`bubblewrap`) should be evaluated for use in the Explorer phase instead of a custom implementation.
 
 **New files**:
 - `packages/foreman-pi-extensions/package.json`
 - `packages/foreman-pi-extensions/tsconfig.json`
-- `packages/foreman-pi-extensions/src/tool-gate.ts`
+- `packages/foreman-pi-extensions/src/tool-gate.ts` (extends `permission-gate.ts` + `protected-paths.ts`)
 - `packages/foreman-pi-extensions/src/budget-enforcer.ts`
-- `packages/foreman-pi-extensions/src/audit-logger.ts`
+- `packages/foreman-pi-extensions/src/audit-logger.ts` (hooks `session_shutdown`, `session_fork` for Pi session events)
 - `packages/foreman-pi-extensions/src/index.ts`
 - `packages/foreman-pi-extensions/__tests__/tool-gate.test.ts`
 - `packages/foreman-pi-extensions/__tests__/budget-enforcer.test.ts`
@@ -578,6 +632,8 @@ Per-phase model selection must not weaken security posture.
 | Non-Anthropic models behave differently | Medium | Medium | Phase-specific prompt tuning; model validation in integration tests |
 | Agent Mail FTS5 index grows unbounded | Low | Medium | Configurable retention policy; auto-archive audit logs older than 30 days |
 | Pi stdin/stdout pipe deadlock | Low | High | Async JSONL parsing with backpressure; watchdog timer on stdin writes |
+| ~~Session resume requires custom extension work~~ | ~~Medium~~ | ~~High~~ | **Resolved (v1.1):** Pi has a fully built-in session system (`switch_session`, `fork` RPC commands, auto-JSONL persistence). No custom extension needed. |
+| ~~DCG/permission controls require building from scratch~~ | ~~Medium~~ | ~~High~~ | **Resolved (v1.1):** pi-mono ships `permission-gate.ts`, `sandbox/index.ts`, and `protected-paths.ts` example extensions. `foreman-tool-gate` extends these rather than building from scratch. |
 
 ---
 
@@ -710,10 +766,12 @@ Per-phase model selection must not weaken security posture.
 | # | Question | Owner | Status |
 |---|----------|-------|--------|
 | 1 | What is Pi's exact RPC JSONL protocol specification? Published docs reference `--mode rpc` but detailed message schemas need verification. | Engineering | Open |
-| 2 | Does Pi's extension system support blocking `tool_call` events, or only observing them? The `foreman-tool-gate` design depends on blocking capability. | Engineering | Open |
+| 2 | Does Pi's extension system support blocking `tool_call` events, or only observing them? The `foreman-tool-gate` design depends on blocking capability. | Engineering | **Closed (v1.1):** Confirmed — the `tool_call` hook returns `{ block: true, reason: "..." }` to block execution. The `event.input.command` field provides the full bash command string before execution. |
 | 3 | Should Agent Mail run as a sidecar (started by `foreman init`) or as an independent system daemon? | DevOps | Open |
 | 4 | What is the Agent Mail message size limit? Explorer reports can be 10-50KB. | Engineering | Open |
 | 5 | Should the Pi Merge Agent use a dedicated model (e.g., Opus for complex conflict resolution) or inherit from phase config? | Product | Open |
 | 6 | How should the `ModelSelection` type be relaxed -- to `string` or to a union of known providers plus `string`? | Engineering | Open |
 | 7 | Should we remove the existing `messages` table from SQLite (store.ts) now that Agent Mail replaces it, or keep it for backward compatibility? | Engineering | Open |
-| 8 | What is the Pi extension loading mechanism -- filesystem path, npm package, or inline configuration? | Engineering | Open |
+| 8 | What is the Pi extension loading mechanism -- filesystem path, npm package, or inline configuration? | Engineering | **Closed (v1.1):** pi-mono ships example extensions that serve as the loading reference. The `foreman-pi-extensions` package extends these directly. |
+| 9 | Should Dev↔QA retry cycles use the Pi `fork` RPC command (branch from shared Explorer session) or spawn fresh Pi processes per phase? | Engineering | Open — `fork` is now confirmed available; tradeoff is context sharing vs. isolation. |
+| 10 | Which pi-mono sandbox variant should be used for CI (macOS uses `sandbox-exec`, Linux uses `bubblewrap`)? Does the `sandbox/index.ts` extension auto-detect, or does Foreman need to configure it? | Engineering | Open |
