@@ -1,20 +1,348 @@
-/**
- * Tests for the finalize() npm-ci + type-check logic in agent-worker.ts.
- *
- * finalize() is a private function so we test its observable behaviour by
- * simulating the same conditional flow it uses:
- *
- *   1. Run `npm ci` → set installSucceeded
- *   2. If installSucceeded → run `npx tsc --noEmit`
- *      else              → record SKIPPED in report
- *
- * This mirrors how agent-worker-team.test.ts validates the prompt-transform
- * step without spawning the full worker process.
- *
- * See: src/orchestrator/agent-worker.ts — finalize(), lines ~538-583
- */
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-import { describe, it, expect } from "vitest";
+// ── Mock setup ─────────────────────────────────────────────────────────────
+//
+// We mock node:child_process so no real subprocess is spawned, and
+// we mock task-backend-ops so we can verify closeSeed call behaviour.
+//
+// vi.hoisted() ensures mock variables are initialised before the module
+// factory runs (vitest hoists vi.mock() calls to the top of the file).
+
+const { mockExecFileSync, mockCloseSeed, mockEnqueueToMergeQueue } = vi.hoisted(() => ({
+  mockExecFileSync: vi.fn(),
+  mockCloseSeed: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+  mockEnqueueToMergeQueue: vi.fn().mockReturnValue({ success: true }),
+}));
+
+vi.mock("node:child_process", () => ({
+  execFileSync: mockExecFileSync,
+}));
+
+vi.mock("../task-backend-ops.js", () => ({
+  closeSeed: mockCloseSeed,
+}));
+
+vi.mock("../agent-worker-enqueue.js", () => ({
+  enqueueToMergeQueue: mockEnqueueToMergeQueue,
+}));
+
+// Mock ForemanStore so we don't need a real SQLite database
+vi.mock("../../lib/store.js", () => ({
+  ForemanStore: {
+    forProject: vi.fn(() => ({
+      getDb: vi.fn(() => ({})),
+      close: vi.fn(),
+    })),
+  },
+}));
+
+import { finalize, rotateReport } from "../agent-worker-finalize.js";
+import type { FinalizeConfig } from "../agent-worker-finalize.js";
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function makeConfig(overrides: Partial<FinalizeConfig> = {}): FinalizeConfig {
+  // Note: `worktreePath` has no default here — every test that touches the
+  // filesystem must supply a real tmpDir via overrides to ensure isolation.
+  return {
+    runId: "run-test-001",
+    seedId: "bd-test-001",
+    seedTitle: "Fix the test bug",
+    projectPath: "/tmp/fake-project",
+    ...overrides,
+  } as FinalizeConfig;
+}
+
+// ── rotateReport ──────────────────────────────────────────────────────────────
+
+describe("rotateReport", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-rotate-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("renames an existing report file with a timestamp suffix", () => {
+    const filename = "FINALIZE_REPORT.md";
+    writeFileSync(join(tmpDir, filename), "# Old report");
+
+    rotateReport(tmpDir, filename);
+
+    // Original file should be gone
+    expect(existsSync(join(tmpDir, filename))).toBe(false);
+    // A rotated file with a timestamp suffix should exist
+    const files = readdirSync(tmpDir);
+    const rotated = files.find((f) => f.startsWith("FINALIZE_REPORT.") && f.endsWith(".md") && f !== filename);
+    expect(rotated).toBeDefined();
+  });
+
+  it("does nothing when the file does not exist (non-fatal)", () => {
+    // Should not throw
+    expect(() => rotateReport(tmpDir, "NONEXISTENT.md")).not.toThrow();
+  });
+});
+
+// ── finalize — push succeeds ──────────────────────────────────────────────────
+
+describe("finalize() — push succeeds", () => {
+  let logFile: string;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    // Default: all git commands succeed
+    mockExecFileSync.mockReset();
+    mockCloseSeed.mockReset().mockResolvedValue(undefined);
+    mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns true when git push succeeds", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result).toBe(true);
+  });
+
+  it("calls closeSeed when push succeeds", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/my/project" }), logFile);
+    expect(mockCloseSeed).toHaveBeenCalledOnce();
+    expect(mockCloseSeed).toHaveBeenCalledWith("bd-test-001", "/my/project");
+  });
+
+  it("calls git push with correct branch name", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-xyz-999" }), logFile);
+    const pushCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "push",
+    );
+    expect(pushCall).toBeDefined();
+    expect(pushCall![1]).toContain("foreman/bd-xyz-999");
+  });
+
+  it("writes FINALIZE_REPORT.md with SUCCESS status for seed close", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
+    expect(existsSync(reportPath)).toBe(true);
+    const content = readFileSync(reportPath, "utf-8");
+    expect(content).toContain("## Seed Close");
+    expect(content).toContain("Status: SUCCESS");
+  });
+
+  it("enqueues to merge queue when push succeeds", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(mockEnqueueToMergeQueue).toHaveBeenCalledOnce();
+  });
+});
+
+// ── finalize — push FAILS ─────────────────────────────────────────────────────
+
+describe("finalize() — push FAILS", () => {
+  let logFile: string;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-pushfail-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    mockExecFileSync.mockReset();
+    mockCloseSeed.mockReset().mockResolvedValue(undefined);
+    mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+
+    // git push fails; all other commands succeed
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "push") {
+        throw new Error("remote: Permission to repo denied.");
+      }
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns false when git push fails", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result).toBe(false);
+  });
+
+  it("does NOT call closeSeed when push fails", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(mockCloseSeed).not.toHaveBeenCalled();
+  });
+
+  it("does NOT enqueue to merge queue when push fails", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(mockEnqueueToMergeQueue).not.toHaveBeenCalled();
+  });
+
+  it("writes FINALIZE_REPORT.md with FAILED push and SKIPPED seed close", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
+    expect(existsSync(reportPath)).toBe(true);
+    const content = readFileSync(reportPath, "utf-8");
+    expect(content).toContain("## Push");
+    expect(content).toContain("Status: FAILED");
+    expect(content).toContain("## Seed Close");
+    expect(content).toContain("Status: SKIPPED (push failed)");
+  });
+
+  it("does not throw even when push fails", async () => {
+    await expect(finalize(makeConfig({ worktreePath: tmpDir }), logFile)).resolves.toBe(false);
+  });
+});
+
+// ── finalize — tsc failure is non-fatal ───────────────────────────────────────
+
+describe("finalize() — type check failure is non-fatal", () => {
+  let logFile: string;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-tscfail-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    mockExecFileSync.mockReset();
+    mockCloseSeed.mockReset().mockResolvedValue(undefined);
+    mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+
+    // tsc fails, git push succeeds
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (_bin === "npx" && Array.isArray(args) && args[0] === "tsc") {
+        throw new Error("Type error: cannot find module");
+      }
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns true (push succeeded) even when type check fails", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result).toBe(true);
+  });
+
+  it("still calls closeSeed when type check fails but push succeeds", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(mockCloseSeed).toHaveBeenCalledOnce();
+  });
+
+  it("reports type check failure in FINALIZE_REPORT.md", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
+    const content = readFileSync(reportPath, "utf-8");
+    expect(content).toContain("## Build / Type Check");
+    expect(content).toContain("Status: FAILED");
+  });
+});
+
+// ── finalize — commit "nothing to commit" is non-fatal ────────────────────────
+
+describe("finalize() — nothing to commit", () => {
+  let logFile: string;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-nocommit-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    mockExecFileSync.mockReset();
+    mockCloseSeed.mockReset().mockResolvedValue(undefined);
+    mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "commit") {
+        throw new Error("nothing to commit, working tree clean");
+      }
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns true and still pushes/closes when nothing to commit", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result).toBe(true);
+    expect(mockCloseSeed).toHaveBeenCalledOnce();
+  });
+
+  it("reports commit as SKIPPED (nothing to commit) in the report", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
+    const content = readFileSync(reportPath, "utf-8");
+    expect(content).toContain("Status: SKIPPED (nothing to commit)");
+  });
+});
+
+// ── finalize — closeSeed receives correct projectPath ─────────────────────────
+
+describe("finalize() — projectPath forwarded to closeSeed", () => {
+  let logFile: string;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-path-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    mockExecFileSync.mockReset();
+    mockCloseSeed.mockReset().mockResolvedValue(undefined);
+    mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("passes projectPath to closeSeed when provided", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/explicit/project" }), logFile);
+    expect(mockCloseSeed).toHaveBeenCalledWith("bd-test-001", "/explicit/project");
+  });
+
+  it("passes undefined projectPath to closeSeed when not provided", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir, projectPath: undefined }), logFile);
+    expect(mockCloseSeed).toHaveBeenCalledWith("bd-test-001", undefined);
+  });
+});
+
+// ── npm-ci + type-check logic (simulated — no real subprocess) ────────────────
+//
+// finalize() runs npm ci before tsc. The tests below verify the observable
+// behaviour of that conditional flow using pure-TypeScript simulators that
+// mirror the real code's logic without spawning subprocesses.
+//
+// See: src/orchestrator/agent-worker-finalize.ts — finalize() npm ci section
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
