@@ -467,7 +467,8 @@ describe("dispatch loop: auto-merge after each batch", () => {
     expect(mockMergeQueueReconcile).not.toHaveBeenCalled();
   });
 
-  it("does NOT process merge queue when user detaches (Ctrl+C) during watch", async () => {
+  it("processes merge queue BEFORE watchRunsInk even when user detaches (Ctrl+C)", async () => {
+    mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
     mockWatchRunsInk.mockResolvedValue({ detached: true });
 
     mockDispatch.mockResolvedValueOnce({
@@ -484,8 +485,9 @@ describe("dispatch loop: auto-merge after each batch", () => {
 
     await invokeRun([]);
 
-    // autoMerge code is after the detach check — should NOT run
-    expect(mockMergeQueueReconcile).not.toHaveBeenCalled();
+    // autoMerge now runs BEFORE watchRunsInk — so reconcile is called even when detached
+    // (only the final drain after the loop is skipped when detached)
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
   });
 
   it("logs 'Auto-merging completed branches...' and merged count", async () => {
@@ -586,6 +588,84 @@ describe("dispatch loop: auto-merge after each batch", () => {
   });
 });
 
+// ── Call ordering: autoMerge must run BEFORE watchRunsInk ────────────────────
+//
+// Regression tests for the bug where autoMerge was called after watchRunsInk
+// returned, causing completed branches to sit unmerged while long-running
+// agents occupied the watch.
+
+describe("call ordering: autoMerge fires BEFORE watchRunsInk", () => {
+  beforeEach(resetMocks);
+  afterEach(() => vi.restoreAllMocks());
+
+  it("calls autoMerge before watchRunsInk at callsite 1 (no tasks dispatched, agents active)", async () => {
+    mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
+
+    // Nothing dispatched, but 1 active agent — triggers callsite 1 (waiting path).
+    // watchRunsInk returns detached=true → loop breaks immediately, no 2nd dispatch.
+    mockDispatch.mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 1 });
+    mockGetActiveRuns.mockReturnValue([{ id: "run-active" }]);
+
+    const callOrder: string[] = [];
+    mockMergeQueueReconcile.mockImplementation(async () => {
+      callOrder.push("autoMerge");
+      return { enqueued: 0, skipped: 0, invalidBranch: 0 };
+    });
+    mockWatchRunsInk.mockImplementationOnce(async () => {
+      callOrder.push("watchRunsInk");
+      return { detached: true }; // detach to exit loop cleanly
+    });
+
+    await invokeRun([]);
+
+    // autoMerge (via reconcile) should have been called BEFORE watchRunsInk
+    const autoMergeIdx = callOrder.indexOf("autoMerge");
+    const watchIdx = callOrder.indexOf("watchRunsInk");
+    expect(autoMergeIdx).toBeGreaterThanOrEqual(0);
+    expect(watchIdx).toBeGreaterThanOrEqual(0);
+    expect(autoMergeIdx).toBeLessThan(watchIdx);
+  });
+
+  it("calls autoMerge before watchRunsInk at callsite 2 (tasks dispatched, watch mode)", async () => {
+    mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
+
+    // Tasks dispatched — triggers callsite 2 (normal dispatch + watch path)
+    mockDispatch.mockResolvedValueOnce({
+      dispatched: [
+        {
+          seedId: "s-ord", runId: "run-ord", title: "Order Test",
+          model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
+          branchName: "foreman/s-ord", runtime: "claude-code",
+        },
+      ],
+      skipped: [],
+      activeAgents: 1,
+    });
+
+    // Detach on watch to exit cleanly
+    mockWatchRunsInk.mockResolvedValue({ detached: true });
+
+    const callOrder: string[] = [];
+    mockMergeQueueReconcile.mockImplementation(async () => {
+      callOrder.push("autoMerge");
+      return { enqueued: 0, skipped: 0, invalidBranch: 0 };
+    });
+    mockWatchRunsInk.mockImplementationOnce(async () => {
+      callOrder.push("watchRunsInk");
+      return { detached: true };
+    });
+
+    await invokeRun([]);
+
+    // autoMerge (via reconcile) must appear before watchRunsInk in call order
+    const autoMergeIdx = callOrder.indexOf("autoMerge");
+    const watchIdx = callOrder.indexOf("watchRunsInk");
+    expect(autoMergeIdx).toBeGreaterThanOrEqual(0);
+    expect(watchIdx).toBeGreaterThanOrEqual(0);
+    expect(autoMergeIdx).toBeLessThan(watchIdx);
+  });
+});
+
 // ── Final merge drain: pending entries processed after dispatch loop exits ────
 
 describe("final merge drain: continuous processing after dispatch loop", () => {
@@ -677,7 +757,7 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
     consoleSpy.mockRestore();
   });
 
-  it("final drain is skipped when user detaches (Ctrl+C)", async () => {
+  it("final drain is skipped when user detaches (Ctrl+C), but in-loop autoMerge still ran before watch", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
     // User detaches during watch
     mockWatchRunsInk.mockResolvedValue({ detached: true });
@@ -696,9 +776,9 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
 
     await invokeRun([]);
 
-    // No reconcile or merge should happen at all (detached before autoMerge + final drain skipped)
-    expect(mockMergeQueueReconcile).not.toHaveBeenCalled();
-    expect(mockMergeQueueUpdateStatus).not.toHaveBeenCalled();
+    // autoMerge now runs BEFORE watchRunsInk — so reconcile is called once (in-loop, before watch)
+    // The final drain after the loop is skipped (userDetached=true)
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
   });
 
   it("final drain is skipped when --no-auto-merge is set", async () => {
