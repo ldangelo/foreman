@@ -6,11 +6,16 @@ import { Doctor } from "../doctor.js";
 import type { Run } from "../../lib/store.js";
 
 // Mock git module for worktree tests
-vi.mock("../../lib/git.js", () => ({
-  listWorktrees: vi.fn(),
-  removeWorktree: vi.fn(),
-}));
-import { listWorktrees } from "../../lib/git.js";
+vi.mock("../../lib/git.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/git.js")>();
+  return {
+    ...actual,
+    listWorktrees: vi.fn(),
+    removeWorktree: vi.fn(),
+    branchExistsOnOrigin: vi.fn(),
+  };
+});
+import { listWorktrees, branchExistsOnOrigin } from "../../lib/git.js";
 
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
@@ -615,12 +620,18 @@ describe("Doctor", () => {
       expect(result.status).toBe("warn");
       expect(result.name).toBe("blocked seeds");
       expect(result.message).toContain("Could not list seeds");
+    });
+  });
 
   describe("checkOrphanedWorktrees", () => {
     const mockListWorktrees = vi.mocked(listWorktrees);
+    const mockBranchExistsOnOrigin = vi.mocked(branchExistsOnOrigin);
 
     beforeEach(() => {
       mockListWorktrees.mockReset();
+      mockBranchExistsOnOrigin.mockReset();
+      // Default: branch not on origin (safe to remove)
+      mockBranchExistsOnOrigin.mockResolvedValue(false);
     });
 
     it("returns pass when no foreman worktrees", async () => {
@@ -707,6 +718,53 @@ describe("Doctor", () => {
       expect(results).toHaveLength(1);
       expect(results[0].status).toBe("pass");
       expect(results[0].message).toContain("pending");
+    });
+
+    it("warns for orphaned worktree with branch on origin (no runs)", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      mockListWorktrees.mockResolvedValue([
+        { path: "/tmp/wt", branch: "foreman/seed-orphan", head: "abc123", bare: false },
+      ]);
+      store.getRunsForSeed.mockReturnValue([]);
+      mockBranchExistsOnOrigin.mockResolvedValue(true);
+
+      const results = await doctor.checkOrphanedWorktrees();
+
+      expect(results[0].status).toBe("warn");
+      expect(results[0].message).toContain("branch exists on origin");
+      expect(results[0].message).toContain("skipping auto-removal");
+    });
+
+    it("removes orphaned worktree when branch not on origin and fix=true", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      mockListWorktrees.mockResolvedValue([
+        { path: "/tmp/wt", branch: "foreman/seed-gone", head: "abc123", bare: false },
+      ]);
+      store.getRunsForSeed.mockReturnValue([]);
+      mockBranchExistsOnOrigin.mockResolvedValue(false);
+      vi.mocked(await import("../../lib/git.js").then(m => m)).removeWorktree = vi.fn().mockResolvedValue(undefined);
+
+      const results = await doctor.checkOrphanedWorktrees({ fix: true });
+
+      expect(results[0].message).toContain("not on origin");
+    });
+
+    it("warns without fix for orphaned worktree not on origin", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      mockListWorktrees.mockResolvedValue([
+        { path: "/tmp/wt", branch: "foreman/seed-local", head: "abc123", bare: false },
+      ]);
+      store.getRunsForSeed.mockReturnValue([]);
+      mockBranchExistsOnOrigin.mockResolvedValue(false);
+
+      const results = await doctor.checkOrphanedWorktrees();
+
+      expect(results[0].status).toBe("warn");
+      expect(results[0].message).toContain("not on origin");
+      expect(results[0].message).toContain("--fix");
     });
   });
 

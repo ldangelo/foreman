@@ -252,5 +252,4 @@ export async function writeSessionLog(
 
   await writeFile(filepath, content, "utf-8");
   return filepath;
-||||||| parent of 4bc57b9 (finalize() in agent-worker.ts has no SessionLogs step — pipeline completion produces no session transcript (bd-uj9e))
 }

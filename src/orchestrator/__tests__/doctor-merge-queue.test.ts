@@ -228,7 +228,7 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
       const results = await doctor.checkMergeQueueHealth();
 
-      expect(results).toHaveLength(4);
+      expect(results).toHaveLength(5);
       expect(results.every((r) => r.status === "pass")).toBe(true);
     });
 
@@ -269,7 +269,7 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
       const result = await doctor.checkStuckConflictFailedEntries();
       expect(result.status).toBe("warn");
-      expect(result.message).toContain("MQ-011");
+      expect(result.message).toContain("MQ-012");
     });
 
     it("warns about failed entries stuck >1h", async () => {

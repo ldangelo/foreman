@@ -120,6 +120,7 @@ describe("Dispatcher — ITaskClient injection", () => {
       show: vi.fn().mockResolvedValue({ status: "open" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
 
     // Should construct without error when given a mock ITaskClient
@@ -133,6 +134,7 @@ describe("Dispatcher — ITaskClient injection", () => {
       show: vi.fn().mockResolvedValue({ status: "open" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
 
     const dispatcher = makeDispatcher(mockClient);
@@ -147,6 +149,7 @@ describe("Dispatcher — ITaskClient injection", () => {
       show: vi.fn().mockResolvedValue({ status: "open" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
 
     expect(typeof mockClient.ready).toBe("function");
@@ -241,6 +244,7 @@ describe("Dispatcher — BvClient ordering", () => {
       show: vi.fn().mockResolvedValue({ status: "open" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
@@ -268,6 +272,7 @@ describe("Dispatcher — BvClient ordering", () => {
       show: vi.fn().mockResolvedValue({ status: "open" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
@@ -297,6 +302,7 @@ describe("Dispatcher — BvClient ordering", () => {
       show: vi.fn().mockResolvedValue({ status: "open" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
@@ -318,6 +324,7 @@ describe("Dispatcher — BvClient ordering", () => {
       show: vi.fn().mockResolvedValue({ status: "open" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
@@ -356,6 +363,7 @@ describe("Dispatcher — BvClient ordering", () => {
       show: vi.fn().mockResolvedValue({ status: "open" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
@@ -415,6 +423,7 @@ describe("Dispatcher.resumeRuns — seed in_progress marking", () => {
       show: vi.fn().mockResolvedValue({ status: "stuck" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     } as ITaskClient;
   }
 
@@ -560,6 +569,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
       show: vi.fn().mockResolvedValue({ status: "open", description: "This requires a complex overhaul" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
@@ -586,6 +596,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
       show: vi.fn().mockResolvedValue({ status: "open", description: "Some description" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
@@ -608,6 +619,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
       show: vi.fn().mockRejectedValue(new Error("network error")),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
@@ -630,6 +642,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
       show: vi.fn().mockResolvedValue({ status: "open", description: null }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
@@ -708,6 +721,7 @@ describe("Dispatcher.dispatch — fetches seed details via show()", () => {
       show: vi.fn().mockResolvedValue(showResult),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
@@ -753,6 +767,7 @@ describe("Dispatcher.dispatch — fetches seed details via show()", () => {
       show: vi.fn().mockRejectedValue(new Error("show failed")),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
     };
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),

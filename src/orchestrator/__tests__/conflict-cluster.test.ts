@@ -30,6 +30,8 @@ function entry(
     status: "pending",
     resolved_tier: null,
     error: null,
+    retry_count: 0,
+    last_attempted_at: null,
   };
 }
 

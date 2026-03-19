@@ -16,11 +16,12 @@ vi.mock("node:child_process", () => ({
 vi.mock("../../lib/git.js", () => ({
   listWorktrees: vi.fn(),
   removeWorktree: vi.fn(),
+  branchExistsOnOrigin: vi.fn().mockResolvedValue(false),
   detectDefaultBranch: vi.fn().mockResolvedValue("main"),
 }));
 
 // Import mocked modules AFTER vi.mock declarations
-import { listWorktrees, removeWorktree } from "../../lib/git.js";
+import { listWorktrees, removeWorktree, branchExistsOnOrigin } from "../../lib/git.js";
 import { Doctor } from "../doctor.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -88,7 +89,8 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     const seedId = "seed-abc";
     vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
-      makeRun({ seed_id: seedId, status: "running", worktree_path: `/tmp/worktrees/${seedId}` }),
+      // Use the test process PID so isProcessAlive() returns true
+      makeRun({ seed_id: seedId, status: "running", worktree_path: `/tmp/worktrees/${seedId}`, session_key: `pid-${process.pid}` }),
     ]);
 
     const results = await doctor.checkOrphanedWorktrees();
@@ -301,7 +303,7 @@ describe("Doctor.checkOrphanedWorktrees", () => {
 
     store.getRunsForSeed.mockImplementation((seedId: string) => {
       if (seedId === "seed-active") {
-        return [makeRun({ seed_id: seedId, status: "running", worktree_path: `/tmp/worktrees/${seedId}` })];
+        return [makeRun({ seed_id: seedId, status: "running", worktree_path: `/tmp/worktrees/${seedId}`, session_key: `pid-${process.pid}` })];
       }
       if (seedId === "seed-failed") {
         return [makeRun({ seed_id: seedId, status: "failed" })];

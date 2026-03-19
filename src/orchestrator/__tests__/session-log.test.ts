@@ -346,6 +346,5 @@ describe("writeSessionLog", () => {
     await mkdir(join(tmpDir, "SessionLogs"), { recursive: true });
     const date = new Date(2026, 2, 17, 14, 32);
     await expect(writeSessionLog(tmpDir, makeData(), date)).resolves.not.toThrow();
-||||||| parent of 4bc57b9 (finalize() in agent-worker.ts has no SessionLogs step — pipeline completion produces no session transcript (bd-uj9e))
   });
 });
