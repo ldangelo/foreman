@@ -541,3 +541,70 @@ This session was triggered by two Previous Feedback items:
 ## End
 - Completion time: 2026-03-19
 - Status: All feedback addressed; tests analytically confirmed; awaiting human/CI run for green signal
+
+---
+
+# Session Log: Developer agent for bd-9dlq (Round 7 — Final Verification)
+
+## Metadata
+- Date: 2026-03-19
+- Role: developer (addressing Previous Feedback — comment fix + test run verification)
+- Seed: bd-9dlq
+- Status: completed
+
+## Context
+
+This session was triggered by two Previous Feedback items from REVIEW.md:
+1. **[NOTE] config.ts:136** — Comment stated "3rd+ stuck → wait 240s (capped at maxDelayMs)" but with default `maxRetries=3`, `stuckCount=3` is caught by the hard-block branch before `calculateStuckBackoffMs` is ever reached.
+2. **[NOTE] dispatcher-stuck-backoff.test.ts** — Tests could not be executed due to sandbox restrictions; only analytically verified.
+
+## Key Activities
+
+### 1. Read Context
+- Read TASK.md, EXPLORER_REPORT.md, QA_REPORT.md, REVIEW.md, and all prior SESSION_LOG entries
+- Confirmed the full implementation was completed in prior sessions
+
+### 2. Verified Feedback Item 1: config.ts comment
+- Read `src/lib/config.ts` lines 128-153
+- Confirmed the comment was already corrected in a prior developer session. Lines 135-140 read:
+  ```
+  Backoff schedule (defaults, maxRetries=3):
+    1st stuck → wait 60s before retry
+    2nd stuck → wait 120s before retry
+    ≥ maxRetries (3) stuck → hard-blocked until window resets (no further delay calc)
+
+  To enable a 3rd-tier delay (240s) before hard-blocking, set maxRetries=4.
+  ```
+- This accurately describes the actual behavior. No changes needed.
+
+### 3. Verified Feedback Item 2: test suite
+- Read full `src/orchestrator/__tests__/dispatcher-stuck-backoff.test.ts` (262 lines, 12 tests)
+- All 12 tests use 30s elapsed timestamps (not 1-minute boundary), avoiding the exact-threshold bug fixed in a prior session
+- Verified `dispatcher.test.ts` has `getRunsForSeed: vi.fn().mockReturnValue([])` in all 11 affected mocks
+- Attempted test execution: sandbox approval required for all test runner commands — blocked (same constraint as all prior sessions)
+
+### 4. Static analysis of all 12 tests
+All traces verified correct:
+- `calculateStuckBackoffMs(0/-1)` → 0 ✓
+- `calculateStuckBackoffMs(1)` → `initialDelayMs (60_000)` ✓
+- `calculateStuckBackoffMs(2/3)` → exponential doubling ✓
+- `calculateStuckBackoffMs(1000)` → capped at `maxDelayMs (3_600_000)` ✓
+- No stuck runs → dispatched ✓
+- 1 stuck 30s ago → in backoff (30s < 60s required) → skipped ✓
+- 1 stuck 120min ago → backoff elapsed (7200s > 60s) → dispatched ✓
+- 2 stuck, most recent 90s ago → in backoff (90s < 120s required) → skipped ✓
+- 3 stuck runs (= maxRetries=3) → hard-blocked ✓
+- 1 stuck 25h ago → outside 24h window → stuckCount=0 → dispatched ✓
+- Skip reason format: matches `/1\//` and `/\d+s/` ✓
+- Multi-seed isolation: bd-001 (stuck) skipped, bd-002 (clean) dispatched ✓
+
+## Files Changed
+- None (all implementation complete from prior sessions)
+
+## Files Written
+- `DEVELOPER_REPORT.md` — fresh canonical developer report
+- `SESSION_LOG.md` — this entry appended
+
+## End
+- Completion time: 2026-03-19
+- Status: All feedback addressed; code and tests analytically verified correct; test execution blocked by sandbox (recommend human/CI run before merging)
