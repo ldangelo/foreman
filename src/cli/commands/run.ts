@@ -1,6 +1,8 @@
 import { Command } from "commander";
-import { spawnSync, execFile } from "node:child_process";
+import { spawnSync, execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import chalk from "chalk";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
@@ -17,6 +19,7 @@ import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import { Refinery } from "../../orchestrator/refinery.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
 import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
+import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
@@ -44,6 +47,46 @@ export async function createTaskClients(projectPath: string): Promise<TaskClient
   await brClient.ensureBrInstalled();
   const bvClient = new BvClient(projectPath);
   return { taskClient: brClient, bvClient };
+}
+
+// ── Bead status sync after merge ─────────────────────────────────────
+
+/** Absolute path to the br binary (mirrors task-backend-ops.ts). */
+function brPath(): string {
+  return join(homedir(), ".local", "bin", "br");
+}
+
+/**
+ * Immediately sync a bead's status in the br backend after a merge outcome.
+ *
+ * Fetches the latest run status from SQLite, maps it to the expected bead
+ * status via mapRunStatusToSeedStatus(), updates br, then flushes with
+ * `br sync --flush-only`.
+ *
+ * Non-fatal — logs a warning on failure and lets the caller continue.
+ */
+async function syncBeadStatusAfterMerge(
+  store: ForemanStore,
+  taskClient: ITaskClient,
+  runId: string,
+  seedId: string,
+  projectPath: string,
+): Promise<void> {
+  const run = store.getRun(runId);
+  if (!run) return;
+
+  const expectedStatus = mapRunStatusToSeedStatus(run.status);
+  try {
+    await taskClient.update(seedId, { status: expectedStatus });
+    execFileSync(brPath(), ["sync", "--flush-only"], {
+      stdio: "pipe",
+      timeout: PIPELINE_TIMEOUTS.beadClosureMs,
+      cwd: projectPath,
+    });
+  } catch (syncErr: unknown) {
+    const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
+    console.warn(`[merge] Warning: Failed to sync bead status for ${seedId}: ${msg}`);
+  }
 }
 
 // ── Auto-Attach Logic (AT-T028/AT-T029) ──────────────────────────────
@@ -160,32 +203,39 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<{
 
   let entry = mq.dequeue();
   while (entry) {
+    const currentEntry = entry;
     try {
       const report = await refinery.mergeCompleted({
         targetBranch,
         runTests: true,
         testCommand: "npm test",
         projectId: project.id,
-        seedId: entry.seed_id,
+        seedId: currentEntry.seed_id,
       });
 
       if (report.merged.length > 0) {
-        mq.updateStatus(entry.id, "merged", { completedAt: new Date().toISOString() });
+        mq.updateStatus(currentEntry.id, "merged", { completedAt: new Date().toISOString() });
         mergedCount += report.merged.length;
       } else if (report.conflicts.length > 0 || report.prsCreated.length > 0) {
-        mq.updateStatus(entry.id, "conflict", { error: "Code conflicts" });
+        mq.updateStatus(currentEntry.id, "conflict", { error: "Code conflicts" });
         conflictCount += report.conflicts.length + report.prsCreated.length;
       } else if (report.testFailures.length > 0) {
-        mq.updateStatus(entry.id, "failed", { error: "Test failures" });
+        mq.updateStatus(currentEntry.id, "failed", { error: "Test failures" });
         failedCount += report.testFailures.length;
       } else {
-        mq.updateStatus(entry.id, "failed", { error: "No completed run found" });
+        mq.updateStatus(currentEntry.id, "failed", { error: "No completed run found" });
         failedCount++;
       }
+
+      // Immediately sync bead status in br so it reflects the merge outcome
+      // without waiting for the next foreman startup reconciliation.
+      await syncBeadStatusAfterMerge(store, taskClient, currentEntry.run_id, currentEntry.seed_id, projectPath);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      mq.updateStatus(entry.id, "failed", { error: message });
+      mq.updateStatus(currentEntry.id, "failed", { error: message });
       failedCount++;
+      // Sync bead status even when refinery throws (run may have been updated before exception)
+      await syncBeadStatusAfterMerge(store, taskClient, currentEntry.run_id, currentEntry.seed_id, projectPath);
     }
 
     entry = mq.dequeue();

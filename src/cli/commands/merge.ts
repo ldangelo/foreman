@@ -1,7 +1,9 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { ITaskClient } from "../../lib/task-client.js";
@@ -12,6 +14,48 @@ import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { MergeQueueStatus } from "../../orchestrator/merge-queue.js";
 import type { MergedRun, ConflictRun, FailedRun, CreatedPr } from "../../orchestrator/types.js";
 import { MergeCostTracker } from "../../orchestrator/merge-cost-tracker.js";
+import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
+import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
+
+// ── Bead status sync helpers ───────────────────────────────────────────
+
+/** Absolute path to the br binary (mirrors task-backend-ops.ts). */
+function brPath(): string {
+  return join(homedir(), ".local", "bin", "br");
+}
+
+/**
+ * Immediately sync a bead's status in the br backend after a merge outcome.
+ *
+ * Fetches the latest run status from SQLite, maps it to the expected bead
+ * status via mapRunStatusToSeedStatus(), updates br, then flushes with
+ * `br sync --flush-only`.
+ *
+ * Non-fatal — logs a warning on failure and lets the caller continue.
+ */
+async function syncBeadStatusAfterMerge(
+  store: ForemanStore,
+  seeds: ITaskClient,
+  runId: string,
+  seedId: string,
+  projectPath: string,
+): Promise<void> {
+  const run = store.getRun(runId);
+  if (!run) return;
+
+  const expectedStatus = mapRunStatusToSeedStatus(run.status);
+  try {
+    await seeds.update(seedId, { status: expectedStatus });
+    execFileSync(brPath(), ["sync", "--flush-only"], {
+      stdio: "pipe",
+      timeout: PIPELINE_TIMEOUTS.beadClosureMs,
+      cwd: projectPath,
+    });
+  } catch (syncErr: unknown) {
+    const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
+    console.warn(chalk.yellow(`  [merge] Warning: Failed to sync bead status for ${seedId}: ${msg}`));
+  }
+}
 
 // ── Backend Client Factory (TRD-017) ──────────────────────────────────
 
@@ -341,6 +385,10 @@ export const mergeCommand = new Command("merge")
             // No completed run found for this seed (already merged or no run)
             mq.updateStatus(entry.id, "failed", { error: "No completed run found" });
           }
+
+          // Immediately sync bead status in br so it reflects the merge outcome
+          // without waiting for the next foreman startup reconciliation.
+          await syncBeadStatusAfterMerge(store, seeds, entry.run_id, entry.seed_id, projectPath);
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
           mq.updateStatus(entry.id, "failed", { error: message });
@@ -350,6 +398,8 @@ export const mergeCommand = new Command("merge")
             branchName: entry.branch_name,
             error: message,
           });
+          // Sync bead status even when refinery throws (run may have been updated before exception)
+          await syncBeadStatusAfterMerge(store, seeds, entry.run_id, entry.seed_id, projectPath);
         }
 
         // If --seed filter, stop after processing the target

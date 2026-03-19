@@ -512,6 +512,9 @@ export class Refinery {
         });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
+        // Update run status to "failed" so subsequent bead status sync has a
+        // terminal status to map from (fixes the exception gap).
+        this.store.updateRun(run.id, { status: "failed" });
         this.store.logEvent(
           run.project_id,
           "fail",
