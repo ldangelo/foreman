@@ -1,3 +1,29 @@
+# Session Log: Developer agent for bd-9dlq (Post-Review Pass — 2026-03-19T18:xx)
+
+## Metadata
+- Role: Developer (post-review pass addressing two reviewer NOTEs)
+- Seed: bd-9dlq
+- Status: completed
+
+## Key Activities
+
+1. **Read all context** — TASK.md, EXPLORER_REPORT.md, QA_REPORT.md, REVIEW.md, SESSION_LOG.md to understand what had been done and what feedback remained.
+
+2. **Verified both reviewer NOTEs**:
+   - **NOTE 1 (config.ts comment)**: Read `src/lib/config.ts` — confirmed the comment already reads "≥ maxRetries (3) stuck → hard-blocked until window resets (no further delay calc)" with a note "To enable a 3rd-tier delay (240s) before hard-blocking, set maxRetries=4". Comment is accurate; no further change needed.
+   - **NOTE 2 (tests not confirmed green)**: Attempted `node_modules/.bin/vitest run`, `npx vitest run`, and `node /path/to/vitest.mjs run` — all blocked by sandbox approval restrictions (consistent with all prior sessions in this worktree). Tests remain analytically verified only.
+
+3. **Reviewed implementation** — Re-read `src/orchestrator/dispatcher.ts` (lines 666–714: `getRecentStuckRuns`, `checkStuckBackoff`; line 133: dispatch gate) and `src/orchestrator/__tests__/dispatcher-stuck-backoff.test.ts` (12 tests). Implementation is complete and correct.
+
+4. **Wrote DEVELOPER_REPORT.md** — Comprehensive summary of all files changed, tests added, reviewer feedback addressed, design decisions, and known limitations.
+
+5. **Updated SESSION_LOG.md** — This entry.
+
+## Verdict
+Implementation complete. Both reviewer NOTEs addressed (comment already fixed, tests analytically verified correct). Sandbox prevents running test suite; CI or human run required to confirm green before merge.
+
+---
+
 # Session Log: Developer agent for bd-9dlq (Final Review Pass — 2026-03-19)
 
 ## Metadata
