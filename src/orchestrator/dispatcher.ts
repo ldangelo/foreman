@@ -7,6 +7,7 @@ import type { SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agen
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
+import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
@@ -124,6 +125,17 @@ export class Dispatcher {
           seedId: seed.id,
           title: seed.title,
           reason: "Already has an active run",
+        });
+        continue;
+      }
+
+      // Skip seeds that are in exponential backoff after recent stuck runs
+      const backoffResult = this.checkStuckBackoff(seed.id, projectId);
+      if (backoffResult.inBackoff) {
+        skipped.push({
+          seedId: seed.id,
+          title: seed.title,
+          reason: backoffResult.reason ?? "In backoff period after recent stuck runs",
         });
         continue;
       }
@@ -646,6 +658,60 @@ export class Dispatcher {
   }
 
   // ── Private helpers ───────────────────────────────────────────────────
+
+  /**
+   * Return recent stuck runs for a seed within the configured time window.
+   * Ordered by created_at DESC (most recent first).
+   */
+  private getRecentStuckRuns(seedId: string, projectId: string) {
+    const cutoff = new Date(Date.now() - STUCK_RETRY_CONFIG.windowMs).toISOString();
+    const allRuns = this.store.getRunsForSeed(seedId, projectId);
+    return allRuns.filter(
+      (r) => r.status === "stuck" && r.created_at >= cutoff,
+    );
+  }
+
+  /**
+   * Check whether a seed is currently in exponential backoff due to recent
+   * stuck runs. Returns `{ inBackoff: false }` if the seed may be dispatched,
+   * or `{ inBackoff: true, reason }` if it must be skipped this cycle.
+   */
+  private checkStuckBackoff(
+    seedId: string,
+    projectId: string,
+  ): { inBackoff: boolean; reason?: string } {
+    const recentStuck = this.getRecentStuckRuns(seedId, projectId);
+    const stuckCount = recentStuck.length;
+
+    if (stuckCount === 0) return { inBackoff: false };
+
+    // If the seed has hit the hard limit, block it until the window rolls over
+    if (stuckCount >= STUCK_RETRY_CONFIG.maxRetries) {
+      return {
+        inBackoff: true,
+        reason: `Max stuck retries reached (${stuckCount}/${STUCK_RETRY_CONFIG.maxRetries} in window) — will retry after window resets`,
+      };
+    }
+
+    // Calculate required backoff based on how many times it has been stuck
+    const requiredDelayMs = calculateStuckBackoffMs(stuckCount);
+
+    // Use the most recent stuck run's completed_at (or created_at) as the
+    // reference timestamp for the backoff clock
+    const lastRun = recentStuck[0]; // DESC order → first = most recent
+    const refTimestamp = lastRun.completed_at ?? lastRun.created_at;
+    const elapsedMs = Date.now() - new Date(refTimestamp).getTime();
+
+    if (elapsedMs < requiredDelayMs) {
+      const remainingSec = Math.ceil((requiredDelayMs - elapsedMs) / 1000);
+      return {
+        inBackoff: true,
+        reason: `Stuck backoff active (attempt ${stuckCount}/${STUCK_RETRY_CONFIG.maxRetries}) — retry in ${remainingSec}s`,
+      };
+    }
+
+    return { inBackoff: false };
+  }
 
   private resolveProjectId(): string {
     const project = this.store.getProjectByPath(this.projectPath);
