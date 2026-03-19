@@ -11,7 +11,7 @@
  *  4. Enqueue the branch to the merge queue (only if push succeeded)
  *  5. Close the seed in the br backend (ONLY if push succeeded)
  *
- * Returns `true` when push succeeded (seed was closed); `false` otherwise.
+ * Returns a FinalizeResult: { success, retryable }.
  */
 
 import { writeFileSync, renameSync, existsSync } from "node:fs";
@@ -40,6 +40,20 @@ export interface FinalizeConfig {
    * when not provided.
    */
   projectPath?: string;
+}
+
+/**
+ * Result returned by finalize().
+ *
+ * - `success`: true when the git push succeeded (seed was closed / enqueued).
+ * - `retryable`: when success=false, indicates whether the caller should reset
+ *   the seed to "open" for re-dispatch.  Set to false for deterministic failures
+ *   (e.g. diverged history that could not be rebased) to prevent an infinite
+ *   re-dispatch loop (see bd-zwtr).
+ */
+export interface FinalizeResult {
+  success: boolean;
+  retryable: boolean;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -74,10 +88,12 @@ function log(msg: string): void {
  *
  * Uses execFileSync for safety — no shell interpolation.
  *
- * @returns `true` when the git push succeeded (seed is closed);
- *          `false` when the push failed (seed is left open for retry).
+ * @returns `{ success: true, retryable: true }` when the git push succeeded;
+ *          `{ success: false, retryable: true }` for transient push failures;
+ *          `{ success: false, retryable: false }` for deterministic failures
+ *          (e.g. diverged history that could not be rebased via pull --rebase).
  */
-export async function finalize(config: FinalizeConfig, logFile: string): Promise<boolean> {
+export async function finalize(config: FinalizeConfig, logFile: string): Promise<FinalizeResult> {
   const { seedId, seedTitle, worktreePath } = config;
   // `storeProjectPath` is used only to open the SQLite store for the merge
   // queue — it must never be undefined, so we fall back to worktreePath/../..
@@ -135,18 +151,76 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     }
   }
 
-  // Push
+  // Push — with automatic rebase recovery on non-fast-forward rejections.
+  //
+  // Non-fast-forward errors are deterministic (diverged history) and will
+  // always fail on retry unless the local branch is rebased onto the remote.
+  // Attempting git pull --rebase here resolves the common case where origin
+  // received a commit (e.g. from a previous partial run) while the worktree
+  // continued on a different history.  If the rebase itself fails (real
+  // conflicts), we return retryable=false so the caller does NOT reset the
+  // seed to open — preventing the infinite re-dispatch loop described in bd-zwtr.
   let pushSucceeded = false;
+  let pushRetryable = true; // default: transient failures may be retried
   try {
     execFileSync("git", ["push", "-u", "origin", `foreman/${seedId}`], opts);
     log(`[FINALIZE] Pushed to origin`);
     report.push(`## Push`, `- Status: SUCCESS`, `- Branch: foreman/${seedId}`, "");
     pushSucceeded = true;
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`[FINALIZE] Push failed: ${msg.slice(0, 200)}`);
-    await appendFile(logFile, `[FINALIZE] Push error: ${msg}\n`);
-    report.push(`## Push`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
+  } catch (pushErr: unknown) {
+    const pushMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+    const isNonFastForward =
+      pushMsg.includes("non-fast-forward") ||
+      (pushMsg.includes("[rejected]") && pushMsg.includes("foreman/"));
+
+    if (isNonFastForward) {
+      log(`[FINALIZE] Push rejected (non-fast-forward) — attempting git pull --rebase`);
+      await appendFile(logFile, `[FINALIZE] Push rejected (non-fast-forward): ${pushMsg}\n`);
+      report.push(`## Push`, `- Status: REJECTED (non-fast-forward) — attempting rebase`, "");
+
+      // Attempt rebase. A failed rebase is deterministic — do NOT reset seed to open.
+      let rebaseSucceeded = false;
+      try {
+        execFileSync("git", ["pull", "--rebase", "origin", `foreman/${seedId}`], opts);
+        log(`[FINALIZE] Rebase succeeded — retrying push`);
+        report.push(`## Rebase`, `- Status: SUCCESS`, "");
+        rebaseSucceeded = true;
+      } catch (rebaseErr: unknown) {
+        const rebaseMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+        log(`[FINALIZE] Rebase failed: ${rebaseMsg.slice(0, 200)}`);
+        await appendFile(logFile, `[FINALIZE] Rebase error: ${rebaseMsg}\n`);
+        report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${rebaseMsg.slice(0, 300)}`, "");
+        report.push(`## Push`, `- Status: FAILED (rebase could not resolve diverged history)`, "");
+        // Abort any partial rebase to leave the worktree clean
+        try { execFileSync("git", ["rebase", "--abort"], opts); } catch { /* already clean */ }
+        // Deterministic failure — do NOT reset seed to open (prevents infinite loop)
+        pushRetryable = false;
+      }
+
+      // Retry push only if rebase succeeded. A post-rebase push failure is treated
+      // as transient (retryable=true) — it is distinct from a rebase conflict.
+      if (rebaseSucceeded) {
+        try {
+          execFileSync("git", ["push", "-u", "origin", `foreman/${seedId}`], opts);
+          log(`[FINALIZE] Pushed to origin (after rebase)`);
+          report.push(`## Push`, `- Status: SUCCESS (after rebase)`, `- Branch: foreman/${seedId}`, "");
+          pushSucceeded = true;
+        } catch (retryPushErr: unknown) {
+          const retryMsg = retryPushErr instanceof Error ? retryPushErr.message : String(retryPushErr);
+          log(`[FINALIZE] Push failed after rebase: ${retryMsg.slice(0, 200)}`);
+          await appendFile(logFile, `[FINALIZE] Post-rebase push error: ${retryMsg}\n`);
+          report.push(`## Push`, `- Status: FAILED (after rebase)`, `- Error: ${retryMsg.slice(0, 300)}`, "");
+          // Transient failure — allow retry
+          pushRetryable = true;
+        }
+      }
+    } else {
+      log(`[FINALIZE] Push failed: ${pushMsg.slice(0, 200)}`);
+      await appendFile(logFile, `[FINALIZE] Push error: ${pushMsg}\n`);
+      report.push(`## Push`, `- Status: FAILED`, `- Error: ${pushMsg.slice(0, 300)}`, "");
+      // Non-classification failures (network, permissions, etc.) may be transient
+      pushRetryable = true;
+    }
   }
 
   // Enqueue to merge queue (fire-and-forget — must not block finalization)
@@ -199,5 +273,5 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     // Non-fatal — finalize report is for debugging
   }
 
-  return pushSucceeded;
+  return { success: pushSucceeded, retryable: pushRetryable };
 }
