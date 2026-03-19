@@ -540,14 +540,7 @@ export const runCommand = new Command("run")
             );
             const activeRuns = store.getActiveRuns();
             const runIds = activeRuns.map((r) => r.id);
-            if (runIds.length > 0) {
-              const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
-              if (detached) {
-                userDetached = true;
-                break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
-              }
-            }
-            // Auto-merge completed branches before looping back
+            // Auto-merge completed branches BEFORE blocking on watch
             if (enableAutoMerge) {
               console.log(chalk.dim("Auto-merging completed branches..."));
               try {
@@ -564,6 +557,13 @@ export const runCommand = new Command("run")
               } catch (mergeErr: unknown) {
                 const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
                 console.error(chalk.yellow(`  Auto-merge error (non-fatal): ${msg}`));
+              }
+            }
+            if (runIds.length > 0) {
+              const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
+              if (detached) {
+                userDetached = true;
+                break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
               }
             }
             // Agents finished — loop back and check for newly-unblocked tasks
@@ -604,13 +604,7 @@ export const runCommand = new Command("run")
 
         // Watch mode: wait for this batch to finish, then loop to check for more
         if (watch) {
-          const runIds = result.dispatched.map((t) => t.runId);
-          const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
-          if (detached) {
-            userDetached = true;
-            break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
-          }
-          // Auto-merge completed branches before dispatching the next batch
+          // Auto-merge completed branches BEFORE blocking on watch
           if (enableAutoMerge) {
             console.log(chalk.dim("Auto-merging completed branches..."));
             try {
@@ -628,6 +622,12 @@ export const runCommand = new Command("run")
               const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
               console.error(chalk.yellow(`  Auto-merge error (non-fatal): ${msg}`));
             }
+          }
+          const runIds = result.dispatched.map((t) => t.runId);
+          const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
+          if (detached) {
+            userDetached = true;
+            break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
           }
           // After batch completes, loop back to dispatch the next batch
           continue;
