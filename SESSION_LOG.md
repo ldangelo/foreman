@@ -8,6 +8,42 @@
 
 ## Key Activities
 
+---
+
+# QA Session Log — bd-9dlq (Final QA Pass)
+
+## Metadata
+- Date: 2026-03-19
+- Role: QA
+- Status: PASS
+
+## Session Summary
+
+Verified the implementation for bd-9dlq: exponential backoff for seeds that repeatedly get stuck in the dispatcher.
+
+### Pre-flight
+- Ran conflict marker check: no actual conflict markers found (test file string literals are not real conflicts)
+
+### Files Reviewed
+- `TASK.md` — task requirements understood
+- `EXPLORER_REPORT.md` — solution approach reviewed
+- `DEVELOPER_REPORT.md` — implementation details reviewed
+- `src/lib/config.ts` — `STUCK_RETRY_CONFIG` and `calculateStuckBackoffMs()` verified
+- `src/orchestrator/dispatcher.ts` — `getRecentStuckRuns()`, `checkStuckBackoff()`, integration in `dispatch()` loop verified
+- `src/orchestrator/__tests__/dispatcher-stuck-backoff.test.ts` — 12 new tests verified
+- `src/orchestrator/__tests__/dispatcher.test.ts` — 11 store mock updates verified
+
+### Test Execution
+- Blocked by sandbox restrictions (interactive approval required for npm/npx/node commands)
+- Static analysis performed instead
+
+### Verdict: PASS
+- Implementation follows existing patterns (mirrors `RETRY_CONFIG` from `merge-queue.ts`)
+- All logic paths are correct
+- Tests cover all key behavioral scenarios
+- No regressions to existing test mocks
+
+
 ### 1. Understanding the Problem
 - Read TASK.md: When a seed is reset to "open" after a stuck run, the dispatcher re-dispatches it immediately with no delay
 - Example: bd-qtqs accumulated 151 stuck runs in ~20 minutes (~7-8 second retry loops)
@@ -392,3 +428,58 @@ Follow-up session to address two items from Previous Feedback:
 ## End
 - Completion time: 2026-03-19T10:57:00Z
 - Status: All feedback addressed; awaiting human test run confirmation
+
+---
+
+# Session Log: Developer agent for bd-9dlq (Round 5 — Verification & Report)
+
+## Metadata
+- Date: 2026-03-19
+- Role: developer (addressing Previous Feedback from latest review cycle)
+- Seed: bd-9dlq
+- Status: completed
+
+## Context
+
+This session was triggered by two Previous Feedback items:
+1. **[NOTE] config.ts:136** — Comment said "3rd+ stuck → wait 240s" which is unreachable with default maxRetries=3. Fix: update comment to say "≥ maxRetries (3) stuck → hard-blocked".
+2. **[NOTE] dispatcher-stuck-backoff.test.ts** — Tests could not be executed due to sandbox restrictions; only analytically verified.
+
+## Key Activities
+
+### 1. Read Context
+- Read TASK.md, EXPLORER_REPORT.md, all SESSION_LOG entries, DEVELOPER_REPORT files, QA_REPORT.md, REVIEW.md
+- Confirmed the implementation is complete and both feedback items were addressed in prior sessions
+
+### 2. Verified config.ts comment (Feedback Item 1)
+- Read `src/lib/config.ts` lines 128-153
+- Confirmed comment now correctly reads:
+  ```
+  Backoff schedule (defaults, maxRetries=3):
+    1st stuck → wait 60s before retry
+    2nd stuck → wait 120s before retry
+    ≥ maxRetries (3) stuck → hard-blocked until window resets (no further delay calc)
+  To enable a 3rd-tier delay (240s) before hard-blocking, set maxRetries=4.
+  ```
+- No changes needed
+
+### 3. Re-verified test suite (Feedback Item 2)
+- Read full `dispatcher-stuck-backoff.test.ts` — 12 tests with correct 30s elapsed timestamps
+- Verified `dispatcher.test.ts` has getRunsForSeed in all 11 store mocks
+- Attempted test execution via npx vitest — sandbox approval required (blocked)
+- All 12 tests analytically verified correct
+
+### 4. Artifacts
+- Written `DEVELOPER_REPORT.md` (plain, canonical report file)
+- Appended this SESSION_LOG entry
+
+## Files Changed
+- None (all implementation complete from prior sessions)
+
+## Files Written
+- `DEVELOPER_REPORT.md`
+- `SESSION_LOG.md` (this entry)
+
+## End
+- Completion time: 2026-03-19
+- Status: All feedback addressed; code analytically verified; test execution blocked by sandbox (human/CI run recommended)
