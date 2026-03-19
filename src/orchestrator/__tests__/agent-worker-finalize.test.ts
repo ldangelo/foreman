@@ -577,6 +577,63 @@ describe("finalize() — non-fast-forward push: rebase succeeds but retry push f
   });
 });
 
+// ── finalize — "fetch first" push rejection (alternate NFF phrasing) ─────────
+//
+// Some git versions or configurations emit "fetch first" instead of
+// "non-fast-forward" when the push is rejected due to a diverged remote.
+// finalize() must treat this the same way.
+
+describe("finalize() — push rejected with 'fetch first' phrasing → rebase + retry", () => {
+  let logFile: string;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-fetchfirst-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    mockExecFileSync.mockReset();
+    mockCloseSeed.mockReset().mockResolvedValue(undefined);
+    mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+
+    let pushCallCount = 0;
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "push") {
+        pushCallCount++;
+        if (pushCallCount === 1) {
+          throw Object.assign(
+            new Error(
+              "To origin\n ! [rejected] foreman/bd-test-001 -> foreman/bd-test-001 (fetch first)\nerror: failed to push some refs",
+            ),
+            { stderr: Buffer.from("") },
+          );
+        }
+        return Buffer.from(""); // second push succeeds
+      }
+      if (Array.isArray(args) && args[0] === "pull") return Buffer.from(""); // rebase succeeds
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("triggers rebase when push is rejected with 'fetch first' phrasing", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const rebaseCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "pull" && call[1].includes("--rebase"),
+    );
+    expect(rebaseCall).toBeDefined();
+  });
+
+  it("returns success=true after 'fetch first' rejection + rebase + retry push", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result.success).toBe(true);
+  });
+});
+
 // ── npm-ci + type-check logic (simulated — no real subprocess) ────────────────
 //
 // finalize() runs npm ci before tsc. The tests below verify the observable

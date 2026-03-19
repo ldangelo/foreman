@@ -169,9 +169,12 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     pushSucceeded = true;
   } catch (pushErr: unknown) {
     const pushMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+    // "non-fast-forward" covers the standard rejection message.
+    // "fetch first" covers the case where git phrases it differently (e.g. older git versions).
+    // We do NOT trigger rebase for other rejection types (permission errors, missing refs, etc.).
     const isNonFastForward =
       pushMsg.includes("non-fast-forward") ||
-      (pushMsg.includes("[rejected]") && pushMsg.includes("foreman/"));
+      pushMsg.includes("fetch first");
 
     if (isNonFastForward) {
       log(`[FINALIZE] Push rejected (non-fast-forward) — attempting git pull --rebase`);

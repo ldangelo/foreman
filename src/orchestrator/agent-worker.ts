@@ -514,19 +514,7 @@ function readReport(worktreePath: string, filename: string): string | null {
   try { return readFileSync(p, "utf-8"); } catch { return null; }
 }
 
-/**
- * Result returned by the internal finalize() function.
- *
- * - `success`: true when the git push succeeded.
- * - `retryable`: when success=false, indicates whether the seed should be reset
- *   to "open" for re-dispatch.  Set to false for deterministic failures (e.g.
- *   diverged history that could not be resolved) so the dispatcher does not
- *   immediately loop with the same failure.
- *
- * Imported from agent-worker-finalize.ts so the type is shared with the
- * unit-testable module.
- */
-// FinalizeResult is imported above from "./agent-worker-finalize.js"
+// FinalizeResult is imported from "./agent-worker-finalize.js" — see that module for the type definition.
 
 async function finalize(
   config: WorkerConfig,
@@ -677,9 +665,12 @@ async function finalize(
     pushSucceeded = true;
   } catch (pushErr: unknown) {
     const pushMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+    // "non-fast-forward" covers the standard rejection message.
+    // "fetch first" covers the case where git phrases it differently (e.g. older git versions).
+    // We do NOT trigger rebase for other rejection types (permission errors, missing refs, etc.).
     const isNonFastForward =
       pushMsg.includes("non-fast-forward") ||
-      (pushMsg.includes("[rejected]") && pushMsg.includes("foreman/"));
+      pushMsg.includes("fetch first");
 
     if (isNonFastForward) {
       log(`[FINALIZE] Push rejected (non-fast-forward) — attempting git pull --rebase`);
