@@ -4,7 +4,7 @@ import { MergeQueue } from "../merge-queue.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT, path TEXT UNIQUE, status TEXT, created_at TEXT, updated_at TEXT);
-CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, project_id TEXT, seed_id TEXT, agent_type TEXT, status TEXT DEFAULT 'pending', created_at TEXT, FOREIGN KEY (project_id) REFERENCES projects(id));
+CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, project_id TEXT, seed_id TEXT, agent_type TEXT, status TEXT DEFAULT 'pending', created_at TEXT, completed_at TEXT, worktree_path TEXT, FOREIGN KEY (project_id) REFERENCES projects(id));
 CREATE TABLE IF NOT EXISTS merge_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, branch_name TEXT NOT NULL, seed_id TEXT NOT NULL, run_id TEXT NOT NULL, agent_name TEXT, files_modified TEXT DEFAULT '[]', enqueued_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, status TEXT DEFAULT 'pending' CHECK (status IN ('pending','merging','merged','conflict','failed')), resolved_tier INTEGER, error TEXT, retry_count INTEGER DEFAULT 0, last_attempted_at TEXT DEFAULT NULL, FOREIGN KEY (run_id) REFERENCES runs(id));
 CREATE INDEX IF NOT EXISTS idx_merge_queue_status ON merge_queue (status, enqueued_at);
 `;
@@ -36,7 +36,14 @@ describe("Reconcile detects missing entries", () => {
     addRun(db, "r1", "s1", "completed");
     addRun(db, "r2", "s2", "completed");
     addRun(db, "r3", "s3", "running");
-    const r = await mq.reconcile(db, "/tmp", mockGit());
+    // Secondary pass checks remote branch existence for pending/running runs.
+    // r3 has no remote branch (still genuinely running), so git fails for it.
+    const git = vi.fn().mockImplementation((...args: unknown[]) => {
+      const argStr = JSON.stringify(args);
+      if (argStr.includes("s3")) return Promise.reject(new Error("not found"));
+      return Promise.resolve({ stdout: "ok\n", stderr: "" });
+    });
+    const r = await mq.reconcile(db, "/tmp", git);
     expect(r.enqueued).toBe(2);
     expect(mq.list()).toHaveLength(2);
   });
