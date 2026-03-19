@@ -148,7 +148,7 @@ describe("syncBeadStatusOnStartup", () => {
     expect(result.mismatches[0].expectedSeedStatus).toBe("open");
   });
 
-  it("fixes mismatches by calling taskClient.update", async () => {
+  it("fixes mismatches by calling execFileSync update (not taskClient.update)", async () => {
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
@@ -156,7 +156,13 @@ describe("syncBeadStatusOnStartup", () => {
 
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
-    expect(taskClient.update).toHaveBeenCalledWith("seed-abc", { status: "closed" });
+    // Uses execFileSync directly (not taskClient.update) to preserve the br dirty flag
+    const updateCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "update" && call[1][1] === "seed-abc",
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall![1]).toEqual(["update", "seed-abc", "--status", "closed"]);
+    expect(taskClient.update).not.toHaveBeenCalled();
     expect(result.synced).toBe(1);
   });
 
@@ -169,7 +175,11 @@ describe("syncBeadStatusOnStartup", () => {
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
     expect(result.mismatches).toHaveLength(0);
-    expect(taskClient.update).not.toHaveBeenCalled();
+    // No execFileSync update call should be made when there's no mismatch
+    const updateCalls = mockExecFileSync.mock.calls.filter(
+      (call) => Array.isArray(call[1]) && call[1][0] === "update",
+    );
+    expect(updateCalls).toHaveLength(0);
     expect(result.synced).toBe(0);
   });
 
@@ -181,7 +191,8 @@ describe("syncBeadStatusOnStartup", () => {
 
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1", { dryRun: true });
 
-    expect(taskClient.update).not.toHaveBeenCalled();
+    // Neither update nor flush execFileSync calls should be made in dry-run mode
+    expect(mockExecFileSync).not.toHaveBeenCalled();
     expect(result.synced).toBe(0);
     expect(result.mismatches).toHaveLength(1);
   });
@@ -222,12 +233,16 @@ describe("syncBeadStatusOnStartup", () => {
     expect(result.errors[0]).toContain("seed-abc");
   });
 
-  it("records error when taskClient.update fails, does not count as synced", async () => {
+  it("records error when execFileSync update fails, does not count as synced", async () => {
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
     taskClient.show.mockResolvedValue({ status: "in_progress" });
-    taskClient.update.mockRejectedValue(new Error("Update failed"));
+    // execFileSync throws when called with update args (simulates br CLI failure)
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "update") throw new Error("Update failed");
+      return undefined;
+    });
 
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 

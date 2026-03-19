@@ -490,7 +490,8 @@ describe("addLabelsToBead — br backend", () => {
 
     addLabelsToBead("bd-abc-001", ["phase:explorer"]);
 
-    expect(mockExecFileSync).toHaveBeenCalledOnce();
+    // First call is update, second is sync --flush-only
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toContain("br");
     expect(args).toEqual(["update", "bd-abc-001", "--labels", "phase:explorer"]);
@@ -546,5 +547,50 @@ describe("addLabelsToBead — br backend", () => {
 
     const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
     expect(opts.cwd).toBeUndefined();
+  });
+
+  it("calls br sync --flush-only after adding labels", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addLabelsToBead("bd-flush-label", ["phase:explorer"], "/my/project");
+
+    // execFileSync called twice: first for update, then for sync --flush-only
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
+    expect(syncArgs).toEqual(["sync", "--flush-only"]);
+    expect(syncOpts).toMatchObject({ cwd: "/my/project" });
+  });
+
+  it("calls br sync --flush-only with correct cwd when projectPath is not provided", () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    addLabelsToBead("bd-flush-label-no-path", ["phase:qa"]);
+
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
+    expect(syncArgs).toEqual(["sync", "--flush-only"]);
+    expect(syncOpts).not.toHaveProperty("cwd");
+  });
+
+  it("does not throw when br sync --flush-only fails (flush is non-fatal)", () => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "sync") throw new Error("sync failed");
+      return Buffer.from("");
+    });
+
+    // Must not throw even if flush fails
+    expect(() => addLabelsToBead("bd-flush-fail", ["phase:reviewer"], "/my/project")).not.toThrow();
+  });
+
+  it("does not call br sync --flush-only when br update --labels fails", () => {
+    mockExecFileSync.mockImplementation(() => { throw new Error("br binary missing"); });
+
+    addLabelsToBead("bd-label-fail-no-flush", ["phase:explorer"]);
+
+    // Only the (failed) update call was made — sync should not have been called
+    const syncCalls = mockExecFileSync.mock.calls.filter(
+      (call) => Array.isArray(call[1]) && (call[1] as string[])[0] === "sync",
+    );
+    expect(syncCalls).toHaveLength(0);
   });
 });
