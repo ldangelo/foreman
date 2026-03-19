@@ -106,6 +106,7 @@ describe("finalize() — push succeeds", () => {
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
       if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
       return Buffer.from("");
     });
@@ -170,6 +171,7 @@ describe("finalize() — push FAILS", () => {
       if (Array.isArray(args) && args[0] === "push") {
         throw new Error("remote: Permission to repo denied.");
       }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
       if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
       return Buffer.from("");
     });
@@ -230,6 +232,7 @@ describe("finalize() — type check failure is non-fatal", () => {
       if (_bin === "npx" && Array.isArray(args) && args[0] === "tsc") {
         throw new Error("Type error: cannot find module");
       }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
       if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
       return Buffer.from("");
     });
@@ -277,6 +280,7 @@ describe("finalize() — nothing to commit", () => {
       if (Array.isArray(args) && args[0] === "commit") {
         throw new Error("nothing to commit, working tree clean");
       }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
       if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
       return Buffer.from("");
     });
@@ -316,6 +320,7 @@ describe("finalize() — projectPath forwarded to closeSeed", () => {
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
       if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
       return Buffer.from("");
     });
@@ -333,6 +338,160 @@ describe("finalize() — projectPath forwarded to closeSeed", () => {
   it("passes undefined projectPath to closeSeed when not provided", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir, projectPath: undefined }), logFile);
     expect(mockCloseSeed).toHaveBeenCalledWith("bd-test-001", undefined);
+  });
+});
+
+// ── finalize — branch verification before push ────────────────────────────────
+
+describe("finalize() — branch verification", () => {
+  let logFile: string;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-branch-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    mockExecFileSync.mockReset();
+    mockCloseSeed.mockReset().mockResolvedValue(undefined);
+    mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("does NOT call checkout when already on the correct branch", async () => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+
+    const checkoutCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "checkout",
+    );
+    expect(checkoutCall).toBeUndefined();
+  });
+
+  it("reports Branch Verification OK when already on the correct branch", async () => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+
+    const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
+    expect(content).toContain("## Branch Verification");
+    expect(content).toContain("Status: OK");
+  });
+
+  it("attempts checkout when on a different branch and push succeeds after recovery", async () => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("main\n");
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+
+    // checkout was called
+    const checkoutCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "checkout" && call[1][1] === "foreman/bd-test-001",
+    );
+    expect(checkoutCall).toBeDefined();
+
+    // push succeeded after checkout recovery
+    expect(result).toBe(true);
+    expect(mockCloseSeed).toHaveBeenCalledOnce();
+  });
+
+  it("reports RECOVERED status in branch verification section after mismatch checkout", async () => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("main\n");
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+
+    const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
+    expect(content).toContain("## Branch Verification");
+    expect(content).toContain("Status: RECOVERED (checkout succeeded)");
+    expect(content).toContain("Was: main");
+  });
+
+  it("attempts checkout when in detached HEAD state and push succeeds after recovery", async () => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("HEAD\n");
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+
+    const checkoutCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "checkout",
+    );
+    expect(checkoutCall).toBeDefined();
+    expect(result).toBe(true);
+  });
+
+  it("skips push and returns false when checkout fails after branch mismatch", async () => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("main\n");
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      if (args[0] === "checkout") throw new Error("error: pathspec 'foreman/bd-test-001' did not match any file(s) known to git");
+      return Buffer.from("");
+    });
+
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+
+    // push was NOT called
+    const pushCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "push",
+    );
+    expect(pushCall).toBeUndefined();
+
+    expect(result).toBe(false);
+    expect(mockCloseSeed).not.toHaveBeenCalled();
+    expect(mockEnqueueToMergeQueue).not.toHaveBeenCalled();
+  });
+
+  it("reports Branch Verification FAILED and Push SKIPPED when checkout fails", async () => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("other-branch\n");
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      if (args[0] === "checkout") throw new Error("checkout failed");
+      return Buffer.from("");
+    });
+
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+
+    const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
+    expect(content).toContain("## Branch Verification");
+    expect(content).toContain("Status: FAILED");
+    expect(content).toContain("## Push");
+    expect(content).toContain("Status: SKIPPED (branch verification failed)");
+    expect(content).toContain("## Seed Close");
+    expect(content).toContain("Status: SKIPPED (push failed)");
+  });
+
+  it("skips push and returns false when rev-parse itself fails", async () => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") throw new Error("not a git repository");
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+
+    expect(result).toBe(false);
+    expect(mockCloseSeed).not.toHaveBeenCalled();
   });
 });
 

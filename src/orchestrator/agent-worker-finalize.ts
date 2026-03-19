@@ -135,18 +135,67 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     }
   }
 
-  // Push
-  let pushSucceeded = false;
+  // Branch Verification — ensure we're on the correct branch before pushing.
+  // Worktrees can end up in detached HEAD or on a wrong branch (e.g. after a
+  // failed rebase or manual intervention), causing `git push foreman/<seedId>`
+  // to fail with "src refspec does not match any".
+  const expectedBranch = `foreman/${seedId}`;
+  let branchVerified = false;
   try {
-    execFileSync("git", ["push", "-u", "origin", `foreman/${seedId}`], opts);
-    log(`[FINALIZE] Pushed to origin`);
-    report.push(`## Push`, `- Status: SUCCESS`, `- Branch: foreman/${seedId}`, "");
-    pushSucceeded = true;
+    const currentBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], opts)
+      .toString()
+      .trim();
+    if (currentBranch !== expectedBranch) {
+      log(`[FINALIZE] Branch mismatch: on '${currentBranch}', expected '${expectedBranch}' — attempting checkout`);
+      execFileSync("git", ["checkout", expectedBranch], opts);
+      log(`[FINALIZE] Checked out ${expectedBranch}`);
+      report.push(
+        `## Branch Verification`,
+        `- Was: ${currentBranch}`,
+        `- Expected: ${expectedBranch}`,
+        `- Status: RECOVERED (checkout succeeded)`,
+        "",
+      );
+    } else {
+      log(`[FINALIZE] Branch verified: ${currentBranch}`);
+      report.push(
+        `## Branch Verification`,
+        `- Current: ${currentBranch}`,
+        `- Status: OK`,
+        "",
+      );
+    }
+    branchVerified = true;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`[FINALIZE] Push failed: ${msg.slice(0, 200)}`);
-    await appendFile(logFile, `[FINALIZE] Push error: ${msg}\n`);
-    report.push(`## Push`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
+    log(`[FINALIZE] Branch verification failed: ${msg.slice(0, 200)}`);
+    await appendFile(logFile, `[FINALIZE] Branch verification error: ${msg}\n`);
+    report.push(
+      `## Branch Verification`,
+      `- Expected: ${expectedBranch}`,
+      `- Status: FAILED`,
+      `- Error: ${msg.slice(0, 300)}`,
+      "",
+    );
+  }
+
+  // Push
+  let pushSucceeded = false;
+  if (!branchVerified) {
+    log(`[FINALIZE] Skipping push (branch verification failed)`);
+    report.push(`## Push`, `- Status: SKIPPED (branch verification failed)`, "");
+  } else {
+    try {
+      execFileSync("git", ["push", "-u", "origin", expectedBranch], opts);
+      log(`[FINALIZE] Pushed to origin`);
+      report.push(`## Push`, `- Status: SUCCESS`, `- Branch: ${expectedBranch}`, "");
+      pushSucceeded = true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[FINALIZE] Push failed: ${msg.slice(0, 200)}`);
+      await appendFile(logFile, `[FINALIZE] Push error: ${msg}\n`);
+      report.push(`## Push`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
+    }
   }
 
   // Enqueue to merge queue (fire-and-forget — must not block finalization)
