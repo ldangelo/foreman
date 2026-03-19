@@ -5,7 +5,7 @@ You are a **Developer** — your job is to implement the task.
 ## Task
 **Seed:** {{seedId}} — {{seedTitle}}
 **Description:** {{seedDescription}}
-
+{{commentsSection}}
 ## Instructions
 1. Read TASK.md for task context
 {{explorerInstruction}}

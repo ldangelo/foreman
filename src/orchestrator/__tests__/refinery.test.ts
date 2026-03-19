@@ -544,55 +544,10 @@ describe("Refinery.mergeCompleted()", () => {
       run.id,
       expect.objectContaining({ status: "test-failed" }),
     );
-<<<<<<< HEAD
     expect(seeds.update).toHaveBeenCalledWith(
       run.seed_id,
       expect.objectContaining({ notes: expect.stringContaining("tests failed") }),
     );
-||||||| parent of c54d856 (refinery.ts never calls resetSeedToOpen after merge failure (test-failed / conflict) (bd-0omb))
-=======
-    // resetSeedToOpen must be called so the seed reappears in the ready queue for retry
-    expect(resetSeedToOpen).toHaveBeenCalledWith(run.seed_id, "/tmp/project");
-  });
-
-  it("calls resetSeedToOpen when rebase conflict occurs (rebase path)", async () => {
-    const { store, refinery } = makeMocks();
-    const run = makeRun();
-    store.getRunsByStatus.mockReturnValue([run]);
-
-    // git rebase fails, then autoResolveRebaseConflicts returns false (real code conflict)
-    // Sequence: rebase fails → autoResolveRebaseConflicts → git diff returns code file
-    // → codeConflicts.length > 0 → git rebase --abort → returns false
-    // → !rebaseOk → resetSeedToOpen called → createPrForConflict (gh fails → conflict recorded)
-    (execFile as any).mockImplementation(
-      (cmd: string, args: string[], _opts: any, callback: Function) => {
-        if (Array.isArray(args) && args[0] === "rebase" && !args.includes("--abort") && !args.includes("--continue")) {
-          // rebase fails — triggers autoResolveRebaseConflicts
-          const err = new Error("CONFLICT during rebase") as any;
-          err.stdout = "";
-          err.stderr = "CONFLICT";
-          callback(err);
-        } else if (Array.isArray(args) && args.includes("diff") && args.includes("--name-only")) {
-          // Return a non-report code file so autoResolveRebaseConflicts detects real code conflict
-          // and returns false (triggering the rebase failure path in mergeCompleted)
-          callback(null, { stdout: "src/index.ts\n", stderr: "" });
-        } else if (cmd === "gh") {
-          // PR creation fails
-          const err = new Error("gh not available") as any;
-          err.stdout = "";
-          err.stderr = "gh not available";
-          callback(err);
-        } else {
-          callback(null, { stdout: "", stderr: "" });
-        }
-      },
-    );
-
-    const report = await refinery.mergeCompleted({ runTests: false });
-
-    // resetSeedToOpen must be called for the rebase conflict path
-    expect(resetSeedToOpen).toHaveBeenCalledWith(run.seed_id, "/tmp/project");
->>>>>>> c54d856 (refinery.ts never calls resetSeedToOpen after merge failure (test-failed / conflict) (bd-0omb))
   });
 
   it("merges in dependency order", async () => {

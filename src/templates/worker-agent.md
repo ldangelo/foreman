@@ -6,7 +6,7 @@
 **Description:** {{description}}
 **Model:** {{model}}
 **Worktree:** {{worktreePath}}
-
+{{commentsSection}}
 ## Agent Team
 This task is handled by an Engineering Lead agent that orchestrates a team:
 - **Explorer** — reads the codebase, produces EXPLORER_REPORT.md (read-only)

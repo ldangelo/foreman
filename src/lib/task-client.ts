@@ -81,11 +81,11 @@ export interface ITaskClient {
    * Show full detail for a single issue.
    *
    * Used by Monitor to detect completion (status === "closed" | "completed")
-   * and by Dispatcher to fetch the description for agent prompts.
+   * and by Dispatcher to fetch the description and notes for agent prompts.
    * The return type is intentionally loose — concrete implementations return
    * BrIssueDetail or BeadDetail respectively, both of which include these fields.
    */
-  show(id: string): Promise<{ status: string; description?: string | null }>;
+  show(id: string): Promise<{ status: string; description?: string | null; notes?: string | null }>;
 
   /**
    * Update fields on an issue.

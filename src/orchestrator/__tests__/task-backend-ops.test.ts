@@ -6,9 +6,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // vi.hoisted() ensures the mock variable is initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
 
-const { mockExecFileSync, mockHomedir } = vi.hoisted(() => ({
+const { mockExecFileSync, mockHomedir, mockExecBr } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
   mockHomedir: vi.fn().mockReturnValue("/test/home"),
+  mockExecBr: vi.fn(),
 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
