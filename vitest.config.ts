@@ -6,6 +6,8 @@ export default defineConfig({
       "**/node_modules/**",
       "**/dist/**",
       "**/.foreman-worktrees/**",
+      "**/.claude/worktrees/**",
     ],
+    testTimeout: 30000,
   },
 });
