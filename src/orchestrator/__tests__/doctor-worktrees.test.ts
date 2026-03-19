@@ -281,6 +281,127 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     expect(results[0].message).toContain("--fix");
   });
 
+  // ── SDK-based run tests ───────────────────────────────────────────────────
+
+  it("returns pass for SDK-based running run (no PID in session_key)", async () => {
+    const { store, doctor } = makeMocks();
+    const seedId = "seed-abc";
+    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    store.getRunsForSeed.mockReturnValue([
+      makeRun({
+        seed_id: seedId,
+        status: "running",
+        worktree_path: `/tmp/worktrees/${seedId}`,
+        session_key: "foreman:sdk:claude-sonnet-4-6:seed-abc",
+      }),
+    ]);
+
+    const results = await doctor.checkOrphanedWorktrees();
+
+    expect(results).toHaveLength(1);
+    expect(results[0].status).toBe("pass");
+    expect(results[0].message).toContain("SDK-based worker");
+    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+  });
+
+  it("returns pass for SDK-based running run with session suffix", async () => {
+    const { store, doctor } = makeMocks();
+    const seedId = "seed-abc";
+    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    store.getRunsForSeed.mockReturnValue([
+      makeRun({
+        seed_id: seedId,
+        status: "running",
+        worktree_path: `/tmp/worktrees/${seedId}`,
+        session_key: "foreman:sdk:claude-opus-4-6:seed-abc:session-xyz",
+      }),
+    ]);
+
+    const results = await doctor.checkOrphanedWorktrees();
+
+    expect(results[0].status).toBe("pass");
+    expect(results[0].message).toContain("SDK-based worker");
+    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+  });
+
+  it("never marks SDK-based running run as zombie even when fix=true", async () => {
+    const { store, doctor } = makeMocks();
+    const seedId = "seed-abc";
+    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    store.getRunsForSeed.mockReturnValue([
+      makeRun({
+        seed_id: seedId,
+        status: "running",
+        worktree_path: `/tmp/worktrees/${seedId}`,
+        session_key: "foreman:sdk:claude-sonnet-4-6:seed-abc",
+      }),
+    ]);
+
+    const results = await doctor.checkOrphanedWorktrees({ fix: true });
+
+    expect(results[0].status).toBe("pass");
+    expect(results[0].message).not.toContain("Zombie");
+    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+  });
+
+  it("handles mixed worktrees: SDK run (pass), traditional zombie (warn), orphan (fixed)", async () => {
+    const { store, doctor } = makeMocks();
+    vi.mocked(listWorktrees).mockResolvedValue([
+      makeWorktree("seed-sdk"),
+      makeWorktree("seed-zombie"),
+      makeWorktree("seed-orphan"),
+    ]);
+    vi.mocked(removeWorktree).mockResolvedValue(undefined);
+
+    store.getRunsForSeed.mockImplementation((seedId: string) => {
+      if (seedId === "seed-sdk") {
+        return [
+          makeRun({
+            seed_id: seedId,
+            status: "running",
+            worktree_path: `/tmp/worktrees/${seedId}`,
+            session_key: "foreman:sdk:claude-sonnet-4-6:seed-sdk",
+          }),
+        ];
+      }
+      if (seedId === "seed-zombie") {
+        // Traditional run with a dead PID (pid 99999999 is unlikely to be alive)
+        return [
+          makeRun({
+            seed_id: seedId,
+            status: "running",
+            worktree_path: `/tmp/worktrees/${seedId}`,
+            session_key: "pid-99999999",
+          }),
+        ];
+      }
+      return []; // seed-orphan has no runs
+    });
+
+    const results = await doctor.checkOrphanedWorktrees({ fix: true });
+
+    expect(results).toHaveLength(3);
+
+    const sdkResult = results.find((r) => r.name === "worktree: seed-sdk");
+    const zombieResult = results.find((r) => r.name === "worktree: seed-zombie");
+    const orphanResult = results.find((r) => r.name === "worktree: seed-orphan");
+
+    expect(sdkResult?.status).toBe("pass");
+    expect(sdkResult?.message).toContain("SDK-based worker");
+
+    expect(zombieResult?.status).toBe("warn");
+    expect(zombieResult?.message).toContain("Zombie");
+
+    expect(orphanResult?.status).toBe("fixed");
+
+    // Only the orphaned worktree should be removed (zombie stays, SDK is alive)
+    expect(vi.mocked(removeWorktree)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(removeWorktree)).toHaveBeenCalledWith(
+      expect.any(String),
+      `/tmp/worktrees/seed-orphan`,
+    );
+  });
+
   it("returns warn when listWorktrees throws", async () => {
     const { doctor } = makeMocks();
     vi.mocked(listWorktrees).mockRejectedValue(new Error("git error"));
