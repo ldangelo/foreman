@@ -124,6 +124,44 @@ export async function resetSeedToOpen(seedId: string, projectPath?: string): Pro
 }
 
 /**
+ * Add a note/comment to a bead in the br backend.
+ * Used by markStuck() to explain why a bead was reset to open.
+ *
+ * br update <seedId> --notes "<notes>"
+ *
+ * Errors are caught and logged to stderr; the function never throws.
+ * Does nothing when notes is empty.
+ *
+ * @param seedId - The bead/seed ID
+ * @param notes - The note/comment text to add
+ * @param projectPath - The project root directory that contains .beads/.
+ */
+export function addNotesToBead(seedId: string, notes: string, projectPath?: string): void {
+  if (!notes) return;
+  const bin = brPath();
+  // Truncate to avoid excessive note lengths in the br backend
+  const truncated = notes.length > 2000 ? notes.slice(0, 2000) + "…" : notes;
+  const args = ["update", seedId, "--notes", truncated];
+
+  try {
+    execFileSync(bin, args, execOpts(projectPath));
+    console.error(`[task-backend-ops] Added notes to seed ${seedId} via br`);
+
+    // Flush changes to .beads/beads.jsonl so the note survives a process restart.
+    try {
+      execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
+      console.error(`[task-backend-ops] Flushed JSONL for notes on seed ${seedId}`);
+    } catch (flushErr: unknown) {
+      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
+      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: br update --notes failed for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
  * Add labels to a bead in the br backend.
  * Called after each pipeline phase completes to track phase progress.
  *
