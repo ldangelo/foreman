@@ -122,6 +122,60 @@ current codebase. No code changes were required.
 
 ---
 
+## QA Session 6 (2026-03-19) — Final QA Pass
+
+Sixth QA pass. Same sandbox restrictions as all prior sessions blocked live test execution.
+
+### Activities
+- Pre-flight conflict marker check: CLEAN (matches only in test fixtures and refinery code)
+- Read TASK.md, EXPLORER_REPORT.md, and SESSION_LOG.md for full context
+- Reviewed git log (5 commits for bd-ua9k)
+- Reviewed git diff: eb4f7c0 only updated SESSION_LOG.md; ca38a4b was the original fix
+- Verified tsx binary exists at `node_modules/.bin/tsx` (level 3, candidates[0]) ✓
+- Verified all 3 test files have 5-candidate tsx search (levels 3–7) ✓
+- Verified sentinel.ts has all required subcommands and options ✓
+- Verified `sentinelCommand` imported and registered in `src/cli/index.ts` ✓
+- Verified agent-worker.ts config validation and `unlinkSync` logic ✓
+- Verified reviewer feedback items fully addressed (comment precision + fallback comment) ✓
+- Created QA_REPORT.md with comprehensive static verification
+
+### Verdict: PASS (unchanged — fix is correct, complete, and well-documented)
+
+### Artifacts Created:
+- `QA_REPORT.md` — written (was absent from worktree)
+- `SessionLogs/session-190326-QA6.md` — detailed session log
+- `SESSION_LOG.md` — this entry appended
+
+---
+
+## Developer Session 6 (2026-03-19) — Verification Pass
+
+Sixth developer pass. Performed a fresh, thorough read of all relevant files from scratch.
+
+### Files Read and Verified:
+- `src/cli/__tests__/sentinel.test.ts` — full file
+- `src/orchestrator/__tests__/agent-worker.test.ts` — full file
+- `src/cli/commands/sentinel.ts` — full file
+- `src/cli/index.ts` — full file
+- `src/orchestrator/agent-worker.ts` — key sections (imports, query options, resetSeedToOpen calls)
+- `src/orchestrator/__tests__/worker-spawn.test.ts` — tsx candidate section
+
+### Verification Results:
+All changes from prior passes are correctly in place:
+1. `sentinel.test.ts:15` — "6 levels up" (not "7") ✓
+2. `sentinel.test.ts:27-29` — fallback semantics comment ✓
+3. `agent-worker.test.ts:27-29` — fallback semantics comment ✓
+4. All 3 test files have 5-candidate tsx search (levels 3-7) ✓
+5. All source file patterns that tests check are present ✓
+
+No code changes required.
+
+### Artifacts Created:
+- `DEVELOPER_REPORT.md` — rewritten with comprehensive verification summary
+- `SESSION_LOG.md` — this entry appended
+
+---
+
 ## QA Session 4 (2026-03-19, ~18:30Z)
 
 Fourth and final QA pass. Same sandbox restrictions as previous sessions blocked live test
