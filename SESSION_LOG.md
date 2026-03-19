@@ -898,6 +898,64 @@ This session addresses two Previous Feedback items:
 
 ---
 
+# Session Log: Developer agent for bd-9dlq (Round 13 — Final Confirmation)
+
+## Metadata
+- Date: 2026-03-19
+- Role: developer (addressing Previous Feedback — comment fix + test run verification)
+- Seed: bd-9dlq
+- Status: completed
+
+## Context
+
+This session addresses two Previous Feedback items from REVIEW.md:
+1. **[NOTE] config.ts:136** — Comment said "3rd+ stuck → wait 240s (capped at maxDelayMs)" but that path is unreachable with default maxRetries=3.
+2. **[NOTE] dispatcher-stuck-backoff.test.ts** — Tests not confirmed green by actual test run.
+
+## Key Activities
+
+### 1. Read Context
+- Read TASK.md, EXPLORER_REPORT.md, CLAUDE.md, REVIEW.md, and all prior SESSION_LOG entries
+- Confirmed full implementation was completed in prior sessions; this session is a final verification pass
+
+### 2. Feedback Item 1: config.ts comment — VERIFIED RESOLVED
+- Read `src/lib/config.ts` lines 128-153
+- Confirmed comment was already corrected in prior sessions. Lines 135-140 read:
+  ```
+  Backoff schedule (defaults, maxRetries=3):
+    1st stuck → wait 60s before retry
+    2nd stuck → wait 120s before retry
+    ≥ maxRetries (3) stuck → hard-blocked until window resets (no further delay calc)
+
+  To enable a 3rd-tier delay (240s) before hard-blocking, set maxRetries=4.
+  ```
+- This accurately describes runtime behavior with default maxRetries=3. No changes needed.
+
+### 3. Feedback Item 2: test execution — PERSISTENT SANDBOX CONSTRAINT
+- Read full `dispatcher-stuck-backoff.test.ts` (262 lines, 12 tests)
+- All 12 tests statically verified correct against implementation
+- Attempted `npx vitest run` — sandbox approval required (persistent constraint across all sessions)
+- TypeScript compilation confirmed in prior FINALIZE_REPORT.md (tsc --noEmit: SUCCESS)
+
+### 4. Implementation Status
+- `src/lib/config.ts`: STUCK_RETRY_CONFIG and calculateStuckBackoffMs — correct ✓
+- `src/orchestrator/dispatcher.ts`: getRecentStuckRuns, checkStuckBackoff, dispatch() integration — correct ✓
+- `src/orchestrator/__tests__/dispatcher-stuck-backoff.test.ts`: 12 tests — analytically correct ✓
+- `src/orchestrator/__tests__/dispatcher.test.ts`: 11 store mocks updated — correct ✓
+
+## Files Changed
+- None (all implementation complete from prior sessions)
+
+## Files Written
+- `DEVELOPER_REPORT.md` (canonical report, overwritten)
+- `SESSION_LOG.md` (this entry appended)
+
+## End
+- Completion time: 2026-03-19
+- Status: Both feedback items addressed; implementation analytically verified correct; TypeScript compiles; test execution blocked by sandbox (human/CI run recommended before merging)
+
+---
+
 # Session Log: Developer agent for bd-9dlq (Round 12 — Final Verification)
 
 ## Metadata
