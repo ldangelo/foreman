@@ -232,11 +232,31 @@ export class Doctor {
       );
 
       if (activeRun) {
-        results.push({
-          name: `worktree: ${seedId}`,
-          status: "pass",
-          message: `Active run (${activeRun.status}) for seed ${seedId}`,
-        });
+        if (activeRun.status === "running") {
+          // For running runs, verify the process is actually alive
+          const pid = extractPid(activeRun.session_key);
+          const alive = pid !== null && isProcessAlive(pid);
+          if (alive) {
+            results.push({
+              name: `worktree: ${seedId}`,
+              status: "pass",
+              message: `Active run (${activeRun.status}) for seed ${seedId}`,
+            });
+          } else {
+            results.push({
+              name: `worktree: ${seedId}`,
+              status: "warn",
+              message: `Zombie run: status=running but no live process${pid ? ` (pid ${pid})` : ""}. Run 'foreman doctor --fix' to clean up.`,
+            });
+          }
+        } else {
+          // pending runs don't have a process to check
+          results.push({
+            name: `worktree: ${seedId}`,
+            status: "pass",
+            message: `Active run (${activeRun.status}) for seed ${seedId}`,
+          });
+        }
       } else if (mergedRun) {
         if (dryRun) {
           results.push({

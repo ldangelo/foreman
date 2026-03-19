@@ -5,6 +5,13 @@ import { tmpdir } from "node:os";
 import { Doctor } from "../doctor.js";
 import type { Run } from "../../lib/store.js";
 
+// Mock git module for worktree tests
+vi.mock("../../lib/git.js", () => ({
+  listWorktrees: vi.fn(),
+  removeWorktree: vi.fn(),
+}));
+import { listWorktrees } from "../../lib/git.js";
+
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
@@ -44,6 +51,11 @@ function makeMergeQueueMock(missingEntries: Array<{ run_id: string; seed_id: str
     remove: vi.fn(),
   };
 }
+
+// Default: return empty worktree list so existing tests aren't affected
+beforeEach(() => {
+  vi.mocked(listWorktrees).mockResolvedValue([]);
+});
 
 describe("Doctor", () => {
   describe("checkGitBinary", () => {
@@ -603,6 +615,98 @@ describe("Doctor", () => {
       expect(result.status).toBe("warn");
       expect(result.name).toBe("blocked seeds");
       expect(result.message).toContain("Could not list seeds");
+
+  describe("checkOrphanedWorktrees", () => {
+    const mockListWorktrees = vi.mocked(listWorktrees);
+
+    beforeEach(() => {
+      mockListWorktrees.mockReset();
+    });
+
+    it("returns pass when no foreman worktrees", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      mockListWorktrees.mockResolvedValue([
+        { path: "/tmp/project", branch: "main", head: "abc123", bare: false },
+      ]);
+
+      const results = await doctor.checkOrphanedWorktrees();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("pass");
+      expect(results[0].message).toContain("No foreman worktrees");
+    });
+
+    it("reports pass for running run with a live process", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      mockListWorktrees.mockResolvedValue([
+        { path: "/tmp/wt", branch: "foreman/seed-abc", head: "abc123", bare: false },
+      ]);
+      // Use the current process's PID — guaranteed to be alive
+      const livePid = process.pid;
+      store.getRunsForSeed.mockReturnValue([
+        makeRun({ status: "running", seed_id: "seed-abc", worktree_path: "/tmp/wt", session_key: `session-pid-${livePid}` }),
+      ]);
+
+      const results = await doctor.checkOrphanedWorktrees();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("pass");
+      expect(results[0].message).toContain("Active run");
+    });
+
+    it("reports warn for running run with dead process (zombie)", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      mockListWorktrees.mockResolvedValue([
+        { path: "/tmp/wt", branch: "foreman/seed-abc", head: "abc123", bare: false },
+      ]);
+      // Use PID 999999999 — extremely unlikely to exist
+      store.getRunsForSeed.mockReturnValue([
+        makeRun({ status: "running", seed_id: "seed-abc", worktree_path: "/tmp/wt", session_key: "session-pid-999999999" }),
+      ]);
+
+      const results = await doctor.checkOrphanedWorktrees();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("warn");
+      expect(results[0].message).toContain("Zombie run");
+      expect(results[0].message).toContain("999999999");
+    });
+
+    it("reports warn for running run with no session_key (no pid)", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      mockListWorktrees.mockResolvedValue([
+        { path: "/tmp/wt", branch: "foreman/seed-abc", head: "abc123", bare: false },
+      ]);
+      store.getRunsForSeed.mockReturnValue([
+        makeRun({ status: "running", seed_id: "seed-abc", worktree_path: "/tmp/wt", session_key: null }),
+      ]);
+
+      const results = await doctor.checkOrphanedWorktrees();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("warn");
+      expect(results[0].message).toContain("Zombie run");
+    });
+
+    it("reports pass for pending run without process check", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      mockListWorktrees.mockResolvedValue([
+        { path: "/tmp/wt", branch: "foreman/seed-abc", head: "abc123", bare: false },
+      ]);
+      store.getRunsForSeed.mockReturnValue([
+        makeRun({ status: "pending", seed_id: "seed-abc", worktree_path: "/tmp/wt", session_key: null }),
+      ]);
+
+      const results = await doctor.checkOrphanedWorktrees();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("pass");
+      expect(results[0].message).toContain("pending");
     });
   });
 
