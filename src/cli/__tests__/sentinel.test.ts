@@ -9,13 +9,23 @@ import path from "node:path";
 const execFileAsync = promisify(execFile);
 
 function findTsx(): string {
+  // Search up the directory tree for node_modules/.bin/tsx.
+  // Worktrees at .foreman-worktrees/<id>/ have their own node_modules (3 levels
+  // up from src/cli/__tests__).  Worktrees at .claude/worktrees/<id>/ share the
+  // main project's node_modules which lives 6 levels up.  We check both depths
+  // plus intermediate levels to cover all layouts.
   const candidates = [
     path.resolve(__dirname, "../../../node_modules/.bin/tsx"),
+    path.resolve(__dirname, "../../../../node_modules/.bin/tsx"),
     path.resolve(__dirname, "../../../../../node_modules/.bin/tsx"),
+    path.resolve(__dirname, "../../../../../../node_modules/.bin/tsx"),
+    path.resolve(__dirname, "../../../../../../../node_modules/.bin/tsx"),
   ];
   for (const p of candidates) {
     if (existsSync(p)) return p;
   }
+  // Fall back to the closest candidate; the error from tsx not existing will be
+  // more informative than a confusing "TSX is undefined" failure.
   return candidates[0];
 }
 

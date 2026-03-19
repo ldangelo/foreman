@@ -110,8 +110,17 @@ describe("Dispatcher worker spawning", () => {
   });
 
   it("tsx binary exists in node_modules", () => {
-    const projectRoot = join(import.meta.dirname, "..", "..", "..");
-    const tsxBin = join(projectRoot, "node_modules", ".bin", "tsx");
-    expect(existsSync(tsxBin)).toBe(true);
+    // Search up the directory tree: worktrees at .foreman-worktrees/<id>/ have
+    // node_modules 3 levels up, but worktrees at .claude/worktrees/<id>/ share the
+    // main project's node_modules which may be several more levels up.
+    const candidates = [
+      join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx"),
+      join(import.meta.dirname, "..", "..", "..", "..", "node_modules", ".bin", "tsx"),
+      join(import.meta.dirname, "..", "..", "..", "..", "..", "node_modules", ".bin", "tsx"),
+      join(import.meta.dirname, "..", "..", "..", "..", "..", "..", "node_modules", ".bin", "tsx"),
+      join(import.meta.dirname, "..", "..", "..", "..", "..", "..", "..", "node_modules", ".bin", "tsx"),
+    ];
+    const found = candidates.some((p) => existsSync(p));
+    expect(found).toBe(true);
   });
 });

@@ -5,8 +5,31 @@ import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
-const TSX_BIN = join(PROJECT_ROOT, "node_modules", ".bin", "tsx");
 const WORKER_SCRIPT = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
+
+/**
+ * Find the tsx binary by searching up the directory tree for node_modules.
+ * Worktrees at .foreman-worktrees/<id>/ have their own node_modules (3 levels
+ * up from src/orchestrator/__tests__).  Worktrees at .claude/worktrees/<id>/
+ * share the main project's node_modules which lives further up.
+ */
+function findTsxBin(): string {
+  const candidates = [
+    join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx"),
+    join(import.meta.dirname, "..", "..", "..", "..", "node_modules", ".bin", "tsx"),
+    join(import.meta.dirname, "..", "..", "..", "..", "..", "node_modules", ".bin", "tsx"),
+    join(import.meta.dirname, "..", "..", "..", "..", "..", "..", "node_modules", ".bin", "tsx"),
+    join(import.meta.dirname, "..", "..", "..", "..", "..", "..", "..", "node_modules", ".bin", "tsx"),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  // Fall back to the closest candidate; the error from tsx not existing will be
+  // more informative than a confusing "TSX_BIN is undefined" failure.
+  return candidates[0];
+}
+
+const TSX_BIN = findTsxBin();
 
 describe("agent-worker.ts", () => {
   let tmpDir: string;

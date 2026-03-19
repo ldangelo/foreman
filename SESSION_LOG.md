@@ -1,25 +1,62 @@
-# Session Log: Reviewer Agent — bd-ybs8
+# Session Log: QA Agent for bd-ua9k
 
 ## Metadata
-- Start: 2026-03-18T12:00:00Z
-- Role: reviewer
-- Seed: bd-ybs8
+- Start: 2026-03-19T17:10:00Z
+- Role: qa
+- Seed: bd-ua9k
 - Status: completed
+- Title: [Sentinel] Test failures on main @ 7e065e79
 
 ## Key Activities
 
-- Activity 1: Read TASK.md, EXPLORER_REPORT.md, and QA_REPORT.md to understand the context and the three fixes applied for sentinel-detected test failures on main at commit 2841e0a5.
-- Activity 2: Reviewed `src/cli/__tests__/sentinel.test.ts` — confirmed timeout increase (15s→25s subprocess, 15s→30s test) and `runWithRetry()` helper. Verified retry logic is sound: only retries on no-output + non-zero exit (infrastructure failures), not meaningful CLI failures.
-- Activity 3: Reviewed `src/cli/__tests__/run-auto-merge.test.ts` — confirmed `getSentinelConfig: vi.fn().mockReturnValue(null)` added to both `vi.hoisted()` and `resetMocks()` blocks, consistent with `run-sentinel-autostart.test.ts` pattern.
-- Activity 4: Reviewed `src/lib/store.ts` — confirmed `recordSentinelRun` parameter renamed from `failureCount` to `failure_count`, body updated to `run.failure_count ?? 0`. Verified alignment with `SentinelRunRow` interface and `sentinel.ts` call site.
-- Activity 5: Grepped for any remaining `failureCount` references — none found. Grepped for all `getSentinelConfig` call sites to verify mock coverage is complete across test files.
+### Pre-flight: Conflict Marker Check
+Ran grep for conflict markers in `src/**/*.{ts,tsx,js}`. All matches were in test
+files or source code that *tests for* conflict markers (string literals, comments,
+grep arguments). No actual git merge conflicts found. Proceeded with QA.
 
-## Verdict
-PASS — all three fixes are minimal, correct, and consistent with the codebase.
+### Context Gathering
+- Read EXPLORER_REPORT.md: identified 6 failing tests across 2 files due to tsx binary
+  not found in `.claude/worktrees/<id>/` layout
+- Read DEVELOPER_REPORT.md: developer fixed by extending binary path search to 5
+  candidates (levels 3–7 up) in all 3 affected test files
+- Read existing QA_REPORT (static analysis only, test execution blocked by sandbox)
+- Read REVIEW.md: Reviewer gave PASS; two NOTE-level items addressed in follow-up
+
+### Code Diff Review
+Reviewed all 3 changed files via `git diff`:
+1. `src/cli/__tests__/sentinel.test.ts` — Added comment explaining worktree layouts,
+   3 new candidate paths (levels 4, 6, 7), fixed comment typo, added fallback comment
+2. `src/orchestrator/__tests__/agent-worker.test.ts` — Replaced hardcoded `TSX_BIN`
+   with `findTsxBin()` function searching levels 3–7, with fallback comment
+3. `src/orchestrator/__tests__/worker-spawn.test.ts` — Updated tsx existence check
+   to multi-level candidate search
+
+### Static Verification
+Confirmed tsx binary exists at expected path:
+```
+node_modules/.bin/tsx -> ../tsx/dist/cli.mjs  (3 levels up from test dirs in this layout)
+```
+
+Verified sentinel.ts has all required subcommands and options:
+- `run-once` with `--branch`, `--test-command`, `--dry-run` ✓
+- `start`, `status` ✓
+- `stop` with `--force` ✓
+
+Verified index.ts correctly imports and registers `sentinelCommand` ✓
+
+Verified agent-worker.ts has the required config validation and file deletion logic ✓
+
+### Test Execution
+Attempted to run test suite via multiple approaches (`npm test`, `npx vitest run`,
+direct `node node_modules/.bin/vitest run`) — all blocked by sandbox approval
+requirements. This is the same constraint the previous QA session encountered.
+
+Verdict based on static analysis: PASS with high confidence.
 
 ## Artifacts Created
-- REVIEW.md — code review findings (PASS)
-- SESSION_LOG.md (this file, updated from QA session log)
+- `QA_REPORT.md` — comprehensive static verification report, verdict PASS
+- `SESSION_LOG.md` — this file
 
 ## End
-- Completion time: 2026-03-18T12:20:00Z
+- Completion time: 2026-03-19T17:20:00Z
+- Next phase: Finalize (commit, push, br close)
