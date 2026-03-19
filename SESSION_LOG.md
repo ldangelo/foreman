@@ -329,3 +329,31 @@ Fix is correct and complete. Both reviewer NOTE items addressed. QA_REPORT.md wr
 ### Artifacts Created:
 - `QA_REPORT.md` — written with comprehensive static analysis, verdict PASS
 - `SESSION_LOG.md` — this entry appended
+
+---
+
+## QA Session 11 (2026-03-19) — Current Pass
+
+Eleventh QA pass. Same sandbox restrictions as all prior sessions blocked live test execution.
+Developer's latest cycle made comment-only changes (improving fallback comments in both
+`findTsx()` and `findTsxBin()`).
+
+### Activities
+- Pre-flight conflict marker check: CLEAN (all `<<<<<<<`/`>>>>>>>` in `src/` are in test
+  fixture strings or grep/refinery code — no real merge conflicts)
+- Read TASK.md, EXPLORER_REPORT.md, DEVELOPER_REPORT.md
+- Ran `git diff HEAD~1 -- src/` — confirmed only comment changes in 2 test files (no functional changes)
+- Verified `vitest.config.ts` — `"**/.claude/**"` exclusion present ✓
+- Verified `src/cli/__tests__/sentinel.test.ts` — `findTsx()` with 5 candidates, updated fallback comment ✓
+- Verified `src/orchestrator/__tests__/agent-worker.test.ts` — `findTsxBin()` with 5 candidates, updated fallback comment ✓
+- Verified `src/cli/index.ts` — `sentinelCommand` imported and registered ✓
+- Verified `src/orchestrator/agent-worker.ts` lines 110–118 — config validation + `unlinkSync` ✓
+- Confirmed `node_modules/.bin/tsx` exists (first candidate works in this worktree layout)
+- Attempted live test execution (all forms blocked by sandbox — consistent with all prior sessions)
+
+### Verdict: PASS (unchanged)
+Fix is correct, complete, and well-documented. Latest changes are quality improvements only.
+
+### Artifacts Created:
+- `QA_REPORT.md` — rewritten with comprehensive static verification, verdict PASS
+- `SESSION_LOG.md` — this entry appended

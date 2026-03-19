@@ -24,8 +24,11 @@ function findTsx(): string {
   for (const p of candidates) {
     if (existsSync(p)) return p;
   }
-  // Fall back to the closest candidate; the error from tsx not existing will be
-  // more informative than a confusing "TSX is undefined" failure.
+  // Fall back to candidates[0] when none of the candidates exist. This path
+  // may itself not exist, but the resulting spawn error ("tsx not found") will
+  // be more informative than a confusing "TSX is undefined" failure.  The
+  // 5-candidate list already covers all known worktree layouts, so in practice
+  // this branch should never be reached.
   return candidates[0];
 }
 
