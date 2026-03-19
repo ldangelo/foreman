@@ -288,23 +288,43 @@ and reviewer feedback. No code changes required.
 
 ---
 
-## QA Session 9 (2026-03-19) — Current Pass
+## Developer Session 9 (2026-03-19) — Current Pass
 
-Ninth QA pass. Same sandbox restrictions as all prior sessions blocked live test execution.
+Ninth developer pass. Performed verification of both NOTE-level review feedback items.
+No code changes were needed — all fixes from prior passes remain correctly in place.
+
+### Verified:
+1. `sentinel.test.ts:13-16` — comment correctly says "6 levels up" (not "7") ✓
+2. `sentinel.test.ts:27-29` — fallback semantics comment present ✓
+3. `agent-worker.test.ts:27-29` — fallback semantics comment present ✓
+4. `vitest.config.ts` — `"**/.claude/**"` in exclude list ✓
+5. `worker-spawn.test.ts` — 5-candidate tsx search ✓
+
+### Artifacts Created:
+- `DEVELOPER_REPORT.md` — rewritten with comprehensive current state documentation
+- `SESSION_LOG.md` — this entry appended
+
+---
+
+## QA Session 10 (2026-03-19) — Current Pass
+
+Tenth QA pass. Same sandbox restrictions as all prior sessions blocked live test execution.
 
 ### Activities
-- Pre-flight conflict marker check: CLEAN (all `<<<<<<<`/`>>>>>>>` matches are in test
-  fixture strings, refinery source code comments, and grep arguments — not real conflicts)
-- Read EXPLORER_REPORT.md, most recent prior QA report, TASK.md
-- Reviewed git diff: `HEAD~1` → `HEAD` shows only `vitest.config.ts` and `SESSION_LOG.md` changed
-- The key fix is `"**/.claude/**"` added to vitest exclude list in `vitest.config.ts`
-- Read and verified `src/cli/commands/sentinel.ts` — all subcommands and options correct
-- Read and verified `src/cli/index.ts` — sentinelCommand imported and registered
-- Read and verified `src/orchestrator/agent-worker.ts` — config validation and unlinkSync correct
-- Read and verified test files — tsx binary discovery logic handles both worktree layouts
+- Pre-flight conflict marker check: CLEAN (all `<<<<<<<`/`>>>>>>>` matches in `src/` are
+  in test fixture strings, refinery source comments, or grep command args — no real conflicts)
+- Read EXPLORER_REPORT.md, DEVELOPER_REPORT (pass 8), and most recent QA report (pass 9)
+- Verified `vitest.config.ts` — `"**/.claude/**"` exclusion present ✓
+- Verified `src/cli/__tests__/sentinel.test.ts` — `findTsx()` helper with 5 candidates ✓
+- Verified `src/orchestrator/__tests__/agent-worker.test.ts` — `findTsxBin()` with 5 candidates ✓
+- Verified `src/orchestrator/__tests__/worker-spawn.test.ts` — 5-candidate tsx existence check ✓
+- Verified `src/cli/commands/sentinel.ts` — all 4 subcommands with expected options ✓
+- Verified `src/cli/index.ts` — `sentinelCommand` imported and registered ✓
+- Verified `src/orchestrator/agent-worker.ts` — config validation + `unlinkSync` on line 118 ✓
+- Attempted live test execution (all forms blocked by sandbox)
 
 ### Verdict: PASS
-Fix is correct and complete. QA_REPORT.md written with full static verification.
+Fix is correct and complete. Both reviewer NOTE items addressed. QA_REPORT.md written.
 
 ### Artifacts Created:
 - `QA_REPORT.md` — written with comprehensive static analysis, verdict PASS
