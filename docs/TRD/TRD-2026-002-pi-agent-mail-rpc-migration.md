@@ -1,7 +1,7 @@
 # TRD-2026-002: Pi + Agent Mail + RPC Migration
 
 **Document ID:** TRD-2026-002
-**Version:** 1.0
+**Version:** 1.1
 **Status:** Draft
 **Date:** 2026-03-19
 **PRD Reference:** PRD-2026-002 v1.2
@@ -14,6 +14,7 @@
 | Version | Date       | Author    | Changes       |
 |---------|------------|-----------|---------------|
 | 1.0     | 2026-03-19 | Tech Lead | Initial draft |
+| 1.1     | 2026-03-19 | Tech Lead | Refinement: fix AC annotations, add missing TEST tasks, new TRD-035/036, session hooks, RunProgress spec, Docker health check, audit dual-write |
 
 ---
 
@@ -32,7 +33,7 @@
 
 ## 1. Executive Summary
 
-This TRD translates PRD-2026-002 into an implementable plan for migrating Foreman's agent runtime from Claude SDK `query()` + tmux/detached spawn to Pi RPC-controlled sessions with Agent Mail messaging. The migration spans 4 phases over 8 weeks, producing 68 implementation tasks plus their paired test tasks.
+This TRD translates PRD-2026-002 into an implementable plan for migrating Foreman's agent runtime from Claude SDK `query()` + tmux/detached spawn to Pi RPC-controlled sessions with Agent Mail messaging. The migration spans 4 phases over 8 weeks, producing 36 implementation tasks and 36 paired test tasks (72 total).
 
 **Key architectural changes:**
 - New `PiRpcSpawnStrategy` that communicates with Pi via JSONL over stdin/stdout
@@ -352,9 +353,9 @@ Unit tests for all tool-gate scenarios: phase-based blocking, bash blocklist, ca
 ---
 
 #### TRD-004: foreman-budget Extension (3h) [satisfies REQ-004] [satisfies REQ-019]
-Implement the `foreman-budget` Pi extension that hooks `turn_end` events and enforces hard turn and token limits. Reads `FOREMAN_MAX_TURNS` and `FOREMAN_MAX_TOKENS` from env vars. Returns `{ block: true }` when limits are exceeded to terminate the session.
+Implement the `foreman-budget` Pi extension that hooks `turn_end` events and enforces hard turn and token limits. Reads `FOREMAN_MAX_TURNS` and `FOREMAN_MAX_TOKENS` from env vars. Returns `{ block: true }` when limits are exceeded to terminate the session. Note: AC-004-3 (run marked 'stuck' on budget exceeded) and AC-019-2 (session ID storage) are owned by TRD-012 (PiRpcSpawnStrategy), which handles the Foreman-side response to budget events.
 
-**Validates PRD ACs:** AC-004-1, AC-004-2, AC-004-3, AC-004-4, AC-004-5, AC-019-1, AC-019-2, AC-019-3
+**Validates PRD ACs:** AC-004-1, AC-004-2, AC-004-4, AC-004-5, AC-019-1, AC-019-3
 **Implementation AC:**
 - [ ] Given `FOREMAN_MAX_TURNS=30`, when the 30th turn completes and `turn_end` fires, then the extension returns `{ block: true, reason: "Turn limit reached: 30" }`
 - [ ] Given `FOREMAN_MAX_TOKENS=100000`, when `ctx.getContextUsage().totalTokens >= 100000`, then the extension returns `{ block: true, reason: "Token limit reached" }`
@@ -367,7 +368,7 @@ Implement the `foreman-budget` Pi extension that hooks `turn_end` events and enf
 #### TRD-004-TEST: foreman-budget Tests (2h) [verifies TRD-004] [satisfies REQ-004] [satisfies REQ-019] [depends: TRD-004]
 Unit tests for budget enforcement: turn limits, token limits, cross-check, defaults.
 
-**Validates PRD ACs:** AC-004-1, AC-004-2, AC-004-3, AC-004-4, AC-004-5, AC-019-1, AC-019-2, AC-019-3
+**Validates PRD ACs:** AC-004-1, AC-004-2, AC-004-4, AC-004-5, AC-019-1, AC-019-3
 **Implementation AC:**
 - [ ] Given a mock turn_end event at turn 30 with maxTurns=30, when the hook fires, then block is returned
 - [ ] Given a mock turn_end event at turn 29 with maxTurns=30, when the hook fires, then no block
@@ -377,26 +378,31 @@ Unit tests for budget enforcement: turn limits, token limits, cross-check, defau
 ---
 
 #### TRD-005: foreman-audit Extension (4h) [satisfies REQ-005] [satisfies REQ-020]
-Implement the `foreman-audit` Pi extension that hooks all Pi events (`tool_call`, `turn_end`, `agent_start`, `agent_end`, `before_provider_request`, `session_shutdown`, `session_fork`) and writes structured audit entries. Phase 1: writes to local JSONL at `~/.foreman/audit/{runId}.jsonl`. Phase 3: streams to Agent Mail inbox.
+Implement the `foreman-audit` Pi extension that hooks all Pi events (`tool_call`, `turn_end`, `agent_start`, `agent_end`, `before_provider_request`, `session_shutdown`, `switch_session`, `session_fork`) and writes structured audit entries. Phase 1: writes to local JSONL at `~/.foreman/audit/{runId}.jsonl`. Phase 3: streams to Agent Mail inbox (with JSONL as fallback). Note: AC-005-3 (FTS5 search) is owned by TRD-025 (Phase 3 Agent Mail upgrade).
 
-**Validates PRD ACs:** AC-005-1, AC-005-2, AC-005-3, AC-005-4, AC-005-5, AC-020-1, AC-020-4
+**Validates PRD ACs:** AC-005-1, AC-005-2, AC-005-4, AC-005-5, AC-020-1, AC-020-4
 **Implementation AC:**
 - [ ] Given any Pi event, when the hook fires, then a structured JSONL line is appended to `~/.foreman/audit/{FOREMAN_RUN_ID}.jsonl`
 - [ ] Given an audit entry, when written, then it includes: timestamp, runId (from `FOREMAN_RUN_ID`), seedId (from `FOREMAN_SEED_ID`), phase (from `FOREMAN_PHASE`), event type, tool name (if applicable), and event-specific details
 - [ ] Given a tool_call event that was blocked by foreman-tool-gate, when the audit hook fires, then the entry includes `blocked: true` and the `blockReason`
 - [ ] Given a complete pipeline run, when all phases complete, then the JSONL file contains a contiguous record from explorer start to finalize completion
 - [ ] Given the `session_shutdown` hook, when Pi shuts down, then the audit extension flushes any buffered entries and writes a final shutdown entry
+- [ ] Given the `switch_session` hook, when Pi resumes a session, then the audit extension logs the session ID transition (old -> new)
+- [ ] Given the `session_fork` hook, when Pi forks a session (e.g., Dev->QA retry), then the audit extension logs the fork with parent and child session IDs
 
 [depends: TRD-002]
 
-#### TRD-005-TEST: foreman-audit Tests (2h) [verifies TRD-005] [satisfies REQ-005] [satisfies REQ-020] [depends: TRD-005]
-Unit tests for audit logging: all event types, structured format, blocked events, contiguity.
+#### TRD-005-TEST: foreman-audit Tests (3h) [verifies TRD-005] [satisfies REQ-005] [satisfies REQ-020] [depends: TRD-005]
+Unit tests for audit logging: all event types (including session lifecycle), structured format, blocked events, contiguity.
 
 **Validates PRD ACs:** AC-005-1, AC-005-2, AC-005-4, AC-005-5, AC-020-1, AC-020-4
 **Implementation AC:**
 - [ ] Given mock events for each type (tool_call, turn_end, agent_start, agent_end), when hooks fire, then JSONL entries are written with correct structure
 - [ ] Given a blocked tool_call, when the audit hook receives the block info, then the entry includes blockReason
 - [ ] Given a simulated multi-phase run, when all phase events fire, then entries are contiguous and ordered by timestamp
+- [ ] Given a session_shutdown event, when the hook fires, then a final shutdown entry is written and buffered entries are flushed
+- [ ] Given a switch_session event, when the hook fires, then the entry includes old and new session IDs
+- [ ] Given a session_fork event, when the hook fires, then the entry includes parent and child session IDs
 - [ ] Given coverage measurement, when tests complete, then coverage for audit-logger.ts is at least 80%
 
 ---
@@ -477,6 +483,15 @@ Create a test harness that simulates Pi extension events for integration testing
 
 [depends: TRD-003, TRD-004, TRD-005, TRD-006]
 
+#### TRD-009-TEST: Integration Test Harness Tests (2h) [verifies TRD-009] [satisfies REQ-013] [depends: TRD-009]
+Verify the test harness correctly simulates Pi extension events and that aggregate extension coverage meets targets.
+
+**Validates PRD ACs:** AC-013-3, AC-015-4
+**Implementation AC:**
+- [ ] Given the test harness, when all three extensions are loaded and events dispatched, then responses are collected correctly
+- [ ] Given the harness running all extension tests, when coverage is measured, then aggregate coverage is at least 80%
+- [ ] Given 100 tool_call events dispatched through the harness, when performance is measured, then average overhead per event is under 50ms
+
 ---
 
 ### Phase 2: PiRpcSpawnStrategy + Dispatcher Integration (P1) -- Week 3-4
@@ -529,10 +544,10 @@ Unit tests with mock child process streams for command sending, event parsing, b
 
 ---
 
-#### TRD-012: PiRpcSpawnStrategy (6h) [satisfies REQ-001] [satisfies REQ-002] [satisfies REQ-011]
-Implement `PiRpcSpawnStrategy` class that implements the `SpawnStrategy` interface. Spawns `pi --mode rpc --extensions <path>` as a child process, sends initialization sequence (extensions config, phase metadata, system prompt, initial prompt), and manages the session lifecycle. Handles process exit detection and status updates.
+#### TRD-012: PiRpcSpawnStrategy (6h) [satisfies REQ-001] [satisfies REQ-002] [satisfies REQ-011] [satisfies REQ-004] [satisfies REQ-019]
+Implement `PiRpcSpawnStrategy` class that implements the `SpawnStrategy` interface. Spawns `pi --mode rpc --extensions <path>` as a child process, sends initialization sequence (extensions config, phase metadata, system prompt, initial prompt), and manages the session lifecycle. Handles process exit detection, status updates, budget event mapping, session ID storage, and incremental RunProgress updates.
 
-**Validates PRD ACs:** AC-001-1, AC-001-5, AC-002-2, AC-002-3, AC-011-1, AC-011-2, AC-011-3, AC-011-4, AC-015-1
+**Validates PRD ACs:** AC-001-1, AC-001-5, AC-002-2, AC-002-3, AC-004-3, AC-011-1, AC-011-2, AC-011-3, AC-011-4, AC-015-1, AC-019-2
 **Implementation AC:**
 - [ ] Given Pi is available, when `spawn(config)` is called, then a `pi --mode rpc` child process is started with the extension package path
 - [ ] Given the Pi process is started, when initialization completes, then the first prompt is sent within 2 seconds of process creation
@@ -541,18 +556,24 @@ Implement `PiRpcSpawnStrategy` class that implements the `SpawnStrategy` interfa
 - [ ] Given operator cancellation, when Foreman closes stdin, then Pi performs clean shutdown via `session_shutdown` hook
 - [ ] Given `PiRpcSpawnStrategy.spawn()` fails, when the error is caught, then Foreman falls back to `DetachedSpawnStrategy` and logs a warning
 - [ ] Given env vars `FOREMAN_PHASE`, `FOREMAN_ALLOWED_TOOLS`, `FOREMAN_MAX_TURNS`, `FOREMAN_MAX_TOKENS`, `FOREMAN_RUN_ID`, `FOREMAN_SEED_ID`, when the Pi process is spawned, then all env vars are set in the child process environment
+- [ ] Given a `budget_exceeded` event from foreman-budget extension, when the RPC event loop receives it, then the run is marked 'stuck' with reason 'BUDGET_EXCEEDED' in SQLite (AC-004-3)
+- [ ] Given a Pi session is started, when the session ID is available, then it is stored in `runs.session_key` (existing TEXT column, no migration needed) (AC-019-2)
+- [ ] Given a `tool_execution_start` or `tool_execution_end` event, when received in the RPC event loop, then `RunProgress` is updated immediately in SQLite (per-event, not batched)
 
 [depends: TRD-010, TRD-011, TRD-006]
 
-#### TRD-012-TEST: PiRpcSpawnStrategy Tests (4h) [verifies TRD-012] [satisfies REQ-001] [satisfies REQ-002] [satisfies REQ-011] [depends: TRD-012]
-Unit and integration tests for PiRpcSpawnStrategy: spawn, initialization, exit detection, fallback.
+#### TRD-012-TEST: PiRpcSpawnStrategy Tests (5h) [verifies TRD-012] [satisfies REQ-001] [satisfies REQ-002] [satisfies REQ-004] [satisfies REQ-011] [satisfies REQ-019] [depends: TRD-012]
+Unit and integration tests for PiRpcSpawnStrategy: spawn, initialization, exit detection, fallback, budget event mapping, session ID storage, incremental RunProgress.
 
-**Validates PRD ACs:** AC-001-1, AC-001-5, AC-002-2, AC-002-3, AC-011-1, AC-011-2, AC-011-3, AC-011-4, AC-015-1
+**Validates PRD ACs:** AC-001-1, AC-001-5, AC-002-2, AC-002-3, AC-004-3, AC-011-1, AC-011-2, AC-011-3, AC-011-4, AC-015-1, AC-019-2
 **Implementation AC:**
 - [ ] Given a mock Pi process, when `spawn()` is called, then the initialization sequence is sent in correct order
 - [ ] Given a mock Pi process that exits cleanly, when the exit event fires, then run status is updated to "completed"
 - [ ] Given a mock Pi process that crashes, when pipe break is detected, then run status is updated to "stuck" within 5 seconds
 - [ ] Given a mock Pi process that fails to spawn, when the error occurs, then DetachedSpawnStrategy is used as fallback
+- [ ] Given a mock budget_exceeded event, when processed by event loop, then run is marked 'stuck' with reason 'BUDGET_EXCEEDED'
+- [ ] Given a mock Pi session with session ID, when stored, then runs.session_key contains the Pi session ID
+- [ ] Given a mock tool_execution_start event, when received, then RunProgress is updated in SQLite immediately
 
 ---
 
@@ -799,20 +820,22 @@ Tests for branch-ready message sending and failure handling.
 
 ---
 
-#### TRD-024: Notification System Deprecation (2h) [satisfies REQ-012]
-Mark `NotificationServer` and `NotificationBus` with `@deprecated` JSDoc tags. Add Agent Mail as an alternative notification channel in `agent-worker.ts`. Preserve SQLite polling fallback.
+#### TRD-024: Notification System Deprecation + Agent Mail Channel (8h) [satisfies REQ-012]
+Mark `NotificationServer` and `NotificationBus` with `@deprecated` JSDoc tags. Implement Agent Mail as an alternative notification channel in `agent-worker.ts` for phase completion, run status changes, and error events. Preserve SQLite polling fallback. Note: AC-012-2 (status/monitor via Agent Mail) is owned by TRD-035.
 
-**Validates PRD ACs:** AC-012-1, AC-012-2, AC-012-3, AC-012-4
+**Validates PRD ACs:** AC-012-1, AC-012-3, AC-012-4
 **Implementation AC:**
 - [ ] Given `NotificationServer` class, when its JSDoc is updated, then `@deprecated` tag is present with migration note
 - [ ] Given `NotificationBus` class, when its JSDoc is updated, then `@deprecated` tag is present with migration note
 - [ ] Given a pipeline run, when a phase completes, then status update is sent to Agent Mail (in addition to HTTP POST)
 - [ ] Given Agent Mail is down, when status updates need communication, then SQLite polling fallback continues to work
+- [ ] Given a run error, when the error is recorded, then an Agent Mail notification is sent to the operator inbox
+- [ ] Given Agent Mail configured, when `foreman run` starts, then agent registrations are sent for all pipeline roles
 
 [depends: TRD-020]
 
-#### TRD-024-TEST: Notification Deprecation Tests (1h) [verifies TRD-024] [satisfies REQ-012] [depends: TRD-024]
-Tests verifying deprecated annotations and dual-channel notifications.
+#### TRD-024-TEST: Notification Deprecation Tests (2h) [verifies TRD-024] [satisfies REQ-012] [depends: TRD-024]
+Tests verifying deprecated annotations, dual-channel notifications, and Agent Mail channel.
 
 **Validates PRD ACs:** AC-012-1, AC-012-3, AC-012-4
 **Implementation AC:**
@@ -822,7 +845,7 @@ Tests verifying deprecated annotations and dual-channel notifications.
 ---
 
 #### TRD-025: Audit Extension Upgrade to Agent Mail (3h) [satisfies REQ-005] [satisfies REQ-020]
-Upgrade `foreman-audit` extension to stream audit entries to Agent Mail (in addition to local JSONL). Implement the buffering strategy: when Agent Mail is down, buffer entries locally and flush when recovered (AC-020-3).
+Upgrade `foreman-audit` extension to stream audit entries to Agent Mail as primary store with FTS5 search (AC-005-3), while keeping local JSONL as a persistent fallback. JSONL continues writing at all times — it is never removed, providing durability if Agent Mail is unavailable. Implement the buffering strategy: when Agent Mail is down, buffer unsent entries locally and flush when recovered (AC-020-3).
 
 **Validates PRD ACs:** AC-005-3, AC-020-2, AC-020-3
 **Implementation AC:**
@@ -864,15 +887,26 @@ Tests for Agent Mail FTS5 delegation and fallback.
 
 ---
 
-#### TRD-027: Agent Mail Performance Validation (2h) [satisfies REQ-015]
-Implement performance benchmarks for Agent Mail operations: message send latency (<500ms), audit overhead (<50ms per tool call).
+#### TRD-027: Agent Mail Docker Compose + Performance Validation (3h) [satisfies REQ-015] [satisfies REQ-009]
+Provide a `docker-compose.yml` for Agent Mail server with health check configuration. Implement performance benchmarks for Agent Mail operations: message send latency (<500ms), audit overhead (<50ms per tool call).
 
-**Validates PRD ACs:** AC-015-2, AC-015-4
+**Validates PRD ACs:** AC-009-1, AC-015-2, AC-015-4
 **Implementation AC:**
+- [ ] Given the `docker-compose.yml`, when `docker compose up` is run, then the Agent Mail server starts and becomes healthy
+- [ ] Given the Docker health check, when configured, then it uses `curl -f http://localhost:8765/health` with 30s interval and 3 retries
 - [ ] Given a running Agent Mail server, when a message is sent, then it is visible to the recipient within 500ms (measured P95)
 - [ ] Given the audit extension streaming to Agent Mail, when a tool_call event fires, then audit logging adds no more than 50ms overhead (measured P95)
 
 [depends: TRD-020, TRD-025]
+
+#### TRD-027-TEST: Docker Compose + Performance Tests (2h) [verifies TRD-027] [satisfies REQ-015] [satisfies REQ-009] [depends: TRD-027]
+Tests for Docker Compose up/health, message latency, and audit overhead benchmarks.
+
+**Validates PRD ACs:** AC-009-1, AC-015-2, AC-015-4
+**Implementation AC:**
+- [ ] Given Docker Compose file, when `docker compose config` is run, then the configuration is valid
+- [ ] Given a running Agent Mail container, when health check runs, then HTTP GET /health returns 200
+- [ ] Given a benchmark harness, when 100 messages are sent, then P95 latency is under 500ms
 
 ---
 
@@ -1023,6 +1057,62 @@ Ensure merge processing begins within 5 seconds of branch-ready message arrival.
 
 [depends: TRD-028]
 
+#### TRD-034-TEST: Merge Processing Performance Tests (1h) [verifies TRD-034] [satisfies REQ-015] [depends: TRD-034]
+Tests measuring merge processing latency from message arrival to merge start.
+
+**Validates PRD ACs:** AC-015-3
+**Implementation AC:**
+- [ ] Given a mock branch-ready message with a timestamp, when the merge agent processes it, then the delta between message timestamp and merge start is under 5 seconds
+- [ ] Given latency logging, when a merge completes, then the latency metric is recorded in logs
+
+---
+
+#### TRD-035: Agent Mail Status/Monitor Integration (4h) [satisfies REQ-012] [satisfies REQ-016]
+Wire Agent Mail data into `foreman status` and `foreman monitor` CLI commands. When Agent Mail is available, display live phase, turn count, and cost sourced from Agent Mail messages. Fall back to SQLite polling when Agent Mail is unavailable.
+
+**Validates PRD ACs:** AC-012-2, AC-016-1
+**Implementation AC:**
+- [ ] Given Agent Mail is available, when `foreman status` is invoked, then it displays live phase, turn count, and cost from Agent Mail messages
+- [ ] Given Agent Mail is available, when `foreman monitor` is invoked, then it shows real-time updates from Agent Mail
+- [ ] Given Agent Mail is unavailable, when `foreman status` is invoked, then it falls back to SQLite polling (existing behavior preserved)
+- [ ] Given Agent Mail is available but returns stale data, when compared to SQLite, then the most recent data source wins
+
+[depends: TRD-020, TRD-024]
+
+#### TRD-035-TEST: Status/Monitor Agent Mail Integration Tests (2h) [verifies TRD-035] [satisfies REQ-012] [satisfies REQ-016] [depends: TRD-035]
+Tests for Agent Mail data in status/monitor commands with fallback scenarios.
+
+**Validates PRD ACs:** AC-012-2, AC-016-1
+**Implementation AC:**
+- [ ] Given mock Agent Mail with run data, when `foreman status` renders, then Agent Mail data is displayed
+- [ ] Given Agent Mail unavailable, when `foreman status` renders, then SQLite data is displayed without error
+- [ ] Given mock Agent Mail with stale data, when compared to SQLite, then the freshest source is used
+
+---
+
+#### TRD-036: Mid-Session Pi Crash Recovery (4h) [satisfies REQ-015] [satisfies REQ-002]
+Implement detection and recovery when Pi crashes mid-session: detect process exit (SIGPIPE, unexpected exit code), attempt session resume via `switch_session` with stored session ID from `runs.session_key`, and fall back to starting a new `DetachedSpawnStrategy` run if resume fails.
+
+**Validates PRD ACs:** AC-002-3, AC-015-1
+**Implementation AC:**
+- [ ] Given a Pi process that exits unexpectedly mid-session, when SIGPIPE or unexpected exit code is detected, then recovery is attempted within 5 seconds
+- [ ] Given a stored session ID in `runs.session_key`, when recovery begins, then a new Pi process is spawned with `switch_session` to resume the session
+- [ ] Given session resume succeeds, when the new Pi process starts, then the pipeline continues from the interrupted phase
+- [ ] Given session resume fails (e.g., corrupt session), when the fallback triggers, then a new `DetachedSpawnStrategy` run is started for the remaining phases
+- [ ] Given crash recovery, when the audit extension captures events, then the crash and recovery attempt are logged in the audit trail
+
+[depends: TRD-012, TRD-014]
+
+#### TRD-036-TEST: Mid-Session Crash Recovery Tests (3h) [verifies TRD-036] [satisfies REQ-015] [satisfies REQ-002] [depends: TRD-036]
+Tests for Pi crash detection, session resume, and DetachedSpawnStrategy fallback.
+
+**Validates PRD ACs:** AC-002-3, AC-015-1
+**Implementation AC:**
+- [ ] Given a mock Pi process that exits with code 1, when detected, then recovery is attempted
+- [ ] Given a mock `switch_session` that succeeds, when resume is attempted, then pipeline continues
+- [ ] Given a mock `switch_session` that fails, when fallback triggers, then DetachedSpawnStrategy is used
+- [ ] Given a crash event, when audit is checked, then crash and recovery are logged
+
 ---
 
 ## 5. Sprint Planning
@@ -1039,7 +1129,7 @@ Ensure merge processing begins within 5 seconds of branch-ready message arrival.
 | TRD-004 | foreman-budget Extension | 3h | TRD-002 | P0 |
 | TRD-004-TEST | budget Tests | 2h | TRD-004 | P0 |
 | TRD-005 | foreman-audit Extension | 4h | TRD-002 | P0 |
-| TRD-005-TEST | audit Tests | 2h | TRD-005 | P0 |
+| TRD-005-TEST | audit Tests | 3h | TRD-005 | P0 |
 | TRD-006 | Extension Index and Registration | 2h | TRD-003, TRD-004, TRD-005 | P0 |
 | TRD-006-TEST | Registration Tests | 1h | TRD-006 | P0 |
 | TRD-007 | Audit JSONL Reader | 3h | TRD-005 | P0 |
@@ -1047,8 +1137,9 @@ Ensure merge processing begins within 5 seconds of branch-ready message arrival.
 | TRD-008 | `foreman audit` CLI (Phase 1) | 3h | TRD-007 | P0 |
 | TRD-008-TEST | audit CLI Tests | 2h | TRD-008 | P0 |
 | TRD-009 | Integration Test Harness | 3h | TRD-003, TRD-004, TRD-005, TRD-006 | P0 |
+| TRD-009-TEST | Harness Tests | 2h | TRD-009 | P0 |
 
-**Sprint 1 Total:** 39h (5 working days at ~8h/day)
+**Sprint 1 Total:** 41h (~5 working days at ~8h/day)
 **Sprint 1 Gate:** All extension unit tests pass, >=80% coverage, `foreman audit` works on local JSONL
 
 ---
@@ -1062,7 +1153,7 @@ Ensure merge processing begins within 5 seconds of branch-ready message arrival.
 | TRD-011 | JSONL RPC Protocol Layer | 4h | TRD-002 | P1 |
 | TRD-011-TEST | Protocol Tests | 3h | TRD-011 | P1 |
 | TRD-012 | PiRpcSpawnStrategy | 6h | TRD-010, TRD-011, TRD-006 | P1 |
-| TRD-012-TEST | SpawnStrategy Tests | 4h | TRD-012 | P1 |
+| TRD-012-TEST | SpawnStrategy Tests | 5h | TRD-012 | P1 |
 | TRD-013 | Dispatcher Strategy Update | 3h | TRD-012, TRD-010 | P1 |
 | TRD-013-TEST | Strategy Selection Tests | 2h | TRD-013 | P1 |
 | TRD-014 | Session Lifecycle Management | 4h | TRD-012 | P1 |
@@ -1078,7 +1169,7 @@ Ensure merge processing begins within 5 seconds of branch-ready message arrival.
 | TRD-019 | Status Pi RPC Stats | 2h | TRD-012 | P1 |
 | TRD-019-TEST | Status Display Tests | 1h | TRD-019 | P1 |
 
-**Sprint 2 Total:** 48h (6 working days at ~8h/day)
+**Sprint 2 Total:** 49h (~6 working days at ~8h/day)
 **Sprint 2 Gate:** E2E test: full pipeline via Pi RPC; fallback test passes; `foreman status` shows Pi stats
 
 ---
@@ -1095,15 +1186,18 @@ Ensure merge processing begins within 5 seconds of branch-ready message arrival.
 | TRD-022-TEST | Handoff Tests | 2h | TRD-022 | P2 |
 | TRD-023 | Branch-Ready Signal | 2h | TRD-020 | P2 |
 | TRD-023-TEST | Branch-Ready Tests | 1h | TRD-023 | P2 |
-| TRD-024 | Notification Deprecation | 2h | TRD-020 | P2 |
-| TRD-024-TEST | Deprecation Tests | 1h | TRD-024 | P2 |
+| TRD-024 | Notification Deprecation + Agent Mail Channel | 8h | TRD-020 | P2 |
+| TRD-024-TEST | Deprecation Tests | 2h | TRD-024 | P2 |
 | TRD-025 | Audit Extension Agent Mail Upgrade | 3h | TRD-005, TRD-020 | P2 |
 | TRD-025-TEST | Audit Upgrade Tests | 2h | TRD-025 | P2 |
 | TRD-026 | Audit CLI Agent Mail Upgrade | 2h | TRD-008, TRD-025 | P2 |
 | TRD-026-TEST | Audit CLI Upgrade Tests | 1h | TRD-026 | P2 |
-| TRD-027 | Agent Mail Performance Validation | 2h | TRD-020, TRD-025 | P2 |
+| TRD-027 | Docker Compose + Performance Validation | 3h | TRD-020, TRD-025 | P2 |
+| TRD-027-TEST | Docker + Performance Tests | 2h | TRD-027 | P2 |
+| TRD-035 | Agent Mail Status/Monitor Integration | 4h | TRD-020, TRD-024 | P2 |
+| TRD-035-TEST | Status/Monitor Tests | 2h | TRD-035 | P2 |
 
-**Sprint 3 Total:** 34h (4.25 working days at ~8h/day)
+**Sprint 3 Total:** 50h (~6 working days at ~8h/day)
 **Sprint 3 Gate:** Messaging works with Agent Mail up; pipeline completes with Agent Mail down; FTS5 search works
 
 ---
@@ -1125,8 +1219,11 @@ Ensure merge processing begins within 5 seconds of branch-ready message arrival.
 | TRD-032 | Merge Agent CLI Commands | 3h | TRD-028 | P3 |
 | TRD-032-TEST | CLI Tests | 2h | TRD-032 | P3 |
 | TRD-034 | Merge Processing Performance | 2h | TRD-028 | P3 |
+| TRD-034-TEST | Performance Tests | 1h | TRD-034 | P3 |
+| TRD-036 | Mid-Session Pi Crash Recovery | 4h | TRD-012, TRD-014 | P3 |
+| TRD-036-TEST | Crash Recovery Tests | 3h | TRD-036 | P3 |
 
-**Sprint 4 Total:** 39h (5 working days at ~8h/day)
+**Sprint 4 Total:** 47h (~6 working days at ~8h/day)
 **Sprint 4 Gate:** Daemon auto-merges T1/T2; T3/T4 creates PRs; manual merge lock works; `foreman merge --status` works
 
 ---
@@ -1145,9 +1242,12 @@ TRD-015 ────────────────────────
 TRD-020 -> TRD-021 (File reservations)
         -> TRD-022 (Phase handoff)
         -> TRD-023 (Branch-ready)
-        -> TRD-024 (Notification deprecation)
+        -> TRD-024 -> TRD-035 (Status/monitor via Agent Mail)
         -> TRD-025 -> TRD-026 (Audit upgrade)
+        -> TRD-027 (Docker Compose + perf)
         -> TRD-028 -> TRD-031 (Merge daemon)
+
+TRD-012 -> TRD-014 -> TRD-036 (Mid-session crash recovery)
 
 TRD-029 -> TRD-030 (AI resolution)
         -> TRD-031 (Retry/PR)
@@ -1198,24 +1298,24 @@ TRD-029 -> TRD-030 (AI resolution)
 | REQ ID | Description | Implementation Tasks | Test Tasks |
 |--------|-------------|---------------------|------------|
 | REQ-001 | PiRpcSpawnStrategy | TRD-011, TRD-012 | TRD-011-TEST, TRD-012-TEST |
-| REQ-002 | Pi Binary Detection & Fallback | TRD-010, TRD-013 | TRD-010-TEST, TRD-013-TEST |
+| REQ-002 | Pi Binary Detection & Fallback | TRD-010, TRD-013, TRD-036 | TRD-010-TEST, TRD-013-TEST, TRD-036-TEST |
 | REQ-003 | foreman-tool-gate Extension | TRD-003 | TRD-003-TEST |
-| REQ-004 | foreman-budget Extension | TRD-004 | TRD-004-TEST |
+| REQ-004 | foreman-budget Extension | TRD-004, TRD-012 | TRD-004-TEST, TRD-012-TEST |
 | REQ-005 | foreman-audit Extension | TRD-005, TRD-025 | TRD-005-TEST, TRD-025-TEST |
 | REQ-006 | Agent Mail Client Integration | TRD-020, TRD-023 | TRD-020-TEST, TRD-023-TEST |
 | REQ-007 | Agent Mail File Reservations | TRD-021 | TRD-021-TEST |
 | REQ-008 | Pi Merge Agent Daemon | TRD-028, TRD-029, TRD-030, TRD-031, TRD-032, TRD-033 | TRD-028-TEST, TRD-029-TEST, TRD-030-TEST, TRD-031-TEST, TRD-032-TEST, TRD-033-TEST |
-| REQ-009 | Per-Phase Model Selection via Pi | TRD-015, TRD-016 | TRD-015-TEST, TRD-016-TEST |
+| REQ-009 | Per-Phase Model Selection via Pi | TRD-015, TRD-016, TRD-027 | TRD-015-TEST, TRD-016-TEST, TRD-027-TEST |
 | REQ-010 | Phase Communication via Agent Mail | TRD-022 | TRD-022-TEST |
 | REQ-011 | RPC Session Lifecycle | TRD-012, TRD-014 | TRD-012-TEST, TRD-014-TEST |
-| REQ-012 | Notification System Migration | TRD-024 | TRD-024-TEST |
-| REQ-013 | Extension Package Structure | TRD-001, TRD-006 | TRD-001-TEST, TRD-006-TEST, TRD-009 |
+| REQ-012 | Notification System Migration | TRD-024, TRD-035 | TRD-024-TEST, TRD-035-TEST |
+| REQ-013 | Extension Package Structure | TRD-001, TRD-006, TRD-009 | TRD-001-TEST, TRD-006-TEST, TRD-009-TEST |
 | REQ-014 | Agent Mail Server Lifecycle | TRD-020 | TRD-020-TEST |
-| REQ-015 | Performance Requirements | TRD-012, TRD-027, TRD-034 | TRD-012-TEST, TRD-027, TRD-034 |
-| REQ-016 | Observability | TRD-008, TRD-019, TRD-032 | TRD-008-TEST, TRD-019-TEST, TRD-032-TEST |
+| REQ-015 | Performance Requirements | TRD-012, TRD-027, TRD-034, TRD-036 | TRD-012-TEST, TRD-027-TEST, TRD-034-TEST, TRD-036-TEST |
+| REQ-016 | Observability | TRD-008, TRD-019, TRD-032, TRD-035 | TRD-008-TEST, TRD-019-TEST, TRD-032-TEST, TRD-035-TEST |
 | REQ-017 | Phase-Specific Pi Configuration | TRD-015, TRD-016 | TRD-015-TEST, TRD-016-TEST |
 | REQ-018 | Tool Restriction Enforcement | TRD-003, TRD-017 | TRD-003-TEST, TRD-017-TEST |
-| REQ-019 | Hard Budget Enforcement | TRD-004 | TRD-004-TEST |
+| REQ-019 | Hard Budget Enforcement | TRD-004, TRD-012 | TRD-004-TEST, TRD-012-TEST |
 | REQ-020 | Full Audit Trail | TRD-005, TRD-025 | TRD-005-TEST, TRD-025-TEST |
 | REQ-021 | Multi-Model Security | TRD-018 | TRD-018-TEST |
 | REQ-022 | Audit Trail CLI | TRD-007, TRD-008, TRD-026 | TRD-007-TEST, TRD-008-TEST, TRD-026-TEST |
@@ -1251,3 +1351,15 @@ TRD-029 -> TRD-030 (AI resolution)
 ### TD-007: TmuxSpawnStrategy deprecation, not removal
 **Decision:** Mark `TmuxSpawnStrategy` with `@deprecated` but keep it available via `FOREMAN_SPAWN_STRATEGY=tmux`.
 **Rationale:** PRD says "deprecated but not removed". Some operators may prefer tmux for debugging visibility.
+
+### TD-008: Audit storage dual-write (JSONL + Agent Mail)
+**Decision:** In Phase 3, local JSONL continues writing as a persistent fallback alongside Agent Mail. JSONL is never removed.
+**Rationale:** Agent Mail is an external dependency that may be unavailable. JSONL provides guaranteed local durability. The dual-write approach means no audit data is lost even if Agent Mail is down, while Agent Mail provides FTS5 search capability when available.
+
+### TD-009: RunProgress updates per tool_execution event
+**Decision:** Update `RunProgress` in SQLite on every `tool_execution_start`/`tool_execution_end` event, not batched per turn.
+**Rationale:** Real-time progress enables `foreman status` to show current activity immediately. The slight increase in SQLite writes is negligible compared to the pipeline's overall I/O.
+
+### TD-010: Reuse existing runs.session_key for Pi session IDs
+**Decision:** Store Pi session IDs in the existing `runs.session_key` TEXT column. No schema migration needed.
+**Rationale:** The column already exists, is TEXT and nullable, and serves exactly this purpose. Adding new columns would require a migration for no benefit.
