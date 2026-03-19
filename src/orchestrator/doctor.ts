@@ -233,21 +233,31 @@ export class Doctor {
 
       if (activeRun) {
         if (activeRun.status === "running") {
-          // For running runs, verify the process is actually alive
-          const pid = extractPid(activeRun.session_key);
-          const alive = pid !== null && isProcessAlive(pid);
-          if (alive) {
+          if (isSDKBasedRun(activeRun.session_key)) {
+            // SDK-based workers don't have a PID — liveness is checked via
+            // checkGhostRuns() (tmux) or stale timeouts, not PID-based checks.
             results.push({
               name: `worktree: ${seedId}`,
               status: "pass",
-              message: `Active run (${activeRun.status}) for seed ${seedId}`,
+              message: `Active run (${activeRun.status}) for seed ${seedId} — SDK-based worker`,
             });
           } else {
-            results.push({
-              name: `worktree: ${seedId}`,
-              status: "warn",
-              message: `Zombie run: status=running but no live process${pid ? ` (pid ${pid})` : ""}. Run 'foreman doctor --fix' to clean up.`,
-            });
+            // For traditional PID-based runs, verify the process is actually alive
+            const pid = extractPid(activeRun.session_key);
+            const alive = pid !== null && isProcessAlive(pid);
+            if (alive) {
+              results.push({
+                name: `worktree: ${seedId}`,
+                status: "pass",
+                message: `Active run (${activeRun.status}) for seed ${seedId}`,
+              });
+            } else {
+              results.push({
+                name: `worktree: ${seedId}`,
+                status: "warn",
+                message: `Zombie run: status=running but no live process${pid ? ` (pid ${pid})` : ""}. Run 'foreman doctor --fix' to clean up.`,
+              });
+            }
           }
         } else {
           // pending runs don't have a process to check
