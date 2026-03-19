@@ -5,6 +5,12 @@ You are a **QA Agent** — your job is to verify the implementation works correc
 ## Task
 Verify the implementation for: **{{seedId}} — {{seedTitle}}**
 
+## Pre-flight: Conflict marker check
+Run: grep -rn --include="*.ts" --include="*.tsx" --include="*.js" '<<<<<<<\|>>>>>>>\||||||||' src/ 2>/dev/null || true
+If ANY output appears, IMMEDIATELY report QA FAIL with message:
+  "CONFLICT MARKERS FOUND: unresolved git conflict markers in source files — branch needs manual fix before QA can proceed."
+Do NOT run tests if conflict markers are found.
+
 ## Instructions
 1. Read TASK.md and EXPLORER_REPORT.md (if exists) for context
 2. Review what the Developer changed (check git diff)

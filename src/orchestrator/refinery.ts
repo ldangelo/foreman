@@ -82,6 +82,32 @@ export class Refinery {
   }
 
   /**
+   * Scan a directory for unresolved git conflict markers in source files.
+   * Checks for <<<<<<< and ||||||| (diff3 style) markers.
+   * Returns a list of files containing markers (relative to worktreePath), or an empty array if clean.
+   */
+  private async scanForConflictMarkers(worktreePath: string): Promise<string[]> {
+    const extensions = ["*.ts", "*.tsx", "*.js", "*.jsx", "*.mts", "*.mjs"];
+    const includeArgs = extensions.flatMap((ext) => ["--include", ext]);
+    try {
+      const { stdout } = await execFileAsync(
+        "grep",
+        ["-rl", ...includeArgs, "--exclude-dir=node_modules", "--exclude-dir=.git", "-e", "<<<<<<<", "-e", "|||||||", worktreePath],
+        { maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+      );
+      const lines = stdout.trim().split("\n").filter(Boolean);
+      // Return paths relative to worktreePath
+      return lines.map((f) => f.startsWith(worktreePath) ? f.slice(worktreePath.length).replace(/^\//, "") : f);
+    } catch (err: unknown) {
+      // grep exits with code 1 when no matches are found — that's a clean result
+      const exitCode = (err as NodeJS.ErrnoException & { code?: number }).code;
+      if (exitCode === 1) return [];
+      // Any other error (e.g. directory missing) — return clean to avoid blocking merge
+      return [];
+    }
+  }
+
+  /**
    * Check if a file path is a report/non-code file that can be auto-resolved.
    * Delegates to ConflictResolver.isReportFile().
    */
@@ -360,6 +386,28 @@ export class Refinery {
       const branchName = `foreman/${run.seed_id}`;
 
       try {
+        // Scan for unresolved conflict markers in source files before attempting merge.
+        // If any are found, skip rebase and create a PR for manual resolution.
+        if (run.worktree_path) {
+          const markedFiles = await this.scanForConflictMarkers(run.worktree_path);
+          if (markedFiles.length > 0) {
+            await resetSeedToOpen(run.seed_id, this.projectPath);
+            const pr = await this.createPrForConflict(
+              run,
+              branchName,
+              targetBranch,
+              `Unresolved conflict markers in: ${markedFiles.join(", ")}`,
+            );
+            if (pr) {
+              prsCreated.push(pr);
+            } else {
+              await this.addFailureNote(run.seed_id, `Merge skipped: unresolved conflict markers in ${markedFiles.join(", ")}. PR creation also failed — manual intervention required.`);
+              conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: markedFiles });
+            }
+            continue;
+          }
+        }
+
         // Commit any dirty state files (.seeds/, .foreman/) before merge
         await this.autoCommitStateFiles();
 
