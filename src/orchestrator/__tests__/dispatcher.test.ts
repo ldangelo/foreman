@@ -249,6 +249,7 @@ describe("Dispatcher — BvClient ordering", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
@@ -277,6 +278,7 @@ describe("Dispatcher — BvClient ordering", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
     } as any;
 
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -307,6 +309,7 @@ describe("Dispatcher — BvClient ordering", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
     } as any;
 
     // No bvClient passed (undefined)
@@ -329,6 +332,7 @@ describe("Dispatcher — BvClient ordering", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
     } as any;
 
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -368,6 +372,7 @@ describe("Dispatcher — BvClient ordering", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
@@ -574,6 +579,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
@@ -601,6 +607,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
@@ -624,6 +631,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
@@ -647,6 +655,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
@@ -726,6 +735,7 @@ describe("Dispatcher.dispatch — fetches seed details via show()", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
@@ -772,6 +782,7 @@ describe("Dispatcher.dispatch — fetches seed details via show()", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});

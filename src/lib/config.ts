@@ -125,6 +125,48 @@ export const PIPELINE_LIMITS = {
   stuckDetectionMinutes: envInt("FOREMAN_STUCK_DETECTION_MINUTES", 15),
 } as const;
 
+/**
+ * Exponential backoff configuration for seeds that repeatedly get stuck.
+ *
+ * When a seed is reset to open after a stuck run, the dispatcher applies
+ * this backoff before re-dispatching. This prevents tight retry loops for
+ * deterministic failures (e.g. non-fast-forward push errors).
+ *
+ * Backoff schedule (defaults, maxRetries=3):
+ *   1st stuck → wait 60s before retry
+ *   2nd stuck → wait 120s before retry
+ *   ≥ maxRetries (3) stuck → hard-blocked until window resets (no further delay calc)
+ *
+ * To enable a 3rd-tier delay (240s) before hard-blocking, set maxRetries=4.
+ */
+export const STUCK_RETRY_CONFIG = {
+  /** Number of recent stuck runs before the seed is blocked from dispatch */
+  maxRetries: envNonNegativeInt("FOREMAN_STUCK_MAX_RETRIES", 3),
+  /** Initial backoff delay in milliseconds after the first stuck run */
+  initialDelayMs: envInt("FOREMAN_STUCK_INITIAL_DELAY_MS", 60_000),
+  /** Maximum backoff delay in milliseconds */
+  maxDelayMs: envInt("FOREMAN_STUCK_MAX_DELAY_MS", 3_600_000),
+  /** Multiplier applied to delay on each successive stuck run */
+  backoffMultiplier: envInt("FOREMAN_STUCK_BACKOFF_MULTIPLIER", 2),
+  /** Time window in milliseconds for counting recent stuck runs (default: 24h) */
+  windowMs: envInt("FOREMAN_STUCK_WINDOW_MS", 24 * 60 * 60 * 1000),
+};
+
+/**
+ * Calculate the required backoff delay in milliseconds for a seed that has
+ * been stuck `stuckCount` times recently.
+ *
+ * Formula: initialDelayMs * backoffMultiplier^(stuckCount - 1), capped at maxDelayMs.
+ */
+export function calculateStuckBackoffMs(stuckCount: number): number {
+  if (stuckCount <= 0) return 0;
+  return Math.min(
+    STUCK_RETRY_CONFIG.initialDelayMs *
+      Math.pow(STUCK_RETRY_CONFIG.backoffMultiplier, stuckCount - 1),
+    STUCK_RETRY_CONFIG.maxDelayMs,
+  );
+}
+
 // ── Buffer sizes ──────────────────────────────────────────────────────────
 
 export const PIPELINE_BUFFERS = {
