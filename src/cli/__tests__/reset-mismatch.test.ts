@@ -48,8 +48,8 @@ describe("mapRunStatusToSeedStatus", () => {
     expect(mapRunStatusToSeedStatus("running")).toBe("in_progress");
   });
 
-  it("maps completed to closed", () => {
-    expect(mapRunStatusToSeedStatus("completed")).toBe("closed");
+  it("maps completed to in_progress", () => {
+    expect(mapRunStatusToSeedStatus("completed")).toBe("in_progress");
   });
 
   it("maps failed to open", () => {
@@ -98,13 +98,14 @@ describe("detectAndFixMismatches", () => {
     expect(store.getActiveRuns).not.toHaveBeenCalled();
   });
 
-  it("detects mismatch when completed run has seed still in_progress", async () => {
+  it("detects mismatch when completed run has seed incorrectly closed", async () => {
+    // After fix: completed → in_progress. A seed "closed" when run is only "completed" is a mismatch.
     const { store, seeds } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: any[]) =>
       args[0] === "completed" ? [run] : []
     );
-    seeds.show.mockResolvedValue({ status: "in_progress" });
+    seeds.show.mockResolvedValue({ status: "closed" });
 
     const result = await detectAndFixMismatches(store as any, seeds as any, "proj-1", new Set());
 
@@ -113,8 +114,8 @@ describe("detectAndFixMismatches", () => {
       seedId: "seed-abc",
       runId: "run-1",
       runStatus: "completed",
-      actualSeedStatus: "in_progress",
-      expectedSeedStatus: "closed",
+      actualSeedStatus: "closed",
+      expectedSeedStatus: "in_progress",
     });
   });
 
@@ -133,26 +134,28 @@ describe("detectAndFixMismatches", () => {
   });
 
   it("fixes mismatches by calling seeds.update", async () => {
+    // completed run with seed incorrectly "closed" → update to "in_progress"
     const { store, seeds } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: any[]) =>
       args[0] === "completed" ? [run] : []
     );
-    seeds.show.mockResolvedValue({ status: "in_progress" });
+    seeds.show.mockResolvedValue({ status: "closed" });
 
     const result = await detectAndFixMismatches(store as any, seeds as any, "proj-1", new Set());
 
-    expect(seeds.update).toHaveBeenCalledWith("seed-abc", { status: "closed" });
+    expect(seeds.update).toHaveBeenCalledWith("seed-abc", { status: "in_progress" });
     expect(result.fixed).toBe(1);
   });
 
   it("does not call seeds.update in dry-run mode", async () => {
+    // completed run with seed incorrectly "closed" → mismatch detected but not fixed in dry-run
     const { store, seeds } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: any[]) =>
       args[0] === "completed" ? [run] : []
     );
-    seeds.show.mockResolvedValue({ status: "in_progress" });
+    seeds.show.mockResolvedValue({ status: "closed" });
 
     const result = await detectAndFixMismatches(store as any, seeds as any, "proj-1", new Set(), { dryRun: true });
 
@@ -176,12 +179,13 @@ describe("detectAndFixMismatches", () => {
   });
 
   it("reports no mismatch when seed status already matches expected", async () => {
+    // After fix: completed → in_progress. Seed at "in_progress" = no mismatch.
     const { store, seeds } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: any[]) =>
       args[0] === "completed" ? [run] : []
     );
-    seeds.show.mockResolvedValue({ status: "closed" });
+    seeds.show.mockResolvedValue({ status: "in_progress" });
 
     const result = await detectAndFixMismatches(store as any, seeds as any, "proj-1", new Set());
 
@@ -218,12 +222,13 @@ describe("detectAndFixMismatches", () => {
   });
 
   it("records error when seeds.update fails, does not count as fixed", async () => {
+    // completed run with seed incorrectly "closed" → mismatch, update attempted but fails
     const { store, seeds } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: any[]) =>
       args[0] === "completed" ? [run] : []
     );
-    seeds.show.mockResolvedValue({ status: "in_progress" });
+    seeds.show.mockResolvedValue({ status: "closed" });
     seeds.update.mockRejectedValue(new Error("Update failed"));
 
     const result = await detectAndFixMismatches(store as any, seeds as any, "proj-1", new Set());
@@ -265,6 +270,8 @@ describe("detectAndFixMismatches", () => {
   });
 
   it("handles multiple seeds with different mismatch states", async () => {
+    // run1: completed → expected in_progress; seed-a is "closed" → mismatch
+    // run2: conflict → expected open; seed-b is "in_progress" → mismatch
     const { store, seeds } = makeMocks();
     const run1 = makeRun({ id: "run-1", seed_id: "seed-a", status: "completed" });
     const run2 = makeRun({ id: "run-2", seed_id: "seed-b", status: "conflict" });
@@ -274,8 +281,8 @@ describe("detectAndFixMismatches", () => {
       return [];
     });
     seeds.show.mockImplementation(async (...args: any[]) => {
-      if (args[0] === "seed-a") return { status: "in_progress" };
-      if (args[0] === "seed-b") return { status: "in_progress" };
+      if (args[0] === "seed-a") return { status: "closed" };      // wrong for completed (expects in_progress)
+      if (args[0] === "seed-b") return { status: "in_progress" }; // wrong for conflict (expects open)
       return { status: "open" };
     });
 
@@ -339,14 +346,15 @@ describe("detectAndFixMismatches", () => {
       args[0] === "completed" ? [terminalRunSafe, terminalRunBusy] : []
     );
     store.getActiveRuns.mockReturnValue([activeRunBusy]);
-    seeds.show.mockResolvedValue({ status: "in_progress" });
+    // After fix: completed → in_progress. Seed is "closed" (incorrect) → triggers mismatch.
+    seeds.show.mockResolvedValue({ status: "closed" });
 
     const result = await detectAndFixMismatches(store as any, seeds as any, "proj-1", new Set());
 
-    // Only seed-safe should be checked and fixed
+    // Only seed-safe should be checked and fixed (seed-busy is skipped due to active run)
     expect(seeds.show).toHaveBeenCalledTimes(1);
     expect(seeds.show).toHaveBeenCalledWith("seed-safe");
-    expect(seeds.update).toHaveBeenCalledWith("seed-safe", { status: "closed" });
+    expect(seeds.update).toHaveBeenCalledWith("seed-safe", { status: "in_progress" });
     expect(result.mismatches).toHaveLength(1);
     expect(result.fixed).toBe(1);
   });

@@ -5,24 +5,21 @@ import { tmpdir } from "node:os";
 
 // ── Mock setup ─────────────────────────────────────────────────────────────
 //
-// We mock node:child_process so no real subprocess is spawned, and
-// we mock task-backend-ops so we can verify closeSeed call behaviour.
+// We mock node:child_process so no real subprocess is spawned.
+// closeSeed is no longer imported by agent-worker-finalize (it was removed
+// as part of the bead lifecycle fix — closing now happens in refinery.ts
+// after merge, not here after push).
 //
 // vi.hoisted() ensures mock variables are initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
 
-const { mockExecFileSync, mockCloseSeed, mockEnqueueToMergeQueue } = vi.hoisted(() => ({
+const { mockExecFileSync, mockEnqueueToMergeQueue } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
-  mockCloseSeed: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
   mockEnqueueToMergeQueue: vi.fn().mockReturnValue({ success: true }),
 }));
 
 vi.mock("node:child_process", () => ({
   execFileSync: mockExecFileSync,
-}));
-
-vi.mock("../task-backend-ops.js", () => ({
-  closeSeed: mockCloseSeed,
 }));
 
 vi.mock("../agent-worker-enqueue.js", () => ({
@@ -102,7 +99,6 @@ describe("finalize() — push succeeds", () => {
 
     // Default: all git commands succeed
     mockExecFileSync.mockReset();
-    mockCloseSeed.mockReset().mockResolvedValue(undefined);
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
@@ -121,10 +117,12 @@ describe("finalize() — push succeeds", () => {
     expect(result.success).toBe(true);
   });
 
-  it("calls closeSeed when push succeeds", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/my/project" }), logFile);
-    expect(mockCloseSeed).toHaveBeenCalledOnce();
-    expect(mockCloseSeed).toHaveBeenCalledWith("bd-test-001", "/my/project");
+  it("finalize returns true when push succeeds (bead closed by refinery, not here)", async () => {
+    // closeSeed is no longer called from finalize() — the bead lifecycle fix
+    // moves closing to refinery.ts after the branch lands on main.
+    // We simply verify finalize returns true when push succeeds.
+    const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/my/project" }), logFile);
+    expect(result).toBe(true);
   });
 
   it("calls git push with correct branch name", async () => {
@@ -136,13 +134,13 @@ describe("finalize() — push succeeds", () => {
     expect(pushCall![1]).toContain("foreman/bd-xyz-999");
   });
 
-  it("writes FINALIZE_REPORT.md with SUCCESS status for seed close", async () => {
+  it("writes FINALIZE_REPORT.md with AWAITING_MERGE status after successful push", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
     const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
     expect(existsSync(reportPath)).toBe(true);
     const content = readFileSync(reportPath, "utf-8");
-    expect(content).toContain("## Seed Close");
-    expect(content).toContain("Status: SUCCESS");
+    expect(content).toContain("## Seed Status");
+    expect(content).toContain("AWAITING_MERGE");
   });
 
   it("enqueues to merge queue when push succeeds", async () => {
@@ -163,7 +161,6 @@ describe("finalize() — push FAILS", () => {
     writeFileSync(logFile, "");
 
     mockExecFileSync.mockReset();
-    mockCloseSeed.mockReset().mockResolvedValue(undefined);
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     // git push fails; all other commands succeed
@@ -191,9 +188,9 @@ describe("finalize() — push FAILS", () => {
     expect(result.retryable).toBe(true);
   });
 
-  it("does NOT call closeSeed when push fails", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    expect(mockCloseSeed).not.toHaveBeenCalled();
+  it("returns success=false when push fails", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result.success).toBe(false);
   });
 
   it("does NOT enqueue to merge queue when push fails", async () => {
@@ -201,15 +198,15 @@ describe("finalize() — push FAILS", () => {
     expect(mockEnqueueToMergeQueue).not.toHaveBeenCalled();
   });
 
-  it("writes FINALIZE_REPORT.md with FAILED push and SKIPPED seed close", async () => {
+  it("writes FINALIZE_REPORT.md with FAILED push and SKIPPED seed status", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
     const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
     expect(existsSync(reportPath)).toBe(true);
     const content = readFileSync(reportPath, "utf-8");
     expect(content).toContain("## Push");
     expect(content).toContain("Status: FAILED");
-    expect(content).toContain("## Seed Close");
-    expect(content).toContain("Status: SKIPPED (push failed)");
+    expect(content).toContain("## Seed Status");
+    expect(content).toContain("SKIPPED (push failed)");
   });
 
   it("does not throw even when push fails", async () => {
@@ -230,7 +227,6 @@ describe("finalize() — type check failure is non-fatal", () => {
     writeFileSync(logFile, "");
 
     mockExecFileSync.mockReset();
-    mockCloseSeed.mockReset().mockResolvedValue(undefined);
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     // tsc fails, git push succeeds
@@ -253,9 +249,9 @@ describe("finalize() — type check failure is non-fatal", () => {
     expect(result.success).toBe(true);
   });
 
-  it("still calls closeSeed when type check fails but push succeeds", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    expect(mockCloseSeed).toHaveBeenCalledOnce();
+  it("returns success=true when type check fails but push succeeds (bead closed by refinery after merge)", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    expect(result.success).toBe(true);
   });
 
   it("reports type check failure in FINALIZE_REPORT.md", async () => {
@@ -279,7 +275,6 @@ describe("finalize() — nothing to commit", () => {
     writeFileSync(logFile, "");
 
     mockExecFileSync.mockReset();
-    mockCloseSeed.mockReset().mockResolvedValue(undefined);
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
@@ -296,10 +291,9 @@ describe("finalize() — nothing to commit", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns success=true and still pushes/closes when nothing to commit", async () => {
+  it("returns success=true and still pushes when nothing to commit", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
     expect(result.success).toBe(true);
-    expect(mockCloseSeed).toHaveBeenCalledOnce();
   });
 
   it("reports commit as SKIPPED (nothing to commit) in the report", async () => {
@@ -310,9 +304,13 @@ describe("finalize() — nothing to commit", () => {
   });
 });
 
-// ── finalize — closeSeed receives correct projectPath ─────────────────────────
+// ── finalize — merge queue uses correct projectPath ───────────────────────────
+//
+// After the bead lifecycle fix, closeSeed is no longer called from finalize().
+// The projectPath is still used for the SQLite store (merge queue). These tests
+// verify that finalize() succeeds regardless of projectPath configuration.
 
-describe("finalize() — projectPath forwarded to closeSeed", () => {
+describe("finalize() — projectPath used for merge queue store", () => {
   let logFile: string;
   let tmpDir: string;
 
@@ -322,7 +320,6 @@ describe("finalize() — projectPath forwarded to closeSeed", () => {
     writeFileSync(logFile, "");
 
     mockExecFileSync.mockReset();
-    mockCloseSeed.mockReset().mockResolvedValue(undefined);
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
@@ -336,14 +333,14 @@ describe("finalize() — projectPath forwarded to closeSeed", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("passes projectPath to closeSeed when provided", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/explicit/project" }), logFile);
-    expect(mockCloseSeed).toHaveBeenCalledWith("bd-test-001", "/explicit/project");
+  it("finalize succeeds when projectPath is provided", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/explicit/project" }), logFile);
+    expect(result).toBe(true);
   });
 
-  it("passes undefined projectPath to closeSeed when not provided", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir, projectPath: undefined }), logFile);
-    expect(mockCloseSeed).toHaveBeenCalledWith("bd-test-001", undefined);
+  it("finalize succeeds when projectPath is not provided (falls back to worktree parent)", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: undefined }), logFile);
+    expect(result).toBe(true);
   });
 });
 
@@ -369,7 +366,6 @@ describe("finalize() — non-fast-forward push: rebase succeeds → push succeed
     writeFileSync(logFile, "");
 
     mockExecFileSync.mockReset();
-    mockCloseSeed.mockReset().mockResolvedValue(undefined);
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     // First push throws non-fast-forward; pull --rebase and second push succeed.
@@ -415,11 +411,6 @@ describe("finalize() — non-fast-forward push: rebase succeeds → push succeed
     expect(rebaseCall).toBeDefined();
   });
 
-  it("calls closeSeed after rebase + push succeeds", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    expect(mockCloseSeed).toHaveBeenCalledOnce();
-  });
-
   it("writes FINALIZE_REPORT.md with rebase success and push success", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
     const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
@@ -439,7 +430,6 @@ describe("finalize() — non-fast-forward push: rebase FAILS → deterministic f
     writeFileSync(logFile, "");
 
     mockExecFileSync.mockReset();
-    mockCloseSeed.mockReset().mockResolvedValue(undefined);
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     // push throws non-fast-forward; pull --rebase also throws (conflict).
@@ -474,11 +464,6 @@ describe("finalize() — non-fast-forward push: rebase FAILS → deterministic f
   it("returns retryable=false (prevents infinite loop) when rebase fails", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
     expect(result.retryable).toBe(false);
-  });
-
-  it("does NOT call closeSeed when rebase fails", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    expect(mockCloseSeed).not.toHaveBeenCalled();
   });
 
   it("calls git rebase --abort to clean up partial rebase", async () => {
@@ -521,7 +506,6 @@ describe("finalize() — non-fast-forward push: rebase succeeds but retry push f
     writeFileSync(logFile, "");
 
     mockExecFileSync.mockReset();
-    mockCloseSeed.mockReset().mockResolvedValue(undefined);
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     // All push calls throw (first non-fast-forward, second transient network).
@@ -560,11 +544,6 @@ describe("finalize() — non-fast-forward push: rebase succeeds but retry push f
     expect(result.retryable).toBe(true);
   });
 
-  it("does NOT call closeSeed when retry push fails", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    expect(mockCloseSeed).not.toHaveBeenCalled();
-  });
-
   it("writes FINALIZE_REPORT.md noting push failed after rebase", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
     const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
@@ -598,7 +577,6 @@ describe("finalize() — push rejected with 'fetch first' phrasing → rebase + 
     writeFileSync(logFile, "");
 
     mockExecFileSync.mockReset();
-    mockCloseSeed.mockReset().mockResolvedValue(undefined);
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     let pushCallCount = 0;
@@ -651,7 +629,6 @@ describe("finalize() — branch verification", () => {
     writeFileSync(logFile, "");
 
     mockExecFileSync.mockReset();
-    mockCloseSeed.mockReset().mockResolvedValue(undefined);
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
   });
 
@@ -703,7 +680,6 @@ describe("finalize() — branch verification", () => {
     expect(checkoutCall).toBeDefined();
 
     expect(result.success).toBe(true);
-    expect(mockCloseSeed).toHaveBeenCalledOnce();
   });
 
   it("reports RECOVERED status in branch verification section after mismatch checkout", async () => {
@@ -753,7 +729,6 @@ describe("finalize() — branch verification", () => {
     expect(pushCall).toBeUndefined();
 
     expect(result.success).toBe(false);
-    expect(mockCloseSeed).not.toHaveBeenCalled();
     expect(mockEnqueueToMergeQueue).not.toHaveBeenCalled();
   });
 
@@ -772,7 +747,7 @@ describe("finalize() — branch verification", () => {
     expect(content).toContain("Status: FAILED");
     expect(content).toContain("## Push");
     expect(content).toContain("Status: SKIPPED (branch verification failed)");
-    expect(content).toContain("## Seed Close");
+    expect(content).toContain("## Seed Status");
     expect(content).toContain("Status: SKIPPED (push failed)");
   });
 
@@ -786,17 +761,16 @@ describe("finalize() — branch verification", () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
 
     expect(result.success).toBe(false);
-    expect(mockCloseSeed).not.toHaveBeenCalled();
   });
 });
 
 // ── npm-ci + type-check logic (simulated — no real subprocess) ────────────────
 //
-// finalize() runs npm ci before tsc. The tests below verify the observable
-// behaviour of that conditional flow using pure-TypeScript simulators that
-// mirror the real code's logic without spawning subprocesses.
-//
-// See: src/orchestrator/agent-worker-finalize.ts — finalize() npm ci section
+// The tests below verify the observable behaviour of a conditional
+// install-then-type-check flow using pure-TypeScript simulators. These are
+// aspirational / documentation-level tests: the simulators do NOT call any
+// production code. They document intended behaviour for a potential future
+// npm ci step before tsc (not yet implemented in finalize()).
 
 // ── Types ─────────────────────────────────────────────────────────────────
 

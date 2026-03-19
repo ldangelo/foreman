@@ -8,8 +8,7 @@
  *  1. Type-check the worktree (tsc --noEmit, non-fatal)
  *  2. Commit all changes with the seed title/ID as the commit message
  *  3. Push the branch to origin
- *  4. Enqueue the branch to the merge queue (only if push succeeded)
- *  5. Close the seed in the br backend (ONLY if push succeeded)
+ *  4. Enqueue branch for merge (seed will be closed by refinery after merge)
  *
  * Returns a FinalizeResult: { success, retryable }.
  */
@@ -21,7 +20,6 @@ import { execFileSync } from "node:child_process";
 import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { closeSeed } from "./task-backend-ops.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -84,7 +82,7 @@ function log(msg: string): void {
 // ── finalize ──────────────────────────────────────────────────────────────────
 
 /**
- * Run git finalization: add, commit, push, and close the seed.
+ * Run git finalization: add, commit, push, and enqueue for merge.
  *
  * Uses execFileSync for safety — no shell interpolation.
  *
@@ -98,9 +96,6 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
   // `storeProjectPath` is used only to open the SQLite store for the merge
   // queue — it must never be undefined, so we fall back to worktreePath/../..
   // (the conventional repo root for a worktree at <root>/.foreman-worktrees/<id>).
-  // `closeSeed()` further below receives `config.projectPath` directly (which
-  // may be undefined) because that function handles the undefined case
-  // internally and resolves the path itself.
   const storeProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
   const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
 
@@ -305,16 +300,15 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     }
   }
 
-  // Close bead (br backend) — ONLY if push succeeded.
-  // If push failed the seed must stay open so it can be retried manually.
-  // Pass projectPath (repo root) so br finds .beads/ — the worktree dir has none.
+  // Seed lifecycle note: the bead is NOT closed here.
+  // Closing happens only after the branch successfully merges (via refinery.ts).
+  // The bead stays in_progress while the run is in the merge queue.
   if (pushSucceeded) {
-    await closeSeed(seedId, config.projectPath);
-    log(`[FINALIZE] Closed seed ${seedId}`);
-    report.push(`## Seed Close`, `- Status: SUCCESS`, "");
+    log(`[FINALIZE] Seed ${seedId} queued for merge — bead will be closed by refinery after merge`);
+    report.push(`## Seed Status`, `- Status: AWAITING_MERGE`, `- Note: bead closed by refinery after successful merge`, "");
   } else {
-    log(`[FINALIZE] Skipped seed close (push failed) for ${seedId}`);
-    report.push(`## Seed Close`, `- Status: SKIPPED (push failed)`, "");
+    log(`[FINALIZE] Skipped merge queue — push failed for ${seedId}`);
+    report.push(`## Seed Status`, `- Status: SKIPPED (push failed)`, "");
   }
 
   // Write finalize report

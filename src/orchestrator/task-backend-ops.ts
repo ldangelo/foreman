@@ -220,7 +220,8 @@ export interface SyncResult {
  * a br update completed.
  *
  * Covers all terminal run statuses:
- *   completed, merged, pr-created → closed
+ *   merged, pr-created           → closed
+ *   completed                    → in_progress (waiting for merge queue)
  *   failed, stuck, conflict, test-failed → open
  *
  * Non-fatal: individual seed errors are collected and returned; startup

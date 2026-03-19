@@ -106,11 +106,13 @@ describe("syncBeadStatusOnStartup", () => {
     expect(projectId).toBe("proj-xyz");
   });
 
-  it("detects mismatch when completed run has seed still in_progress", async () => {
+  it("detects mismatch when completed run has seed incorrectly closed", async () => {
+    // After the bead lifecycle fix: completed → in_progress (not closed).
+    // A seed that is "closed" when the run is only "completed" (not yet merged) is a mismatch.
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
-    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    taskClient.show.mockResolvedValue({ status: "closed" });
 
     const result: SyncResult = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
@@ -119,8 +121,8 @@ describe("syncBeadStatusOnStartup", () => {
       seedId: "seed-abc",
       runId: "run-1",
       runStatus: "completed",
-      actualSeedStatus: "in_progress",
-      expectedSeedStatus: "closed",
+      actualSeedStatus: "closed",
+      expectedSeedStatus: "in_progress",
     });
   });
 
@@ -149,10 +151,11 @@ describe("syncBeadStatusOnStartup", () => {
   });
 
   it("fixes mismatches by calling execFileSync update (not taskClient.update)", async () => {
+    // completed run with seed incorrectly "closed" → should be updated to "in_progress"
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
-    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    taskClient.show.mockResolvedValue({ status: "closed" });
 
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
@@ -161,16 +164,17 @@ describe("syncBeadStatusOnStartup", () => {
       (call) => Array.isArray(call[1]) && call[1][0] === "update" && call[1][1] === "seed-abc",
     );
     expect(updateCall).toBeDefined();
-    expect(updateCall![1]).toEqual(["update", "seed-abc", "--status", "closed"]);
+    expect(updateCall![1]).toEqual(["update", "seed-abc", "--status", "in_progress"]);
     expect(taskClient.update).not.toHaveBeenCalled();
     expect(result.synced).toBe(1);
   });
 
   it("reports no mismatch when seed status already matches expected", async () => {
+    // After fix: completed → in_progress. Seed at "in_progress" = no mismatch.
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
-    taskClient.show.mockResolvedValue({ status: "closed" });
+    taskClient.show.mockResolvedValue({ status: "in_progress" });
 
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
@@ -184,10 +188,11 @@ describe("syncBeadStatusOnStartup", () => {
   });
 
   it("does not fix mismatches in dry-run mode", async () => {
+    // completed run with seed incorrectly "closed" → mismatch detected but not fixed in dry-run
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
-    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    taskClient.show.mockResolvedValue({ status: "closed" });
 
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1", { dryRun: true });
 
@@ -234,10 +239,11 @@ describe("syncBeadStatusOnStartup", () => {
   });
 
   it("records error when execFileSync update fails, does not count as synced", async () => {
+    // completed run with seed incorrectly "closed" → mismatch, update attempted but fails
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
-    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    taskClient.show.mockResolvedValue({ status: "closed" });
     // execFileSync throws when called with update args (simulates br CLI failure)
     mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
       if (Array.isArray(args) && args[0] === "update") throw new Error("Update failed");
@@ -279,11 +285,17 @@ describe("syncBeadStatusOnStartup", () => {
   });
 
   it("handles multiple seeds with different mismatch states", async () => {
+    // run1: completed → expected in_progress; seed-a is "closed" → mismatch
+    // run2: stuck → expected open; seed-b is "in_progress" → mismatch
     const { store, taskClient } = makeMocks();
     const run1 = makeRun({ id: "run-1", seed_id: "seed-a", status: "completed" });
     const run2 = makeRun({ id: "run-2", seed_id: "seed-b", status: "stuck" });
     store.getRunsByStatuses.mockReturnValue([run1, run2]);
-    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    taskClient.show.mockImplementation(async (id: string) => {
+      if (id === "seed-a") return { status: "closed" };      // wrong for completed (expects in_progress)
+      if (id === "seed-b") return { status: "in_progress" }; // wrong for stuck (expects open)
+      return { status: "open" };
+    });
 
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
@@ -292,10 +304,11 @@ describe("syncBeadStatusOnStartup", () => {
   });
 
   it("calls br sync --flush-only after fixing mismatches", async () => {
+    // completed run with seed incorrectly "closed" → triggers mismatch fix and flush
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
-    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    taskClient.show.mockResolvedValue({ status: "closed" });
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
@@ -307,10 +320,11 @@ describe("syncBeadStatusOnStartup", () => {
   });
 
   it("passes projectPath to execFileSync sync call", async () => {
+    // completed run with seed incorrectly "closed" → mismatch triggers sync call
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
-    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    taskClient.show.mockResolvedValue({ status: "closed" });
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1", {
       projectPath: "/my/project",
@@ -325,11 +339,12 @@ describe("syncBeadStatusOnStartup", () => {
   });
 
   it("does not call br sync --flush-only when no seeds were synced", async () => {
+    // After fix: completed → in_progress. Seed at "in_progress" = no mismatch, no sync needed.
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
-    // Seed already at the correct status
-    taskClient.show.mockResolvedValue({ status: "closed" });
+    // Seed already at the correct status for a completed run
+    taskClient.show.mockResolvedValue({ status: "in_progress" });
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
@@ -340,10 +355,12 @@ describe("syncBeadStatusOnStartup", () => {
   });
 
   it("does not call br sync --flush-only in dry-run mode", async () => {
+    // Use "closed" (mismatch for completed) to ensure there IS a mismatch detected
+    // but confirm no flush is triggered due to dry-run mode.
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
-    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    taskClient.show.mockResolvedValue({ status: "closed" });
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1", { dryRun: true });
 
@@ -354,10 +371,11 @@ describe("syncBeadStatusOnStartup", () => {
   });
 
   it("records error when br sync --flush-only fails but still returns result", async () => {
+    // completed run with seed incorrectly "closed" → mismatch triggers sync call which fails
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
-    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    taskClient.show.mockResolvedValue({ status: "closed" });
     mockExecFileSync.mockImplementation((bin: string, args: string[]) => {
       if (args[0] === "sync") throw new Error("br sync failed");
       return undefined;

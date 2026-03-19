@@ -35,18 +35,20 @@ export interface StateMismatch {
  * defines the correct seed state given a run's terminal state.
  *
  * Mapping:
- *   pending / running        → in_progress
- *   completed / merged / pr-created → closed
+ *   pending / running / completed → in_progress
+ *   merged / pr-created           → closed
  *   failed / stuck / conflict / test-failed → open
  *   (unknown)                → open   (safe default: makes task visible again)
  */
 export function mapRunStatusToSeedStatus(runStatus: string): string {
   switch (runStatus) {
+    // Active pipeline: agent is still running
     case "pending":
     case "running":
-      return "in_progress";
+    // Awaiting merge: pipeline finished, branch pushed, waiting in the merge queue
+    // (refinery.ts closes the bead only after the branch successfully lands on main)
     case "completed":
-      return "closed";
+      return "in_progress";
     case "failed":
     case "stuck":
       return "open";
