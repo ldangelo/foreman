@@ -325,7 +325,9 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
 
             if (event.type === "agent_end") {
               agentEndReceived = true;
-              agentEndSuccess = event.success;
+              // Real Pi emits agent_end without a `success` field on normal completion.
+              // Treat absence of `success: false` as success.
+              agentEndSuccess = event.success !== false;
               agentEndMessage = event.message;
             }
           }
