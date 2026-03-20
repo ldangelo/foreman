@@ -80,13 +80,13 @@ function makeBrMocks() {
 // ── detectAndFixMismatches with BeadsRustClient ──────────────────────────
 
 describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
-  it("detects mismatch when completed run has br issue still in_progress", async () => {
+  it("detects mismatch when completed run has br issue in open state (should be in_progress awaiting merge)", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-abc", status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    brClient.show.mockResolvedValue(makeBrDetail("in_progress"));
+    brClient.show.mockResolvedValue(makeBrDetail("open"));
 
     const result = await detectAndFixMismatches(
       store,
@@ -100,18 +100,18 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
       seedId: "bd-abc",
       runId: "run-1",
       runStatus: "completed",
-      actualSeedStatus: "in_progress",
-      expectedSeedStatus: "closed",
+      actualSeedStatus: "open",
+      expectedSeedStatus: "in_progress",
     });
   });
 
-  it("calls brClient.update to fix a mismatch", async () => {
+  it("calls brClient.update to fix a mismatch (completed run should have in_progress bead)", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-abc", status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    brClient.show.mockResolvedValue(makeBrDetail("in_progress"));
+    brClient.show.mockResolvedValue(makeBrDetail("open"));
 
     const result = await detectAndFixMismatches(
       store,
@@ -120,7 +120,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
       new Set(),
     );
 
-    expect(brClient.update).toHaveBeenCalledWith("bd-abc", { status: "closed" });
+    expect(brClient.update).toHaveBeenCalledWith("bd-abc", { status: "in_progress" });
     expect(result.fixed).toBe(1);
   });
 
@@ -130,7 +130,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
     store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    brClient.show.mockResolvedValue(makeBrDetail("in_progress"));
+    brClient.show.mockResolvedValue(makeBrDetail("open"));
 
     const result = await detectAndFixMismatches(
       store,
@@ -151,7 +151,8 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
     store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    brClient.show.mockResolvedValue(makeBrDetail("closed"));
+    // completed → in_progress: bead already in_progress means no mismatch
+    brClient.show.mockResolvedValue(makeBrDetail("in_progress"));
 
     const result = await detectAndFixMismatches(
       store,
@@ -208,7 +209,8 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
     store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    brClient.show.mockResolvedValue(makeBrDetail("in_progress"));
+    // Use "open" so there IS a mismatch (completed → in_progress, but bead is open)
+    brClient.show.mockResolvedValue(makeBrDetail("open"));
     brClient.update.mockRejectedValue(new Error("br update failed: permission denied"));
 
     const result = await detectAndFixMismatches(
