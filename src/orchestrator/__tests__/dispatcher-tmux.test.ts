@@ -62,6 +62,19 @@ vi.mock("../../lib/tmux.js", () => {
   };
 });
 
+// Mock pi-rpc-spawn-strategy so tmux tests are not affected by Pi binary presence
+const mockSelectSpawnStrategy = vi.fn<() => "pi-rpc" | "tmux" | "detached">(() => "tmux");
+vi.mock("../pi-rpc-spawn-strategy.js", () => {
+  return {
+    isPiAvailable: vi.fn(() => false),
+    selectSpawnStrategy: mockSelectSpawnStrategy,
+    PiRpcSpawnStrategy: class {
+      spawn() { return Promise.resolve({ success: false, error: "mock" }); }
+    },
+    _resetCache: vi.fn(),
+  };
+});
+
 // Now import the module under test
 const { spawnWorkerProcess, TmuxSpawnStrategy, DetachedSpawnStrategy } = await import("../dispatcher.js");
 // Also import the SpawnStrategy type for type checking
@@ -467,11 +480,14 @@ describe("FOREMAN_TMUX_DISABLED -> detached spawn (AT-T017)", () => {
     mockIsAvailable.mockReset();
     mockCreateSession.mockReset();
     mockKillSession.mockReset();
+    // When tmux is disabled, selectSpawnStrategy returns 'detached'
+    mockSelectSpawnStrategy.mockReturnValue("detached");
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
     process.env = { ...originalEnv };
+    mockSelectSpawnStrategy.mockReturnValue("tmux");
   });
 
   it("uses detached spawn when FOREMAN_TMUX_DISABLED=true", async () => {

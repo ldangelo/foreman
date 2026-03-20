@@ -93,6 +93,17 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
+// Mock pi-rpc-spawn-strategy so these tests are not affected by Pi binary presence
+const mockSelectSpawnStrategy = vi.fn<() => "pi-rpc" | "tmux" | "detached">(() => "tmux");
+vi.mock("../pi-rpc-spawn-strategy.js", () => ({
+  isPiAvailable: vi.fn(() => false),
+  selectSpawnStrategy: mockSelectSpawnStrategy,
+  PiRpcSpawnStrategy: class {
+    spawn() { return Promise.resolve({ success: false, error: "mock" }); }
+  },
+  _resetCache: vi.fn(),
+}));
+
 // ── AT-T038: Real tmux integration (skipped when tmux unavailable) ────
 // Uses vi.importActual to bypass the mock and use the real TmuxClient.
 
@@ -270,6 +281,8 @@ describe("AT-T039: fallback behavior when tmux is unavailable", () => {
     mockCreateSession.mockReset();
     mockOpen.mockClear();
     mockClose.mockClear();
+    // For fallback tests, Pi and tmux are both unavailable → detached strategy
+    mockSelectSpawnStrategy.mockReturnValue("detached");
   });
 
   afterEach(() => {

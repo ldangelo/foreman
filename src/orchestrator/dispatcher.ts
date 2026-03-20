@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
+import { PiRpcSpawnStrategy, selectSpawnStrategy } from "./pi-rpc-spawn-strategy.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
@@ -615,7 +616,7 @@ export class Dispatcher {
       pipeline: usePipeline,
       skipExplore: pipelineOpts?.skipExplore,
       skipReview: pipelineOpts?.skipReview,
-    });
+    }, this.store);
 
     return { sessionKey, tmuxSession: spawnResult.tmuxSession };
   }
@@ -652,7 +653,7 @@ export class Dispatcher {
       prompt: resumePrompt,
       env,
       resume: sdkSessionId,
-    });
+    }, this.store);
 
     return { sessionKey, tmuxSession: spawnResult.tmuxSession };
   }
@@ -865,31 +866,41 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
  * Spawn agent-worker.ts using the best available strategy.
  *
  * Strategy selection:
- * 1. If tmux is available, use TmuxSpawnStrategy (AT-T013)
- * 2. If tmux creation fails, fall back to DetachedSpawnStrategy (AT-T016)
- * 3. If tmux is unavailable, use DetachedSpawnStrategy directly
+ * 1. `FOREMAN_SPAWN_STRATEGY=pi-rpc` or pi binary detected → PiRpcSpawnStrategy
+ * 2. `FOREMAN_SPAWN_STRATEGY=tmux` or tmux available → TmuxSpawnStrategy (with detached fallback)
+ * 3. `FOREMAN_SPAWN_STRATEGY=detached` or nothing else available → DetachedSpawnStrategy
  *
  * Returns the spawn result including optional tmux session name.
  */
-export async function spawnWorkerProcess(config: WorkerConfig): Promise<SpawnResult> {
-  const tmux = new TmuxClient();
-  const available = await tmux.isAvailable();
+export async function spawnWorkerProcess(config: WorkerConfig, store?: ForemanStore): Promise<SpawnResult> {
+  const strategyName = selectSpawnStrategy();
+  logger.info({ strategy: strategyName }, "Spawn strategy selected");
 
-  if (available) {
-    const tmuxStrategy = new TmuxSpawnStrategy();
-    const result = await tmuxStrategy.spawn(config);
-
-    // AT-T016: If tmux creation failed, fall back to detached spawn
-    if (result.tmuxSession) {
-      return result;
-    }
-
-    // Tmux was available but session creation failed — fall back
-    const detachedStrategy = new DetachedSpawnStrategy();
-    return detachedStrategy.spawn(config);
+  if (strategyName === "pi-rpc") {
+    const strategy = new PiRpcSpawnStrategy(store);
+    return strategy.spawn(config);
   }
 
-  // Tmux not available — use detached spawn directly
+  if (strategyName === "tmux") {
+    const tmux = new TmuxClient();
+    const available = await tmux.isAvailable();
+
+    if (available) {
+      const tmuxStrategy = new TmuxSpawnStrategy();
+      const result = await tmuxStrategy.spawn(config);
+
+      // AT-T016: If tmux creation failed, fall back to detached spawn
+      if (result.tmuxSession) {
+        return result;
+      }
+
+      // Tmux was available but session creation failed — fall back
+      const detachedStrategy = new DetachedSpawnStrategy();
+      return detachedStrategy.spawn(config);
+    }
+  }
+
+  // Detached strategy (default when neither pi-rpc nor tmux)
   const detachedStrategy = new DetachedSpawnStrategy();
   return detachedStrategy.spawn(config);
 }
@@ -935,6 +946,16 @@ function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 23);
   console.error(`[foreman ${ts}] ${msg}`);
 }
+
+/** Structured logger shim that maps to the module-level log() function. */
+const logger = {
+  info(fields: Record<string, unknown>, msg: string): void {
+    const fieldStr = Object.entries(fields)
+      .map(([k, v]) => `${k}=${String(v)}`)
+      .join(" ");
+    log(`${msg}${fieldStr ? ` [${fieldStr}]` : ""}`);
+  },
+};
 
 /**
  * Extract the SDK session ID from a foreman session key.

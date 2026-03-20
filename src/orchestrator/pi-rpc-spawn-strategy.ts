@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { PiRpcClient } from "./pi-rpc-client.js";
 import type {
+  PiAgentStartEvent,
   PiAgentEndEvent,
   PiTurnEndEvent,
   PiToolExecutionStartEvent,
@@ -250,6 +251,19 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
 
       // ── event dispatch ─────────────────────────────────────────────────
       client.on("event", (event: { type: string }) => {
+        // ── agent_start — model mismatch detection ──────────────────────
+        if (event.type === "agent_start") {
+          const agentStart = event as PiAgentStartEvent;
+          if (agentStart.model && agentStart.model !== config.model) {
+            log(
+              `[PiRpcSpawnStrategy] Pi model mismatch — Pi may not support requested model` +
+              ` | requested=${config.model} actual=${agentStart.model}` +
+              ` | seed=${config.seedId}`,
+            );
+          }
+          return;
+        }
+
         // ── agent_end ───────────────────────────────────────────────────
         if (event.type === "agent_end") {
           const agentEnd = event as PiAgentEndEvent;

@@ -8,6 +8,7 @@ import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { BrIssue } from "../../lib/beads-rust.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
 import type { Issue } from "../../lib/task-client.js";
+import { AgentMailClient } from "../../orchestrator/agent-mail-client.js";
 
 // ── Exported helpers (used by tests) ─────────────────────────────────────
 
@@ -67,6 +68,88 @@ export async function fetchStatusCounts(projectPath: string): Promise<StatusCoun
   const total = openIssues.length + completed;
 
   return { total, ready, inProgress, completed, blocked };
+}
+
+// ── Agent Mail integration ────────────────────────────────────────────────
+
+/** The 5 canonical agent mailboxes checked by foreman status. */
+export const AGENT_MAILBOXES = [
+  "explorer-agent",
+  "developer-agent",
+  "qa-agent",
+  "reviewer-agent",
+  "merge-agent",
+] as const;
+
+export type AgentMailbox = (typeof AGENT_MAILBOXES)[number];
+
+/** Result returned by fetchAgentMailStatus. */
+export interface AgentMailStatus {
+  online: boolean;
+  /** Present only when online === true. Keys are agent names; values are pending message counts. */
+  inboxCounts?: Record<string, number>;
+}
+
+/**
+ * Check Agent Mail health and fetch inbox counts for all 5 agent mailboxes.
+ * Never throws — returns { online: false } on any failure.
+ */
+export async function fetchAgentMailStatus(): Promise<AgentMailStatus> {
+  const client = new AgentMailClient();
+  let healthy = false;
+  try {
+    healthy = await client.healthCheck();
+  } catch {
+    return { online: false };
+  }
+  if (!healthy) {
+    return { online: false };
+  }
+
+  const inboxCounts: Record<string, number> = {};
+  await Promise.all(
+    AGENT_MAILBOXES.map(async (agent) => {
+      const messages = await client.fetchInbox(agent);
+      inboxCounts[agent] = messages.length;
+    }),
+  );
+
+  return { online: true, inboxCounts };
+}
+
+/**
+ * Render the "Agent Mail" section to the provided output function (defaults to console.log).
+ * Exported for testing.
+ */
+export function renderAgentMailSection(
+  status: AgentMailStatus,
+  output: (line: string) => void = console.log,
+): void {
+  if (status.online) {
+    output(chalk.bold("Agent Mail") + ": " + chalk.green("● Online"));
+    if (status.inboxCounts !== undefined) {
+      const agentsWithMessages = AGENT_MAILBOXES.filter(
+        (a) => (status.inboxCounts![a] ?? 0) > 0,
+      );
+      if (agentsWithMessages.length > 0) {
+        for (const agent of agentsWithMessages) {
+          const count = status.inboxCounts![agent] ?? 0;
+          output(
+            `  ${agent.padEnd(18)} ${chalk.yellow(count)} pending ${count === 1 ? "message" : "messages"}`,
+          );
+        }
+      } else {
+        output(chalk.dim("  (all inboxes empty)"));
+      }
+    }
+  } else {
+    output(
+      chalk.bold("Agent Mail") +
+        ": " +
+        chalk.dim("○ Offline") +
+        chalk.dim("  (run: python -m mcp_agent_mail)"),
+    );
+  }
 }
 
 // ── Internal render helper ────────────────────────────────────────────────
@@ -161,6 +244,11 @@ async function renderStatus(): Promise<void> {
   }
 
   store.close();
+
+  // Agent Mail section (always shown, at the bottom)
+  console.log();
+  const agentMailStatus = await fetchAgentMailStatus();
+  renderAgentMailSection(agentMailStatus);
 }
 
 export const statusCommand = new Command("status")

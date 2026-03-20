@@ -41,6 +41,8 @@ export type PiCommand =
 export interface PiAgentStartEvent {
   type: "agent_start";
   sessionId?: string;
+  /** Model identifier reported by Pi — used for mismatch detection */
+  model?: string;
 }
 
 export interface PiAgentEndEvent {

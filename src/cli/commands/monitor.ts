@@ -5,6 +5,46 @@ import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { Monitor } from "../../orchestrator/monitor.js";
+import { AgentMailClient } from "../../orchestrator/agent-mail-client.js";
+
+// ── Agent Mail health helpers ─────────────────────────────────────────────────
+
+/** Result returned by fetchAgentMailHealth. */
+export interface AgentMailHealth {
+  online: boolean;
+}
+
+/**
+ * Check Agent Mail service health.
+ * Never throws — returns { online: false } on any failure.
+ */
+export async function fetchAgentMailHealth(): Promise<AgentMailHealth> {
+  const client = new AgentMailClient();
+  try {
+    const online = await client.healthCheck();
+    return { online };
+  } catch {
+    return { online: false };
+  }
+}
+
+/**
+ * Render a single Agent Mail health line for the monitor command.
+ * Exported for testing.
+ */
+export function renderAgentMailMonitorLine(
+  health: AgentMailHealth,
+  output: (line: string) => void = console.log,
+): void {
+  if (health.online) {
+    output(`  ${chalk.green("✓")} Agent Mail server: ${chalk.green("online")}`);
+  } else {
+    output(
+      `  ${chalk.red("✗")} Agent Mail server: ${chalk.red("offline")}` +
+        chalk.dim("  (run: python -m mcp_agent_mail &)"),
+    );
+  }
+}
 
 export const monitorCommand = new Command("monitor")
   .description("[deprecated] Check agent progress and detect stuck runs. Use 'foreman reset --detect-stuck' instead.")
@@ -122,6 +162,12 @@ export const monitorCommand = new Command("monitor")
       if (total === 0) {
         console.log(chalk.dim("No active runs found."));
       }
+
+      // Agent Mail health check (informational — never fails the command)
+      console.log();
+      console.log(chalk.bold("Service Health"));
+      const agentMailHealth = await fetchAgentMailHealth();
+      renderAgentMailMonitorLine(agentMailHealth);
 
       store.close();
     } catch (err: unknown) {

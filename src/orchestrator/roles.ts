@@ -286,6 +286,62 @@ export const SENTINEL_ROLE_CONFIG: RoleConfig = {
   maxTokens: 100_000,
 };
 
+// ── Pi Phase Config ─────────────────────────────────────────────────────────
+
+/**
+ * Lightweight configuration for a Pi RPC pipeline phase.
+ * Mirrors the relevant fields from `RoleConfig` but excludes SDK-specific
+ * properties (permissionMode, maxBudgetUsd, reportFile, role) that are not
+ * meaningful in the Pi RPC context.
+ */
+export interface PiPhaseConfig {
+  /** Model identifier sent via set_model command to Pi */
+  model: string;
+  /** Tool names the phase is permitted to invoke */
+  allowedTools: string[];
+  /** Bash commands this phase must not execute (empty = no blocklist) */
+  bashBlocklist?: string[];
+  /** Maximum number of agent turns for this phase */
+  maxTurns: number;
+  /** Maximum token budget for this phase */
+  maxTokens: number;
+}
+
+/**
+ * Per-phase Pi RPC configuration map.
+ *
+ * Derived from `ROLE_CONFIGS` so model, maxTurns, maxTokens, and allowedTools
+ * remain a single source of truth.  Any env-var overrides applied to
+ * `ROLE_CONFIGS` (e.g. `FOREMAN_EXPLORER_MODEL`) are automatically reflected
+ * here because we reference `ROLE_CONFIGS` at module-evaluation time.
+ */
+export const PI_PHASE_CONFIGS: Record<string, PiPhaseConfig> = {
+  explorer: {
+    model: ROLE_CONFIGS.explorer.model,
+    allowedTools: [...ROLE_CONFIGS.explorer.allowedTools],
+    maxTurns: ROLE_CONFIGS.explorer.maxTurns,
+    maxTokens: ROLE_CONFIGS.explorer.maxTokens,
+  },
+  developer: {
+    model: ROLE_CONFIGS.developer.model,
+    allowedTools: [...ROLE_CONFIGS.developer.allowedTools],
+    maxTurns: ROLE_CONFIGS.developer.maxTurns,
+    maxTokens: ROLE_CONFIGS.developer.maxTokens,
+  },
+  qa: {
+    model: ROLE_CONFIGS.qa.model,
+    allowedTools: [...ROLE_CONFIGS.qa.allowedTools],
+    maxTurns: ROLE_CONFIGS.qa.maxTurns,
+    maxTokens: ROLE_CONFIGS.qa.maxTokens,
+  },
+  reviewer: {
+    model: ROLE_CONFIGS.reviewer.model,
+    allowedTools: [...ROLE_CONFIGS.reviewer.allowedTools],
+    maxTurns: ROLE_CONFIGS.reviewer.maxTurns,
+    maxTokens: ROLE_CONFIGS.reviewer.maxTokens,
+  },
+};
+
 // ── Prompt templates ────────────────────────────────────────────────────
 
 export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string): string {
