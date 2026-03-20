@@ -36,6 +36,7 @@ import { resetSeedToOpen, addLabelsToBead, addNotesToBead } from "./task-backend
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
+import { AgentMailClient } from "./agent-mail-client.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -81,6 +82,25 @@ class NotificationClient {
       // Silently ignore any synchronous errors (e.g. invalid URL)
     }
   }
+}
+
+// ── Agent Mail helper ─────────────────────────────────────────────────────────
+
+/**
+ * Fire-and-forget wrapper for AgentMailClient.sendMessage.
+ * Never throws — failures are logged but do not affect the pipeline.
+ */
+function sendMail(
+  client: AgentMailClient | null,
+  to: string,
+  subject: string,
+  body: Record<string, unknown>,
+): void {
+  if (!client) return;
+  client.sendMessage(to, subject, JSON.stringify(body)).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[agent-mail] send failed (non-fatal): ${msg}`);
+  });
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -162,12 +182,25 @@ async function main(): Promise<void> {
   // Create notification client using FOREMAN_NOTIFY_URL (set in env above if provided by dispatcher)
   const notifyClient = new NotificationClient(process.env.FOREMAN_NOTIFY_URL);
 
+  // Create AgentMailClient (reads config from env vars / .foreman/agent-mail.json / defaults).
+  // Set to null when Agent Mail is not reachable so sends are silently skipped.
+  let agentMailClient: AgentMailClient | null = null;
+  try {
+    const candidate = new AgentMailClient();
+    const reachable = await candidate.healthCheck();
+    if (reachable) {
+      agentMailClient = candidate;
+    }
+  } catch {
+    // Non-fatal — Agent Mail is optional infrastructure
+  }
+
   // Build clean env for SDK
   const env: Record<string, string | undefined> = { ...process.env };
 
   // ── Pipeline mode: run each phase as a separate SDK session ─────────
   if (pipeline) {
-    await runPipeline(config, store, logFile, notifyClient);
+    await runPipeline(config, store, logFile, notifyClient, agentMailClient);
     store.close();
     log(`Pipeline worker exiting for ${seedId}`);
     return;
@@ -522,6 +555,7 @@ async function finalize(
   progress: RunProgress,
   pipelineStartedAt: string,
   pipelineStatus = "ALL_CHECKS_PASSED",
+  agentMailClient: AgentMailClient | null = null,
 ): Promise<FinalizeResult> {
   const { seedId, seedTitle, worktreePath } = config;
   const storeProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
@@ -790,6 +824,12 @@ async function finalize(
       if (enqueueResult.success) {
         log(`[FINALIZE] Enqueued to merge queue`);
         report.push(`## Merge Queue`, `- Status: ENQUEUED`, "");
+        sendMail(agentMailClient, "refinery", "branch-ready", {
+          seedId,
+          runId: config.runId,
+          branch: `foreman/${seedId}`,
+          worktreePath,
+        });
       } else {
         log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error}`);
         report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueResult.error?.slice(0, 300)}`, "");
@@ -853,7 +893,7 @@ const MAX_DEV_RETRIES = PIPELINE_LIMITS.maxDevRetries;
  * Run the full pipeline: Explorer → Developer ⇄ QA → Reviewer → Finalize.
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
-async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string, notifyClient: NotificationClient): Promise<void> {
+async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string, notifyClient: NotificationClient, agentMailClient: AgentMailClient | null): Promise<void> {
   const { runId, projectId, seedId, seedTitle, worktreePath } = config;
   const description = config.seedDescription ?? "(no description)";
   const comments = config.seedComments;
@@ -900,9 +940,15 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         error: result.error,
       });
       if (!result.success) {
+        sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: "explorer", error: result.error ?? "Explorer failed", retryable: true,
+        });
         await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed", notifyClient, config.projectPath);
         return;
       }
+      sendMail(agentMailClient, "foreman", "phase-complete", {
+        seedId, phase: "explorer", status: "completed", cost: result.costUsd, turns: result.turns,
+      });
       store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
       addLabelsToBead(seedId, ["phase:explorer"], config.projectPath);
     }
@@ -942,9 +988,15 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         error: devResult.error,
       });
       if (!devResult.success) {
+        sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: "developer", error: devResult.error ?? "Developer failed", retryable: true,
+        });
         await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed", notifyClient, config.projectPath);
         return;
       }
+      sendMail(agentMailClient, "foreman", "phase-complete", {
+        seedId, phase: "developer", status: "completed", cost: devResult.costUsd, turns: devResult.turns,
+      });
       store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
       addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
     }
@@ -968,9 +1020,15 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         error: qaResult.error,
       });
       if (!qaResult.success) {
+        sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: "qa", error: qaResult.error ?? "QA failed", retryable: true,
+        });
         await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed", notifyClient, config.projectPath);
         return;
       }
+      sendMail(agentMailClient, "foreman", "phase-complete", {
+        seedId, phase: "qa", status: "completed", cost: qaResult.costUsd, turns: qaResult.turns,
+      });
       store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
       addLabelsToBead(seedId, ["phase:qa"], config.projectPath);
     }
@@ -1015,9 +1073,15 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         error: reviewResult.error,
       });
       if (!reviewResult.success) {
+        sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: "reviewer", error: reviewResult.error ?? "Reviewer failed", retryable: true,
+        });
         await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed", notifyClient, config.projectPath);
         return;
       }
+      sendMail(agentMailClient, "foreman", "phase-complete", {
+        seedId, phase: "reviewer", status: "completed", cost: reviewResult.costUsd, turns: reviewResult.turns,
+      });
       store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
       addLabelsToBead(seedId, ["phase:reviewer"], config.projectPath);
     }
@@ -1050,6 +1114,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         error: devResult.error,
       });
       if (devResult.success) {
+        sendMail(agentMailClient, "foreman", "phase-complete", {
+          seedId, phase: "developer", status: "completed", cost: devResult.costUsd, turns: devResult.turns,
+        });
         store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
         addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
 
@@ -1064,6 +1131,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           error: qaResult.error,
         });
         if (qaResult.success) {
+          sendMail(agentMailClient, "foreman", "phase-complete", {
+            seedId, phase: "qa", status: "completed", cost: qaResult.costUsd, turns: qaResult.turns,
+          });
           store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
           addLabelsToBead(seedId, ["phase:qa"], config.projectPath);
         }
@@ -1119,7 +1189,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   store.updateRunProgress(runId, progress);
   await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: FINALIZE]\n`);
 
-  const finalizeResult = await finalize(config, logFile, progress, pipelineStartedAt, pipelineStatus);
+  const finalizeResult = await finalize(config, logFile, progress, pipelineStartedAt, pipelineStatus, agentMailClient);
   const finalizeSucceeded = finalizeResult.success;
 
   const now = new Date().toISOString();
@@ -1130,6 +1200,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     // Push failed — mark the run as stuck.
     store.updateRun(runId, { status: "stuck", completed_at: now });
     notifyClient.send({ type: "status", runId, status: "stuck", timestamp: now });
+    sendMail(agentMailClient, "foreman", "agent-error", {
+      seedId, phase: "finalize", error: "Push failed", retryable: finalizeResult.retryable,
+    });
     // Only reset the seed to "open" for retryable failures (e.g. transient network
     // errors).  Deterministic failures — like a diverged history that could not be
     // rebased — must NOT trigger a reset, because that would cause the dispatcher
