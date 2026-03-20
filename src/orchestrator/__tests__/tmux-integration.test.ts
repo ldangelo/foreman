@@ -52,6 +52,14 @@ function createTestRun(
 const mockSpawnSync = vi.fn();
 const mockSpawn = vi.fn();
 
+// Mock Pi RPC spawn strategy so tmux tests are not intercepted by Pi
+vi.mock("../pi-rpc-spawn-strategy.js", () => ({
+  isPiAvailable: vi.fn().mockReturnValue(false),
+  PiRpcSpawnStrategy: vi.fn(),
+  PI_PHASE_CONFIGS: {},
+  parsePiEvent: vi.fn().mockReturnValue(null),
+}));
+
 vi.mock("node:child_process", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:child_process")>();
   return {

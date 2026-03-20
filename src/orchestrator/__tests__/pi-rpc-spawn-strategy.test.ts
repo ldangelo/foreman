@@ -66,13 +66,30 @@ function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
 }
 
 function makeFakeProcess() {
+  // Minimal EventEmitter-like stub so background async code can call child.on("close")
+  const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+  const fakeEmitter = {
+    on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+      listeners[event] = listeners[event] ?? [];
+      listeners[event].push(cb);
+    }),
+    emit: (event: string, ...args: unknown[]) => {
+      (listeners[event] ?? []).forEach((cb) => cb(...args));
+    },
+  };
   return {
     pid: 12345,
+    exitCode: null as number | null,
     stdin: {
       write: vi.fn(),
       end: vi.fn(),
     },
+    // stdout is read via readline — provide a minimal async iterable that ends immediately
+    stdout: {
+      [Symbol.asyncIterator]: async function* () { /* no events */ },
+    },
     unref: vi.fn(),
+    ...fakeEmitter,
   };
 }
 
