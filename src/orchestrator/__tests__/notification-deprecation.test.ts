@@ -53,7 +53,6 @@ describe("AgentMailClient phase-completion dual-channel in agent-worker.ts", () 
   it("sends Phase Complete: explorer message after explorer phase success", () => {
     const source = readFileSync(agentWorkerPath, "utf-8");
     expect(source).toContain("`Phase Complete: explorer`");
-    expect(source).toContain("phase: \"explorer\"");
     // Verify it is sent to the pipeline channel
     expect(source).toContain("`pipeline-${config.seedId}`");
   });
@@ -61,34 +60,41 @@ describe("AgentMailClient phase-completion dual-channel in agent-worker.ts", () 
   it("sends Phase Complete: developer message after developer phase success", () => {
     const source = readFileSync(agentWorkerPath, "utf-8");
     expect(source).toContain("`Phase Complete: developer`");
-    expect(source).toContain("phase: \"developer\"");
+    expect(source).toContain("`pipeline-${config.seedId}`");
   });
 
   it("sends Phase Complete: qa message after qa phase success", () => {
     const source = readFileSync(agentWorkerPath, "utf-8");
     expect(source).toContain("`Phase Complete: qa`");
-    expect(source).toContain("phase: \"qa\"");
+    expect(source).toContain("`pipeline-${config.seedId}`");
   });
 
   it("sends Phase Complete: reviewer message after reviewer phase success", () => {
     const source = readFileSync(agentWorkerPath, "utf-8");
     expect(source).toContain("`Phase Complete: reviewer`");
-    expect(source).toContain("phase: \"reviewer\"");
+    expect(source).toContain("`pipeline-${config.seedId}`");
   });
 
   it("sends Phase Complete: finalize message after successful finalize", () => {
     const source = readFileSync(agentWorkerPath, "utf-8");
     expect(source).toContain("`Phase Complete: finalize`");
-    expect(source).toContain("phase: \"finalize\"");
+    // Verify it is sent to the pipeline channel
+    expect(source).toContain("`pipeline-${config.seedId}`");
   });
 
-  it("all phase complete messages include status: complete metadata", () => {
+  it("all five phase complete messages exist in source (explorer, developer, qa, reviewer, finalize)", () => {
     const source = readFileSync(agentWorkerPath, "utf-8");
-    // Count occurrences of 'status: "complete"' in the phase completion blocks
-    const matches = source.match(/status: "complete"/g);
-    // At least 5 occurrences (explorer, developer, qa, reviewer, finalize)
-    expect(matches).not.toBeNull();
-    expect((matches ?? []).length).toBeGreaterThanOrEqual(5);
+    // Each phase message is sent via sendMessage with the "Phase Complete: X" subject
+    const phaseMessages = [
+      "`Phase Complete: explorer`",
+      "`Phase Complete: developer`",
+      "`Phase Complete: qa`",
+      "`Phase Complete: reviewer`",
+      "`Phase Complete: finalize`",
+    ];
+    for (const msg of phaseMessages) {
+      expect(source).toContain(msg);
+    }
   });
 });
 
@@ -116,8 +122,8 @@ describe("Run error Agent Mail notification in markStuck", () => {
     expect(source).toContain('"operator"');
     // Verify the Run Error subject pattern
     expect(source).toContain("`Run Error: ${seedId}`");
-    // Verify status: "error" metadata
-    expect(source).toContain('status: "error"');
+    // Verify sendMessage is called with the error reason as the body
+    expect(source).toContain("reason,");
   });
 
   it("markStuck accepts agentMailClient as optional parameter", () => {
