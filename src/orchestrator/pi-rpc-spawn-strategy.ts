@@ -165,6 +165,8 @@ export function isPiAvailable(): boolean {
  * otherwise fall back to the known Homebrew install path.
  */
 function resolvePiBinary(): string {
+  // Allow tests (and advanced users) to override the binary path via env var.
+  if (process.env.FOREMAN_PI_BIN) return process.env.FOREMAN_PI_BIN;
   try {
     const result = execFileSync("which", ["pi"], { encoding: "utf-8" }).trim();
     if (result) return result;
