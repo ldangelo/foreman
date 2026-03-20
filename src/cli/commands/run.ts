@@ -320,6 +320,8 @@ export const runCommand = new Command("run")
           console.error(chalk.dim(`  Configure via: .foreman/agent-mail.json or AGENT_MAIL_URL env var\n`));
           process.exit(1);
         }
+        // Ensure the project exists in Agent Mail (idempotent).
+        await agentMailClient.ensureProject(projectPath);
       }
 
       // ── Pi Extensions check ──────────────────────────────────────────────────

@@ -252,6 +252,9 @@ async function main(): Promise<void> {
     const candidate = new AgentMailClient();
     const reachable = await candidate.healthCheck();
     if (reachable) {
+      // Ensure the project exists in Agent Mail before any sends/receives.
+      // This is idempotent — safe to call on every worker start.
+      await candidate.ensureProject(storeProjectPath);
       agentMailClient = candidate;
     }
   } catch {

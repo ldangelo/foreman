@@ -87,6 +87,7 @@ vi.mock("../watch-ui.js", () => ({ watchRunsInk: (...args: unknown[]) => mockWat
 vi.mock("../../orchestrator/agent-mail-client.js", () => ({
   AgentMailClient: vi.fn(function (this: Record<string, unknown>) {
     this.healthCheck = mockHealthCheck;
+    this.ensureProject = vi.fn().mockResolvedValue(undefined);
   }),
   DEFAULT_AGENT_MAIL_CONFIG: { baseUrl: "http://localhost:8766" },
 }));
