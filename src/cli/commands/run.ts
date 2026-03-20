@@ -13,7 +13,7 @@ import { ForemanStore } from "../../lib/store.js";
 import { getRepoRoot, detectDefaultBranch } from "../../lib/git.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
-import { watchRunsInk, type WatchResult } from "../watch-ui.js";
+import { watchRunsInk } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
