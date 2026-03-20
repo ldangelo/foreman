@@ -9,6 +9,16 @@ import type { UpdateOptions } from "../lib/task-client.js";
 import { mergeWorktree, removeWorktree, detectDefaultBranch } from "../lib/git.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
+
+// ── mergeOne result type ──────────────────────────────────────────────────────
+
+export type MergeOneStatus = "merged" | "conflict" | "pr-created" | "failed";
+
+export interface MergeOneResult {
+  status: MergeOneStatus;
+  branchName: string;
+  reason?: string;
+}
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
@@ -356,12 +366,228 @@ export class Refinery {
   }
 
   /**
+   * Attempt to merge a single completed run into the target branch.
+   *
+   * Handles:
+   *   - T1 clean merge: rebase + fast-forward + optional test gate + bead close
+   *   - T2 report-only conflict resolution: auto-resolve report files then merge
+   *   - Conflict / rebase failures: reset seed to open and create a PR
+   *
+   * Returns a typed result indicating success, conflict (PR created), or failure.
+   * Side-effects: updates store run status, logs events, closes bead on success.
+   */
+  async mergeOne(
+    run: import("../lib/store.js").Run,
+    opts: {
+      targetBranch: string;
+      runTests: boolean;
+      testCommand: string;
+    },
+  ): Promise<MergeOneResult & {
+    merged?: MergedRun;
+    conflict?: ConflictRun;
+    testFailure?: FailedRun;
+    prCreated?: CreatedPr;
+  }> {
+    const { targetBranch, runTests, testCommand } = opts;
+    const branchName = `foreman/${run.seed_id}`;
+
+    // Scan for unresolved conflict markers in source files before attempting merge.
+    // If any are found, skip rebase and create a PR for manual resolution.
+    if (run.worktree_path) {
+      const markedFiles = await this.scanForConflictMarkers(run.worktree_path);
+      if (markedFiles.length > 0) {
+        await resetSeedToOpen(run.seed_id, this.projectPath);
+        const pr = await this.createPrForConflict(
+          run,
+          branchName,
+          targetBranch,
+          `Unresolved conflict markers in: ${markedFiles.join(", ")}`,
+        );
+        if (pr) {
+          return { status: "pr-created", branchName, prCreated: pr };
+        }
+        await this.addFailureNote(run.seed_id, `Merge skipped: unresolved conflict markers in ${markedFiles.join(", ")}. PR creation also failed — manual intervention required.`);
+        return {
+          status: "conflict",
+          branchName,
+          reason: `Unresolved conflict markers in: ${markedFiles.join(", ")}`,
+          conflict: { runId: run.id, seedId: run.seed_id, branchName, conflictFiles: markedFiles },
+        };
+      }
+    }
+
+    // Commit any dirty state files (.seeds/, .foreman/) before merge
+    await this.autoCommitStateFiles();
+
+    // Remove report files so they can't cause merge conflicts
+    await this.removeReportFiles();
+
+    // Ensure branch is in local refs — sentinel/remote branches may only exist
+    // on origin and not be fetched yet. Silently skip if the fetch fails (the
+    // reconcile step already validates the branch exists).
+    try {
+      await git(["fetch", "origin", `${branchName}:${branchName}`], this.projectPath);
+    } catch {
+      // Fetch failure is non-fatal: branch may already be local, or the remote
+      // may be unreachable. The subsequent rebase/merge will surface any real error.
+    }
+
+    // Rebase branch onto current target so it picks up all prior merges.
+    // Auto-resolves report-file conflicts during rebase; aborts on real code conflicts.
+    {
+      let rebaseOk = true;
+      try {
+        await git(["rebase", targetBranch, branchName], this.projectPath);
+      } catch {
+        // Rebase hit conflicts — try to auto-resolve report files and continue
+        rebaseOk = await this.autoResolveRebaseConflicts(targetBranch);
+      }
+
+      // Return to target branch regardless
+      try { await git(["checkout", targetBranch], this.projectPath); } catch { /* best effort */ }
+
+      if (!rebaseOk) {
+        // Rebase failed — reset seed to open so it can be retried, then create a PR for manual conflict resolution
+        await resetSeedToOpen(run.seed_id, this.projectPath);
+        const pr = await this.createPrForConflict(run, branchName, targetBranch, "Rebase conflicts");
+        if (pr) {
+          return { status: "pr-created", branchName, prCreated: pr };
+        }
+        await this.addFailureNote(run.seed_id, "Merge conflict: rebase failed. PR creation also failed — manual intervention required.");
+        return {
+          status: "conflict",
+          branchName,
+          reason: "Rebase conflicts",
+          conflict: { runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] },
+        };
+      }
+    }
+
+    // Save pre-merge HEAD so we can revert merge + archive if tests fail
+    const preMergeHead = await git(["rev-parse", "HEAD"], this.projectPath);
+
+    const result = await mergeWorktree(this.projectPath, branchName, targetBranch);
+
+    if (!result.success) {
+      const allConflicts = result.conflicts ?? [];
+      const reportConflicts = allConflicts.filter((f) => this.isReportFile(f));
+      const codeConflicts = allConflicts.filter((f) => !this.isReportFile(f));
+
+      if (codeConflicts.length > 0) {
+        // Real code conflicts — abort merge and create PR instead
+        try {
+          await git(["merge", "--abort"], this.projectPath);
+        } catch {
+          // merge --abort may fail if already clean
+        }
+
+        // Reset seed to open so it can be retried after manual conflict resolution
+        await resetSeedToOpen(run.seed_id, this.projectPath);
+
+        const pr = await this.createPrForConflict(run, branchName, targetBranch,
+          `Conflicts in: ${codeConflicts.join(", ")}`);
+        if (pr) {
+          return { status: "pr-created", branchName, prCreated: pr };
+        }
+        await this.addFailureNote(run.seed_id, `Merge conflict: code conflicts in ${codeConflicts.join(", ")}. PR creation also failed — manual intervention required.`);
+        return {
+          status: "conflict",
+          branchName,
+          reason: `Code conflicts in: ${codeConflicts.join(", ")}`,
+          conflict: { runId: run.id, seedId: run.seed_id, branchName, conflictFiles: codeConflicts },
+        };
+      }
+
+      // Only report-file conflicts — auto-resolve by accepting the branch version
+      for (const f of reportConflicts) {
+        await git(["checkout", "--theirs", f], this.projectPath);
+        await git(["add", "-f", f], this.projectPath);
+      }
+      await git(["commit", "--no-edit"], this.projectPath);
+    }
+
+    // Merge succeeded — archive report files so they don't conflict with next merge
+    await this.archiveReportsPostMerge(run.seed_id);
+
+    // Optionally run tests
+    if (runTests) {
+      const testResult = await runTestCommand(testCommand, this.projectPath);
+
+      if (!testResult.ok) {
+        // Revert the merge + archive commits
+        await git(["reset", "--hard", preMergeHead], this.projectPath);
+
+        // Reset seed to open so it can be retried
+        await resetSeedToOpen(run.seed_id, this.projectPath);
+
+        this.store.updateRun(run.id, { status: "test-failed" });
+        this.store.logEvent(
+          run.project_id,
+          "test-fail",
+          { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
+          run.id,
+        );
+        await this.addFailureNote(run.seed_id, `Merge failed: tests failed after merge. ${testResult.output.slice(0, 300)}`);
+        return {
+          status: "failed",
+          branchName,
+          reason: "tests failed after merge",
+          testFailure: {
+            runId: run.id,
+            seedId: run.seed_id,
+            branchName,
+            error: testResult.output.slice(0, 500),
+          },
+        };
+      }
+    }
+
+    // All good — clean up worktree and mark as merged
+    if (run.worktree_path) {
+      try {
+        await archiveWorktreeReports(this.projectPath, run.worktree_path, run.seed_id);
+      } catch {
+        // Archive is best-effort — don't block worktree removal
+      }
+      try {
+        await removeWorktree(this.projectPath, run.worktree_path);
+      } catch {
+        // Non-fatal — worktree may already be gone
+      }
+    }
+
+    this.store.updateRun(run.id, {
+      status: "merged",
+      completed_at: new Date().toISOString(),
+    });
+    this.store.logEvent(
+      run.project_id,
+      "merge",
+      { seedId: run.seed_id, branchName, targetBranch },
+      run.id,
+    );
+
+    // Close the bead NOW — after the code has actually landed in main.
+    // projectPath (repo root) is where .beads/ lives; not the worktree dir.
+    await closeSeed(run.seed_id, this.projectPath);
+
+    return {
+      status: "merged",
+      branchName,
+      merged: { runId: run.id, seedId: run.seed_id, branchName },
+    };
+  }
+
+  /**
    * Find all completed (unmerged) runs and attempt to merge them into the target branch.
    * Optionally run tests after each merge. Merges in dependency order.
    *
    * Report files (QA_REPORT.md, REVIEW.md, TASK.md, AGENTS.md, etc.) are removed
    * before each merge to prevent conflicts, then archived to .foreman/reports/ after.
    * Only real code conflicts are reported as failures.
+   *
+   * Delegates per-branch work to mergeOne().
    */
   async mergeCompleted(opts?: {
     targetBranch?: string;
@@ -386,178 +612,22 @@ export class Refinery {
       const branchName = `foreman/${run.seed_id}`;
 
       try {
-        // Scan for unresolved conflict markers in source files before attempting merge.
-        // If any are found, skip rebase and create a PR for manual resolution.
-        if (run.worktree_path) {
-          const markedFiles = await this.scanForConflictMarkers(run.worktree_path);
-          if (markedFiles.length > 0) {
-            await resetSeedToOpen(run.seed_id, this.projectPath);
-            const pr = await this.createPrForConflict(
-              run,
-              branchName,
-              targetBranch,
-              `Unresolved conflict markers in: ${markedFiles.join(", ")}`,
-            );
-            if (pr) {
-              prsCreated.push(pr);
-            } else {
-              await this.addFailureNote(run.seed_id, `Merge skipped: unresolved conflict markers in ${markedFiles.join(", ")}. PR creation also failed — manual intervention required.`);
-              conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: markedFiles });
-            }
-            continue;
-          }
+        const oneResult = await this.mergeOne(run, { targetBranch, runTests, testCommand });
+
+        switch (oneResult.status) {
+          case "merged":
+            if (oneResult.merged) merged.push(oneResult.merged);
+            break;
+          case "pr-created":
+            if (oneResult.prCreated) prsCreated.push(oneResult.prCreated);
+            break;
+          case "conflict":
+            if (oneResult.conflict) conflicts.push(oneResult.conflict);
+            break;
+          case "failed":
+            if (oneResult.testFailure) testFailures.push(oneResult.testFailure);
+            break;
         }
-
-        // Commit any dirty state files (.seeds/, .foreman/) before merge
-        await this.autoCommitStateFiles();
-
-        // Remove report files so they can't cause merge conflicts
-        await this.removeReportFiles();
-
-        // Ensure branch is in local refs — sentinel/remote branches may only exist
-        // on origin and not be fetched yet. Silently skip if the fetch fails (the
-        // reconcile step already validates the branch exists).
-        try {
-          await git(["fetch", "origin", `${branchName}:${branchName}`], this.projectPath);
-        } catch {
-          // Fetch failure is non-fatal: branch may already be local, or the remote
-          // may be unreachable. The subsequent rebase/merge will surface any real error.
-        }
-
-        // Rebase branch onto current target so it picks up all prior merges.
-        // Auto-resolves report-file conflicts during rebase; aborts on real code conflicts.
-        {
-          let rebaseOk = true;
-          try {
-            await git(["rebase", targetBranch, branchName], this.projectPath);
-          } catch {
-            // Rebase hit conflicts — try to auto-resolve report files and continue
-            rebaseOk = await this.autoResolveRebaseConflicts(targetBranch);
-          }
-
-          // Return to target branch regardless
-          try { await git(["checkout", targetBranch], this.projectPath); } catch { /* best effort */ }
-
-          if (!rebaseOk) {
-            // Rebase failed — reset seed to open so it can be retried, then create a PR for manual conflict resolution
-            await resetSeedToOpen(run.seed_id, this.projectPath);
-            const pr = await this.createPrForConflict(run, branchName, targetBranch, "Rebase conflicts");
-            if (pr) {
-              prsCreated.push(pr);
-            } else {
-              await this.addFailureNote(run.seed_id, "Merge conflict: rebase failed. PR creation also failed — manual intervention required.");
-              conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
-            }
-            continue;
-          }
-        }
-
-        // Save pre-merge HEAD so we can revert merge + archive if tests fail
-        const preMergeHead = await git(["rev-parse", "HEAD"], this.projectPath);
-
-        const result = await mergeWorktree(this.projectPath, branchName, targetBranch);
-
-        if (!result.success) {
-          const allConflicts = result.conflicts ?? [];
-          const reportConflicts = allConflicts.filter((f) => this.isReportFile(f));
-          const codeConflicts = allConflicts.filter((f) => !this.isReportFile(f));
-
-          if (codeConflicts.length > 0) {
-            // Real code conflicts — abort merge and create PR instead
-            try {
-              await git(["merge", "--abort"], this.projectPath);
-            } catch {
-              // merge --abort may fail if already clean
-            }
-
-            // Reset seed to open so it can be retried after manual conflict resolution
-            await resetSeedToOpen(run.seed_id, this.projectPath);
-
-            const pr = await this.createPrForConflict(run, branchName, targetBranch,
-              `Conflicts in: ${codeConflicts.join(", ")}`);
-            if (pr) {
-              prsCreated.push(pr);
-            } else {
-              await this.addFailureNote(run.seed_id, `Merge conflict: code conflicts in ${codeConflicts.join(", ")}. PR creation also failed — manual intervention required.`);
-              conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: codeConflicts });
-            }
-            continue;
-          }
-
-          // Only report-file conflicts — auto-resolve by accepting the branch version
-          for (const f of reportConflicts) {
-            await git(["checkout", "--theirs", f], this.projectPath);
-            await git(["add", "-f", f], this.projectPath);
-          }
-          await git(["commit", "--no-edit"], this.projectPath);
-        }
-
-        // Merge succeeded — archive report files so they don't conflict with next merge
-        await this.archiveReportsPostMerge(run.seed_id);
-
-        // Optionally run tests
-        if (runTests) {
-          const testResult = await runTestCommand(testCommand, this.projectPath);
-
-          if (!testResult.ok) {
-            // Revert the merge + archive commits
-            await git(["reset", "--hard", preMergeHead], this.projectPath);
-
-            // Reset seed to open so it can be retried
-            await resetSeedToOpen(run.seed_id, this.projectPath);
-
-            this.store.updateRun(run.id, { status: "test-failed" });
-            this.store.logEvent(
-              run.project_id,
-              "test-fail",
-              { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
-              run.id,
-            );
-            await this.addFailureNote(run.seed_id, `Merge failed: tests failed after merge. ${testResult.output.slice(0, 300)}`);
-            testFailures.push({
-              runId: run.id,
-              seedId: run.seed_id,
-              branchName,
-              error: testResult.output.slice(0, 500),
-            });
-            continue;
-          }
-        }
-
-        // All good — clean up worktree and mark as merged
-        if (run.worktree_path) {
-          try {
-            await archiveWorktreeReports(this.projectPath, run.worktree_path, run.seed_id);
-          } catch {
-            // Archive is best-effort — don't block worktree removal
-          }
-          try {
-            await removeWorktree(this.projectPath, run.worktree_path);
-          } catch {
-            // Non-fatal — worktree may already be gone
-          }
-        }
-
-        this.store.updateRun(run.id, {
-          status: "merged",
-          completed_at: new Date().toISOString(),
-        });
-        this.store.logEvent(
-          run.project_id,
-          "merge",
-          { seedId: run.seed_id, branchName, targetBranch },
-          run.id,
-        );
-
-        // Close the bead NOW — after the code has actually landed in main.
-        // projectPath (repo root) is where .beads/ lives; not the worktree dir.
-        await closeSeed(run.seed_id, this.projectPath);
-
-        merged.push({
-          runId: run.id,
-          seedId: run.seed_id,
-          branchName,
-        });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         // Update run status to "failed" so subsequent bead status sync has a

@@ -126,6 +126,16 @@ export interface SentinelConfigRow {
   updated_at: string;
 }
 
+export interface MergeAgentConfigRow {
+  id: number;
+  project_id: string;
+  interval_seconds: number; // polling interval (default 30)
+  enabled: number; // 0 or 1
+  pid: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SentinelRunRow {
   id: string;
   project_id: string;
@@ -301,6 +311,16 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS idx_sentinel_runs_project ON sentinel_runs (project_id, started_at DESC)`,
   `ALTER TABLE merge_queue ADD COLUMN retry_count INTEGER DEFAULT 0`,
   `ALTER TABLE merge_queue ADD COLUMN last_attempted_at TEXT DEFAULT NULL`,
+  `CREATE TABLE IF NOT EXISTS merge_agent_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL UNIQUE,
+    interval_seconds INTEGER DEFAULT 30,
+    enabled INTEGER DEFAULT 1,
+    pid INTEGER DEFAULT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+  )`,
 ];
 
 // One-time destructive migrations that cannot be made idempotent via failure
@@ -956,6 +976,48 @@ export class ForemanStore {
   getSentinelConfig(projectId: string): SentinelConfigRow | null {
     return (
       (this.db.prepare("SELECT * FROM sentinel_configs WHERE project_id = ?").get(projectId) as SentinelConfigRow | undefined) ?? null
+    );
+  }
+
+  // ── Merge Agent ─────────────────────────────────────────────────────
+
+  upsertMergeAgentConfig(
+    projectId: string,
+    config: Partial<Omit<MergeAgentConfigRow, "id" | "project_id" | "created_at" | "updated_at">>
+  ): MergeAgentConfigRow {
+    const now = new Date().toISOString();
+    const existing = this.getMergeAgentConfig(projectId);
+    if (existing) {
+      const fields: string[] = ["updated_at = @updated_at"];
+      const values: Record<string, unknown> = { project_id: projectId, updated_at: now };
+      for (const [key, value] of Object.entries(config)) {
+        if (value !== undefined) {
+          fields.push(`${key} = @${key}`);
+          values[key] = value;
+        }
+      }
+      this.db.prepare(`UPDATE merge_agent_configs SET ${fields.join(", ")} WHERE project_id = @project_id`).run(values);
+      return this.getMergeAgentConfig(projectId)!;
+    } else {
+      const row: Omit<MergeAgentConfigRow, "id"> = {
+        project_id: projectId,
+        interval_seconds: config.interval_seconds ?? 30,
+        enabled: config.enabled ?? 1,
+        pid: config.pid ?? null,
+        created_at: now,
+        updated_at: now,
+      };
+      this.db.prepare(
+        `INSERT INTO merge_agent_configs (project_id, interval_seconds, enabled, pid, created_at, updated_at)
+         VALUES (@project_id, @interval_seconds, @enabled, @pid, @created_at, @updated_at)`
+      ).run(row);
+      return this.getMergeAgentConfig(projectId)!;
+    }
+  }
+
+  getMergeAgentConfig(projectId: string): MergeAgentConfigRow | null {
+    return (
+      (this.db.prepare("SELECT * FROM merge_agent_configs WHERE project_id = ?").get(projectId) as MergeAgentConfigRow | undefined) ?? null
     );
   }
 

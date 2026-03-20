@@ -123,6 +123,9 @@ export function selectSpawnStrategy(): SpawnStrategyOverride {
 /** Timeout for detecting a pipe break after process close (ms). */
 const PIPE_BREAK_WINDOW_MS = 5_000;
 
+/** Timeout to wait for a resumed Pi process to send agent_start before giving up (ms). */
+const CRASH_RESUME_TIMEOUT_MS = 5_000;
+
 /**
  * Resolve the path to the foreman-pi-extensions dist/index.js.
  * The extensions package lives at packages/foreman-pi-extensions/ relative
@@ -246,11 +249,24 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
     // Initialize RunProgress
     const progress = defaultProgress(phase, maxTurns, maxTokens);
 
+    // Shared flag: set to true when agent_end is received (used by both
+    // wireEventHandlers and the crash handler to distinguish normal vs crash exit).
+    let agentEndReceived = false;
+
     // Wire up event handlers BEFORE sending commands to avoid race conditions
-    const resultPromise = this.wireEventHandlers(client, config, progress);
+    const resultPromise = this.wireEventHandlers(client, config, progress, (received) => {
+      agentEndReceived = received;
+    });
     // Attach a no-op catch so that if we abandon resultPromise early (e.g. due
     // to health check failure), Node doesn't report an unhandled rejection.
     resultPromise.catch(() => undefined);
+
+    // ── Crash detection: listen for unexpected process exit ────────────
+    child.on("exit", (exitCode, signal) => {
+      if (!agentEndReceived) {
+        void this.handleCrash(exitCode, signal, config, childEnv as NodeJS.ProcessEnv, progress);
+      }
+    });
 
     // Send initialization sequence
     await client.sendCommand({ cmd: "set_model", model: config.model });
@@ -277,6 +293,146 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
     await resultPromise;
 
     return {};
+  }
+
+  /**
+   * Handle an unexpected Pi process crash (exit without a preceding agent_end).
+   *
+   * Attempts session resume:
+   *   1. Read runs.session_key from the store for the current run.
+   *   2. If a session key exists: spawn a new Pi process and send switch_session.
+   *   3. If the resumed Pi process fails to send agent_start within 5 seconds,
+   *      fall back to DetachedSpawnStrategy for the run.
+   *
+   * If no session key is available, falls through without action — the existing
+   * pipe-break detection in wireEventHandlers will handle the stuck state.
+   *
+   * @param exitCode - Process exit code, or null if killed by a signal.
+   * @param signal   - Signal name if killed, or null.
+   * @param config   - Worker configuration for the run.
+   * @param childEnv - Child process environment to reuse for the resumed process.
+   * @param progress - Current RunProgress to persist on crash.
+   */
+  private async handleCrash(
+    exitCode: number | null,
+    signal: string | null,
+    config: WorkerConfig,
+    childEnv: NodeJS.ProcessEnv,
+    progress: RunProgress,
+  ): Promise<void> {
+    log(
+      `[PiRpcSpawnStrategy] Pi process crashed for ${config.seedId}` +
+      ` (exitCode=${exitCode ?? "null"} signal=${signal ?? "null"})`,
+    );
+
+    // Look up stored session key for this run
+    const run = this.store?.getRun(config.runId) ?? null;
+    const sessionId = extractPiSessionId(run?.session_key ?? null);
+
+    if (!sessionId) {
+      log(
+        `[PiRpcSpawnStrategy] Crash recovery: no session key for run ${config.runId}; ` +
+        `skipping resume (pipe-break detection will handle stuck state)`,
+      );
+      return;
+    }
+
+    log(
+      `[PiRpcSpawnStrategy] Crash recovery: attempting session resume ` +
+      `sessionId=${sessionId} for run ${config.runId}`,
+    );
+
+    try {
+      // Spawn a new Pi process for the resume attempt
+      const resumedChild = spawn("pi", ["--mode", "rpc", "--no-session"], {
+        stdio: ["pipe", "pipe", "pipe"],
+        cwd: config.worktreePath,
+        env: childEnv,
+      });
+
+      const resumedClient = new PiRpcClient(resumedChild, { watchdogTimeoutMs: 60_000 });
+
+      // Wait for agent_start within CRASH_RESUME_TIMEOUT_MS to confirm the
+      // session resumed successfully.
+      const resumeOk = await new Promise<boolean>((resolve) => {
+        let settled = false;
+
+        const timeout = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          resumedClient.removeListener("event", onEvent);
+          resumedClient.removeListener("error", onError);
+          resolve(false);
+        }, CRASH_RESUME_TIMEOUT_MS);
+
+        const onEvent = (event: { type: string }): void => {
+          if (event.type !== "agent_start") return;
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resumedClient.removeListener("event", onEvent);
+          resumedClient.removeListener("error", onError);
+          resolve(true);
+        };
+
+        const onError = (): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resumedClient.removeListener("event", onEvent);
+          resolve(false);
+        };
+
+        resumedClient.on("event", onEvent);
+        resumedClient.on("error", onError);
+
+        // Send switch_session to resume prior session
+        resumedClient.sendCommand({ cmd: "switch_session", sessionId }).catch(() => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            resumedClient.removeListener("event", onEvent);
+            resumedClient.removeListener("error", onError);
+            resolve(false);
+          }
+        });
+      });
+
+      if (!resumeOk) {
+        log(
+          `[PiRpcSpawnStrategy] Crash recovery: resume failed for run ${config.runId}` +
+          ` (no agent_start within ${CRASH_RESUME_TIMEOUT_MS}ms); falling back to DetachedSpawnStrategy`,
+        );
+        resumedClient.destroy();
+        this.store?.updateRunProgress(config.runId, progress);
+        // Fall back to DetachedSpawnStrategy
+        const fallback = new DetachedSpawnStrategy();
+        await fallback.spawn(config);
+        return;
+      }
+
+      log(
+        `[PiRpcSpawnStrategy] Crash recovery: session resumed successfully ` +
+        `sessionId=${sessionId} for run ${config.runId}`,
+      );
+
+      // Wire up remaining event handlers for the resumed session
+      this.wireEventHandlers(resumedClient, config, progress, () => undefined).catch(() => undefined);
+
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      log(
+        `[PiRpcSpawnStrategy] Crash recovery: exception during resume for run ${config.runId}: ${message}` +
+        `; falling back to DetachedSpawnStrategy`,
+      );
+      this.store?.updateRunProgress(config.runId, progress);
+      try {
+        const fallback = new DetachedSpawnStrategy();
+        await fallback.spawn(config);
+      } catch {
+        // Fallback failure is non-fatal at this point — the run will be stuck
+      }
+    }
   }
 
   /**
@@ -386,11 +542,15 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
    * Wire up all PiRpcClient event handlers.
    * Returns a promise that resolves when the agent completes (agent_end)
    * or rejects on unrecoverable error (budget exceeded, pipe break).
+   *
+   * @param agentEndCallback - Optional callback invoked with `true` when agent_end
+   *   is received. Used by the crash handler to distinguish normal vs crash exit.
    */
   private wireEventHandlers(
     client: PiRpcClient,
     config: WorkerConfig,
     progress: RunProgress,
+    agentEndCallback?: (received: boolean) => void,
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -426,6 +586,7 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
         if (event.type === "agent_end") {
           const agentEnd = event as PiAgentEndEvent;
           agentEndReceived = true;
+          agentEndCallback?.(true);
 
           // AC-019-2: Store Pi session_id in runs.session_key
           if (agentEnd.sessionId) {
