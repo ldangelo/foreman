@@ -10,11 +10,13 @@
  */
 
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import { mkdir } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { SpawnStrategy, SpawnResult, WorkerConfig } from "./dispatcher.js";
+import { AgentMailClient } from "./agent-mail-client.js";
 
 // ── Pi phase configuration ───────────────────────────────────────────────
 
@@ -199,9 +201,14 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
     const phase = config.env.FOREMAN_PHASE ?? "developer";
     const phaseConfig = PI_PHASE_CONFIGS[phase] ?? PI_PHASE_CONFIGS.developer;
 
+    // Resolve project path using same pattern as agent-worker.ts
+    const projectPath = config.projectPath ?? join(config.worktreePath, "..", "..");
+
     // Prepare log directory
     const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
     await mkdir(logDir, { recursive: true });
+    // stdout is piped (not redirected to fd) so we can read JSONL events — we
+    // manually tee each line to the .out log file ourselves.
     const outFd = await open(join(logDir, `${config.runId}.out`), "w");
     const errFd = await open(join(logDir, `${config.runId}.err`), "w");
 
@@ -233,17 +240,18 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
 
     log(`Spawning pi --mode rpc for ${config.seedId} phase=${phase} in ${config.worktreePath}`);
 
+    // stdout is "pipe" so we can read JSONL lines; we tee each line to the log file.
     const child = spawn(piBin, ["--mode", "rpc"], {
       detached: true,
-      stdio: ["pipe", outFd.fd, errFd.fd],
+      stdio: ["pipe", "pipe", errFd.fd],
       cwd: config.worktreePath,
       env: cleanEnv,
     });
 
     child.unref();
 
-    // Close parent file handles after child has inherited its fd copies
-    await outFd.close();
+    // Close the error fd handle in the parent after the child has inherited it.
+    // We keep outFd open until the background task finishes writing.
     await errFd.close();
 
     // Send context then prompt over stdin JSONL
@@ -270,6 +278,121 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
     }
 
     log(`  Pi pid=${child.pid} for ${config.seedId}`);
+
+    // ── Background task: read JSONL stdout, tee to log, send Agent Mail on completion ──
+    // This runs fire-and-forget — spawn() returns immediately.
+    void (async () => {
+      // Set up Agent Mail client.  All failures are silent.
+      let agentMailClient: AgentMailClient | null = null;
+      try {
+        const candidate = new AgentMailClient();
+        const reachable = await candidate.healthCheck();
+        if (reachable) {
+          await candidate.ensureProject(projectPath);
+          // Register this phase as a named sending identity
+          const phaseRoleHint = `${phase}-${config.seedId}`;
+          const generatedName = await candidate.ensureAgentRegistered(phaseRoleHint, projectPath);
+          if (generatedName) {
+            candidate.agentName = generatedName;
+            log(`[agent-mail] Pi phase registered as '${generatedName}' (role: ${phaseRoleHint})`);
+          }
+          agentMailClient = candidate;
+        }
+      } catch {
+        // Silent failure — Agent Mail is optional
+      }
+
+      // Read Pi stdout JSONL, tee each line to the .out log file.
+      let agentEndReceived = false;
+      let agentEndSuccess = true;
+      let agentEndMessage: string | undefined;
+
+      try {
+        if (child.stdout) {
+          const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+          for await (const line of rl) {
+            // Tee to log file
+            try {
+              await outFd.write(line + "\n");
+            } catch {
+              // Non-fatal log write failure
+            }
+
+            const event = parsePiEvent(line);
+            if (!event) continue;
+
+            if (event.type === "agent_end") {
+              agentEndReceived = true;
+              agentEndSuccess = event.success;
+              agentEndMessage = event.message;
+            }
+          }
+        }
+      } catch {
+        // stdout read failure — treat as error
+        agentEndSuccess = false;
+      }
+
+      // Wait for child exit
+      const exitCode = await new Promise<number | null>((resolve) => {
+        child.on("close", (code) => resolve(code));
+        // If already exited (no stdout), resolve immediately
+        if (child.exitCode !== null) resolve(child.exitCode);
+      });
+
+      // Close the log file handle now that we're done writing
+      try {
+        await outFd.close();
+      } catch {
+        // Non-fatal
+      }
+
+      // Determine success: agent_end must have been received with success=true,
+      // and the process must have exited cleanly (code 0).
+      const success =
+        agentEndReceived && agentEndSuccess && (exitCode === 0 || exitCode === null);
+
+      log(
+        `[pi-rpc] Phase ${phase} for ${config.seedId} finished: ` +
+          `success=${success} exitCode=${exitCode ?? "null"} ` +
+          `agent_end=${agentEndReceived}`,
+      );
+
+      // Send Agent Mail phase lifecycle message to "foreman"
+      if (agentMailClient) {
+        try {
+          if (success) {
+            await agentMailClient.sendMessage(
+              "foreman",
+              "phase-complete",
+              JSON.stringify({
+                seedId: config.seedId,
+                phase,
+                runId: config.runId,
+                status: "complete",
+              }),
+            );
+            log(`[agent-mail] Sent phase-complete for ${phase}/${config.seedId}`);
+          } else {
+            await agentMailClient.sendMessage(
+              "foreman",
+              "agent-error",
+              JSON.stringify({
+                seedId: config.seedId,
+                phase,
+                runId: config.runId,
+                status: "error",
+                message: agentEndMessage ?? `Pi exited with code ${exitCode ?? "null"}`,
+              }),
+            );
+            log(`[agent-mail] Sent agent-error for ${phase}/${config.seedId}`);
+          }
+        } catch {
+          // Silent failure — mail errors must never surface
+        }
+      }
+    })();
+
     return {};
   }
 }
