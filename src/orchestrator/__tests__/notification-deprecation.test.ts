@@ -172,11 +172,7 @@ describe("AgentMailClient dual-channel mock verification", () => {
 
     // sendMessage must not throw — even on connection failure
     await expect(
-      client.sendMessage("operator", "Run Error: test-seed", "some error", {
-        seedId: "test-seed",
-        runId: "test-run",
-        status: "error",
-      }),
+      client.sendMessage("operator", "Run Error: test-seed", "some error"),
     ).resolves.toBeUndefined();
   });
 

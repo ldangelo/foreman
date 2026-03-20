@@ -21,7 +21,7 @@ const { mockExecFileSync, mockCloseSeed, mockEnqueueToMergeQueue, mockSendMessag
   mockCloseSeed: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
   mockEnqueueToMergeQueue: vi.fn().mockReturnValue({ success: true }),
   mockSendMessage: vi
-    .fn<(to: string, subject: string, body: string, metadata?: Record<string, unknown>) => Promise<void>>()
+    .fn<(to: string, subject: string, body: string) => Promise<void>>()
     .mockResolvedValue(undefined),
 }));
 
@@ -121,32 +121,34 @@ describe("branch-ready signal — push succeeds", () => {
     expect(body).toContain(`foreman/${seedId}`);
   });
 
-  it("includes seedId in message metadata", async () => {
+  it("body contains seedId", async () => {
     const seedId = "bd-test-signal";
     await finalize(makeConfig({ worktreePath: tmpDir, seedId }), logFile);
-    const [, , , metadata] = mockSendMessage.mock.calls[0]!;
-    expect(metadata).toMatchObject({ seedId });
+    const [, , body] = mockSendMessage.mock.calls[0]!;
+    expect(body).toContain(seedId);
   });
 
-  it("includes branchName in message metadata", async () => {
+  it("body contains branchName", async () => {
     const seedId = "bd-test-signal";
     await finalize(makeConfig({ worktreePath: tmpDir, seedId }), logFile);
-    const [, , , metadata] = mockSendMessage.mock.calls[0]!;
-    expect(metadata).toMatchObject({ branchName: `foreman/${seedId}` });
+    const [, , body] = mockSendMessage.mock.calls[0]!;
+    expect(body).toContain(`foreman/${seedId}`);
   });
 
-  it("includes runId in message metadata", async () => {
-    const runId = "run-branch-ready-001";
-    await finalize(makeConfig({ worktreePath: tmpDir, runId }), logFile);
-    const [, , , metadata] = mockSendMessage.mock.calls[0]!;
-    expect(metadata).toMatchObject({ runId });
-  });
-
-  it("includes commitHash in message metadata", async () => {
-    // rev-parse returns "abc1234\n" in our mock
+  it("sends exactly 3 arguments (no metadata)", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    const [, , , metadata] = mockSendMessage.mock.calls[0]!;
-    expect(metadata).toMatchObject({ commitHash: "abc1234" });
+    const call = mockSendMessage.mock.calls[0]!;
+    // to, subject, body — no 4th argument
+    expect(call).toHaveLength(3);
+  });
+
+  it("message has correct to, subject, and non-empty body", async () => {
+    const seedId = "bd-test-signal";
+    await finalize(makeConfig({ worktreePath: tmpDir, seedId }), logFile);
+    const [to, subject, body] = mockSendMessage.mock.calls[0]!;
+    expect(to).toBe("merge-agent");
+    expect(subject).toBe("Branch Ready");
+    expect(body.length).toBeGreaterThan(0);
   });
 
   it("still returns success=true even when sendMessage is called", async () => {

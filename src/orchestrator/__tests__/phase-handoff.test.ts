@@ -160,18 +160,13 @@ describe("Explorer phase Agent Mail handoff", () => {
     vi.clearAllMocks();
   });
 
-  it("sendMessage is called with 'Explorer Report' subject and correct metadata", async () => {
+  it("sendMessage is called with 'Explorer Report' subject and body", async () => {
     // Simulate what runPipeline does after Explorer phase succeeds
     const client = new AgentMailClient();
     const seedId = "bd-test1";
-    const runId = "run-abc";
     const explorerContent = "# Explorer Report\n\nKey findings: src/orchestrator/roles.ts\n";
 
-    void client.sendMessage(`pipeline-${seedId}`, "Explorer Report", explorerContent, {
-      seedId,
-      phase: "explorer",
-      runId,
-    });
+    void client.sendMessage(`pipeline-${seedId}`, "Explorer Report", explorerContent);
     await Promise.resolve();
 
     expect(mockSendMessage).toHaveBeenCalledOnce();
@@ -179,7 +174,6 @@ describe("Explorer phase Agent Mail handoff", () => {
       `pipeline-${seedId}`,
       "Explorer Report",
       explorerContent,
-      { seedId, phase: "explorer", runId },
     );
   });
 
@@ -196,7 +190,6 @@ describe("Explorer phase Agent Mail handoff", () => {
         "pipeline-bd-test2",
         "Explorer Report",
         "# Report",
-        { seedId: "bd-test2", phase: "explorer" },
       );
       await Promise.resolve();
     } catch {
@@ -206,27 +199,16 @@ describe("Explorer phase Agent Mail handoff", () => {
     expect(threw).toBe(false);
   });
 
-  it("sendMessage metadata includes seedId, phase:explorer, and runId", async () => {
+  it("sendMessage is called with to=pipeline-<seedId>, subject='Explorer Report'", async () => {
     const client = new AgentMailClient();
     const seedId = "bd-meta1";
-    const runId = "run-meta1";
 
-    void client.sendMessage(`pipeline-${seedId}`, "Explorer Report", "content", {
-      seedId,
-      phase: "explorer",
-      runId,
-    });
+    void client.sendMessage(`pipeline-${seedId}`, "Explorer Report", "content");
     await Promise.resolve();
 
-    const [, , , metadata] = mockSendMessage.mock.calls[0] as unknown as [
-      string,
-      string,
-      string,
-      Record<string, unknown>,
-    ];
-    expect(metadata.seedId).toBe(seedId);
-    expect(metadata.phase).toBe("explorer");
-    expect(metadata.runId).toBe(runId);
+    const [to, subject] = mockSendMessage.mock.calls[0] as unknown as [string, string, string];
+    expect(to).toBe(`pipeline-${seedId}`);
+    expect(subject).toBe("Explorer Report");
   });
 
   it("EXPLORER_REPORT.md on disk is unaffected when Agent Mail fails", () => {
@@ -238,10 +220,7 @@ describe("Explorer phase Agent Mail handoff", () => {
       // Agent Mail failing should not delete the file
       mockSendMessage.mockRejectedValueOnce(new Error("Network unavailable"));
       const client = new AgentMailClient();
-      void client.sendMessage("pipeline-bd-filetest", "Explorer Report", "content", {
-        seedId: "bd-filetest",
-        phase: "explorer",
-      });
+      void client.sendMessage("pipeline-bd-filetest", "Explorer Report", "content");
 
       expect(existsSync(reportPath)).toBe(true);
     } finally {
@@ -271,7 +250,6 @@ describe("QA retry Agent Mail handoff", () => {
       `pipeline-${seedId}`,
       `QA Feedback - Retry ${retryCount}`,
       qaContent,
-      { seedId, phase: "qa", verdict: "fail", retryCount },
     );
     await Promise.resolve();
 
@@ -279,7 +257,6 @@ describe("QA retry Agent Mail handoff", () => {
       `pipeline-${seedId}`,
       "QA Feedback - Retry 1",
       qaContent,
-      { seedId, phase: "qa", verdict: "fail", retryCount: 1 },
     );
   });
 
@@ -292,7 +269,6 @@ describe("QA retry Agent Mail handoff", () => {
       `pipeline-${seedId}`,
       `QA Feedback - Retry ${retryCount}`,
       "QA content",
-      { seedId, phase: "qa", verdict: "fail", retryCount },
     );
     await Promise.resolve();
 
@@ -300,30 +276,22 @@ describe("QA retry Agent Mail handoff", () => {
       `pipeline-${seedId}`,
       "QA Feedback - Retry 2",
       expect.any(String),
-      expect.objectContaining({ retryCount: 2 }),
     );
   });
 
-  it("QA metadata includes verdict:fail and retryCount", async () => {
+  it("QA sendMessage uses subject 'QA Feedback - Retry N' with the retry number", async () => {
     const client = new AgentMailClient();
 
     void client.sendMessage(
       "pipeline-bd-qameta",
       "QA Feedback - Retry 1",
       "content",
-      { seedId: "bd-qameta", phase: "qa", verdict: "fail", retryCount: 1 },
     );
     await Promise.resolve();
 
-    const [, , , metadata] = mockSendMessage.mock.calls[0] as unknown as [
-      string,
-      string,
-      string,
-      Record<string, unknown>,
-    ];
-    expect(metadata.verdict).toBe("fail");
-    expect(metadata.retryCount).toBe(1);
-    expect(metadata.phase).toBe("qa");
+    const [to, subject] = mockSendMessage.mock.calls[0] as unknown as [string, string, string];
+    expect(to).toBe("pipeline-bd-qameta");
+    expect(subject).toBe("QA Feedback - Retry 1");
   });
 
   it("pipeline files on disk are unaffected when QA Agent Mail fails", () => {
@@ -338,7 +306,6 @@ describe("QA retry Agent Mail handoff", () => {
         "pipeline-bd-failtest",
         "QA Feedback - Retry 1",
         "qa content",
-        { seedId: "bd-failtest", phase: "qa", verdict: "fail", retryCount: 1 },
       );
 
       expect(existsSync(reportPath)).toBe(true);
@@ -359,17 +326,15 @@ describe("Reviewer phase Agent Mail handoff", () => {
     vi.clearAllMocks();
   });
 
-  it("sendMessage is called with 'Review Complete' subject after reviewer finishes", async () => {
+  it("sendMessage is called with 'Review Complete' subject and body after reviewer finishes", async () => {
     const client = new AgentMailClient();
     const seedId = "bd-rev1";
-    const runId = "run-rev1";
     const reviewContent = "# Review\n## Verdict: PASS\n\nLooks good.\n";
 
     void client.sendMessage(
       `pipeline-${seedId}`,
       "Review Complete",
       reviewContent,
-      { seedId, phase: "reviewer", verdict: "pass", runId },
     );
     await Promise.resolve();
 
@@ -377,54 +342,37 @@ describe("Reviewer phase Agent Mail handoff", () => {
       `pipeline-${seedId}`,
       "Review Complete",
       reviewContent,
-      { seedId, phase: "reviewer", verdict: "pass", runId },
     );
   });
 
-  it("sendMessage metadata includes verdict:fail when reviewer FAILS", async () => {
+  it("sendMessage is called with subject 'Review Complete' when reviewer FAILS", async () => {
     const client = new AgentMailClient();
     const seedId = "bd-revfail";
-    const runId = "run-revfail";
     const reviewContent = "# Review\n## Verdict: FAIL\n\nCRITICAL: Missing tests.\n";
 
     void client.sendMessage(
       `pipeline-${seedId}`,
       "Review Complete",
       reviewContent,
-      { seedId, phase: "reviewer", verdict: "fail", runId },
     );
     await Promise.resolve();
 
-    const [, subject, , metadata] = mockSendMessage.mock.calls[0] as unknown as [
-      string,
-      string,
-      string,
-      Record<string, unknown>,
-    ];
+    const [, subject] = mockSendMessage.mock.calls[0] as unknown as [string, string, string];
     expect(subject).toBe("Review Complete");
-    expect(metadata.verdict).toBe("fail");
-    expect(metadata.phase).toBe("reviewer");
-    expect(metadata.runId).toBe(runId);
   });
 
-  it("sendMessage metadata contains verdict:unknown when review content is empty", async () => {
+  it("sendMessage is called with empty body when review content is empty", async () => {
     const client = new AgentMailClient();
 
     void client.sendMessage(
       "pipeline-bd-empty",
       "Review Complete",
       "",
-      { seedId: "bd-empty", phase: "reviewer", verdict: "unknown", runId: "run-empty" },
     );
     await Promise.resolve();
 
-    const [, , , metadata] = mockSendMessage.mock.calls[0] as unknown as [
-      string,
-      string,
-      string,
-      Record<string, unknown>,
-    ];
-    expect(metadata.verdict).toBe("unknown");
+    const [, , body] = mockSendMessage.mock.calls[0] as unknown as [string, string, string];
+    expect(body).toBe("");
   });
 
   it("REVIEW.md on disk is unaffected when Agent Mail fails", () => {
@@ -439,7 +387,6 @@ describe("Reviewer phase Agent Mail handoff", () => {
         "pipeline-bd-revfile",
         "Review Complete",
         "content",
-        { seedId: "bd-revfile", phase: "reviewer", verdict: "pass", runId: "run-revfile" },
       );
 
       expect(existsSync(reviewPath)).toBe(true);
@@ -464,14 +411,14 @@ describe("Agent Mail 'to' field format", () => {
     const client = new AgentMailClient();
     const seedId = "bd-totest";
 
-    const calls: Array<[string, string, string, Record<string, unknown>]> = [
-      [`pipeline-${seedId}`, "Explorer Report", "content", { seedId, phase: "explorer", runId: "r1" }],
-      [`pipeline-${seedId}`, "QA Feedback - Retry 1", "qa", { seedId, phase: "qa", verdict: "fail", retryCount: 1 }],
-      [`pipeline-${seedId}`, "Review Complete", "review", { seedId, phase: "reviewer", verdict: "pass", runId: "r1" }],
+    const calls: Array<[string, string, string]> = [
+      [`pipeline-${seedId}`, "Explorer Report", "content"],
+      [`pipeline-${seedId}`, "QA Feedback - Retry 1", "qa content"],
+      [`pipeline-${seedId}`, "Review Complete", "review content"],
     ];
 
-    for (const [to, subject, body, metadata] of calls) {
-      void client.sendMessage(to, subject, body, metadata);
+    for (const [to, subject, body] of calls) {
+      void client.sendMessage(to, subject, body);
     }
     await Promise.resolve();
 

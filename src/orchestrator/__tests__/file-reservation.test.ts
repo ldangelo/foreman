@@ -152,9 +152,17 @@ describe("AgentMailClient file reservation integration", () => {
     vi.restoreAllMocks();
   });
 
-  it("calls fileReservation with the expected paths and agent name", async () => {
+  it("calls fileReservation with the expected paths and agent name via JSON-RPC", async () => {
+    // The new transport wraps calls in a JSON-RPC envelope to POST /mcp
+    const rpcResponse = {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        content: [{ type: "text", text: JSON.stringify({ success: true }) }],
+      },
+    };
     fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      makeFetchResponse({ success: true }),
+      makeFetchResponse(rpcResponse),
     );
 
     const paths = ["src/foo.ts", "src/bar.ts"];
@@ -167,30 +175,44 @@ describe("AgentMailClient file reservation integration", () => {
     expect(fetchSpy).toHaveBeenCalledOnce();
 
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:8765/file_reservation_paths");
+    expect(url).toBe("http://localhost:8765/mcp");
     expect(init.method).toBe("POST");
 
-    const body = JSON.parse(init.body as string);
-    expect(body.paths).toEqual(paths);
-    expect(body.agent).toBe("developer-bd-test");
-    expect(body.duration_ms).toBe(3_600_000);
+    const body = JSON.parse(init.body as string) as {
+      params: { name: string; arguments: Record<string, unknown> };
+    };
+    expect(body.params.name).toBe("file_reservation_paths");
+    expect(body.params.arguments["paths"]).toEqual(paths);
+    expect(body.params.arguments["agent_name"]).toBe("developer-bd-test");
+    expect(body.params.arguments["ttl_seconds"]).toBe(3600);
   });
 
-  it("calls releaseReservation with the expected paths", async () => {
+  it("calls releaseReservation with the expected paths and agent name via JSON-RPC", async () => {
+    const rpcResponse = {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        content: [{ type: "text", text: JSON.stringify({ released: true }) }],
+      },
+    };
     fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      makeFetchResponse({ released: true }),
+      makeFetchResponse(rpcResponse),
     );
 
     const paths = ["src/foo.ts", "src/bar.ts"];
-    await client.releaseReservation(paths);
+    await client.releaseReservation(paths, "developer-bd-test");
 
     expect(fetchSpy).toHaveBeenCalledOnce();
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:8765/release_reservation");
+    expect(url).toBe("http://localhost:8765/mcp");
     expect(init.method).toBe("POST");
 
-    const body = JSON.parse(init.body as string);
-    expect(body.paths).toEqual(paths);
+    const body = JSON.parse(init.body as string) as {
+      params: { name: string; arguments: Record<string, unknown> };
+    };
+    expect(body.params.name).toBe("release_file_reservations");
+    expect(body.params.arguments["paths"]).toEqual(paths);
+    expect(body.params.arguments["agent_name"]).toBe("developer-bd-test");
   });
 
   it("returns { success: false } when fileReservation gets a network error", async () => {
@@ -214,7 +236,7 @@ describe("AgentMailClient file reservation integration", () => {
   it("silently ignores errors from releaseReservation (never throws)", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED"));
     // Must not throw
-    await expect(client.releaseReservation(["src/foo.ts"])).resolves.toBeUndefined();
+    await expect(client.releaseReservation(["src/foo.ts"], "developer-bd-test")).resolves.toBeUndefined();
   });
 
   it("returns [] from fetchInbox when Agent Mail is unreachable", async () => {
@@ -223,24 +245,34 @@ describe("AgentMailClient file reservation integration", () => {
     expect(messages).toEqual([]);
   });
 
-  it("fetchInbox returns messages from the inbox", async () => {
-    const mockMessages = [
+  it("fetchInbox returns messages from the inbox (mapped from server shape)", async () => {
+    // Server returns messages with numeric id, sender_name, recipients, body_md, received_at
+    const rawServerMessages = [
       {
-        id: "msg-1",
-        from: "developer-bd-test",
-        to: "qa-bd-test",
+        id: 1,
+        sender_name: "developer-bd-test",
+        recipients: ["qa-bd-test"],
         subject: "Dev complete",
-        body: "All tests pass",
-        receivedAt: new Date().toISOString(),
+        body_md: "All tests pass",
+        received_at: new Date().toISOString(),
         acknowledged: false,
       },
     ];
+    const rpcResponse = {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        content: [{ type: "text", text: JSON.stringify(rawServerMessages) }],
+      },
+    };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      makeFetchResponse(mockMessages),
+      makeFetchResponse(rpcResponse),
     );
     const messages = await client.fetchInbox("qa-bd-test");
     expect(messages).toHaveLength(1);
-    expect(messages[0].subject).toBe("Dev complete");
+    expect(messages[0]?.subject).toBe("Dev complete");
+    expect(messages[0]?.id).toBe("1");
+    expect(messages[0]?.from).toBe("developer-bd-test");
   });
 });
 
@@ -316,19 +348,20 @@ describe("file reservation pipeline lifecycle", () => {
     const releaseSpy = vi.spyOn(client, "releaseReservation").mockResolvedValue(undefined);
 
     // Simulate the try/finally pattern from the pipeline
+    const agentName = "developer-bd-release";
     let devPhaseRan = false;
     try {
       devPhaseRan = true;
       // developer phase succeeds (no throw)
     } finally {
       if (files.length > 0) {
-        await client.releaseReservation(files);
+        await client.releaseReservation(files, agentName);
       }
     }
 
     expect(devPhaseRan).toBe(true);
     expect(releaseSpy).toHaveBeenCalledOnce();
-    expect(releaseSpy).toHaveBeenCalledWith(files);
+    expect(releaseSpy).toHaveBeenCalledWith(files, agentName);
   });
 
   it("releaseReservation is called after developer phase fails (finally block)", async () => {
@@ -343,6 +376,7 @@ describe("file reservation pipeline lifecycle", () => {
     const releaseSpy = vi.spyOn(client, "releaseReservation").mockResolvedValue(undefined);
 
     // Simulate the try/finally pattern from the pipeline — phase throws
+    const agentName = "developer-bd-fail";
     let releaseCalledBeforeThrow = false;
     try {
       await (async () => {
@@ -352,7 +386,7 @@ describe("file reservation pipeline lifecycle", () => {
       // swallow for test
     } finally {
       if (files.length > 0) {
-        await client.releaseReservation(files);
+        await client.releaseReservation(files, agentName);
         releaseCalledBeforeThrow = true;
       }
     }

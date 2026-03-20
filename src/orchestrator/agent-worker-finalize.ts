@@ -278,12 +278,6 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
       "merge-agent",
       "Branch Ready",
       `Branch foreman/${seedId} is ready for merging`,
-      {
-        seedId,
-        branchName: `foreman/${seedId}`,
-        runId: config.runId,
-        commitHash,
-      },
     );
     log("[FINALIZE] Sent branch-ready signal via Agent Mail");
   }
