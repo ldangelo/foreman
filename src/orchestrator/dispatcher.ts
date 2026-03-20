@@ -632,6 +632,7 @@ export class Dispatcher {
       pipeline: usePipeline,
       skipExplore: pipelineOpts?.skipExplore,
       skipReview: pipelineOpts?.skipReview,
+      dbPath: join(this.projectPath, ".foreman", "foreman.db"),
     });
 
     return { sessionKey, tmuxSession: spawnResult.tmuxSession };
@@ -669,6 +670,7 @@ export class Dispatcher {
       prompt: resumePrompt,
       env,
       resume: sdkSessionId,
+      dbPath: join(this.projectPath, ".foreman", "foreman.db"),
     });
 
     return { sessionKey, tmuxSession: spawnResult.tmuxSession };
@@ -762,6 +764,8 @@ export interface WorkerConfig {
   pipeline?: boolean;
   skipExplore?: boolean;
   skipReview?: boolean;
+  /** Absolute path to the SQLite DB file (e.g. .foreman/foreman.db) */
+  dbPath?: string;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

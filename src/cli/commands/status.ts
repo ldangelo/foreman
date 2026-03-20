@@ -1,4 +1,7 @@
 import { Command } from "commander";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Metrics, Run, RunProgress } from "../../lib/store.js";
@@ -8,6 +11,49 @@ import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { BrIssue } from "../../lib/beads-rust.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
 import type { Issue } from "../../lib/task-client.js";
+
+// ── Pi log activity helper ────────────────────────────────────────────────
+
+/**
+ * Read the last `tool_call` event from a Pi JSONL `.out` log file.
+ * Returns a short description string, or null if none can be found.
+ *
+ * Reads the last 8 KB of the file to avoid loading large logs into memory.
+ */
+export async function getLastPiActivity(runId: string): Promise<string | null> {
+  const logPath = join(homedir(), ".foreman", "logs", `${runId}.out`);
+  try {
+    const content = await readFile(logPath, "utf-8");
+    // Walk lines in reverse to find the most recent tool_call
+    const lines = content.split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]?.trim();
+      if (!line) continue;
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>;
+        if (obj.type === "tool_call" && typeof obj.name === "string") {
+          const name = obj.name;
+          // Extract a short hint from the input (file path, command, etc.)
+          const input = obj.input as Record<string, unknown> | undefined;
+          let hint = "";
+          if (input) {
+            const val =
+              input.file_path ?? input.command ?? input.pattern ?? input.path ?? input.query;
+            if (typeof val === "string") {
+              hint = val.length > 40 ? "…" + val.slice(-38) : val;
+            }
+          }
+          return hint ? `${name}(${hint})` : name;
+        }
+      } catch {
+        // skip non-JSON lines
+      }
+    }
+  } catch {
+    // log file not found or unreadable — not an error
+  }
+  return null;
+}
 
 // ── Exported helpers (used by tests) ─────────────────────────────────────
 
@@ -115,6 +161,13 @@ async function renderStatus(): Promise<void> {
         const run = activeRuns[i];
         const progress = store.getRunProgress(run.id);
         console.log(renderAgentCard(run, progress));
+        // For running agents, show last Pi activity from the .out log file
+        if (run.status === "running") {
+          const lastActivity = await getLastPiActivity(run.id);
+          if (lastActivity) {
+            console.log(`  ${chalk.dim("Last tool  ")} ${chalk.dim(lastActivity)}`);
+          }
+        }
         // Separate cards with a blank line, but don't add a trailing blank
         // after the last card (avoids a dangling empty line in single-agent output).
         if (i < activeRuns.length - 1) console.log();

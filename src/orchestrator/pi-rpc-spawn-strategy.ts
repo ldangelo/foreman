@@ -11,10 +11,11 @@
 
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import Database from "better-sqlite3";
 import type { SpawnStrategy, SpawnResult, WorkerConfig } from "./dispatcher.js";
 import { AgentMailClient } from "./agent-mail-client.js";
 
@@ -182,6 +183,23 @@ function log(msg: string): void {
 }
 
 /**
+ * Resolve the Anthropic API key for Pi.
+ * Priority: ANTHROPIC_API_KEY env var → /run/secrets/anthropic_api_key file.
+ * If neither is available, returns empty string and Pi will use its own auth.json.
+ */
+async function resolveAnthropicApiKey(env: Record<string, string>): Promise<string> {
+  if (env.ANTHROPIC_API_KEY) return env.ANTHROPIC_API_KEY;
+  // Try secrets file (NixOS / home-manager pattern)
+  try {
+    const key = (await readFile("/run/secrets/anthropic_api_key", "utf-8")).trim();
+    if (key) return key;
+  } catch {
+    // not available
+  }
+  return "";
+}
+
+/**
  * Spawn strategy that runs agents via `pi --mode rpc`.
  *
  * Responsibilities:
@@ -240,10 +258,21 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
       if (v !== undefined) cleanEnv[k] = v;
     }
 
+    // Resolve the Anthropic API key and inject it into the Pi environment.
+    // Pi reads ANTHROPIC_API_KEY from its process env; passing it explicitly
+    // ensures it works even when the parent shell didn't export it.
+    const anthropicApiKey = await resolveAnthropicApiKey(cleanEnv);
+    if (anthropicApiKey) {
+      cleanEnv.ANTHROPIC_API_KEY = anthropicApiKey;
+    }
+
+    // Build pi args: always use Anthropic provider with the phase model
+    const piArgs = ["--mode", "rpc", "--provider", "anthropic", "--model", phaseConfig.model];
+
     log(`Spawning pi --mode rpc for ${config.seedId} phase=${phase} in ${config.worktreePath}`);
 
     // stdout is "pipe" so we can read JSONL lines; we tee each line to the log file.
-    const child = spawn(piBin, ["--mode", "rpc"], {
+    const child = spawn(piBin, piArgs, {
       detached: true,
       stdio: ["pipe", "pipe", errFd.fd],
       cwd: config.worktreePath,
@@ -362,6 +391,22 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
           `success=${success} exitCode=${exitCode ?? "null"} ` +
           `agent_end=${agentEndReceived}`,
       );
+
+      // Update SQLite run status BEFORE sending Agent Mail so that the
+      // ForemanInboxProcessor's `run.status === "completed"` guard passes.
+      if (config.dbPath) {
+        try {
+          const db = new Database(config.dbPath);
+          const now = new Date().toISOString();
+          db.prepare(
+            "UPDATE runs SET status = ?, completed_at = ? WHERE id = ? AND status = 'running'",
+          ).run(success ? "completed" : "failed", now, config.runId);
+          db.close();
+          log(`[sqlite] Marked run ${config.runId} as ${success ? "completed" : "failed"}`);
+        } catch (err) {
+          log(`[sqlite] Failed to update run status: ${err}`);
+        }
+      }
 
       // Send Agent Mail phase lifecycle message to "foreman"
       if (agentMailClient) {

@@ -26,8 +26,10 @@ const PROJECT_PATH = process.cwd();
 const POLL_INTERVAL_MS = 500;
 const POLL_MAX_RETRIES = 20; // 10 seconds total
 
-// Check reachability once at suite level
-let serverReachable = false;
+// Two-level liveness check (same pattern as agent-mail-integration.test.ts):
+// serverUp    = health endpoint OK
+// serverFunctional = health + register_agent both work
+let serverFunctional = false;
 let tempDir: string | null = null;
 
 beforeAll(async () => {
@@ -35,9 +37,31 @@ beforeAll(async () => {
     const res = await fetch(`${AGENT_MAIL_URL}/health`, {
       signal: AbortSignal.timeout(2000),
     });
-    serverReachable = res.ok;
+    if (!res.ok) return;
+
+    const probe = await fetch(`${AGENT_MAIL_URL}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 0,
+        method: "tools/call",
+        params: {
+          name: "register_agent",
+          arguments: {
+            project_key: PROJECT_PATH,
+            program: "foreman-pi-probe",
+            task_description: "Probe",
+            model: "claude-sonnet-4-6",
+          },
+        },
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+    const probeJson = await probe.json() as { result?: { isError?: boolean } };
+    serverFunctional = !probeJson.result?.isError;
   } catch {
-    serverReachable = false;
+    serverFunctional = false;
   }
 
   // Create a temp dir for the fake pi scripts
@@ -58,10 +82,7 @@ afterAll(async () => {
 });
 
 function skipIfOffline(): boolean {
-  if (!serverReachable) {
-    return true;
-  }
-  return false;
+  return !serverFunctional;
 }
 
 /**

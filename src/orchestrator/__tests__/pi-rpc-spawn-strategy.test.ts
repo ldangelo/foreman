@@ -181,7 +181,7 @@ describe("PiRpcSpawnStrategy.spawn()", () => {
     expect(spawnMock).toHaveBeenCalledOnce();
     const [bin, args] = spawnMock.mock.calls[0] as [string, string[], unknown];
     expect(bin).toMatch(/pi$/);
-    expect(args).toEqual(["--mode", "rpc"]);
+    expect(args).toEqual(["--mode", "rpc", "--provider", "anthropic", "--model", expect.stringContaining("claude")]);
     expect(result).toEqual({});
   });
 
