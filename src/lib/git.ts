@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
+import fs from "node:fs/promises";
 
 const execFileAsync = promisify(execFile);
 
@@ -245,7 +246,25 @@ export async function removeWorktree(
   repoPath: string,
   worktreePath: string,
 ): Promise<void> {
-  await git(["worktree", "remove", worktreePath, "--force"], repoPath);
+  // Try the standard git removal first.
+  try {
+    await git(["worktree", "remove", worktreePath, "--force"], repoPath);
+  } catch (removeErr) {
+    // git worktree remove --force can fail when the directory has untracked
+    // files (e.g. written by a spawned process).  In that case git exits with
+    // "Directory not empty", leaving a dangling .git file that breaks the next
+    // dispatch.  Fall back to a plain recursive directory removal so the
+    // subsequent worktree prune can clean up the stale metadata.
+    const removeMsg = removeErr instanceof Error ? removeErr.message : String(removeErr);
+    console.error(`[git] Warning: git worktree remove --force failed for ${worktreePath}: ${removeMsg}`);
+    console.error(`[git] Falling back to fs.rm for ${worktreePath}`);
+    try {
+      await fs.rm(worktreePath, { recursive: true, force: true });
+    } catch (rmErr) {
+      const rmMsg = rmErr instanceof Error ? rmErr.message : String(rmErr);
+      console.error(`[git] Warning: fs.rm fallback also failed for ${worktreePath}: ${rmMsg}`);
+    }
+  }
 
   // Prune stale .git/worktrees/<seed> metadata so the next dispatch does not
   // fail with "fatal: not a git repository: .git/worktrees/<seed>".
