@@ -24,6 +24,7 @@ const {
   mockGetProjectByPath,
   MockForemanStore,
   mockWatchRunsInk,
+  mockHealthCheck,
 } = vi.hoisted(() => {
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
   const MockBeadsRustClient = vi.fn(function (this: Record<string, unknown>) {
@@ -48,6 +49,10 @@ const {
 
   const mockWatchRunsInk = vi.fn().mockResolvedValue({ detached: false });
 
+  // AgentMailClient.healthCheck() returns true so the startup check passes
+  // without making a real network request to localhost:8766.
+  const mockHealthCheck = vi.fn().mockResolvedValue(true);
+
   return {
     mockEnsureBrInstalled,
     MockBeadsRustClient,
@@ -58,6 +63,7 @@ const {
     mockGetProjectByPath,
     MockForemanStore,
     mockWatchRunsInk,
+    mockHealthCheck,
   };
 });
 
@@ -78,6 +84,12 @@ vi.mock("../../orchestrator/notification-server.js", () => ({
 }));
 vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }));
 vi.mock("../watch-ui.js", () => ({ watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args) }));
+vi.mock("../../orchestrator/agent-mail-client.js", () => ({
+  AgentMailClient: vi.fn(function (this: Record<string, unknown>) {
+    this.healthCheck = mockHealthCheck;
+  }),
+  DEFAULT_AGENT_MAIL_CONFIG: { baseUrl: "http://localhost:8766" },
+}));
 
 // ── Module under test ─────────────────────────────────────────────────────────
 import { runCommand } from "../commands/run.js";
@@ -98,6 +110,7 @@ describe("dispatch loop: watch-and-continue when nothing dispatched but agents a
     vi.spyOn(console, "error").mockImplementation(() => {});
 
     // Restore constructor implementations after clearAllMocks resets them
+    mockHealthCheck.mockResolvedValue(true);
     mockEnsureBrInstalled.mockResolvedValue(undefined);
     MockBeadsRustClient.mockImplementation(function (this: Record<string, unknown>) {
       this.ensureBrInstalled = mockEnsureBrInstalled;
@@ -234,7 +247,7 @@ describe("dispatch loop: watch-and-continue when nothing dispatched but agents a
     // The "No ready tasks" message should appear exactly once, not once per poll iteration.
     const consoleMock = vi.mocked(console.log);
     const waitingMessages = consoleMock.mock.calls.filter(
-      (args) => typeof args[0] === "string" && String(args[0]).includes("No ready tasks")
+      (args) => typeof args[0] === "string" && String(args[0]).includes("No ready beads")
     );
     expect(waitingMessages).toHaveLength(1);
 

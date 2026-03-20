@@ -120,9 +120,9 @@ describe("finalize() — push succeeds", () => {
   it("finalize returns true when push succeeds (bead closed by refinery, not here)", async () => {
     // closeSeed is no longer called from finalize() — the bead lifecycle fix
     // moves closing to refinery.ts after the branch lands on main.
-    // We simply verify finalize returns true when push succeeds.
+    // We simply verify finalize returns success=true when push succeeds.
     const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/my/project" }), logFile);
-    expect(result).toBe(true);
+    expect(result.success).toBe(true);
   });
 
   it("calls git push with correct branch name", async () => {
@@ -335,12 +335,12 @@ describe("finalize() — projectPath used for merge queue store", () => {
 
   it("finalize succeeds when projectPath is provided", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/explicit/project" }), logFile);
-    expect(result).toBe(true);
+    expect(result.success).toBe(true);
   });
 
   it("finalize succeeds when projectPath is not provided (falls back to worktree parent)", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: undefined }), logFile);
-    expect(result).toBe(true);
+    expect(result.success).toBe(true);
   });
 });
 
