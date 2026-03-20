@@ -18,3 +18,9 @@ export type {
   ForemanExtension,
   ExtensionFactory,
 } from './types.js';
+
+export {
+  createToolGateExtension,
+  toolGate,
+  DEFAULT_BASH_BLOCKLIST,
+} from './tool-gate.js';
