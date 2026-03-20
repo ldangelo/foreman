@@ -22,6 +22,10 @@ import {
   type AuditEntry,
   type AuditFilter,
 } from "../../lib/audit-reader.js";
+import {
+  AgentMailClient,
+  type AgentMailMessage,
+} from "../../orchestrator/agent-mail-client.js";
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -76,12 +80,13 @@ function renderEntry(entry: AuditEntry): string {
   return parts.join("  ");
 }
 
-function renderTable(seedId: string, entries: AuditEntry[]): void {
+function renderTable(seedId: string, entries: AuditEntry[], sourceNote?: string): void {
   // Derive runId from the first entry (all entries share the same run).
   const runId = entries[0]?.runId ?? "unknown";
 
+  const headerSuffix = sourceNote !== undefined ? `  ${sourceNote}` : "";
   console.log(
-    chalk.bold(`Audit log for seed ${chalk.cyan(seedId)} (run: ${chalk.dim(runId)})`),
+    chalk.bold(`Audit log for seed ${chalk.cyan(seedId)} (run: ${chalk.dim(runId)})`) + headerSuffix,
   );
   console.log(SEPARATOR);
 
@@ -103,6 +108,48 @@ function renderTable(seedId: string, entries: AuditEntry[]): void {
       `Blocked: ${chalk.red(blockedCount)} tool calls | ` +
       `Phases: ${chalk.cyan(phases)}`,
   );
+}
+
+// ── Agent Mail search ─────────────────────────────────────────────────────────
+
+/**
+ * Attempt to search audit entries via Agent Mail FTS5.
+ *
+ * Returns an array of matching AuditEntry objects when Agent Mail is available
+ * and successfully returns results.  Returns null when Agent Mail is
+ * unreachable or any error occurs — the caller must fall back to the local
+ * JSONL path in that case.
+ */
+async function searchViaAgentMail(searchTerm: string): Promise<AuditEntry[] | null> {
+  try {
+    const client = new AgentMailClient();
+    const available = await client.healthCheck();
+    if (!available) {
+      return null;
+    }
+
+    const messages: AgentMailMessage[] = await client.fetchInbox("audit-log", { limit: 1000 });
+
+    const lowerSearch = searchTerm.toLowerCase();
+    const entries: AuditEntry[] = [];
+
+    for (const msg of messages) {
+      try {
+        const entry = JSON.parse(msg.body) as AuditEntry;
+        // Apply case-insensitive search across the serialized entry.
+        const serialized = JSON.stringify(entry).toLowerCase();
+        if (serialized.includes(lowerSearch)) {
+          entries.push(entry);
+        }
+      } catch {
+        // Malformed body — skip.
+      }
+    }
+
+    return entries;
+  } catch {
+    return null;
+  }
 }
 
 // ── Command definition ────────────────────────────────────────────────────────
@@ -144,7 +191,17 @@ export const auditCommand = new Command("audit")
         filter.eventType = "tool_call";
       }
 
-      const entries = await readAuditEntries(seedId, filter);
+      // When --search is provided, try Agent Mail FTS5 first.
+      // If Agent Mail is unavailable or returns null, fall through to the
+      // local JSONL path (seamless fallback — no error is shown to the user).
+      let agentMailEntries: AuditEntry[] | null = null;
+      if (opts.search) {
+        agentMailEntries = await searchViaAgentMail(opts.search);
+      }
+
+      const entries = agentMailEntries !== null
+        ? agentMailEntries
+        : await readAuditEntries(seedId, filter);
 
       // Apply --blocked post-filter (readAuditEntries doesn't have a blocked
       // field filter — we filter ourselves after receiving the results).
@@ -165,7 +222,10 @@ export const auditCommand = new Command("audit")
       }
 
       // ── Tabular output ───────────────────────────────────────────────────
-      renderTable(seedId, filtered);
+      const sourceNote = agentMailEntries !== null
+        ? chalk.dim("(via Agent Mail FTS5)")
+        : undefined;
+      renderTable(seedId, filtered, sourceNote);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       if (opts.json) {

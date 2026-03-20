@@ -1,0 +1,33 @@
+# docker-compose.yml
+# Agent Mail server for Foreman inter-agent messaging
+# Run: docker compose up -d agent-mail
+# Health check: curl http://localhost:8765/health
+
+version: '3.8'
+
+services:
+  agent-mail:
+    image: python:3.12-slim
+    container_name: foreman-agent-mail
+    working_dir: /app
+    command: >
+      sh -c "pip install mcp-agent-mail --quiet &&
+             python -m mcp_agent_mail --port 8765 --host 0.0.0.0"
+    ports:
+      - "8765:8765"
+    volumes:
+      - agent-mail-data:/app/data
+    environment:
+      - AGENT_MAIL_DATA_DIR=/app/data
+      - AGENT_MAIL_PORT=8765
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  agent-mail-data:
+    driver: local
