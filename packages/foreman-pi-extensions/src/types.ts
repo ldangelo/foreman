@@ -71,8 +71,10 @@ export interface ForemanExtension {
   // Called when a tool is about to be invoked. Return ToolCallResult to block.
   onToolCall?(event: ToolCallEvent, ctx: ExtensionContext): ToolCallResult | Promise<ToolCallResult>;
 
-  // Called at the end of each turn
-  onTurnEnd?(event: TurnEndEvent, ctx: ExtensionContext): void | Promise<void>;
+  // Called at the end of each turn. May return ToolCallResult to signal
+  // session termination (e.g. budget exceeded); callers must not rely on
+  // the return value for normal observer hooks.
+  onTurnEnd?(event: TurnEndEvent, ctx: ExtensionContext): ToolCallResult | void | Promise<ToolCallResult | void>;
 
   // Called when the agent session ends
   onAgentEnd?(event: AgentEndEvent, ctx: ExtensionContext): void | Promise<void>;

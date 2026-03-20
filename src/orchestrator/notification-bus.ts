@@ -9,6 +9,11 @@
 import { EventEmitter } from "node:events";
 import type { WorkerNotification } from "./types.js";
 
+/**
+ * @deprecated Use AgentMailClient for new notification implementations.
+ * This HTTP fire-and-forget server will be removed in a future release.
+ * Migration: replace NotificationClient.sendStatus() calls with AgentMailClient.sendMessage().
+ */
 export class NotificationBus extends EventEmitter {
   constructor() {
     super();

@@ -30,14 +30,7 @@ export function createBudgetExtension(
     name: 'foreman-budget',
     version: '1.0.0',
 
-    // NOTE: The ForemanExtension interface declares onTurnEnd as returning
-    // void | Promise<void>. We intentionally return ToolCallResult here
-    // because Pi interprets a truthy return value as a session termination
-    // signal. TypeScript's `void` return type still permits returning a value
-    // (void means "caller should not use the return value", not "must return
-    // undefined"). The cast below satisfies strict mode without altering
-    // runtime semantics.
-    onTurnEnd(event: TurnEndEvent, ctx: ExtensionContext): void {
+    onTurnEnd(event: TurnEndEvent, ctx: ExtensionContext): ToolCallResult | void {
       turnCount++;
 
       const maxTurns = parseInt(
@@ -73,9 +66,7 @@ export function createBudgetExtension(
           turnCount: effectiveTurns,
           maxTurns,
         });
-        // Cast is required because the interface declares `void` return but
-        // Pi runtime inspects the actual returned value.
-        return { block: true, reason } as unknown as void;
+        return { block: true, reason };
       }
 
       if (totalTokens >= maxTokens) {
@@ -87,7 +78,7 @@ export function createBudgetExtension(
           totalTokens,
           maxTokens,
         });
-        return { block: true, reason } as unknown as void;
+        return { block: true, reason };
       }
 
       return undefined;

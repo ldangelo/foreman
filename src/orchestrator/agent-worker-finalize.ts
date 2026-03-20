@@ -22,6 +22,7 @@ import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import { closeSeed } from "./task-backend-ops.js";
+import { AgentMailClient } from "./agent-mail-client.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -266,6 +267,25 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
   } else {
     log(`[FINALIZE] Skipped seed close (push failed) for ${seedId}`);
     report.push(`## Seed Close`, `- Status: SKIPPED (push failed)`, "");
+  }
+
+  // Send branch-ready signal via Agent Mail (fire-and-forget).
+  // Only sent when push succeeded so the merge-agent only receives actionable signals.
+  // Agent Mail errors are swallowed — they must never fail finalization.
+  if (pushSucceeded) {
+    const agentMailClient = new AgentMailClient();
+    void agentMailClient.sendMessage(
+      "merge-agent",
+      "Branch Ready",
+      `Branch foreman/${seedId} is ready for merging`,
+      {
+        seedId,
+        branchName: `foreman/${seedId}`,
+        runId: config.runId,
+        commitHash,
+      },
+    );
+    log("[FINALIZE] Sent branch-ready signal via Agent Mail");
   }
 
   // Write finalize report

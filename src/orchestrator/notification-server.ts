@@ -19,6 +19,11 @@ import type { AddressInfo } from "node:net";
 import type { NotificationBus } from "./notification-bus.js";
 import type { WorkerNotification } from "./types.js";
 
+/**
+ * @deprecated Use AgentMailClient for new notification implementations.
+ * This HTTP fire-and-forget server will be removed in a future release.
+ * Migration: replace NotificationClient.sendStatus() calls with AgentMailClient.sendMessage().
+ */
 export class NotificationServer {
   private server: Server | null = null;
   private _port: number | null = null;

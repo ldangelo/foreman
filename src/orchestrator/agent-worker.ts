@@ -817,6 +817,16 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   // Agent Mail client — fire-and-forget, silent on failure.
   const agentMailClient = new AgentMailClient();
 
+  // Register all pipeline role agents with Agent Mail so they can receive messages.
+  // Promise.allSettled ensures this never throws even if Agent Mail is unavailable.
+  await Promise.allSettled([
+    agentMailClient.registerAgent(`explorer-${config.seedId}`),
+    agentMailClient.registerAgent(`developer-${config.seedId}`),
+    agentMailClient.registerAgent(`qa-${config.seedId}`),
+    agentMailClient.registerAgent(`reviewer-${config.seedId}`),
+    agentMailClient.registerAgent(`pipeline-${config.seedId}`),
+  ]);
+
   const progress: RunProgress = {
     toolCalls: 0,
     toolBreakdown: {},
@@ -859,11 +869,19 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         error: result.error,
       });
       if (!result.success) {
-        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed", notifyClient, config.projectPath);
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "explorer", result.error ?? "Explorer failed", notifyClient, config.projectPath, agentMailClient);
         return;
       }
       store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
       addLabelsToBead(seedId, ["phase:explorer"], config.projectPath);
+
+      // Phase completion → Agent Mail dual-channel (fire-and-forget)
+      void agentMailClient.sendMessage(
+        `pipeline-${config.seedId}`,
+        `Phase Complete: explorer`,
+        `Phase explorer completed for seed ${config.seedId}`,
+        { seedId: config.seedId, phase: "explorer", runId: config.runId, status: "complete" },
+      );
 
       // Send Explorer report via Agent Mail (fire-and-forget)
       const explorerContent = readReport(worktreePath, "EXPLORER_REPORT.md") ?? "";
@@ -940,11 +958,19 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         error: devResult.error,
       });
       if (!devResult.success) {
-        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed", notifyClient, config.projectPath);
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer", devResult.error ?? "Developer failed", notifyClient, config.projectPath, agentMailClient);
         return;
       }
       store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
       addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
+
+      // Phase completion → Agent Mail dual-channel (fire-and-forget)
+      void agentMailClient.sendMessage(
+        `pipeline-${config.seedId}`,
+        `Phase Complete: developer`,
+        `Phase developer completed for seed ${config.seedId}`,
+        { seedId: config.seedId, phase: "developer", runId: config.runId, status: "complete" },
+      );
     }
 
     // QA — skip on first pass if artifact already exists (resume after crash)
@@ -976,11 +1002,19 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         error: qaResult.error,
       });
       if (!qaResult.success) {
-        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed", notifyClient, config.projectPath);
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed", notifyClient, config.projectPath, agentMailClient);
         return;
       }
       store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
       addLabelsToBead(seedId, ["phase:qa"], config.projectPath);
+
+      // Phase completion → Agent Mail dual-channel (fire-and-forget)
+      void agentMailClient.sendMessage(
+        `pipeline-${config.seedId}`,
+        `Phase Complete: qa`,
+        `Phase qa completed for seed ${config.seedId}`,
+        { seedId: config.seedId, phase: "qa", runId: config.runId, status: "complete" },
+      );
     }
 
     const qaReport = readReport(worktreePath, "QA_REPORT.md");
@@ -1033,11 +1067,19 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         error: reviewResult.error,
       });
       if (!reviewResult.success) {
-        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed", notifyClient, config.projectPath);
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reviewer", reviewResult.error ?? "Reviewer failed", notifyClient, config.projectPath, agentMailClient);
         return;
       }
       store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
       addLabelsToBead(seedId, ["phase:reviewer"], config.projectPath);
+
+      // Phase completion → Agent Mail dual-channel (fire-and-forget)
+      void agentMailClient.sendMessage(
+        `pipeline-${config.seedId}`,
+        `Phase Complete: reviewer`,
+        `Phase reviewer completed for seed ${config.seedId}`,
+        { seedId: config.seedId, phase: "reviewer", runId: config.runId, status: "complete" },
+      );
 
       // Send Reviewer report via Agent Mail (fire-and-forget)
       const reviewContent = readReport(worktreePath, "REVIEW.md") ?? "";
@@ -1151,10 +1193,18 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   const finalizeResult = await finalize(config, logFile, progress, pipelineStartedAt, pipelineStatus);
   const finalizeSucceeded = finalizeResult.success;
 
+  // SQLite polling fallback: run status is always written to SQLite regardless of Agent Mail availability
   const now = new Date().toISOString();
   if (finalizeSucceeded) {
     store.updateRun(runId, { status: "completed", completed_at: now });
     notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
+    // Phase completion → Agent Mail dual-channel (fire-and-forget)
+    void agentMailClient.sendMessage(
+      `pipeline-${config.seedId}`,
+      `Phase Complete: finalize`,
+      `Phase finalize completed for seed ${config.seedId}`,
+      { seedId: config.seedId, phase: "finalize", runId: config.runId, status: "complete" },
+    );
   } else {
     // Push failed — mark the run as stuck.
     store.updateRun(runId, { status: "stuck", completed_at: now });
@@ -1211,6 +1261,7 @@ async function markStuck(
   reason: string,
   notifyClient?: NotificationClient,
   projectPath?: string,
+  agentMailClient?: AgentMailClient,
 ): Promise<void> {
   const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
   const now = new Date().toISOString();
@@ -1218,6 +1269,13 @@ async function markStuck(
   store.updateRunProgress(runId, progress);
   store.updateRun(runId, { status: stuckStatus, completed_at: now });
   notifyClient?.send({ type: "status", runId, status: stuckStatus, timestamp: now, details: { phase, reason } });
+  // Run error → Agent Mail notification (fire-and-forget)
+  void agentMailClient?.sendMessage(
+    "operator",
+    `Run Error: ${seedId}`,
+    reason,
+    { seedId, runId, status: "error" },
+  );
   store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
     seedId,
     title: seedTitle,
