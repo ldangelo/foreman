@@ -103,9 +103,24 @@ export class Dispatcher {
     if (opts?.seedId) {
       const target = readySeeds.find((b) => b.id === opts.seedId);
       if (!target) {
+        let reason = "Not found in ready beads";
+        try {
+          const bead = await this.seeds.show(opts.seedId);
+          if (!bead) {
+            reason = `Bead ${opts.seedId} not found`;
+          } else if (bead.status === "closed" || bead.status === "completed") {
+            reason = `Bead ${opts.seedId} is closed (already completed)`;
+          } else if (bead.status === "in_progress") {
+            reason = `Bead ${opts.seedId} is already in progress`;
+          } else if (bead.status === "open") {
+            reason = `Bead ${opts.seedId} is blocked (has unresolved dependencies)`;
+          }
+        } catch {
+          // fall back to default reason
+        }
         return {
           dispatched: [],
-          skipped: [{ seedId: opts.seedId, title: opts.seedId, reason: "Not found in ready beads" }],
+          skipped: [{ seedId: opts.seedId, title: opts.seedId, reason }],
           resumed: [],
           activeAgents: activeRuns.length,
         };
