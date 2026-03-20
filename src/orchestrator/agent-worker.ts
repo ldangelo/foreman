@@ -36,6 +36,9 @@ import { resetSeedToOpen, addLabelsToBead, addNotesToBead } from "./task-backend
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
+import { AgentMailClient } from "./agent-mail-client.js";
+import { parseFilesFromExplorerReport } from "./file-reservation.js";
+export { parseFilesFromExplorerReport }; // re-export for backward compatibility
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -798,6 +801,8 @@ async function finalize(
 }
 
 
+
+
 const MAX_DEV_RETRIES = PIPELINE_LIMITS.maxDevRetries;
 
 /**
@@ -808,6 +813,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   const { runId, projectId, seedId, seedTitle, worktreePath } = config;
   const description = config.seedDescription ?? "(no description)";
   const comments = config.seedComments;
+
+  // Agent Mail client — fire-and-forget, silent on failure.
+  const agentMailClient = new AgentMailClient();
 
   const progress: RunProgress = {
     toolCalls: 0,
@@ -856,6 +864,16 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       }
       store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
       addLabelsToBead(seedId, ["phase:explorer"], config.projectPath);
+
+      // Send Explorer report via Agent Mail (fire-and-forget)
+      const explorerContent = readReport(worktreePath, "EXPLORER_REPORT.md") ?? "";
+      void agentMailClient.sendMessage(
+        `pipeline-${seedId}`,
+        "Explorer Report",
+        explorerContent,
+        { seedId, phase: "explorer", runId },
+      );
+      log("[EXPLORER] Sent report via Agent Mail");
     }
   } else {
     phaseRecords.push({ name: "explorer", skipped: true });
@@ -879,11 +897,40 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       phaseRecords.push({ name: "developer", skipped: true });
     } else {
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
-      const devResult = await runPhase(
-        "developer",
-        developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext, comments),
-        config, progress, logFile, store, notifyClient,
-      );
+
+      // Agent Mail: reserve files identified by Explorer (fire-and-forget)
+      const reservedFiles = parseFilesFromExplorerReport(worktreePath);
+      if (reservedFiles.length > 0) {
+        try {
+          await agentMailClient.fileReservation(reservedFiles, {
+            agent: `developer-${seedId}`,
+            durationMs: 3_600_000, // 1 hour
+          });
+          log(`[DEVELOPER] Reserved ${reservedFiles.length} files via Agent Mail`);
+        } catch {
+          // Agent Mail is optional — never block the pipeline
+        }
+      }
+
+      let devResult: Awaited<ReturnType<typeof runPhase>>;
+      try {
+        devResult = await runPhase(
+          "developer",
+          developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext, comments),
+          config, progress, logFile, store, notifyClient,
+        );
+      } finally {
+        // Release file reservations regardless of success or failure
+        if (reservedFiles.length > 0) {
+          try {
+            await agentMailClient.releaseReservation(reservedFiles);
+            log(`[DEVELOPER] Released file reservations`);
+          } catch {
+            // Agent Mail is optional — never block the pipeline
+          }
+        }
+      }
+
       phaseRecords.push({
         name: devRetries === 0 ? "developer" : `developer (retry ${devRetries})`,
         skipped: false,
@@ -908,6 +955,16 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       await appendFile(logFile, `\n[PHASE: QA] SKIPPED (artifact already present)\n`);
       phaseRecords.push({ name: "qa", skipped: true });
     } else {
+      // Agent Mail: check QA inbox for any messages (informational only — QA proceeds regardless)
+      try {
+        const qaMessages = await agentMailClient.fetchInbox(`qa-${seedId}`);
+        if (qaMessages.length > 0) {
+          log(`[QA] Agent Mail inbox has ${qaMessages.length} message(s)`);
+        }
+      } catch {
+        // Agent Mail is optional — never block the pipeline
+      }
+
       rotateReport(worktreePath, "QA_REPORT.md");
       const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
@@ -937,6 +994,16 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     // QA failed — retry developer with feedback
     feedbackContext = qaReport ? extractIssues(qaReport) : "(QA failed but no report written)";
     devRetries++;
+
+    // Send QA feedback via Agent Mail (fire-and-forget)
+    const qaContent = readReport(worktreePath, "QA_REPORT.md") ?? "";
+    void agentMailClient.sendMessage(
+      `pipeline-${seedId}`,
+      `QA Feedback - Retry ${devRetries}`,
+      qaContent,
+      { seedId, phase: "qa", verdict: "fail", retryCount: devRetries },
+    );
+
     if (devRetries <= MAX_DEV_RETRIES) {
       log(`[QA] FAIL — sending back to Developer (retry ${devRetries}/${MAX_DEV_RETRIES})`);
       await appendFile(logFile, `\n[PIPELINE] QA failed, retrying developer (${devRetries}/${MAX_DEV_RETRIES})\n`);
@@ -971,6 +1038,17 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       }
       store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
       addLabelsToBead(seedId, ["phase:reviewer"], config.projectPath);
+
+      // Send Reviewer report via Agent Mail (fire-and-forget)
+      const reviewContent = readReport(worktreePath, "REVIEW.md") ?? "";
+      const reviewVerdictForMail = parseVerdict(reviewContent);
+      void agentMailClient.sendMessage(
+        `pipeline-${seedId}`,
+        "Review Complete",
+        reviewContent,
+        { seedId, phase: "reviewer", verdict: reviewVerdictForMail, runId },
+      );
+      log("[REVIEWER] Sent report via Agent Mail");
     }
 
     const reviewReport = readReport(worktreePath, "REVIEW.md");
