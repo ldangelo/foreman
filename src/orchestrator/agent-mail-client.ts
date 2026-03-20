@@ -4,11 +4,16 @@
  * TRD-020: Agent Mail HTTP Client
  *
  * Design principles:
- *   - Fire-and-forget with AbortController timeout (default 500ms)
+ *   - Fire-and-forget with AbortController timeout (default 3000ms)
  *   - Silent failure: ALL errors (network, timeout, non-2xx) are caught and swallowed
  *   - fetchInbox() returns [] on any failure
  *   - healthCheck() returns false on any failure
  *   - Base URL resolved from: constructor config → AGENT_MAIL_URL env var → default
+ *   - Project key resolved from: constructor config → AGENT_MAIL_PROJECT env var → file config → "foreman"
+ *   - Bearer token resolved from: constructor config → AGENT_MAIL_TOKEN env var → file config
+ *
+ * Transport: FastMCP streamable HTTP transport at POST /mcp using JSON-RPC 2.0.
+ * The real server is https://github.com/Dicklesworthstone/mcp_agent_mail.
  *
  * The client is designed to be resilient when Agent Mail is not running.
  * Callers should never need to wrap calls in try/catch.
@@ -25,7 +30,6 @@ export interface AgentMailMessage {
   to: string;
   subject: string;
   body: string;
-  metadata?: Record<string, unknown>;
   receivedAt: string;
   acknowledged: boolean;
 }
@@ -39,8 +43,12 @@ export interface ReservationResult {
 export interface AgentMailClientConfig {
   /** Base URL of the Agent Mail service. Defaults to AGENT_MAIL_URL env var or http://localhost:8765. */
   baseUrl?: string;
-  /** Timeout in ms for all requests. Defaults to 500. */
+  /** Timeout in ms for all requests. Defaults to 3000. */
   timeoutMs?: number;
+  /** Project key for the Agent Mail service. Defaults to AGENT_MAIL_PROJECT env var or "foreman". */
+  projectKey?: string;
+  /** Bearer token for authentication. Defaults to AGENT_MAIL_TOKEN env var. */
+  bearerToken?: string;
 }
 
 /** Shape of the optional .foreman/agent-mail.json config file. */
@@ -48,20 +56,52 @@ interface AgentMailFileConfig {
   baseUrl?: string;
   timeoutMs?: number;
   enabled?: boolean;
+  projectKey?: string;
+  bearerToken?: string;
+}
+
+/** JSON-RPC 2.0 response shape returned by FastMCP /mcp endpoint. */
+interface JsonRpcResponse {
+  jsonrpc: "2.0";
+  id: number;
+  result?: {
+    content: Array<{ type: string; text: string }>;
+  };
+  error?: {
+    code: number;
+    message: string;
+  };
+}
+
+/** Raw message shape returned by the real fetch_inbox tool. */
+interface RawMailMessage {
+  id: number;
+  sender_name?: string;
+  from?: string;
+  recipients?: string[];
+  to?: string;
+  subject: string;
+  body_md?: string;
+  body?: string;
+  created_at?: string;
+  received_at?: string;
+  acknowledged: boolean;
 }
 
 // ── Default config file content (written by init command) ─────────────────────
 
 export const DEFAULT_AGENT_MAIL_CONFIG: AgentMailFileConfig = {
   baseUrl: "http://localhost:8765",
-  timeoutMs: 500,
+  timeoutMs: 3000,
   enabled: true,
+  projectKey: "foreman",
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const DEFAULT_BASE_URL = "http://localhost:8765";
-const DEFAULT_TIMEOUT_MS = 500;
+const DEFAULT_TIMEOUT_MS = 3000;
+const DEFAULT_PROJECT_KEY = "foreman";
 
 /**
  * Attempt to read the optional .foreman/agent-mail.json config file.
@@ -110,59 +150,153 @@ function resolveTimeoutMs(configTimeoutMs: number | undefined): number {
   return DEFAULT_TIMEOUT_MS;
 }
 
+/**
+ * Resolve the project key from: constructor config → env var → file config → default.
+ */
+function resolveProjectKey(configProjectKey: string | undefined): string {
+  if (configProjectKey !== undefined && configProjectKey !== "") {
+    return configProjectKey;
+  }
+  const envKey = process.env.AGENT_MAIL_PROJECT;
+  if (envKey !== undefined && envKey !== "") {
+    return envKey;
+  }
+  const fileConfig = loadFileConfig();
+  if (fileConfig?.projectKey !== undefined && fileConfig.projectKey !== "") {
+    return fileConfig.projectKey;
+  }
+  return DEFAULT_PROJECT_KEY;
+}
+
+/**
+ * Resolve the bearer token from: constructor config → env var → file config → undefined.
+ */
+function resolveBearerToken(configToken: string | undefined): string | undefined {
+  if (configToken !== undefined && configToken !== "") {
+    return configToken;
+  }
+  const envToken = process.env.AGENT_MAIL_TOKEN;
+  if (envToken !== undefined && envToken !== "") {
+    return envToken;
+  }
+  const fileConfig = loadFileConfig();
+  if (fileConfig?.bearerToken !== undefined && fileConfig.bearerToken !== "") {
+    return fileConfig.bearerToken;
+  }
+  return undefined;
+}
+
+/**
+ * Map a raw server message to the AgentMailMessage interface expected by callers.
+ */
+function mapMessage(raw: RawMailMessage): AgentMailMessage {
+  return {
+    id: String(raw.id),
+    from: raw.sender_name ?? raw.from ?? "",
+    to: raw.recipients?.[0] ?? raw.to ?? "",
+    subject: raw.subject,
+    body: raw.body_md ?? raw.body ?? "",
+    receivedAt: raw.received_at ?? raw.created_at ?? new Date().toISOString(),
+    acknowledged: raw.acknowledged,
+  };
+}
+
 // ── AgentMailClient ────────────────────────────────────────────────────────────
 
 export class AgentMailClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly projectKey: string;
+  private readonly bearerToken: string | undefined;
 
   constructor(config?: AgentMailClientConfig) {
     this.baseUrl = resolveBaseUrl(config?.baseUrl);
     this.timeoutMs = resolveTimeoutMs(config?.timeoutMs);
+    this.projectKey = resolveProjectKey(config?.projectKey);
+    this.bearerToken = resolveBearerToken(config?.bearerToken);
   }
 
-  // ── Internal fetch helper ─────────────────────────────────────────────────
+  // ── Internal MCP call helper ──────────────────────────────────────────────
 
   /**
-   * Perform a fetch with an AbortController-based timeout.
-   * Throws on network error, timeout, or non-2xx — callers are responsible for catching.
+   * Call a FastMCP tool via JSON-RPC 2.0 POST /mcp.
+   * Extracts and JSON-parses the result from result.content[0].text.
+   * Throws on any failure — callers are responsible for catching.
    */
-  private async fetchWithTimeout(
-    url: string,
-    init?: RequestInit,
-  ): Promise<Response> {
+  private async mcpCall(toolName: string, args: Record<string, unknown>): Promise<unknown> {
     const controller = new AbortController();
     const timerId = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (this.bearerToken !== undefined) {
+      headers["Authorization"] = `Bearer ${this.bearerToken}`;
+    }
+
     try {
-      const response = await fetch(url, { ...init, signal: controller.signal });
-      return response;
+      const response = await fetch(`${this.baseUrl}/mcp`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: toolName,
+            arguments: args,
+          },
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} from /mcp`);
+      }
+
+      const rpc = (await response.json()) as JsonRpcResponse;
+
+      if (rpc.error !== undefined) {
+        throw new Error(`MCP error ${rpc.error.code}: ${rpc.error.message}`);
+      }
+
+      const text = rpc.result?.content?.[0]?.text;
+      if (text === undefined) {
+        throw new Error("MCP response missing result.content[0].text");
+      }
+
+      return JSON.parse(text) as unknown;
     } finally {
       clearTimeout(timerId);
     }
   }
 
-  /** Build a POST request init object with JSON body. */
-  private postJson(body: unknown): RequestInit {
-    return {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    };
-  }
-
   // ── Public API ────────────────────────────────────────────────────────────
 
   /**
+   * Ensure the project exists in the Agent Mail service.
+   * Silently ignores all errors.
+   */
+  async ensureProject(): Promise<void> {
+    try {
+      await this.mcpCall("ensure_project", { project_key: this.projectKey });
+    } catch {
+      // silent failure
+    }
+  }
+
+  /**
    * Register an agent with the mail service.
-   * Sends POST /register_agent { name }.
    * Silently ignores all errors.
    */
   async registerAgent(name: string): Promise<void> {
     try {
-      await this.fetchWithTimeout(
-        `${this.baseUrl}/register_agent`,
-        this.postJson({ name }),
-      );
+      await this.mcpCall("register_agent", {
+        project_key: this.projectKey,
+        name,
+        program: "foreman",
+        model: "claude-sonnet-4-6",
+      });
     } catch {
       // silent failure
     }
@@ -170,24 +304,21 @@ export class AgentMailClient {
 
   /**
    * Send a message to another agent.
-   * Sends POST /send_message { to, subject, body, metadata? }.
    * Silently ignores all errors.
    */
   async sendMessage(
     to: string,
     subject: string,
     body: string,
-    metadata?: Record<string, unknown>,
   ): Promise<void> {
     try {
-      const payload: Record<string, unknown> = { to, subject, body };
-      if (metadata !== undefined) {
-        payload.metadata = metadata;
-      }
-      await this.fetchWithTimeout(
-        `${this.baseUrl}/send_message`,
-        this.postJson(payload),
-      );
+      await this.mcpCall("send_message", {
+        project_key: this.projectKey,
+        sender_name: "foreman",
+        to: [to],
+        subject,
+        body_md: body,
+      });
     } catch {
       // silent failure
     }
@@ -195,7 +326,6 @@ export class AgentMailClient {
 
   /**
    * Fetch messages from an agent's inbox.
-   * GET /fetch_inbox?agent=<name>&limit=<n>&unread_only=<bool>
    * Returns [] on any failure.
    */
   async fetchInbox(
@@ -203,20 +333,15 @@ export class AgentMailClient {
     options?: { limit?: number; unreadOnly?: boolean },
   ): Promise<AgentMailMessage[]> {
     try {
-      const params = new URLSearchParams({ agent });
-      if (options?.limit !== undefined) {
-        params.set("limit", String(options.limit));
-      }
-      if (options?.unreadOnly !== undefined) {
-        params.set("unread_only", String(options.unreadOnly));
-      }
-      const url = `${this.baseUrl}/fetch_inbox?${params.toString()}`;
-      const response = await this.fetchWithTimeout(url, { method: "GET" });
-      if (!response.ok) {
-        return [];
-      }
-      const messages = (await response.json()) as AgentMailMessage[];
-      return messages;
+      const result = await this.mcpCall("fetch_inbox", {
+        project_key: this.projectKey,
+        agent_name: agent,
+        limit: options?.limit ?? 20,
+        urgent_only: options?.unreadOnly ?? false,
+        include_bodies: true,
+      });
+      const rawMessages = result as RawMailMessage[];
+      return rawMessages.map(mapMessage);
     } catch {
       return [];
     }
@@ -224,7 +349,6 @@ export class AgentMailClient {
 
   /**
    * Request a file reservation lease for a set of paths.
-   * POST /file_reservation_paths { paths, agent, duration_ms? }.
    * Returns { success: false } on any failure.
    */
   async fileReservation(
@@ -232,21 +356,15 @@ export class AgentMailClient {
     lease: { agent: string; durationMs?: number },
   ): Promise<ReservationResult> {
     try {
-      const payload: Record<string, unknown> = {
+      const result = await this.mcpCall("file_reservation_paths", {
+        project_key: this.projectKey,
+        agent_name: lease.agent,
         paths,
-        agent: lease.agent,
-      };
-      if (lease.durationMs !== undefined) {
-        payload.duration_ms = lease.durationMs;
-      }
-      const response = await this.fetchWithTimeout(
-        `${this.baseUrl}/file_reservation_paths`,
-        this.postJson(payload),
-      );
-      if (!response.ok) {
-        return { success: false };
-      }
-      return (await response.json()) as ReservationResult;
+        ttl_seconds: lease.durationMs !== undefined ? Math.ceil(lease.durationMs / 1000) : 3600,
+        exclusive: true,
+        reason: "foreman-phase-reservation",
+      });
+      return result as ReservationResult;
     } catch {
       return { success: false };
     }
@@ -254,15 +372,15 @@ export class AgentMailClient {
 
   /**
    * Release a previously-held file reservation.
-   * POST /release_reservation { paths }.
    * Silently ignores all errors.
    */
-  async releaseReservation(paths: string[]): Promise<void> {
+  async releaseReservation(paths: string[], agentName: string): Promise<void> {
     try {
-      await this.fetchWithTimeout(
-        `${this.baseUrl}/release_reservation`,
-        this.postJson({ paths }),
-      );
+      await this.mcpCall("release_file_reservations", {
+        project_key: this.projectKey,
+        agent_name: agentName,
+        paths,
+      });
     } catch {
       // silent failure
     }
@@ -273,14 +391,18 @@ export class AgentMailClient {
    * GET /health → returns true if response is 2xx, false otherwise.
    */
   async healthCheck(): Promise<boolean> {
+    const controller = new AbortController();
+    const timerId = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetchWithTimeout(
-        `${this.baseUrl}/health`,
-        { method: "GET" },
-      );
+      const response = await fetch(`${this.baseUrl}/health`, {
+        method: "GET",
+        signal: controller.signal,
+      });
       return response.ok;
     } catch {
       return false;
+    } finally {
+      clearTimeout(timerId);
     }
   }
 }

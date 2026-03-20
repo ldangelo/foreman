@@ -818,8 +818,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   // Agent Mail client — fire-and-forget, silent on failure.
   const agentMailClient = new AgentMailClient();
 
-  // Register all pipeline role agents with Agent Mail so they can receive messages.
+  // Ensure the project exists, then register all pipeline role agents with Agent Mail.
   // Promise.allSettled ensures this never throws even if Agent Mail is unavailable.
+  await agentMailClient.ensureProject();
   await Promise.allSettled([
     agentMailClient.registerAgent(`explorer-${config.seedId}`),
     agentMailClient.registerAgent(`developer-${config.seedId}`),
@@ -881,7 +882,6 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         `pipeline-${config.seedId}`,
         `Phase Complete: explorer`,
         `Phase explorer completed for seed ${config.seedId}`,
-        { seedId: config.seedId, phase: "explorer", runId: config.runId, status: "complete" },
       );
 
       // Send Explorer report via Agent Mail (fire-and-forget)
@@ -890,7 +890,6 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         `pipeline-${seedId}`,
         "Explorer Report",
         explorerContent,
-        { seedId, phase: "explorer", runId },
       );
       log("[EXPLORER] Sent report via Agent Mail");
     }
@@ -942,7 +941,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         // Release file reservations regardless of success or failure
         if (reservedFiles.length > 0) {
           try {
-            await agentMailClient.releaseReservation(reservedFiles);
+            await agentMailClient.releaseReservation(reservedFiles, `developer-${seedId}`);
             log(`[DEVELOPER] Released file reservations`);
           } catch {
             // Agent Mail is optional — never block the pipeline
@@ -970,7 +969,6 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         `pipeline-${config.seedId}`,
         `Phase Complete: developer`,
         `Phase developer completed for seed ${config.seedId}`,
-        { seedId: config.seedId, phase: "developer", runId: config.runId, status: "complete" },
       );
     }
 
@@ -1014,7 +1012,6 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         `pipeline-${config.seedId}`,
         `Phase Complete: qa`,
         `Phase qa completed for seed ${config.seedId}`,
-        { seedId: config.seedId, phase: "qa", runId: config.runId, status: "complete" },
       );
     }
 
@@ -1036,7 +1033,6 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       `pipeline-${seedId}`,
       `QA Feedback - Retry ${devRetries}`,
       qaContent,
-      { seedId, phase: "qa", verdict: "fail", retryCount: devRetries },
     );
 
     if (devRetries <= MAX_DEV_RETRIES) {
@@ -1079,17 +1075,14 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         `pipeline-${config.seedId}`,
         `Phase Complete: reviewer`,
         `Phase reviewer completed for seed ${config.seedId}`,
-        { seedId: config.seedId, phase: "reviewer", runId: config.runId, status: "complete" },
       );
 
       // Send Reviewer report via Agent Mail (fire-and-forget)
       const reviewContent = readReport(worktreePath, "REVIEW.md") ?? "";
-      const reviewVerdictForMail = parseVerdict(reviewContent);
       void agentMailClient.sendMessage(
         `pipeline-${seedId}`,
         "Review Complete",
         reviewContent,
-        { seedId, phase: "reviewer", verdict: reviewVerdictForMail, runId },
       );
       log("[REVIEWER] Sent report via Agent Mail");
     }
@@ -1204,7 +1197,6 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       `pipeline-${config.seedId}`,
       `Phase Complete: finalize`,
       `Phase finalize completed for seed ${config.seedId}`,
-      { seedId: config.seedId, phase: "finalize", runId: config.runId, status: "complete" },
     );
   } else {
     // Push failed — mark the run as stuck.
@@ -1275,7 +1267,6 @@ async function markStuck(
     "operator",
     `Run Error: ${seedId}`,
     reason,
-    { seedId, runId, status: "error" },
   );
   store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
     seedId,
