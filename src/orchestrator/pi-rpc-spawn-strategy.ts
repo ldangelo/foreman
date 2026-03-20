@@ -351,10 +351,11 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
         // Non-fatal
       }
 
-      // Determine success: agent_end must have been received with success=true,
-      // and the process must have exited cleanly (code 0).
-      const success =
-        agentEndReceived && agentEndSuccess && (exitCode === 0 || exitCode === null);
+      // Determine success: exit code 0 = success unless agent_end explicitly
+      // signals failure (success: false). Not receiving agent_end is not an error
+      // — Pi may not emit it in all cases (e.g. budget-exceeded short-circuits).
+      const explicitFailure = agentEndReceived && !agentEndSuccess;
+      const success = (exitCode === 0 || exitCode === null) && !explicitFailure;
 
       log(
         `[pi-rpc] Phase ${phase} for ${config.seedId} finished: ` +
