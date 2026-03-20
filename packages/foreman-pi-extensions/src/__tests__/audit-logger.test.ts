@@ -1,16 +1,39 @@
 /**
  * Tests for the foreman-audit extension (audit-logger.ts)
- * TDD — RED phase: these tests are written before the implementation.
+ * TDD — RED/GREEN phases covering:
+ *   - Original JSONL-writing behaviour (unchanged)
+ *   - Agent Mail streaming (primary store)
+ *   - Buffering when Agent Mail is down
+ *   - Buffer flush on Agent Mail recovery
+ *   - Observer-only guarantee
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { readFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { readFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { createAuditExtension } from '../audit-logger.js';
 import type { ExtensionContext } from '../types.js';
+
+// ── fetch mock ────────────────────────────────────────────────────────────────
+// We mock globalThis.fetch so tests never hit a real network.
+
+type FetchFn = typeof fetch;
+
+/** Build a mock fetch that resolves with a given status code. */
+function makeFetchMock(status: number): FetchFn {
+  return vi.fn().mockResolvedValue({
+    ok: status >= 200 && status < 300,
+    status,
+  } as Response);
+}
+
+/** Build a mock fetch that rejects with a network error. */
+function makeFailingFetch(): FetchFn {
+  return vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -281,5 +304,149 @@ describe('createAuditExtension', () => {
       const entries = readJSONL(file);
       expect(entries.length).toBeGreaterThanOrEqual(2);
     });
+  });
+});
+
+// ── Agent Mail integration tests ──────────────────────────────────────────────
+
+describe('createAuditExtension — Agent Mail integration', () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    process.env['FOREMAN_RUN_ID'] = RUN_ID;
+    process.env['FOREMAN_SEED_ID'] = SEED_ID;
+    process.env['FOREMAN_PHASE'] = PHASE;
+    // Use a non-default URL so tests don't accidentally hit localhost:8765
+    process.env['AGENT_MAIL_URL'] = 'http://test-agent-mail:9999';
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    delete process.env['AGENT_MAIL_URL'];
+  });
+
+  // 1. Tool call event → written to both local JSONL and Agent Mail
+  it('writes tool_call event to local JSONL AND posts to Agent Mail', async () => {
+    const mockFetch = makeFetchMock(200);
+    globalThis.fetch = mockFetch;
+
+    const dir = makeTmpDir();
+    const bufferDir = makeTmpDir();
+    const ext = createAuditExtension(dir, bufferDir);
+
+    ext.onToolCall?.({ toolName: 'Bash', input: { command: 'ls' } }, mockCtx);
+
+    // Let fire-and-forget promises settle
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    // Local JSONL must have the entry
+    const entries = readJSONL(auditFilePath(dir, RUN_ID));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!['eventType']).toBe('tool_call');
+
+    // fetch should have been called for the Agent Mail send_message endpoint
+    expect(mockFetch).toHaveBeenCalled();
+    const [calledUrl, calledInit] = (mockFetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(calledUrl).toContain('send_message');
+    const body = JSON.parse(calledInit.body as string) as Record<string, unknown>;
+    expect(body['to']).toBe('audit-log');
+    expect(body['subject']).toBe('tool_call');
+    const parsedEntry = JSON.parse(body['body'] as string) as Record<string, unknown>;
+    expect(parsedEntry['eventType']).toBe('tool_call');
+  });
+
+  // 2. Agent Mail down → event written to JSONL + buffered
+  it('buffers entry when Agent Mail send_message fails', async () => {
+    globalThis.fetch = makeFailingFetch();
+
+    const dir = makeTmpDir();
+    const bufferDir = makeTmpDir();
+    const ext = createAuditExtension(dir, bufferDir);
+
+    ext.onToolCall?.({ toolName: 'Read', input: {} }, mockCtx);
+
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    // Local JSONL written
+    const entries = readJSONL(auditFilePath(dir, RUN_ID));
+    expect(entries).toHaveLength(1);
+
+    // Buffer file created under bufferDir/{runId}.jsonl
+    const bufferFile = join(bufferDir, `${RUN_ID}.jsonl`);
+    expect(existsSync(bufferFile)).toBe(true);
+    const buffered = readJSONL(bufferFile);
+    expect(buffered).toHaveLength(1);
+    expect(buffered[0]!['eventType']).toBe('tool_call');
+  });
+
+  // 3. Agent Mail recovers → buffer flushed before next event
+  it('flushes buffer to Agent Mail when service recovers', async () => {
+    // First call: Agent Mail is down — buffer the entry
+    globalThis.fetch = makeFailingFetch();
+
+    const dir = makeTmpDir();
+    const bufferDir = makeTmpDir();
+    const ext = createAuditExtension(dir, bufferDir);
+
+    ext.onToolCall?.({ toolName: 'Read', input: {} }, mockCtx);
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    // Verify buffer has 1 entry
+    const bufferFile = join(bufferDir, `${RUN_ID}.jsonl`);
+    expect(existsSync(bufferFile)).toBe(true);
+
+    // Second call: Agent Mail recovers — first call is health check, subsequent calls succeed
+    let healthChecked = false;
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      if ((url as string).includes('/health')) {
+        healthChecked = true;
+        return Promise.resolve({ ok: true, status: 200 } as Response);
+      }
+      return Promise.resolve({ ok: true, status: 200 } as Response);
+    }) as FetchFn;
+
+    ext.onToolCall?.({ toolName: 'Write', input: {} }, mockCtx);
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // Health check should have been called
+    expect(healthChecked).toBe(true);
+
+    // Buffer file should be deleted after successful flush
+    expect(existsSync(bufferFile)).toBe(false);
+
+    // fetch should have been called at least 3 times:
+    //   1. health check
+    //   2. flush of buffered entry (send_message)
+    //   3. new event (send_message)
+    const mockFetch = globalThis.fetch as ReturnType<typeof vi.fn>;
+    expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  // 4. Observer-only: Agent Mail failure never blocks tool call
+  it('never throws or blocks when Agent Mail is unreachable', () => {
+    globalThis.fetch = makeFailingFetch();
+
+    const dir = makeTmpDir();
+    const bufferDir = makeTmpDir();
+    const ext = createAuditExtension(dir, bufferDir);
+
+    // All hook calls must be synchronous and must not throw
+    expect(() => {
+      const result = ext.onToolCall?.({ toolName: 'Bash', input: {} }, mockCtx);
+      // Result must be undefined (observer-only)
+      expect(result).toBeUndefined();
+    }).not.toThrow();
+
+    expect(() => {
+      ext.onTurnEnd?.(
+        { turnNumber: 1, contextUsage: { totalTokens: 100, inputTokens: 80, outputTokens: 20 } },
+        mockCtx,
+      );
+    }).not.toThrow();
+
+    expect(() => {
+      ext.onAgentEnd?.({ reason: 'completed' }, mockCtx);
+    }).not.toThrow();
   });
 });
