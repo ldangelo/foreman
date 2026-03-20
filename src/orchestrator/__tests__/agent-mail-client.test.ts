@@ -121,6 +121,23 @@ describe("AgentMailClient", () => {
       expect(args["project_key"]).toBeUndefined();
     });
 
+    it("updates projectKey so subsequent calls use the absolute path", async () => {
+      // First call: ensureProject succeeds
+      mockFetch.mockResolvedValueOnce(mcpOkResponse({}));
+      // Second call: sendMessage — should use the absolute path as project_key
+      mockFetch.mockResolvedValueOnce(mcpOkResponse({}));
+
+      const client = new AgentMailClient({ baseUrl: "http://localhost:8766" });
+      await client.ensureProject("/Users/ldangelo/Development/Fortium/foreman");
+      await client.sendMessage("agent-x", "Hello", "body");
+
+      const [, sendInit] = mockFetch.mock.calls[1] as [string, RequestInit];
+      const body = JSON.parse(sendInit.body as string) as Record<string, unknown>;
+      const params = body["params"] as Record<string, unknown>;
+      const args = params["arguments"] as Record<string, unknown>;
+      expect(args["project_key"]).toBe("/Users/ldangelo/Development/Fortium/foreman");
+    });
+
     it("does not throw on network error (silent failure)", async () => {
       mockFetch.mockRejectedValueOnce(new Error("connection refused"));
       const client = new AgentMailClient({ baseUrl: "http://localhost:9999" });
@@ -375,8 +392,10 @@ describe("AgentMailClient", () => {
       // We can't access private fields directly, but we can verify via behaviour:
       // healthCheck will use the default baseUrl
       expect(DEFAULT_AGENT_MAIL_CONFIG.baseUrl).toBe("http://localhost:8766");
-      expect(DEFAULT_AGENT_MAIL_CONFIG.projectKey).toBe("foreman");
+      // projectKey defaults to process.cwd() (not a hardcoded slug)
+      expect(DEFAULT_AGENT_MAIL_CONFIG.projectKey).toBe(process.cwd());
       expect(DEFAULT_AGENT_MAIL_CONFIG.timeoutMs).toBe(3000);
+      void client; // suppress unused variable warning
     });
 
     it("AGENT_MAIL_URL env var overrides default baseUrl", async () => {

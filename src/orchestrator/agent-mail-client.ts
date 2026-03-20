@@ -43,12 +43,17 @@ export interface AgentMailClientConfig {
   bearerToken?: string;
 }
 
-export const DEFAULT_AGENT_MAIL_CONFIG = {
+export const DEFAULT_AGENT_MAIL_CONFIG: {
+  readonly baseUrl: string;
+  readonly timeoutMs: number;
+  readonly enabled: boolean;
+  readonly projectKey: string;
+} = {
   baseUrl: "http://localhost:8766",
   timeoutMs: 3000,
   enabled: true,
-  projectKey: "foreman",
-} as const;
+  projectKey: process.cwd(),
+};
 
 // ── File-based config shape ───────────────────────────────────────────────────
 
@@ -93,7 +98,7 @@ type JsonRpcResponse = JsonRpcSuccessResponse | JsonRpcErrorResponse;
 export class AgentMailClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
-  private readonly projectKey: string;
+  private projectKey: string;
   private readonly bearerToken: string | undefined;
   private rpcId = 0;
 
@@ -214,6 +219,9 @@ export class AgentMailClient {
   async ensureProject(projectPath: string): Promise<void> {
     try {
       await this.mcpCall("ensure_project", { human_key: projectPath });
+      // After successful project registration, use the absolute path as project_key
+      // for all subsequent calls (send_message, fetch_inbox, register_agent, etc.)
+      this.projectKey = projectPath;
     } catch {
       // Silent failure — mail is non-critical infrastructure
     }
