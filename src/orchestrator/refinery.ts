@@ -424,6 +424,20 @@ export class Refinery {
           // may be unreachable. The subsequent rebase/merge will surface any real error.
         }
 
+        // Ensure working directory is clean before rebase — a previous partial rebase
+        // may have left patches applied but not committed. Stash any uncommitted changes
+        // so git rebase doesn't refuse to run.
+        let stashedBeforeRebase = false;
+        try {
+          const dirty = await git(["status", "--porcelain"], this.projectPath);
+          if (dirty.trim()) {
+            await git(["stash", "push", "--include-untracked", "-m", "foreman-rebase-pre-stash"], this.projectPath);
+            stashedBeforeRebase = true;
+          }
+        } catch {
+          // stash failure is non-fatal — rebase will fail with a clear message if still dirty
+        }
+
         // Rebase branch onto current target so it picks up all prior merges.
         // Auto-resolves report-file conflicts during rebase; aborts on real code conflicts.
         {
@@ -439,6 +453,10 @@ export class Refinery {
           try { await git(["checkout", targetBranch], this.projectPath); } catch { /* best effort */ }
 
           if (!rebaseOk) {
+            // Restore stash before bailing out so working directory stays clean
+            if (stashedBeforeRebase) {
+              try { await git(["stash", "pop"], this.projectPath); } catch { /* best effort */ }
+            }
             // Rebase failed — reset seed to open so it can be retried, then create a PR for manual conflict resolution
             await resetSeedToOpen(run.seed_id, this.projectPath);
             const pr = await this.createPrForConflict(run, branchName, targetBranch, "Rebase conflicts");
@@ -450,6 +468,12 @@ export class Refinery {
             }
             continue;
           }
+        }
+
+        // Restore any stash we created before the rebase (working dir should be clean after
+        // a successful rebase, but pop defensively to avoid losing the stash entry)
+        if (stashedBeforeRebase) {
+          try { await git(["stash", "pop"], this.projectPath); } catch { /* best effort — may be empty */ }
         }
 
         // Save pre-merge HEAD so we can revert merge + archive if tests fail
