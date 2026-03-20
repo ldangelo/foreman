@@ -496,7 +496,7 @@ export const runCommand = new Command("run")
       // Track whether the user explicitly detached (Ctrl+C). When detached, agents
       // continue running in the background so we skip the final merge drain.
       let userDetached = false;
-      // Suppress repeated "No ready tasks" log messages — only print once per wait period.
+      // Suppress repeated "No ready beads" log messages — only print once per wait period.
       let waitingForTasksLogged = false;
       while (true) {
         iteration++;
@@ -594,7 +594,7 @@ export const runCommand = new Command("run")
             if (!waitingForTasksLogged) {
               console.log(
                 chalk.dim(
-                  `No ready tasks — waiting for tasks to become available…`
+                  `No ready beads — waiting for tasks to become available…`
                 )
               );
               waitingForTasksLogged = true;

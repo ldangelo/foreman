@@ -105,7 +105,7 @@ export class Dispatcher {
       if (!target) {
         return {
           dispatched: [],
-          skipped: [{ seedId: opts.seedId, title: opts.seedId, reason: "Not found in ready seeds" }],
+          skipped: [{ seedId: opts.seedId, title: opts.seedId, reason: "Not found in ready beads" }],
           resumed: [],
           activeAgents: activeRuns.length,
         };
