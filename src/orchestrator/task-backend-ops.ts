@@ -179,7 +179,7 @@ export function addNotesToBead(seedId: string, notes: string, projectPath?: stri
 export function addLabelsToBead(seedId: string, labels: string[], projectPath?: string): void {
   if (labels.length === 0) return;
   const bin = brPath();
-  const args = ["update", seedId, "--labels", labels.join(",")];
+  const args = ["update", seedId, "--set-labels", labels.join(",")];
 
   try {
     execFileSync(bin, args, execOpts(projectPath));
