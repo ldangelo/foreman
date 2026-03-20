@@ -20,6 +20,7 @@ import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import { Refinery } from "../../orchestrator/refinery.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
 import { MergeAgent } from "../../orchestrator/merge-agent.js";
+import { ForemanInboxProcessor } from "../../orchestrator/foreman-inbox-processor.js";
 import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
@@ -444,6 +445,42 @@ export const runCommand = new Command("run")
         }
       };
 
+      // ── Foreman Inbox Processor Auto-Start ──────────────────────────────────
+      // If the merge agent is enabled, also start the ForemanInboxProcessor so
+      // that "phase-complete" messages from Pi agents are translated into
+      // "branch-ready" messages for the MergeAgent. This bridges the gap between
+      // PiRpcSpawnStrategy (which writes to the "foreman" inbox) and MergeAgent
+      // (which listens on the "refinery" inbox).
+      // Non-fatal — if anything fails, log a warning and continue without it.
+      let inboxProcessorInstance: ForemanInboxProcessor | null = null;
+      if (!dryRun && mergeAgentInstance !== null) {
+        try {
+          const agentMailForInbox = new AgentMailClient();
+          inboxProcessorInstance = new ForemanInboxProcessor(
+            agentMailForInbox,
+            store,
+            projectPath,
+          );
+          inboxProcessorInstance.start();
+          console.log(
+            chalk.dim("[foreman-inbox] Auto-started (translates phase-complete → branch-ready)"),
+          );
+        } catch (inboxErr: unknown) {
+          const msg = inboxErr instanceof Error ? inboxErr.message : String(inboxErr);
+          console.warn(
+            chalk.yellow(`[foreman-inbox] Failed to auto-start (non-fatal): ${msg}`),
+          );
+        }
+      }
+
+      /** Stop the inbox processor if it is running. Non-fatal cleanup helper. */
+      const stopInboxProcessor = (): void => {
+        if (inboxProcessorInstance?.isRunning()) {
+          inboxProcessorInstance.stop();
+          console.log(chalk.dim("[foreman-inbox] Stopped."));
+        }
+      };
+
       // ── Startup worker config file cleanup ──────────────────────────────────
       // Delete orphaned worker-{runId}.json files in ~/.foreman/tmp/ that were
       // never consumed by a worker (e.g. because the run was killed externally).
@@ -548,6 +585,7 @@ export const runCommand = new Command("run")
           if (detached) {
             stopSentinel();
             stopMergeAgent();
+            stopInboxProcessor();
             store.close();
             return;
           }
@@ -555,6 +593,7 @@ export const runCommand = new Command("run")
 
         stopSentinel();
         stopMergeAgent();
+        stopInboxProcessor();
         store.close();
         return;
       }
@@ -763,6 +802,7 @@ export const runCommand = new Command("run")
 
       stopSentinel();
       stopMergeAgent();
+      stopInboxProcessor();
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

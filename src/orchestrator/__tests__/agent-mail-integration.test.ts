@@ -15,30 +15,55 @@ import { AgentMailClient } from "../agent-mail-client.js";
 const AGENT_MAIL_URL = "http://localhost:8766";
 const PROJECT_KEY = process.cwd();
 
-// Check reachability once at suite level
-let serverReachable = false;
+// Two-level liveness check:
+// serverUp       = health endpoint returns OK (used by healthCheck test)
+// serverFunctional = register_agent also works (used by all other tests)
+let serverUp = false;
+let serverFunctional = false;
 
 beforeAll(async () => {
   try {
     const res = await fetch(`${AGENT_MAIL_URL}/health`, { signal: AbortSignal.timeout(2000) });
-    serverReachable = res.ok;
+    serverUp = res.ok;
+    if (!serverUp) return;
+
+    // Also verify that register_agent is functional (DB may be broken even if health is OK).
+    const probe = await fetch(`${AGENT_MAIL_URL}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 0,
+        method: "tools/call",
+        params: {
+          name: "register_agent",
+          arguments: {
+            project_key: PROJECT_KEY,
+            program: "foreman-probe",
+            task_description: "Probe",
+            model: "claude-sonnet-4-6",
+          },
+        },
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+    const probeJson = await probe.json() as { result?: { isError?: boolean } };
+    serverFunctional = !probeJson.result?.isError;
   } catch {
-    serverReachable = false;
+    serverUp = false;
+    serverFunctional = false;
   }
 });
 
 function skipIfOffline() {
-  if (!serverReachable) {
-    return true; // caller should skip
-  }
-  return false;
+  return !serverFunctional;
 }
 
 describe("AgentMailClient integration — send and receive", () => {
   it("healthCheck returns true when server is running", async () => {
     const client = new AgentMailClient({ baseUrl: AGENT_MAIL_URL, projectKey: PROJECT_KEY });
     const result = await client.healthCheck();
-    if (!serverReachable) {
+    if (!serverUp) {
       expect(result).toBe(false);
     } else {
       expect(result).toBe(true);

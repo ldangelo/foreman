@@ -1075,6 +1075,8 @@ export class ConflictResolver {
     if (f.startsWith(".foreman/reports/")) return true;
     if (f.endsWith(".md") && REPORT_FILES.some((r) => f.startsWith(r.replace(".md", ".")))) return true;
     if (f === ".claude/settings.local.json") return true;
+    // Beads data files are auto-resolvable: take the branch version (latest bead state)
+    if (f === ".beads/issues.jsonl" || f.startsWith(".beads/")) return true;
     return false;
   }
 
