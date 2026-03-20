@@ -1,0 +1,37 @@
+{
+  "name": "@foreman/pi-extensions",
+  "version": "1.0.0",
+  "description": "Pi agent pipeline hook extensions for Foreman",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "foreman",
+    "pi",
+    "extensions",
+    "agent",
+    "hooks"
+  ],
+  "author": "Leo D'Angelo",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.4.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

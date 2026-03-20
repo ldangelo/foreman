@@ -17,6 +17,9 @@ import {
   getSentinelBudget,
 } from "../lib/config.js";
 import { loadAndInterpolate } from "./template-loader.js";
+import { PI_PHASE_CONFIGS } from "./pi-rpc-spawn-strategy.js";
+
+export { PI_PHASE_CONFIGS };
 
 // ── Role config ─────────────────────────────────────────────────────────
 
@@ -38,6 +41,16 @@ export interface RoleConfig {
    * to the SDK query() call to enforce role-based access control.
    */
   allowedTools: ReadonlyArray<string>;
+  /**
+   * Maximum number of conversation turns for this phase.
+   * Used by Pi RPC strategy and SDK query() calls alike.
+   */
+  maxTurns?: number;
+  /**
+   * Maximum total token budget (input + output combined) for this phase.
+   * Used by Pi RPC strategy to enforce per-phase limits.
+   */
+  maxTokens?: number;
 }
 
 // ── Plan step config ────────────────────────────────────────────────────

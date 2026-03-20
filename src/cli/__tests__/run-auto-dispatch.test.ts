@@ -40,6 +40,7 @@ const {
     this.close = vi.fn();
     this.getActiveRuns = mockGetActiveRuns;
     this.getProjectByPath = mockGetProjectByPath;
+    this.getMergeAgentConfig = vi.fn().mockReturnValue(null);
   });
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
@@ -72,6 +73,20 @@ vi.mock("../../orchestrator/notification-server.js", () => ({
 }));
 vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }));
 vi.mock("../watch-ui.js", () => ({ watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args) }));
+vi.mock("../../orchestrator/agent-mail-client.js", () => ({
+  AgentMailClient: vi.fn(function (this: Record<string, unknown>) {
+    this.healthCheck = vi.fn().mockResolvedValue(true);
+  }),
+  DEFAULT_AGENT_MAIL_CONFIG: { baseUrl: "http://localhost:8766" },
+}));
+vi.mock("../../orchestrator/merge-agent.js", () => ({
+  MergeAgent: vi.fn(function (this: Record<string, unknown>) {
+    this.start = vi.fn().mockResolvedValue(undefined);
+    this.stop = vi.fn();
+  }),
+  MERGE_AGENT_MAILBOX: "refinery",
+  DEFAULT_POLL_INTERVAL_MS: 30_000,
+}));
 
 // ── Module under test ─────────────────────────────────────────────────────────
 import { runCommand } from "../commands/run.js";
@@ -104,6 +119,7 @@ describe("auto-dispatch: passes callback to watchRunsInk", () => {
       this.close = vi.fn();
       this.getActiveRuns = mockGetActiveRuns;
       this.getProjectByPath = mockGetProjectByPath;
+      this.getMergeAgentConfig = vi.fn().mockReturnValue(null);
     });
     mockWatchRunsInk.mockResolvedValue({ detached: false });
     mockGetActiveRuns.mockReturnValue([]);

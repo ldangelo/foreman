@@ -14,6 +14,7 @@ import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
 import { TmuxClient, tmuxSessionName } from "../lib/tmux.js";
+import { PiRpcSpawnStrategy, isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -880,13 +881,21 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
  * Spawn agent-worker.ts using the best available strategy.
  *
  * Strategy selection:
- * 1. If tmux is available, use TmuxSpawnStrategy (AT-T013)
- * 2. If tmux creation fails, fall back to DetachedSpawnStrategy (AT-T016)
- * 3. If tmux is unavailable, use DetachedSpawnStrategy directly
+ * 1. If `pi` binary is available, use PiRpcSpawnStrategy
+ * 2. If tmux is available, use TmuxSpawnStrategy (AT-T013)
+ * 3. If tmux creation fails, fall back to DetachedSpawnStrategy (AT-T016)
+ * 4. If tmux is unavailable, use DetachedSpawnStrategy directly
  *
  * Returns the spawn result including optional tmux session name.
  */
 export async function spawnWorkerProcess(config: WorkerConfig): Promise<SpawnResult> {
+  // Pi RPC takes highest priority when available
+  if (isPiAvailable()) {
+    log(`[foreman] pi binary found — using PiRpcSpawnStrategy for ${config.seedId}`);
+    const piStrategy = new PiRpcSpawnStrategy();
+    return piStrategy.spawn(config);
+  }
+
   const tmux = new TmuxClient();
   const available = await tmux.isAvailable();
 

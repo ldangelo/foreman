@@ -18,6 +18,7 @@ import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import { Refinery } from "../../orchestrator/refinery.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
+import { MergeAgent } from "../../orchestrator/merge-agent.js";
 import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
@@ -388,6 +389,43 @@ export const runCommand = new Command("run")
         }
       };
 
+      // ── Merge Agent Auto-Start ───────────────────────────────────────────
+      // If merge_agent_config.enabled=1 in the DB config, start the merge agent
+      // daemon automatically alongside foreman run. The merge agent polls Agent
+      // Mail for "branch-ready" messages and triggers Refinery automatically.
+      // Non-fatal — if anything fails, log a warning and continue without it.
+      let mergeAgentInstance: MergeAgent | null = null;
+      if (!dryRun) {
+        try {
+          const mergeAgentConfig = store.getMergeAgentConfig();
+          if (mergeAgentConfig && mergeAgentConfig.enabled === 1) {
+            mergeAgentInstance = new MergeAgent(
+              projectPath,
+              store,
+              taskClient,
+              mergeAgentConfig.poll_interval_ms,
+            );
+            mergeAgentInstance.start();
+            console.log(
+              chalk.dim(
+                `[merge-agent] Auto-started (polling every ${mergeAgentConfig.poll_interval_ms / 1000}s)`
+              )
+            );
+          }
+        } catch (mergeAgentErr: unknown) {
+          const msg = mergeAgentErr instanceof Error ? mergeAgentErr.message : String(mergeAgentErr);
+          console.warn(chalk.yellow(`[merge-agent] Failed to auto-start (non-fatal): ${msg}`));
+        }
+      }
+
+      /** Stop the merge agent daemon if it is running. Non-fatal cleanup helper. */
+      const stopMergeAgent = (): void => {
+        if (mergeAgentInstance?.isRunning()) {
+          mergeAgentInstance.stop();
+          console.log(chalk.dim("[merge-agent] Stopped."));
+        }
+      };
+
       // ── Startup Bead Sync ────────────────────────────────────────────────
       // Reconcile br seed statuses against SQLite run statuses before dispatching.
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
@@ -476,12 +514,14 @@ export const runCommand = new Command("run")
           const { detached } = await watchRunsInk(store, runIds, { notificationBus });
           if (detached) {
             stopSentinel();
+            stopMergeAgent();
             store.close();
             return;
           }
         }
 
         stopSentinel();
+        stopMergeAgent();
         store.close();
         return;
       }
@@ -689,6 +729,7 @@ export const runCommand = new Command("run")
       }
 
       stopSentinel();
+      stopMergeAgent();
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

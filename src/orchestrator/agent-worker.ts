@@ -103,6 +103,69 @@ function sendMail(
   });
 }
 
+/**
+ * Fire-and-forget wrapper for AgentMailClient.sendMessage with plain string body.
+ * Used to send report content (Explorer report, QA feedback, Review result).
+ * Never throws.
+ */
+function sendMailText(
+  client: AgentMailClient | null,
+  to: string,
+  subject: string,
+  body: string,
+): void {
+  if (!client) return;
+  client.sendMessage(to, subject, body).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[agent-mail] send failed (non-fatal): ${msg}`);
+  });
+}
+
+/**
+ * Fire-and-forget wrapper for AgentMailClient.registerAgent.
+ * Never throws — failures are logged but do not affect the pipeline.
+ */
+function registerAgent(client: AgentMailClient | null, name: string): void {
+  if (!client) return;
+  client.registerAgent(name).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[agent-mail] registerAgent failed (non-fatal): ${msg}`);
+  });
+}
+
+/**
+ * Fire-and-forget wrapper for file reservation.
+ * Never throws — failures are logged but do not affect the pipeline.
+ */
+function reserveFiles(
+  client: AgentMailClient | null,
+  paths: string[],
+  agentName: string,
+  leaseSecs?: number,
+): void {
+  if (!client || paths.length === 0) return;
+  client.reserveFiles(paths, agentName, leaseSecs).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[agent-mail] reserveFiles failed (non-fatal): ${msg}`);
+  });
+}
+
+/**
+ * Fire-and-forget wrapper for releasing file reservations.
+ * Never throws — failures are logged but do not affect the pipeline.
+ */
+function releaseFiles(
+  client: AgentMailClient | null,
+  paths: string[],
+  agentName: string,
+): void {
+  if (!client || paths.length === 0) return;
+  client.releaseFiles(paths, agentName).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[agent-mail] releaseFiles failed (non-fatal): ${msg}`);
+  });
+}
+
 // ── Config ───────────────────────────────────────────────────────────────────
 
 interface WorkerConfig {
@@ -929,6 +992,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       await appendFile(logFile, `\n[PHASE: EXPLORER] SKIPPED (artifact already present)\n`);
       phaseRecords.push({ name: "explorer", skipped: true });
     } else {
+      // AC-006-1: Register the explorer agent with Agent Mail before the phase starts.
+      registerAgent(agentMailClient, `explorer-${seedId}`);
       rotateReport(worktreePath, "EXPLORER_REPORT.md");
       const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description, comments), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
@@ -951,6 +1016,11 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       });
       store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
       addLabelsToBead(seedId, ["phase:explorer"], config.projectPath);
+      // AC-010-1: Send explorer report content as a message to developer's inbox.
+      const explorerReport = readReport(worktreePath, "EXPLORER_REPORT.md");
+      if (explorerReport) {
+        sendMailText(agentMailClient, `developer-${seedId}`, "Explorer Report", explorerReport);
+      }
     }
   } else {
     phaseRecords.push({ name: "explorer", skipped: true });
@@ -973,12 +1043,20 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       await appendFile(logFile, `\n[PHASE: DEVELOPER] SKIPPED (artifact already present)\n`);
       phaseRecords.push({ name: "developer", skipped: true });
     } else {
+      // AC-006-1: Register the developer agent with Agent Mail before the phase starts.
+      const developerAgentName = `developer-${seedId}`;
+      registerAgent(agentMailClient, developerAgentName);
+      // REQ-007 / AC-007-1: Reserve the worktree path before Developer edits files.
+      // Lease 10 minutes (600 s) — generous to cover typical developer phase duration.
+      reserveFiles(agentMailClient, [worktreePath], developerAgentName, 600);
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
       const devResult = await runPhase(
         "developer",
         developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext, comments),
         config, progress, logFile, store, notifyClient,
       );
+      // AC-007-3: Release file reservations on phase completion or failure.
+      releaseFiles(agentMailClient, [worktreePath], developerAgentName);
       phaseRecords.push({
         name: devRetries === 0 ? "developer" : `developer (retry ${devRetries})`,
         skipped: false,
@@ -1009,6 +1087,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       await appendFile(logFile, `\n[PHASE: QA] SKIPPED (artifact already present)\n`);
       phaseRecords.push({ name: "qa", skipped: true });
     } else {
+      // AC-006-1: Register the QA agent with Agent Mail before the phase starts.
+      registerAgent(agentMailClient, `qa-${seedId}`);
       rotateReport(worktreePath, "QA_REPORT.md");
       const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
@@ -1041,12 +1121,16 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       break;
     }
 
-    // QA failed — retry developer with feedback
+    // QA failed — retry developer with feedback.
+    // AC-010-2: Send QA feedback as a message to developer's inbox before retry.
     feedbackContext = qaReport ? extractIssues(qaReport) : "(QA failed but no report written)";
     devRetries++;
     if (devRetries <= MAX_DEV_RETRIES) {
       log(`[QA] FAIL — sending back to Developer (retry ${devRetries}/${MAX_DEV_RETRIES})`);
       await appendFile(logFile, `\n[PIPELINE] QA failed, retrying developer (${devRetries}/${MAX_DEV_RETRIES})\n`);
+      if (qaReport) {
+        sendMailText(agentMailClient, `developer-${seedId}`, `QA Feedback - Retry ${devRetries}`, qaReport);
+      }
     } else {
       log(`[QA] FAIL — max retries exhausted, proceeding with current state`);
       await appendFile(logFile, `\n[PIPELINE] QA failed after ${MAX_DEV_RETRIES} retries, proceeding anyway\n`);
@@ -1062,6 +1146,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       await appendFile(logFile, `\n[PHASE: REVIEWER] SKIPPED (artifact already present)\n`);
       phaseRecords.push({ name: "reviewer", skipped: true });
     } else {
+      // AC-006-1: Register the reviewer agent with Agent Mail before the phase starts.
+      registerAgent(agentMailClient, `reviewer-${seedId}`);
       rotateReport(worktreePath, "REVIEW.md");
       const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description, comments), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
@@ -1084,6 +1170,13 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       });
       store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
       addLabelsToBead(seedId, ["phase:reviewer"], config.projectPath);
+      // AC-010-3: Send review content and verdict to foreman inbox after REVIEW.md is written.
+      const reviewReport = readReport(worktreePath, "REVIEW.md");
+      if (reviewReport) {
+        const reviewVerdictForMail = parseVerdict(reviewReport);
+        const reviewBody = `${reviewReport}\n\n---\n**Verdict:** ${reviewVerdictForMail}`;
+        sendMailText(agentMailClient, "foreman", "Review Complete", reviewBody);
+      }
     }
 
     const reviewReport = readReport(worktreePath, "REVIEW.md");
@@ -1099,12 +1192,18 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       devRetries++;
 
       // One more dev → QA cycle to address review feedback
+      // AC-006-1: Register the developer agent; AC-007-1: Reserve files before editing.
+      const reviewFeedbackDevAgent = `developer-${seedId}`;
+      registerAgent(agentMailClient, reviewFeedbackDevAgent);
+      reserveFiles(agentMailClient, [worktreePath], reviewFeedbackDevAgent, 600);
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
       const devResult = await runPhase(
         "developer",
         developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback, comments),
         config, progress, logFile, store, notifyClient,
       );
+      // AC-007-3: Release file reservations on phase completion or failure.
+      releaseFiles(agentMailClient, [worktreePath], reviewFeedbackDevAgent);
       phaseRecords.push({
         name: `developer (review-feedback)`,
         skipped: false,

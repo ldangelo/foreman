@@ -62,6 +62,14 @@ vi.mock("../../lib/tmux.js", () => {
   };
 });
 
+// Mock Pi RPC spawn strategy so tmux tests are not intercepted by Pi
+vi.mock("../pi-rpc-spawn-strategy.js", () => ({
+  isPiAvailable: vi.fn().mockReturnValue(false),
+  PiRpcSpawnStrategy: vi.fn(),
+  PI_PHASE_CONFIGS: {},
+  parsePiEvent: vi.fn().mockReturnValue(null),
+}));
+
 // Now import the module under test
 const { spawnWorkerProcess, TmuxSpawnStrategy, DetachedSpawnStrategy } = await import("../dispatcher.js");
 // Also import the SpawnStrategy type for type checking

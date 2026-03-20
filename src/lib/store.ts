@@ -107,6 +107,16 @@ export interface Message {
   deleted_at: string | null;
 }
 
+// ── Merge Agent interfaces ───────────────────────────────────────────────
+
+export interface MergeAgentConfigRow {
+  id: string;
+  enabled: number; // 0 or 1
+  poll_interval_ms: number;
+  created_at: string;
+  updated_at: string;
+}
+
 // ── Sentinel interfaces ──────────────────────────────────────────────────
 
 export interface SentinelConfigRow {
@@ -297,6 +307,13 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS idx_sentinel_runs_project ON sentinel_runs (project_id, started_at DESC)`,
   `ALTER TABLE merge_queue ADD COLUMN retry_count INTEGER DEFAULT 0`,
   `ALTER TABLE merge_queue ADD COLUMN last_attempted_at TEXT DEFAULT NULL`,
+  `CREATE TABLE IF NOT EXISTS merge_agent_config (
+    id TEXT PRIMARY KEY DEFAULT 'default',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    poll_interval_ms INTEGER NOT NULL DEFAULT 30000,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
 ];
 
 // One-time destructive migrations that cannot be made idempotent via failure
@@ -999,6 +1016,63 @@ export class ForemanStore {
     return this.db
       .prepare(`SELECT * FROM sentinel_runs ${where} ORDER BY started_at DESC ${limitClause}`)
       .all(...params) as SentinelRunRow[];
+  }
+
+  // ── Merge Agent Config ───────────────────────────────────────────────
+
+  /**
+   * Get the merge agent configuration row (singleton with id='default').
+   * Returns null if not yet initialized (before `foreman init`).
+   */
+  getMergeAgentConfig(): MergeAgentConfigRow | null {
+    return (
+      (this.db
+        .prepare("SELECT * FROM merge_agent_config WHERE id = 'default'")
+        .get() as MergeAgentConfigRow | undefined) ?? null
+    );
+  }
+
+  /**
+   * Create or update the merge agent configuration.
+   * Upserts the singleton 'default' row.
+   */
+  setMergeAgentConfig(
+    config: Partial<Omit<MergeAgentConfigRow, "id" | "created_at" | "updated_at">>
+  ): MergeAgentConfigRow {
+    const now = new Date().toISOString();
+    const existing = this.getMergeAgentConfig();
+
+    if (existing) {
+      const fields: string[] = ["updated_at = @updated_at"];
+      const values: Record<string, unknown> = { updated_at: now };
+
+      if (config.enabled !== undefined) {
+        fields.push("enabled = @enabled");
+        values.enabled = config.enabled;
+      }
+      if (config.poll_interval_ms !== undefined) {
+        fields.push("poll_interval_ms = @poll_interval_ms");
+        values.poll_interval_ms = config.poll_interval_ms;
+      }
+
+      this.db
+        .prepare(`UPDATE merge_agent_config SET ${fields.join(", ")} WHERE id = 'default'`)
+        .run(values);
+    } else {
+      this.db
+        .prepare(
+          `INSERT INTO merge_agent_config (id, enabled, poll_interval_ms, created_at, updated_at)
+           VALUES ('default', @enabled, @poll_interval_ms, @created_at, @updated_at)`
+        )
+        .run({
+          enabled: config.enabled ?? 1,
+          poll_interval_ms: config.poll_interval_ms ?? 30_000,
+          created_at: now,
+          updated_at: now,
+        });
+    }
+
+    return this.getMergeAgentConfig()!;
   }
 
   // ── Metrics ─────────────────────────────────────────────────────────

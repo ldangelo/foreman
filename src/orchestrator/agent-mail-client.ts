@@ -362,6 +362,28 @@ export class AgentMailClient {
   }
 
   /**
+   * Reserve files for exclusive use during a pipeline phase.
+   * Convenience wrapper around fileReservation().
+   * Silent failure — returns void (ignores conflict details).
+   */
+  async reserveFiles(paths: string[], agentName: string, leaseSecs?: number): Promise<void> {
+    await this.fileReservation(paths, {
+      agent: agentName,
+      durationMs: leaseSecs !== undefined ? leaseSecs * 1000 : undefined,
+    });
+    // Result intentionally ignored — fire-and-forget reservation
+  }
+
+  /**
+   * Release file reservations held by an agent.
+   * Convenience wrapper around releaseReservation().
+   * Silent failure.
+   */
+  async releaseFiles(paths: string[], agentName: string): Promise<void> {
+    await this.releaseReservation(paths, agentName);
+  }
+
+  /**
    * Health check: GET /health.
    * Returns true on 2xx, false otherwise.
    */
