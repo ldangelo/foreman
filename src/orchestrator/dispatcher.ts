@@ -191,6 +191,19 @@ export class Dispatcher {
         continue;
       }
 
+      // Route ensemble types (bug/feature/epic) to /ensemble:fix-issue
+      const workflow = this.routeByType(seedInfo);
+      if (workflow === "ensemble") {
+        try {
+          const task = await this.dispatchEnsemble(projectId, seedInfo, model);
+          dispatched.push(task);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          skipped.push({ seedId: seed.id, title: seed.title, reason: `Ensemble dispatch failed: ${message}` });
+        }
+        continue;
+      }
+
       try {
         // 1. Create git worktree
         const { worktreePath, branchName } = await createWorktree(
@@ -508,6 +521,48 @@ export class Dispatcher {
       title: seed.title,
       runId: run.id,
       sessionKey,
+    };
+  }
+
+  /**
+   * Determine workflow strategy based on bead type.
+   * Returns 'ensemble' for types handled by ensemble commands,
+   * 'pipeline' for types handled by the existing agent pipeline.
+   */
+  private routeByType(seed: SeedInfo): "ensemble" | "pipeline" {
+    const ensembleTypes = new Set(["bug", "feature", "epic"]);
+    return ensembleTypes.has(seed.type ?? "") ? "ensemble" : "pipeline";
+  }
+
+  /**
+   * Dispatch a bug/feature/epic to /ensemble:fix-issue via dispatchPlanStep.
+   * Returns a DispatchedTask-compatible object (no worktree, no branch).
+   */
+  private async dispatchEnsemble(
+    projectId: string,
+    seed: SeedInfo,
+    model: ModelSelection,
+  ): Promise<DispatchedTask> {
+    const ensembleCommand = "/ensemble:fix-issue";
+    const input = `${seed.id}: ${seed.title}\n\n${seed.description ?? ""}`;
+    const outputDir = join(this.projectPath, ".foreman", "ensemble", seed.id);
+
+    const result = await this.dispatchPlanStep(
+      projectId,
+      seed,
+      ensembleCommand,
+      input,
+      outputDir,
+    );
+
+    return {
+      seedId: seed.id,
+      title: seed.title,
+      runtime: "claude-code" as RuntimeSelection,
+      model,
+      worktreePath: outputDir,
+      runId: result.runId,
+      branchName: `foreman/${seed.id}`,
     };
   }
 
