@@ -347,7 +347,6 @@ describe("finalize() — projectPath forwarded to closeSeed", () => {
   });
 });
 
-<<<<<<< HEAD
 // ── finalize — non-fast-forward push failure (bd-zwtr regression) ─────────────
 //
 // When git push fails with "non-fast-forward", finalize() should:
@@ -637,8 +636,9 @@ describe("finalize() — push rejected with 'fetch first' phrasing → rebase + 
   it("returns success=true after 'fetch first' rejection + rebase + retry push", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
     expect(result.success).toBe(true);
-||||||| parent of 8682c8a (finalize: push fails with 'src refspec does not match any' when worktree branch not checked out (bd-vjaj))
-=======
+  });
+});
+
 // ── finalize — branch verification before push ────────────────────────────────
 
 describe("finalize() — branch verification", () => {
@@ -697,14 +697,12 @@ describe("finalize() — branch verification", () => {
 
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
 
-    // checkout was called
     const checkoutCall = mockExecFileSync.mock.calls.find(
       (call) => Array.isArray(call[1]) && call[1][0] === "checkout" && call[1][1] === "foreman/bd-test-001",
     );
     expect(checkoutCall).toBeDefined();
 
-    // push succeeded after checkout recovery
-    expect(result).toBe(true);
+    expect(result.success).toBe(true);
     expect(mockCloseSeed).toHaveBeenCalledOnce();
   });
 
@@ -736,7 +734,7 @@ describe("finalize() — branch verification", () => {
       (call) => Array.isArray(call[1]) && call[1][0] === "checkout",
     );
     expect(checkoutCall).toBeDefined();
-    expect(result).toBe(true);
+    expect(result.success).toBe(true);
   });
 
   it("skips push and returns false when checkout fails after branch mismatch", async () => {
@@ -749,13 +747,12 @@ describe("finalize() — branch verification", () => {
 
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
 
-    // push was NOT called
     const pushCall = mockExecFileSync.mock.calls.find(
       (call) => Array.isArray(call[1]) && call[1][0] === "push",
     );
     expect(pushCall).toBeUndefined();
 
-    expect(result).toBe(false);
+    expect(result.success).toBe(false);
     expect(mockCloseSeed).not.toHaveBeenCalled();
     expect(mockEnqueueToMergeQueue).not.toHaveBeenCalled();
   });
@@ -788,9 +785,8 @@ describe("finalize() — branch verification", () => {
 
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
 
-    expect(result).toBe(false);
+    expect(result.success).toBe(false);
     expect(mockCloseSeed).not.toHaveBeenCalled();
->>>>>>> 8682c8a (finalize: push fails with 'src refspec does not match any' when worktree branch not checked out (bd-vjaj))
   });
 });
 

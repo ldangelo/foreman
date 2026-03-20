@@ -584,7 +584,7 @@ describe("foreman retry", () => {
           {
             seedId: "bd-test",
             title: "Test bead",
-            reason: "Not found in ready seeds",
+            reason: "Not found in ready beads",
           },
         ],
         resumed: [],
@@ -602,7 +602,7 @@ describe("foreman retry", () => {
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain("skipped");
-      expect(output).toContain("Not found in ready seeds");
+      expect(output).toContain("Not found in ready beads");
 
       consoleSpy.mockRestore();
     });

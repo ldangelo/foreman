@@ -165,7 +165,10 @@ export class BeadsRustClient implements ITaskClient {
   /** Show full detail for one issue. */
   async show(id: string): Promise<BrIssueDetail> {
     await this.requireInit();
-    return (await execBr(["show", id], this.projectPath)) as BrIssueDetail;
+    const result = await execBr(["show", id], this.projectPath);
+    // br show returns an array with one element
+    const item = Array.isArray(result) ? result[0] : result;
+    return item as BrIssueDetail;
   }
 
   /** Update fields on an issue. Satisfies ITaskClient.update(). */

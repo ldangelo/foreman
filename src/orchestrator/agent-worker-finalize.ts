@@ -151,102 +151,13 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     }
   }
 
-<<<<<<< HEAD
-  // Push — with automatic rebase recovery on non-fast-forward rejections.
-  //
-  // Non-fast-forward errors are deterministic (diverged history) and will
-  // always fail on retry unless the local branch is rebased onto the remote.
-  // Attempting git pull --rebase here resolves the common case where origin
-  // received a commit (e.g. from a previous partial run) while the worktree
-  // continued on a different history.  If the rebase itself fails (real
-  // conflicts), we return retryable=false so the caller does NOT reset the
-  // seed to open — preventing the infinite re-dispatch loop described in bd-zwtr.
-  let pushSucceeded = false;
-  let pushRetryable = true; // default: transient failures may be retried
-||||||| parent of 8682c8a (finalize: push fails with 'src refspec does not match any' when worktree branch not checked out (bd-vjaj))
-  // Push
-  let pushSucceeded = false;
-=======
   // Branch Verification — ensure we're on the correct branch before pushing.
   // Worktrees can end up in detached HEAD or on a wrong branch (e.g. after a
   // failed rebase or manual intervention), causing `git push foreman/<seedId>`
   // to fail with "src refspec does not match any".
   const expectedBranch = `foreman/${seedId}`;
   let branchVerified = false;
->>>>>>> 8682c8a (finalize: push fails with 'src refspec does not match any' when worktree branch not checked out (bd-vjaj))
   try {
-<<<<<<< HEAD
-    execFileSync("git", ["push", "-u", "origin", `foreman/${seedId}`], opts);
-    log(`[FINALIZE] Pushed to origin`);
-    report.push(`## Push`, `- Status: SUCCESS`, `- Branch: foreman/${seedId}`, "");
-    pushSucceeded = true;
-  } catch (pushErr: unknown) {
-    const pushMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
-    // "non-fast-forward" covers the standard rejection message.
-    // "fetch first" covers the case where git phrases it differently (e.g. older git versions).
-    // We do NOT trigger rebase for other rejection types (permission errors, missing refs, etc.).
-    const isNonFastForward =
-      pushMsg.includes("non-fast-forward") ||
-      pushMsg.includes("fetch first");
-
-    if (isNonFastForward) {
-      log(`[FINALIZE] Push rejected (non-fast-forward) — attempting git pull --rebase`);
-      await appendFile(logFile, `[FINALIZE] Push rejected (non-fast-forward): ${pushMsg}\n`);
-      report.push(`## Push`, `- Status: REJECTED (non-fast-forward) — attempting rebase`, "");
-
-      // Attempt rebase. A failed rebase is deterministic — do NOT reset seed to open.
-      let rebaseSucceeded = false;
-      try {
-        execFileSync("git", ["pull", "--rebase", "origin", `foreman/${seedId}`], opts);
-        log(`[FINALIZE] Rebase succeeded — retrying push`);
-        report.push(`## Rebase`, `- Status: SUCCESS`, "");
-        rebaseSucceeded = true;
-      } catch (rebaseErr: unknown) {
-        const rebaseMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
-        log(`[FINALIZE] Rebase failed: ${rebaseMsg.slice(0, 200)}`);
-        await appendFile(logFile, `[FINALIZE] Rebase error: ${rebaseMsg}\n`);
-        report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${rebaseMsg.slice(0, 300)}`, "");
-        report.push(`## Push`, `- Status: FAILED (rebase could not resolve diverged history)`, "");
-        // Abort any partial rebase to leave the worktree clean
-        try { execFileSync("git", ["rebase", "--abort"], opts); } catch { /* already clean */ }
-        // Deterministic failure — do NOT reset seed to open (prevents infinite loop)
-        pushRetryable = false;
-      }
-
-      // Retry push only if rebase succeeded. A post-rebase push failure is treated
-      // as transient (retryable=true) — it is distinct from a rebase conflict.
-      if (rebaseSucceeded) {
-        try {
-          execFileSync("git", ["push", "-u", "origin", `foreman/${seedId}`], opts);
-          log(`[FINALIZE] Pushed to origin (after rebase)`);
-          report.push(`## Push`, `- Status: SUCCESS (after rebase)`, `- Branch: foreman/${seedId}`, "");
-          pushSucceeded = true;
-        } catch (retryPushErr: unknown) {
-          const retryMsg = retryPushErr instanceof Error ? retryPushErr.message : String(retryPushErr);
-          log(`[FINALIZE] Push failed after rebase: ${retryMsg.slice(0, 200)}`);
-          await appendFile(logFile, `[FINALIZE] Post-rebase push error: ${retryMsg}\n`);
-          report.push(`## Push`, `- Status: FAILED (after rebase)`, `- Error: ${retryMsg.slice(0, 300)}`, "");
-          // Transient failure — allow retry
-          pushRetryable = true;
-        }
-      }
-    } else {
-      log(`[FINALIZE] Push failed: ${pushMsg.slice(0, 200)}`);
-      await appendFile(logFile, `[FINALIZE] Push error: ${pushMsg}\n`);
-      report.push(`## Push`, `- Status: FAILED`, `- Error: ${pushMsg.slice(0, 300)}`, "");
-      // Non-classification failures (network, permissions, etc.) may be transient
-      pushRetryable = true;
-||||||| parent of 8682c8a (finalize: push fails with 'src refspec does not match any' when worktree branch not checked out (bd-vjaj))
-    execFileSync("git", ["push", "-u", "origin", `foreman/${seedId}`], opts);
-    log(`[FINALIZE] Pushed to origin`);
-    report.push(`## Push`, `- Status: SUCCESS`, `- Branch: foreman/${seedId}`, "");
-    pushSucceeded = true;
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`[FINALIZE] Push failed: ${msg.slice(0, 200)}`);
-    await appendFile(logFile, `[FINALIZE] Push error: ${msg}\n`);
-    report.push(`## Push`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
-=======
     const currentBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], opts)
       .toString()
       .trim();
@@ -284,8 +195,17 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     );
   }
 
-  // Push
+  // Push — with automatic rebase recovery on non-fast-forward rejections.
+  //
+  // Non-fast-forward errors are deterministic (diverged history) and will
+  // always fail on retry unless the local branch is rebased onto the remote.
+  // Attempting git pull --rebase here resolves the common case where origin
+  // received a commit (e.g. from a previous partial run) while the worktree
+  // continued on a different history.  If the rebase itself fails (real
+  // conflicts), we return retryable=false so the caller does NOT reset the
+  // seed to open — preventing the infinite re-dispatch loop described in bd-zwtr.
   let pushSucceeded = false;
+  let pushRetryable = true; // default: transient failures may be retried
   if (!branchVerified) {
     log(`[FINALIZE] Skipping push (branch verification failed)`);
     report.push(`## Push`, `- Status: SKIPPED (branch verification failed)`, "");
@@ -295,12 +215,63 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
       log(`[FINALIZE] Pushed to origin`);
       report.push(`## Push`, `- Status: SUCCESS`, `- Branch: ${expectedBranch}`, "");
       pushSucceeded = true;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[FINALIZE] Push failed: ${msg.slice(0, 200)}`);
-      await appendFile(logFile, `[FINALIZE] Push error: ${msg}\n`);
-      report.push(`## Push`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
->>>>>>> 8682c8a (finalize: push fails with 'src refspec does not match any' when worktree branch not checked out (bd-vjaj))
+    } catch (pushErr: unknown) {
+      const pushMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+      // "non-fast-forward" covers the standard rejection message.
+      // "fetch first" covers the case where git phrases it differently (e.g. older git versions).
+      // We do NOT trigger rebase for other rejection types (permission errors, missing refs, etc.).
+      const isNonFastForward =
+        pushMsg.includes("non-fast-forward") ||
+        pushMsg.includes("fetch first");
+
+      if (isNonFastForward) {
+        log(`[FINALIZE] Push rejected (non-fast-forward) — attempting git pull --rebase`);
+        await appendFile(logFile, `[FINALIZE] Push rejected (non-fast-forward): ${pushMsg}\n`);
+        report.push(`## Push`, `- Status: REJECTED (non-fast-forward) — attempting rebase`, "");
+
+        // Attempt rebase. A failed rebase is deterministic — do NOT reset seed to open.
+        let rebaseSucceeded = false;
+        try {
+          execFileSync("git", ["pull", "--rebase", "origin", expectedBranch], opts);
+          log(`[FINALIZE] Rebase succeeded — retrying push`);
+          report.push(`## Rebase`, `- Status: SUCCESS`, "");
+          rebaseSucceeded = true;
+        } catch (rebaseErr: unknown) {
+          const rebaseMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+          log(`[FINALIZE] Rebase failed: ${rebaseMsg.slice(0, 200)}`);
+          await appendFile(logFile, `[FINALIZE] Rebase error: ${rebaseMsg}\n`);
+          report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${rebaseMsg.slice(0, 300)}`, "");
+          report.push(`## Push`, `- Status: FAILED (rebase could not resolve diverged history)`, "");
+          // Abort any partial rebase to leave the worktree clean
+          try { execFileSync("git", ["rebase", "--abort"], opts); } catch { /* already clean */ }
+          // Deterministic failure — do NOT reset seed to open (prevents infinite loop)
+          pushRetryable = false;
+        }
+
+        // Retry push only if rebase succeeded. A post-rebase push failure is treated
+        // as transient (retryable=true) — it is distinct from a rebase conflict.
+        if (rebaseSucceeded) {
+          try {
+            execFileSync("git", ["push", "-u", "origin", expectedBranch], opts);
+            log(`[FINALIZE] Pushed to origin (after rebase)`);
+            report.push(`## Push`, `- Status: SUCCESS (after rebase)`, `- Branch: ${expectedBranch}`, "");
+            pushSucceeded = true;
+          } catch (retryPushErr: unknown) {
+            const retryMsg = retryPushErr instanceof Error ? retryPushErr.message : String(retryPushErr);
+            log(`[FINALIZE] Push failed after rebase: ${retryMsg.slice(0, 200)}`);
+            await appendFile(logFile, `[FINALIZE] Post-rebase push error: ${retryMsg}\n`);
+            report.push(`## Push`, `- Status: FAILED (after rebase)`, `- Error: ${retryMsg.slice(0, 300)}`, "");
+            // Transient failure — allow retry
+            pushRetryable = true;
+          }
+        }
+      } else {
+        log(`[FINALIZE] Push failed: ${pushMsg.slice(0, 200)}`);
+        await appendFile(logFile, `[FINALIZE] Push error: ${pushMsg}\n`);
+        report.push(`## Push`, `- Status: FAILED`, `- Error: ${pushMsg.slice(0, 300)}`, "");
+        // Non-classification failures (network, permissions, etc.) may be transient
+        pushRetryable = true;
+      }
     }
   }
 
