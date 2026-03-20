@@ -1,5 +1,6 @@
-import { writeFile, mkdir, open } from "node:fs/promises";
+import { writeFile, mkdir, open, readdir, unlink } from "node:fs/promises";
 import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -979,4 +980,74 @@ function seedToInfo(seed: Issue, detail?: { description?: string | null; notes?:
     type: seed.type,
     comments: detail?.notes ?? undefined,
   };
+}
+
+// ── Worker config file cleanup ────────────────────────────────────────────────
+
+/**
+ * Return the directory where worker config JSON files are written.
+ */
+export function workerConfigDir(): string {
+  return join(homedir(), ".foreman", "tmp");
+}
+
+/**
+ * Delete the worker config file for a specific run (if it still exists).
+ * Safe to call even if the file has already been deleted by the worker.
+ */
+export async function deleteWorkerConfigFile(runId: string): Promise<void> {
+  const configPath = join(workerConfigDir(), `worker-${runId}.json`);
+  try {
+    await unlink(configPath);
+  } catch {
+    // Already deleted or never created — ignore
+  }
+}
+
+/**
+ * Purge stale worker config files from ~/.foreman/tmp/ for runs that are no
+ * longer active in the database.
+ *
+ * Worker config files are written by the dispatcher and deleted by the worker
+ * on startup.  When a run is killed externally, the worker never starts and
+ * the config file is never cleaned up.  This function removes orphaned files
+ * for runs that are in a terminal state (failed, stuck, completed, etc.) or
+ * are entirely absent from the DB.
+ *
+ * Returns the number of files deleted.
+ */
+export async function purgeOrphanedWorkerConfigs(
+  store: Pick<import("../lib/store.js").ForemanStore, "getRun">,
+): Promise<number> {
+  const dir = workerConfigDir();
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    // Directory does not exist — nothing to purge
+    return 0;
+  }
+
+  const activeStatuses = new Set(["pending", "running"]);
+  let deleted = 0;
+
+  for (const entry of entries) {
+    if (!entry.startsWith("worker-") || !entry.endsWith(".json")) continue;
+    // Extract runId from filename: worker-<runId>.json
+    const runId = entry.slice("worker-".length, -".json".length);
+    if (!runId) continue;
+
+    const run = store.getRun(runId);
+    // Delete if the run is terminal, unknown, or absent from the DB
+    if (!run || !activeStatuses.has(run.status)) {
+      try {
+        await unlink(join(dir, entry));
+        deleted++;
+      } catch {
+        // Already gone — ignore
+      }
+    }
+  }
+
+  return deleted;
 }

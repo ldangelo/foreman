@@ -25,6 +25,7 @@ import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
 import { AgentMailClient, DEFAULT_AGENT_MAIL_CONFIG } from "../../orchestrator/agent-mail-client.js";
 import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
+import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
 
@@ -442,6 +443,21 @@ export const runCommand = new Command("run")
           console.log(chalk.dim("[merge-agent] Stopped."));
         }
       };
+
+      // ── Startup worker config file cleanup ──────────────────────────────────
+      // Delete orphaned worker-{runId}.json files in ~/.foreman/tmp/ that were
+      // never consumed by a worker (e.g. because the run was killed externally).
+      // Non-fatal — stale files waste disk space but do not affect correctness.
+      if (!dryRun) {
+        try {
+          const purged = await purgeOrphanedWorkerConfigs(store);
+          if (purged > 0) {
+            console.log(chalk.dim(`[startup] Purged ${purged} orphaned worker config file(s).`));
+          }
+        } catch {
+          // Non-fatal — ignore cleanup errors
+        }
+      }
 
       // ── Startup Bead Sync ────────────────────────────────────────────────
       // Reconcile br seed statuses against SQLite run statuses before dispatching.

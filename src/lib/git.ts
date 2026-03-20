@@ -174,13 +174,38 @@ export async function createWorktree(
 
   // If worktree already exists (e.g. from a failed previous run), reuse it
   if (existsSync(worktreePath)) {
-    // Update the branch to the latest base so it picks up new code
+    // Update the branch to the latest base so it picks up new code.
+    // Rebase may fail when there are unstaged changes in the worktree —
+    // attempt a `git checkout -- .` to discard them before retrying.
     try {
       await git(["rebase", base], worktreePath);
-    } catch (err) {
-      // Rebase may fail if there are conflicts — that's OK, use as-is
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[git] Rebase failed in ${worktreePath} (continuing): ${msg.slice(0, 200)}`);
+    } catch (rebaseErr) {
+      const rebaseMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+      const hasUnstagedChanges =
+        rebaseMsg.includes("unstaged changes") ||
+        rebaseMsg.includes("uncommitted changes") ||
+        rebaseMsg.includes("please stash");
+
+      if (hasUnstagedChanges) {
+        console.error(`[git] Rebase failed due to unstaged changes in ${worktreePath} — cleaning and retrying`);
+        try {
+          // Discard all unstaged changes and untracked files so rebase can proceed
+          await git(["checkout", "--", "."], worktreePath);
+          await git(["clean", "-fd"], worktreePath);
+          // Retry the rebase after cleaning
+          await git(["rebase", base], worktreePath);
+        } catch (retryErr) {
+          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          // Abort any partial rebase to leave the worktree in a usable state
+          try { await git(["rebase", "--abort"], worktreePath); } catch { /* already clean */ }
+          throw new Error(`Rebase failed even after cleaning unstaged changes: ${retryMsg}`);
+        }
+      } else {
+        // Non-unstaged-changes rebase failure (e.g. real conflicts): throw so
+        // the dispatcher does not spawn an agent into a broken worktree.
+        try { await git(["rebase", "--abort"], worktreePath); } catch { /* already clean */ }
+        throw new Error(`Rebase failed in ${worktreePath}: ${rebaseMsg.slice(0, 300)}`);
+      }
     }
     // Reinstall in case dependencies changed after rebase
     await installDependencies(worktreePath);

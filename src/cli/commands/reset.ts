@@ -11,6 +11,7 @@ import { TmuxClient } from "../../lib/tmux.js";
 import type { UpdateOptions } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
+import { deleteWorkerConfigFile } from "../../orchestrator/dispatcher.js";
 import type { StateMismatch } from "../../lib/run-status.js";
 // Re-export for callers that import these from this module (backward compatibility).
 export { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
@@ -431,6 +432,11 @@ export const resetCommand = new Command("reset")
             });
             runsMarkedFailed++;
           }
+        }
+
+        // 5. Clean up orphaned worker config file (if it still exists)
+        if (!dryRun) {
+          await deleteWorkerConfigFile(run.id);
         }
 
         seedIds.add(run.seed_id);

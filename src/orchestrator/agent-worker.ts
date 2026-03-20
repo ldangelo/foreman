@@ -166,6 +166,11 @@ function releaseFiles(
   });
 }
 
+// ── Module-level phase tracker ───────────────────────────────────────────────
+// Updated by main() and runPipeline() as phases progress so the fatal error
+// handler can report the correct phase in its Agent Mail message.
+let currentPhase = "startup";
+
 // ── Config ───────────────────────────────────────────────────────────────────
 
 interface WorkerConfig {
@@ -227,6 +232,7 @@ async function main(): Promise<void> {
   await appendFile(logFile, header);
 
   log(`Worker started for ${seedId} [${model}] pid=${process.pid} mode=${mode}`);
+  currentPhase = "init";
 
   // Open store connection (project-local database)
   const store = ForemanStore.forProject(storeProjectPath);
@@ -978,6 +984,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   };
 
   const pipelineStartedAt = new Date().toISOString();
+  currentPhase = "pipeline";
 
   log(`Pipeline starting for ${seedId} [phases: ${config.skipExplore ? "skip-explore" : "explore"} → dev → qa → ${config.skipReview ? "skip-review" : "review"} → finalize]`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n`);
@@ -1426,7 +1433,88 @@ function log(msg: string): void {
 
 // ── Entry ────────────────────────────────────────────────────────────────────
 
-main().catch((err) => {
-  console.error(`[foreman-worker] Fatal: ${err instanceof Error ? err.message : String(err)}`);
+/**
+ * Top-level fatal error handler.
+ *
+ * When main() rejects (e.g. config parse failure, ForemanStore.forProject()
+ * throws, or runPipeline() propagates an uncaught error), we attempt to:
+ *   1. Update the run status to "failed" in SQLite so the run is not left stuck.
+ *   2. Send an Agent Mail "worker-error" message to the "foreman" mailbox so
+ *      the operator can see the error without having to grep log files.
+ *
+ * Both operations are best-effort — if Agent Mail is unavailable or the store
+ * cannot be opened, we log and exit cleanly rather than masking the original
+ * error.
+ *
+ * The config is re-read from argv[2] if it still exists on disk (worker
+ * crashed before unlinking it), or parsed from what we can infer.  We attempt
+ * to load runId/seedId from the config so we can target the correct DB row.
+ */
+async function fatalHandler(err: unknown): Promise<void> {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(`[foreman-worker] Fatal: ${msg}`);
+
+  // Try to recover enough context to update SQLite + send Agent Mail.
+  const configPath = process.argv[2];
+  if (!configPath) {
+    process.exit(1);
+  }
+
+  let runId: string | undefined;
+  let seedId: string | undefined;
+  let projectPath: string | undefined;
+
+  // Config may have already been deleted by main(); re-read if still present.
+  try {
+    const raw = readFileSync(configPath, "utf-8");
+    const cfg = JSON.parse(raw) as Partial<WorkerConfig>;
+    runId = cfg.runId;
+    seedId = cfg.seedId;
+    projectPath = cfg.projectPath ?? (cfg.worktreePath ? join(cfg.worktreePath, "..", "..") : undefined);
+  } catch {
+    // Config already deleted (worker started successfully but crashed later).
+    // We cannot recover context from disk at this point.
+  }
+
+  if (runId && projectPath) {
+    // Update SQLite so the run is not left permanently in "running" status.
+    try {
+      const store = ForemanStore.forProject(projectPath);
+      store.updateRun(runId, {
+        status: "failed",
+        completed_at: new Date().toISOString(),
+      });
+      store.close();
+    } catch (storeErr: unknown) {
+      const storeMsg = storeErr instanceof Error ? storeErr.message : String(storeErr);
+      console.error(`[foreman-worker] Could not update run status: ${storeMsg}`);
+    }
+
+    // Send Agent Mail notification so foreman knows this worker died.
+    // agentMailClient is not in scope here — create a fresh one.
+    if (seedId) {
+      try {
+        const mailCandidate = new AgentMailClient();
+        const reachable = await mailCandidate.healthCheck();
+        if (reachable) {
+          await mailCandidate.sendMessage(
+            "foreman",
+            "worker-error",
+            JSON.stringify({
+              runId,
+              seedId,
+              error: msg,
+              phase: currentPhase,
+            }),
+          );
+        }
+      } catch {
+        // Agent Mail unavailable — SQLite update above is sufficient.
+      }
+    }
+  }
+
   process.exit(1);
-});
+}
+
+main().catch(fatalHandler);
