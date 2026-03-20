@@ -152,6 +152,98 @@ export function renderAgentMailSection(
   }
 }
 
+// ── Pi RPC Stats integration ──────────────────────────────────────────────
+
+/**
+ * Determine whether a run has Pi RPC progress data worth displaying.
+ *
+ * A run is considered a Pi RPC run when any of the following is true:
+ * - `runs.session_key` starts with `foreman:pi-rpc:`
+ * - `RunProgress.lastToolCall` is set (Pi-specific real-time field)
+ * - `RunProgress.currentPhase` is set (written by PiRpcSpawnStrategy)
+ */
+export function hasPiRpcProgress(run: Run, progress: RunProgress | null): boolean {
+  if (run.session_key?.startsWith("foreman:pi-rpc:")) return true;
+  if (progress?.lastToolCall !== null && progress?.lastToolCall !== undefined) return true;
+  if (progress?.currentPhase !== undefined) return true;
+  return false;
+}
+
+/**
+ * Format a number with comma thousands separator.
+ * e.g. 45230 → "45,230"
+ */
+export function formatNumber(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/**
+ * Format an ISO timestamp as a relative "X ago" string.
+ * Returns undefined when lastToolCall is null/undefined.
+ */
+export function formatRelativeTime(isoTimestamp: string | null | undefined): string | undefined {
+  if (!isoTimestamp) return undefined;
+  const diffMs = Date.now() - new Date(isoTimestamp).getTime();
+  if (diffMs < 0) return "just now";
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  return `${diffHr}h ago`;
+}
+
+/**
+ * Render Pi RPC Stats section for a single run.
+ * Only renders when the run has Pi progress data.
+ * Exported for testing.
+ */
+export function renderPiRpcStatsSection(
+  run: Run,
+  progress: RunProgress | null,
+  output: (line: string) => void = console.log,
+): void {
+  if (!hasPiRpcProgress(run, progress)) return;
+  if (!progress) return;
+
+  const divider = chalk.dim("  " + "─".repeat(43));
+  output(divider);
+  output(chalk.bold("  Pi RPC Stats"));
+  output(divider);
+
+  // Model — use progress.model (actual Pi model) or fall back to run agent_type
+  const model = progress.model ?? chalk.dim("(unknown)");
+  output(`  Model:       ${chalk.cyan(model)}`);
+
+  // Phase
+  const phase = progress.currentPhase ?? chalk.dim("(unknown)");
+  output(`  Phase:       ${chalk.yellow(phase)}`);
+
+  // Turns: current / max
+  const turnsStr = progress.maxTurns !== undefined
+    ? `${progress.turns} / ${progress.maxTurns}`
+    : `${progress.turns}`;
+  output(`  Turns:       ${turnsStr}`);
+
+  // Tokens: combined in+out / max
+  const totalTokens = progress.tokensIn + progress.tokensOut;
+  const tokensStr = progress.maxTokens !== undefined
+    ? `${formatNumber(totalTokens)} / ${formatNumber(progress.maxTokens)}`
+    : formatNumber(totalTokens);
+  output(`  Tokens:      ${tokensStr}`);
+
+  // Last tool call with relative time
+  if (progress.lastToolCall) {
+    const relTime = formatRelativeTime(progress.lastActivity);
+    const toolStr = relTime
+      ? `${progress.lastToolCall} ${chalk.dim(`(${relTime})`)}`
+      : progress.lastToolCall;
+    output(`  Last tool:   ${toolStr}`);
+  }
+
+  output(divider);
+}
+
 // ── Internal render helper ────────────────────────────────────────────────
 
 async function renderStatus(): Promise<void> {
@@ -198,6 +290,7 @@ async function renderStatus(): Promise<void> {
         const run = activeRuns[i];
         const progress = store.getRunProgress(run.id);
         console.log(renderAgentCard(run, progress));
+        renderPiRpcStatsSection(run, progress);
         // Separate cards with a blank line, but don't add a trailing blank
         // after the last card (avoids a dangling empty line in single-agent output).
         if (i < activeRuns.length - 1) console.log();

@@ -82,6 +82,10 @@ export interface RunProgress {
   currentPhase?: string;        // Pipeline phase: "explorer" | "developer" | "qa" | "reviewer" | "finalize"
   costByPhase?: Record<string, number>;  // e.g. { explorer: 0.10, developer: 0.50 }
   agentByPhase?: Record<string, string>; // e.g. { explorer: "claude-haiku-4-5", developer: "claude-sonnet-4-6" }
+  // Pi RPC specific fields
+  model?: string;               // Active model name (set by Pi RPC agent_start event)
+  maxTurns?: number;            // Turn budget (from FOREMAN_MAX_TURNS)
+  maxTokens?: number;           // Token budget (from FOREMAN_MAX_TOKENS)
 }
 
 export interface Metrics {

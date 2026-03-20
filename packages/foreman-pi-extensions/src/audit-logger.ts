@@ -37,6 +37,7 @@ export interface AuditEntry {
   seedId: string;                         // from FOREMAN_SEED_ID env
   phase: string;                          // from FOREMAN_PHASE env
   eventType: string;                      // discriminant field
+  model?: string;                         // from FOREMAN_MODEL env — active model at event time
   toolName?: string;                      // tool_call / tool_execution_* events
   blocked?: boolean;                      // tool_call events that were blocked
   blockReason?: string;                   // reason a tool_call was blocked
@@ -210,6 +211,7 @@ export function createAuditExtension(outputDir?: string, bufferDir?: string): Fo
       runId: process.env['FOREMAN_RUN_ID'] ?? 'unknown',
       seedId: process.env['FOREMAN_SEED_ID'] ?? 'unknown',
       phase: process.env['FOREMAN_PHASE'] ?? 'unknown',
+      model: process.env['FOREMAN_MODEL'] ?? 'unknown',
       eventType,
     };
   }

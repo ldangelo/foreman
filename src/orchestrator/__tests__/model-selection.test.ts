@@ -93,6 +93,19 @@ function makeFakeProcess() {
   return { proc, stdin, stdout, stderr };
 }
 
+function autoRespondHealthCheck(proc: ReturnType<typeof makeFakeProcess>["proc"]) {
+  setImmediate(() => {
+    proc.stdout.emit(
+      "data",
+      JSON.stringify({
+        type: "health_check_response",
+        loadedExtensions: ["foreman-tool-gate", "foreman-budget", "foreman-audit"],
+        status: "ok",
+      }) + "\n",
+    );
+  });
+}
+
 function makeWorkerConfig(overrides: Partial<{
   runId: string;
   projectId: string;
@@ -196,6 +209,7 @@ describe("PiRpcSpawnStrategy — model mismatch warning on agent_start", () => {
   it("logs a warning when agent_start reports a different model than requested", async () => {
     const { proc } = makeFakeProcess();
     mockSpawn.mockReturnValue(proc);
+    autoRespondHealthCheck(proc);
 
     // Capture stderr output (log() writes to console.error)
     const warnSpy = vi.spyOn(console, "error");
@@ -244,6 +258,7 @@ describe("PiRpcSpawnStrategy — model mismatch warning on agent_start", () => {
   it("does NOT log a warning when agent_start model matches requested model", async () => {
     const { proc } = makeFakeProcess();
     mockSpawn.mockReturnValue(proc);
+    autoRespondHealthCheck(proc);
 
     const warnSpy = vi.spyOn(console, "error");
 
@@ -284,6 +299,7 @@ describe("PiRpcSpawnStrategy — model mismatch warning on agent_start", () => {
   it("does NOT log a warning when agent_start has no model field", async () => {
     const { proc } = makeFakeProcess();
     mockSpawn.mockReturnValue(proc);
+    autoRespondHealthCheck(proc);
 
     const warnSpy = vi.spyOn(console, "error");
 
@@ -329,6 +345,7 @@ describe("PiRpcSpawnStrategy — set_model sent as first init message", () => {
   it("sends set_model command before any other command", async () => {
     const { proc } = makeFakeProcess();
     mockSpawn.mockReturnValue(proc);
+    autoRespondHealthCheck(proc);
 
     const receivedLines: string[] = [];
     proc.stdin.on("data", (chunk: Buffer) => {
@@ -372,6 +389,7 @@ describe("PiRpcSpawnStrategy — set_model sent as first init message", () => {
   it("set_model command carries the model from WorkerConfig", async () => {
     const { proc } = makeFakeProcess();
     mockSpawn.mockReturnValue(proc);
+    autoRespondHealthCheck(proc);
 
     const sentCommands: Array<{ cmd: string; model?: string }> = [];
     proc.stdin.on("data", (chunk: Buffer) => {
@@ -409,6 +427,7 @@ describe("PiRpcSpawnStrategy — set_model sent as first init message", () => {
   it("prompt command is sent after set_model (ordering guarantee)", async () => {
     const { proc } = makeFakeProcess();
     mockSpawn.mockReturnValue(proc);
+    autoRespondHealthCheck(proc);
 
     const sentCommands: Array<{ cmd: string }> = [];
     proc.stdin.on("data", (chunk: Buffer) => {

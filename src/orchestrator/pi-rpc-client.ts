@@ -29,12 +29,17 @@ export interface PiForkCommand {
   label?: string;
 }
 
+export interface PiHealthCheckCommand {
+  type: "health_check";
+}
+
 export type PiCommand =
   | PiPromptCommand
   | PiSetModelCommand
   | PiSetContextCommand
   | PiSwitchSessionCommand
-  | PiForkCommand;
+  | PiForkCommand
+  | PiHealthCheckCommand;
 
 // ── Pi RPC event types (received from Pi via stdout) ─────────────────────────
 
@@ -95,6 +100,13 @@ export interface PiErrorEvent {
   message: string;
 }
 
+export interface PiHealthCheckResponseEvent {
+  type: "health_check_response";
+  /** Extension names that successfully loaded, e.g. ["foreman-tool-gate", "foreman-budget", "foreman-audit"] */
+  loadedExtensions: string[];
+  status: "ok" | "error";
+}
+
 export type PiEvent =
   | PiAgentStartEvent
   | PiAgentEndEvent
@@ -104,7 +116,8 @@ export type PiEvent =
   | PiToolExecutionEndEvent
   | PiBudgetExceededEvent
   | PiExtensionUiEvent
-  | PiErrorEvent;
+  | PiErrorEvent
+  | PiHealthCheckResponseEvent;
 
 // ── Client options ────────────────────────────────────────────────────────────
 

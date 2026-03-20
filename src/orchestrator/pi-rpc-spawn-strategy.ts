@@ -10,6 +10,7 @@ import type {
   PiTurnEndEvent,
   PiToolExecutionStartEvent,
   PiToolExecutionEndEvent,
+  PiHealthCheckResponseEvent,
 } from "./pi-rpc-client.js";
 import { DetachedSpawnStrategy } from "./dispatcher.js";
 import type { SpawnStrategy, SpawnResult, WorkerConfig } from "./dispatcher.js";
@@ -19,6 +20,38 @@ import type { ForemanStore, RunProgress } from "../lib/store.js";
 
 /** Valid values for the FOREMAN_SPAWN_STRATEGY environment variable. */
 export type SpawnStrategyOverride = "pi-rpc" | "tmux" | "detached";
+
+/**
+ * Valid values for the FOREMAN_PI_SESSION_STRATEGY environment variable.
+ *
+ *   reuse   (default): Start a fresh Pi process per pipeline phase.
+ *                      Sends set_model + set_context + prompt. No prior-session
+ *                      commands are sent.
+ *   resume:            Start a new Pi process and resume a prior session via
+ *                      a switch_session command sent before the prompt.
+ *                      Falls back to reuse behavior when no prior session exists.
+ *   fork:              Fork from an existing Pi session before the prompt,
+ *                      creating a branched session.
+ *                      Falls back to reuse behavior when no prior session exists.
+ */
+export type PiSessionStrategy = "reuse" | "resume" | "fork";
+
+/**
+ * Extract the Pi session ID from a Foreman session key.
+ *
+ * Session keys are stored in the format:
+ *   foreman:pi-rpc:<model>:<runId>:session-<sessionId>
+ *
+ * @param sessionKey - Value from runs.session_key, or null.
+ * @returns The extracted sessionId string, or null when the key is absent
+ *          or does not contain a valid session- suffix.
+ */
+export function extractPiSessionId(sessionKey: string | null): string | null {
+  if (!sessionKey) return null;
+  const match = sessionKey.match(/session-([^:]+)$/);
+  if (!match || !match[1]) return null;
+  return match[1];
+}
 
 /**
  * Module-level cache for the pi binary availability check.
@@ -111,7 +144,7 @@ function log(msg: string): void {
 /**
  * Build a default RunProgress object for a new Pi RPC run.
  */
-function defaultProgress(phase: string): RunProgress {
+function defaultProgress(phase: string, maxTurns: number, maxTokens: number): RunProgress {
   return {
     toolCalls: 0,
     toolBreakdown: {},
@@ -125,6 +158,8 @@ function defaultProgress(phase: string): RunProgress {
     currentPhase: phase,
     costByPhase: {},
     agentByPhase: {},
+    maxTurns,
+    maxTokens,
   };
 }
 
@@ -204,11 +239,18 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
       log(`[PiRpcSpawnStrategy] Could not read TASK.md for ${config.seedId}`);
     }
 
+    // Parse turn / token budgets from env for progress tracking
+    const maxTurns = parseInt(childEnv.FOREMAN_MAX_TURNS ?? "80", 10);
+    const maxTokens = parseInt(childEnv.FOREMAN_MAX_TOKENS ?? "200000", 10);
+
     // Initialize RunProgress
-    const progress = defaultProgress(phase);
+    const progress = defaultProgress(phase, maxTurns, maxTokens);
 
     // Wire up event handlers BEFORE sending commands to avoid race conditions
     const resultPromise = this.wireEventHandlers(client, config, progress);
+    // Attach a no-op catch so that if we abandon resultPromise early (e.g. due
+    // to health check failure), Node doesn't report an unhandled rejection.
+    resultPromise.catch(() => undefined);
 
     // Send initialization sequence
     await client.sendCommand({ cmd: "set_model", model: config.model });
@@ -220,6 +262,14 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
       });
     }
 
+    // ── Extension health check — verify foreman-tool-gate loaded ─────
+    // Throws if foreman-tool-gate is absent or Pi doesn't respond within 5s.
+    // On throw: spawnPiRpc rejects, outer spawn() falls back to DetachedSpawnStrategy.
+    await this.performHealthCheck(client, config.seedId);
+
+    // ── Session lifecycle: resume / fork / reuse ───────────────────────
+    await this.applySessionStrategy(client, config);
+
     await client.sendCommand({ cmd: "prompt", text: config.prompt });
 
     // Wait for the agent to complete (resolves when agent_end is received
@@ -227,6 +277,109 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
     await resultPromise;
 
     return {};
+  }
+
+  /**
+   * Apply the FOREMAN_PI_SESSION_STRATEGY before sending the prompt command.
+   *
+   * Strategy behaviour:
+   *   reuse  (default) — no-op; let Pi start a fresh session.
+   *   resume           — send switch_session with the prior Pi session ID.
+   *   fork             — send fork to branch the prior Pi session.
+   *
+   * Both resume and fork fall back silently to reuse behaviour when no prior
+   * session key can be found in the store.
+   */
+  private async applySessionStrategy(
+    client: PiRpcClient,
+    config: WorkerConfig,
+  ): Promise<void> {
+    const raw = process.env.FOREMAN_PI_SESSION_STRATEGY;
+    const strategy: PiSessionStrategy =
+      raw === "resume" || raw === "fork" ? raw : "reuse";
+
+    if (strategy === "reuse") {
+      return; // Default behaviour — nothing extra to send
+    }
+
+    // Look up the prior session key from the store
+    const run = this.store?.getRun(config.runId) ?? null;
+    const sessionId = extractPiSessionId(run?.session_key ?? null);
+
+    if (!sessionId) {
+      // No prior session found — fall back to reuse behaviour
+      log(
+        `[PiRpcSpawnStrategy] ${strategy} strategy: no prior session for run ${config.runId}; falling back to reuse`,
+      );
+      return;
+    }
+
+    if (strategy === "resume") {
+      log(
+        `[PiRpcSpawnStrategy] resume strategy: sending switch_session sessionId=${sessionId} for run ${config.runId}`,
+      );
+      await client.sendCommand({ cmd: "switch_session", sessionId });
+    } else if (strategy === "fork") {
+      log(
+        `[PiRpcSpawnStrategy] fork strategy: sending fork for run ${config.runId} (prior sessionId=${sessionId})`,
+      );
+      await client.sendCommand({ cmd: "fork" });
+    }
+  }
+
+  /**
+   * Send a health_check command to Pi and wait for the response.
+   * Verifies that the `foreman-tool-gate` extension loaded successfully.
+   *
+   * If Pi does not respond within 5 seconds, or if `foreman-tool-gate` is
+   * absent from the loaded extensions list, this method throws an Error which
+   * causes spawnPiRpc() to reject, triggering fallback to DetachedSpawnStrategy.
+   *
+   * @param client - The PiRpcClient instance connected to the Pi process.
+   * @param seedId - The seed ID, used for logging only.
+   */
+  private performHealthCheck(client: PiRpcClient, seedId: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        client.removeListener("event", onEvent);
+        reject(new Error("Extension health check timed out after 5s"));
+      }, 5_000);
+
+      const onEvent = (event: { type: string }): void => {
+        if (event.type !== "health_check_response") {
+          // Not the response we are waiting for — keep listening
+          return;
+        }
+
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        client.removeListener("event", onEvent);
+
+        const hcEvent = event as PiHealthCheckResponseEvent;
+        const loadedExtensions = hcEvent.loadedExtensions ?? [];
+
+        if (!loadedExtensions.includes("foreman-tool-gate")) {
+          const err = new Error(
+            `foreman-tool-gate extension not loaded. Loaded: [${loadedExtensions.join(", ")}]. ` +
+            `Check PI_EXTENSIONS env var and ensure packages/foreman-pi-extensions/dist/index.js exists.`,
+          );
+          log(`[PiRpcSpawnStrategy] Extension health check failed for ${seedId}: ${err.message}`);
+          reject(err);
+          return;
+        }
+
+        log(`[PiRpcSpawnStrategy] Extension health check passed for ${seedId}: extensions=[${loadedExtensions.join(", ")}]`);
+        resolve();
+      };
+
+      client.on("event", onEvent);
+      void client.sendCommand({ type: "health_check" });
+    });
   }
 
   /**
@@ -251,15 +404,20 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
 
       // ── event dispatch ─────────────────────────────────────────────────
       client.on("event", (event: { type: string }) => {
-        // ── agent_start — model mismatch detection ──────────────────────
+        // ── agent_start — model capture and mismatch detection ─────────
         if (event.type === "agent_start") {
           const agentStart = event as PiAgentStartEvent;
-          if (agentStart.model && agentStart.model !== config.model) {
-            log(
-              `[PiRpcSpawnStrategy] Pi model mismatch — Pi may not support requested model` +
-              ` | requested=${config.model} actual=${agentStart.model}` +
-              ` | seed=${config.seedId}`,
-            );
+          if (agentStart.model) {
+            // Record the actual model Pi is using in progress
+            progress.model = agentStart.model;
+            this.store?.updateRunProgress(config.runId, progress);
+            if (agentStart.model !== config.model) {
+              log(
+                `[PiRpcSpawnStrategy] Pi model mismatch — Pi may not support requested model` +
+                ` | requested=${config.model} actual=${agentStart.model}` +
+                ` | seed=${config.seedId}`,
+              );
+            }
           }
           return;
         }

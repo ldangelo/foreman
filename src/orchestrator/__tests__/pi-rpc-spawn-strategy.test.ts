@@ -321,7 +321,14 @@ describe("PiRpcSpawnStrategy.spawn() — successful agent_end", () => {
 
     const spawnPromise = strategy.spawn(config);
 
-    // Give PiRpcClient time to set up readline interface
+    // Give PiRpcClient time to set up readline interface and send init commands
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // Satisfy the health check so the init sequence can continue to prompt
+    proc.stdout.emit("data", JSON.stringify({ type: "health_check_response", loadedExtensions: ["foreman-tool-gate"], status: "ok" }) + "\n");
+    await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
 
     // Emit agent_end event via stdout
@@ -341,6 +348,12 @@ describe("PiRpcSpawnStrategy.spawn() — successful agent_end", () => {
     const config = makeWorkerConfig({ runId: "run-abc", model: "claude-sonnet-4-6" });
 
     const spawnPromise = strategy.spawn(config);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    proc.stdout.emit("data", JSON.stringify({ type: "health_check_response", loadedExtensions: ["foreman-tool-gate"], status: "ok" }) + "\n");
+    await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
 
     const agentEndEvent = JSON.stringify({ type: "agent_end", reason: "completed", sessionId: "pi-sess-xyz" });
@@ -365,6 +378,12 @@ describe("PiRpcSpawnStrategy.spawn() — successful agent_end", () => {
     const config = makeWorkerConfig({ runId: "run-complete-1" });
 
     const spawnPromise = strategy.spawn(config);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    proc.stdout.emit("data", JSON.stringify({ type: "health_check_response", loadedExtensions: ["foreman-tool-gate"], status: "ok" }) + "\n");
+    await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
 
     proc.stdout.emit("data", JSON.stringify({ type: "agent_end", reason: "done" }) + "\n");
@@ -396,6 +415,12 @@ describe("PiRpcSpawnStrategy.spawn() — budget_exceeded", () => {
 
     const spawnPromise = strategy.spawn(config);
     await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    proc.stdout.emit("data", JSON.stringify({ type: "health_check_response", loadedExtensions: ["foreman-tool-gate"], status: "ok" }) + "\n");
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
 
     proc.stdout.emit("data", JSON.stringify({ type: "budget_exceeded", reason: "token limit" }) + "\n");
 
@@ -418,6 +443,12 @@ describe("PiRpcSpawnStrategy.spawn() — budget_exceeded", () => {
     const config = makeWorkerConfig({ runId: "run-budget-2" });
 
     const spawnPromise = strategy.spawn(config);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    proc.stdout.emit("data", JSON.stringify({ type: "health_check_response", loadedExtensions: ["foreman-tool-gate"], status: "ok" }) + "\n");
+    await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
 
     proc.stdout.emit("data", JSON.stringify({ type: "budget_exceeded", reason: "exceeded" }) + "\n");
@@ -458,6 +489,13 @@ describe("PiRpcSpawnStrategy.spawn() — pipe break within 5s", () => {
     // Allow async setup (sendCommand calls) to complete
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // Satisfy the health check so init sequence advances to awaiting the prompt response
+    proc.stdout.emit("data", JSON.stringify({ type: "health_check_response", loadedExtensions: ["foreman-tool-gate"], status: "ok" }) + "\n");
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
 
     // End the stdout stream — readline will emit 'close', which triggers pipe break detection
     proc.stdout.push(null);
@@ -488,6 +526,13 @@ describe("PiRpcSpawnStrategy.spawn() — pipe break within 5s", () => {
     const config = makeWorkerConfig({ runId: "run-normal-close" });
 
     const spawnPromise = strategy.spawn(config);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // Satisfy the health check so init sequence can advance to prompt
+    proc.stdout.emit("data", JSON.stringify({ type: "health_check_response", loadedExtensions: ["foreman-tool-gate"], status: "ok" }) + "\n");
+    await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
 
@@ -576,8 +621,14 @@ describe("PiRpcSpawnStrategy — CLAUDECODE stripped from child process env", ()
 
     const spawnPromise = strategy.spawn(config);
     await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
 
-    // Emit agent_end to cleanly finish
+    // Satisfy health check then emit agent_end to cleanly finish
+    proc.stdout.emit("data", JSON.stringify({ type: "health_check_response", loadedExtensions: ["foreman-tool-gate"], status: "ok" }) + "\n");
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
     proc.stdout.emit("data", JSON.stringify({ type: "agent_end", reason: "done" }) + "\n");
     await spawnPromise;
 
@@ -614,6 +665,13 @@ describe("PiRpcSpawnStrategy — RunProgress accumulation", () => {
 
     const spawnPromise = strategy.spawn(config);
     await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // Satisfy health check before turn events
+    proc.stdout.emit("data", JSON.stringify({ type: "health_check_response", loadedExtensions: ["foreman-tool-gate"], status: "ok" }) + "\n");
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
 
     // Emit two turn_end events
     proc.stdout.emit("data", JSON.stringify({ type: "turn_end", turnNumber: 1, inputTokens: 100, outputTokens: 50 }) + "\n");
@@ -642,6 +700,13 @@ describe("PiRpcSpawnStrategy — RunProgress accumulation", () => {
     const config = makeWorkerConfig({ runId: "run-tools-1" });
 
     const spawnPromise = strategy.spawn(config);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // Satisfy health check before tool events
+    proc.stdout.emit("data", JSON.stringify({ type: "health_check_response", loadedExtensions: ["foreman-tool-gate"], status: "ok" }) + "\n");
+    await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
 
     proc.stdout.emit("data", JSON.stringify({ type: "tool_execution_start", toolName: "Read", toolCallId: "tc-1" }) + "\n");
