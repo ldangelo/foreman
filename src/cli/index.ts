@@ -20,6 +20,7 @@ import { sentinelCommand } from "./commands/sentinel.js";
 import { retryCommand } from "./commands/retry.js";
 import { purgeZombieRunsCommand } from "./commands/purge-zombie-runs.js";
 import { auditCommand } from "./commands/audit.js";
+import { mergeAgentCommand } from "./commands/merge-agent.js";
 
 const program = new Command();
 
@@ -47,5 +48,6 @@ program.addCommand(sentinelCommand);
 program.addCommand(retryCommand);
 program.addCommand(purgeZombieRunsCommand);
 program.addCommand(auditCommand);
+program.addCommand(mergeAgentCommand);
 
 program.parse();
