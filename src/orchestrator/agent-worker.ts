@@ -9,7 +9,7 @@
  * Usage: tsx agent-worker.ts <config-file>
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, existsSync, appendFileSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -130,6 +130,7 @@ async function main(): Promise<void> {
   const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
   await mkdir(logDir, { recursive: true });
   const logFile = join(logDir, `${runId}.log`);
+  _logFile = logFile;
 
   const mode = pipeline ? "pipeline" : (resume ? "resume" : "worker");
   const header = [
@@ -873,7 +874,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         return;
       }
       store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
-      addLabelsToBead(seedId, ["phase:explorer"], config.projectPath);
+      addLabelsToBead(seedId, ["phase:explorer"], config.projectPath, logFile);
 
       // Phase completion → Agent Mail dual-channel (fire-and-forget)
       void agentMailClient.sendMessage(
@@ -962,7 +963,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         return;
       }
       store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries }, runId);
-      addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
+      addLabelsToBead(seedId, ["phase:developer"], config.projectPath, logFile);
 
       // Phase completion → Agent Mail dual-channel (fire-and-forget)
       void agentMailClient.sendMessage(
@@ -1006,7 +1007,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         return;
       }
       store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
-      addLabelsToBead(seedId, ["phase:qa"], config.projectPath);
+      addLabelsToBead(seedId, ["phase:qa"], config.projectPath, logFile);
 
       // Phase completion → Agent Mail dual-channel (fire-and-forget)
       void agentMailClient.sendMessage(
@@ -1071,7 +1072,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         return;
       }
       store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
-      addLabelsToBead(seedId, ["phase:reviewer"], config.projectPath);
+      addLabelsToBead(seedId, ["phase:reviewer"], config.projectPath, logFile);
 
       // Phase completion → Agent Mail dual-channel (fire-and-forget)
       void agentMailClient.sendMessage(
@@ -1122,7 +1123,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       });
       if (devResult.success) {
         store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
-        addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
+        addLabelsToBead(seedId, ["phase:developer"], config.projectPath, logFile);
 
         rotateReport(worktreePath, "QA_REPORT.md");
         const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
@@ -1136,7 +1137,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         });
         if (qaResult.success) {
           store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
-          addLabelsToBead(seedId, ["phase:qa"], config.projectPath);
+          addLabelsToBead(seedId, ["phase:qa"], config.projectPath, logFile);
         }
       }
     } else if (reviewVerdict === "fail") {
@@ -1331,9 +1332,17 @@ async function logMessage(logFile: string, message: SDKMessage): Promise<void> {
   }
 }
 
+// Module-level log file path — set by main() before first log call
+let _logFile: string | null = null;
+
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 23);
-  console.error(`[foreman-worker ${ts}] ${msg}`);
+  const line = `[foreman-worker ${ts}] ${msg}`;
+  console.error(line);
+  // Also append to the persistent .log file if available
+  if (_logFile) {
+    appendFileSync(_logFile, line + "\n");
+  }
 }
 
 // ── Entry ────────────────────────────────────────────────────────────────────

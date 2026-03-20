@@ -19,7 +19,8 @@
  * pipeline worker itself.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -176,27 +177,34 @@ export function addNotesToBead(seedId: string, notes: string, projectPath?: stri
  *   Must be provided so br auto-discovers the correct database when called
  *   from a worktree that has no .beads/ of its own.
  */
-export function addLabelsToBead(seedId: string, labels: string[], projectPath?: string): void {
+export function addLabelsToBead(seedId: string, labels: string[], projectPath?: string, logFile?: string): void {
   if (labels.length === 0) return;
   const bin = brPath();
-  const args = ["update", seedId, "--labels", labels.join(",")];
+  const args = ["update", seedId, "--set-labels", labels.join(",")];
+
+  function writeLog(line: string): void {
+    console.error(line);
+    if (logFile) {
+      appendFileSync(logFile, line + "\n");
+    }
+  }
 
   try {
     execFileSync(bin, args, execOpts(projectPath));
-    console.error(`[task-backend-ops] Added labels [${labels.join(", ")}] to seed ${seedId} via br`);
+    writeLog(`[task-backend-ops] Added labels [${labels.join(", ")}] to seed ${seedId} via br`);
 
     // Flush changes to .beads/beads.jsonl so the label update survives a process restart.
     // Uses execFileSync (not execBr) to avoid the auto-appended --json flag.
     try {
       execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
-      console.error(`[task-backend-ops] Flushed JSONL for label update on seed ${seedId}`);
+      writeLog(`[task-backend-ops] Flushed JSONL for label update on seed ${seedId}`);
     } catch (flushErr: unknown) {
       const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
+      writeLog(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[task-backend-ops] Warning: br update --labels failed for ${seedId}: ${msg.slice(0, 200)}`);
+    writeLog(`[task-backend-ops] Warning: br update --set-labels failed for ${seedId}: ${msg.slice(0, 200)}`);
   }
 }
 

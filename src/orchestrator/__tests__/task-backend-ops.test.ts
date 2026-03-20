@@ -485,7 +485,7 @@ describe("addLabelsToBead — br backend", () => {
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("calls br update with --labels flag and comma-separated labels", () => {
+  it("calls br update with --set-labels flag and comma-separated labels", () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     addLabelsToBead("bd-abc-001", ["phase:explorer"]);
@@ -494,7 +494,7 @@ describe("addLabelsToBead — br backend", () => {
     expect(mockExecFileSync).toHaveBeenCalledTimes(2);
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toContain("br");
-    expect(args).toEqual(["update", "bd-abc-001", "--labels", "phase:explorer"]);
+    expect(args).toEqual(["update", "bd-abc-001", "--set-labels", "phase:explorer"]);
   });
 
   it("joins multiple labels with comma", () => {
@@ -503,7 +503,7 @@ describe("addLabelsToBead — br backend", () => {
     addLabelsToBead("bd-abc-002", ["phase:developer", "phase:qa"]);
 
     const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    const labelsIdx = args.indexOf("--labels");
+    const labelsIdx = args.indexOf("--set-labels");
     expect(labelsIdx).toBeGreaterThanOrEqual(0);
     expect(args[labelsIdx + 1]).toBe("phase:developer,phase:qa");
   });

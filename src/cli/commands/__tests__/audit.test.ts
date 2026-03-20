@@ -23,6 +23,15 @@ vi.mock("../../../lib/audit-reader.js", () => ({
   readAuditEntries: mockReadAuditEntries,
 }));
 
+// Mock AgentMailClient so searchViaAgentMail returns null (Agent Mail unavailable),
+// ensuring tests exercise the local readAuditEntries fallback path.
+vi.mock("../../../orchestrator/agent-mail-client.js", () => ({
+  AgentMailClient: class {
+    healthCheck = vi.fn().mockResolvedValue(false);
+    fetchInbox = vi.fn().mockResolvedValue([]);
+  },
+}));
+
 // ── process.exit mock ────────────────────────────────────────────────────────
 
 let exitSpy: ReturnType<typeof vi.spyOn>;
