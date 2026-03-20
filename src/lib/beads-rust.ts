@@ -205,7 +205,9 @@ export class BeadsRustClient implements ITaskClient {
   /** Return all open, unblocked issues (equivalent to `br ready`). Satisfies ITaskClient.ready(). */
   async ready(): Promise<Issue[]> {
     await this.requireInit();
-    return ((await execBr(["ready"], this.projectPath)) as BrIssue[]) ?? [];
+    // Pass --limit 0 to get all ready issues (default is 20, which truncates the list
+    // and causes lower-priority beads to be silently ignored by the dispatcher).
+    return ((await execBr(["ready", "--limit", "0"], this.projectPath)) as BrIssue[]) ?? [];
   }
 
   /** Search issues by query string. */
