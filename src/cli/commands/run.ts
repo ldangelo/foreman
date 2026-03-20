@@ -21,6 +21,7 @@ import { SentinelAgent } from "../../orchestrator/sentinel.js";
 import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
+import { AgentMailClient, DEFAULT_AGENT_MAIL_CONFIG } from "../../orchestrator/agent-mail-client.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
 
@@ -299,6 +300,25 @@ export const runCommand = new Command("run")
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
+
+      // ── Agent Mail health check ──────────────────────────────────────────────
+      // Verify mcp_agent_mail is reachable before dispatching agents.
+      // Skipped in dry-run mode since no real work will happen.
+      if (!dryRun) {
+        const agentMailClient = new AgentMailClient();
+        const agentMailRunning = await agentMailClient.healthCheck();
+        if (!agentMailRunning) {
+          const url = process.env.AGENT_MAIL_URL ?? DEFAULT_AGENT_MAIL_CONFIG.baseUrl;
+          const port = url.split(":").pop() ?? "8766";
+          console.error(chalk.red("\nError: Agent Mail service is not running.\n"));
+          console.error(`  Start it with:  ${chalk.cyan(`mcp_agent_mail serve --port ${port}`)}`);
+          console.error(`  Then re-run:    ${chalk.cyan("foreman run")}\n`);
+          console.error(chalk.dim(`  Expected URL: ${url}`));
+          console.error(chalk.dim(`  Configure via: .foreman/agent-mail.json or AGENT_MAIL_URL env var\n`));
+          process.exit(1);
+        }
+      }
+
       let taskClient: ITaskClient;
       let bvClient: BvClient | null = null;
       try {
