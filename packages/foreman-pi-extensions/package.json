@@ -1,0 +1,29 @@
+{
+  "name": "@foreman/pi-extensions",
+  "version": "0.1.0",
+  "description": "Pi agent mail and RPC extension handlers for Foreman",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "Leo D'Angelo",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "*",
+    "vitest": "*"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

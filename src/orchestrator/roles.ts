@@ -38,6 +38,10 @@ export interface RoleConfig {
    * to the SDK query() call to enforce role-based access control.
    */
   allowedTools: ReadonlyArray<string>;
+  /** Maximum number of agent turns for this phase */
+  maxTurns: number;
+  /** Maximum token budget for this phase */
+  maxTokens: number;
 }
 
 // ── Plan step config ────────────────────────────────────────────────────
@@ -102,38 +106,34 @@ export function getDisallowedTools(config: RoleConfig): string[] {
 }
 
 /**
- * All valid model selections.
+ * Well-known Anthropic model identifiers (for documentation purposes only).
+ * ModelSelection is now an open string type — any provider's model ID is accepted.
  *
- * NOTE: These values must stay in sync with the `ModelSelection` union in
- * `types.ts`. If a new model is added to that union, add it here too —
- * otherwise the new value will be rejected at runtime when read from an
- * environment variable.
+ * @example "claude-opus-4-6" | "claude-sonnet-4-6" | "claude-haiku-4-5-20251001"
+ *          "gpt-4o-mini" | "gemini-1.5-pro" (accepted by Pi RPC via set_model)
  */
-const VALID_MODELS: readonly ModelSelection[] = [
+const _ANTHROPIC_MODELS_DOC = [
   "claude-opus-4-6",
   "claude-sonnet-4-6",
   "claude-haiku-4-5-20251001",
-];
+] as const;
+// Prevent unused-variable lint errors — this is intentionally documentation-only
+void _ANTHROPIC_MODELS_DOC;
 
 /**
  * Resolve a model selection from an environment variable, falling back to the
- * provided default.  Throws if the env var is set to an unrecognised value.
+ * provided default.  Any non-empty string is accepted so that Pi RPC can route
+ * to any model provider (e.g. "gpt-4o-mini", "gemini-1.5-pro").
  *
  * @param envVar  Name of the environment variable (e.g. "FOREMAN_EXPLORER_MODEL")
- * @param defaultModel  Hard-coded default used when the env var is absent
+ * @param defaultModel  Hard-coded default used when the env var is absent or empty
  */
 function resolveModel(envVar: string, defaultModel: ModelSelection): ModelSelection {
   const value = process.env[envVar];
   if (value === undefined || value === "") {
     return defaultModel;
   }
-  if (!(VALID_MODELS as string[]).includes(value)) {
-    throw new Error(
-      `Invalid model "${value}" in ${envVar}. ` +
-        `Valid values are: ${VALID_MODELS.join(", ")}`,
-    );
-  }
-  return value as ModelSelection;
+  return value;
 }
 
 /**
@@ -169,6 +169,8 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
       permissionMode: "acceptEdits",
       reportFile: "EXPLORER_REPORT.md",
       allowedTools: ["Glob", "Grep", "Read", "Write"],
+      maxTurns: 30,
+      maxTokens: 100_000,
     },
     developer: {
       role: "developer",
@@ -180,6 +182,8 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
         "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
         "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
       ],
+      maxTurns: 80,
+      maxTokens: 500_000,
     },
     qa: {
       role: "qa",
@@ -188,6 +192,8 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
       permissionMode: "acceptEdits",
       reportFile: "QA_REPORT.md",
       allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
+      maxTurns: 30,
+      maxTokens: 200_000,
     },
     reviewer: {
       role: "reviewer",
@@ -196,6 +202,8 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
       permissionMode: "acceptEdits",
       reportFile: "REVIEW.md",
       allowedTools: ["Glob", "Grep", "Read", "Write"],
+      maxTurns: 20,
+      maxTokens: 150_000,
     },
   };
 }
@@ -226,6 +234,8 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
         permissionMode: "acceptEdits",
         reportFile: "EXPLORER_REPORT.md",
         allowedTools: ["Glob", "Grep", "Read", "Write"],
+        maxTurns: 30,
+        maxTokens: 100_000,
       },
       developer: {
         role: "developer",
@@ -237,6 +247,8 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
           "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
           "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
         ],
+        maxTurns: 80,
+        maxTokens: 500_000,
       },
       qa: {
         role: "qa",
@@ -245,6 +257,8 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
         permissionMode: "acceptEdits",
         reportFile: "QA_REPORT.md",
         allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
+        maxTurns: 30,
+        maxTokens: 200_000,
       },
       reviewer: {
         role: "reviewer",
@@ -253,6 +267,8 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
         permissionMode: "acceptEdits",
         reportFile: "REVIEW.md",
         allowedTools: ["Glob", "Grep", "Read", "Write"],
+        maxTurns: 20,
+        maxTokens: 150_000,
       },
     };
   }
@@ -266,6 +282,8 @@ export const SENTINEL_ROLE_CONFIG: RoleConfig = {
   permissionMode: "acceptEdits",
   reportFile: "SENTINEL_REPORT.md",
   allowedTools: ["Bash", "Glob", "Grep", "Read", "Write"],
+  maxTurns: 20,
+  maxTokens: 100_000,
 };
 
 // ── Prompt templates ────────────────────────────────────────────────────

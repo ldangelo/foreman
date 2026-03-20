@@ -4,6 +4,7 @@
   "description": "Multi-agent coding orchestrator built on OpenClaw + Beads",
   "type": "module",
   "main": "dist/index.js",
+  "workspaces": ["packages/*"],
   "bin": {
     "foreman": "bin/foreman"
   },

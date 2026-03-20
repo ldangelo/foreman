@@ -59,10 +59,24 @@ describe("ROLE_CONFIGS", () => {
     expect(configs.reviewer.maxBudgetUsd).toBe(2.00);
   });
 
-  it("all role configs have no maxTurns property", () => {
-    for (const [role, config] of Object.entries(ROLE_CONFIGS)) {
-      expect(config, `${role} should not have maxTurns`).not.toHaveProperty("maxTurns");
-    }
+  it("explorer has maxTurns=30 and maxTokens=100_000", () => {
+    expect(ROLE_CONFIGS.explorer.maxTurns).toBe(30);
+    expect(ROLE_CONFIGS.explorer.maxTokens).toBe(100_000);
+  });
+
+  it("developer has maxTurns=80 and maxTokens=500_000", () => {
+    expect(ROLE_CONFIGS.developer.maxTurns).toBe(80);
+    expect(ROLE_CONFIGS.developer.maxTokens).toBe(500_000);
+  });
+
+  it("qa has maxTurns=30 and maxTokens=200_000", () => {
+    expect(ROLE_CONFIGS.qa.maxTurns).toBe(30);
+    expect(ROLE_CONFIGS.qa.maxTokens).toBe(200_000);
+  });
+
+  it("reviewer has maxTurns=20 and maxTokens=150_000", () => {
+    expect(ROLE_CONFIGS.reviewer.maxTurns).toBe(20);
+    expect(ROLE_CONFIGS.reviewer.maxTokens).toBe(150_000);
   });
 });
 
@@ -261,14 +275,16 @@ describe("buildRoleConfigs — environment variable overrides", () => {
     expect(configs.explorer.model).toBe("claude-haiku-4-5-20251001");
   });
 
-  it("throws for an invalid model value in an env var", () => {
-    process.env["FOREMAN_DEVELOPER_MODEL"] = "gpt-4o";
-    expect(() => buildRoleConfigs()).toThrow(/Invalid model "gpt-4o" in FOREMAN_DEVELOPER_MODEL/);
+  it("accepts non-Anthropic model strings (Pi RPC multi-provider support)", () => {
+    process.env["FOREMAN_DEVELOPER_MODEL"] = "gpt-4o-mini";
+    const configs = buildRoleConfigs();
+    expect(configs.developer.model).toBe("gpt-4o-mini");
   });
 
-  it("error message for invalid model lists valid options", () => {
-    process.env["FOREMAN_QA_MODEL"] = "not-a-model";
-    expect(() => buildRoleConfigs()).toThrow(/claude-opus-4-6/);
+  it("accepts any arbitrary model string without throwing", () => {
+    process.env["FOREMAN_QA_MODEL"] = "gemini-1.5-pro";
+    const configs = buildRoleConfigs();
+    expect(configs.qa.model).toBe("gemini-1.5-pro");
   });
 
   it("budget values are not affected by model env var overrides", () => {
@@ -341,9 +357,12 @@ describe("ROLE_CONFIGS module-level fallback", () => {
     expect(ROLE_CONFIGS.reviewer).toBeDefined();
   });
 
-  it("buildRoleConfigs throws on invalid model (same logic used by the IIFE try-block)", () => {
+  it("buildRoleConfigs accepts any model string — no validation (multi-provider support)", () => {
+    // ModelSelection is now open — non-Anthropic model strings are passed through as-is
+    // so Pi RPC can route to any provider (gpt-4o-mini, gemini-1.5-pro, etc.)
     process.env["FOREMAN_EXPLORER_MODEL"] = "not-a-valid-model";
-    expect(() => buildRoleConfigs()).toThrow(/Invalid model/);
+    const configs = buildRoleConfigs();
+    expect(configs.explorer.model).toBe("not-a-valid-model");
   });
 
   it("ROLE_CONFIGS falls back to valid defaults when env var is unset", () => {
@@ -523,6 +542,8 @@ describe("getDisallowedTools", () => {
       permissionMode: "acceptEdits",
       reportFile: "DEVELOPER_REPORT.md",
       allowedTools: [...ALL_AGENT_TOOLS],
+      maxTurns: 80,
+      maxTokens: 500_000,
     };
     expect(getDisallowedTools(allToolsConfig)).toEqual([]);
   });
@@ -535,6 +556,8 @@ describe("getDisallowedTools", () => {
       permissionMode: "acceptEdits",
       reportFile: "REVIEW.md",
       allowedTools: [],
+      maxTurns: 20,
+      maxTokens: 150_000,
     };
     const disallowed = getDisallowedTools(noToolsConfig);
     expect(disallowed).toEqual([...ALL_AGENT_TOOLS]);
