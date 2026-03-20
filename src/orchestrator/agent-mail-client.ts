@@ -11,7 +11,7 @@
  *   4. Built-in defaults
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -62,6 +62,8 @@ interface FileConfig {
   timeoutMs?: number;
   enabled?: boolean;
   projectKey?: string;
+  /** Persistent name for the foreman orchestrator agent (adjective+noun, e.g. "PearlHawk"). */
+  foremanAgentName?: string;
 }
 
 // ── JSON-RPC envelope types ───────────────────────────────────────────────────
@@ -101,6 +103,17 @@ export class AgentMailClient {
   private projectKey: string;
   private readonly bearerToken: string | undefined;
   private rpcId = 0;
+  /**
+   * The registered Agent Mail name for this instance (adjective+noun, e.g. "PearlHawk").
+   * Set after ensureProject() + ensureAgentRegistered() succeed.
+   * Used as sender_name for outgoing messages.
+   */
+  agentName: string | null = null;
+  /**
+   * Role-to-registered-name mapping for addressing messages.
+   * Keys are logical role names ("foreman", "developer-bd-xxx"), values are adjective+noun names.
+   */
+  private agentRegistry: Map<string, string> = new Map();
 
   constructor(config: AgentMailClientConfig = {}) {
     // Load file-based config (lowest priority above defaults)
@@ -126,6 +139,12 @@ export class AgentMailClient {
 
     this.bearerToken =
       config.bearerToken ?? process.env.AGENT_MAIL_TOKEN ?? undefined;
+
+    // Pre-load foreman agent name from file config if available
+    if (fileConfig?.foremanAgentName) {
+      this.agentName = fileConfig.foremanAgentName;
+      this.agentRegistry.set("foreman", fileConfig.foremanAgentName);
+    }
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────────
@@ -222,38 +241,115 @@ export class AgentMailClient {
       // After successful project registration, use the absolute path as project_key
       // for all subsequent calls (send_message, fetch_inbox, register_agent, etc.)
       this.projectKey = projectPath;
+
+      // If we don't have a foreman agent name yet, register the orchestrator now.
+      if (!this.agentName) {
+        await this.ensureAgentRegistered("foreman", projectPath);
+      }
     } catch {
       // Silent failure — mail is non-critical infrastructure
     }
   }
 
   /**
-   * Register an agent with the project.
-   * Silent failure.
+   * Register this process as a named agent in Agent Mail.
+   * Auto-generates an adjective+noun name (Agent Mail requirement).
+   * Persists the generated name to .foreman/agent-mail.json under `foremanAgentName`
+   * when roleHint="foreman" so subsequent startups reuse the same mailbox.
+   *
+   * @param roleHint - Logical role (used as program description and for caching)
+   * @param projectPath - Absolute project path (for config file location)
+   * @returns The generated agent name, or null on failure.
    */
-  async registerAgent(name: string): Promise<void> {
+  async ensureAgentRegistered(roleHint: string, projectPath?: string): Promise<string | null> {
+    // Return cached name if available
+    const cached = this.agentRegistry.get(roleHint);
+    if (cached) return cached;
+
     try {
-      await this.mcpCall("register_agent", {
+      const result = await this.mcpCall("register_agent", {
         project_key: this.projectKey,
         program: "foreman",
+        task_description: `Foreman ${roleHint} agent`,
         model: "claude-sonnet-4-6",
-        name,
-      });
+        // Deliberately omit "name" — Agent Mail auto-generates a valid adjective+noun name
+      }) as Record<string, unknown>;
+
+      const generatedName = String(result["name"] ?? "");
+      if (!generatedName) return null;
+
+      // Cache the name for this role
+      this.agentRegistry.set(roleHint, generatedName);
+
+      // For the foreman orchestrator, set as the primary agent name and persist to disk
+      if (roleHint === "foreman") {
+        this.agentName = generatedName;
+        if (projectPath) {
+          this.persistForemanAgentName(generatedName, projectPath);
+        }
+      }
+
+      return generatedName;
     } catch {
-      // Silent failure
+      return null;
+    }
+  }
+
+  /** Persist the foreman agent name to .foreman/agent-mail.json for cross-process reuse. */
+  private persistForemanAgentName(name: string, projectPath: string): void {
+    try {
+      const configPath = join(projectPath, ".foreman", "agent-mail.json");
+      let existing: Record<string, unknown> = {};
+      try {
+        existing = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
+      } catch {
+        // File may not exist yet — start fresh
+      }
+      existing["foremanAgentName"] = name;
+      writeFileSync(configPath, JSON.stringify(existing, null, 2) + "\n", "utf-8");
+    } catch {
+      // Non-fatal — name will just be re-registered on next startup
     }
   }
 
   /**
-   * Send a message from foreman to an agent.
+   * Register an agent with the project.
+   * Auto-generates the adjective+noun name (Agent Mail requirement).
+   * Caches the returned name under the provided roleHint for subsequent sends.
+   * Silent failure.
+   */
+  async registerAgent(roleHint: string): Promise<void> {
+    // Use ensureAgentRegistered — it handles caching and generation
+    await this.ensureAgentRegistered(roleHint);
+  }
+
+  /**
+   * Resolve a logical role name to a registered Agent Mail agent name.
+   * Returns null if the role hasn't been registered yet.
+   */
+  resolveAgentName(roleHint: string): string | null {
+    return this.agentRegistry.get(roleHint) ?? null;
+  }
+
+  /**
+   * Send a message from this agent to a recipient.
+   * Resolves logical role names (e.g. "foreman") to registered adjective+noun names.
    * Silent failure.
    */
   async sendMessage(to: string, subject: string, body: string): Promise<void> {
+    const senderName = this.agentName;
+    const recipientName = this.agentRegistry.get(to) ?? to;
+
+    if (!senderName) {
+      // Can't send without a registered sender identity
+      return;
+    }
+
     try {
       await this.mcpCall("send_message", {
         project_key: this.projectKey,
-        sender_name: "foreman",
-        to: [to],
+        sender_name: senderName,
+        to: [recipientName],
         subject,
         body_md: body,
       });
@@ -270,10 +366,12 @@ export class AgentMailClient {
     agent: string,
     options?: { limit?: number; unreadOnly?: boolean },
   ): Promise<AgentMailMessage[]> {
+    // Resolve logical role name to registered agent name
+    const agentName = this.agentRegistry.get(agent) ?? agent;
     try {
       const result = await this.mcpCall("fetch_inbox", {
         project_key: this.projectKey,
-        agent_name: agent,
+        agent_name: agentName,
         limit: options?.limit ?? 20,
         urgent_only: false,
         include_bodies: true,

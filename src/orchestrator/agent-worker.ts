@@ -122,15 +122,23 @@ function sendMailText(
 }
 
 /**
- * Fire-and-forget wrapper for AgentMailClient.registerAgent.
+ * Register agent identity for a phase and set as the sending identity on the client.
+ * Uses ensureAgentRegistered so the auto-generated name is cached and used as sender_name.
  * Never throws — failures are logged but do not affect the pipeline.
  */
-function registerAgent(client: AgentMailClient | null, name: string): void {
+async function registerAgent(client: AgentMailClient | null, roleHint: string): Promise<void> {
   if (!client) return;
-  client.registerAgent(name).catch((err: unknown) => {
+  try {
+    const generatedName = await client.ensureAgentRegistered(roleHint);
+    // Set the generated name as the current sending identity
+    if (generatedName) {
+      client.agentName = generatedName;
+      log(`[agent-mail] Registered as '${generatedName}' (role: ${roleHint})`);
+    }
+  } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`[agent-mail] registerAgent failed (non-fatal): ${msg}`);
-  });
+  }
 }
 
 /**
@@ -1003,7 +1011,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       phaseRecords.push({ name: "explorer", skipped: true });
     } else {
       // AC-006-1: Register the explorer agent with Agent Mail before the phase starts.
-      registerAgent(agentMailClient, `explorer-${seedId}`);
+      await registerAgent(agentMailClient, `explorer-${seedId}`);
       rotateReport(worktreePath, "EXPLORER_REPORT.md");
       const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description, comments), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
@@ -1055,7 +1063,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     } else {
       // AC-006-1: Register the developer agent with Agent Mail before the phase starts.
       const developerAgentName = `developer-${seedId}`;
-      registerAgent(agentMailClient, developerAgentName);
+      await registerAgent(agentMailClient, developerAgentName);
       // REQ-007 / AC-007-1: Reserve the worktree path before Developer edits files.
       // Lease 10 minutes (600 s) — generous to cover typical developer phase duration.
       reserveFiles(agentMailClient, [worktreePath], developerAgentName, 600);
@@ -1098,7 +1106,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       phaseRecords.push({ name: "qa", skipped: true });
     } else {
       // AC-006-1: Register the QA agent with Agent Mail before the phase starts.
-      registerAgent(agentMailClient, `qa-${seedId}`);
+      await registerAgent(agentMailClient, `qa-${seedId}`);
       rotateReport(worktreePath, "QA_REPORT.md");
       const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
@@ -1157,7 +1165,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       phaseRecords.push({ name: "reviewer", skipped: true });
     } else {
       // AC-006-1: Register the reviewer agent with Agent Mail before the phase starts.
-      registerAgent(agentMailClient, `reviewer-${seedId}`);
+      await registerAgent(agentMailClient, `reviewer-${seedId}`);
       rotateReport(worktreePath, "REVIEW.md");
       const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description, comments), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
@@ -1204,7 +1212,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // One more dev → QA cycle to address review feedback
       // AC-006-1: Register the developer agent; AC-007-1: Reserve files before editing.
       const reviewFeedbackDevAgent = `developer-${seedId}`;
-      registerAgent(agentMailClient, reviewFeedbackDevAgent);
+      await registerAgent(agentMailClient, reviewFeedbackDevAgent);
       reserveFiles(agentMailClient, [worktreePath], reviewFeedbackDevAgent, 600);
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
       const devResult = await runPhase(
