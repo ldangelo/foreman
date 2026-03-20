@@ -117,6 +117,12 @@ vi.mock("../../orchestrator/agent-mail-client.js", () => ({
   }),
   DEFAULT_AGENT_MAIL_CONFIG: { baseUrl: "http://localhost:8766" },
 }));
+vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
+  isPiAvailable: vi.fn().mockReturnValue(false),
+  PiRpcSpawnStrategy: vi.fn(),
+  PI_PHASE_CONFIGS: {},
+  parsePiEvent: vi.fn().mockReturnValue(null),
+}));
 vi.mock("../../orchestrator/merge-agent.js", () => ({
   MergeAgent: vi.fn(function (this: Record<string, unknown>) {
     this.start = vi.fn().mockResolvedValue(undefined);

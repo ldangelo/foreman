@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { spawnSync, execFile, execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -23,6 +24,7 @@ import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js"
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
 import { AgentMailClient, DEFAULT_AGENT_MAIL_CONFIG } from "../../orchestrator/agent-mail-client.js";
+import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
 
@@ -316,6 +318,19 @@ export const runCommand = new Command("run")
           console.error(`  Then re-run:    ${chalk.cyan("foreman run")}\n`);
           console.error(chalk.dim(`  Expected URL: ${url}`));
           console.error(chalk.dim(`  Configure via: .foreman/agent-mail.json or AGENT_MAIL_URL env var\n`));
+          process.exit(1);
+        }
+      }
+
+      // ── Pi Extensions check ──────────────────────────────────────────────────
+      // If Pi is available, the extensions package must be built before dispatch.
+      // Skipped in dry-run mode since no real agent work will happen.
+      if (!dryRun && isPiAvailable()) {
+        const extDist = join(projectPath, "packages/foreman-pi-extensions/dist/index.js");
+        if (!existsSync(extDist)) {
+          console.error(chalk.red("\nError: Pi extensions package has not been built.\n"));
+          console.error(`  Build it with:  ${chalk.cyan("npm run build")}`);
+          console.error(`  Expected:       ${chalk.dim(extDist)}\n`);
           process.exit(1);
         }
       }
