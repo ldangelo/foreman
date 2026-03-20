@@ -8,7 +8,7 @@
     "foreman": "bin/foreman"
   },
   "scripts": {
-    "build": "tsc && node scripts/copy-assets.js",
+    "build": "tsc && node scripts/copy-assets.js && npm run build --workspace=packages/foreman-pi-extensions",
     "dev": "tsx watch src/cli/index.ts",
     "start": "node dist/cli/index.js",
     "test": "vitest run",
