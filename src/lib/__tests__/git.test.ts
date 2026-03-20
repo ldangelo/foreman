@@ -86,6 +86,24 @@ describe("git worktree manager", () => {
     expect(existsSync(worktreePath)).toBe(false);
   });
 
+  it("removeWorktree prunes stale .git/worktrees metadata", async () => {
+    const repo = makeTempRepo();
+    tempDirs.push(repo);
+
+    const { worktreePath } = await createWorktree(repo, "seed-prune");
+
+    // Verify the metadata directory was created under .git/worktrees
+    const metaDir = join(repo, ".git", "worktrees", "seed-prune");
+    expect(existsSync(metaDir)).toBe(true);
+
+    await removeWorktree(repo, worktreePath);
+
+    // After removal + prune, neither the worktree directory nor the stale
+    // .git/worktrees/<seed> metadata should exist.
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(existsSync(metaDir)).toBe(false);
+  });
+
   it("listWorktrees returns created worktrees", async () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);

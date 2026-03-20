@@ -236,12 +236,26 @@ export async function createWorktree(
 
 /**
  * Remove a worktree and prune stale entries.
+ *
+ * After removing the worktree, runs `git worktree prune` to delete any stale
+ * `.git/worktrees/<name>` metadata left behind. The prune step is non-fatal —
+ * if it fails, a warning is logged but the function still resolves successfully.
  */
 export async function removeWorktree(
   repoPath: string,
   worktreePath: string,
 ): Promise<void> {
   await git(["worktree", "remove", worktreePath, "--force"], repoPath);
+
+  // Prune stale .git/worktrees/<seed> metadata so the next dispatch does not
+  // fail with "fatal: not a git repository: .git/worktrees/<seed>".
+  try {
+    await git(["worktree", "prune"], repoPath);
+  } catch (pruneErr) {
+    // Non-fatal: log a warning and continue.
+    const msg = pruneErr instanceof Error ? pruneErr.message : String(pruneErr);
+    console.error(`[git] Warning: worktree prune failed after removing ${worktreePath}: ${msg}`);
+  }
 }
 
 /**
