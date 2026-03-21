@@ -444,9 +444,17 @@ export class Refinery {
           let rebaseOk = true;
           try {
             await git(["rebase", targetBranch, branchName], this.projectPath);
-          } catch {
-            // Rebase hit conflicts — try to auto-resolve report files and continue
-            rebaseOk = await this.autoResolveRebaseConflicts(targetBranch);
+          } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            if (errMsg.includes("already used by worktree") || errMsg.includes("is already checked out")) {
+              // Branch is checked out in an active worktree — git refuses to rebase it from
+              // the main repo. Skip rebase and fall back to direct merge.
+              console.warn(`[Refinery] Skipping rebase for ${branchName} (active worktree) — falling back to direct merge`);
+              rebaseOk = true;
+            } else {
+              // Rebase hit conflicts — try to auto-resolve report files and continue
+              rebaseOk = await this.autoResolveRebaseConflicts(targetBranch);
+            }
           }
 
           // Return to target branch regardless
