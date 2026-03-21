@@ -179,7 +179,8 @@ export function addNotesToBead(seedId: string, notes: string, projectPath?: stri
 export function addLabelsToBead(seedId: string, labels: string[], projectPath?: string): void {
   if (labels.length === 0) return;
   const bin = brPath();
-  const args = ["update", seedId, "--set-labels", labels.join(",")];
+  // Use --add-label (not --set-labels) to preserve existing labels like workflow:smoke.
+  const args = ["update", seedId, ...labels.flatMap((l) => ["--add-label", l])];
 
   try {
     execFileSync(bin, args, execOpts(projectPath));
