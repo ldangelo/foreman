@@ -4,8 +4,9 @@ import chalk from "chalk";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { getRepoRoot, getCurrentBranch } from "../../lib/git.js";
 import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
+import { existsSync, readdirSync } from "node:fs";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import { TmuxClient } from "../../lib/tmux.js";
 import type { UpdateOptions } from "../../lib/task-client.js";
@@ -423,7 +424,7 @@ export const resetCommand = new Command("reset")
           }
         }
 
-        // 3. Delete the branch
+        // 3. Delete the branch — switch to main first if it is currently checked out
         console.log(`    ${chalk.yellow("delete")} branch ${branchName}`);
         if (!dryRun) {
           try {
@@ -431,8 +432,24 @@ export const resetCommand = new Command("reset")
             if (delResult.deleted) branchesDeleted++;
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            errors.push(`Failed to delete branch ${branchName}: ${msg}`);
-            console.log(`    ${chalk.red("error")} deleting branch: ${msg}`);
+            if (msg.includes("used by worktree")) {
+              // Branch is HEAD of the main worktree — switch to main then retry
+              try {
+                console.log(`    ${chalk.dim("checkout")} main (branch is current HEAD)`);
+                const { execFile } = await import("node:child_process");
+                const { promisify } = await import("node:util");
+                await promisify(execFile)("git", ["checkout", "-f", "main"], { cwd: projectPath });
+                const retryResult = await deleteBranch(projectPath, branchName, { force: true });
+                if (retryResult.deleted) branchesDeleted++;
+              } catch (retryErr: unknown) {
+                const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+                errors.push(`Failed to delete branch ${branchName}: ${retryMsg}`);
+                console.log(`    ${chalk.red("error")} deleting branch: ${retryMsg}`);
+              }
+            } else {
+              errors.push(`Failed to delete branch ${branchName}: ${msg}`);
+              console.log(`    ${chalk.red("error")} deleting branch: ${msg}`);
+            }
           }
         }
 
@@ -492,6 +509,54 @@ export const resetCommand = new Command("reset")
           await promisify(execFile)("git", ["worktree", "prune"], { cwd: projectPath });
         } catch {
           // Non-critical
+        }
+      }
+
+      // 6b. Clean up orphaned worktrees — directories in .foreman-worktrees/ that either have
+      //     no SQLite run record OR only have completed/merged runs (finalize should remove them
+      //     but sometimes fails to do so)
+      if (!dryRun) {
+        const worktreesDir = `${projectPath}/.foreman-worktrees`;
+        if (existsSync(worktreesDir)) {
+          // Paths that still have active/non-terminal runs (keep these)
+          const activeStatuses = ["pending", "running", "failed", "stuck"] as const;
+          const activeRuns = activeStatuses.flatMap((s) => store.getRunsByStatus(s, project.id));
+          const activeWorktreePaths = new Set(activeRuns.map((r) => r.worktree_path).filter(Boolean));
+
+          let entries: string[] = [];
+          try {
+            entries = readdirSync(worktreesDir);
+          } catch {
+            // Directory may have been removed already
+          }
+
+          for (const entry of entries) {
+            const fullPath = `${worktreesDir}/${entry}`;
+            // Skip if this worktree belongs to an active run (may still be in use)
+            if (activeWorktreePaths.has(fullPath)) continue;
+
+            console.log(`  ${chalk.yellow("orphan")} worktree ${fullPath}`);
+            try {
+              await removeWorktree(projectPath, fullPath);
+              worktreesRemoved++;
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              if (!msg.includes("is not a working tree")) {
+                console.log(`    ${chalk.red("error")} removing orphaned worktree: ${msg}`);
+              }
+            }
+            // Delete the corresponding branch if it exists
+            const orphanBranch = `foreman/${entry}`;
+            try {
+              const delResult = await deleteBranch(projectPath, orphanBranch, { force: true });
+              if (delResult.deleted) {
+                branchesDeleted++;
+                console.log(`    ${chalk.yellow("delete")} orphan branch ${orphanBranch}`);
+              }
+            } catch {
+              // Branch may not exist — skip silently
+            }
+          }
         }
       }
 
