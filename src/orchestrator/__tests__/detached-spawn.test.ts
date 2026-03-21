@@ -16,13 +16,25 @@ const TSX_BIN = join(PROJECT_ROOT, "node_modules", ".bin", "tsx");
  */
 describe("detached process survival", () => {
   let tmpDir: string;
+  let spawnedPids: number[];
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-detach-test-"));
+    spawnedPids = [];
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    for (const pid of spawnedPids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (err: unknown) {
+        // Ignore ESRCH (no such process) — child already exited
+        if ((err as NodeJS.ErrnoException).code !== "ESRCH") {
+          throw err;
+        }
+      }
+    }
   });
 
   it("detached child process writes a file after parent exits", async () => {
@@ -48,6 +60,9 @@ describe("detached process survival", () => {
       cwd: tmpDir,
     });
     child.unref();
+    if (child.pid !== undefined) {
+      spawnedPids.push(child.pid);
+    }
 
     // At this point, if we were in a separate parent process, it could exit.
     // The child should still run independently.
@@ -81,6 +96,9 @@ describe("detached process survival", () => {
       cwd: tmpDir,
     });
     child.unref();
+    if (child.pid !== undefined) {
+      spawnedPids.push(child.pid);
+    }
 
     // The child is in its own process group (detached: true).
     // Sending SIGINT to OUR process group won't affect it.
