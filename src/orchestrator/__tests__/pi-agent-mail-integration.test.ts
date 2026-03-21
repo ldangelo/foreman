@@ -79,6 +79,27 @@ afterAll(async () => {
       // Non-fatal cleanup failure
     }
   }
+
+  // Purge any remaining test messages from the foreman inbox to avoid
+  // polluting the real inbox when tests run against a live Agent Mail server.
+  if (serverFunctional) {
+    try {
+      const cleanup = new AgentMailClient({ baseUrl: AGENT_MAIL_URL });
+      await cleanup.ensureProject(PROJECT_PATH);
+      const messages = await cleanup.fetchInbox("foreman", { limit: 50 });
+      for (const m of messages) {
+        if (!m.acknowledged && (m.subject === "phase-complete" || m.subject === "agent-error" || m.subject === "worker-start")) {
+          try {
+            await cleanup.acknowledgeMessage("foreman", parseInt(m.id, 10));
+          } catch {
+            // Non-fatal
+          }
+        }
+      }
+    } catch {
+      // Non-fatal cleanup
+    }
+  }
 });
 
 function skipIfOffline(): boolean {
@@ -176,6 +197,12 @@ async function pollForMessage(
       (m) => m.subject === subject && m.body.includes(seedId),
     );
     if (match) {
+      // Acknowledge to keep the foreman inbox clean
+      try {
+        await client.acknowledgeMessage("foreman", parseInt(match.id, 10));
+      } catch {
+        // Non-fatal — message found either way
+      }
       return { subject: match.subject, body: match.body };
     }
     // Wait before next poll

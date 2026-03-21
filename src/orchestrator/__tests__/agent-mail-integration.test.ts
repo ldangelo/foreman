@@ -9,7 +9,7 @@
  *   npx vitest run src/orchestrator/__tests__/agent-mail-integration.test.ts
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { AgentMailClient } from "../agent-mail-client.js";
 
 const AGENT_MAIL_URL = "http://localhost:8766";
@@ -58,6 +58,27 @@ beforeAll(async () => {
 function skipIfOffline() {
   return !serverFunctional;
 }
+
+afterAll(async () => {
+  // Purge test messages left in the foreman inbox to keep it clean.
+  if (!serverFunctional) return;
+  try {
+    const cleanup = new AgentMailClient({ baseUrl: AGENT_MAIL_URL });
+    await cleanup.ensureProject(PROJECT_KEY);
+    const messages = await cleanup.fetchInbox("foreman", { limit: 50 });
+    for (const m of messages) {
+      if (!m.acknowledged) {
+        try {
+          await cleanup.acknowledgeMessage("foreman", parseInt(m.id, 10));
+        } catch {
+          // Non-fatal
+        }
+      }
+    }
+  } catch {
+    // Non-fatal cleanup
+  }
+});
 
 describe("AgentMailClient integration — send and receive", () => {
   it("healthCheck returns true when server is running", async () => {

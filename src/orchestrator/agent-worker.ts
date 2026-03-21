@@ -522,6 +522,32 @@ async function runPhase(
   store: ForemanStore,
   notifyClient: NotificationClient,
 ): Promise<PhaseResult> {
+  // ── SMOKE TEST BYPASS ────────────────────────────────────────────────────────
+  // When FOREMAN_SMOKE_TEST === "true", skip the real SDK call and write a
+  // synthetic pass report.  This exercises pipeline orchestration (phase ordering,
+  // artifact gating, verdict parsing, retry loops) without spending API budget.
+  if (process.env.FOREMAN_SMOKE_TEST === "true") {
+    const smokeArtifacts: Record<string, string> = {
+      explorer: "EXPLORER_REPORT.md",
+      developer: "DEVELOPER_REPORT.md",
+      qa: "QA_REPORT.md",
+      reviewer: "REVIEW.md",
+      reproducer: "REPRODUCER_REPORT.md",
+    };
+    const artifact = smokeArtifacts[role];
+    if (artifact) {
+      const verdictLine = role === "developer" ? "## Status: COMPLETE" : "## Verdict: PASS";
+      writeFileSync(
+        join(config.worktreePath, artifact),
+        `# ${role.charAt(0).toUpperCase() + role.slice(1)} Report\n\n${verdictLine}\n\nSmoke test noop — no real ${role} work performed.\n`,
+      );
+    }
+    log(`[${role.toUpperCase()}] SMOKE NOOP — bypassing SDK call, writing ${artifact ?? "(no artifact)"}`);
+    await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] SMOKE NOOP — skipping SDK call\n`);
+    return { success: true, costUsd: 0, turns: 1 };
+  }
+  // ── END SMOKE TEST BYPASS ────────────────────────────────────────────────────
+
   const roleConfig = ROLE_CONFIGS[role];
   progress.currentPhase = role;
   store.updateRunProgress(config.runId, progress);
@@ -638,6 +664,20 @@ async function finalize(
   agentMailClient: AgentMailClient | null = null,
 ): Promise<FinalizeResult> {
   const { seedId, seedTitle, worktreePath } = config;
+
+  // ── SMOKE TEST BYPASS ────────────────────────────────────────────────────────
+  // Skip git/npm/push operations entirely; write a synthetic FINALIZE_REPORT.md.
+  if (process.env.FOREMAN_SMOKE_TEST === "true") {
+    await appendFile(logFile, `\n${"─".repeat(40)}\n[FINALIZE] SMOKE NOOP — skipping git/npm/push\n`);
+    log(`[FINALIZE] SMOKE NOOP — skipping git/npm/push`);
+    writeFileSync(
+      join(worktreePath, "FINALIZE_REPORT.md"),
+      `# Finalize Report: ${seedTitle}\n\n## Seed: ${seedId}\n## Status: COMPLETE\n\nSmoke test noop — no git operations performed.\n`,
+    );
+    return { success: true, retryable: false };
+  }
+  // ── END SMOKE TEST BYPASS ────────────────────────────────────────────────────
+
   const storeProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
   const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
 
