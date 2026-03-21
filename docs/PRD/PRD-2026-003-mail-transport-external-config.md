@@ -1,8 +1,8 @@
 # PRD-2026-003: Agent Mail-Driven Phase Transitions and Externalized Configuration
 
 **Document ID:** PRD-2026-003
-**Version:** 1.1
-**Status:** Draft (v1.1)
+**Version:** 1.2
+**Status:** Draft (v1.2)
 **Date:** 2026-03-21
 **Author:** Product Management
 **Stakeholders:** Engineering (Foreman maintainers), Foreman operators, Prompt engineers, Team leads
@@ -16,6 +16,7 @@
 |---------|------|--------|---------|
 | 1.0 | 2026-03-21 | Product Management | Initial draft covering Agent Mail read transport (Part 1) and externalized prompts/workflow config (Part 2) |
 | 1.1 | 2026-03-21 | Product Management | Added REQ-023 (Explorer report read path); added REQ-024 (workflow-phase cross-validation); added REQ-025 (finalize enforcement); added REQ-026 (stale message filtering via runId). Clarified retry semantics when Reviewer absent (REQ-012). Specified Reproducer failure behavior as markStuck (REQ-015). Specified AbortController timeout mechanism (REQ-022). Clarified nested `{{#if}}` as greedy match (REQ-008). Closed OQ-2 (finalize enforcement). Total: 26 requirements, 109 ACs. |
+| 1.2 | 2026-03-21 | Product Management | Updated AC-019-2: empty workflow arrays are now rejected by finalize enforcement (REQ-025) rather than passed through. Resolves conflict between AC-019-2 and REQ-025. |
 
 ---
 
@@ -524,7 +525,7 @@ When `~/.foreman/prompts/`, `~/.foreman/phases.json`, or `~/.foreman/workflows.j
 Invalid configuration files must log warnings but never crash the process.
 
 - AC-019-1: Given `~/.foreman/phases.json` contains a JSON syntax error, when `loadPhaseConfigs()` is called, then a warning is logged to stderr identifying the file and parse error, and built-in defaults are returned.
-- AC-019-2: Given `~/.foreman/workflows.json` contains valid JSON but with an empty array for a workflow (`"feature": []`), when `getWorkflow("feature")` is called, then the empty array is returned (the loader does not validate array contents -- `runPipeline()` handles empty sequences).
+- AC-019-2: Given `~/.foreman/workflows.json` contains valid JSON but with an empty array for a workflow (`"feature": []`), when `loadWorkflows()` validates the workflow map, then finalize enforcement (REQ-025) rejects the empty array with a validation error since it does not end with `"finalize"`, and the built-in `DEFAULT_WORKFLOWS` are returned instead. *(v1.2: Updated to align with REQ-025 finalize enforcement — empty arrays are validation errors, not passthrough cases.)*
 - AC-019-3: Given `~/.foreman/prompts/explorer.md` contains malformed template syntax (e.g., unclosed `{{#if`), when `loadPrompt()` processes it, then the malformed syntax passes through as literal text rather than crashing.
 
 ### REQ-020: No SQLite Schema Changes (P0)

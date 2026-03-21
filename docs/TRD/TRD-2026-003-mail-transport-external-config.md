@@ -1,8 +1,8 @@
 # TRD-2026-003: Agent Mail Read Transport and Externalized Configuration
 
 **Document ID:** TRD-2026-003
-**Version:** 1.0
-**Status:** Draft
+**Version:** 1.1
+**Status:** Draft (v1.1)
 **Date:** 2026-03-21
 **PRD Reference:** PRD-2026-003 v1.1
 **Author:** Tech Lead (AI-assisted)
@@ -14,6 +14,7 @@
 | Version | Date       | Author    | Changes       |
 |---------|------------|-----------|---------------|
 | 1.0     | 2026-03-21 | Tech Lead | Initial draft: 21 implementation tasks + 21 test tasks (42 total) covering all 26 PRD requirements (109 ACs) |
+| 1.1     | 2026-03-21 | Tech Lead | Refinement: Added TRD-012-TEST; removed TRD-009/TRD-018 consolidation tasks; resolved AC-019-2 vs REQ-025 conflict (finalize enforcement wins); clarified TRD-002/TRD-007 runId responsibility boundary; added roles.ts note to TRD-020; corrected sprint hour totals; split TRD-016 into sub-tasks (a-e); added AbortController timeout to TRD-002. Task count: 25 implementation + 22 test = 47 total. |
 
 ---
 
@@ -39,7 +40,7 @@ This TRD translates PRD-2026-003 into an implementable plan for two independentl
 
 **Part 2 -- Externalized Prompts and Workflow Config:** Move phase system prompts from TypeScript template literals in `roles.ts` to user-editable markdown files in `~/.foreman/prompts/`. Move phase mechanical config (model, budget, tools) to `~/.foreman/phases.json`. Move pipeline phase sequences to `~/.foreman/workflows.json` keyed by seed type. Add `foreman init` config seeding and a Reproducer phase for bug workflows. Three new loader modules plus bundled defaults.
 
-**Scope:** 21 implementation tasks + 21 paired test tasks = 42 total tasks across 4 phases. No SQLite schema changes. No changes to `foreman status` or `foreman monitor`. Full backward compatibility when Agent Mail is unavailable or config files are absent.
+**Scope:** 25 implementation tasks + 22 paired test tasks = 47 total tasks across 4 phases. No SQLite schema changes. No changes to `foreman status` or `foreman monitor`. Full backward compatibility when Agent Mail is unavailable or config files are absent.
 
 **Key architectural constraints:**
 - `roles.ts` prompt functions and `ROLE_CONFIGS` remain as fallback defaults -- no deletions
@@ -252,7 +253,8 @@ interface WorkflowConfigFile {
   7. Call `client.acknowledgeMessage(inboxRole, parseInt(match.id, 10))` (catch errors but still return body)
   8. Log the fetch with `log()` and return `match.body`
   9. On any error, log non-fatal warning and return `null`
-- Validates PRD ACs: AC-002-1, AC-002-2, AC-002-3, AC-002-4, AC-002-5, AC-002-6, AC-002-7, AC-026-2, AC-026-3, AC-026-4
+  10. Pass `AbortSignal.timeout(5000)` as the `signal` option to the underlying `fetchInbox()` HTTP call, ensuring unreachable Agent Mail servers return `null` within 5 seconds (REQ-022 / AC-022-3)
+- Validates PRD ACs: AC-002-1, AC-002-2, AC-002-3, AC-002-4, AC-002-5, AC-002-6, AC-002-7, AC-022-3, AC-026-2, AC-026-3, AC-026-4
 - Implementation AC:
   - [ ] Given `client` is not null and a matching unacknowledged message exists with correct `runId`, when `fetchLatestPhaseMessage()` is called, then it returns `message.body` and calls `acknowledgeMessage()`
   - [ ] Given `client` is not null and no message matches the subject prefix, when called, then it returns `null`
@@ -263,6 +265,7 @@ interface WorkflowConfigFile {
   - [ ] Given `acknowledgeMessage()` throws, when called, then the message body is still returned
   - [ ] Given a `runId` is provided, when messages are filtered, then only messages containing that `runId` are considered
   - [ ] Given a message from a previous crashed run (different `runId`), when called with the current `runId`, then the stale message is not returned
+  - [ ] Given Agent Mail server is unreachable, when `fetchLatestPhaseMessage()` is called, then `AbortSignal.timeout(5000)` causes the fetch to abort and `null` is returned within 5 seconds
 
 ---
 
@@ -283,6 +286,7 @@ interface WorkflowConfigFile {
   - [ ] Given a mock client where `fetchInbox()` throws, when called, then returns `null`
   - [ ] Given a mock client where `acknowledgeMessage()` throws, when called, then returns body anyway
   - [ ] Given messages from different `runId`s, when called with a specific `runId`, then only the matching message is returned
+  - [ ] Given a mock client where `fetchInbox()` hangs indefinitely, when called with `AbortSignal.timeout(5000)`, then the function returns `null` within 5 seconds
 
 ---
 
@@ -409,36 +413,32 @@ interface WorkflowConfigFile {
 
 ---
 
-#### TRD-007: Stale Message Filtering via Run ID (2h) [satisfies REQ-026]
+#### TRD-007: Stale Message Subject Tagging via Run ID (2h) [satisfies REQ-026]
 
 - File: `src/orchestrator/agent-worker.ts`
 - Actions:
   1. Update all `sendMailText()` calls that send inter-phase reports to include `runId` in the subject: append ` [run:{runId}]` to existing subjects
   2. Affected subjects: `"Explorer Report"`, `"QA Feedback - Retry N"`, `"QA Report"`, `"Review Findings"`
-  3. Update `fetchLatestPhaseMessage()` signature to accept optional `runId` parameter (done in TRD-002)
-  4. In `fetchLatestPhaseMessage()`, when `runId` is provided, filter messages to only those containing the `runId` in subject or body
-  5. Messages without any `runId` (from older Foreman versions) are skipped when `runId` filtering is active
-- Validates PRD ACs: AC-026-1, AC-026-2, AC-026-3, AC-026-4
+  3. Note: The `runId` filtering logic in `fetchLatestPhaseMessage()` is implemented in TRD-002 (Action 5). This task only handles the send-side subject format.
+- Validates PRD ACs: AC-026-1
 - Implementation AC:
   - [ ] Given `sendMailText()` sends a QA Feedback message, when the subject is constructed, then it includes `[run:{runId}]` (e.g., `"QA Feedback - Retry 1 [run:abc123]"`)
-  - [ ] Given `fetchLatestPhaseMessage()` is called with a `runId`, when filtering messages, then only messages whose subject contains `[run:{runId}]` are considered
-  - [ ] Given a stale message from a crashed run with a different `runId`, when the new run calls `fetchLatestPhaseMessage()`, then the stale message is skipped and disk fallback is used
-  - [ ] Given a message without any `runId` tag (from an older Foreman version), when `fetchLatestPhaseMessage()` is called with a `runId`, then the old message is skipped
+  - [ ] Given `sendMailText()` sends an Explorer Report, when the subject is constructed, then it includes `[run:{runId}]`
+  - [ ] Given `sendMailText()` sends Review Findings, when the subject is constructed, then it includes `[run:{runId}]`
 
 ---
 
-#### TRD-007-TEST: Stale Message Filtering Tests (2h) [verifies TRD-007] [satisfies REQ-026] [depends: TRD-007]
+#### TRD-007-TEST: Stale Message Subject Tagging Tests (1h) [verifies TRD-007] [satisfies REQ-026] [depends: TRD-007]
 
 - File: `src/orchestrator/__tests__/agent-worker-mail.test.ts` (extend)
 - Actions:
-  1. Test subject format includes `[run:{runId}]`
-  2. Test filtering with matching `runId`
-  3. Test filtering with non-matching `runId`
-  4. Test backward compatibility with messages lacking `runId`
-- Validates PRD ACs: AC-026-1, AC-026-2, AC-026-3, AC-026-4
+  1. Test that all `sendMailText()` calls for inter-phase reports include `[run:{runId}]` in the subject
+  2. Verify subject format for Explorer Report, QA Feedback, QA Report, and Review Findings
+- Validates PRD ACs: AC-026-1
+- Note: The runId _filtering_ tests are in TRD-002-TEST (AC-026-2, AC-026-3, AC-026-4)
 - Implementation AC:
-  - [ ] Given mock messages with various `runId` tags, when `fetchLatestPhaseMessage()` is called with a specific `runId`, then only the matching message is returned
-  - [ ] Given mock messages without `runId` tags, when `fetchLatestPhaseMessage()` is called with a `runId`, then those messages are skipped
+  - [ ] Given a mock pipeline where `sendMailText()` is called for QA Feedback, when the subject is inspected, then it contains `[run:{runId}]`
+  - [ ] Given a mock pipeline where `sendMailText()` is called for Explorer Report, when the subject is inspected, then it contains `[run:{runId}]`
 
 ---
 
@@ -469,26 +469,6 @@ interface WorkflowConfigFile {
 - Implementation AC:
   - [ ] Given a mock pipeline with `agentMailClient = null`, when all phase read paths execute, then every `fetchLatestPhaseMessage()` returns `null` and disk reads succeed
   - [ ] Given a mock pipeline where `fetchInbox()` starts failing mid-run, when subsequent reads occur, then errors are caught and disk fallback is used seamlessly
-
----
-
-#### TRD-009: Part 1 Comprehensive Unit Tests (3h) [satisfies REQ-007]
-
-- File: `src/orchestrator/__tests__/agent-worker-mail.test.ts` (consolidation)
-- Actions:
-  1. Ensure all 7 test cases from REQ-007 are covered (some may already be covered by TRD-002-TEST through TRD-008-TEST)
-  2. Add any missing edge case tests
-  3. Verify test coverage for `fetchLatestPhaseMessage()` is >= 80%
-  4. Verify overall Part 1 test coverage meets targets
-- Validates PRD ACs: AC-007-1 through AC-007-7
-- Implementation AC:
-  - [ ] Given a mock client returning a matching unacknowledged message, when `fetchLatestPhaseMessage()` is called, then it returns the message body and calls `acknowledgeMessage()` with correct args
-  - [ ] Given a mock client returning messages with non-matching subjects, when called, then returns `null`
-  - [ ] Given a mock client returning only acknowledged messages, when called, then returns `null`
-  - [ ] Given a mock client returning two messages with same prefix but different `receivedAt`, when called, then returns the more recent body
-  - [ ] Given `client` is `null`, when called, then returns `null` with zero mock interactions
-  - [ ] Given a mock client where `fetchInbox()` throws, when called, then returns `null` and logs a non-fatal warning
-  - [ ] Given a mock client where `acknowledgeMessage()` throws, when called, then returns the body anyway
 
 ---
 
@@ -593,6 +573,23 @@ interface WorkflowConfigFile {
   - [ ] Given a phase entry with extra field `"description": "test"`, when validation runs, then it passes
   - [ ] Given a phase entry with `maxBudgetUsd` as string, when validation runs, then it throws with message identifying the phase and field
   - [ ] Given a phase entry missing `allowedTools`, when validation runs, then it throws identifying `"allowedTools"` as missing
+
+---
+
+#### TRD-012-TEST: Phase Config Schema Validation Tests (1h) [verifies TRD-012] [satisfies REQ-010] [depends: TRD-012]
+
+- File: `src/lib/__tests__/phase-config-loader.test.ts` (extend)
+- Actions:
+  1. Test valid phase config passes validation
+  2. Test extra unrecognized fields are tolerated
+  3. Test wrong type for `maxBudgetUsd` throws with descriptive message
+  4. Test missing required field throws identifying the field name
+- Validates PRD ACs: AC-010-1, AC-010-2, AC-010-3, AC-010-4
+- Implementation AC:
+  - [ ] Given a valid phase config object with all required fields, when `validatePhaseConfig()` runs, then no error is thrown
+  - [ ] Given a phase entry with extra field `"description": "test"`, when validation runs, then it passes without error
+  - [ ] Given a phase entry with `maxBudgetUsd: "5.00"` (string), when validation runs, then it throws with message containing `"maxBudgetUsd"` and `"number"`
+  - [ ] Given a phase entry missing `allowedTools`, when validation runs, then it throws with message containing `"allowedTools"`
 
 ---
 
@@ -701,7 +698,7 @@ interface WorkflowConfigFile {
 
 ---
 
-#### TRD-016: Wire Loaders into `runPipeline()` (4h) [satisfies REQ-012]
+#### TRD-016a: Workflow-Driven Phase Iteration (1h) [satisfies REQ-012]
 
 - File: `src/orchestrator/agent-worker.ts`
 - Actions:
@@ -710,26 +707,70 @@ interface WorkflowConfigFile {
   3. Run cross-validation: `validateWorkflowPhases(phases, phaseConfigs, seed.type)` and finalize enforcement
   4. Replace hardcoded phase sequence with iteration over `phases` array
   5. For each phase in the workflow (except `"finalize"`), use `phaseConfigs[phaseName]` for model/budget/tools
-  6. Replace direct `explorerPrompt(...)` calls with: `loadPrompt("explorer", { seedId, seedTitle, seedDescription, seedComments }, explorerPrompt(seedId, seedTitle, description, comments))`
-  7. Replace direct `developerPrompt(...)` calls similarly, using the existing function as fallback
-  8. Replace direct `qaPrompt(...)` and `reviewerPrompt(...)` calls similarly
-  9. Handle Dev<->QA retry loop: if workflow contains `"qa"`, run retry loop; if workflow omits `"qa"`, skip to next phase
-  10. Handle reviewer absence: if workflow omits `"reviewer"`, skip reviewer block entirely
-  11. When no external config files exist, behavior must be identical to current hardcoded implementation
-- Validates PRD ACs: AC-012-1 through AC-012-8
+- Validates PRD ACs: AC-012-1, AC-012-2, AC-012-3, AC-012-6
 - Implementation AC:
   - [ ] Given seed type `"feature"`, when `runPipeline()` executes, then phases `["explorer", "developer", "qa", "reviewer", "finalize"]` are run
   - [ ] Given seed type `"bug"`, when `runPipeline()` executes, then phases `["reproducer", "developer", "qa", "finalize"]` are run (no Explorer, no Reviewer)
   - [ ] Given seed type `"chore"`, when `runPipeline()` executes, then phases `["developer", "finalize"]` are run (no Explorer, QA, or Reviewer)
-  - [ ] Given `~/.foreman/prompts/explorer.md` exists, when Explorer phase runs, then `loadPrompt` provides external prompt with built-in as fallback
-  - [ ] Given `~/.foreman/phases.json` with custom Explorer model, when Explorer runs, then the custom model is used
   - [ ] Given no external config files, when `runPipeline()` executes, then behavior is identical to current hardcoded implementation
-  - [ ] Given a workflow with `"qa"` but no `"reviewer"`, when QA passes, then pipeline proceeds to next phase (typically `"finalize"`)
-  - [ ] Given a workflow omitting both `"qa"` and `"reviewer"`, when Developer completes, then pipeline proceeds directly to Finalize
 
 ---
 
-#### TRD-016-TEST: Wire Loaders Integration Tests (3h) [verifies TRD-016] [satisfies REQ-012] [depends: TRD-016, TRD-010, TRD-011, TRD-013]
+#### TRD-016b: Prompt Loader Wiring (1h) [satisfies REQ-012] [depends: TRD-016a, TRD-010]
+
+- File: `src/orchestrator/agent-worker.ts`
+- Actions:
+  1. Replace direct `explorerPrompt(...)` calls with: `loadPrompt("explorer", { seedId, seedTitle, seedDescription, seedComments }, explorerPrompt(seedId, seedTitle, description, comments))`
+  2. Replace direct `developerPrompt(...)` calls similarly, using the existing function as fallback
+  3. Replace direct `qaPrompt(...)` and `reviewerPrompt(...)` calls similarly
+- Validates PRD ACs: AC-012-4
+- Implementation AC:
+  - [ ] Given `~/.foreman/prompts/explorer.md` exists, when Explorer phase runs, then `loadPrompt` provides external prompt with built-in as fallback
+  - [ ] Given no external prompt files, when any phase runs, then built-in prompt functions are used via fallback path
+
+---
+
+#### TRD-016c: Phase Config Loader Wiring (0.5h) [satisfies REQ-012] [depends: TRD-016a, TRD-011]
+
+- File: `src/orchestrator/agent-worker.ts`
+- Actions:
+  1. For each phase in the workflow (except `"finalize"`), use `phaseConfigs[phaseName]` for model, budget, and tools instead of hardcoded `ROLE_CONFIGS`
+- Validates PRD ACs: AC-012-5, AC-012-6
+- Implementation AC:
+  - [ ] Given `~/.foreman/phases.json` with custom Explorer model, when Explorer runs, then the custom model is used
+  - [ ] Given no `phases.json`, when any phase runs, then `ROLE_CONFIGS` fallback values are used
+
+---
+
+#### TRD-016d: QA Retry Loop Adaptation (1h) [satisfies REQ-012] [depends: TRD-016a]
+
+- File: `src/orchestrator/agent-worker.ts`
+- Actions:
+  1. In the phase iteration loop, detect if workflow contains `"qa"` phase
+  2. If `"qa"` is present, run the existing Dev<->QA retry loop (up to `MAX_DEV_RETRIES`)
+  3. If `"qa"` is absent in the workflow, skip to the next phase after Developer completes
+- Validates PRD ACs: AC-012-7, AC-012-8
+- Implementation AC:
+  - [ ] Given a workflow with `"qa"` but no `"reviewer"`, when QA passes, then pipeline proceeds to next phase (typically `"finalize"`)
+  - [ ] Given a workflow omitting both `"qa"` and `"reviewer"` (e.g., chore), when Developer completes, then pipeline proceeds directly to Finalize with no retry loop
+
+---
+
+#### TRD-016e: Reviewer Skip Logic (0.5h) [satisfies REQ-012] [depends: TRD-016a]
+
+- File: `src/orchestrator/agent-worker.ts`
+- Actions:
+  1. In the phase iteration loop, detect if workflow contains `"reviewer"` phase
+  2. If `"reviewer"` is absent, skip the entire reviewer block (no review phase, no review retry)
+  3. If `"reviewer"` is present, run existing reviewer logic
+- Validates PRD ACs: AC-012-7
+- Implementation AC:
+  - [ ] Given a workflow omitting `"reviewer"` (e.g., bug workflow), when the pipeline reaches where reviewer would run, then the reviewer block is skipped entirely
+  - [ ] Given a workflow including `"reviewer"`, when the pipeline reaches that phase, then reviewer runs as before
+
+---
+
+#### TRD-016-TEST: Wire Loaders Integration Tests (3h) [verifies TRD-016a, TRD-016b, TRD-016c, TRD-016d, TRD-016e] [satisfies REQ-012] [depends: TRD-016a, TRD-016b, TRD-016c, TRD-016d, TRD-016e, TRD-010, TRD-011, TRD-013]
 
 - File: `src/orchestrator/__tests__/agent-worker-config.test.ts` (new)
 - Actions:
@@ -740,11 +781,14 @@ interface WorkflowConfigFile {
   5. Test external prompt loading with mock file system
   6. Test fallback to built-in when no config files present
   7. Test Dev<->QA retry loop with workflow-driven phases
+  8. Test reviewer skip when absent from workflow
 - Validates PRD ACs: AC-012-1 through AC-012-8
 - Implementation AC:
   - [ ] Given a mock pipeline with seed type `"feature"`, when `runPipeline()` executes, then the phase sequence recorded is `["explorer", "developer", "qa", "reviewer", "finalize"]`
   - [ ] Given a mock pipeline with seed type `"bug"`, when `runPipeline()` executes, then the phase sequence is `["reproducer", "developer", "qa", "finalize"]`
   - [ ] Given a mock pipeline with seed type `"chore"`, when `runPipeline()` executes, then the phase sequence is `["developer", "finalize"]`
+  - [ ] Given a mock pipeline with external explorer prompt file, when Explorer runs, then the external prompt is used
+  - [ ] Given a mock pipeline with no external config files, when `runPipeline()` executes, then behavior matches current hardcoded implementation
 
 ---
 
@@ -788,31 +832,6 @@ interface WorkflowConfigFile {
 - Implementation AC:
   - [ ] Given `src/defaults/phases.json`, when parsed and compared to `ROLE_CONFIGS`, then all field values match
   - [ ] Given `src/defaults/prompts/explorer.md`, when rendered with test variables via `renderTemplate`, then output matches `explorerPrompt()` with same variables
-
----
-
-#### TRD-018: Part 2 Comprehensive Unit Tests (3h) [satisfies REQ-016]
-
-- Files:
-  - `src/lib/__tests__/prompt-loader.test.ts` (extend)
-  - `src/lib/__tests__/phase-config-loader.test.ts` (extend)
-  - `src/lib/__tests__/workflow-config-loader.test.ts` (extend)
-- Actions:
-  1. Ensure all 10 test cases from REQ-016 are covered across the three test files
-  2. Add any missing edge cases identified during implementation
-  3. Verify coverage for each loader module is >= 80%
-- Validates PRD ACs: AC-016-1 through AC-016-10
-- Implementation AC:
-  - [ ] Given `loadPrompt()` with file and all vars, when called, then returns fully rendered markdown (AC-016-1)
-  - [ ] Given `loadPrompt()` with `{{#if feedbackContext}}` and var absent, when called, then block omitted (AC-016-2)
-  - [ ] Given `loadPrompt()` with no file, when called, then rendered fallback returned (AC-016-3)
-  - [ ] Given `loadWorkflows()` with valid file, when called, then parsed map returned (AC-016-4)
-  - [ ] Given `loadWorkflows()` with no file, when called, then `DEFAULT_WORKFLOWS` returned (AC-016-5)
-  - [ ] Given `loadWorkflows()` with invalid JSON, when called, then warns and returns defaults (AC-016-6)
-  - [ ] Given `getWorkflow("bug")`, when called, then returns `["reproducer", "developer", "qa", "finalize"]` (AC-016-7)
-  - [ ] Given `getWorkflow("unknown")`, when called, then returns feature workflow (AC-016-8)
-  - [ ] Given `loadPhaseConfigs()` with valid file, when called, then parsed map returned (AC-016-9)
-  - [ ] Given `loadPhaseConfigs()` with missing field, when called, then warns and returns `ROLE_CONFIGS` (AC-016-10)
 
 ---
 
@@ -872,7 +891,7 @@ interface WorkflowConfigFile {
   4. After Reproducer completes, check for `REPRODUCER_REPORT.md`
   5. Send reproducer report to Developer inbox via Agent Mail: `sendMailText(agentMailClient, \`developer-${seedId}\`, \`Reproducer Report [run:${runId}]\`, reproducerReport)`
   6. If Reproducer fails (cannot reproduce bug or phase errors), mark seed as stuck with note `"Reproduction failed"` and do NOT proceed to Developer. Do NOT auto-reset to open.
-  7. Create built-in `reproducerPrompt()` function in `roles.ts` as fallback (or use the bundled `reproducer.md` default)
+  7. Create built-in `reproducerPrompt()` function in `roles.ts` as fallback (or use the bundled `reproducer.md` default). **Note:** This modifies `roles.ts` — the only change to that file in this TRD. The new function follows the same pattern as `explorerPrompt()` etc. and is tracked under REQ-015/AC-015-3.
   8. Add `"reproducer"` entry to `ROLE_CONFIGS` or handle it in `loadPhaseConfigs()` fallback
 - Validates PRD ACs: AC-015-1, AC-015-2, AC-015-3, AC-015-4
 - Implementation AC:
@@ -917,11 +936,11 @@ The NFR tasks below are validated through the implementation and test tasks abov
 
 #### TRD-NFR-002: Invalid Config Resilience [satisfies REQ-019]
 
-- Validated by: TRD-011 (phase config loader catches parse errors), TRD-013 (workflow loader catches parse errors), TRD-010 (prompt loader handles malformed templates)
+- Validated by: TRD-011 (phase config loader catches parse errors), TRD-013 (workflow loader catches parse errors), TRD-015 (finalize enforcement), TRD-010 (prompt loader handles malformed templates)
 - Validates PRD ACs: AC-019-1, AC-019-2, AC-019-3
 - Implementation AC:
   - [ ] Given `phases.json` with JSON syntax error, when `loadPhaseConfigs()` is called, then a warning is logged and built-in defaults are returned
-  - [ ] Given `workflows.json` with empty array `"feature": []`, when `getWorkflow("feature")` is called, then the empty array is returned (loader does not validate contents)
+  - [ ] Given `workflows.json` with empty array `"feature": []`, when `loadWorkflows()` validates it, then finalize enforcement (TRD-015) rejects it with an error since it does not end with `"finalize"`. **Note:** PRD AC-019-2 has been superseded by REQ-025 (finalize enforcement). Empty arrays are validation errors, not passthrough cases.
   - [ ] Given `explorer.md` with unclosed `{{#if`, when `loadPrompt()` processes it, then the malformed syntax passes through as literal text
 
 ---
@@ -948,7 +967,7 @@ The NFR tasks below are validated through the implementation and test tasks abov
 
 #### TRD-NFR-005: Performance [satisfies REQ-022]
 
-- Validated by: TRD-002 (fetchLatestPhaseMessage with AbortController timeout), TRD-010/TRD-011/TRD-013 (filesystem-only config loading)
+- Validated by: TRD-002 (fetchLatestPhaseMessage with AbortController timeout — Action 10), TRD-002-TEST (timeout test case), TRD-010/TRD-011/TRD-013 (filesystem-only config loading)
 - Validates PRD ACs: AC-022-1, AC-022-2, AC-022-3
 - Implementation AC:
   - [ ] Given Agent Mail is available on localhost, when `fetchLatestPhaseMessage()` is called, then fetch + acknowledge completes within 500ms
@@ -959,7 +978,7 @@ The NFR tasks below are validated through the implementation and test tasks abov
 
 ## 5. Sprint Planning
 
-### Phase 1: Agent Mail Read Transport -- 2 days (16h)
+### Phase 1: Agent Mail Read Transport -- 3 days (25h)
 
 | Task | Estimate | Dependencies | Priority |
 |------|----------|-------------|----------|
@@ -975,14 +994,13 @@ The NFR tasks below are validated through the implementation and test tasks abov
 | TRD-005-TEST | 1h | TRD-005 | P1 |
 | TRD-006: Explorer report read | 2h | TRD-002 | P0 |
 | TRD-006-TEST | 1h | TRD-006 | P0 |
-| TRD-007: Stale message filtering | 2h | TRD-002 | P1 |
-| TRD-007-TEST | 2h | TRD-007 | P1 |
+| TRD-007: Stale message subject tagging | 2h | TRD-002 | P1 |
+| TRD-007-TEST | 1h | TRD-007 | P1 |
 | TRD-008: Backward compat validation | 2h | TRD-003, TRD-005, TRD-006 | P0 |
 | TRD-008-TEST | 2h | TRD-008 | P0 |
-| TRD-009: Part 1 comprehensive tests | 3h | TRD-001 through TRD-008 | P0 |
-| **Phase 1 Total** | **27h** | | |
+| **Phase 1 Total** | **25h** | | |
 
-### Phase 2: Config Loaders -- 3 days (24h)
+### Phase 2: Config Loaders -- 4 days (30h)
 
 | Task | Estimate | Dependencies | Priority |
 |------|----------|-------------|----------|
@@ -991,18 +1009,22 @@ The NFR tasks below are validated through the implementation and test tasks abov
 | TRD-011: Phase config loader | 2h | none | P1 |
 | TRD-011-TEST | 2h | TRD-011 | P1 |
 | TRD-012: Phase config schema validation | 1h | TRD-011 | P2 |
+| TRD-012-TEST | 1h | TRD-012 | P2 |
 | TRD-013: Workflow config loader | 2h | none | P1 |
 | TRD-013-TEST | 2h | TRD-013 | P1 |
 | TRD-014: Workflow-phase cross-validation | 2h | TRD-013 | P1 |
 | TRD-014-TEST | 1h | TRD-014 | P1 |
 | TRD-015: Finalize enforcement | 1h | TRD-013 | P1 |
 | TRD-015-TEST | 1h | TRD-015 | P1 |
-| TRD-016: Wire loaders into runPipeline | 4h | TRD-010, TRD-011, TRD-013, TRD-014, TRD-015 | P1 |
-| TRD-016-TEST | 3h | TRD-016 | P1 |
+| TRD-016a: Workflow-driven phase iteration | 1h | TRD-010, TRD-011, TRD-013, TRD-014, TRD-015 | P1 |
+| TRD-016b: Prompt loader wiring | 1h | TRD-016a, TRD-010 | P1 |
+| TRD-016c: Phase config loader wiring | 0.5h | TRD-016a, TRD-011 | P1 |
+| TRD-016d: QA retry loop adaptation | 1h | TRD-016a | P1 |
+| TRD-016e: Reviewer skip logic | 0.5h | TRD-016a | P1 |
+| TRD-016-TEST | 3h | TRD-016a through TRD-016e | P1 |
 | TRD-017: Bundled default files | 2h | none | P1 |
 | TRD-017-TEST | 2h | TRD-017, TRD-010 | P1 |
-| TRD-018: Part 2 comprehensive tests | 3h | TRD-010 through TRD-017 | P1 |
-| **Phase 2 Total** | **32h** | | |
+| **Phase 2 Total** | **30h** | | |
 
 ### Phase 3: Init Seeding -- 1 day (4h)
 
@@ -1016,11 +1038,11 @@ The NFR tasks below are validated through the implementation and test tasks abov
 
 | Task | Estimate | Dependencies | Priority |
 |------|----------|-------------|----------|
-| TRD-020: Reproducer phase | 3h | TRD-016, TRD-017 | P3 |
+| TRD-020: Reproducer phase | 3h | TRD-016a, TRD-017 | P3 |
 | TRD-020-TEST | 2h | TRD-020 | P3 |
 | **Phase 4 Total** | **5h** | | |
 
-### Total: 68h across 42 tasks (21 implementation + 21 test)
+### Total: 64h across 47 tasks (25 implementation + 22 test)
 
 ---
 
@@ -1032,7 +1054,7 @@ The NFR tasks below are validated through the implementation and test tasks abov
 Phase 1: Agent Mail Read Transport
   TRD-001 (ack fix)
     +-- TRD-001-TEST
-    +-- TRD-002 (fetchLatestPhaseMessage)
+    +-- TRD-002 (fetchLatestPhaseMessage + runId filtering + AbortController timeout)
           +-- TRD-002-TEST
           +-- TRD-003 (QA read path)
           |     +-- TRD-003-TEST
@@ -1042,11 +1064,10 @@ Phase 1: Agent Mail Read Transport
           |           +-- TRD-005-TEST
           +-- TRD-006 (Explorer read path)
           |     +-- TRD-006-TEST
-          +-- TRD-007 (Stale message filtering)
+          +-- TRD-007 (Stale message subject tagging — send-side only)
                 +-- TRD-007-TEST
   TRD-003, TRD-005, TRD-006 --> TRD-008 (Backward compat)
     +-- TRD-008-TEST
-  TRD-001 through TRD-008 --> TRD-009 (Comprehensive tests)
 
 Phase 2: Config Loaders (independent of Phase 1)
   TRD-010 (Prompt loader)      -- independent
@@ -1054,24 +1075,28 @@ Phase 2: Config Loaders (independent of Phase 1)
   TRD-011 (Phase config loader) -- independent
     +-- TRD-011-TEST
     +-- TRD-012 (Schema validation)
+          +-- TRD-012-TEST
   TRD-013 (Workflow loader)     -- independent
     +-- TRD-013-TEST
     +-- TRD-014 (Cross-validation)
     |     +-- TRD-014-TEST
     +-- TRD-015 (Finalize enforcement)
           +-- TRD-015-TEST
-  TRD-010, TRD-011, TRD-013, TRD-014, TRD-015 --> TRD-016 (Wire into runPipeline)
-    +-- TRD-016-TEST
+  TRD-010, TRD-011, TRD-013, TRD-014, TRD-015 --> TRD-016a (Workflow iteration)
+    +-- TRD-016b (Prompt wiring)        [depends: TRD-016a, TRD-010]
+    +-- TRD-016c (Config wiring)        [depends: TRD-016a, TRD-011]
+    +-- TRD-016d (QA retry adaptation)  [depends: TRD-016a]
+    +-- TRD-016e (Reviewer skip)        [depends: TRD-016a]
+    +-- TRD-016-TEST                    [depends: TRD-016a through TRD-016e]
   TRD-017 (Bundled defaults) -- independent
     +-- TRD-017-TEST
-  TRD-010 through TRD-017 --> TRD-018 (Comprehensive tests)
 
 Phase 3: Init Seeding
   TRD-017 --> TRD-019 (foreman init seeding)
     +-- TRD-019-TEST
 
 Phase 4: Reproducer
-  TRD-016, TRD-017 --> TRD-020 (Reproducer phase)
+  TRD-016a, TRD-017 --> TRD-020 (Reproducer phase)
     +-- TRD-020-TEST
 ```
 
@@ -1138,22 +1163,22 @@ A task is complete when:
 | REQ-004 | Reviewer findings send | TRD-004 | TRD-004-TEST |
 | REQ-005 | Reviewer findings read path | TRD-005 | TRD-005-TEST |
 | REQ-006 | Backward compatibility | TRD-008 | TRD-008-TEST |
-| REQ-007 | Part 1 unit tests | TRD-009 | TRD-002-TEST through TRD-009 |
+| REQ-007 | Part 1 unit tests | *(covered by individual test tasks)* | TRD-002-TEST through TRD-008-TEST |
 | REQ-008 | Prompt loader utility | TRD-010 | TRD-010-TEST |
 | REQ-009 | Phase config loader | TRD-011 | TRD-011-TEST |
-| REQ-010 | Phase config schema validation | TRD-012 | TRD-011-TEST |
+| REQ-010 | Phase config schema validation | TRD-012 | TRD-012-TEST |
 | REQ-011 | Workflow config loader | TRD-013 | TRD-013-TEST |
-| REQ-012 | Wire loaders into runPipeline | TRD-016 | TRD-016-TEST |
+| REQ-012 | Wire loaders into runPipeline | TRD-016a, TRD-016b, TRD-016c, TRD-016d, TRD-016e | TRD-016-TEST |
 | REQ-013 | foreman init config seeding | TRD-019 | TRD-019-TEST |
 | REQ-014 | Bundled default files | TRD-017 | TRD-017-TEST |
 | REQ-015 | Reproducer phase | TRD-020 | TRD-020-TEST |
-| REQ-016 | Part 2 unit tests | TRD-018 | TRD-010-TEST through TRD-018 |
+| REQ-016 | Part 2 unit tests | *(covered by individual test tasks)* | TRD-010-TEST through TRD-017-TEST |
 | REQ-017 | Zero regression without Agent Mail | TRD-008 | TRD-008-TEST |
-| REQ-018 | Zero regression without config files | TRD-NFR-001, TRD-016 | TRD-016-TEST |
+| REQ-018 | Zero regression without config files | TRD-NFR-001, TRD-016a | TRD-016-TEST |
 | REQ-019 | Invalid config resilience | TRD-NFR-002, TRD-010, TRD-011, TRD-013 | TRD-010-TEST, TRD-011-TEST, TRD-013-TEST |
 | REQ-020 | No SQLite schema changes | TRD-NFR-003 | Code review |
 | REQ-021 | Existing CLI commands unchanged | TRD-NFR-004 | Code review |
-| REQ-022 | Performance | TRD-NFR-005, TRD-002 | Performance validation |
+| REQ-022 | Performance | TRD-NFR-005, TRD-002 (AbortController timeout) | TRD-002-TEST, Performance validation |
 | REQ-023 | Explorer report read path | TRD-006 | TRD-006-TEST |
 | REQ-024 | Workflow-phase cross-validation | TRD-014 | TRD-014-TEST |
 | REQ-025 | Finalize phase enforcement | TRD-015 | TRD-015-TEST |
