@@ -21,10 +21,6 @@ vi.mock("node:os", () => ({
   homedir: mockHomedir,
 }));
 
-vi.mock("../../lib/beads-rust.js", () => ({
-  execBr: mockExecBr,
-}));
-
 import { closeSeed, resetSeedToOpen, addLabelsToBead, addNotesToBead } from "../task-backend-ops.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
