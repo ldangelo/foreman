@@ -5,6 +5,20 @@ import { tmpdir } from "node:os";
 import { Doctor } from "../doctor.js";
 import type { Run } from "../../lib/store.js";
 
+// Shared health-check mock — tests mutate `agentMailHealthy` to control return value
+let agentMailHealthy = false;
+const mockHealthCheck = vi.fn().mockImplementation(() => Promise.resolve(agentMailHealthy));
+
+vi.mock("../agent-mail-client.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../agent-mail-client.js")>();
+  return {
+    ...actual,
+    AgentMailClient: class MockAgentMailClient {
+      healthCheck = mockHealthCheck;
+    },
+  };
+});
+
 // Mock git module for worktree tests
 vi.mock("../../lib/git.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/git.js")>();
@@ -84,6 +98,89 @@ describe("Doctor", () => {
         expect(result.message).toContain("not found");
       } finally {
         process.env.PATH = originalPath;
+      }
+    });
+  });
+
+  describe("checkAgentMailLiveness", () => {
+    beforeEach(() => {
+      agentMailHealthy = false;
+      mockHealthCheck.mockClear();
+    });
+
+    it("returns pass when Agent Mail is reachable", async () => {
+      const { doctor } = makeMocks();
+      agentMailHealthy = true;
+
+      const result = await doctor.checkAgentMailLiveness();
+
+      expect(result.name).toBe("Agent Mail service");
+      expect(result.status).toBe("pass");
+      expect(result.message).toContain("Reachable");
+    });
+
+    it("returns fail when Agent Mail is not reachable", async () => {
+      const { doctor } = makeMocks();
+      agentMailHealthy = false;
+
+      const result = await doctor.checkAgentMailLiveness();
+
+      expect(result.name).toBe("Agent Mail service");
+      expect(result.status).toBe("fail");
+      expect(result.message).toContain("Not reachable");
+      expect(result.message).toContain("foreman run will exit");
+    });
+
+    it("includes startup instructions in details when not reachable", async () => {
+      const { doctor } = makeMocks();
+      agentMailHealthy = false;
+
+      const result = await doctor.checkAgentMailLiveness();
+
+      expect(result.details).toContain("mcp_agent_mail serve");
+      expect(result.details).toContain("AGENT_MAIL_URL");
+    });
+
+    it("includes port from default URL in startup instructions", async () => {
+      const { doctor } = makeMocks();
+      agentMailHealthy = false;
+
+      const result = await doctor.checkAgentMailLiveness();
+
+      expect(result.details).toContain("8766");
+    });
+
+    it("uses AGENT_MAIL_URL env var in pass message when set", async () => {
+      const { doctor } = makeMocks();
+      agentMailHealthy = true;
+      const originalUrl = process.env.AGENT_MAIL_URL;
+      process.env.AGENT_MAIL_URL = "http://localhost:9999";
+      try {
+        const result = await doctor.checkAgentMailLiveness();
+        expect(result.message).toContain("http://localhost:9999");
+      } finally {
+        if (originalUrl === undefined) {
+          delete process.env.AGENT_MAIL_URL;
+        } else {
+          process.env.AGENT_MAIL_URL = originalUrl;
+        }
+      }
+    });
+
+    it("uses AGENT_MAIL_URL env var port in fail details when set", async () => {
+      const { doctor } = makeMocks();
+      agentMailHealthy = false;
+      const originalUrl = process.env.AGENT_MAIL_URL;
+      process.env.AGENT_MAIL_URL = "http://localhost:9999";
+      try {
+        const result = await doctor.checkAgentMailLiveness();
+        expect(result.details).toContain("9999");
+      } finally {
+        if (originalUrl === undefined) {
+          delete process.env.AGENT_MAIL_URL;
+        } else {
+          process.env.AGENT_MAIL_URL = originalUrl;
+        }
       }
     });
   });
