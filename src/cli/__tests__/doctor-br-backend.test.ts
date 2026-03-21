@@ -4,7 +4,7 @@
  * Verifies:
  * - Doctor checks for br binary and bv binary (and git)
  * - Doctor does NOT check for the legacy sd (seeds) binary
- * - checkSystem() returns exactly 3 results (br + bv + git)
+ * - checkSystem() returns exactly 4 results (br + bv + git + Agent Mail)
  * - Doctor.checkBrRecoveryArtifacts(): detects and optionally removes .br_recovery/ artifacts
  */
 
@@ -28,6 +28,17 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     access: mockAccess,
     stat: mockStat,
     rm: mockRm,
+  };
+});
+
+// Mock AgentMailClient so checkSystem() doesn't make real HTTP calls
+vi.mock("../../orchestrator/agent-mail-client.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../orchestrator/agent-mail-client.js")>();
+  return {
+    ...actual,
+    AgentMailClient: class MockAgentMailClient {
+      healthCheck = vi.fn().mockResolvedValue(false);
+    },
   };
 });
 
