@@ -1,0 +1,6 @@
+{
+  "feature": ["explorer", "developer", "qa", "reviewer", "finalize"],
+  "bug": ["reproducer", "developer", "qa", "finalize"],
+  "chore": ["developer", "finalize"],
+  "docs": ["developer", "finalize"]
+}

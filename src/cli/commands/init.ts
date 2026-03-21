@@ -2,9 +2,10 @@ import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { existsSync, mkdirSync, writeFileSync, copyFileSync, readdirSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { ForemanStore } from "../../lib/store.js";
 import { AgentMailClient } from "../../orchestrator/agent-mail-client.js";
 import { MERGE_AGENT_MAILBOX } from "../../orchestrator/merge-agent.js";
@@ -146,6 +147,143 @@ export async function initProjectStore(
   }
 }
 
+// ── Default config seeding (TRD-019) ──────────────────────────────────────
+
+/**
+ * Injectable filesystem operations for initDefaultConfigs — enables testing
+ * with temp directories without mocking ESM modules.
+ */
+export interface InitDefaultConfigsOpts {
+  /** Override for ~/.foreman path (defaults to homedir() + "/.foreman"). */
+  foremanHomeDir?: string;
+  /** Injectable existsSync (defaults to node:fs existsSync). */
+  checkExists?: (p: string) => boolean;
+  /** Injectable mkdirSync (defaults to node:fs mkdirSync). */
+  mkdirSyncFn?: (p: string, opts?: { recursive?: boolean }) => string | undefined;
+  /** Injectable copyFileSync (defaults to node:fs copyFileSync). */
+  copyFileSyncFn?: (src: string, dest: string) => void;
+  /** Injectable readdirSync (defaults to node:fs readdirSync). */
+  readdirSyncFn?: (p: string) => string[];
+  /** Bundled defaults directory path override (for testing). */
+  defaultsDir?: string;
+}
+
+/**
+ * Resolve the bundled defaults directory path relative to this module's location.
+ *
+ * In the compiled output (dist/), this file is at:
+ *   dist/cli/commands/init.js
+ * The defaults are at:
+ *   dist/defaults/
+ *
+ * In the source tree (src/), this file is at:
+ *   src/cli/commands/init.ts
+ * The defaults are at:
+ *   src/defaults/
+ *
+ * We resolve two levels up from this file's directory to reach the package root,
+ * then descend into "defaults/".
+ */
+function resolveDefaultsDir(): string {
+  const thisFile = fileURLToPath(import.meta.url);
+  const thisDir = dirname(thisFile);
+  // thisDir = .../src/cli/commands (or .../dist/cli/commands)
+  // go up two levels → package root (src/ or dist/)
+  return join(thisDir, "..", "..", "defaults");
+}
+
+/**
+ * Seed ~/.foreman/ with bundled default configuration files on first run.
+ *
+ * For each file:
+ *   - If the destination does NOT exist: copy it and print a confirmation.
+ *   - If the destination already exists: skip it (preserve user customizations)
+ *     and print a dim "already present" message.
+ *
+ * Files seeded:
+ *   - ~/.foreman/phases.json      (from src/defaults/phases.json)
+ *   - ~/.foreman/workflows.json   (from src/defaults/workflows.json)
+ *   - ~/.foreman/prompts/*.md     (from src/defaults/prompts/*.md)
+ *
+ * Satisfies: REQ-013, AC-013-1 through AC-013-5
+ *
+ * Exported for unit testing.
+ */
+export function initDefaultConfigs(opts: InitDefaultConfigsOpts = {}): void {
+  const {
+    foremanHomeDir = join(homedir(), ".foreman"),
+    checkExists = existsSync,
+    mkdirSyncFn = (p, o) => mkdirSync(p, o),
+    copyFileSyncFn = copyFileSync,
+    readdirSyncFn = (p) => readdirSync(p) as string[],
+    defaultsDir = resolveDefaultsDir(),
+  } = opts;
+
+  // Ensure ~/.foreman/ directory exists
+  if (!checkExists(foremanHomeDir)) {
+    mkdirSyncFn(foremanHomeDir, { recursive: true });
+  }
+
+  // ── phases.json ─────────────────────────────────────────────────────────
+  const phasesSrc = join(defaultsDir, "phases.json");
+  const phasesDest = join(foremanHomeDir, "phases.json");
+  if (checkExists(phasesDest)) {
+    console.log(chalk.dim("  Config: phases.json already present — skipping"));
+  } else {
+    try {
+      copyFileSyncFn(phasesSrc, phasesDest);
+      console.log(chalk.dim("  Config: phases.json written to ~/.foreman/phases.json"));
+    } catch (e) {
+      console.warn(chalk.yellow(`  Config: could not write phases.json (non-fatal): ${e instanceof Error ? e.message : String(e)}`));
+    }
+  }
+
+  // ── workflows.json ───────────────────────────────────────────────────────
+  const workflowsSrc = join(defaultsDir, "workflows.json");
+  const workflowsDest = join(foremanHomeDir, "workflows.json");
+  if (checkExists(workflowsDest)) {
+    console.log(chalk.dim("  Config: workflows.json already present — skipping"));
+  } else {
+    try {
+      copyFileSyncFn(workflowsSrc, workflowsDest);
+      console.log(chalk.dim("  Config: workflows.json written to ~/.foreman/workflows.json"));
+    } catch (e) {
+      console.warn(chalk.yellow(`  Config: could not write workflows.json (non-fatal): ${e instanceof Error ? e.message : String(e)}`));
+    }
+  }
+
+  // ── prompts/*.md ─────────────────────────────────────────────────────────
+  const promptsSrc = join(defaultsDir, "prompts");
+  const promptsDest = join(foremanHomeDir, "prompts");
+
+  if (!checkExists(promptsDest)) {
+    mkdirSyncFn(promptsDest, { recursive: true });
+  }
+
+  let promptFiles: string[];
+  try {
+    promptFiles = readdirSyncFn(promptsSrc).filter((f) => f.endsWith(".md"));
+  } catch (e) {
+    console.warn(chalk.yellow(`  Config: could not read bundled prompts directory (non-fatal): ${e instanceof Error ? e.message : String(e)}`));
+    return;
+  }
+
+  for (const filename of promptFiles) {
+    const src = join(promptsSrc, filename);
+    const dest = join(promptsDest, filename);
+    if (checkExists(dest)) {
+      console.log(chalk.dim(`  Config: prompts/${filename} already present — skipping`));
+    } else {
+      try {
+        copyFileSyncFn(src, dest);
+        console.log(chalk.dim(`  Config: prompts/${filename} written to ~/.foreman/prompts/${filename}`));
+      } catch (e) {
+        console.warn(chalk.yellow(`  Config: could not write prompts/${filename} (non-fatal): ${e instanceof Error ? e.message : String(e)}`));
+      }
+    }
+  }
+}
+
 // ── Command ────────────────────────────────────────────────────────────────
 
 export const initCommand = new Command("init")
@@ -164,6 +302,9 @@ export const initCommand = new Command("init")
 
     // Write default Agent Mail config (.foreman/agent-mail.json) if missing
     initAgentMailConfig(projectDir);
+
+    // TRD-019: Seed ~/.foreman/ with bundled default configs on first run (REQ-013)
+    initDefaultConfigs();
 
     // Register project and seed sentinel config
     const store = ForemanStore.forProject(projectDir);

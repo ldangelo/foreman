@@ -1,0 +1,40 @@
+{
+  "explorer": {
+    "model": "claude-haiku-4-5-20251001",
+    "maxBudgetUsd": 1.00,
+    "allowedTools": ["Glob", "Grep", "Read", "Write"],
+    "reportFile": "EXPLORER_REPORT.md",
+    "promptFile": "explorer.md"
+  },
+  "developer": {
+    "model": "claude-sonnet-4-6",
+    "maxBudgetUsd": 5.00,
+    "allowedTools": [
+      "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+      "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write"
+    ],
+    "reportFile": "DEVELOPER_REPORT.md",
+    "promptFile": "developer.md"
+  },
+  "qa": {
+    "model": "claude-sonnet-4-6",
+    "maxBudgetUsd": 3.00,
+    "allowedTools": ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
+    "reportFile": "QA_REPORT.md",
+    "promptFile": "qa.md"
+  },
+  "reviewer": {
+    "model": "claude-sonnet-4-6",
+    "maxBudgetUsd": 2.00,
+    "allowedTools": ["Glob", "Grep", "Read", "Write"],
+    "reportFile": "REVIEW.md",
+    "promptFile": "reviewer.md"
+  },
+  "reproducer": {
+    "model": "claude-sonnet-4-6",
+    "maxBudgetUsd": 2.00,
+    "allowedTools": ["Bash", "Glob", "Grep", "Read", "Write"],
+    "reportFile": "REPRODUCER_REPORT.md",
+    "promptFile": "reproducer.md"
+  }
+}

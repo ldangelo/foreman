@@ -21,11 +21,13 @@ import type { RunProgress } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS, getSessionLogBudget } from "../lib/config.js";
 import {
   ROLE_CONFIGS,
+  ALL_AGENT_TOOLS,
   getDisallowedTools,
   explorerPrompt,
   developerPrompt,
   qaPrompt,
   reviewerPrompt,
+  reproducerPrompt,
   parseVerdict,
   extractIssues,
   hasActionableIssues,
@@ -37,6 +39,13 @@ import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { AgentMailClient } from "./agent-mail-client.js";
+import { fetchLatestPhaseMessage as _fetchLatestPhaseMessage } from "./agent-mail-helpers.js";
+import { loadPhaseConfigs, type PhaseConfigEntry } from "../lib/phase-config-loader.js";
+import { getWorkflow, validateWorkflowPhases, validateFinalizeEnforcement, loadWorkflows } from "../lib/workflow-config-loader.js";
+import { loadPrompt } from "../lib/prompt-loader.js";
+
+// Re-export for use in tests (avoids triggering main() in this module)
+export { fetchLatestPhaseMessage as fetchLatestPhaseMessageForTest } from "./agent-mail-helpers.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -122,6 +131,41 @@ function sendMailText(
 }
 
 /**
+ * Fetch the most recent unacknowledged message matching a subject prefix from an Agent Mail inbox.
+ *
+ * Resolution logic:
+ *   1. If client is null, return null immediately (no API calls)
+ *   2. Fetch up to 20 unacknowledged messages from the inbox
+ *   3. Filter by subject prefix (and optionally by runId in subject or body)
+ *   4. Sort by receivedAt descending, take the most recent
+ *   5. Acknowledge the match (errors non-fatal — body still returned)
+ *   6. Return the message body
+ *
+ * Uses AbortSignal.timeout(5000) to ensure unreachable servers return null within 5 seconds.
+ *
+ * TRD-2026-003: TRD-002 [satisfies REQ-002, REQ-026, AC-022-3]
+ *
+ * @param client       The Agent Mail client (null = Agent Mail disabled)
+ * @param inboxRole    Logical role name for the inbox (e.g. "developer-bd-abc1")
+ * @param subjectPrefix Subject prefix to match (e.g. "Explorer Report", "QA Feedback")
+ * @param runId        Optional run ID to filter stale messages from previous runs
+ * @returns            Message body string, or null if not found / error
+ */
+/**
+ * Internal wrapper for fetchLatestPhaseMessage that uses the module-scoped log() function.
+ * Delegates to agent-mail-helpers.ts for the core implementation.
+ * TRD-2026-003: TRD-002 [satisfies REQ-002, REQ-026, AC-022-3]
+ */
+async function fetchLatestPhaseMessage(
+  client: AgentMailClient | null,
+  inboxRole: string,
+  subjectPrefix: string,
+  runId?: string,
+): Promise<string | null> {
+  return _fetchLatestPhaseMessage(client, inboxRole, subjectPrefix, runId, log);
+}
+
+/**
  * Register agent identity for a phase and set as the sending identity on the client.
  * Uses ensureAgentRegistered so the auto-generated name is cached and used as sender_name.
  * Never throws — failures are logged but do not affect the pipeline.
@@ -198,6 +242,8 @@ interface WorkerConfig {
   pipeline?: boolean;  // Run as lead pipeline (explorer → developer → qa → reviewer)
   skipExplore?: boolean;
   skipReview?: boolean;
+  /** Seed type for workflow selection (e.g. "feature", "bug", "chore"). TRD-016a. */
+  seedType?: string;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -512,6 +558,11 @@ interface PhaseResult {
 
 /**
  * Run a single pipeline phase as a separate SDK session.
+ *
+ * @param phaseConfigOverride - Optional external phase config (from ~/.foreman/phases.json).
+ *   When present, its model, maxBudgetUsd, and allowedTools take precedence over ROLE_CONFIGS.
+ *   permissionMode is always sourced from ROLE_CONFIGS (PhaseConfigEntry does not include it).
+ *   Satisfies TRD-016c: AC-012-5, AC-012-6.
  */
 async function runPhase(
   role: Exclude<AgentRole, "lead" | "worker" | "sentinel">,
@@ -521,15 +572,27 @@ async function runPhase(
   logFile: string,
   store: ForemanStore,
   notifyClient: NotificationClient,
+  phaseConfigOverride?: PhaseConfigEntry,
 ): Promise<PhaseResult> {
   const roleConfig = ROLE_CONFIGS[role];
+
+  // TRD-016c: Apply external phase config overrides (model, budget, tools) when present.
+  // permissionMode is always sourced from ROLE_CONFIGS — PhaseConfigEntry does not carry it.
+  // AC-012-5: custom phases.json values take effect; AC-012-6: ROLE_CONFIGS used when absent.
+  const effectiveModel: string = phaseConfigOverride?.model ?? roleConfig.model;
+  const effectiveMaxBudgetUsd: number = phaseConfigOverride?.maxBudgetUsd ?? roleConfig.maxBudgetUsd;
+  const effectiveAllowedTools: ReadonlyArray<string> = phaseConfigOverride?.allowedTools ?? roleConfig.allowedTools;
+
+  // Compute disallowedTools from the effective allowedTools list (not the ROLE_CONFIGS value).
+  const effectiveAllowedSet = new Set(effectiveAllowedTools);
+  const disallowedTools: string[] = ALL_AGENT_TOOLS.filter((t) => !effectiveAllowedSet.has(t));
+
   progress.currentPhase = role;
   store.updateRunProgress(config.runId, progress);
 
-  const disallowedTools = getDisallowedTools(roleConfig);
-  const allowedSummary = roleConfig.allowedTools.join(", ");
-  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxBudgetUsd=${roleConfig.maxBudgetUsd}, allowedTools=[${allowedSummary}])\n`);
-  log(`[${role.toUpperCase()}] Starting phase for ${config.seedId} (${roleConfig.allowedTools.length} allowed tools, ${disallowedTools.length} disallowed)`);
+  const allowedSummary = [...effectiveAllowedTools].join(", ");
+  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${effectiveModel}, maxBudgetUsd=${effectiveMaxBudgetUsd}, allowedTools=[${allowedSummary}])\n`);
+  log(`[${role.toUpperCase()}] Starting phase for ${config.seedId} (${effectiveAllowedTools.length} allowed tools, ${disallowedTools.length} disallowed)`);
 
   const env: Record<string, string | undefined> = { ...config.env };
 
@@ -541,9 +604,9 @@ async function runPhase(
       prompt,
       options: {
         cwd: config.worktreePath,
-        model: roleConfig.model as any,
+        model: effectiveModel as any,
         permissionMode: roleConfig.permissionMode,
-        maxBudgetUsd: roleConfig.maxBudgetUsd,
+        maxBudgetUsd: effectiveMaxBudgetUsd,
         disallowedTools,
         env,
         persistSession: false,
@@ -594,7 +657,7 @@ async function runPhase(
       progress.costByPhase ??= {};
       progress.costByPhase[role] = (progress.costByPhase[role] ?? 0) + phaseResult.total_cost_usd;
       progress.agentByPhase ??= {};
-      progress.agentByPhase[role] = roleConfig.model;
+      progress.agentByPhase[role] = effectiveModel;
 
       store.updateRunProgress(config.runId, progress);
 
@@ -994,7 +1057,30 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   const pipelineStartedAt = new Date().toISOString();
   currentPhase = "pipeline";
 
-  log(`Pipeline starting for ${seedId} [phases: ${config.skipExplore ? "skip-explore" : "explore"} → dev → qa → ${config.skipReview ? "skip-review" : "review"} → finalize]`);
+  // TRD-016a: Load external phase configs and workflow sequence at pipeline start.
+  // Falls back to ROLE_CONFIGS and DEFAULT_WORKFLOWS when no external files are present.
+  // (REQ-012, AC-012-1 through AC-012-6)
+  const phaseConfigs = loadPhaseConfigs();
+  const seedType = config.seedType ?? "feature";
+  const workflowPhases = getWorkflow(seedType);
+
+  // TRD-014 + TRD-015: Cross-validate phases and enforce finalize enforcement.
+  try {
+    validateWorkflowPhases(workflowPhases, phaseConfigs, seedType);
+    validateFinalizeEnforcement(loadWorkflows());
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[PIPELINE] Workflow validation failed: ${msg}`);
+    await markStuck(store, runId, projectId, seedId, seedTitle, progress, "pipeline", msg, notifyClient, config.projectPath);
+    return;
+  }
+
+  const hasExplorerInWorkflow = workflowPhases.includes("explorer");
+  const hasQaInWorkflow = workflowPhases.includes("qa");
+  const hasReviewerInWorkflow = workflowPhases.includes("reviewer");
+  const hasReproducerInWorkflow = workflowPhases.includes("reproducer");
+
+  log(`Pipeline starting for ${seedId} [seed-type: ${seedType}, phases: ${workflowPhases.join(" → ")}]`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n`);
 
   // Accumulate phase records for the session log written at pipeline completion.
@@ -1013,7 +1099,13 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // AC-006-1: Register the explorer agent with Agent Mail before the phase starts.
       await registerAgent(agentMailClient, `explorer-${seedId}`);
       rotateReport(worktreePath, "EXPLORER_REPORT.md");
-      const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description, comments), config, progress, logFile, store, notifyClient);
+      // TRD-016b: Use loadPrompt() for external prompt file support, falling back to built-in (AC-012-4).
+      const explorerPromptStr = loadPrompt(
+        "explorer",
+        { seedId, seedTitle, seedDescription: description, seedComments: comments },
+        explorerPrompt(seedId, seedTitle, description, comments),
+      );
+      const result = await runPhase("explorer", explorerPromptStr, config, progress, logFile, store, notifyClient, phaseConfigs["explorer"]);
       phaseRecords.push({
         name: "explorer",
         skipped: false,
@@ -1034,10 +1126,11 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       });
       store.logEvent(projectId, "complete", { seedId, phase: "explorer", costUsd: result.costUsd }, runId);
       addLabelsToBead(seedId, ["phase:explorer"], config.projectPath);
-      // AC-010-1: Send explorer report content as a message to developer's inbox.
+      // TRD-007: Send explorer report with runId in subject for stale message filtering (REQ-026/AC-026-1).
+      // TRD-006: The Developer will read this via fetchLatestPhaseMessage() as the primary transport.
       const explorerReport = readReport(worktreePath, "EXPLORER_REPORT.md");
       if (explorerReport) {
-        sendMailText(agentMailClient, `developer-${seedId}`, "Explorer Report", explorerReport);
+        sendMailText(agentMailClient, `developer-${seedId}`, `Explorer Report [run:${runId}]`, explorerReport);
       }
     }
   } else {
@@ -1045,6 +1138,90 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   }
 
   const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
+
+  // TRD-006: Read Explorer report via Agent Mail (primary transport), fall back to disk.
+  // This is informational context for the Developer — pipeline continues regardless.
+  // (REQ-023, AC-023-1 through AC-023-4)
+  let explorerContext: string | undefined;
+  if (hasExplorerReport) {
+    const explorerMailBody = await fetchLatestPhaseMessage(
+      agentMailClient,
+      `developer-${seedId}`,
+      "Explorer Report",
+      runId,
+    );
+    explorerContext = explorerMailBody ?? readReport(worktreePath, "EXPLORER_REPORT.md") ?? undefined;
+  }
+
+  // ── Phase 1b: Reproducer (bug seeds only) ──────────────────────────
+  // TRD-020: Run Reproducer before Developer when "reproducer" is in the workflow sequence.
+  // If Reproducer fails or returns CANNOT_REPRODUCE verdict, mark seed as stuck and stop.
+  // (REQ-015, AC-015-1 through AC-015-4)
+  if (hasReproducerInWorkflow) {
+    const reproducerArtifact = join(worktreePath, "REPRODUCER_REPORT.md");
+    if (existsSync(reproducerArtifact)) {
+      log(`[REPRODUCER] Skipping — REPRODUCER_REPORT.md already exists (resuming from previous run)`);
+      await appendFile(logFile, `\n[PHASE: REPRODUCER] SKIPPED (artifact already present)\n`);
+      phaseRecords.push({ name: "reproducer", skipped: true });
+    } else {
+      // AC-006-1: Register the reproducer agent with Agent Mail before the phase starts.
+      await registerAgent(agentMailClient, `reproducer-${seedId}`);
+      rotateReport(worktreePath, "REPRODUCER_REPORT.md");
+      // TRD-016b / TRD-020: Use loadPrompt() with built-in reproducerPrompt() as fallback.
+      const reproducerPromptStr = loadPrompt(
+        "reproducer",
+        { seedId, seedTitle, seedDescription: description, seedComments: comments ?? undefined },
+        reproducerPrompt(seedId, seedTitle, description, comments ?? undefined),
+      );
+      const reproducerResult = await runPhase(
+        "reproducer",
+        reproducerPromptStr,
+        config, progress, logFile, store, notifyClient, phaseConfigs["reproducer"],
+      );
+      phaseRecords.push({
+        name: "reproducer",
+        skipped: false,
+        success: reproducerResult.success,
+        costUsd: reproducerResult.costUsd,
+        turns: reproducerResult.turns,
+        error: reproducerResult.error,
+      });
+      if (!reproducerResult.success) {
+        // AC-015-4: Reproducer phase failure → mark stuck, do not proceed to Developer.
+        sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: "reproducer", error: reproducerResult.error ?? "Reproducer failed", retryable: false,
+        });
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reproducer", reproducerResult.error ?? "Reproducer failed", notifyClient, config.projectPath);
+        return;
+      }
+
+      // AC-015-2: Check for CANNOT_REPRODUCE verdict — stop pipeline if present.
+      const reproducerReport = readReport(worktreePath, "REPRODUCER_REPORT.md");
+      const cannotReproduce = reproducerReport ? /CANNOT_REPRODUCE/i.test(reproducerReport) : false;
+      if (cannotReproduce) {
+        const reason = "Reproduction failed: CANNOT_REPRODUCE verdict in REPRODUCER_REPORT.md";
+        log(`[REPRODUCER] ${reason} — marking seed as stuck`);
+        await appendFile(logFile, `\n[PIPELINE] ${reason}\n`);
+        sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: "reproducer", error: reason, retryable: false,
+        });
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "reproducer", reason, notifyClient, config.projectPath);
+        return;
+      }
+
+      sendMail(agentMailClient, "foreman", "phase-complete", {
+        seedId, phase: "reproducer", status: "completed", cost: reproducerResult.costUsd, turns: reproducerResult.turns,
+      });
+      store.logEvent(projectId, "complete", { seedId, phase: "reproducer", costUsd: reproducerResult.costUsd }, runId);
+      addLabelsToBead(seedId, ["phase:reproducer"], config.projectPath);
+
+      // AC-015-3: Send reproducer report to Developer inbox with runId in subject.
+      // TRD-007: Include runId for stale message filtering (REQ-026/AC-026-1).
+      if (reproducerReport) {
+        sendMailText(agentMailClient, `developer-${seedId}`, `Reproducer Report [run:${runId}]`, reproducerReport);
+      }
+    }
+  }
 
   // ── Phase 2-3: Developer ⇄ QA loop ────────────────────────────────
   let devRetries = 0;
@@ -1068,10 +1245,25 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // Lease 10 minutes (600 s) — generous to cover typical developer phase duration.
       reserveFiles(agentMailClient, [worktreePath], developerAgentName, 600);
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
+      // TRD-016b: Use loadPrompt() for external prompt file support, falling back to built-in (AC-012-4).
+      const developerPromptStr = loadPrompt(
+        "developer",
+        {
+          seedId,
+          seedTitle,
+          seedDescription: description,
+          seedComments: comments,
+          feedbackContext: feedbackContext ?? undefined,
+          explorerInstruction: hasExplorerReport
+            ? "2. Read **EXPLORER_REPORT.md** for codebase context and recommended approach"
+            : "2. Explore the codebase to understand the relevant architecture",
+        },
+        developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext, comments),
+      );
       const devResult = await runPhase(
         "developer",
-        developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext, comments),
-        config, progress, logFile, store, notifyClient,
+        developerPromptStr,
+        config, progress, logFile, store, notifyClient, phaseConfigs["developer"],
       );
       // AC-007-3: Release file reservations on phase completion or failure.
       releaseFiles(agentMailClient, [worktreePath], developerAgentName);
@@ -1097,66 +1289,92 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
     }
 
-    // QA — skip on first pass if artifact already exists (resume after crash)
-    const qaArtifact = join(worktreePath, "QA_REPORT.md");
-    const qaAlreadyDone = devRetries === 0 && existsSync(qaArtifact);
-    if (qaAlreadyDone) {
-      log(`[QA] Skipping — QA_REPORT.md already exists (resuming from previous run)`);
-      await appendFile(logFile, `\n[PHASE: QA] SKIPPED (artifact already present)\n`);
+    // TRD-016d: QA phase — skip entirely when "qa" is not in the workflow sequence.
+    // When absent, qaVerdict stays "unknown" which causes the loop to break immediately
+    // after developer, proceeding directly to reviewer or finalize (AC-012-7, AC-012-8).
+    if (!hasQaInWorkflow) {
+      log(`[QA] Skipping — "qa" not in workflow sequence`);
+      await appendFile(logFile, `\n[PHASE: QA] SKIPPED (not in workflow)\n`);
       phaseRecords.push({ name: "qa", skipped: true });
+      // qaVerdict stays "unknown" → loop will break below
     } else {
-      // AC-006-1: Register the QA agent with Agent Mail before the phase starts.
-      await registerAgent(agentMailClient, `qa-${seedId}`);
-      rotateReport(worktreePath, "QA_REPORT.md");
-      const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
-      phaseRecords.push({
-        name: devRetries === 0 ? "qa" : `qa (retry ${devRetries})`,
-        skipped: false,
-        success: qaResult.success,
-        costUsd: qaResult.costUsd,
-        turns: qaResult.turns,
-        error: qaResult.error,
-      });
-      if (!qaResult.success) {
-        sendMail(agentMailClient, "foreman", "agent-error", {
-          seedId, phase: "qa", error: qaResult.error ?? "QA failed", retryable: true,
+      // QA — skip on first pass if artifact already exists (resume after crash)
+      const qaArtifact = join(worktreePath, "QA_REPORT.md");
+      const qaAlreadyDone = devRetries === 0 && existsSync(qaArtifact);
+      if (qaAlreadyDone) {
+        log(`[QA] Skipping — QA_REPORT.md already exists (resuming from previous run)`);
+        await appendFile(logFile, `\n[PHASE: QA] SKIPPED (artifact already present)\n`);
+        phaseRecords.push({ name: "qa", skipped: true });
+      } else {
+        // AC-006-1: Register the QA agent with Agent Mail before the phase starts.
+        await registerAgent(agentMailClient, `qa-${seedId}`);
+        rotateReport(worktreePath, "QA_REPORT.md");
+        // TRD-016b: Use loadPrompt() for QA (AC-012-4).
+        const qaPromptStr = loadPrompt("qa", { seedId, seedTitle }, qaPrompt(seedId, seedTitle));
+        const qaResult = await runPhase("qa", qaPromptStr, config, progress, logFile, store, notifyClient, phaseConfigs["qa"]);
+        phaseRecords.push({
+          name: devRetries === 0 ? "qa" : `qa (retry ${devRetries})`,
+          skipped: false,
+          success: qaResult.success,
+          costUsd: qaResult.costUsd,
+          turns: qaResult.turns,
+          error: qaResult.error,
         });
-        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed", notifyClient, config.projectPath);
-        return;
+        if (!qaResult.success) {
+          sendMail(agentMailClient, "foreman", "agent-error", {
+            seedId, phase: "qa", error: qaResult.error ?? "QA failed", retryable: true,
+          });
+          await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa", qaResult.error ?? "QA failed", notifyClient, config.projectPath);
+          return;
+        }
+        sendMail(agentMailClient, "foreman", "phase-complete", {
+          seedId, phase: "qa", status: "completed", cost: qaResult.costUsd, turns: qaResult.turns,
+        });
+        store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
+        addLabelsToBead(seedId, ["phase:qa"], config.projectPath);
       }
-      sendMail(agentMailClient, "foreman", "phase-complete", {
-        seedId, phase: "qa", status: "completed", cost: qaResult.costUsd, turns: qaResult.turns,
-      });
-      store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries }, runId);
-      addLabelsToBead(seedId, ["phase:qa"], config.projectPath);
-    }
 
-    const qaReport = readReport(worktreePath, "QA_REPORT.md");
-    qaVerdict = qaReport ? parseVerdict(qaReport) : "unknown";
+      // TRD-003: Read QA feedback via Agent Mail (primary transport), fall back to disk.
+      // Agent Mail provides stale-message-safe access when the QA agent sends its report.
+      // (REQ-003, AC-003-1 through AC-003-4)
+      const qaMailBody = await fetchLatestPhaseMessage(
+        agentMailClient,
+        `developer-${seedId}`,
+        "QA Feedback",
+        runId,
+      );
+      const qaReport = qaMailBody ?? readReport(worktreePath, "QA_REPORT.md");
+      qaVerdict = qaReport ? parseVerdict(qaReport) : "unknown";
 
-    if (qaVerdict === "pass" || qaVerdict === "unknown") {
-      log(`[QA] Verdict: ${qaVerdict} — proceeding to ${config.skipReview ? "finalize" : "review"}`);
-      break;
-    }
-
-    // QA failed — retry developer with feedback.
-    // AC-010-2: Send QA feedback as a message to developer's inbox before retry.
-    feedbackContext = qaReport ? extractIssues(qaReport) : "(QA failed but no report written)";
-    devRetries++;
-    if (devRetries <= MAX_DEV_RETRIES) {
-      log(`[QA] FAIL — sending back to Developer (retry ${devRetries}/${MAX_DEV_RETRIES})`);
-      await appendFile(logFile, `\n[PIPELINE] QA failed, retrying developer (${devRetries}/${MAX_DEV_RETRIES})\n`);
-      if (qaReport) {
-        sendMailText(agentMailClient, `developer-${seedId}`, `QA Feedback - Retry ${devRetries}`, qaReport);
+      if (qaVerdict !== "fail") {
+        log(`[QA] Verdict: ${qaVerdict} — proceeding to ${config.skipReview ? "finalize" : "review"}`);
+        break;
       }
-    } else {
-      log(`[QA] FAIL — max retries exhausted, proceeding with current state`);
-      await appendFile(logFile, `\n[PIPELINE] QA failed after ${MAX_DEV_RETRIES} retries, proceeding anyway\n`);
+
+      // QA failed — retry developer with feedback.
+      // AC-010-2: Send QA feedback as a message to developer's inbox before retry.
+      // TRD-007: Include runId in subject for stale message filtering (REQ-026/AC-026-1).
+      feedbackContext = qaReport ? extractIssues(qaReport) : "(QA failed but no report written)";
+      devRetries++;
+      if (devRetries <= MAX_DEV_RETRIES) {
+        log(`[QA] FAIL — sending back to Developer (retry ${devRetries}/${MAX_DEV_RETRIES})`);
+        await appendFile(logFile, `\n[PIPELINE] QA failed, retrying developer (${devRetries}/${MAX_DEV_RETRIES})\n`);
+        if (qaReport) {
+          sendMailText(agentMailClient, `developer-${seedId}`, `QA Feedback - Retry ${devRetries} [run:${runId}]`, qaReport);
+        }
+      } else {
+        log(`[QA] FAIL — max retries exhausted, proceeding with current state`);
+        await appendFile(logFile, `\n[PIPELINE] QA failed after ${MAX_DEV_RETRIES} retries, proceeding anyway\n`);
+      }
     }
+
+    // When QA is not in workflow: qaVerdict === "unknown" → break out of while loop.
+    if (!hasQaInWorkflow) break;
   }
 
   // ── Phase 4: Reviewer ──────────────────────────────────────────────
-  if (!config.skipReview) {
+  // TRD-016e: Skip reviewer when "reviewer" is not in the workflow sequence (AC-012-7).
+  if (!config.skipReview && hasReviewerInWorkflow) {
     const reviewerArtifact = join(worktreePath, "REVIEW.md");
     const reviewerAlreadyDone = existsSync(reviewerArtifact);
     if (reviewerAlreadyDone) {
@@ -1167,7 +1385,13 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // AC-006-1: Register the reviewer agent with Agent Mail before the phase starts.
       await registerAgent(agentMailClient, `reviewer-${seedId}`);
       rotateReport(worktreePath, "REVIEW.md");
-      const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description, comments), config, progress, logFile, store, notifyClient);
+      // TRD-016b: Use loadPrompt() for reviewer (AC-012-4).
+      const reviewerPromptStr = loadPrompt(
+        "reviewer",
+        { seedId, seedTitle, seedDescription: description, seedComments: comments },
+        reviewerPrompt(seedId, seedTitle, description, comments),
+      );
+      const reviewResult = await runPhase("reviewer", reviewerPromptStr, config, progress, logFile, store, notifyClient, phaseConfigs["reviewer"]);
       phaseRecords.push({
         name: "reviewer",
         skipped: false,
@@ -1189,6 +1413,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       store.logEvent(projectId, "complete", { seedId, phase: "reviewer", costUsd: reviewResult.costUsd }, runId);
       addLabelsToBead(seedId, ["phase:reviewer"], config.projectPath);
       // AC-010-3: Send review content and verdict to foreman inbox after REVIEW.md is written.
+      // TRD-007: Include runId in QA Report subject for stale message filtering (REQ-026/AC-026-1).
       const reviewReport = readReport(worktreePath, "REVIEW.md");
       if (reviewReport) {
         const reviewVerdictForMail = parseVerdict(reviewReport);
@@ -1206,6 +1431,23 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       const reviewFeedback = reviewReport ? extractIssues(reviewReport) : "(Review failed but no issues listed)";
       const reason = reviewVerdict === "fail" ? "FAIL" : "PASS with issues";
       log(`[REVIEW] ${reason} — sending back to Developer with review feedback`);
+
+      // TRD-004: Send Reviewer findings to Developer inbox (REQ-004, AC-004-1 through AC-004-3).
+      // Guard: only send if reviewReport is non-null.
+      // TRD-007: Include runId in subject for stale message filtering (REQ-026/AC-026-1).
+      if (reviewReport) {
+        sendMailText(agentMailClient, `developer-${seedId}`, `Review Findings [run:${runId}]`, reviewFeedback);
+      }
+
+      // TRD-005: Read Reviewer findings from Agent Mail (primary), fall back to local variable.
+      // (REQ-005, AC-005-1 through AC-005-3)
+      const reviewMailBody = await fetchLatestPhaseMessage(
+        agentMailClient,
+        `developer-${seedId}`,
+        "Review Findings",
+        runId,
+      );
+      const reviewFeedbackForDev = reviewMailBody ?? reviewFeedback;
       await appendFile(logFile, `\n[PIPELINE] Review ${reason}, retrying developer with review feedback\n`);
       devRetries++;
 
@@ -1215,10 +1457,25 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       await registerAgent(agentMailClient, reviewFeedbackDevAgent);
       reserveFiles(agentMailClient, [worktreePath], reviewFeedbackDevAgent, 600);
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
+      // TRD-016b: Use loadPrompt() with review feedback context (AC-012-4).
+      const devPromptRf = loadPrompt(
+        "developer",
+        {
+          seedId,
+          seedTitle,
+          seedDescription: description,
+          seedComments: comments,
+          feedbackContext: reviewFeedbackForDev,
+          explorerInstruction: hasExplorerReport
+            ? "2. Read **EXPLORER_REPORT.md** for codebase context and recommended approach"
+            : "2. Explore the codebase to understand the relevant architecture",
+        },
+        developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedbackForDev, comments),
+      );
       const devResult = await runPhase(
         "developer",
-        developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback, comments),
-        config, progress, logFile, store, notifyClient,
+        devPromptRf,
+        config, progress, logFile, store, notifyClient, phaseConfigs["developer"],
       );
       // AC-007-3: Release file reservations on phase completion or failure.
       releaseFiles(agentMailClient, [worktreePath], reviewFeedbackDevAgent);
@@ -1238,7 +1495,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
 
         rotateReport(worktreePath, "QA_REPORT.md");
-        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
+        const qaPromptStrRf = loadPrompt("qa", { seedId, seedTitle }, qaPrompt(seedId, seedTitle));
+        const qaResult = await runPhase("qa", qaPromptStrRf, config, progress, logFile, store, notifyClient, phaseConfigs["qa"]);
         phaseRecords.push({
           name: `qa (review-feedback)`,
           skipped: false,

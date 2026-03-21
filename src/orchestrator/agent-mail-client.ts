@@ -401,13 +401,16 @@ export class AgentMailClient {
 
   /**
    * Acknowledge a message by ID.
+   * Resolves logical role names to registered agent names (same as fetchInbox).
    * Silent failure.
    */
   async acknowledgeMessage(agent: string, messageId: number): Promise<void> {
+    // Resolve logical role name to registered agent name (mirrors fetchInbox resolution)
+    const agentName = this.agentRegistry.get(agent) ?? agent;
     try {
       await this.mcpCall("acknowledge_message", {
         project_key: this.projectKey,
-        agent_name: agent,
+        agent_name: agentName,
         message_id: messageId,
       });
     } catch {

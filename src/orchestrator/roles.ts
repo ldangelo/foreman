@@ -159,6 +159,7 @@ const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker" | "se
   developer: "claude-sonnet-4-6",
   qa: "claude-sonnet-4-6",
   reviewer: "claude-sonnet-4-6",
+  reproducer: "claude-sonnet-4-6",
 };
 
 /**
@@ -209,6 +210,15 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
       permissionMode: "acceptEdits",
       reportFile: "REVIEW.md",
       allowedTools: ["Glob", "Grep", "Read", "Write"],
+    },
+    reproducer: {
+      role: "reproducer",
+      model: resolveModel("FOREMAN_REPRODUCER_MODEL", DEFAULT_MODELS.reproducer),
+      maxBudgetUsd: 2.00,
+      permissionMode: "acceptEdits",
+      reportFile: "REPRODUCER_REPORT.md",
+      // Read-only + write for report — no source modification (AC-015-3)
+      allowedTools: ["Bash", "Glob", "Grep", "Read", "Write"],
     },
   };
 }
@@ -266,6 +276,14 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
         permissionMode: "acceptEdits",
         reportFile: "REVIEW.md",
         allowedTools: ["Glob", "Grep", "Read", "Write"],
+      },
+      reproducer: {
+        role: "reproducer",
+        model: DEFAULT_MODELS.reproducer,
+        maxBudgetUsd: 2.00,
+        permissionMode: "acceptEdits",
+        reportFile: "REPRODUCER_REPORT.md",
+        allowedTools: ["Bash", "Glob", "Grep", "Read", "Write"],
       },
     };
   }
@@ -332,6 +350,70 @@ export function reviewerPrompt(seedId: string, seedTitle: string, seedDescriptio
 
 export function sentinelPrompt(branch: string, testCommand: string): string {
   return loadAndInterpolate("sentinel-prompt.md", { branch, testCommand });
+}
+
+/**
+ * Built-in fallback prompt for the Reproducer phase.
+ *
+ * The Reproducer runs before the Developer for bug seeds. Its job is to
+ * reproduce the bug, write REPRODUCER_REPORT.md, and send the report to
+ * the Developer inbox. A CANNOT_REPRODUCE verdict stops the pipeline.
+ *
+ * TRD-020 [satisfies REQ-015, AC-015-1 through AC-015-4]
+ */
+export function reproducerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string): string {
+  const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
+  return `# Reproducer Agent
+
+You are a **Reproducer** — your job is to reproduce a reported bug before implementation begins.
+
+## Task
+**Seed:** ${seedId} — ${seedTitle}
+**Description:** ${seedDescription}
+${commentsSection}
+## Instructions
+1. Read TASK.md for task context
+2. Understand the bug description thoroughly
+3. Set up the conditions to reproduce the bug:
+   - Identify the relevant code paths
+   - Understand what the expected behavior should be
+   - Understand what the actual (broken) behavior is
+4. Attempt to reproduce the bug:
+   - Write a minimal reproduction case (test or script) that triggers the bug
+   - Verify the bug actually occurs in the current codebase
+5. Write your findings to **REPRODUCER_REPORT.md** in the worktree root
+6. Write **SESSION_LOG.md** in the worktree root documenting your session
+
+## REPRODUCER_REPORT.md Format
+\`\`\`markdown
+# Reproducer Report: ${seedTitle}
+
+## Verdict: REPRODUCED | CANNOT_REPRODUCE
+
+## Bug Summary
+Brief description of the bug.
+
+## Reproduction Steps
+1. Step-by-step instructions to reproduce
+2. ...
+
+## Root Cause (if identified)
+- What component is responsible
+- Why the bug occurs
+
+## Recommended Fix Approach
+- Suggested implementation approach for the Developer phase
+- Files to modify
+- Key considerations
+\`\`\`
+
+## Rules
+- **DO NOT implement the fix** — you are in read-and-reproduce mode only
+- **DO NOT modify source files** — only create the reproduction case and write REPRODUCER_REPORT.md and SESSION_LOG.md
+- If you CANNOT reproduce the bug, set Verdict to CANNOT_REPRODUCE and explain why
+- A CANNOT_REPRODUCE verdict will stop the pipeline — the seed will be marked as stuck
+- Be specific about what you tried and what you observed
+`.trim();
 }
 
 // ── Report parsing ──────────────────────────────────────────────────────
