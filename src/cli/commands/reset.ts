@@ -226,10 +226,10 @@ export interface ResetSeedResult {
 }
 
 /**
- * Reset a single seed back to "open" status, but ONLY if it is not already
- * closed (terminal state).
+ * Reset a single seed back to "open" status.
  *
- * - If the seed is "closed", the update is skipped entirely.
+ * - If the seed is "closed" AND `force` is false, the update is skipped.
+ * - If the seed is "closed" AND `force` is true, it is re-opened (used by --seed).
  * - If the seed is already "open", the update is also skipped (idempotent).
  * - If the seed is in any other state (e.g. "in_progress"), it is reset.
  * - If the seed is not found, returns "not-found" without throwing.
@@ -239,13 +239,14 @@ export interface ResetSeedResult {
 export async function resetSeedToOpen(
   seedId: string,
   seeds: IShowUpdateClient,
-  opts?: { dryRun?: boolean },
+  opts?: { dryRun?: boolean; force?: boolean },
 ): Promise<ResetSeedResult> {
   const dryRun = opts?.dryRun ?? false;
+  const force = opts?.force ?? false;
   try {
     const seedDetail = await seeds.show(seedId);
 
-    if (seedDetail.status === "closed") {
+    if (seedDetail.status === "closed" && !force) {
       return { action: "skipped-closed", seedId, previousStatus: seedDetail.status };
     }
 
@@ -268,6 +269,7 @@ export async function resetSeedToOpen(
 
 export const resetCommand = new Command("reset")
   .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
+  .option("--seed <id>", "Reset a specific seed by ID (clears all runs for that seed, including stale pending ones)")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
   .option("--detect-stuck", "Run stuck detection first, adding newly-detected stuck runs to the reset list")
   .option(
@@ -280,6 +282,7 @@ export const resetCommand = new Command("reset")
     const dryRun = opts.dryRun as boolean | undefined;
     const all = opts.all as boolean | undefined;
     const detectStuck = opts.detectStuck as boolean | undefined;
+    const seedFilter = opts.seed as string | undefined;
     const timeoutMinutes = parseInt(opts.timeout as string, 10);
 
     if (isNaN(timeoutMinutes)) {
@@ -342,19 +345,30 @@ export const resetCommand = new Command("reset")
       }
 
       // Find runs to reset
-      const statuses = all
-        ? ["pending", "running", "failed", "stuck"] as const
-        : ["failed", "stuck"] as const;
+      let runs: Run[];
 
-      const runs = statuses.flatMap((s) => store.getRunsByStatus(s, project.id));
+      if (seedFilter) {
+        // --seed: get ALL runs for this seed regardless of status, so stale pending/running are included
+        runs = store.getRunsForSeed(seedFilter, project.id);
+        if (runs.length === 0) {
+          console.log(chalk.yellow(`No runs found for seed ${seedFilter}.\n`));
+        } else {
+          console.log(chalk.bold(`Resetting all ${runs.length} run(s) for seed ${seedFilter}:\n`));
+        }
+      } else {
+        const statuses = all
+          ? ["pending", "running", "failed", "stuck"] as const
+          : ["failed", "stuck"] as const;
+        runs = statuses.flatMap((s) => store.getRunsByStatus(s, project.id));
+      }
 
       if (dryRun) {
         console.log(chalk.yellow("(dry run — no changes will be made)\n"));
       }
 
-      if (runs.length === 0) {
+      if (!seedFilter && runs.length === 0) {
         console.log(chalk.yellow("No active runs to reset.\n"));
-      } else {
+      } else if (!seedFilter) {
         console.log(chalk.bold(`Resetting ${runs.length} run(s):\n`));
       }
 
@@ -443,13 +457,13 @@ export const resetCommand = new Command("reset")
         console.log();
       }
 
-      // 5. Reset seeds to open (only if not already closed)
+      // 5. Reset seeds to open (force-reopen if --seed was explicitly provided)
       for (const seedId of seedIds) {
-        const result = await resetSeedToOpen(seedId, seeds, { dryRun });
+        const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!seedFilter });
         switch (result.action) {
           case "skipped-closed":
             console.log(
-              `  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already closed — not reopening`,
+              `  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already closed — not reopening (use --seed to force)`,
             );
             break;
           case "already-open":
