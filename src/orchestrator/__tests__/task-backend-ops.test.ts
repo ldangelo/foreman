@@ -6,10 +6,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // vi.hoisted() ensures the mock variable is initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
 
-const { mockExecFileSync, mockHomedir, mockExecBr } = vi.hoisted(() => ({
+const { mockExecFileSync, mockHomedir } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
   mockHomedir: vi.fn().mockReturnValue("/test/home"),
-  mockExecBr: vi.fn(),
 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -19,10 +18,6 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 vi.mock("node:os", () => ({
   homedir: mockHomedir,
-}));
-
-vi.mock("../../lib/beads-rust.js", () => ({
-  execBr: mockExecBr,
 }));
 
 import { closeSeed, resetSeedToOpen, addLabelsToBead, addNotesToBead } from "../task-backend-ops.js";
