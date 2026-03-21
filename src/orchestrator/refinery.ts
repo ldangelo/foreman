@@ -82,27 +82,28 @@ export class Refinery {
   }
 
   /**
-   * Scan a directory for unresolved git conflict markers in source files.
-   * Checks for <<<<<<< and ||||||| (diff3 style) markers.
-   * Returns a list of files containing markers (relative to worktreePath), or an empty array if clean.
+   * Scan the committed diff between branchName and targetBranch for conflict markers.
+   * Only looks at committed content (git diff), never at uncommitted working-tree files.
+   * Uncommitted conflict markers (e.g. from a failed agent rebase) are intentionally ignored —
+   * they don't exist in the branch that will be merged.
+   * Returns a list of files containing markers (relative to repo root), or an empty array if clean.
    */
-  private async scanForConflictMarkers(worktreePath: string): Promise<string[]> {
-    const extensions = ["*.ts", "*.tsx", "*.js", "*.jsx", "*.mts", "*.mjs"];
-    const includeArgs = extensions.flatMap((ext) => ["--include", ext]);
+  private async scanForConflictMarkers(branchName: string, targetBranch: string): Promise<string[]> {
     try {
-      const { stdout } = await execFileAsync(
-        "grep",
-        ["-rl", ...includeArgs, "--exclude-dir=node_modules", "--exclude-dir=.git", "-e", "<<<<<<<", "-e", "|||||||", worktreePath],
-        { maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
-      );
-      const lines = stdout.trim().split("\n").filter(Boolean);
-      // Return paths relative to worktreePath
-      return lines.map((f) => f.startsWith(worktreePath) ? f.slice(worktreePath.length).replace(/^\//, "") : f);
-    } catch (err: unknown) {
-      // grep exits with code 1 when no matches are found — that's a clean result
-      const exitCode = (err as NodeJS.ErrnoException & { code?: number }).code;
-      if (exitCode === 1) return [];
-      // Any other error (e.g. directory missing) — return clean to avoid blocking merge
+      const diff = await git(["diff", `${targetBranch}..${branchName}`, "--"], this.projectPath);
+      if (!diff.trim()) return [];
+      const files = new Set<string>();
+      let currentFile = "";
+      for (const line of diff.split("\n")) {
+        if (line.startsWith("+++ b/")) {
+          currentFile = line.slice(6); // strip "+++ b/"
+        } else if ((line.startsWith("+<<<<<<<") || line.startsWith("+|||||||")) && currentFile) {
+          files.add(currentFile);
+        }
+      }
+      return [...files];
+    } catch {
+      // Any error (e.g. branch not found) — return clean to avoid blocking merge
       return [];
     }
   }
@@ -386,10 +387,23 @@ export class Refinery {
       const branchName = `foreman/${run.seed_id}`;
 
       try {
-        // Scan for unresolved conflict markers in source files before attempting merge.
-        // If any are found, skip rebase and create a PR for manual resolution.
-        if (run.worktree_path) {
-          const markedFiles = await this.scanForConflictMarkers(run.worktree_path);
+        // Early guard: if the branch has no unique commits vs target, the agent committed
+        // nothing. Creating a PR would fail ("no commits between ..."). Don't reset to open
+        // (that would cause infinite redispatch to the same broken worktree). Mark as a
+        // conflict so the user can investigate.
+        const branchCommits = await git(["log", "--oneline", `${targetBranch}..${branchName}`], this.projectPath).catch(() => "");
+        if (!branchCommits.trim()) {
+          console.warn(`[Refinery] Branch ${branchName} has no commits beyond ${targetBranch} — agent may not have committed work`);
+          await this.addFailureNote(run.seed_id, `Branch ${branchName} has no unique commits beyond ${targetBranch}. The agent may not have committed its work. Manual intervention required — do not auto-reset.`);
+          conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
+          continue;
+        }
+
+        // Scan for conflict markers in COMMITTED branch content (not working tree).
+        // Working-tree conflict markers (e.g. leftover from a failed agent rebase) are
+        // intentionally ignored — they don't exist in the commits that will be merged.
+        {
+          const markedFiles = await this.scanForConflictMarkers(branchName, targetBranch);
           if (markedFiles.length > 0) {
             await resetSeedToOpen(run.seed_id, this.projectPath);
             const pr = await this.createPrForConflict(
