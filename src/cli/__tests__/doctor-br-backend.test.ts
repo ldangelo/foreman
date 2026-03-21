@@ -321,7 +321,7 @@ describe("TRD-020: Doctor.checkSystem() checks (br backend only)", () => {
     store.close();
   });
 
-  it("checkSystem() returns exactly 3 results (br + bv + git)", async () => {
+  it("checkSystem() returns exactly 4 results (br + bv + git + agent-mail)", async () => {
     const { Doctor } = await import("../../orchestrator/doctor.js");
     const { ForemanStore } = await import("../../lib/store.js");
 
@@ -332,7 +332,9 @@ describe("TRD-020: Doctor.checkSystem() checks (br backend only)", () => {
 
     const results = await doctor.checkSystem();
 
-    expect(results).toHaveLength(3);
+    expect(results).toHaveLength(4);
+    const names = results.map((r) => r.name);
+    expect(names.some((n) => n.toLowerCase().includes("agent mail"))).toBe(true);
     store.close();
   });
 });
