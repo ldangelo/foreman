@@ -62,7 +62,7 @@ Dev ↔ QA retries up to 2x before proceeding to Review.
   brew install pi
   # or follow Pi's install instructions for your platform
   ```
-- **[mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail)** _(optional)_ — inter-agent messaging
+- **[mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail)** — inter-agent messaging (**required** — `foreman run` exits if not reachable)
   ```bash
   pip install mcp-agent-mail
   # Requires Python 3.11+
