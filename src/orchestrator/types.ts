@@ -14,6 +14,7 @@ export interface SeedInfo {
   description?: string;
   priority?: string;
   type?: string;
+  labels?: string[];
   comments?: string | null;
 }
 

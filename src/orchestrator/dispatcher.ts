@@ -16,6 +16,7 @@ import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
 import { TmuxClient, tmuxSessionName } from "../lib/tmux.js";
 import { PiRpcSpawnStrategy, isPiAvailable } from "./pi-rpc-spawn-strategy.js";
+import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -166,8 +167,8 @@ export class Dispatcher {
         continue;
       }
 
-      // Fetch full issue details (description, notes/comments) for agent context
-      let seedDetail: { description?: string | null; notes?: string | null } | undefined;
+      // Fetch full issue details (description, notes/comments, labels) for agent context
+      let seedDetail: { description?: string | null; notes?: string | null; labels?: string[] } | undefined;
       try {
         seedDetail = await this.seeds.show(seed.id);
       } catch {
@@ -617,6 +618,8 @@ export class Dispatcher {
 
     log(`Spawning ${usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}`);
 
+    const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
+
     const spawnResult = await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
@@ -633,6 +636,7 @@ export class Dispatcher {
       skipExplore: pipelineOpts?.skipExplore,
       skipReview: pipelineOpts?.skipReview,
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
+      seedType,
     });
 
     return { sessionKey, tmuxSession: spawnResult.tmuxSession };
@@ -766,6 +770,12 @@ export interface WorkerConfig {
   skipReview?: boolean;
   /** Absolute path to the SQLite DB file (e.g. .foreman/foreman.db) */
   dbPath?: string;
+  /**
+   * Resolved workflow type (e.g. "smoke", "feature", "bug").
+   * Derived from label-based override or bead type field.
+   * Used for prompt-loader workflow scoping and spawn strategy selection.
+   */
+  seedType?: string;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────
@@ -894,6 +904,24 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
  * Returns the spawn result including optional tmux session name.
  */
 export async function spawnWorkerProcess(config: WorkerConfig): Promise<SpawnResult> {
+  // Smoke workflow: bypass Pi entirely so FOREMAN_SMOKE_TEST bypass fires in agent-worker.
+  // Inject the env var here so the worker receives it even if not set by the caller.
+  if (config.seedType === "smoke") {
+    log(`[foreman] smoke workflow — bypassing Pi, using agent-worker with FOREMAN_SMOKE_TEST=true for ${config.seedId}`);
+    const smokeConfig: WorkerConfig = {
+      ...config,
+      env: { ...config.env, FOREMAN_SMOKE_TEST: "true" },
+    };
+    const tmux = new TmuxClient();
+    const tmuxAvailable = await tmux.isAvailable();
+    if (tmuxAvailable) {
+      const tmuxStrategy = new TmuxSpawnStrategy();
+      const result = await tmuxStrategy.spawn(smokeConfig);
+      if (result.tmuxSession) return result;
+    }
+    return new DetachedSpawnStrategy().spawn(smokeConfig);
+  }
+
   // Pi RPC takes highest priority when available
   if (isPiAvailable()) {
     log(`[foreman] pi binary found — using PiRpcSpawnStrategy for ${config.seedId}`);
@@ -975,13 +1003,14 @@ function extractSessionId(sessionKey: string | null): string | null {
   return m ? m[1] : null;
 }
 
-function seedToInfo(seed: Issue, detail?: { description?: string | null; notes?: string | null }): SeedInfo {
+function seedToInfo(seed: Issue, detail?: { description?: string | null; notes?: string | null; labels?: string[] }): SeedInfo {
   return {
     id: seed.id,
     title: seed.title,
     description: detail?.description ?? seed.description ?? undefined,
     priority: seed.priority,
     type: seed.type,
+    labels: detail?.labels ?? seed.labels,
     comments: detail?.notes ?? undefined,
   };
 }

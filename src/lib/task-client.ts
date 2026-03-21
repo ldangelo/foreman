@@ -35,6 +35,8 @@ export interface Issue {
   updated_at: string;
   /** Full description text. Populated when fetched via show(); absent on list/ready() results. */
   description?: string | null;
+  /** Labels attached to this issue (e.g. ["workflow:smoke"]). Populated by show(). */
+  labels?: string[];
 }
 
 // ── Update options ───────────────────────────────────────────────────────
