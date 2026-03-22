@@ -304,3 +304,47 @@ export function resolveWorkflowName(seedType: string, labels?: string[]): string
   }
   return seedType === "smoke" ? "smoke" : "default";
 }
+
+// ── Compatibility exports ─────────────────────────────────────────────────────
+
+/**
+ * Alias for BUNDLED_WORKFLOW_NAMES — required workflow names.
+ * @deprecated Use BUNDLED_WORKFLOW_NAMES instead.
+ */
+export const REQUIRED_WORKFLOWS: ReadonlyArray<string> = BUNDLED_WORKFLOW_NAMES;
+
+/**
+ * Find a phase by name in a workflow config.
+ *
+ * @param workflow   - Loaded workflow config.
+ * @param phaseName  - Phase name to look up.
+ * @returns The matching phase config, or undefined if not found.
+ */
+export function getWorkflowPhase(
+  workflow: WorkflowConfig,
+  phaseName: string,
+): WorkflowPhaseConfig | undefined {
+  return workflow.phases.find((p) => p.name === phaseName);
+}
+
+/**
+ * Model shorthand to full model ID mapping.
+ * Allows YAML to use readable aliases instead of full model strings.
+ */
+const MODEL_SHORTHANDS: Record<string, string> = {
+  haiku: "claude-haiku-4-5-20251001",
+  sonnet: "claude-sonnet-4-6",
+  opus: "claude-opus-4-6",
+};
+
+/**
+ * Resolve a model string from workflow YAML to a full model ID.
+ * Accepts shorthands ("haiku", "sonnet", "opus") or full model IDs.
+ *
+ * @param model - Model string from YAML, or undefined.
+ * @returns Full model ID, or undefined if input is undefined.
+ */
+export function resolveWorkflowModel(model: string | undefined): string | undefined {
+  if (!model) return undefined;
+  return MODEL_SHORTHANDS[model] ?? model;
+}

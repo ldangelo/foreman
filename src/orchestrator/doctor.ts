@@ -397,7 +397,7 @@ export class Doctor {
       };
     }
 
-    const missingList = missing.join(", ");
+    const missingList = missing.map((n) => `${n}.yaml`).join(", ");
 
     if (dryRun) {
       return {
@@ -418,13 +418,12 @@ export class Doctor {
             message: `${missing.length} missing workflow config(s)`,
             fixApplied: `Installed ${installed.length} workflow config(s) from bundled defaults`,
           };
-        } else {
-          return {
-            name: "workflow configs (.foreman/workflows/)",
-            status: "fail",
-            message: `${stillMissing.length} workflow config(s) still missing after reinstall: ${stillMissing.join(", ")}`,
-          };
         }
+        return {
+          name: "workflow configs (.foreman/workflows/)",
+          status: "fail",
+          message: `${stillMissing.length} workflow config(s) still missing after reinstall: ${stillMissing.map((n) => `${n}.yaml`).join(", ")}`,
+        };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
