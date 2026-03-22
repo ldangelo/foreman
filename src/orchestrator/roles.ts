@@ -6,8 +6,10 @@
  * same worktree. Communication is via report files (EXPLORER_REPORT.md, etc).
  */
 
-import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRole, ModelSelection } from "./types.js";
+
+/** Permission mode for DCG (Destructive Command Guard). */
+type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
 import {
   getExplorerBudget,
   getDeveloperBudget,

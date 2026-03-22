@@ -14,8 +14,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { execFileSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { SDKMessage, SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
+import { runWithPi } from "./pi-runner.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS, getSessionLogBudget } from "../lib/config.js";
@@ -305,10 +304,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  // ── Single-agent mode: run a single SDK query ───────────────────────
-  let sessionId = resume ?? "";
-  let resultHandled = false;
-
+  // ── Single-agent mode: run via Pi RPC ──────────────────────────────
   const progress: RunProgress = {
     toolCalls: 0,
     toolBreakdown: {},
@@ -332,152 +328,74 @@ async function main(): Promise<void> {
   progressTimer.unref();
 
   try {
-    // DCG (Destructive Command Guard): use acceptEdits instead of bypassPermissions.
-    // This guards against destructive tool calls (rm -rf, DROP TABLE, etc.) while
-    // still allowing file edits and reads that agent tasks legitimately require.
-    // sessionLogDir is a valid SDK option but not yet present in the type definitions.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const queryOpts = (resume
-      ? {
-          prompt,
-          options: {
-            cwd: worktreePath,
-            model: model as any,
-            permissionMode: "acceptEdits",
-            env,
-            resume,
-            persistSession: true,
-            sessionLogDir: worktreePath,
-          },
-        }
-      : {
-          prompt,
-          options: {
-            cwd: worktreePath,
-            model: model as any,
-            permissionMode: "acceptEdits",
-            env,
-            persistSession: true,
-            sessionLogDir: worktreePath,
-          },
-        }) as unknown as Parameters<typeof query>[0];
+    // Build clean env for Pi (strip CLAUDECODE, convert to string-only map)
+    const piEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(env)) {
+      if (k !== "CLAUDECODE" && v !== undefined) piEnv[k] = v as string;
+    }
 
-    // NOTE: Single-agent (non-pipeline) mode emits only terminal status notifications
-    // (completed, failed, stuck) — not progress notifications after each assistant turn.
-    // Pipeline mode (runPhase) emits a progress notification after every assistant turn.
-    // The asymmetry is intentional: single-agent progress is already flushed to SQLite
-    // every 2 s via the flushProgress() timer, so the live-UI benefit is preserved via
-    // polling fallback. Aligning the two paths is deferred to a follow-up task.
-    for await (const message of query(queryOpts)) {
-      await logMessage(logFile, message);
-      progress.lastActivity = new Date().toISOString();
+    const piResult = await runWithPi({
+      prompt,
+      systemPrompt: `You are an agent working on task: ${seedTitle}`,
+      cwd: worktreePath,
+      model,
+      env: piEnv,
+      logFile,
+      onToolCall: (name, input) => {
+        progress.toolCalls++;
+        progress.toolBreakdown[name] = (progress.toolBreakdown[name] ?? 0) + 1;
+        progress.lastToolCall = name;
+        progress.lastActivity = new Date().toISOString();
 
-      // Track session ID
-      if ("session_id" in message && message.session_id && !sessionId) {
-        sessionId = message.session_id;
-        store.updateRun(runId, {
-          session_key: `foreman:sdk:${model}:${runId}:session-${sessionId}`,
-        });
-        log(`  Session: ${sessionId}`);
-      }
-
-      // Track tool usage
-      if (message.type === "assistant") {
-        progress.turns++;
-        const toolUses = message.message.content.filter(
-          (b: { type: string }) => b.type === "tool_use",
-        ) as Array<{ type: "tool_use"; name: string; input: Record<string, unknown> }>;
-
-        for (const tool of toolUses) {
-          progress.toolCalls++;
-          progress.toolBreakdown[tool.name] = (progress.toolBreakdown[tool.name] ?? 0) + 1;
-          progress.lastToolCall = tool.name;
-
-          if ((tool.name === "Write" || tool.name === "Edit") && tool.input?.file_path) {
-            const filePath = String(tool.input.file_path);
-            if (!progress.filesChanged.includes(filePath)) {
-              progress.filesChanged.push(filePath);
-            }
+        if ((name === "Write" || name === "Edit") && input?.file_path) {
+          const filePath = String(input.file_path);
+          if (!progress.filesChanged.includes(filePath)) {
+            progress.filesChanged.push(filePath);
           }
         }
         progressDirty = true;
-      }
+      },
+      onTurnEnd: (turn) => {
+        progress.turns = turn;
+        progress.lastActivity = new Date().toISOString();
+        progressDirty = true;
+      },
+    });
 
-      // Handle completion
-      if (message.type === "result") {
-        const result = message as SDKResultSuccess | SDKResultError;
-        progress.turns = result.num_turns;
-        progress.costUsd = result.total_cost_usd;
-        progress.tokensIn = result.usage.input_tokens;
-        progress.tokensOut = result.usage.output_tokens;
-        const now = new Date().toISOString();
+    clearInterval(progressTimer);
+    progress.costUsd = piResult.costUsd;
+    progress.turns = piResult.turns;
+    progress.toolCalls = piResult.toolCalls;
+    progress.toolBreakdown = piResult.toolBreakdown;
+    store.updateRunProgress(runId, progress);
 
-        clearInterval(progressTimer);
-        store.updateRunProgress(runId, progress);
-        resultHandled = true;
+    const now = new Date().toISOString();
 
-        if (result.subtype === "success") {
-          store.updateRun(runId, { status: "completed", completed_at: now });
-          notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
-          store.logEvent(projectId, "complete", {
-            seedId,
-            title: seedTitle,
-            costUsd: progress.costUsd,
-            numTurns: progress.turns,
-            toolCalls: progress.toolCalls,
-            filesChanged: progress.filesChanged.length,
-            durationMs: result.duration_ms,
-            sessionId,
-            resumed: !!resume,
-          }, runId);
-          log(`COMPLETED (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
-        } else {
-          const errResult = result as SDKResultError;
-          const reason = errResult.errors?.join("; ") ?? errResult.subtype;
-          const isRateLimit = reason.includes("hit your limit")
-            || reason.includes("rate limit")
-            || errResult.subtype === "error_max_budget_usd";
-
-          const finalStatus = isRateLimit ? "stuck" : "failed";
-          store.updateRun(runId, {
-            status: finalStatus,
-            completed_at: now,
-          });
-          notifyClient.send({ type: "status", runId, status: finalStatus, timestamp: now, details: { reason } });
-          store.logEvent(projectId, isRateLimit ? "stuck" : "fail", {
-            seedId,
-            reason,
-            costUsd: progress.costUsd,
-            numTurns: progress.turns,
-            rateLimit: isRateLimit,
-            sessionId,
-            resumed: !!resume,
-          }, runId);
-          log(`${isRateLimit ? "RATE LIMITED" : "FAILED"}: ${reason.slice(0, 300)}`);
-          // Reset seed back to open so it can be retried
-          await resetSeedToOpen(seedId, storeProjectPath);
-        }
-      }
-    }
-
-    // Guard: SDK generator ended without result message
-    if (!resultHandled) {
-      clearInterval(progressTimer);
-      store.updateRunProgress(runId, progress);
-      const now = new Date().toISOString();
-      store.updateRun(runId, { status: "stuck", completed_at: now });
-      notifyClient.send({ type: "status", runId, status: "stuck", timestamp: now });
-      store.logEvent(projectId, "stuck", {
+    if (piResult.success) {
+      store.updateRun(runId, { status: "completed", completed_at: now });
+      notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
+      store.logEvent(projectId, "complete", {
         seedId,
-        reason: "SDK generator ended without result (connection drop or silent rate limit)",
+        title: seedTitle,
         costUsd: progress.costUsd,
         numTurns: progress.turns,
         toolCalls: progress.toolCalls,
-        sessionId,
+        filesChanged: progress.filesChanged.length,
         resumed: !!resume,
       }, runId);
-      log(`STUCK: SDK stream ended without result after ${progress.turns} turns — can resume later`);
-      await appendFile(logFile, `\n[foreman-worker] STUCK: SDK generator ended without result.\n`);
+      log(`COMPLETED (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
+    } else {
+      const reason = piResult.errorMessage ?? "Pi agent failed";
+      store.updateRun(runId, { status: "failed", completed_at: now });
+      notifyClient.send({ type: "status", runId, status: "failed", timestamp: now, details: { reason } });
+      store.logEvent(projectId, "fail", {
+        seedId,
+        reason,
+        costUsd: progress.costUsd,
+        numTurns: progress.turns,
+        resumed: !!resume,
+      }, runId);
+      log(`FAILED: ${reason.slice(0, 300)}`);
       // Reset seed back to open so it can be retried
       await resetSeedToOpen(seedId, storeProjectPath);
     }
@@ -486,13 +404,6 @@ async function main(): Promise<void> {
     store.updateRunProgress(runId, progress);
     const reason = err instanceof Error ? err.message : String(err);
     const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
-
-    if (resultHandled) {
-      log(`Post-result error (ignored): ${reason.slice(0, 200)}`);
-      await appendFile(logFile, `\n[foreman-worker] Post-result error (ignored): ${reason}\n`);
-      store.close();
-      return;
-    }
 
     const now = new Date().toISOString();
     const catchStatus = isRateLimit ? "stuck" : "failed";
@@ -507,7 +418,6 @@ async function main(): Promise<void> {
       costUsd: progress.costUsd,
       numTurns: progress.turns,
       rateLimit: isRateLimit,
-      sessionId,
       resumed: !!resume,
     }, runId);
     log(`${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason.slice(0, 200)}`);
@@ -576,46 +486,36 @@ async function runPhase(
   await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxBudgetUsd=${roleConfig.maxBudgetUsd}, allowedTools=[${allowedSummary}])\n`);
   log(`[${role.toUpperCase()}] Starting phase for ${config.seedId} (${roleConfig.allowedTools.length} allowed tools, ${disallowedTools.length} disallowed)`);
 
-  const env: Record<string, string | undefined> = { ...config.env };
+  // Build clean env for Pi (string-only, strip CLAUDECODE)
+  const piEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(config.env)) {
+    if (k !== "CLAUDECODE" && v !== undefined) piEnv[k] = v;
+  }
 
   try {
-    let phaseResult: SDKResultSuccess | SDKResultError | undefined;
-
-    // DCG: use the role's configured permissionMode instead of blanket bypassPermissions.
-    for await (const message of query(({
+    const phaseResult = await runWithPi({
       prompt,
-      options: {
-        cwd: config.worktreePath,
-        model: roleConfig.model as any,
-        permissionMode: roleConfig.permissionMode,
-        maxBudgetUsd: roleConfig.maxBudgetUsd,
-        disallowedTools,
-        env,
-        persistSession: false,
-        sessionLogDir: config.worktreePath,
-      },
-    }) as unknown as Parameters<typeof query>[0])) {
-      await logMessage(logFile, message);
-      progress.lastActivity = new Date().toISOString();
+      systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
+      cwd: config.worktreePath,
+      model: roleConfig.model,
+      env: piEnv,
+      logFile,
+      onToolCall: (name, input) => {
+        progress.toolCalls++;
+        progress.toolBreakdown[name] = (progress.toolBreakdown[name] ?? 0) + 1;
+        progress.lastToolCall = name;
+        progress.lastActivity = new Date().toISOString();
 
-      if (message.type === "assistant") {
-        progress.turns++;
-        const toolUses = message.message.content.filter(
-          (b: { type: string }) => b.type === "tool_use",
-        ) as Array<{ type: "tool_use"; name: string; input: Record<string, unknown> }>;
-
-        for (const tool of toolUses) {
-          progress.toolCalls++;
-          progress.toolBreakdown[tool.name] = (progress.toolBreakdown[tool.name] ?? 0) + 1;
-          progress.lastToolCall = tool.name;
-
-          if ((tool.name === "Write" || tool.name === "Edit") && tool.input?.file_path) {
-            const filePath = String(tool.input.file_path);
-            if (!progress.filesChanged.includes(filePath)) {
-              progress.filesChanged.push(filePath);
-            }
+        if ((name === "Write" || name === "Edit") && input?.file_path) {
+          const filePath = String(input.file_path);
+          if (!progress.filesChanged.includes(filePath)) {
+            progress.filesChanged.push(filePath);
           }
         }
+      },
+      onTurnEnd: (turn) => {
+        progress.turns = turn;
+        progress.lastActivity = new Date().toISOString();
         store.updateRunProgress(config.runId, progress);
         notifyClient.send({
           type: "progress",
@@ -623,41 +523,29 @@ async function runPhase(
           progress: { ...progress },
           timestamp: new Date().toISOString(),
         });
-      }
+      },
+    });
 
-      if (message.type === "result") {
-        phaseResult = message as SDKResultSuccess | SDKResultError;
-      }
+    progress.costUsd += phaseResult.costUsd;
+
+    // Record per-phase cost breakdown
+    progress.costByPhase ??= {};
+    progress.costByPhase[role] = (progress.costByPhase[role] ?? 0) + phaseResult.costUsd;
+    progress.agentByPhase ??= {};
+    progress.agentByPhase[role] = roleConfig.model;
+
+    store.updateRunProgress(config.runId, progress);
+
+    if (phaseResult.success) {
+      log(`[${role.toUpperCase()}] Completed (${phaseResult.turns} turns, $${phaseResult.costUsd.toFixed(4)})`);
+      await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] COMPLETED ($${phaseResult.costUsd.toFixed(4)})\n`);
+      return { success: true, costUsd: phaseResult.costUsd, turns: phaseResult.turns };
+    } else {
+      const reason = phaseResult.errorMessage ?? "Pi agent ended without success";
+      log(`[${role.toUpperCase()}] Failed: ${reason.slice(0, 200)}`);
+      await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] FAILED: ${reason}\n`);
+      return { success: false, costUsd: phaseResult.costUsd, turns: phaseResult.turns, error: reason };
     }
-
-    if (phaseResult) {
-      progress.costUsd += phaseResult.total_cost_usd;
-      progress.tokensIn += phaseResult.usage.input_tokens;
-      progress.tokensOut += phaseResult.usage.output_tokens;
-
-      // Record per-phase cost breakdown
-      progress.costByPhase ??= {};
-      progress.costByPhase[role] = (progress.costByPhase[role] ?? 0) + phaseResult.total_cost_usd;
-      progress.agentByPhase ??= {};
-      progress.agentByPhase[role] = roleConfig.model;
-
-      store.updateRunProgress(config.runId, progress);
-
-      if (phaseResult.subtype === "success") {
-        log(`[${role.toUpperCase()}] Completed (${phaseResult.num_turns} turns, $${phaseResult.total_cost_usd.toFixed(4)})`);
-        await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] COMPLETED ($${phaseResult.total_cost_usd.toFixed(4)})\n`);
-        return { success: true, costUsd: phaseResult.total_cost_usd, turns: phaseResult.num_turns };
-      } else {
-        const errResult = phaseResult as SDKResultError;
-        const reason = errResult.errors?.join("; ") ?? errResult.subtype;
-        log(`[${role.toUpperCase()}] Failed: ${reason.slice(0, 200)}`);
-        await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] FAILED: ${reason}\n`);
-        return { success: false, costUsd: phaseResult.total_cost_usd, turns: phaseResult.num_turns, error: reason };
-      }
-    }
-
-    log(`[${role.toUpperCase()}] SDK ended without result`);
-    return { success: false, costUsd: 0, turns: 0, error: "SDK stream ended without result" };
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
     const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
@@ -1465,33 +1353,6 @@ async function markStuck(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-async function logMessage(logFile: string, message: SDKMessage): Promise<void> {
-  const ts = new Date().toISOString().slice(11, 23);
-
-  switch (message.type) {
-    case "assistant": {
-      const toolUses = message.message.content
-        .filter((b: { type: string }): b is { type: "tool_use"; name: string; id: string } => b.type === "tool_use")
-        .map((b: { name: string }) => b.name);
-      if (toolUses.length > 0) {
-        await appendFile(logFile, `[${ts}] assistant: tools=[${toolUses.join(", ")}]\n`);
-      }
-      break;
-    }
-    case "result": {
-      const r = message as SDKResultSuccess | SDKResultError;
-      await appendFile(logFile, `[${ts}] result: subtype=${r.subtype} turns=${r.num_turns} cost=$${r.total_cost_usd.toFixed(4)} duration=${r.duration_ms}ms\n`);
-      if (r.subtype === "success") {
-        await appendFile(logFile, `[${ts}] output: ${(r as SDKResultSuccess).result.slice(0, 500)}\n`);
-      } else {
-        await appendFile(logFile, `[${ts}] errors: ${(r as SDKResultError).errors?.join("; ") ?? "unknown"}\n`);
-      }
-      break;
-    }
-    default:
-      break;
-  }
-}
 
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 23);

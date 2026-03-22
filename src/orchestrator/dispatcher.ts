@@ -3,8 +3,7 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
+import { runWithPi } from "./pi-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
@@ -434,33 +433,23 @@ export class Dispatcher {
       started_at: new Date().toISOString(),
     });
 
-    // 4. Build env with telemetry tags
-    const env: Record<string, string | undefined> = { ...process.env };
-    delete env.CLAUDECODE;
-    env.PATH = `/opt/homebrew/bin:${env.PATH}`;
+    // 4. Build clean env for Pi (strip CLAUDECODE, ensure PATH includes homebrew)
+    const piEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (k !== "CLAUDECODE" && v !== undefined) piEnv[k] = v;
+    }
+    piEnv.PATH = `/opt/homebrew/bin:${piEnv.PATH ?? ""}`;
 
     try {
-      let resultMsg: SDKResultSuccess | SDKResultError | undefined;
-
-      for await (const message of query({
+      const planResult = await runWithPi({
         prompt,
-        options: {
-          cwd: this.projectPath,
-          model: PLAN_STEP_CONFIG.model,
-          permissionMode: "bypassPermissions",
-          allowDangerouslySkipPermissions: true,
-          maxBudgetUsd: PLAN_STEP_CONFIG.maxBudgetUsd,
-          maxTurns: PLAN_STEP_CONFIG.maxTurns,
-          env,
-          persistSession: false,
-        },
-      })) {
-        if (message.type === "result") {
-          resultMsg = message as SDKResultSuccess | SDKResultError;
-        }
-      }
+        systemPrompt: `You are a planning agent. ${ensembleCommand} for the task: ${seed.title}`,
+        cwd: this.projectPath,
+        model: PLAN_STEP_CONFIG.model,
+        env: piEnv,
+      });
 
-      if (resultMsg && resultMsg.subtype === "success") {
+      if (planResult.success) {
         this.store.updateRun(run.id, {
           status: "completed",
           completed_at: new Date().toISOString(),
@@ -468,13 +457,11 @@ export class Dispatcher {
         this.store.logEvent(projectId, "complete", {
           seedId: seed.id,
           title: seed.title,
-          costUsd: resultMsg.total_cost_usd,
-          numTurns: resultMsg.num_turns,
-          durationMs: resultMsg.duration_ms,
+          costUsd: planResult.costUsd,
+          numTurns: planResult.turns,
         }, run.id);
-      } else if (resultMsg) {
-        const errResult = resultMsg as SDKResultError;
-        const reason = errResult.errors?.join("; ") ?? errResult.subtype;
+      } else {
+        const reason = planResult.errorMessage ?? "Pi plan step failed";
         this.store.updateRun(run.id, {
           status: "failed",
           completed_at: new Date().toISOString(),
@@ -482,7 +469,7 @@ export class Dispatcher {
         this.store.logEvent(projectId, "fail", {
           seedId: seed.id,
           reason,
-          costUsd: errResult.total_cost_usd,
+          costUsd: planResult.costUsd,
         }, run.id);
         throw new Error(reason);
       }
