@@ -17,6 +17,7 @@ import { writeFileSync, renameSync, existsSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { homedir } from "node:os";
 import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
@@ -302,12 +303,27 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     }
   }
 
-  // Seed lifecycle note: the bead is NOT closed here.
+  // Seed lifecycle: set bead to 'review' after a successful push.
+  // This signals "pipeline done, branch pushed, awaiting foreman merge".
   // Closing happens only after the branch successfully merges (via refinery.ts).
-  // The bead stays in_progress while the run is in the merge queue.
+  // On push failure the bead stays in_progress (caller resets to open via resetSeedToOpen).
   if (pushSucceeded) {
-    log(`[FINALIZE] Seed ${seedId} queued for merge — bead will be closed by refinery after merge`);
-    report.push(`## Seed Status`, `- Status: AWAITING_MERGE`, `- Note: bead closed by refinery after successful merge`, "");
+    const brBin = join(homedir(), ".local", "bin", "br");
+    const brOpts = {
+      stdio: "pipe" as const,
+      timeout: PIPELINE_TIMEOUTS.beadClosureMs,
+      ...(storeProjectPath ? { cwd: storeProjectPath } : {}),
+    };
+    try {
+      execFileSync(brBin, ["update", seedId, "--status", "review"], brOpts);
+      log(`[FINALIZE] Seed ${seedId} set to review — bead will be closed by refinery after merge`);
+      report.push(`## Seed Status`, `- Status: AWAITING_MERGE (review)`, `- Note: bead closed by refinery after successful merge`, "");
+    } catch (brErr: unknown) {
+      const brMsg = brErr instanceof Error ? brErr.message : String(brErr);
+      log(`[FINALIZE] Warning: br update --status review failed for ${seedId}: ${brMsg.slice(0, 200)}`);
+      await appendFile(logFile, `[FINALIZE] br update review error: ${brMsg}\n`);
+      report.push(`## Seed Status`, `- Status: AWAITING_MERGE`, `- Note: bead status update to review failed (non-fatal)`, "");
+    }
   } else {
     log(`[FINALIZE] Skipped merge queue — push failed for ${seedId}`);
     report.push(`## Seed Status`, `- Status: SKIPPED (push failed)`, "");

@@ -45,10 +45,12 @@ export function mapRunStatusToSeedStatus(runStatus: string): string {
     // Active pipeline: agent is still running
     case "pending":
     case "running":
-    // Awaiting merge: pipeline finished, branch pushed, waiting in the merge queue
-    // (refinery.ts closes the bead only after the branch successfully lands on main)
-    case "completed":
       return "in_progress";
+    // Awaiting merge: pipeline finished, branch pushed, waiting in the merge queue
+    // (refinery.ts closes the bead only after the branch successfully lands on main).
+    // Using 'review' so the bead is visually distinct from actively-running tasks.
+    case "completed":
+      return "review";
     case "failed":
     case "stuck":
       return "open";
