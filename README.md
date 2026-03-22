@@ -28,7 +28,7 @@ Foreman CLI / Dispatcher
   │                                    ├─ foreman-budget      (turn + token hard limits)
   │                                    └─ foreman-audit       (stream events → Agent Mail)
   │
-  ├─ Agent Mail server (mcp_agent_mail, port 8766)
+  ├─ Agent Mail server (optional, port 8766)
   │    Mailboxes: foreman, merge-agent, phase agents
   │    Phase transitions: explorer→developer→qa→reviewer→merge
   │    File reservations: prevent concurrent worktree conflicts
@@ -62,7 +62,7 @@ Dev ↔ QA retries up to 2x before proceeding to Review.
   brew install pi
   # or follow Pi's install instructions for your platform
   ```
-- **[mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail)** — inter-agent messaging (**required** — `foreman run` exits if not reachable)
+- **[Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail)** _(optional)_ — inter-agent messaging; Foreman operates normally without it
   ```bash
   pip install mcp-agent-mail
   # Requires Python 3.11+
@@ -82,22 +82,17 @@ npm install && npm run build
 cd ~/your-project
 foreman init --name my-project
 
-# 3. (Optional) Start Agent Mail server
-python -m mcp_agent_mail --port 8766 &
-# Or if installed as a script:
-mcp-agent-mail --port 8766 &
-
-# 4. Create tasks (beads)
+# 3. Create tasks (beads)
 br create --title "Add user auth" --description "Implement JWT-based auth" --type feature --priority 1
 br create --title "Write auth tests" --type task --priority 2
 
-# 5. Dispatch agents to ready tasks
+# 4. Dispatch agents to ready tasks
 foreman run
 
-# 6. Monitor progress
+# 5. Monitor progress
 foreman status
 
-# 7. Merge completed branches (runs automatically in foreman run loop)
+# 6. Merge completed branches (runs automatically in foreman run loop)
 foreman merge
 ```
 
@@ -105,17 +100,11 @@ foreman merge
 
 Agent Mail provides reliable inter-agent messaging, phase-to-phase coordination, and file reservation leases. Foreman uses it automatically when the server is reachable.
 
-### Starting the server
+### Installation (optional)
 
 ```bash
-# Install
 pip install mcp-agent-mail
-
-# Start on port 8766 (Foreman default)
-python -m mcp_agent_mail --port 8766
-
-# Or with custom storage dir:
-python -m mcp_agent_mail --port 8766 --data-dir ~/.foreman/agent-mail
+# Requires Python 3.11+
 ```
 
 ### Environment variable

@@ -1,5 +1,5 @@
 /**
- * AgentMailClient — HTTP client for the mcp_agent_mail FastMCP server.
+ * AgentMailClient — HTTP client for the Agent Mail inter-agent messaging service.
  *
  * The Python server exposes a JSON-RPC 2.0 endpoint at POST /mcp.
  * All methods catch errors silently so they never block or crash the pipeline.
