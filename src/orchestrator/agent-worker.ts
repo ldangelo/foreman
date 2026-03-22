@@ -200,6 +200,11 @@ interface WorkerConfig {
   pipeline?: boolean;  // Run as lead pipeline (explorer → developer → qa → reviewer)
   skipExplore?: boolean;
   skipReview?: boolean;
+  /**
+   * Resolved workflow type (e.g. "default", "smoke").
+   * Used for prompt-loader workflow scoping.
+   */
+  seedType?: string;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -912,6 +917,19 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   const description = config.seedDescription ?? "(no description)";
   const comments = config.seedComments;
 
+  // Prompt loader options: when projectPath is available, use unified loader
+  // so that project-local overrides are respected and missing prompts cause a clear error.
+  //
+  // Workflow normalization: only "smoke" seeds use the smoke prompt set.
+  // All other bead types (feature, bug, task, chore, etc.) use the "default" prompts.
+  // Custom workflows may be added in future via workflow:<name> labels.
+  const pipelineProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
+  const resolvedWorkflow = config.seedType === "smoke" ? "smoke" : "default";
+  const promptOpts = {
+    projectRoot: pipelineProjectPath,
+    workflow: resolvedWorkflow,
+  };
+
   const progress: RunProgress = {
     toolCalls: 0,
     toolBreakdown: {},
@@ -947,7 +965,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // AC-006-1: Register the explorer agent with Agent Mail before the phase starts.
       await registerAgent(agentMailClient, `explorer-${seedId}`);
       rotateReport(worktreePath, "EXPLORER_REPORT.md");
-      const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description, comments, runId), config, progress, logFile, store, notifyClient);
+      const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description, comments, runId, promptOpts), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
         name: "explorer",
         skipped: false,
@@ -1004,7 +1022,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
       const devResult = await runPhase(
         "developer",
-        developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext, comments, runId),
+        developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext, comments, runId, promptOpts),
         config, progress, logFile, store, notifyClient,
       );
       // AC-007-3: Release file reservations on phase completion or failure.
@@ -1042,7 +1060,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // AC-006-1: Register the QA agent with Agent Mail before the phase starts.
       await registerAgent(agentMailClient, `qa-${seedId}`);
       rotateReport(worktreePath, "QA_REPORT.md");
-      const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle, runId), config, progress, logFile, store, notifyClient);
+      const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle, runId, promptOpts), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
         name: devRetries === 0 ? "qa" : `qa (retry ${devRetries})`,
         skipped: false,
@@ -1101,7 +1119,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // AC-006-1: Register the reviewer agent with Agent Mail before the phase starts.
       await registerAgent(agentMailClient, `reviewer-${seedId}`);
       rotateReport(worktreePath, "REVIEW.md");
-      const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description, comments, runId), config, progress, logFile, store, notifyClient);
+      const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description, comments, runId, promptOpts), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
         name: "reviewer",
         skipped: false,
@@ -1151,7 +1169,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
       const devResult = await runPhase(
         "developer",
-        developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback, comments, runId),
+        developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback, comments, runId, promptOpts),
         config, progress, logFile, store, notifyClient,
       );
       // AC-007-3: Release file reservations on phase completion or failure.
@@ -1172,7 +1190,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
 
         rotateReport(worktreePath, "QA_REPORT.md");
-        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle, runId), config, progress, logFile, store, notifyClient);
+        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle, runId, promptOpts), config, progress, logFile, store, notifyClient);
         phaseRecords.push({
           name: `qa (review-feedback)`,
           skipped: false,

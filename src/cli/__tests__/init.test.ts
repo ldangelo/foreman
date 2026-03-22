@@ -54,3 +54,54 @@ describe("initProjectStore — sentinel seeding", () => {
     expect(store.upsertSentinelConfig).toHaveBeenCalledWith("proj-existing", expect.any(Object));
   });
 });
+
+// ── installPrompts ────────────────────────────────────────────────────────────
+
+import { describe as describeInstall, it as itInstall, expect as expectInstall } from "vitest";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { installPrompts } from "../commands/init.js";
+
+describeInstall("installPrompts", () => {
+  itInstall("installs bundled prompts to .foreman/prompts/ on first init", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "foreman-init-prompts-test-"));
+    try {
+      const { installed, skipped } = installPrompts(tmpDir, false);
+      expectInstall(installed.length).toBeGreaterThan(0);
+      expectInstall(skipped.length).toBe(0);
+      // Verify key files exist
+      expectInstall(existsSync(join(tmpDir, ".foreman", "prompts", "default", "explorer.md"))).toBe(true);
+      expectInstall(existsSync(join(tmpDir, ".foreman", "prompts", "default", "developer.md"))).toBe(true);
+      expectInstall(existsSync(join(tmpDir, ".foreman", "prompts", "smoke", "explorer.md"))).toBe(true);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  itInstall("skips existing files when force=false", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "foreman-init-prompts-skip-"));
+    try {
+      // First install
+      installPrompts(tmpDir, false);
+      // Second install — should skip all
+      const { installed, skipped } = installPrompts(tmpDir, false);
+      expectInstall(installed.length).toBe(0);
+      expectInstall(skipped.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  itInstall("overwrites existing files when force=true", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "foreman-init-prompts-force-"));
+    try {
+      installPrompts(tmpDir, false);
+      const { installed, skipped } = installPrompts(tmpDir, true);
+      expectInstall(installed.length).toBeGreaterThan(0);
+      expectInstall(skipped.length).toBe(0);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

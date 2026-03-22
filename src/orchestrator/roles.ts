@@ -19,6 +19,7 @@ import {
   getSentinelBudget,
 } from "../lib/config.js";
 import { loadAndInterpolate } from "./template-loader.js";
+import { loadPrompt, PromptNotFoundError } from "../lib/prompt-loader.js";
 import { PI_PHASE_CONFIGS } from "./pi-rpc-spawn-strategy.js";
 
 export { PI_PHASE_CONFIGS };
@@ -285,9 +286,50 @@ export const SENTINEL_ROLE_CONFIG: RoleConfig = {
 
 // ── Prompt templates ────────────────────────────────────────────────────
 
-export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string, runId?: string): string {
+/**
+ * Options for controlling which prompt loader to use.
+ * When projectRoot and workflow are provided, the unified loadPrompt()
+ * is used (project-local → user global → error).
+ * When omitted, falls back to the bundled template-loader (for tests and
+ * backward compatibility with callers that don't have a project root).
+ */
+export interface PromptLoaderOpts {
+  /** Absolute path to project root (contains .foreman/). Required for unified loader. */
+  projectRoot?: string;
+  /** Workflow name (e.g. "default", "smoke"). Defaults to "default". */
+  workflow?: string;
+}
+
+/**
+ * Internal helper: resolve a prompt using unified loader when projectRoot is
+ * available, otherwise fall back to the bundled template-loader.
+ *
+ * @throws PromptNotFoundError when projectRoot is provided and the file is missing.
+ */
+function resolvePrompt(
+  phase: string,
+  vars: Record<string, string | undefined>,
+  legacyFilename: string,
+  opts?: PromptLoaderOpts,
+): string {
+  if (opts?.projectRoot) {
+    const workflow = opts.workflow ?? "default";
+    return loadPrompt(phase, vars, workflow, opts.projectRoot);
+  }
+  // Bundled fallback (backward compat / unit tests without project root)
+  return loadAndInterpolate(legacyFilename, vars as Record<string, string>);
+}
+
+export { PromptNotFoundError };
+
+export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string, runId?: string, opts?: PromptLoaderOpts): string {
   const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
-  return loadAndInterpolate("explorer-prompt.md", { seedId, seedTitle, seedDescription, commentsSection, runId: runId ?? "", agentRole: "explorer" });
+  return resolvePrompt(
+    "explorer",
+    { seedId, seedTitle, seedDescription, commentsSection, runId: runId ?? "", agentRole: "explorer" },
+    "explorer-prompt.md",
+    opts,
+  );
 }
 
 export function developerPrompt(
@@ -298,12 +340,13 @@ export function developerPrompt(
   feedbackContext?: string,
   seedComments?: string,
   runId?: string,
+  opts?: PromptLoaderOpts,
 ): string {
   // NOTE: These strings are injected at the {{explorerInstruction}} placeholder in
-  // developer-prompt.md, which appears between hardcoded step 1 and step 3 in the
-  // Instructions list. Both values must always begin with "2. " to keep the list
-  // sequential. If a new step is added before the placeholder in the template,
-  // update the numbering here to match.
+  // developer.md (formerly developer-prompt.md), which appears between hardcoded
+  // step 1 and step 3 in the Instructions list. Both values must always begin with
+  // "2. " to keep the list sequential. If a new step is added before the placeholder
+  // in the template, update the numbering here to match.
   const explorerInstruction = hasExplorerReport
     ? `2. Read **EXPLORER_REPORT.md** for codebase context and recommended approach`
     : `2. Explore the codebase to understand the relevant architecture`;
@@ -314,29 +357,49 @@ export function developerPrompt(
 
   const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
 
-  return loadAndInterpolate("developer-prompt.md", {
-    seedId,
-    seedTitle,
-    seedDescription,
-    explorerInstruction,
-    feedbackSection,
-    commentsSection,
-    runId: runId ?? "",
-    agentRole: "developer",
-  });
+  return resolvePrompt(
+    "developer",
+    {
+      seedId,
+      seedTitle,
+      seedDescription,
+      explorerInstruction,
+      feedbackSection,
+      commentsSection,
+      runId: runId ?? "",
+      agentRole: "developer",
+    },
+    "developer-prompt.md",
+    opts,
+  );
 }
 
-export function qaPrompt(seedId: string, seedTitle: string, runId?: string): string {
-  return loadAndInterpolate("qa-prompt.md", { seedId, seedTitle, runId: runId ?? "", agentRole: "qa" });
+export function qaPrompt(seedId: string, seedTitle: string, runId?: string, opts?: PromptLoaderOpts): string {
+  return resolvePrompt(
+    "qa",
+    { seedId, seedTitle, runId: runId ?? "", agentRole: "qa" },
+    "qa-prompt.md",
+    opts,
+  );
 }
 
-export function reviewerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string, runId?: string): string {
+export function reviewerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string, runId?: string, opts?: PromptLoaderOpts): string {
   const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
-  return loadAndInterpolate("reviewer-prompt.md", { seedId, seedTitle, seedDescription, commentsSection, runId: runId ?? "", agentRole: "reviewer" });
+  return resolvePrompt(
+    "reviewer",
+    { seedId, seedTitle, seedDescription, commentsSection, runId: runId ?? "", agentRole: "reviewer" },
+    "reviewer-prompt.md",
+    opts,
+  );
 }
 
-export function sentinelPrompt(branch: string, testCommand: string): string {
-  return loadAndInterpolate("sentinel-prompt.md", { branch, testCommand });
+export function sentinelPrompt(branch: string, testCommand: string, opts?: PromptLoaderOpts): string {
+  return resolvePrompt(
+    "sentinel",
+    { branch, testCommand },
+    "sentinel-prompt.md",
+    opts,
+  );
 }
 
 // ── Report parsing ──────────────────────────────────────────────────────

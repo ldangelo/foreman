@@ -910,3 +910,87 @@ describe("Doctor", () => {
     });
   });
 });
+
+// ── checkPrompts ──────────────────────────────────────────────────────────────
+
+describe("Doctor.checkPrompts", () => {
+  it("returns fail when prompts are not installed", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-prompts-"));
+    try {
+      const store = { getProjectByPath: vi.fn(() => null) };
+      const doctor = new Doctor(store as any, tmpDir);
+      const result = await doctor.checkPrompts();
+      expect(result.status).toBe("fail");
+      expect(result.message).toContain("missing prompt file");
+      expect(result.message).toContain("foreman init");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns pass when all prompts are installed", async () => {
+    const { installBundledPrompts } = await import("../../lib/prompt-loader.js");
+    const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-prompts-ok-"));
+    try {
+      installBundledPrompts(tmpDir, true);
+      const store = { getProjectByPath: vi.fn(() => null) };
+      const doctor = new Doctor(store as any, tmpDir);
+      const result = await doctor.checkPrompts();
+      expect(result.status).toBe("pass");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns fixed when --fix reinstalls missing prompts", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-prompts-fix-"));
+    try {
+      const store = { getProjectByPath: vi.fn(() => null) };
+      const doctor = new Doctor(store as any, tmpDir);
+      // First confirm they're missing
+      const before = await doctor.checkPrompts();
+      expect(before.status).toBe("fail");
+      // Now fix
+      const result = await doctor.checkPrompts({ fix: true });
+      expect(result.status).toBe("fixed");
+      expect(result.fixApplied).toContain("Installed");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dry-run reports missing prompts without installing", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-prompts-dry-"));
+    try {
+      const store = { getProjectByPath: vi.fn(() => null) };
+      const doctor = new Doctor(store as any, tmpDir);
+      const result = await doctor.checkPrompts({ dryRun: true });
+      expect(result.status).toBe("fail");
+      expect(result.message).toContain("dry-run");
+      // Should not have installed any files
+      const { findMissingPrompts } = await import("../../lib/prompt-loader.js");
+      const stillMissing = findMissingPrompts(tmpDir);
+      expect(stillMissing.length).toBeGreaterThan(0);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("checkRepository includes prompt check", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-repo-prompts-"));
+    try {
+      const store = {
+        getProjectByPath: vi.fn(() => null),
+        getRunsByStatus: vi.fn(() => []),
+        getActiveRuns: vi.fn(() => []),
+      };
+      const doctor = new Doctor(store as any, tmpDir);
+      const results = await doctor.checkRepository();
+      const promptCheck = results.find((r) => r.name.includes("prompt templates"));
+      expect(promptCheck).toBeDefined();
+      expect(promptCheck?.status).toBe("fail");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
