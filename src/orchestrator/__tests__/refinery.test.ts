@@ -11,6 +11,7 @@ vi.mock("../../lib/git.js", () => ({
   mergeWorktree: vi.fn(),
   removeWorktree: vi.fn(),
   detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+  gitBranchExists: vi.fn().mockResolvedValue(false),
 }));
 
 // Mock task-backend-ops so closeSeed() / resetSeedToOpen() don't try to execute the real `br` binary.
@@ -50,6 +51,7 @@ function makeMocks() {
     getRun: vi.fn(() => null as Run | null),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
+    getRunsByBaseBranch: vi.fn(() => [] as Run[]),
   };
   const seeds = {
     getGraph: vi.fn(async () => ({ edges: [] })),
@@ -469,11 +471,11 @@ describe("Refinery.mergeCompleted()", () => {
     const report = await refinery.mergeCompleted({ runTests: false });
 
     expect(report.conflicts).toHaveLength(1);
-    // Must add a note explaining what happened since there's no PR URL to reference
+    // Must add a note explaining what happened before the reset
     expect(seeds.update).toHaveBeenCalledWith(
       run.seed_id,
       expect.objectContaining({
-        notes: expect.stringContaining("PR creation also failed"),
+        notes: expect.stringContaining("branch reset to open for retry"),
       }),
     );
   });
@@ -518,10 +520,11 @@ describe("Refinery.mergeCompleted()", () => {
     const report = await refinery.mergeCompleted({ runTests: false });
 
     expect(report.conflicts).toHaveLength(1);
+    // Must add a note explaining what happened before the reset
     expect(seeds.update).toHaveBeenCalledWith(
       run.seed_id,
       expect.objectContaining({
-        notes: expect.stringContaining("PR creation also failed"),
+        notes: expect.stringContaining("branch reset to open for retry"),
       }),
     );
   });

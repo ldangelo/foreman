@@ -9,7 +9,8 @@ import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
-import { createWorktree } from "../lib/git.js";
+import { createWorktree, gitBranchExists } from "../lib/git.js";
+import { BeadsRustClient } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
@@ -191,22 +192,30 @@ export class Dispatcher {
       }
 
       try {
-        // 1. Create git worktree
+        // 1. Resolve base branch (may stack on a dependency branch)
+        const baseBranch = await resolveBaseBranch(seed.id, this.projectPath, this.store);
+        if (baseBranch) {
+          log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
+        }
+
+        // 2. Create git worktree (optionally branched from a dependency branch)
         const { worktreePath, branchName } = await createWorktree(
           this.projectPath,
           seed.id,
+          baseBranch,
         );
 
-        // 2. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
+        // 3. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
         const taskMd = workerAgentMd(seedInfo, worktreePath, model);
         await writeFile(join(worktreePath, "TASK.md"), taskMd, "utf-8");
 
-        // 4. Record run in store
+        // 4. Record run in store (include base_branch for stacking awareness)
         const run = this.store.createRun(
           projectId,
           seed.id,
           model,
           worktreePath,
+          { baseBranch: baseBranch ?? null },
         );
 
         // 5. Log dispatch event
@@ -548,11 +557,11 @@ export class Dispatcher {
       `Use br (beads_rust) to track your progress.`,
       `When completely finished:`,
       `  Save your session log to SessionLogs/session-$(date +%d%m%y-%H:%M).md (mkdir -p SessionLogs first)`,
-      `  br close ${seedId} --reason "Completed"`,
       `  br sync --flush-only`,
       `  git add .`,
       `  git commit -m "${seedTitle} (${seedId})"`,
       `  git push -u origin foreman/${seedId}`,
+      `NOTE: Do NOT close the bead manually — it will be closed automatically after the branch merges to main.`,
     ].join("\n");
   }
 
@@ -565,11 +574,11 @@ export class Dispatcher {
       `Continue where you left off. Check your progress so far and complete the remaining work.`,
       `When completely finished:`,
       `  Save your session log to SessionLogs/session-$(date +%d%m%y-%H:%M).md (mkdir -p SessionLogs first)`,
-      `  br close ${seedId} --reason "Completed"`,
       `  br sync --flush-only`,
       `  git add .`,
       `  git commit -m "${seedTitle} (${seedId})"`,
       `  git push -u origin foreman/${seedId}`,
+      `NOTE: Do NOT close the bead manually — it will be closed automatically after the branch merges to main.`,
     ].join("\n");
   }
 
@@ -732,6 +741,47 @@ export class Dispatcher {
 }
 
 // ── Utility ─────────────────────────────────────────────────────────────
+
+/**
+ * Resolve the base branch for a seed's worktree.
+ *
+ * If any of the seed's blocking dependencies have an unmerged local branch
+ * (i.e. a `foreman/<depId>` branch exists locally and its latest run is
+ * "completed" but not yet "merged"), stack the new worktree on top of that
+ * dependency branch instead of the default branch.
+ *
+ * This allows agent B to build on top of agent A's work before A is merged.
+ * After A merges, the refinery will rebase B onto main.
+ *
+ * Returns the dependency branch name (e.g. "foreman/story-1") or undefined
+ * when no stacking is needed.
+ */
+export async function resolveBaseBranch(
+  seedId: string,
+  projectPath: string,
+  store: Pick<ForemanStore, "getRunsForSeed">,
+): Promise<string | undefined> {
+  const brClient = new BeadsRustClient(projectPath);
+  try {
+    const detail = await brClient.show(seedId);
+    // detail.dependencies is string[] of dep IDs that this seed depends on
+    for (const depId of detail.dependencies ?? []) {
+      const depBranch = `foreman/${depId}`;
+      // Check if this branch exists locally
+      const branchExists = await gitBranchExists(projectPath, depBranch);
+      if (!branchExists) continue;
+      // Check if the dep's most recent run is "completed" (done but not yet merged)
+      const depRuns = store.getRunsForSeed(depId);
+      const latestDepRun = depRuns[0]; // DESC order → first = most recent
+      if (latestDepRun && latestDepRun.status === "completed") {
+        return depBranch; // Stack on this dependency branch
+      }
+    }
+  } catch {
+    // br may not be initialized or the seed may not have dependency info — ignore
+  }
+  return undefined; // Default: branch from main/current
+}
 
 // ── Worker Config (must match agent-worker.ts interface) ────────────────
 

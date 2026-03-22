@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { ForemanStore } from "../lib/store.js";
 import type { BeadGraph } from "../lib/beads.js";
 import type { UpdateOptions } from "../lib/task-client.js";
-import { mergeWorktree, removeWorktree, detectDefaultBranch } from "../lib/git.js";
+import { mergeWorktree, removeWorktree, detectDefaultBranch, gitBranchExists } from "../lib/git.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -191,6 +191,50 @@ export class Refinery {
       // Non-fatal: best-effort annotation
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[Refinery] Failed to add failure note to bead ${seedId}: ${message}`);
+    }
+  }
+
+  /**
+   * After a successful merge of `mergedBranch` into `targetBranch`, find all
+   * stacked branches (seeds whose worktree was branched from `mergedBranch`)
+   * and rebase them onto `targetBranch` so they pick up the latest code.
+   *
+   * Non-fatal: failures are logged as warnings; they do not abort the merge.
+   */
+  private async rebaseStackedBranches(
+    mergedBranch: string,
+    targetBranch: string,
+  ): Promise<void> {
+    try {
+      // Query runs that were stacked on the just-merged branch
+      const stackedRuns = this.store.getRunsByBaseBranch(mergedBranch);
+      if (stackedRuns.length === 0) return;
+
+      for (const stackedRun of stackedRuns) {
+        // Only rebase active (non-terminal) runs
+        const activeStatuses: import("../lib/store.js").Run["status"][] = ["pending", "running", "completed"];
+        if (!activeStatuses.includes(stackedRun.status)) continue;
+
+        const stackedBranch = `foreman/${stackedRun.seed_id}`;
+        const branchExists = await gitBranchExists(this.projectPath, stackedBranch);
+        if (!branchExists) continue;
+
+        try {
+          await git(["rebase", "--onto", targetBranch, mergedBranch, stackedBranch], this.projectPath);
+          console.error(`[Refinery] Rebased stacked branch ${stackedBranch} onto ${targetBranch} (was on ${mergedBranch})`);
+          // Update the run's base_branch to reflect it's now on targetBranch
+          this.store.updateRun(stackedRun.id, { base_branch: null });
+        } catch (rebaseErr: unknown) {
+          const msg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+          console.warn(`[Refinery] Warning: failed to rebase stacked branch ${stackedBranch} onto ${targetBranch}: ${msg.slice(0, 300)}`);
+          // Abort any partial rebase to leave the repo in a clean state
+          try { await git(["rebase", "--abort"], this.projectPath); } catch { /* already clean */ }
+        }
+      }
+    } catch (err: unknown) {
+      // Non-fatal: log and continue — stacked rebase failure must not block the merge
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[Refinery] Warning: rebaseStackedBranches failed: ${msg.slice(0, 200)}`);
     }
   }
 
@@ -479,13 +523,17 @@ export class Refinery {
             if (stashedBeforeRebase) {
               try { await git(["stash", "pop"], this.projectPath); } catch { /* best effort */ }
             }
+            // Add failure note before resetting so the bead records why it was reset
+            await this.addFailureNote(
+              run.seed_id,
+              `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — branch reset to open for retry. Rebase conflicts detected.`,
+            );
             // Rebase failed — reset seed to open so it can be retried, then create a PR for manual conflict resolution
             await resetSeedToOpen(run.seed_id, this.projectPath);
             const pr = await this.createPrForConflict(run, branchName, targetBranch, "Rebase conflicts");
             if (pr) {
               prsCreated.push(pr);
             } else {
-              await this.addFailureNote(run.seed_id, "Merge conflict: rebase failed. PR creation also failed — manual intervention required.");
               conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
             }
             continue;
@@ -516,6 +564,12 @@ export class Refinery {
               // merge --abort may fail if already clean
             }
 
+            // Add failure note before resetting so the bead records why it was reset
+            await this.addFailureNote(
+              run.seed_id,
+              `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — branch reset to open for retry. Conflicting files: ${codeConflicts.join(", ")}`,
+            );
+
             // Reset seed to open so it can be retried after manual conflict resolution
             await resetSeedToOpen(run.seed_id, this.projectPath);
 
@@ -524,7 +578,6 @@ export class Refinery {
             if (pr) {
               prsCreated.push(pr);
             } else {
-              await this.addFailureNote(run.seed_id, `Merge conflict: code conflicts in ${codeConflicts.join(", ")}. PR creation also failed — manual intervention required.`);
               conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: codeConflicts });
             }
             continue;
@@ -549,6 +602,12 @@ export class Refinery {
             // Revert the merge + archive commits
             await git(["reset", "--hard", preMergeHead], this.projectPath);
 
+            // Add failure note before resetting so the bead records why it was reset
+            await this.addFailureNote(
+              run.seed_id,
+              `Merge failed: post-merge tests failed on ${new Date().toISOString().slice(0, 10)} — branch reset for retry. ${testResult.output.slice(0, 300)}`,
+            );
+
             // Reset seed to open so it can be retried
             await resetSeedToOpen(run.seed_id, this.projectPath);
 
@@ -559,7 +618,6 @@ export class Refinery {
               { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
               run.id,
             );
-            await this.addFailureNote(run.seed_id, `Merge failed: tests failed after merge. ${testResult.output.slice(0, 300)}`);
             testFailures.push({
               runId: run.id,
               seedId: run.seed_id,
@@ -598,6 +656,9 @@ export class Refinery {
         // Close the bead NOW — after the code has actually landed in main.
         // projectPath (repo root) is where .beads/ lives; not the worktree dir.
         await closeSeed(run.seed_id, this.projectPath);
+
+        // Rebase any stacked branches (seeds that branched from this one) onto target.
+        await this.rebaseStackedBranches(branchName, targetBranch);
 
         merged.push({
           runId: run.id,

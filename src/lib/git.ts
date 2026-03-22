@@ -368,6 +368,24 @@ export async function deleteBranch(
 }
 
 /**
+ * Check whether a local branch exists in the repository.
+ *
+ * Uses `git show-ref --verify --quiet refs/heads/<branchName>`.
+ * Returns `false` if the branch does not exist or any error occurs.
+ */
+export async function gitBranchExists(
+  repoPath: string,
+  branchName: string,
+): Promise<boolean> {
+  try {
+    await git(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], repoPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Check whether a branch exists on the origin remote.
  *
  * Uses `git rev-parse origin/<branchName>` against local remote-tracking refs.

@@ -1,10 +1,9 @@
 /**
- * Tests for TRD-012 (updated): Dispatcher inline prompts always use 'br close' commands
- * and 'git add .' (not 'git add -A') to limit staging scope to the current directory.
+ * Tests for TRD-012: Dispatcher inline prompts.
  *
  * Verifies:
- * - buildSpawnPrompt() emits "br close" for all seeds
- * - buildResumePrompt() emits "br close" for all seeds
+ * - buildSpawnPrompt() does NOT emit "br close" (bead closed by refinery after merge)
+ * - buildResumePrompt() does NOT emit "br close"
  * - No "sd close" references in any prompt
  * - Uses "git add ." (not "git add -A") to limit staging scope to current directory in worktrees
  */
@@ -22,11 +21,18 @@ function makeDispatcher() {
 }
 
 describe("TRD-012: Dispatcher.buildSpawnPrompt", () => {
-  it("includes 'br close' command", () => {
+  it("does NOT include 'br close' — bead is closed by refinery after merge", () => {
     const d = makeDispatcher();
     const prompt = d.buildSpawnPrompt("bd-001", "Implement feature");
 
-    expect(prompt).toContain(`br close bd-001 --reason "Completed"`);
+    expect(prompt).not.toContain("br close");
+  });
+
+  it("tells agent NOT to close the bead manually", () => {
+    const d = makeDispatcher();
+    const prompt = d.buildSpawnPrompt("bd-001", "Implement feature");
+
+    expect(prompt).toContain("Do NOT close the bead manually");
   });
 
   it("does not include 'sd close'", () => {
@@ -71,35 +77,27 @@ describe("TRD-012: Dispatcher.buildSpawnPrompt", () => {
 
     expect(prompt).toContain("br sync --flush-only");
 
-    // Verify ordering: br sync must appear before git add so beads JSONL
-    // is flushed to disk before it gets staged and committed.
     const syncIdx = prompt.indexOf("br sync --flush-only");
     const addIdx = prompt.indexOf("git add .");
     expect(syncIdx).toBeGreaterThan(-1);
     expect(addIdx).toBeGreaterThan(-1);
     expect(syncIdx).toBeLessThan(addIdx);
   });
-
-  it("flushes beads JSONL between br close and git add", () => {
-    const d = makeDispatcher();
-    const prompt = d.buildSpawnPrompt("bd-xyz", "My feature");
-
-    const closeIdx = prompt.indexOf("br close bd-xyz");
-    const syncIdx = prompt.indexOf("br sync --flush-only");
-    const addIdx = prompt.indexOf("git add .");
-
-    // Order must be: br close → br sync → git add
-    expect(closeIdx).toBeLessThan(syncIdx);
-    expect(syncIdx).toBeLessThan(addIdx);
-  });
 });
 
 describe("TRD-012: Dispatcher.buildResumePrompt", () => {
-  it("includes 'br close' command", () => {
+  it("does NOT include 'br close' — bead is closed by refinery after merge", () => {
     const d = makeDispatcher();
     const prompt = d.buildResumePrompt("bd-001", "Implement feature");
 
-    expect(prompt).toContain(`br close bd-001 --reason "Completed"`);
+    expect(prompt).not.toContain("br close");
+  });
+
+  it("tells agent NOT to close the bead manually", () => {
+    const d = makeDispatcher();
+    const prompt = d.buildResumePrompt("bd-001", "Implement feature");
+
+    expect(prompt).toContain("Do NOT close the bead manually");
   });
 
   it("does not include 'sd close'", () => {
@@ -137,25 +135,10 @@ describe("TRD-012: Dispatcher.buildResumePrompt", () => {
 
     expect(prompt).toContain("br sync --flush-only");
 
-    // Verify ordering: br sync must appear before git add so beads JSONL
-    // is flushed to disk before it gets staged and committed.
     const syncIdx = prompt.indexOf("br sync --flush-only");
     const addIdx = prompt.indexOf("git add .");
     expect(syncIdx).toBeGreaterThan(-1);
     expect(addIdx).toBeGreaterThan(-1);
-    expect(syncIdx).toBeLessThan(addIdx);
-  });
-
-  it("flushes beads JSONL between br close and git add", () => {
-    const d = makeDispatcher();
-    const prompt = d.buildResumePrompt("bd-xyz", "My feature");
-
-    const closeIdx = prompt.indexOf("br close bd-xyz");
-    const syncIdx = prompt.indexOf("br sync --flush-only");
-    const addIdx = prompt.indexOf("git add .");
-
-    // Order must be: br close → br sync → git add
-    expect(closeIdx).toBeLessThan(syncIdx);
     expect(syncIdx).toBeLessThan(addIdx);
   });
 });
