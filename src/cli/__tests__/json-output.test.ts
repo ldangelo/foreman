@@ -277,8 +277,7 @@ describe("foreman status --json", () => {
     const mockRun = {
       id: "run-1", project_id: "proj-1", seed_id: "bd-abc", agent_type: "claude-sonnet-4-6",
       session_key: null, worktree_path: null, status: "running", started_at: "2026-03-17T10:00:00Z",
-      completed_at: null, created_at: "2026-03-17T10:00:00Z", progress: null, tmux_session: null,
-    };
+      completed_at: null, created_at: "2026-03-17T10:00:00Z", progress: null,    };
     const mockProgress = {
       toolCalls: 5, toolBreakdown: {}, filesChanged: [], turns: 3,
       costUsd: 0.05, tokensIn: 1000, tokensOut: 200,
@@ -389,8 +388,7 @@ describe("foreman monitor --json", () => {
     const mockRun = {
       id: "run-1", project_id: "proj-1", seed_id: "bd-abc", agent_type: "claude-sonnet-4-6",
       session_key: null, worktree_path: null, status: "running", started_at: "2026-03-17T10:00:00Z",
-      completed_at: null, created_at: "2026-03-17T10:00:00Z", progress: null, tmux_session: null,
-    };
+      completed_at: null, created_at: "2026-03-17T10:00:00Z", progress: null,    };
     mockCheckAll.mockResolvedValue({
       active: [mockRun],
       completed: [],

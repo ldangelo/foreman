@@ -43,9 +43,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     started_at: new Date().toISOString(),
     completed_at: null,
     created_at: new Date().toISOString(),
-    progress: null,
-    tmux_session: null,
-    ...overrides,
+    progress: null,    ...overrides,
   };
 }
 
@@ -273,13 +271,12 @@ describe("Doctor", () => {
       expect(store.updateRun).not.toHaveBeenCalled();
     });
 
-    it("does NOT mark SDK-based run (no tmux_session) as zombie", async () => {
+    it("does NOT mark Pi-based run as zombie as zombie", async () => {
       const { store, doctor } = makeMocks();
       store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
-      // SDK worker without tmux: session_key starts with "foreman:sdk:", no tmux_session
+      // Pi worker: session_key starts with "foreman:sdk:", no tmux_session
       const run = makeRun({
         session_key: "foreman:sdk:claude-sonnet-4-6:run-1",
-        tmux_session: null,
       });
       store.getRunsByStatus.mockReturnValue([run]);
 
@@ -287,16 +284,15 @@ describe("Doctor", () => {
 
       expect(results).toHaveLength(1);
       expect(results[0].status).toBe("pass");
-      expect(results[0].message).toContain("SDK-based worker");
+      expect(results[0].message).toContain("Pi-based worker");
     });
 
-    it("does NOT mark SDK-based run with session suffix (no tmux_session) as zombie", async () => {
+    it("does NOT mark Pi-based run with session suffix as zombie as zombie", async () => {
       const { store, doctor } = makeMocks();
       store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
       // SDK worker with session suffix (after first agent message), still no PID
       const run = makeRun({
         session_key: "foreman:sdk:claude-sonnet-4-6:run-1:session-abc123",
-        tmux_session: null,
       });
       store.getRunsByStatus.mockReturnValue([run]);
 
@@ -304,16 +300,15 @@ describe("Doctor", () => {
 
       expect(results).toHaveLength(1);
       expect(results[0].status).toBe("pass");
-      expect(results[0].message).toContain("SDK-based worker");
+      expect(results[0].message).toContain("Pi-based worker");
     });
 
-    it("does NOT mark SDK-based run with tmux_session as zombie (deferred to checkGhostRuns)", async () => {
+    it("does NOT mark Pi-based run as zombie", async () => {
       const { store, doctor } = makeMocks();
       store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
-      // SDK worker with tmux session: liveness checked by checkGhostRuns(), not here
+      // Pi worker: liveness checked by timeout, not PID
       const run = makeRun({
         session_key: "foreman:sdk:claude-opus-4-6:run-2",
-        tmux_session: "foreman-bd-krew",
       });
       store.getRunsByStatus.mockReturnValue([run]);
 
@@ -321,7 +316,7 @@ describe("Doctor", () => {
 
       expect(results).toHaveLength(1);
       expect(results[0].status).toBe("pass");
-      expect(results[0].message).toContain("SDK-based worker");
+      expect(results[0].message).toContain("Pi-based worker");
       // Crucially: updateRun should NOT have been called
       expect(store.updateRun).not.toHaveBeenCalled();
     });
@@ -331,7 +326,6 @@ describe("Doctor", () => {
       store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
       const run = makeRun({
         session_key: "foreman:sdk:claude-sonnet-4-6:run-3",
-        tmux_session: null,
       });
       store.getRunsByStatus.mockReturnValue([run]);
 
@@ -348,13 +342,11 @@ describe("Doctor", () => {
         id: "run-sdk",
         seed_id: "bd-sdk",
         session_key: "foreman:sdk:claude-sonnet-4-6:run-sdk",
-        tmux_session: null,
       });
       const zombieRun = makeRun({
         id: "run-zombie",
         seed_id: "bd-zombie",
         session_key: null, // no PID = zombie
-        tmux_session: null,
       });
       store.getRunsByStatus.mockReturnValue([sdkRun, zombieRun]);
 
@@ -615,7 +607,7 @@ describe("Doctor", () => {
         update: vi.fn(),
         close: vi.fn(),
       };
-      const doctor = new Doctor(store as any, "/tmp/project", undefined, undefined, taskClient as any);
+      const doctor = new Doctor(store as any, "/tmp/project", undefined, taskClient as any);
 
       const result = await doctor.checkBlockedSeeds();
 
@@ -632,7 +624,7 @@ describe("Doctor", () => {
         update: vi.fn(),
         close: vi.fn(),
       };
-      const doctor = new Doctor(store as any, "/tmp/project", undefined, undefined, taskClient as any);
+      const doctor = new Doctor(store as any, "/tmp/project", undefined, taskClient as any);
 
       const result = await doctor.checkBlockedSeeds();
 
@@ -651,7 +643,7 @@ describe("Doctor", () => {
         update: vi.fn(),
         close: vi.fn(),
       };
-      const doctor = new Doctor(store as any, "/tmp/project", undefined, undefined, taskClient as any);
+      const doctor = new Doctor(store as any, "/tmp/project", undefined, taskClient as any);
 
       const result = await doctor.checkBlockedSeeds();
 
@@ -673,7 +665,7 @@ describe("Doctor", () => {
         update: vi.fn(),
         close: vi.fn(),
       };
-      const doctor = new Doctor(store as any, "/tmp/project", undefined, undefined, taskClient as any);
+      const doctor = new Doctor(store as any, "/tmp/project", undefined, taskClient as any);
 
       const result = await doctor.checkBlockedSeeds();
 
@@ -692,7 +684,7 @@ describe("Doctor", () => {
         update: vi.fn(),
         close: vi.fn(),
       };
-      const doctor = new Doctor(store as any, "/tmp/project", undefined, undefined, taskClient as any);
+      const doctor = new Doctor(store as any, "/tmp/project", undefined, taskClient as any);
 
       const result = await doctor.checkBlockedSeeds();
 
@@ -710,7 +702,7 @@ describe("Doctor", () => {
         update: vi.fn(),
         close: vi.fn(),
       };
-      const doctor = new Doctor(store as any, "/tmp/project", undefined, undefined, taskClient as any);
+      const doctor = new Doctor(store as any, "/tmp/project", undefined, taskClient as any);
 
       const result = await doctor.checkBlockedSeeds();
 

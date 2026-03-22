@@ -222,7 +222,7 @@ export class Dispatcher {
         await this.seeds.update(seed.id, { status: "in_progress" });
 
         // 7. Spawn the coding agent
-        const { sessionKey, tmuxSession } = await this.spawnAgent(
+        const { sessionKey } = await this.spawnAgent(
           model,
           worktreePath,
           seedInfo,
@@ -236,12 +236,11 @@ export class Dispatcher {
           opts?.notifyUrl,
         );
 
-        // Update run with session key (AT-T015: persist tmux_session if present)
+        // Update run with session key
         this.store.updateRun(run.id, {
           session_key: sessionKey,
           status: "running",
           started_at: new Date().toISOString(),
-          ...(tmuxSession ? { tmux_session: tmuxSession } : {}),
         });
 
         dispatched.push({
@@ -365,7 +364,7 @@ export class Dispatcher {
       await this.seeds.update(run.seed_id, { status: "in_progress" });
 
       // Spawn the resumed agent
-      const { sessionKey, tmuxSession } = await this.resumeAgent(
+      const { sessionKey } = await this.resumeAgent(
         model,
         run.worktree_path,
         { id: run.seed_id, title: run.seed_id },
@@ -379,7 +378,6 @@ export class Dispatcher {
         session_key: sessionKey,
         status: "running",
         started_at: new Date().toISOString(),
-        ...(tmuxSession ? { tmux_session: tmuxSession } : {}),
       });
 
       resumed.push({
@@ -595,7 +593,7 @@ export class Dispatcher {
       skipReview?: boolean;
     },
     notifyUrl?: string,
-  ): Promise<{ sessionKey: string; tmuxSession?: string }> {
+  ): Promise<{ sessionKey: string }> {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
@@ -606,7 +604,7 @@ export class Dispatcher {
 
     const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
 
-    const spawnResult = await spawnWorkerProcess({
+    await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
       seedId: seed.id,
@@ -625,7 +623,7 @@ export class Dispatcher {
       seedType,
     });
 
-    return { sessionKey, tmuxSession: spawnResult.tmuxSession };
+    return { sessionKey };
   }
 
   // ── Session Resume ───────────────────────────────────────────────────
@@ -642,7 +640,7 @@ export class Dispatcher {
     sdkSessionId: string,
     telemetry?: boolean,
     notifyUrl?: string,
-  ): Promise<{ sessionKey: string; tmuxSession?: string }> {
+  ): Promise<{ sessionKey: string }> {
     const resumePrompt = this.buildResumePrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
@@ -650,7 +648,7 @@ export class Dispatcher {
 
     log(`Resuming worker for ${seed.id} [${model}] session=${sdkSessionId}`);
 
-    const spawnResult = await spawnWorkerProcess({
+    await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
       seedId: seed.id,
@@ -663,7 +661,7 @@ export class Dispatcher {
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
     });
 
-    return { sessionKey, tmuxSession: spawnResult.tmuxSession };
+    return { sessionKey };
   }
 
   // ── Private helpers ───────────────────────────────────────────────────
@@ -768,7 +766,6 @@ export interface WorkerConfig {
 
 /** Result returned by a SpawnStrategy */
 export interface SpawnResult {
-  tmuxSession?: string;
 }
 
 /** Strategy interface for spawning worker processes */

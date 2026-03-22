@@ -98,7 +98,7 @@ export const doctorCommand = new Command("doctor")
       store = ForemanStore.forProject(projectPath);
       const mq = new MergeQueue(store.getDb());
       const taskClient = new BeadsRustClient(projectPath);
-      const doctor = new Doctor(store, projectPath, mq, undefined, taskClient);
+      const doctor = new Doctor(store, projectPath, mq, taskClient);
 
       const report = await doctor.runAll({ fix, dryRun });
 

@@ -84,13 +84,11 @@ function createTestRun(
     overrides.worktreePath ?? "/tmp/wt",
   );
   const updates: Partial<
-    Pick<Run, "status" | "session_key" | "tmux_session" | "started_at">
+    Pick<Run, "status" | "session_key" | "started_at">
   > = {};
   if (overrides.status) updates.status = overrides.status;
   if (overrides.sessionKey !== undefined)
     updates.session_key = overrides.sessionKey;
-  if (overrides.tmuxSession !== undefined)
-    updates.tmux_session = overrides.tmuxSession;
   if (overrides.startedAt !== undefined)
     updates.started_at = overrides.startedAt;
   if (Object.keys(updates).length > 0) store.updateRun(run.id, updates);

@@ -404,9 +404,7 @@ describe("Dispatcher.resumeRuns — seed in_progress marking", () => {
       status: "stuck" as const,
       started_at: null,
       completed_at: null,
-      created_at: new Date().toISOString(),
-      tmux_session: null,
-      ...overrides,
+      created_at: new Date().toISOString(),      ...overrides,
     };
   }
 

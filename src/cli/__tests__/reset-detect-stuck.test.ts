@@ -16,9 +16,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     started_at: new Date().toISOString(),
     completed_at: null,
     created_at: new Date().toISOString(),
-    progress: null,
-    tmux_session: null,
-    ...overrides,
+    progress: null,    ...overrides,
   };
 }
 
@@ -90,105 +88,6 @@ describe("detectStuckRuns", () => {
     expect(store.updateRun).not.toHaveBeenCalled();
   });
 
-  it("detects stuck run via dead tmux session (before timeout check)", async () => {
-    const { store } = makeMocks();
-    // Run started recently — would NOT be stuck by timeout alone
-    const run = makeRun({
-      started_at: new Date().toISOString(),
-      tmux_session: "foreman-seed-abc",
-    });
-    store.getActiveRuns.mockReturnValue([run]);
-
-    const tmux = { hasSession: vi.fn(async () => false) }; // dead session
-
-    const result = await detectStuckRuns(store as any, "proj-1", {
-      stuckTimeoutMinutes: 60,
-      tmux,
-    });
-
-    expect(result.stuck).toHaveLength(1);
-    expect(result.stuck[0].status).toBe("stuck");
-    expect(tmux.hasSession).toHaveBeenCalledWith("foreman-seed-abc");
-    expect(store.logEvent).toHaveBeenCalledWith(
-      run.project_id,
-      "stuck",
-      expect.objectContaining({ detectedBy: "tmux-liveness", tmuxSession: "foreman-seed-abc" }),
-      run.id,
-    );
-  });
-
-  it("does not mark as stuck when tmux session is alive", async () => {
-    const { store } = makeMocks();
-    const run = makeRun({
-      started_at: new Date().toISOString(),
-      tmux_session: "foreman-seed-abc",
-    });
-    store.getActiveRuns.mockReturnValue([run]);
-
-    const tmux = { hasSession: vi.fn(async () => true) }; // alive session
-
-    const result = await detectStuckRuns(store as any, "proj-1", {
-      stuckTimeoutMinutes: 60,
-      tmux,
-    });
-
-    expect(result.stuck).toHaveLength(0);
-    expect(store.updateRun).not.toHaveBeenCalled();
-  });
-
-  it("tmux check runs BEFORE timeout check", async () => {
-    const { store } = makeMocks();
-    // Run started long ago AND has a dead tmux session
-    const longAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const run = makeRun({
-      started_at: longAgo,
-      tmux_session: "foreman-seed-abc",
-    });
-    store.getActiveRuns.mockReturnValue([run]);
-
-    const tmux = { hasSession: vi.fn(async () => false) }; // dead session
-
-    const result = await detectStuckRuns(store as any, "proj-1", {
-      stuckTimeoutMinutes: 15,
-      tmux,
-    });
-
-    expect(result.stuck).toHaveLength(1);
-    // Should be detected via tmux, not timeout
-    expect(store.logEvent).toHaveBeenCalledWith(
-      run.project_id,
-      "stuck",
-      expect.objectContaining({ detectedBy: "tmux-liveness" }),
-      run.id,
-    );
-    // Should only be called once (tmux check short-circuits timeout check)
-    expect(store.updateRun).toHaveBeenCalledTimes(1);
-  });
-
-  it("skips tmux check when run has no tmux_session", async () => {
-    const { store } = makeMocks();
-    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-    const run = makeRun({ started_at: thirtyMinAgo, tmux_session: null });
-    store.getActiveRuns.mockReturnValue([run]);
-
-    const tmux = { hasSession: vi.fn(async () => false) };
-
-    const result = await detectStuckRuns(store as any, "proj-1", {
-      stuckTimeoutMinutes: 15,
-      tmux,
-    });
-
-    // Should still detect as stuck via timeout
-    expect(result.stuck).toHaveLength(1);
-    expect(tmux.hasSession).not.toHaveBeenCalled();
-    expect(store.logEvent).toHaveBeenCalledWith(
-      run.project_id,
-      "stuck",
-      expect.objectContaining({ detectedBy: "timeout" }),
-      run.id,
-    );
-  });
-
   it("does not update store in dry-run mode", async () => {
     const { store } = makeMocks();
     const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
@@ -201,27 +100,6 @@ describe("detectStuckRuns", () => {
     });
 
     // Should report stuck, but not modify store
-    expect(result.stuck).toHaveLength(1);
-    expect(store.updateRun).not.toHaveBeenCalled();
-    expect(store.logEvent).not.toHaveBeenCalled();
-  });
-
-  it("does not update store in dry-run mode (tmux path)", async () => {
-    const { store } = makeMocks();
-    const run = makeRun({
-      started_at: new Date().toISOString(),
-      tmux_session: "foreman-seed-abc",
-    });
-    store.getActiveRuns.mockReturnValue([run]);
-
-    const tmux = { hasSession: vi.fn(async () => false) };
-
-    const result = await detectStuckRuns(store as any, "proj-1", {
-      stuckTimeoutMinutes: 60,
-      tmux,
-      dryRun: true,
-    });
-
     expect(result.stuck).toHaveLength(1);
     expect(store.updateRun).not.toHaveBeenCalled();
     expect(store.logEvent).not.toHaveBeenCalled();
@@ -244,27 +122,6 @@ describe("detectStuckRuns", () => {
     expect(result.stuck[0].seed_id).toBe("seed-stuck");
     expect(store.updateRun).toHaveBeenCalledTimes(1);
     expect(store.updateRun).toHaveBeenCalledWith("run-stuck", { status: "stuck" });
-  });
-
-  it("records error for individual run failures (does not abort entire loop)", async () => {
-    const { store } = makeMocks();
-    const run = makeRun({ started_at: new Date().toISOString(), tmux_session: "session-x" });
-    store.getActiveRuns.mockReturnValue([run]);
-
-    const tmux = {
-      hasSession: vi.fn(async () => {
-        throw new Error("tmux unexpected error");
-      }),
-    };
-
-    const result = await detectStuckRuns(store as any, "proj-1", {
-      stuckTimeoutMinutes: 60,
-      tmux,
-    });
-
-    expect(result.stuck).toHaveLength(0);
-    expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toContain("seed-abc");
   });
 
   it("uses PIPELINE_LIMITS.stuckDetectionMinutes as default timeout", async () => {

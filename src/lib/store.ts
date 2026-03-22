@@ -27,7 +27,8 @@ export interface Run {
   completed_at: string | null;
   created_at: string;
   progress: string | null;
-  tmux_session: string | null;
+  /** @deprecated tmux removed; column kept for DB backward compat */
+  tmux_session?: string | null;
 }
 
 export interface Cost {
@@ -486,7 +487,7 @@ export class ForemanStore {
 
   updateRun(
     id: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "tmux_session">>
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at">>
   ): void {
     const fields: string[] = [];
     const values: Record<string, unknown> = { id };

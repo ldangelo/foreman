@@ -8,7 +8,6 @@ import { getRepoRoot, getCurrentBranch } from "../../lib/git.js";
 import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
 import { existsSync, readdirSync } from "node:fs";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
-import { TmuxClient } from "../../lib/tmux.js";
 import type { UpdateOptions } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
@@ -138,8 +137,7 @@ export interface StuckDetectionResult {
 
 /**
  * Detect stuck active runs by:
- *  1. Tmux liveness check — if a tmux session is dead, the run is stuck.
- *  2. Timeout check — if elapsed time > stuckTimeoutMinutes, the run is stuck.
+ *  1. Timeout check — if elapsed time > stuckTimeoutMinutes, the run is stuck.
  *
  * Updates the store for each newly-detected stuck run and returns the list.
  * Runs that are already in "stuck" status are not re-detected here (they will
@@ -150,13 +148,11 @@ export async function detectStuckRuns(
   projectId: string,
   opts?: {
     stuckTimeoutMinutes?: number;
-    tmux?: Pick<TmuxClient, "hasSession">;
     dryRun?: boolean;
   },
 ): Promise<StuckDetectionResult> {
   const stuckTimeout = opts?.stuckTimeoutMinutes ?? PIPELINE_LIMITS.stuckDetectionMinutes;
   const dryRun = opts?.dryRun ?? false;
-  const tmux = opts?.tmux;
 
   // Only look at "running" (not pending/failed/stuck — those are handled elsewhere)
   const activeRuns = store.getActiveRuns(projectId).filter((r) => r.status === "running");
@@ -167,29 +163,7 @@ export async function detectStuckRuns(
 
   for (const run of activeRuns) {
     try {
-      // 1. Tmux liveness check (runs BEFORE seed-status check, matching Monitor priority)
-      if (tmux && run.tmux_session) {
-        const tmuxAlive = await tmux.hasSession(run.tmux_session);
-        if (!tmuxAlive) {
-          if (!dryRun) {
-            store.updateRun(run.id, { status: "stuck" });
-            store.logEvent(
-              run.project_id,
-              "stuck",
-              {
-                seedId: run.seed_id,
-                detectedBy: "tmux-liveness",
-                tmuxSession: run.tmux_session,
-              },
-              run.id,
-            );
-          }
-          stuck.push({ ...run, status: "stuck" });
-          continue;
-        }
-      }
-
-      // 2. Timeout check — if elapsed time exceeds stuckTimeout
+      // Timeout check — if elapsed time exceeds stuckTimeout
       if (run.started_at) {
         const startedAt = new Date(run.started_at).getTime();
         const elapsedMinutes = (now - startedAt) / (1000 * 60);
@@ -312,16 +286,11 @@ export const resetCommand = new Command("reset")
 
       const mergeQueue = new MergeQueue(store.getDb());
 
-      // Shared TmuxClient — used for both stuck detection and session cleanup
-      const tmux = new TmuxClient();
-      const tmuxAvailable = await tmux.isAvailable();
-
       // Optional: run stuck detection first, mark newly-stuck runs in the store
       if (detectStuck) {
         console.log(chalk.bold("Detecting stuck runs...\n"));
         const detectionResult = await detectStuckRuns(store, project.id, {
           stuckTimeoutMinutes: timeoutMinutes,
-          tmux: tmuxAvailable ? tmux : undefined,
           dryRun,
         });
 
@@ -604,15 +573,7 @@ export const resetCommand = new Command("reset")
         }
       }
 
-      // 7. Kill all foreman tmux sessions
-      if (!dryRun) {
-        const tmuxResult = await cleanupTmuxSessions(tmux);
-        if (!tmuxResult.skipped && tmuxResult.killed > 0) {
-          console.log(`\n  ${chalk.yellow("Killed")} ${tmuxResult.killed} tmux session(s)`);
-        }
-      }
-
-      // 8. Detect and fix seed/run state mismatches for terminal runs
+      // 7. Detect and fix seed/run state mismatches for terminal runs
       console.log(chalk.bold("\nChecking for seed/run state mismatches..."));
       const mismatchResult = await detectAndFixMismatches(store, seeds, project.id, seedIds, { dryRun });
 
@@ -664,43 +625,6 @@ export const resetCommand = new Command("reset")
       process.exit(1);
     }
   });
-
-// ── Tmux cleanup ─────────────────────────────────────────────────────────
-
-export interface TmuxCleanupResult {
-  killed: number;
-  errors: number;
-  skipped: boolean;
-}
-
-/**
- * Kill all foreman-* tmux sessions.
- * Skips silently if tmux is unavailable.
- * Individual kill failures do not abort the loop.
- */
-export async function cleanupTmuxSessions(
-  tmux: Pick<TmuxClient, "isAvailable" | "listForemanSessions" | "killSession">,
-): Promise<TmuxCleanupResult> {
-  const available = await tmux.isAvailable();
-  if (!available) {
-    return { killed: 0, errors: 0, skipped: true };
-  }
-
-  const sessions = await tmux.listForemanSessions();
-  let killed = 0;
-  let errors = 0;
-
-  for (const session of sessions) {
-    const success = await tmux.killSession(session.sessionName);
-    if (success) {
-      killed++;
-    } else {
-      errors++;
-    }
-  }
-
-  return { killed, errors, skipped: false };
-}
 
 function extractPid(sessionKey: string | null): number | null {
   if (!sessionKey) return null;

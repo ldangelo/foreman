@@ -298,7 +298,7 @@ describe("PiRpcSpawnStrategy.spawn()", () => {
     expect(fakeProcess.unref).toHaveBeenCalledOnce();
   });
 
-  it("returns empty SpawnResult (no tmuxSession)", async () => {
+  it("returns empty SpawnResult", async () => {
     const fakeProcess = makeFakeProcess();
     spawnMock.mockReturnValue(fakeProcess);
     execFileSyncMock.mockReturnValue("/opt/homebrew/bin/pi");
@@ -307,7 +307,6 @@ describe("PiRpcSpawnStrategy.spawn()", () => {
     const result = await strategy.spawn(makeConfig());
 
     expect(result).toEqual({});
-    expect(result.tmuxSession).toBeUndefined();
   });
 
   it("uses explorer phase config when FOREMAN_PHASE=explorer", async () => {

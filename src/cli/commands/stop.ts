@@ -3,7 +3,6 @@ import chalk from "chalk";
 
 import { ForemanStore, type Run } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
-import { TmuxClient } from "../../lib/tmux.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -31,7 +30,6 @@ export async function stopAction(
   store: ForemanStore,
   projectPath: string,
 ): Promise<number> {
-  const tmux = new TmuxClient();
   const dryRun = opts.dryRun ?? false;
   const force = opts.force ?? false;
 
@@ -64,7 +62,7 @@ export async function stopAction(
       return 1;
     }
 
-    const result = await stopRun(run, store, tmux, { dryRun, force });
+    const result = await stopRun(run, store, { dryRun, force });
     printStopResult(run, result);
     return result.errors.length > 0 ? 1 : 0;
   }
@@ -83,7 +81,7 @@ export async function stopAction(
   const allErrors: string[] = [];
 
   for (const run of activeRuns) {
-    const result = await stopRun(run, store, tmux, { dryRun, force });
+    const result = await stopRun(run, store, { dryRun, force });
     printStopResult(run, result);
     if (result.stopped > 0) stoppedRunIds.add(run.id);
     allErrors.push(...result.errors);
@@ -120,7 +118,6 @@ export async function stopAction(
 async function stopRun(
   run: Run,
   store: ForemanStore,
-  tmux: TmuxClient,
   opts: { dryRun: boolean; force: boolean },
 ): Promise<StopResult> {
   const { dryRun, force } = opts;
@@ -134,27 +131,7 @@ async function stopRun(
   const pid = extractPid(run.session_key);
   const signal = force ? "SIGKILL" : "SIGTERM";
 
-  // 1. Kill tmux session if available
-  if (run.tmux_session) {
-    console.log(`    ${chalk.yellow("kill")} tmux session ${run.tmux_session}`);
-    if (!dryRun) {
-      try {
-        const killed = await tmux.killSession(run.tmux_session);
-        if (killed) {
-          processKilled = true;
-          console.log(`    ${chalk.green("ok")} killed tmux session ${run.tmux_session}`);
-        } else {
-          console.log(`    ${chalk.dim("skip")} tmux session ${run.tmux_session} not found`);
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        errors.push(`Failed to kill tmux session ${run.tmux_session}: ${msg}`);
-        console.log(`    ${chalk.red("error")} killing tmux session: ${msg}`);
-      }
-    }
-  }
-
-  // 2. Kill process by PID if available (check after tmux kill; SIGHUP may have already reaped it)
+  // Kill process by PID if available
   if (pid && isAlive(pid)) {
     console.log(`    ${chalk.yellow("send")} ${signal} to pid ${pid}`);
     if (!dryRun) {
@@ -167,10 +144,10 @@ async function stopRun(
         console.log(`    ${chalk.red("error")} sending ${signal} to pid ${pid}: ${msg}`);
       }
     }
-  } else if (!run.tmux_session && !pid) {
-    // No session handle found — warn but still mark stuck so foreman run won't re-queue as running
+  } else if (!pid) {
+    // No pid found — warn but still mark stuck so foreman run won't re-queue as running
     console.log(
-      `    ${chalk.yellow("warn")} no tmux session or pid found — marking stuck anyway`,
+      `    ${chalk.yellow("warn")} no pid found — marking stuck anyway`,
     );
   }
 
@@ -214,15 +191,13 @@ export function listActiveRuns(store: ForemanStore, projectPath: string): void {
     "STATUS".padEnd(12) +
     "AGENT".padEnd(24) +
     "ELAPSED".padEnd(12) +
-    "TMUX".padEnd(24) +
     "PID",
   );
-  console.log("  " + "\u2500".repeat(110));
+  console.log("  " + "\u2500".repeat(84));
 
   for (const run of activeRuns) {
     const pid = extractPid(run.session_key);
     const pidStr = pid ? String(pid) : "(none)";
-    const tmuxName = run.tmux_session ?? "(none)";
     const elapsed = formatElapsed(run.started_at);
 
     console.log(
@@ -231,7 +206,6 @@ export function listActiveRuns(store: ForemanStore, projectPath: string): void {
       run.status.padEnd(12) +
       run.agent_type.padEnd(24) +
       elapsed.padEnd(12) +
-      tmuxName.padEnd(24) +
       pidStr,
     );
   }

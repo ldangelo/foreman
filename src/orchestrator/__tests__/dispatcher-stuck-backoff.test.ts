@@ -33,9 +33,7 @@ function makeRun(overrides?: Partial<Run>): Run {
     started_at: null,
     completed_at: new Date().toISOString(),
     created_at: new Date().toISOString(),
-    progress: null,
-    tmux_session: null,
-    ...overrides,
+    progress: null,    ...overrides,
   };
 }
 
