@@ -3,6 +3,10 @@ import Database from "better-sqlite3";
 import { MergeQueue } from "../merge-queue.js";
 import type { MergeQueueEntry, MergeQueueStatus } from "../merge-queue.js";
 
+vi.mock("../../lib/git.js", () => ({
+  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+}));
+
 // Minimal schema needed for tests (merge_queue + runs for FK)
 const TEST_SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (

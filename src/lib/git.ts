@@ -330,7 +330,7 @@ export async function deleteBranch(
   options?: { force?: boolean; targetBranch?: string },
 ): Promise<DeleteBranchResult> {
   const force = options?.force ?? false;
-  const targetBranch = options?.targetBranch ?? "main";
+  const targetBranch = options?.targetBranch ?? await detectDefaultBranch(repoPath);
 
   // Check if branch exists
   try {

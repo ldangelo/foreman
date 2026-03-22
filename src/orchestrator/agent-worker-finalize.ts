@@ -20,6 +20,7 @@ import { execFileSync } from "node:child_process";
 import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
+import { detectDefaultBranch } from "../lib/git.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -272,6 +273,7 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
 
   // Enqueue to merge queue (fire-and-forget — must not block finalization)
   if (pushSucceeded) {
+    const defaultBranch = await detectDefaultBranch(storeProjectPath).catch(() => "main");
     try {
       const enqueueStore = ForemanStore.forProject(storeProjectPath);
       const enqueueResult = enqueueToMergeQueue({
@@ -280,7 +282,7 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
         runId: config.runId,
         worktreePath,
         getFilesModified: () => {
-          const output = execFileSync("git", ["diff", "--name-only", "main...HEAD"], opts).toString().trim();
+          const output = execFileSync("git", ["diff", "--name-only", `${defaultBranch}...HEAD`], opts).toString().trim();
           return output ? output.split("\n") : [];
         },
       });

@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { orderByCluster } from "./conflict-cluster.js";
+import { detectDefaultBranch } from "../lib/git.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -369,6 +370,8 @@ export class MergeQueue {
     const existingRunIds = new Set(mqRows.map((r) => r.run_id));
     const existingSeedIds = new Set(mqRows.map((r) => r.seed_id));
 
+    const defaultBranch = await detectDefaultBranch(repoPath);
+
     let enqueued = 0;
     let skipped = 0;
     let invalidBranch = 0;
@@ -408,7 +411,7 @@ export class MergeQueue {
       try {
         const { stdout } = await execFileAsync(
           "git",
-          ["diff", "--name-only", `main...${branchName}`],
+          ["diff", "--name-only", `${defaultBranch}...${branchName}`],
           { cwd: repoPath }
         );
         filesModified = stdout.trim().split("\n").filter(Boolean);
@@ -485,7 +488,7 @@ export class MergeQueue {
       try {
         const { stdout } = await execFileAsync(
           "git",
-          ["diff", "--name-only", `main...${branchName}`],
+          ["diff", "--name-only", `${defaultBranch}...${branchName}`],
           { cwd: repoPath }
         );
         recoveredFiles = stdout.trim().split("\n").filter(Boolean);

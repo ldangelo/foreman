@@ -2,6 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { MergeQueue } from "../merge-queue.js";
 
+vi.mock("../../lib/git.js", () => ({
+  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+}));
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT, path TEXT UNIQUE, status TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, project_id TEXT, seed_id TEXT, agent_type TEXT, status TEXT DEFAULT 'pending', created_at TEXT, completed_at TEXT, worktree_path TEXT, FOREIGN KEY (project_id) REFERENCES projects(id));
