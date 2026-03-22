@@ -838,13 +838,20 @@ async function finalize(
           worktreePath,
         });
       } else {
-        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error}`);
-        report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueResult.error?.slice(0, 300)}`, "");
+        const enqueueErr = enqueueResult.error ?? "Merge queue enqueue failed";
+        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueErr}`);
+        report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueErr.slice(0, 300)}`, "");
+        sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: "finalize", error: enqueueErr, retryable: false,
+        });
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${msg}`);
       report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
+      sendMail(agentMailClient, "foreman", "agent-error", {
+        seedId, phase: "finalize", error: msg, retryable: false,
+      });
     }
   }
 
