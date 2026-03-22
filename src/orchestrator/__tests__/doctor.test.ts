@@ -809,15 +809,32 @@ describe("Doctor", () => {
     });
 
     it("returns pass when git town main branch matches repo default", async () => {
-      // Use the real foreman repo which has git-town.main-branch=main configured
+      // Use the real foreman repo — read the actual configured branch dynamically
+      // so this test stays valid regardless of what git-town.main-branch is set to.
       const store = { getProjectByPath: vi.fn(() => null as any) };
-      const doctor = new Doctor(store as any, "/Users/ldangelo/Development/Fortium/foreman");
+      const repoPath = "/Users/ldangelo/Development/Fortium/foreman";
+      const doctor = new Doctor(store as any, repoPath);
 
       // Skip if git town is not installed in this environment
       const installed = await doctor.checkGitTownInstalled();
       if (installed.status !== "pass") return;
 
-      mockDetectDefaultBranch.mockResolvedValue("main");
+      // Read the actual git-town.main-branch so we can mock detectDefaultBranch to match
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const execFileAsync = promisify(execFile);
+      let configuredBranch: string;
+      try {
+        const { stdout } = await execFileAsync("git", ["config", "--get", "git-town.main-branch"], { cwd: repoPath });
+        configuredBranch = stdout.trim();
+      } catch {
+        // git-town not configured in this repo — skip
+        return;
+      }
+      if (!configuredBranch) return;
+
+      // Mock detectDefaultBranch to return the same branch so checkGitTownMainBranch → "pass"
+      mockDetectDefaultBranch.mockResolvedValue(configuredBranch);
       const result = await doctor.checkGitTownMainBranch();
       expect(result.status).toBe("pass");
       expect(result.name).toBe("git town main branch configured");
