@@ -4,6 +4,7 @@ import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ForemanStore } from "../lib/store.js";
+import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import type { BeadGraph } from "../lib/beads.js";
 import type { UpdateOptions } from "../lib/task-client.js";
 import { mergeWorktree, removeWorktree, detectDefaultBranch, gitBranchExists } from "../lib/git.js";
@@ -79,6 +80,27 @@ export class Refinery {
     private projectPath: string,
   ) {
     this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG);
+  }
+
+  /**
+   * Send a fire-and-forget mail message from the refinery process.
+   * Creates a fresh SqliteMailClient scoped to the given run.
+   * Silent failure — mail is non-critical infrastructure.
+   */
+  private async sendRefineryMail(
+    runId: string,
+    subject: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const client = new SqliteMailClient();
+      client.agentName = "refinery";
+      await client.ensureProject(this.projectPath);
+      client.setRunId(runId);
+      await client.sendMessage("foreman", subject, JSON.stringify(body));
+    } catch {
+      // Silent failure — mail is non-critical infrastructure
+    }
   }
 
   /**
@@ -439,6 +461,15 @@ export class Refinery {
         if (!branchCommits.trim()) {
           console.warn(`[Refinery] Branch ${branchName} has no commits beyond ${targetBranch} — agent may not have committed work`);
           await this.addFailureNote(run.seed_id, `Branch ${branchName} has no unique commits beyond ${targetBranch}. The agent may not have committed its work. Manual intervention required — do not auto-reset.`);
+
+          // Send merge-failed mail for no-commits case
+          await this.sendRefineryMail(run.id, "merge-failed", {
+            seedId: run.seed_id,
+            branchName,
+            reason: "no-commits",
+            runId: run.id,
+          });
+
           conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
           continue;
         }
@@ -450,6 +481,16 @@ export class Refinery {
           const markedFiles = await this.scanForConflictMarkers(branchName, targetBranch);
           if (markedFiles.length > 0) {
             await resetSeedToOpen(run.seed_id, this.projectPath);
+
+            // Send merge-failed mail for conflict markers
+            await this.sendRefineryMail(run.id, "merge-failed", {
+              seedId: run.seed_id,
+              branchName,
+              reason: "conflict-markers",
+              conflictFiles: markedFiles,
+              runId: run.id,
+            });
+
             const pr = await this.createPrForConflict(
               run,
               branchName,
@@ -530,6 +571,15 @@ export class Refinery {
             );
             // Rebase failed — reset seed to open so it can be retried, then create a PR for manual conflict resolution
             await resetSeedToOpen(run.seed_id, this.projectPath);
+
+            // Send merge-failed mail for rebase conflict
+            await this.sendRefineryMail(run.id, "merge-failed", {
+              seedId: run.seed_id,
+              branchName,
+              reason: "rebase-conflict",
+              runId: run.id,
+            });
+
             const pr = await this.createPrForConflict(run, branchName, targetBranch, "Rebase conflicts");
             if (pr) {
               prsCreated.push(pr);
@@ -572,6 +622,15 @@ export class Refinery {
 
             // Reset seed to open so it can be retried after manual conflict resolution
             await resetSeedToOpen(run.seed_id, this.projectPath);
+
+            // Send merge-failed mail for code conflict
+            await this.sendRefineryMail(run.id, "merge-failed", {
+              seedId: run.seed_id,
+              branchName,
+              reason: "code-conflict",
+              conflictFiles: codeConflicts,
+              runId: run.id,
+            });
 
             const pr = await this.createPrForConflict(run, branchName, targetBranch,
               `Conflicts in: ${codeConflicts.join(", ")}`);
@@ -618,6 +677,16 @@ export class Refinery {
               { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
               run.id,
             );
+
+            // Send merge-failed mail for test failure
+            await this.sendRefineryMail(run.id, "merge-failed", {
+              seedId: run.seed_id,
+              branchName,
+              reason: "test-failure",
+              error: testResult.output.slice(0, 500),
+              runId: run.id,
+            });
+
             testFailures.push({
               runId: run.id,
               seedId: run.seed_id,
@@ -653,9 +722,25 @@ export class Refinery {
           run.id,
         );
 
+        // Send merge-complete mail BEFORE closing bead so the audit trail shows the merge event
+        await this.sendRefineryMail(run.id, "merge-complete", {
+          seedId: run.seed_id,
+          branchName,
+          targetBranch,
+          runId: run.id,
+        });
+
         // Close the bead NOW — after the code has actually landed in main.
         // projectPath (repo root) is where .beads/ lives; not the worktree dir.
         await closeSeed(run.seed_id, this.projectPath);
+
+        // Send bead-closed mail after the bead is confirmed closed
+        await this.sendRefineryMail(run.id, "bead-closed", {
+          seedId: run.seed_id,
+          branchName,
+          targetBranch,
+          runId: run.id,
+        });
 
         // Rebase any stacked branches (seeds that branched from this one) onto target.
         await this.rebaseStackedBranches(branchName, targetBranch);
@@ -677,6 +762,16 @@ export class Refinery {
           run.id,
         );
         await this.addFailureNote(run.seed_id, `Merge failed: ${message.slice(0, 400)}`);
+
+        // Send merge-failed mail for unexpected error
+        await this.sendRefineryMail(run.id, "merge-failed", {
+          seedId: run.seed_id,
+          branchName,
+          reason: "error",
+          error: message.slice(0, 500),
+          runId: run.id,
+        });
+
         testFailures.push({
           runId: run.id,
           seedId: run.seed_id,
