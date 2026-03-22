@@ -62,12 +62,22 @@ function resolveLatestRunId(store: ForemanStore): string | null {
   return runs[0]?.id ?? null;
 }
 
+function resolveRunIdBySeed(store: ForemanStore, seedId: string): string | null {
+  const runs = store.getRunsByStatuses(
+    ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
+  );
+  const seedRuns = runs.filter((r) => r.seed_id === seedId);
+  // Runs are returned DESC by created_at, so [0] is most recent
+  return seedRuns[0]?.id ?? null;
+}
+
 // ── Main command ──────────────────────────────────────────────────────────────
 
 export const inboxCommand = new Command("inbox")
   .description("View the SQLite message inbox for agents in a pipeline run")
   .option("--agent <name>", "Filter to a specific agent/role (default: show all)")
   .option("--run <id>", "Filter to a specific run ID (default: latest run)")
+  .option("--seed <id>", "Resolve run by seed/bead ID (uses most recent run for that seed)")
   .option("--watch", "Poll every 2s for new messages (shows only new ones)")
   .option("--unread", "Show only unread messages")
   .option("--limit <n>", "Max messages to show", "50")
@@ -75,6 +85,7 @@ export const inboxCommand = new Command("inbox")
   .action(async (options: {
     agent?: string;
     run?: string;
+    seed?: string;
     watch?: boolean;
     unread?: boolean;
     limit?: string;
@@ -93,7 +104,9 @@ export const inboxCommand = new Command("inbox")
     const store = ForemanStore.forProject(projectPath);
 
     try {
-      const runId = options.run ?? resolveLatestRunId(store);
+      const runId = options.run
+        ?? (options.seed ? resolveRunIdBySeed(store, options.seed) : null)
+        ?? resolveLatestRunId(store);
       if (!runId) {
         console.error("No runs found. Start a pipeline first with `foreman run`.");
         process.exit(1);
