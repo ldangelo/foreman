@@ -12,6 +12,7 @@ import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue.js";
 import type { ITaskClient } from "../lib/task-client.js";
+import { findMissingPrompts, installBundledPrompts } from "../lib/prompt-loader.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -255,12 +256,76 @@ export class Doctor {
     };
   }
 
-  async checkRepository(): Promise<CheckResult[]> {
+  /**
+   * Check that all required prompt files are installed in .foreman/prompts/.
+   * With --fix, reinstalls missing prompts from bundled defaults.
+   */
+  async checkPrompts(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
+    const missing = findMissingPrompts(this.projectPath);
+
+    if (missing.length === 0) {
+      return {
+        name: "prompt templates (.foreman/prompts/)",
+        status: "pass",
+        message: "All required prompt files are installed",
+      };
+    }
+
+    const missingList = missing.join(", ");
+
+    if (dryRun) {
+      return {
+        name: "prompt templates (.foreman/prompts/)",
+        status: "fail",
+        message: `${missing.length} missing prompt file(s): ${missingList}. Would reinstall (dry-run).`,
+      };
+    }
+
+    if (fix) {
+      try {
+        const { installed } = installBundledPrompts(this.projectPath, false);
+        // Re-check after install
+        const stillMissing = findMissingPrompts(this.projectPath);
+        if (stillMissing.length === 0) {
+          return {
+            name: "prompt templates (.foreman/prompts/)",
+            status: "fixed",
+            message: `${missing.length} missing prompt file(s)`,
+            fixApplied: `Installed ${installed.length} prompt file(s) from bundled defaults`,
+          };
+        } else {
+          return {
+            name: "prompt templates (.foreman/prompts/)",
+            status: "fail",
+            message: `${stillMissing.length} prompt file(s) still missing after reinstall: ${stillMissing.join(", ")}`,
+          };
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          name: "prompt templates (.foreman/prompts/)",
+          status: "fail",
+          message: `Failed to reinstall prompts: ${msg}`,
+        };
+      }
+    }
+
+    return {
+      name: "prompt templates (.foreman/prompts/)",
+      status: "fail",
+      message: `${missing.length} missing prompt file(s): ${missingList}. Run 'foreman init' or 'foreman doctor --fix' to reinstall.`,
+    };
+  }
+
+  async checkRepository(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check for .beads initialization.
     const results: CheckResult[] = [];
     results.push(await this.checkDatabaseFile());
     results.push(await this.checkProjectRegistered());
     results.push(await this.checkBeadsInitialized());
+    results.push(await this.checkPrompts(opts));
     return results;
   }
 
@@ -1094,7 +1159,7 @@ export class Doctor {
   async runAll(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<DoctorReport> {
     const [system, repository, dataIntegrity] = await Promise.all([
       this.checkSystem(),
-      this.checkRepository(),
+      this.checkRepository(opts),
       this.checkDataIntegrity(opts),
     ]);
 

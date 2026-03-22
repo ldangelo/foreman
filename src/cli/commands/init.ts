@@ -7,6 +7,7 @@ import { basename, join, resolve } from "node:path";
 
 import { homedir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
+import { installBundledPrompts } from "../../lib/prompt-loader.js";
 
 // ── Backend-specific init logic (TRD-018) ─────────────────────────────────
 
@@ -90,12 +91,28 @@ export async function initProjectStore(
 
 // ── Command ────────────────────────────────────────────────────────────────
 
+/**
+ * Install bundled prompt templates to <projectDir>/.foreman/prompts/.
+ * Exported for unit testing.
+ *
+ * @param projectDir - Absolute path to the project directory
+ * @param force      - Overwrite existing prompt files
+ */
+export function installPrompts(
+  projectDir: string,
+  force: boolean = false,
+): { installed: string[]; skipped: string[] } {
+  return installBundledPrompts(projectDir, force);
+}
+
 export const initCommand = new Command("init")
   .description("Initialize foreman in a project")
   .option("-n, --name <name>", "Project name (defaults to directory name)")
+  .option("--force", "Overwrite existing prompt files when reinstalling")
   .action(async (opts) => {
     const projectDir = resolve(".");
     const projectName = opts.name ?? basename(projectDir);
+    const force = (opts.force as boolean | undefined) ?? false;
 
     console.log(
       chalk.bold(`Initializing foreman project: ${chalk.cyan(projectName)}`),
@@ -108,6 +125,27 @@ export const initCommand = new Command("init")
     const store = ForemanStore.forProject(projectDir);
     await initProjectStore(projectDir, projectName, store);
     store.close();
+
+    // Install bundled prompt templates to .foreman/prompts/
+    const spinner = ora("Installing prompt templates...").start();
+    try {
+      const { installed, skipped } = installPrompts(projectDir, force);
+      if (installed.length > 0) {
+        spinner.succeed(
+          `Installed ${installed.length} prompt template(s) to .foreman/prompts/`,
+        );
+      } else if (skipped.length > 0) {
+        spinner.info(
+          `Prompt templates already installed (${skipped.length} skipped). Use --force to overwrite.`,
+        );
+      } else {
+        spinner.succeed("Prompt templates installed");
+      }
+    } catch (e) {
+      spinner.fail("Failed to install prompt templates");
+      console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+      process.exit(1);
+    }
 
     console.log();
     console.log(chalk.green("Foreman initialized successfully!"));

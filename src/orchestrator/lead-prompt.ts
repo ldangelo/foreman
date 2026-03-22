@@ -8,6 +8,7 @@
  */
 
 import { loadAndInterpolate } from "./template-loader.js";
+import { loadPrompt } from "../lib/prompt-loader.js";
 
 export interface LeadPromptOptions {
   seedId: string;
@@ -16,26 +17,76 @@ export interface LeadPromptOptions {
   seedComments?: string;
   skipExplore?: boolean;
   skipReview?: boolean;
+  /** Absolute path to project root (contains .foreman/). When provided, uses unified loader. */
+  projectRoot?: string;
+  /** Workflow name (e.g. "default"). Defaults to "default". */
+  workflow?: string;
+}
+
+/**
+ * Internal helper: resolve a lead prompt phase using unified loader when
+ * projectRoot is available, otherwise fall back to bundled template-loader.
+ */
+function resolveLeadPrompt(
+  phase: string,
+  vars: Record<string, string | undefined>,
+  legacyFilename: string,
+  projectRoot: string | undefined,
+  workflow: string,
+): string {
+  if (projectRoot) {
+    return loadPrompt(phase, vars, workflow, projectRoot);
+  }
+  return loadAndInterpolate(legacyFilename, vars as Record<string, string>);
 }
 
 export function leadPrompt(opts: LeadPromptOptions): string {
-  const { seedId, seedTitle, seedDescription, seedComments, skipExplore, skipReview } = opts;
-  const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
-
-  const explorerSection = skipExplore
-    ? `### Explorer — SKIPPED (--skip-explore)`
-    : loadAndInterpolate("lead-prompt-explorer.md", { seedId, seedTitle, seedDescription, commentsSection });
-
-  const reviewerSection = skipReview
-    ? `### Reviewer — SKIPPED (--skip-review)`
-    : loadAndInterpolate("lead-prompt-reviewer.md", { seedId, seedTitle, seedDescription });
-
-  return loadAndInterpolate("lead-prompt.md", {
+  const {
     seedId,
     seedTitle,
     seedDescription,
-    commentsSection,
-    explorerSection,
-    reviewerSection,
-  });
+    seedComments,
+    skipExplore,
+    skipReview,
+    projectRoot,
+    workflow = "default",
+  } = opts;
+  const commentsSection = seedComments
+    ? `\n## Additional Context\n${seedComments}\n`
+    : "";
+
+  const explorerSection = skipExplore
+    ? `### Explorer — SKIPPED (--skip-explore)`
+    : resolveLeadPrompt(
+        "lead-explorer",
+        { seedId, seedTitle, seedDescription, commentsSection },
+        "lead-prompt-explorer.md",
+        projectRoot,
+        workflow,
+      );
+
+  const reviewerSection = skipReview
+    ? `### Reviewer — SKIPPED (--skip-review)`
+    : resolveLeadPrompt(
+        "lead-reviewer",
+        { seedId, seedTitle, seedDescription },
+        "lead-prompt-reviewer.md",
+        projectRoot,
+        workflow,
+      );
+
+  return resolveLeadPrompt(
+    "lead",
+    {
+      seedId,
+      seedTitle,
+      seedDescription,
+      commentsSection,
+      explorerSection,
+      reviewerSection,
+    },
+    "lead-prompt.md",
+    projectRoot,
+    workflow,
+  );
 }

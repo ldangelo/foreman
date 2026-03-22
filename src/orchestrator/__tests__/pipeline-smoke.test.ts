@@ -32,6 +32,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { ForemanStore } from "../../lib/store.js";
+import { installBundledPrompts } from "../../lib/prompt-loader.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,10 @@ describe("pipeline smoke test: explorer → developer → qa → reviewer → fi
     worktreeDir = join(tmpDir, "worktree");
     mkdirSync(projectDir, { recursive: true });
     mkdirSync(worktreeDir, { recursive: true });
+
+    // Install bundled prompt templates so the unified loader can find them.
+    // The pipeline worker will look in projectDir/.foreman/prompts/.
+    installBundledPrompts(projectDir, true);
 
     // Initialise a git repo so the finalize phase doesn't crash on git commands.
     // The finalize smoke bypass skips git/npm anyway, but the pipeline may do
@@ -520,45 +525,66 @@ describe("FOREMAN_SMOKE_TEST bypass: structural invariants", () => {
   });
 });
 
-// ── loadPrompt() resolves smoke workflow prompts ───────────────────────────────
+// ── loadPrompt() resolves prompts via unified loader ──────────────────────────
 
-describe("loadPrompt(): smoke workflow resolution", () => {
-  let tmpHome: string;
-  let smokePromptsDir: string;
+describe("loadPrompt(): unified resolution chain", () => {
+  let tmpProject: string;
 
   beforeEach(() => {
-    tmpHome = mkdtempSync(join(tmpdir(), "foreman-smoke-home-"));
-    smokePromptsDir = join(tmpHome, ".foreman", "prompts", "smoke");
-    mkdirSync(smokePromptsDir, { recursive: true });
+    tmpProject = mkdtempSync(join(tmpdir(), "foreman-promptloader-test-"));
+    // Install bundled prompts so the loader can find them
+    installBundledPrompts(tmpProject, true);
   });
 
   afterEach(() => {
-    rmSync(tmpHome, { recursive: true, force: true });
+    rmSync(tmpProject, { recursive: true, force: true });
   });
 
-  it("loadPrompt resolves smoke explorer prompt when workflow-scoped file exists", async () => {
+  it("loadPrompt resolves smoke explorer prompt when installed", async () => {
     const { loadPrompt } = await import("../../lib/prompt-loader.js");
-    const smokeContent = "# Smoke explorer prompt content";
-    writeFileSync(join(smokePromptsDir, "explorer.md"), smokeContent);
-
-    // We can't override HOME without process.env manipulation, but we can
-    // verify loadPrompt() resolution logic via source inspection and direct call.
-    // The direct call uses the real HOME, so we verify behaviour via the fallback path:
-    const fallback = "# Built-in explorer fallback";
-    // Without the smoke dir in real HOME, fallback is returned
-    const result = loadPrompt("explorer", { seedId: "x", seedTitle: "y" }, fallback, "smoke");
-    // Result is either the real smoke prompt (if installed) or the fallback
+    const result = loadPrompt("explorer", { seedId: "x", seedTitle: "y" }, "smoke", tmpProject);
     expect(typeof result).toBe("string");
     expect(result.length).toBeGreaterThan(0);
   });
 
-  it("loadPrompt fallback is used when no smoke file exists for phase", async () => {
+  it("loadPrompt resolves default explorer prompt when installed", async () => {
     const { loadPrompt } = await import("../../lib/prompt-loader.js");
-    const fallback = "# Built-in qa fallback";
-    // qa.md does not exist in the test's HOME (which won't have a smoke dir)
-    // so the fallback should be returned — the key invariant is that it doesn't throw
-    const result = loadPrompt("qa", { seedId: "x", seedTitle: "y" }, fallback, "smoke");
+    const result = loadPrompt("explorer", { seedId: "x", seedTitle: "y" }, "default", tmpProject);
     expect(typeof result).toBe("string");
-    expect(result.length).toBeGreaterThan(0);
+    expect(result).toContain("x"); // seedId interpolated
+  });
+
+  it("loadPrompt project-local override takes precedence over bundled installed", async () => {
+    const { loadPrompt } = await import("../../lib/prompt-loader.js");
+    // Write a custom override
+    const overridePath = join(tmpProject, ".foreman", "prompts", "default", "explorer.md");
+    writeFileSync(overridePath, "# Custom override: {{seedId}}");
+    const result = loadPrompt("explorer", { seedId: "override-test" }, "default", tmpProject);
+    expect(result).toBe("# Custom override: override-test");
+  });
+
+  it("loadPrompt throws PromptNotFoundError when prompt file is missing", async () => {
+    const { loadPrompt, PromptNotFoundError } = await import("../../lib/prompt-loader.js");
+    const emptyDir = mkdtempSync(join(tmpdir(), "foreman-empty-"));
+    // Use a phase name that definitely won't exist anywhere (not in project, not in HOME).
+    try {
+      expect(() =>
+        loadPrompt("nonexistent-phase-xyz-12345", { seedId: "x" }, "default", emptyDir),
+      ).toThrow(PromptNotFoundError);
+    } finally {
+      rmSync(emptyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("loadPrompt error message suggests foreman init", async () => {
+    const { loadPrompt } = await import("../../lib/prompt-loader.js");
+    const emptyDir = mkdtempSync(join(tmpdir(), "foreman-empty2-"));
+    try {
+      expect(() =>
+        loadPrompt("nonexistent-phase-abc-99999", { seedId: "x" }, "default", emptyDir),
+      ).toThrow(/foreman init/);
+    } finally {
+      rmSync(emptyDir, { recursive: true, force: true });
+    }
   });
 });
