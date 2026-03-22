@@ -64,10 +64,10 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 - `packages/foreman-pi-extensions/` — Pi RPC spawn strategy extensions (tool-gate, budget-enforcer, audit-logger)
 
 **Agent pipeline** (orchestrated by TypeScript, not AI):
-1. **Explorer** (Haiku, 30 turns) — read-only codebase analysis -> EXPLORER_REPORT.md
-2. **Developer** (Sonnet, 80 turns) — implementation + tests
-3. **QA** (Sonnet, 30 turns) — test verification -> QA_REPORT.md
-4. **Reviewer** (Sonnet, 20 turns) — code review -> REVIEW.md
+1. **Explorer** (Haiku, $1.00 budget) — read-only codebase analysis -> EXPLORER_REPORT.md
+2. **Developer** (Sonnet, $5.00 budget) — implementation + tests
+3. **QA** (Sonnet, $3.00 budget) — test verification -> QA_REPORT.md
+4. **Reviewer** (Sonnet, $2.00 budget) — code review -> REVIEW.md
 5. **Finalize** — git add/commit/push, br close
 
 Dev <-> QA retries up to 2x before proceeding to Review. Reviewer FAILs on CRITICAL/WARNING issues.
