@@ -240,8 +240,35 @@ export class Dispatcher {
           branchName,
         }, run.id);
 
+        // 5a. Send worktree-created mail so inbox shows worktree lifecycle event
+        try {
+          this.store.sendMessage(run.id, "foreman", "foreman", "worktree-created", JSON.stringify({
+            seedId: seed.id,
+            title: seed.title,
+            worktreePath,
+            branchName,
+            model,
+            timestamp: new Date().toISOString(),
+          }));
+        } catch {
+          // Non-fatal — mail is optional infrastructure
+        }
+
         // 6. Mark seed as in_progress before spawning agent
         await this.seeds.update(seed.id, { status: "in_progress" });
+
+        // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
+        try {
+          this.store.sendMessage(run.id, "foreman", "foreman", "bead-claimed", JSON.stringify({
+            seedId: seed.id,
+            title: seed.title,
+            model,
+            runId: run.id,
+            timestamp: new Date().toISOString(),
+          }));
+        } catch {
+          // Non-fatal — mail is optional infrastructure
+        }
 
         // 7. Spawn the coding agent
         const { sessionKey } = await this.spawnAgent(
