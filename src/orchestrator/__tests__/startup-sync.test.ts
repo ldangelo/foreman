@@ -107,7 +107,7 @@ describe("syncBeadStatusOnStartup", () => {
   });
 
   it("detects mismatch when completed run has seed incorrectly closed", async () => {
-    // After the bead lifecycle fix: completed → in_progress (not closed).
+    // After the bead lifecycle fix: completed → review (not closed).
     // A seed that is "closed" when the run is only "completed" (not yet merged) is a mismatch.
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
@@ -122,7 +122,7 @@ describe("syncBeadStatusOnStartup", () => {
       runId: "run-1",
       runStatus: "completed",
       actualSeedStatus: "closed",
-      expectedSeedStatus: "in_progress",
+      expectedSeedStatus: "review",
     });
   });
 
@@ -151,7 +151,7 @@ describe("syncBeadStatusOnStartup", () => {
   });
 
   it("fixes mismatches by calling execFileSync update (not taskClient.update)", async () => {
-    // completed run with seed incorrectly "closed" → should be updated to "in_progress"
+    // completed run with seed incorrectly "closed" → should be updated to "review"
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
@@ -164,17 +164,17 @@ describe("syncBeadStatusOnStartup", () => {
       (call) => Array.isArray(call[1]) && call[1][0] === "update" && call[1][1] === "seed-abc",
     );
     expect(updateCall).toBeDefined();
-    expect(updateCall![1]).toEqual(["update", "seed-abc", "--status", "in_progress"]);
+    expect(updateCall![1]).toEqual(["update", "seed-abc", "--status", "review"]);
     expect(taskClient.update).not.toHaveBeenCalled();
     expect(result.synced).toBe(1);
   });
 
-  it("reports no mismatch when seed status already matches expected", async () => {
-    // After fix: completed → in_progress. Seed at "in_progress" = no mismatch.
+  it("reports no mismatch when seed status already matches expected (review)", async () => {
+    // After fix: completed → review. Seed at "review" = no mismatch.
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
-    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    taskClient.show.mockResolvedValue({ status: "review" });
 
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
@@ -185,6 +185,20 @@ describe("syncBeadStatusOnStartup", () => {
     );
     expect(updateCalls).toHaveLength(0);
     expect(result.synced).toBe(0);
+  });
+
+  it("detects mismatch when completed run has seed still in_progress (should be review)", async () => {
+    // 'in_progress' is the old mapping — 'review' is now the expected status for completed runs
+    const { store, taskClient } = makeMocks();
+    const run = makeRun({ status: "completed" });
+    store.getRunsByStatuses.mockReturnValue([run]);
+    taskClient.show.mockResolvedValue({ status: "in_progress" });
+
+    const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
+
+    expect(result.mismatches).toHaveLength(1);
+    expect(result.mismatches[0].expectedSeedStatus).toBe("review");
+    expect(result.mismatches[0].actualSeedStatus).toBe("in_progress");
   });
 
   it("does not fix mismatches in dry-run mode", async () => {
@@ -339,12 +353,12 @@ describe("syncBeadStatusOnStartup", () => {
   });
 
   it("does not call br sync --flush-only when no seeds were synced", async () => {
-    // After fix: completed → in_progress. Seed at "in_progress" = no mismatch, no sync needed.
+    // After fix: completed → review. Seed at "review" = no mismatch, no sync needed.
     const { store, taskClient } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatuses.mockReturnValue([run]);
-    // Seed already at the correct status for a completed run
-    taskClient.show.mockResolvedValue({ status: "in_progress" });
+    // Seed already at the correct status for a completed run (review)
+    taskClient.show.mockResolvedValue({ status: "review" });
 
     await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 

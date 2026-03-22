@@ -8,8 +8,8 @@ describe("mapRunStatusToSeedStatus", () => {
   it("maps running to in_progress", () => {
     expect(mapRunStatusToSeedStatus("running")).toBe("in_progress");
   });
-  it("maps completed to in_progress — waiting for merge, not yet closed", () => {
-    expect(mapRunStatusToSeedStatus("completed")).toBe("in_progress");
+  it("maps completed to review — pipeline done, awaiting merge (not yet closed)", () => {
+    expect(mapRunStatusToSeedStatus("completed")).toBe("review");
   });
   it("maps merged to closed", () => {
     expect(mapRunStatusToSeedStatus("merged")).toBe("closed");
@@ -34,5 +34,8 @@ describe("mapRunStatusToSeedStatus", () => {
   });
   it("completed does NOT map to closed — bead stays visible until merge lands", () => {
     expect(mapRunStatusToSeedStatus("completed")).not.toBe("closed");
+  });
+  it("completed does NOT map to in_progress — visually distinct from actively-running tasks", () => {
+    expect(mapRunStatusToSeedStatus("completed")).not.toBe("in_progress");
   });
 });
