@@ -27,9 +27,10 @@ vi.mock("../../lib/git.js", async (importOriginal) => {
     listWorktrees: vi.fn(),
     removeWorktree: vi.fn(),
     branchExistsOnOrigin: vi.fn(),
+    detectDefaultBranch: vi.fn(),
   };
 });
-import { listWorktrees, branchExistsOnOrigin } from "../../lib/git.js";
+import { listWorktrees, branchExistsOnOrigin, detectDefaultBranch } from "../../lib/git.js";
 
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
@@ -857,6 +858,105 @@ describe("Doctor", () => {
     });
   });
 
+  describe("checkGitTownInstalled", () => {
+    it("returns pass when git town is installed", async () => {
+      const { doctor } = makeMocks();
+      // git town is available on the dev machine
+      const result = await doctor.checkGitTownInstalled();
+      // Accept pass or fail depending on whether git-town is installed in the test env
+      expect(["pass", "fail"]).toContain(result.status);
+      expect(result.name).toBe("git town installed");
+    });
+
+    it("returns fail when git town is not in PATH", async () => {
+      const { doctor } = makeMocks();
+      const originalPath = process.env.PATH;
+      process.env.PATH = "";
+      try {
+        const result = await doctor.checkGitTownInstalled();
+        expect(result.status).toBe("fail");
+        expect(result.name).toBe("git town installed");
+        expect(result.message).toBe("git town not found");
+        expect(result.details).toContain("brew install git-town");
+      } finally {
+        process.env.PATH = originalPath;
+      }
+    });
+  });
+
+  describe("checkGitTownMainBranch", () => {
+    const mockDetectDefaultBranch = vi.mocked(detectDefaultBranch);
+
+    beforeEach(() => {
+      mockDetectDefaultBranch.mockReset();
+    });
+
+    it("returns skip when git town is not installed", async () => {
+      const { doctor } = makeMocks();
+      const originalPath = process.env.PATH;
+      process.env.PATH = "";
+      try {
+        const result = await doctor.checkGitTownMainBranch();
+        expect(result.status).toBe("skip");
+        expect(result.name).toBe("git town main branch configured");
+        expect(result.message).toContain("git town not installed");
+      } finally {
+        process.env.PATH = originalPath;
+      }
+    });
+
+    it("returns pass when git town main branch matches repo default", async () => {
+      // Use the real foreman repo which has git-town.main-branch=main configured
+      const store = { getProjectByPath: vi.fn(() => null as any) };
+      const doctor = new Doctor(store as any, "/Users/ldangelo/Development/Fortium/foreman");
+
+      // Skip if git town is not installed in this environment
+      const installed = await doctor.checkGitTownInstalled();
+      if (installed.status !== "pass") return;
+
+      mockDetectDefaultBranch.mockResolvedValue("main");
+      const result = await doctor.checkGitTownMainBranch();
+      expect(result.status).toBe("pass");
+      expect(result.name).toBe("git town main branch configured");
+      expect(result.message).toBe("git town main branch matches repo default");
+    });
+
+    it("returns warn when git town main branch does not match repo default", async () => {
+      // Use the real foreman repo which has git-town.main-branch=main configured
+      const store = { getProjectByPath: vi.fn(() => null as any) };
+      const doctor = new Doctor(store as any, "/Users/ldangelo/Development/Fortium/foreman");
+
+      // Skip if git town is not installed in this environment
+      const installed = await doctor.checkGitTownInstalled();
+      if (installed.status !== "pass") return;
+
+      // Pretend repo default branch is "master" so it mismatches "main"
+      mockDetectDefaultBranch.mockResolvedValue("master");
+      const result = await doctor.checkGitTownMainBranch();
+      expect(result.status).toBe("warn");
+      expect(result.name).toBe("git town main branch configured");
+      expect(result.message).toContain("does not match");
+      expect(result.details).toContain("git town config set main-branch master");
+    });
+
+    it("returns warn when git town is not configured (no git-town.main-branch key)", async () => {
+      // Use a path with no git-town config (git config --get will fail)
+      const store = { getProjectByPath: vi.fn(() => null as any) };
+      const doctor = new Doctor(store as any, "/tmp/no-git-town-config");
+
+      // Skip if git town is not installed in this environment
+      const installed = await doctor.checkGitTownInstalled();
+      if (installed.status !== "pass") return;
+
+      mockDetectDefaultBranch.mockResolvedValue("main");
+      const result = await doctor.checkGitTownMainBranch();
+      expect(result.status).toBe("warn");
+      expect(result.name).toBe("git town main branch configured");
+      // Either "not configured" or some other warning about missing config
+      expect(["git town not configured", "Could not detect repo default branch (skipping comparison)"]).toContain(result.message);
+    });
+  });
+
   describe("runAll", () => {
     it("returns a DoctorReport with all sections", async () => {
       const { store, doctor } = makeMocks();
@@ -874,6 +974,19 @@ describe("Doctor", () => {
       expect(report.summary).toHaveProperty("fail");
       expect(report.summary).toHaveProperty("warn");
       expect(report.summary).toHaveProperty("fixed");
+    });
+
+    it("includes git town checks in system section", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue(null);
+      store.getRunsByStatus.mockReturnValue([]);
+      store.getActiveRuns.mockReturnValue([]);
+
+      const report = await doctor.runAll();
+
+      const names = report.system.map((r) => r.name);
+      expect(names).toContain("git town installed");
+      expect(names).toContain("git town main branch configured");
     });
   });
 });

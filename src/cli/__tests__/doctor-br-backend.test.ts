@@ -321,7 +321,7 @@ describe("TRD-020: Doctor.checkSystem() checks (br backend only)", () => {
 
     const results = await doctor.checkSystem();
 
-    expect(results).toHaveLength(4);
+    expect(results).toHaveLength(6);
     store.close();
   });
 });

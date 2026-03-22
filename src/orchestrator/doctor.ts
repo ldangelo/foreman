@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import type { ForemanStore, Run } from "../lib/store.js";
-import { listWorktrees, removeWorktree, branchExistsOnOrigin } from "../lib/git.js";
+import { listWorktrees, removeWorktree, branchExistsOnOrigin, detectDefaultBranch } from "../lib/git.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -134,15 +134,97 @@ export class Doctor {
     };
   }
 
+  async checkGitTownInstalled(): Promise<CheckResult> {
+    try {
+      await execFileAsync("git", ["town", "--version"]);
+      return {
+        name: "git town installed",
+        status: "pass",
+        message: "git town is installed",
+      };
+    } catch {
+      return {
+        name: "git town installed",
+        status: "fail",
+        message: "git town not found",
+        details: "Install with: brew install git-town",
+      };
+    }
+  }
+
+  async checkGitTownMainBranch(): Promise<CheckResult> {
+    // Skip if git town is not installed
+    const installed = await this.checkGitTownInstalled();
+    if (installed.status !== "pass") {
+      return {
+        name: "git town main branch configured",
+        status: "skip",
+        message: "Skipped: git town not installed",
+      };
+    }
+
+    let configuredBranch: string;
+    try {
+      const { stdout } = await execFileAsync("git", ["config", "--get", "git-town.main-branch"], {
+        cwd: this.projectPath,
+      });
+      configuredBranch = stdout.trim();
+    } catch {
+      return {
+        name: "git town main branch configured",
+        status: "warn",
+        message: "git town not configured",
+        details: "Run: git town setup",
+      };
+    }
+
+    if (!configuredBranch) {
+      return {
+        name: "git town main branch configured",
+        status: "warn",
+        message: "git town not configured",
+        details: "Run: git town setup",
+      };
+    }
+
+    let defaultBranch: string;
+    try {
+      defaultBranch = await detectDefaultBranch(this.projectPath);
+    } catch {
+      return {
+        name: "git town main branch configured",
+        status: "warn",
+        message: "Could not detect repo default branch (skipping comparison)",
+      };
+    }
+
+    if (configuredBranch === defaultBranch) {
+      return {
+        name: "git town main branch configured",
+        status: "pass",
+        message: "git town main branch matches repo default",
+      };
+    }
+
+    return {
+      name: "git town main branch configured",
+      status: "warn",
+      message: "git town main-branch does not match repo default branch",
+      details: `git town main-branch="${configuredBranch}", repo default="${defaultBranch}". Fix with: git town config set main-branch ${defaultBranch}`,
+    };
+  }
+
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.
-    const [brResult, bvResult, gitResult, agentMailResult] = await Promise.all([
+    const [brResult, bvResult, gitResult, agentMailResult, gitTownInstalled, gitTownMainBranch] = await Promise.all([
       this.checkBrBinary(),
       this.checkBvBinary(),
       this.checkGitBinary(),
       this.checkAgentMailLiveness(),
+      this.checkGitTownInstalled(),
+      this.checkGitTownMainBranch(),
     ]);
-    return [brResult, bvResult, gitResult, agentMailResult];
+    return [brResult, bvResult, gitResult, agentMailResult, gitTownInstalled, gitTownMainBranch];
   }
 
   // ── Repository checks ──────────────────────────────────────────────
