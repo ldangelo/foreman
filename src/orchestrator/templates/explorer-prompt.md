@@ -44,7 +44,7 @@ At the very start of your session, invoke /send-mail with:
 When you finish writing EXPLORER_REPORT.md, send its contents to foreman by running this exact bash command (the `jq -Rs .` pipeline escapes the file as a JSON string):
 
 ```bash
-foreman mail send \
+npx foreman mail send \
   --run-id "{{runId}}" \
   --from "{{agentRole}}" \
   --to foreman \

@@ -4,7 +4,7 @@ This is a smoke/integration test run. Your only job is to write a minimal passth
 
 **1. Send phase-started mail:**
 ```bash
-foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-started --body '{"phase":"explorer","smoke":true}'
+npx foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-started --body '{"phase":"explorer","smoke":true}'
 ```
 
 **2. Write `EXPLORER_REPORT.md`** in the current directory with exactly this content:
@@ -19,7 +19,7 @@ Smoke test noop — no real exploration performed.
 
 **3. Send phase-complete mail:**
 ```bash
-foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"explorer","smoke":true,"status":"complete"}'
+npx foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"explorer","smoke":true,"status":"complete"}'
 ```
 
 Do not read any files. Do not explore the codebase. Just write the report and send the mail notifications.
