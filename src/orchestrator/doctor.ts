@@ -12,7 +12,6 @@ import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { MergeQueue, MergeQueueEntry } from "./merge-queue.js";
 import type { ITaskClient } from "../lib/task-client.js";
-import { AgentMailClient, DEFAULT_AGENT_MAIL_CONFIG } from "./agent-mail-client.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -112,28 +111,6 @@ export class Doctor {
     }
   }
 
-  async checkAgentMailLiveness(): Promise<CheckResult> {
-    const client = new AgentMailClient();
-    const alive = await client.healthCheck();
-    if (alive) {
-      const url = process.env.AGENT_MAIL_URL ?? DEFAULT_AGENT_MAIL_CONFIG.baseUrl;
-      return {
-        name: "Agent Mail service",
-        status: "pass",
-        message: `Reachable at ${url}`,
-      };
-    }
-
-    const url = process.env.AGENT_MAIL_URL ?? DEFAULT_AGENT_MAIL_CONFIG.baseUrl;
-    const port = url.split(":").pop() ?? "8766";
-    return {
-      name: "Agent Mail service",
-      status: "fail",
-      message: `Not reachable at ${url}. foreman run will exit until this is resolved.`,
-      details: `Start it with: mcp_agent_mail serve --port ${port}\nConfigure via: .foreman/agent-mail.json or AGENT_MAIL_URL env var`,
-    };
-  }
-
   async checkGitTownInstalled(): Promise<CheckResult> {
     try {
       await execFileAsync("git", ["town", "--version"]);
@@ -216,15 +193,14 @@ export class Doctor {
 
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.
-    const [brResult, bvResult, gitResult, agentMailResult, gitTownInstalled, gitTownMainBranch] = await Promise.all([
+    const [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch] = await Promise.all([
       this.checkBrBinary(),
       this.checkBvBinary(),
       this.checkGitBinary(),
-      this.checkAgentMailLiveness(),
       this.checkGitTownInstalled(),
       this.checkGitTownMainBranch(),
     ]);
-    return [brResult, bvResult, gitResult, agentMailResult, gitTownInstalled, gitTownMainBranch];
+    return [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch];
   }
 
   // ── Repository checks ──────────────────────────────────────────────
