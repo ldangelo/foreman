@@ -63,13 +63,16 @@ function healthOkResponse(): Response {
 describe("AgentMailClient", () => {
   describe("mcpCall — JSON-RPC envelope", () => {
     it("sends correct JSON-RPC 2.0 envelope to POST /mcp", async () => {
+      // ensureProject makes 2 MCP calls: ensure_project + register_agent (ensureAgentRegistered)
       mockFetch.mockResolvedValueOnce(mcpOkResponse({ ok: true }));
+      mockFetch.mockResolvedValueOnce(mcpOkResponse({ name: "TestAgent" }));
 
       const client = new AgentMailClient({ baseUrl: "http://localhost:8766" });
       // Use ensureProject to trigger an mcpCall
       await client.ensureProject("/some/project");
 
-      expect(mockFetch).toHaveBeenCalledOnce();
+      // Verify both calls happened; inspect the first one for envelope structure
+      expect(mockFetch).toHaveBeenCalledTimes(2);
       const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
       expect(url).toBe("http://localhost:8766/mcp");
       expect(init.method).toBe("POST");
@@ -428,6 +431,8 @@ describe("AgentMailClient", () => {
       mockFetch.mockResolvedValueOnce(mcpOkResponse({}));
 
       const client = new AgentMailClient({ baseUrl: "http://localhost:8766" });
+      // sendMessage requires agentName to be set (returns early otherwise)
+      client.agentName = "TestSender";
       await client.sendMessage("agent", "subj", "body");
 
       const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
