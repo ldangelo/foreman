@@ -1,0 +1,171 @@
+/**
+ * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.
+ *
+ * Options:
+ *   --agent <name>   Filter to a specific agent/role (default: show all)
+ *   --run <id>       Filter to a specific run ID (default: latest run)
+ *   --watch          Poll every 2s for new messages, show only new ones
+ *   --unread         Show only unread messages
+ *   --limit <n>      Max messages to show (default: 50)
+ *   --ack            Mark shown messages as read
+ */
+
+import { Command } from "commander";
+import { ForemanStore } from "../../lib/store.js";
+import type { Message } from "../../lib/store.js";
+import { getRepoRoot } from "../../lib/git.js";
+
+// ── Formatting helpers ────────────────────────────────────────────────────────
+
+function formatTimestamp(isoStr: string): string {
+  try {
+    const d = new Date(isoStr);
+    const pad = (n: number): string => String(n).padStart(2, "0");
+    return (
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+      `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    );
+  } catch {
+    return isoStr;
+  }
+}
+
+function formatMessage(msg: Message): string {
+  const ts = formatTimestamp(msg.created_at);
+  const readMark = msg.read === 1 ? " [read]" : "";
+  const header = `[${ts}] ${msg.sender_agent_type} → ${msg.recipient_agent_type}  |  ${msg.subject}${readMark}`;
+  const preview = msg.body.slice(0, 120).replace(/\n/g, " ");
+  const ellipsis = msg.body.length > 120 ? "..." : "";
+  return `${header}\n  ${preview}${ellipsis}`;
+}
+
+// ── Run resolution ────────────────────────────────────────────────────────────
+
+function resolveLatestRunId(store: ForemanStore): string | null {
+  // Get the most recently created run (any status)
+  const runs = store.getRunsByStatuses(
+    ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
+  );
+  if (runs.length === 0) return null;
+  // Runs are returned in DESC created_at order
+  return runs[0]?.id ?? null;
+}
+
+// ── Main command ──────────────────────────────────────────────────────────────
+
+export const inboxCommand = new Command("inbox")
+  .description("View the SQLite message inbox for agents in a pipeline run")
+  .option("--agent <name>", "Filter to a specific agent/role (default: show all)")
+  .option("--run <id>", "Filter to a specific run ID (default: latest run)")
+  .option("--watch", "Poll every 2s for new messages (shows only new ones)")
+  .option("--unread", "Show only unread messages")
+  .option("--limit <n>", "Max messages to show", "50")
+  .option("--ack", "Mark shown messages as read after displaying them")
+  .action(async (options: {
+    agent?: string;
+    run?: string;
+    watch?: boolean;
+    unread?: boolean;
+    limit?: string;
+    ack?: boolean;
+  }) => {
+    const limit = parseInt(options.limit ?? "50", 10);
+
+    // Resolve the project root so we can open the correct store
+    let projectPath: string;
+    try {
+      projectPath = await getRepoRoot(process.cwd());
+    } catch {
+      projectPath = process.cwd();
+    }
+
+    const store = ForemanStore.forProject(projectPath);
+
+    try {
+      const runId = options.run ?? resolveLatestRunId(store);
+      if (!runId) {
+        console.error("No runs found. Start a pipeline first with `foreman run`.");
+        process.exit(1);
+      }
+
+      if (!options.watch) {
+        // One-shot: fetch and display messages
+        const messages = fetchMessages(store, runId, options.agent, options.unread ?? false, limit);
+        if (messages.length === 0) {
+          console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
+        } else {
+          console.log(`\nInbox — run: ${runId}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
+          for (const msg of messages) {
+            console.log(formatMessage(msg));
+            console.log("");
+          }
+          console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
+        }
+
+        if (options.ack && messages.length > 0) {
+          for (const msg of messages) {
+            store.markMessageRead(msg.id);
+          }
+          console.log(`Marked ${messages.length} message(s) as read.`);
+        }
+        return;
+      }
+
+      // Watch mode: poll every 2s, show only new messages
+      console.log(`Watching inbox for run ${runId}${options.agent ? ` (agent: ${options.agent})` : ""}... (Ctrl-C to stop)\n`);
+      const seenIds = new Set<string>();
+
+      // Initial fetch — populate seenIds without printing (so only truly new messages display)
+      const initial = fetchMessages(store, runId, options.agent, false, limit);
+      for (const m of initial) seenIds.add(m.id);
+
+      const poll = (): void => {
+        const msgs = fetchMessages(store, runId, options.agent, options.unread ?? false, limit);
+        const newMsgs = msgs.filter((m) => !seenIds.has(m.id));
+        for (const msg of newMsgs) {
+          seenIds.add(msg.id);
+          console.log(formatMessage(msg));
+          console.log("");
+          if (options.ack) {
+            store.markMessageRead(msg.id);
+          }
+        }
+      };
+
+      // Initial poll after setup
+      poll();
+
+      const interval = setInterval(poll, 2000);
+      // Keep the process alive
+      process.on("SIGINT", () => {
+        clearInterval(interval);
+        store.close();
+        process.exit(0);
+      });
+    } catch (err: unknown) {
+      store.close();
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`inbox error: ${msg}`);
+      process.exit(1);
+    }
+  });
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function fetchMessages(
+  store: ForemanStore,
+  runId: string,
+  agent: string | undefined,
+  unreadOnly: boolean,
+  limit: number,
+): Message[] {
+  let messages: Message[];
+  if (agent) {
+    messages = store.getMessages(runId, agent, unreadOnly);
+  } else {
+    // No agent filter — get all messages for the run
+    const all = store.getAllMessages(runId);
+    messages = unreadOnly ? all.filter((m) => m.read === 0) : all;
+  }
+  return messages.slice(0, limit);
+}

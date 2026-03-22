@@ -37,6 +37,7 @@ import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { AgentMailClient } from "./agent-mail-client.js";
+import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -86,12 +87,15 @@ class NotificationClient {
 
 // ── Agent Mail helper ─────────────────────────────────────────────────────────
 
+/** Union type for either mail client implementation. */
+type AnyMailClient = AgentMailClient | SqliteMailClient;
+
 /**
  * Fire-and-forget wrapper for AgentMailClient.sendMessage.
  * Never throws — failures are logged but do not affect the pipeline.
  */
 function sendMail(
-  client: AgentMailClient | null,
+  client: AnyMailClient | null,
   to: string,
   subject: string,
   body: Record<string, unknown>,
@@ -109,7 +113,7 @@ function sendMail(
  * Never throws.
  */
 function sendMailText(
-  client: AgentMailClient | null,
+  client: AnyMailClient | null,
   to: string,
   subject: string,
   body: string,
@@ -126,7 +130,7 @@ function sendMailText(
  * Uses ensureAgentRegistered so the auto-generated name is cached and used as sender_name.
  * Never throws — failures are logged but do not affect the pipeline.
  */
-async function registerAgent(client: AgentMailClient | null, roleHint: string): Promise<void> {
+async function registerAgent(client: AnyMailClient | null, roleHint: string): Promise<void> {
   if (!client) return;
   try {
     const generatedName = await client.ensureAgentRegistered(roleHint);
@@ -146,7 +150,7 @@ async function registerAgent(client: AgentMailClient | null, roleHint: string): 
  * Never throws — failures are logged but do not affect the pipeline.
  */
 function reserveFiles(
-  client: AgentMailClient | null,
+  client: AnyMailClient | null,
   paths: string[],
   agentName: string,
   leaseSecs?: number,
@@ -163,7 +167,7 @@ function reserveFiles(
  * Never throws — failures are logged but do not affect the pipeline.
  */
 function releaseFiles(
-  client: AgentMailClient | null,
+  client: AnyMailClient | null,
   paths: string[],
   agentName: string,
 ): void {
@@ -259,20 +263,35 @@ async function main(): Promise<void> {
   // Create notification client using FOREMAN_NOTIFY_URL (set in env above if provided by dispatcher)
   const notifyClient = new NotificationClient(process.env.FOREMAN_NOTIFY_URL);
 
-  // Create AgentMailClient (reads config from env vars / .foreman/agent-mail.json / defaults).
-  // Set to null when Agent Mail is not reachable so sends are silently skipped.
-  let agentMailClient: AgentMailClient | null = null;
-  try {
-    const candidate = new AgentMailClient();
-    const reachable = await candidate.healthCheck();
-    if (reachable) {
-      // Ensure the project exists in Agent Mail before any sends/receives.
-      // This is idempotent — safe to call on every worker start.
-      await candidate.ensureProject(storeProjectPath);
-      agentMailClient = candidate;
+  // Create mail client. SqliteMailClient is the default (always available).
+  // AgentMailClient (HTTP) is used only when FOREMAN_AGENT_MAIL_URL is explicitly set.
+  let agentMailClient: AnyMailClient | null = null;
+  if (process.env.FOREMAN_AGENT_MAIL_URL) {
+    // Opt-in: use external HTTP Agent Mail server
+    try {
+      const candidate = new AgentMailClient({ baseUrl: process.env.FOREMAN_AGENT_MAIL_URL });
+      const reachable = await candidate.healthCheck();
+      if (reachable) {
+        await candidate.ensureProject(storeProjectPath);
+        agentMailClient = candidate;
+        log(`[agent-mail] Using HTTP AgentMailClient at ${process.env.FOREMAN_AGENT_MAIL_URL}`);
+      }
+    } catch {
+      // Non-fatal — fall through to SqliteMailClient
     }
-  } catch {
-    // Non-fatal — Agent Mail is optional infrastructure
+  }
+
+  // Default: use SQLite-backed mail client (no external dependencies)
+  if (!agentMailClient) {
+    try {
+      const sqliteClient = new SqliteMailClient();
+      await sqliteClient.ensureProject(storeProjectPath);
+      sqliteClient.setRunId(runId);
+      agentMailClient = sqliteClient;
+      log(`[agent-mail] Using SqliteMailClient (scoped to run ${runId})`);
+    } catch {
+      // Non-fatal — mail is optional infrastructure
+    }
   }
 
   // Build clean env for SDK
@@ -661,7 +680,7 @@ async function finalize(
   progress: RunProgress,
   pipelineStartedAt: string,
   pipelineStatus = "ALL_CHECKS_PASSED",
-  agentMailClient: AgentMailClient | null = null,
+  agentMailClient: AnyMailClient | null = null,
 ): Promise<FinalizeResult> {
   const { seedId, seedTitle, worktreePath } = config;
 
@@ -1013,7 +1032,7 @@ const MAX_DEV_RETRIES = PIPELINE_LIMITS.maxDevRetries;
  * Run the full pipeline: Explorer → Developer ⇄ QA → Reviewer → Finalize.
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
-async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string, notifyClient: NotificationClient, agentMailClient: AgentMailClient | null): Promise<void> {
+async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string, notifyClient: NotificationClient, agentMailClient: AnyMailClient | null): Promise<void> {
   const { runId, projectId, seedId, seedTitle, worktreePath } = config;
   const description = config.seedDescription ?? "(no description)";
   const comments = config.seedComments;
