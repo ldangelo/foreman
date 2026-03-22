@@ -14,7 +14,6 @@ import { createWorktree } from "../lib/git.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
-import { TmuxClient, tmuxSessionName } from "../lib/tmux.js";
 import { PiRpcSpawnStrategy, isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import type {
@@ -804,53 +803,6 @@ function resolveWorkerPaths(): { tsxBin: string; workerScript: string; logDir: s
   };
 }
 
-/**
- * Spawn worker inside a tmux session.
- * Builds a shell command string that tmux will execute.
- */
-export class TmuxSpawnStrategy implements SpawnStrategy {
-  private tmux = new TmuxClient();
-
-  async spawn(config: WorkerConfig): Promise<SpawnResult> {
-    const { tsxBin, workerScript, logDir } = resolveWorkerPaths();
-    const sessionName = tmuxSessionName(config.seedId);
-
-    // Write config to temp file (worker reads + deletes it)
-    const configDir = join(process.env.HOME ?? "/tmp", ".foreman", "tmp");
-    await mkdir(configDir, { recursive: true });
-    const configPath = join(configDir, `worker-${config.runId}.json`);
-    await writeFile(configPath, JSON.stringify(config), "utf-8");
-
-    await mkdir(logDir, { recursive: true });
-    const outLog = join(logDir, `${config.runId}.out`);
-    const errLog = join(logDir, `${config.runId}.err`);
-
-    // AT-T014: Kill stale session with same name before creating new one
-    const killed = await this.tmux.killSession(sessionName);
-    if (killed) {
-      log(`[foreman] Killed stale tmux session ${sessionName}`);
-    }
-
-    // Build the command string for tmux
-    const command = `${tsxBin} ${workerScript} ${configPath} > ${outLog} 2> ${errLog}`;
-
-    const result = await this.tmux.createSession({
-      sessionName,
-      command,
-      cwd: config.worktreePath,
-      env: config.env,
-    });
-
-    if (!result.created) {
-      // AT-T016: Log warning and signal failure so caller falls back
-      log(`[foreman] tmux session creation failed -- falling back to detached process`);
-      return {};
-    }
-
-    log(`  Worker tmux session=${sessionName} for ${config.seedId}`);
-    return { tmuxSession: sessionName };
-  }
-}
 
 /**
  * Spawn worker as a detached child process (original behavior).
@@ -893,62 +845,28 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
 }
 
 /**
- * Spawn agent-worker.ts using the best available strategy.
+ * Spawn agent-worker using the best available strategy.
  *
  * Strategy selection:
- * 1. If `pi` binary is available, use PiRpcSpawnStrategy
- * 2. If tmux is available, use TmuxSpawnStrategy (AT-T013)
- * 3. If tmux creation fails, fall back to DetachedSpawnStrategy (AT-T016)
- * 4. If tmux is unavailable, use DetachedSpawnStrategy directly
+ * 1. If `pi` binary is available, use PiRpcSpawnStrategy (always preferred)
+ * 2. Fallback: DetachedSpawnStrategy (runs agent-worker.js as a detached child)
  *
- * Returns the spawn result including optional tmux session name.
+ * Smoke seeds get FOREMAN_SMOKE_TEST=true injected into env before spawning.
  */
 export async function spawnWorkerProcess(config: WorkerConfig): Promise<SpawnResult> {
-  // Smoke workflow: bypass Pi entirely so FOREMAN_SMOKE_TEST bypass fires in agent-worker.
-  // Inject the env var here so the worker receives it even if not set by the caller.
-  if (config.seedType === "smoke") {
-    log(`[foreman] smoke workflow — bypassing Pi, using agent-worker with FOREMAN_SMOKE_TEST=true for ${config.seedId}`);
-    const smokeConfig: WorkerConfig = {
-      ...config,
-      env: { ...config.env, FOREMAN_SMOKE_TEST: "true" },
-    };
-    const tmux = new TmuxClient();
-    const tmuxAvailable = await tmux.isAvailable();
-    if (tmuxAvailable) {
-      const tmuxStrategy = new TmuxSpawnStrategy();
-      const result = await tmuxStrategy.spawn(smokeConfig);
-      if (result.tmuxSession) return result;
-    }
-    return new DetachedSpawnStrategy().spawn(smokeConfig);
-  }
+  // Inject FOREMAN_SMOKE_TEST for smoke seeds before dispatching to any strategy
+  const effectiveConfig: WorkerConfig =
+    config.seedType === "smoke"
+      ? { ...config, env: { ...config.env, FOREMAN_SMOKE_TEST: "true" } }
+      : config;
 
-  // Pi RPC takes highest priority when available
   if (isPiAvailable()) {
-    log(`[foreman] pi binary found — using PiRpcSpawnStrategy for ${config.seedId}`);
-    const piStrategy = new PiRpcSpawnStrategy();
-    return piStrategy.spawn(config);
+    log(`[foreman] pi binary found — using PiRpcSpawnStrategy for ${effectiveConfig.seedId}`);
+    return new PiRpcSpawnStrategy().spawn(effectiveConfig);
   }
 
-  const tmux = new TmuxClient();
-  const available = await tmux.isAvailable();
-
-  if (available) {
-    const tmuxStrategy = new TmuxSpawnStrategy();
-    const result = await tmuxStrategy.spawn(config);
-
-    // AT-T016: If tmux creation failed, fall back to detached spawn
-    if (result.tmuxSession) {
-      return result;
-    }
-
-    // Tmux was available but session creation failed — fall back
-    const detachedStrategy = new DetachedSpawnStrategy();
-    return detachedStrategy.spawn(config);
-  }
-
-  // Tmux not available — use detached spawn directly
-  const detachedStrategy = new DetachedSpawnStrategy();
-  return detachedStrategy.spawn(config);
+  // Pi not available — fall back to detached child process
+  return new DetachedSpawnStrategy().spawn(effectiveConfig);
 }
 
 /**
