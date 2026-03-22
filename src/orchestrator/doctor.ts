@@ -10,7 +10,7 @@ import { listWorktrees, removeWorktree, branchExistsOnOrigin, detectDefaultBranc
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
-import type { MergeQueue, MergeQueueEntry } from "./merge-queue.js";
+import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue.js";
 import type { ITaskClient } from "../lib/task-client.js";
 
 const execFileAsync = promisify(execFile);
@@ -922,8 +922,17 @@ export class Doctor {
    * Detects runs that completed but were never enqueued — e.g. because their
    * branch was deleted before reconciliation ran, or because a system crash
    * prevented reconciliation from completing.
+   *
+   * When fix=true, calls mergeQueue.reconcile() to enqueue the missing runs.
    */
-  async checkCompletedRunsNotQueued(): Promise<CheckResult> {
+  async checkCompletedRunsNotQueued(opts: {
+    fix?: boolean;
+    dryRun?: boolean;
+    projectPath?: string;
+    execFileFn?: ExecFileAsyncFn | undefined;
+  } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
     if (!this.mergeQueue) {
       return {
         name: "completed runs queued",
@@ -943,6 +952,41 @@ export class Doctor {
     }
 
     const details = missing.map((r) => `${r.seed_id} (run ${r.run_id})`).join(", ");
+
+    if (dryRun) {
+      return {
+        name: "completed runs queued",
+        status: "warn",
+        message: `MQ-011: ${missing.length} completed run(s) not in merge queue. Would reconcile (dry-run).`,
+        details,
+      };
+    }
+
+    if (fix && opts.projectPath) {
+      try {
+        const execFn: ExecFileAsyncFn = opts.execFileFn ?? (execFileAsync as ExecFileAsyncFn);
+        const result = await this.mergeQueue.reconcile(
+          this.store.getDb(),
+          opts.projectPath,
+          execFn,
+        );
+        return {
+          name: "completed runs queued",
+          status: "fixed",
+          message: `MQ-011: ${missing.length} completed run(s) not in merge queue`,
+          fixApplied: `Reconciled: ${result.enqueued} enqueued, ${result.skipped} skipped, ${result.invalidBranch} invalid branch(es)`,
+        };
+      } catch (reconcileErr: unknown) {
+        const msg = reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr);
+        return {
+          name: "completed runs queued",
+          status: "warn",
+          message: `MQ-011: ${missing.length} completed run(s) not in merge queue. Reconcile failed: ${msg}`,
+          details,
+        };
+      }
+    }
+
     return {
       name: "completed runs queued",
       status: "warn",
@@ -1011,18 +1055,18 @@ export class Doctor {
   /**
    * Run all merge queue health checks.
    */
-  async checkMergeQueueHealth(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
+  async checkMergeQueueHealth(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
     const [stale, duplicates, orphaned, notQueued, stuckConflictFailed] = await Promise.all([
       this.checkStaleMergeQueueEntries(opts),
       this.checkDuplicateMergeQueueEntries(opts),
       this.checkOrphanedMergeQueueEntries(opts),
-      this.checkCompletedRunsNotQueued(),
+      this.checkCompletedRunsNotQueued({ fix: opts.fix, dryRun: opts.dryRun, projectPath: opts.projectPath }),
       this.checkStuckConflictFailedEntries(opts),
     ]);
     return [stale, duplicates, orphaned, notQueued, stuckConflictFailed];
   }
 
-  async checkDataIntegrity(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
+  async checkDataIntegrity(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
 
     const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult] =
@@ -1047,7 +1091,7 @@ export class Doctor {
     return results;
   }
 
-  async runAll(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<DoctorReport> {
+  async runAll(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<DoctorReport> {
     const [system, repository, dataIntegrity] = await Promise.all([
       this.checkSystem(),
       this.checkRepository(),

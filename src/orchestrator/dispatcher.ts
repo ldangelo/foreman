@@ -136,12 +136,25 @@ export class Dispatcher {
     // Skip seeds that already have an active run
     const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
 
+    // Also skip seeds that have a completed-but-unmerged run (prevent duplicate runs)
+    const completedRuns = this.store.getRunsByStatus("completed", projectId);
+    const completedSeedIds = new Set(completedRuns.map((r) => r.seed_id));
+
     for (const seed of readySeeds) {
       if (activeSeedIds.has(seed.id)) {
         skipped.push({
           seedId: seed.id,
           title: seed.title,
           reason: "Already has an active run",
+        });
+        continue;
+      }
+
+      if (completedSeedIds.has(seed.id)) {
+        skipped.push({
+          seedId: seed.id,
+          title: seed.title,
+          reason: "Has completed run awaiting merge — run 'foreman merge' or wait for auto-merge",
         });
         continue;
       }

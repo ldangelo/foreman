@@ -11,8 +11,9 @@
  */
 
 import { Command } from "commander";
+import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
-import type { Message } from "../../lib/store.js";
+import type { Message, Run } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
@@ -37,6 +38,16 @@ function formatMessage(msg: Message): string {
   const preview = msg.body.slice(0, 120).replace(/\n/g, " ");
   const ellipsis = msg.body.length > 120 ? "..." : "";
   return `${header}\n  ${preview}${ellipsis}`;
+}
+
+// ── Run status formatting ─────────────────────────────────────────────────────
+
+function formatRunStatus(run: Run): string {
+  const ts = formatTimestamp(new Date().toISOString());
+  const statusStr = run.status === "completed"
+    ? chalk.green(`COMPLETED`)
+    : chalk.red(`FAILED`);
+  return `[${ts}] ${chalk.bold("●")} ${run.seed_id} ${statusStr} (run ${run.id})`;
 }
 
 // ── Run resolution ────────────────────────────────────────────────────────────
@@ -89,7 +100,14 @@ export const inboxCommand = new Command("inbox")
       }
 
       if (!options.watch) {
-        // One-shot: fetch and display messages
+        // One-shot: show current run lifecycle status then fetch and display messages
+        const runStatusRuns = store.getRunsByStatuses(["completed", "failed"]);
+        const currentRun = runStatusRuns.find((r) => r.id === runId);
+        if (currentRun) {
+          console.log(formatRunStatus(currentRun));
+          console.log("");
+        }
+
         const messages = fetchMessages(store, runId, options.agent, options.unread ?? false, limit);
         if (messages.length === 0) {
           console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
@@ -114,12 +132,28 @@ export const inboxCommand = new Command("inbox")
       // Watch mode: poll every 2s, show only new messages
       console.log(`Watching inbox for run ${runId}${options.agent ? ` (agent: ${options.agent})` : ""}... (Ctrl-C to stop)\n`);
       const seenIds = new Set<string>();
+      const seenRunIds = new Set<string>();
 
       // Initial fetch — populate seenIds without printing (so only truly new messages display)
       const initial = fetchMessages(store, runId, options.agent, false, limit);
       for (const m of initial) seenIds.add(m.id);
 
+      // Seed seenRunIds with any already-completed/failed runs so we only show new transitions
+      const initialRuns = store.getRunsByStatuses(["completed", "failed"]);
+      for (const r of initialRuns) seenRunIds.add(r.id);
+
       const poll = (): void => {
+        // Poll run lifecycle transitions (completed / failed)
+        const statusRuns = store.getRunsByStatuses(["completed", "failed"]);
+        for (const run of statusRuns) {
+          if (!seenRunIds.has(run.id)) {
+            seenRunIds.add(run.id);
+            console.log(formatRunStatus(run));
+            console.log("");
+          }
+        }
+
+        // Poll messages
         const msgs = fetchMessages(store, runId, options.agent, options.unread ?? false, limit);
         const newMsgs = msgs.filter((m) => !seenIds.has(m.id));
         for (const msg of newMsgs) {

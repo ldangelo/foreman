@@ -528,6 +528,21 @@ export const runCommand = new Command("run")
         console.log(chalk.yellow("(dry run — no changes will be made)\n"));
       }
 
+      // ── Startup merge drain ─────────────────────────────────────────────────
+      // Drain any completed-but-unmerged runs from previous interrupted sessions
+      // BEFORE dispatching new work. Non-fatal.
+      if (enableAutoMerge && !dryRun && project) {
+        try {
+          const startupMerge = await autoMerge({ store, taskClient, projectPath });
+          if (startupMerge.merged > 0) {
+            console.log(chalk.green(`[startup] Merged ${startupMerge.merged} previously completed branch(es).`));
+          }
+        } catch (startupMergeErr: unknown) {
+          const msg = startupMergeErr instanceof Error ? startupMergeErr.message : String(startupMergeErr);
+          console.warn(chalk.yellow(`[startup] Merge drain error (non-fatal): ${msg}`));
+        }
+      }
+
       // Dispatch loop: dispatch a batch, watch until done, then check for more work.
       // Exits when no new tasks are dispatched (all work complete or all remaining blocked).
       let iteration = 0;

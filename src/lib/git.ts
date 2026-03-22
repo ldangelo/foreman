@@ -116,7 +116,18 @@ export async function getRepoRoot(path: string): Promise<string> {
  * 4. Fall back to the current branch.
  */
 export async function detectDefaultBranch(repoPath: string): Promise<string> {
-  // 1. Try origin/HEAD symbolic ref
+  // 1. Respect git-town.main-branch config (user's explicit development trunk)
+  try {
+    const gtMain = await git(
+      ["config", "get", "git-town.main-branch"],
+      repoPath,
+    );
+    if (gtMain) return gtMain;
+  } catch {
+    // git-town not configured or command unavailable — fall through
+  }
+
+  // 2. Try origin/HEAD symbolic ref
   try {
     const ref = await git(
       ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
@@ -130,7 +141,7 @@ export async function detectDefaultBranch(repoPath: string): Promise<string> {
     // origin/HEAD not set or no remote — fall through
   }
 
-  // 2. Check if "main" exists locally
+  // 3. Check if "main" exists locally
   try {
     await git(["rev-parse", "--verify", "main"], repoPath);
     return "main";
@@ -138,7 +149,7 @@ export async function detectDefaultBranch(repoPath: string): Promise<string> {
     // "main" does not exist — fall through
   }
 
-  // 3. Check if "master" exists locally
+  // 4. Check if "master" exists locally
   try {
     await git(["rev-parse", "--verify", "master"], repoPath);
     return "master";
