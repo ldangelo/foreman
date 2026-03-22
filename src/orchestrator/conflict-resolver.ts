@@ -7,6 +7,7 @@ import type { MergeQueueConfig } from "./merge-config.js";
 import { MergeValidator } from "./merge-validator.js";
 import type { ConflictPatterns } from "./conflict-patterns.js";
 import { REPORT_FILES } from "../lib/archive-reports.js";
+import { runWithPi } from "./pi-runner.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -14,19 +15,6 @@ const MAX_BUFFER = 10 * 1024 * 1024;
 
 // Re-export for backwards compatibility
 export { REPORT_FILES };
-
-/** Shape of the Anthropic Messages API response (subset). */
-export interface AnthropicMessage {
-  content: Array<{ type: string; text: string }>;
-  usage: { input_tokens: number; output_tokens: number };
-}
-
-/** Anthropic client interface for dependency injection. */
-export interface AnthropicClient {
-  messages: {
-    create(params: Record<string, unknown>): Promise<AnthropicMessage>;
-  };
-}
 
 /** Cost information for an AI resolution call. */
 export interface CostInfo {
@@ -98,35 +86,13 @@ export interface Tier2Result {
   reason?: string;
 }
 
-/** Per-million-token pricing for supported models. */
-const PRICING: Record<string, { inputPer1M: number; outputPer1M: number }> = {
-  "claude-sonnet-4-6": { inputPer1M: 3.0, outputPer1M: 15.0 },
-  "claude-opus-4-6": { inputPer1M: 15.0, outputPer1M: 75.0 },
-};
-
 const TIER3_MODEL = "claude-sonnet-4-6";
 const TIER4_MODEL = "claude-opus-4-6";
-
-const TIER3_SYSTEM_PROMPT =
-  "You are a code merge conflict resolver. You will be given a file containing git conflict markers. " +
-  "Resolve the conflicts by producing the correct merged version of the file. " +
-  "Output ONLY the resolved file content. Do NOT include any explanation, comments about the resolution, " +
-  "markdown fencing, or anything other than the exact file content.";
-
-const TIER4_SYSTEM_PROMPT =
-  "You are a code integration specialist. You will be given three things:\n" +
-  "1. The canonical version of a file (from the target branch)\n" +
-  "2. A diff showing changes made on a feature branch\n" +
-  "3. The feature branch's version of the file\n\n" +
-  "Apply the changes from the feature branch onto the canonical version.\n" +
-  "Output ONLY the resulting file content. Do NOT include any explanation, comments about the integration, " +
-  "markdown fencing, or anything other than the exact file content.";
 
 /** Heuristic: approximate 4 characters per token. */
 const CHARS_PER_TOKEN = 4;
 
 export class ConflictResolver {
-  private anthropicClient?: AnthropicClient;
   private validator?: MergeValidator;
   private patternLearning?: ConflictPatterns;
   private sessionCostUsd: number = 0;
@@ -134,10 +100,7 @@ export class ConflictResolver {
   constructor(
     private projectPath: string,
     private config: MergeQueueConfig,
-    anthropicClient?: AnthropicClient,
-  ) {
-    this.anthropicClient = anthropicClient;
-  }
+  ) {}
 
   /** Add to the running session cost total (for testing or external tracking). */
   addSessionCost(amount: number): void {
@@ -147,11 +110,6 @@ export class ConflictResolver {
   /** Get the current session cost total. */
   getSessionCost(): number {
     return this.sessionCostUsd;
-  }
-
-  /** Set (or replace) the Anthropic client for AI resolution. */
-  setAnthropicClient(client: AnthropicClient): void {
-    this.anthropicClient = client;
   }
 
   /** Set (or replace) the MergeValidator instance for AI output validation. */
@@ -454,42 +412,20 @@ export class ConflictResolver {
     return Math.ceil(text.length / CHARS_PER_TOKEN);
   }
 
-  /**
-   * Calculate USD cost from token counts and model pricing.
-   */
-  private calculateCost(
-    inputTokens: number,
-    outputTokens: number,
-    model: string,
-  ): number {
-    const pricing = PRICING[model];
-    if (!pricing) return 0;
-    return (
-      (inputTokens / 1_000_000) * pricing.inputPer1M +
-      (outputTokens / 1_000_000) * pricing.outputPer1M
-    );
-  }
 
   /**
-   * Tier 3: AI-powered conflict resolution using Anthropic Messages API.
+   * Tier 3: AI-powered conflict resolution using Pi agent.
    *
-   * Reads the conflicted file content, sends it to Claude Sonnet for resolution,
-   * validates the output, and returns the result with cost tracking.
+   * Writes the conflicted file to disk, spawns a Pi session with a specialized
+   * conflict-resolution prompt, then reads and validates the resolved content.
    *
-   * @param filePath - The file path (used for extension-based validation)
+   * @param filePath - The file path relative to the project root
    * @param fileContent - The file content with conflict markers
    */
   async attemptTier3Resolution(
     filePath: string,
     fileContent: string,
   ): Promise<Tier3Result> {
-    if (!this.anthropicClient) {
-      return {
-        success: false,
-        error: "No Anthropic client configured for Tier 3 resolution",
-      };
-    }
-
     // ── File size gate (MQ-013) ──
     const lineCount = fileContent.split("\n").length;
     if (lineCount > this.config.costControls.maxFileLines) {
@@ -500,17 +436,9 @@ export class ConflictResolver {
       };
     }
 
-    // ── Pre-call cost estimate ──
-    const estimatedInputTokens =
-      this.estimateTokens(TIER3_SYSTEM_PROMPT) +
-      this.estimateTokens(fileContent);
-    // Estimate output as same size as input content
-    const estimatedOutputTokens = this.estimateTokens(fileContent);
-    const estimatedCostUsd = this.calculateCost(
-      estimatedInputTokens,
-      estimatedOutputTokens,
-      TIER3_MODEL,
-    );
+    // ── Pre-call cost estimate (4 chars/token heuristic) ──
+    const estimatedInputTokens = this.estimateTokens(fileContent) * 2; // prompt + content
+    const estimatedCostUsd = (estimatedInputTokens / 1_000_000) * 3.0;
 
     // ── Budget check (MQ-012) ──
     const remainingBudget =
@@ -523,69 +451,63 @@ export class ConflictResolver {
       };
     }
 
-    // ── Call Anthropic API ──
-    let response: Awaited<
-      ReturnType<AnthropicClient["messages"]["create"]>
-    >;
+    // ── Write conflicted content to disk so Pi can read it ──
+    const fullPath = path.join(this.projectPath, filePath);
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.writeFile(fullPath, fileContent, "utf-8");
+
+    // ── Run Pi conflict-resolution agent ──
+    const prompt = [
+      `You are resolving a git merge conflict. The file \`${filePath}\` contains conflict markers.`,
+      ``,
+      `Instructions:`,
+      `1. Read the file \`${filePath}\``,
+      `2. Examine git log or related files if you need context to understand each side's intent`,
+      `3. Resolve ALL conflicts — produce a correct, logical merged result`,
+      `4. Write the resolved content back to \`${filePath}\``,
+      ``,
+      `CRITICAL RULES:`,
+      `- The resolved file MUST contain ZERO conflict markers (no <<<<<<< HEAD, =======, or >>>>>>>)`,
+      `- Write ONLY valid code — no explanations, no markdown fencing, no prose`,
+    ].join("\n");
+
+    const piResult = await runWithPi({
+      prompt,
+      systemPrompt: "",
+      cwd: this.projectPath,
+      model: TIER3_MODEL,
+      env: process.env as Record<string, string>,
+    });
+
+    if (!piResult.success) {
+      return {
+        success: false,
+        error: `Pi conflict resolution failed: ${piResult.errorMessage ?? "unknown error"}`,
+      };
+    }
+
+    // ── Read resolved content back from disk ──
+    let resolvedContent: string;
     try {
-      response = await this.anthropicClient.messages.create({
-        model: TIER3_MODEL,
-        max_tokens: 8192,
-        system: TIER3_SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: `Resolve the merge conflicts in this file:\n\n${fileContent}`,
-          },
-        ],
-      });
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : String(err);
+      resolvedContent = await fs.readFile(fullPath, "utf-8");
+    } catch {
       return {
         success: false,
-        error: `Anthropic API call failed: ${message}`,
+        error: "Failed to read resolved file after Pi session",
       };
     }
 
-    // ── Extract response text ──
-    const textBlock = response.content.find((b) => b.type === "text");
-    if (!textBlock) {
-      return {
-        success: false,
-        error: "No text content in API response",
-      };
-    }
-    const resolvedContent = textBlock.text;
-
-    // ── Actual cost from usage ──
-    const { input_tokens: inputTokens, output_tokens: outputTokens } =
-      response.usage;
-    const actualCostUsd = this.calculateCost(
-      inputTokens,
-      outputTokens,
-      TIER3_MODEL,
-    );
-
-    // Track session cost
-    this.sessionCostUsd += actualCostUsd;
-
-    const inputPricing = PRICING[TIER3_MODEL];
-    const inputCostUsd = inputPricing
-      ? (inputTokens / 1_000_000) * inputPricing.inputPer1M
-      : 0;
-    const outputCostUsd = inputPricing
-      ? (outputTokens / 1_000_000) * inputPricing.outputPer1M
-      : 0;
+    // ── Track session cost ──
+    this.sessionCostUsd += piResult.costUsd;
 
     const cost: CostInfo = {
-      inputTokens,
-      outputTokens,
-      inputCostUsd,
-      outputCostUsd,
-      totalCostUsd: inputCostUsd + outputCostUsd,
+      inputTokens: 0,
+      outputTokens: 0,
+      inputCostUsd: 0,
+      outputCostUsd: 0,
+      totalCostUsd: piResult.costUsd,
       estimatedCostUsd,
-      actualCostUsd,
+      actualCostUsd: piResult.costUsd,
       model: TIER3_MODEL,
     };
 
@@ -610,11 +532,11 @@ export class ConflictResolver {
   }
 
   /**
-   * Tier 4: AI-powered "reimagination" using Anthropic Messages API with Opus.
+   * Tier 4: AI-powered "reimagination" using Pi agent with Opus.
    *
-   * Unlike Tier 3 which resolves conflict markers, Tier 4 reads the canonical
-   * file, the branch file, and the diff, then reimagines the branch changes
-   * applied onto the canonical version.
+   * Unlike Tier 3 which resolves conflict markers, Tier 4 spawns a Pi agent
+   * that reads the canonical file, the branch version, and the diff from git,
+   * then reimagines the branch changes applied onto the canonical version.
    *
    * @param filePath - The file path relative to the repo root
    * @param branchName - The feature branch name
@@ -625,14 +547,7 @@ export class ConflictResolver {
     branchName: string,
     targetBranch: string,
   ): Promise<Tier4Result> {
-    if (!this.anthropicClient) {
-      return {
-        success: false,
-        error: "No Anthropic client configured for Tier 4 resolution",
-      };
-    }
-
-    // ── Read three inputs ──
+    // ── Read canonical content for size gate and cost estimate ──
     const canonicalResult = await this.gitTry([
       "show",
       `${targetBranch}:${filePath}`,
@@ -645,26 +560,6 @@ export class ConflictResolver {
     }
     const canonicalContent = canonicalResult.stdout;
 
-    const branchResult = await this.gitTry([
-      "show",
-      `${branchName}:${filePath}`,
-    ]);
-    if (!branchResult.ok) {
-      return {
-        success: false,
-        error: "Failed to retrieve branch file content",
-      };
-    }
-    const branchContent = branchResult.stdout;
-
-    const diffResult = await this.gitTry([
-      "diff",
-      `${targetBranch}...${branchName}`,
-      "--",
-      filePath,
-    ]);
-    const diffOutput = diffResult.ok ? diffResult.stdout : "";
-
     // ── File size gate (MQ-013) ──
     const lineCount = canonicalContent.split("\n").length;
     if (lineCount > this.config.costControls.maxFileLines) {
@@ -675,17 +570,9 @@ export class ConflictResolver {
       };
     }
 
-    // ── Pre-call cost estimate (4 chars/token heuristic) ──
-    const promptText =
-      TIER4_SYSTEM_PROMPT + canonicalContent + branchContent + diffOutput;
-    const estimatedInputTokens = this.estimateTokens(promptText);
-    // Estimate output as same size as canonical content
-    const estimatedOutputTokens = this.estimateTokens(canonicalContent);
-    const estimatedCostUsd = this.calculateCost(
-      estimatedInputTokens,
-      estimatedOutputTokens,
-      TIER4_MODEL,
-    );
+    // ── Pre-call cost estimate ──
+    const estimatedInputTokens = this.estimateTokens(canonicalContent) * 3; // prompt + canonical + branch + diff
+    const estimatedCostUsd = (estimatedInputTokens / 1_000_000) * 15.0; // Opus pricing
 
     // ── Budget check ──
     const remainingBudget =
@@ -697,67 +584,60 @@ export class ConflictResolver {
       };
     }
 
-    // ── Build user message with three labeled sections ──
-    const userMessage =
-      `## Canonical version (${targetBranch})\n\n${canonicalContent}\n\n` +
-      `## Diff (${targetBranch}...${branchName})\n\n${diffOutput}\n\n` +
-      `## Branch version (${branchName})\n\n${branchContent}`;
+    // ── Run Pi reimagination agent ──
+    const prompt = [
+      `You are integrating changes from a feature branch into the main branch for file \`${filePath}\`.`,
+      ``,
+      `Instructions:`,
+      `1. Run: git show ${targetBranch}:${filePath}  (canonical main version)`,
+      `2. Run: git show ${branchName}:${filePath}  (feature branch version)`,
+      `3. Run: git diff ${targetBranch}...${branchName} -- ${filePath}  (what changed)`,
+      `4. Apply the feature branch's changes onto the canonical version intelligently`,
+      `5. Write the resulting merged content to \`${filePath}\` in the working directory`,
+      ``,
+      `CRITICAL RULES:`,
+      `- Write ONLY the final file content — no explanations, no markdown, no prose`,
+      `- The result must be valid code with ALL intended changes from both branches preserved`,
+    ].join("\n");
 
-    // ── Call Anthropic API ──
-    let response: AnthropicMessage;
+    const piResult = await runWithPi({
+      prompt,
+      systemPrompt: "",
+      cwd: this.projectPath,
+      model: TIER4_MODEL,
+      env: process.env as Record<string, string>,
+    });
+
+    if (!piResult.success) {
+      return {
+        success: false,
+        error: `Pi reimagination failed: ${piResult.errorMessage ?? "unknown error"}`,
+      };
+    }
+
+    // ── Read resolved content back from disk ──
+    const fullPath = path.join(this.projectPath, filePath);
+    let resolvedContent: string;
     try {
-      response = await this.anthropicClient.messages.create({
-        model: TIER4_MODEL,
-        max_tokens: 16384,
-        system: TIER4_SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: userMessage,
-          },
-        ],
-      });
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      resolvedContent = await fs.readFile(fullPath, "utf-8");
+    } catch {
       return {
         success: false,
-        error: `Anthropic API call failed: ${message}`,
+        error: "Failed to read resolved file after Pi session",
       };
     }
 
-    // ── Extract response text ──
-    const textBlock = response.content.find((b) => b.type === "text");
-    if (!textBlock) {
-      return {
-        success: false,
-        error: "No text content in API response",
-      };
-    }
-    const resolvedContent = textBlock.text;
-
-    // ── Actual cost from usage ──
-    const { input_tokens: inputTokens, output_tokens: outputTokens } =
-      response.usage;
-    const pricing = PRICING[TIER4_MODEL];
-    const inputCostUsd = pricing
-      ? (inputTokens / 1_000_000) * pricing.inputPer1M
-      : 0;
-    const outputCostUsd = pricing
-      ? (outputTokens / 1_000_000) * pricing.outputPer1M
-      : 0;
-    const actualCostUsd = inputCostUsd + outputCostUsd;
-
-    // Track session cost
-    this.sessionCostUsd += actualCostUsd;
+    // ── Track session cost ──
+    this.sessionCostUsd += piResult.costUsd;
 
     const cost: CostInfo = {
-      inputTokens,
-      outputTokens,
-      inputCostUsd,
-      outputCostUsd,
-      totalCostUsd: actualCostUsd,
+      inputTokens: 0,
+      outputTokens: 0,
+      inputCostUsd: 0,
+      outputCostUsd: 0,
+      totalCostUsd: piResult.costUsd,
       estimatedCostUsd,
-      actualCostUsd,
+      actualCostUsd: piResult.costUsd,
       model: TIER4_MODEL,
     };
 
@@ -845,49 +725,47 @@ export class ConflictResolver {
       }
       this.patternLearning?.recordOutcome(filePath, ext(filePath), 2, false, tier2.reason);
 
-      // Tier 3 (only if Anthropic client is available)
-      if (this.anthropicClient) {
-        // Pattern learning: skip Tier 3 if consistently fails for this extension (MQ-015)
-        const skipTier3 = this.patternLearning?.shouldSkipTier(ext(filePath), 3) ?? false;
+      // Tier 3 — Pi agent resolves conflict markers
+      // Pattern learning: skip Tier 3 if consistently fails for this extension (MQ-015)
+      const skipTier3 = this.patternLearning?.shouldSkipTier(ext(filePath), 3) ?? false;
 
-        if (!skipTier3) {
-          // Read the conflicted file content from the working tree
-          const conflictedContent = await this.readConflictedFile(filePath);
-          const tier3 = await this.attemptTier3Resolution(
-            filePath,
-            conflictedContent,
-          );
-          if (tier3.cost) costs.push(tier3.cost);
-          if (tier3.success && tier3.resolvedContent) {
-            await this.writeResolvedFile(filePath, tier3.resolvedContent);
-            resolvedTiers.set(filePath, 3);
-            this.patternLearning?.recordOutcome(filePath, ext(filePath), 3, true);
-            resolved = true;
-            continue;
-          }
-          this.patternLearning?.recordOutcome(filePath, ext(filePath), 3, false, tier3.error);
+      if (!skipTier3) {
+        // Read the conflicted file content from the working tree
+        const conflictedContent = await this.readConflictedFile(filePath);
+        const tier3 = await this.attemptTier3Resolution(
+          filePath,
+          conflictedContent,
+        );
+        if (tier3.cost) costs.push(tier3.cost);
+        if (tier3.success && tier3.resolvedContent) {
+          await this.writeResolvedFile(filePath, tier3.resolvedContent);
+          resolvedTiers.set(filePath, 3);
+          this.patternLearning?.recordOutcome(filePath, ext(filePath), 3, true);
+          resolved = true;
+          continue;
         }
+        this.patternLearning?.recordOutcome(filePath, ext(filePath), 3, false, tier3.error);
+      }
 
-        // Pattern learning: skip Tier 4 if consistently fails for this extension (MQ-015)
-        const skipTier4 = this.patternLearning?.shouldSkipTier(ext(filePath), 4) ?? false;
+      // Tier 4 — Pi agent reimagines the integration using Opus
+      // Pattern learning: skip Tier 4 if consistently fails for this extension (MQ-015)
+      const skipTier4 = this.patternLearning?.shouldSkipTier(ext(filePath), 4) ?? false;
 
-        if (!skipTier4) {
-          // Tier 4
-          const tier4 = await this.attemptTier4Resolution(
-            filePath,
-            branchName,
-            targetBranch,
-          );
-          if (tier4.cost) costs.push(tier4.cost);
-          if (tier4.success && tier4.resolvedContent) {
-            await this.writeResolvedFile(filePath, tier4.resolvedContent);
-            resolvedTiers.set(filePath, 4);
-            this.patternLearning?.recordOutcome(filePath, ext(filePath), 4, true);
-            resolved = true;
-            continue;
-          }
-          this.patternLearning?.recordOutcome(filePath, ext(filePath), 4, false, tier4.error);
+      if (!skipTier4) {
+        const tier4 = await this.attemptTier4Resolution(
+          filePath,
+          branchName,
+          targetBranch,
+        );
+        if (tier4.cost) costs.push(tier4.cost);
+        if (tier4.success && tier4.resolvedContent) {
+          await this.writeResolvedFile(filePath, tier4.resolvedContent);
+          resolvedTiers.set(filePath, 4);
+          this.patternLearning?.recordOutcome(filePath, ext(filePath), 4, true);
+          resolved = true;
+          continue;
         }
+        this.patternLearning?.recordOutcome(filePath, ext(filePath), 4, false, tier4.error);
       }
 
       // Fallback
