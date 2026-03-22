@@ -13,6 +13,7 @@ import type { UpdateOptions } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { deleteWorkerConfigFile } from "../../orchestrator/dispatcher.js";
+import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { StateMismatch } from "../../lib/run-status.js";
 // Re-export for callers that import these from this module (backward compatibility).
 export { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
@@ -309,6 +310,8 @@ export const resetCommand = new Command("reset")
         process.exit(1);
       }
 
+      const mergeQueue = new MergeQueue(store.getDb());
+
       // Shared TmuxClient — used for both stuck detection and session cleanup
       const tmux = new TmuxClient();
       const tmuxAvailable = await tmux.isAvailable();
@@ -379,6 +382,7 @@ export const resetCommand = new Command("reset")
       let worktreesRemoved = 0;
       let branchesDeleted = 0;
       let runsMarkedFailed = 0;
+      let mqEntriesRemoved = 0;
       let seedsReset = 0;
       const errors: string[] = [];
 
@@ -469,6 +473,18 @@ export const resetCommand = new Command("reset")
           await deleteWorkerConfigFile(run.id);
         }
 
+        // 5b. Remove merge queue entries for this seed
+        const mqEntries = mergeQueue.list().filter((e) => e.seed_id === run.seed_id);
+        if (mqEntries.length > 0) {
+          console.log(`    ${chalk.yellow("remove")} ${mqEntries.length} merge queue entry(ies)`);
+          if (!dryRun) {
+            for (const entry of mqEntries) {
+              mergeQueue.remove(entry.id);
+              mqEntriesRemoved++;
+            }
+          }
+        }
+
         seedIds.add(run.seed_id);
         console.log();
       }
@@ -497,6 +513,20 @@ export const resetCommand = new Command("reset")
             errors.push(`Failed to reset seed ${seedId}: ${result.error ?? "unknown error"}`);
             console.log(`    ${chalk.red("error")} resetting seed: ${result.error ?? "unknown error"}`);
             break;
+        }
+      }
+
+      // 5c. Mark all completed runs with no MQ entry as "reset" — their branches
+      //     have been removed or were never queued, so they can never be merged.
+      //     Leaving them as "completed" triggers the MQ-011 doctor warning.
+      if (!dryRun) {
+        const unqueuedCompleted = mergeQueue.missingFromQueue();
+        for (const entry of unqueuedCompleted) {
+          store.updateRun(entry.run_id, { status: "reset", completed_at: new Date().toISOString() });
+          runsMarkedFailed++;
+        }
+        if (unqueuedCompleted.length > 0) {
+          console.log(`  ${chalk.yellow("reset")} ${unqueuedCompleted.length} completed run(s) with no merge queue entry`);
         }
       }
 
@@ -559,6 +589,21 @@ export const resetCommand = new Command("reset")
         }
       }
 
+      // 6c. Purge all remaining conflict/failed merge queue entries (catches seeds not
+      //     in this reset batch that are still clogging the queue)
+      if (!dryRun) {
+        const staleEntries = mergeQueue.list().filter(
+          (e) => e.status === "conflict" || e.status === "failed",
+        );
+        for (const entry of staleEntries) {
+          mergeQueue.remove(entry.id);
+          mqEntriesRemoved++;
+        }
+        if (staleEntries.length > 0) {
+          console.log(`  ${chalk.yellow("purged")} ${staleEntries.length} stale merge queue entry(ies)`);
+        }
+      }
+
       // 7. Kill all foreman tmux sessions
       if (!dryRun) {
         const tmuxResult = await cleanupTmuxSessions(tmux);
@@ -597,6 +642,7 @@ export const resetCommand = new Command("reset")
         console.log(`  Worktrees removed:  ${worktreesRemoved}`);
         console.log(`  Branches deleted:   ${branchesDeleted}`);
         console.log(`  Runs marked reset:   ${runsMarkedFailed}`);
+        console.log(`  MQ entries removed:  ${mqEntriesRemoved}`);
         console.log(`  Seeds reset:        ${seedsReset}`);
         console.log(`  Mismatches fixed:   ${mismatchResult.fixed}`);
       }
