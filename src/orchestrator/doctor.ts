@@ -12,7 +12,7 @@ import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue.js";
 import type { ITaskClient } from "../lib/task-client.js";
-import { findMissingPrompts, installBundledPrompts } from "../lib/prompt-loader.js";
+import { findMissingPrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -319,6 +319,66 @@ export class Doctor {
     };
   }
 
+  /**
+   * Check that required Pi skills are installed in ~/.pi/agent/skills/.
+   * With --fix, installs missing skills from bundled defaults.
+   */
+  async checkPiSkills(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+    const missing = findMissingSkills();
+
+    if (missing.length === 0) {
+      return {
+        name: "Pi skills (~/.pi/agent/skills/)",
+        status: "pass",
+        message: "All required Pi skills are installed",
+      };
+    }
+
+    const missingList = missing.join(", ");
+
+    if (dryRun) {
+      return {
+        name: "Pi skills (~/.pi/agent/skills/)",
+        status: "fail",
+        message: `${missing.length} missing Pi skill(s): ${missingList}. Would install (dry-run).`,
+      };
+    }
+
+    if (fix) {
+      try {
+        const { installed } = installBundledSkills();
+        const stillMissing = findMissingSkills();
+        if (stillMissing.length === 0) {
+          return {
+            name: "Pi skills (~/.pi/agent/skills/)",
+            status: "fixed",
+            message: `${missing.length} missing Pi skill(s)`,
+            fixApplied: `Installed ${installed.length} skill(s) to ~/.pi/agent/skills/`,
+          };
+        }
+        return {
+          name: "Pi skills (~/.pi/agent/skills/)",
+          status: "fail",
+          message: `${stillMissing.length} Pi skill(s) still missing after install: ${stillMissing.join(", ")}`,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          name: "Pi skills (~/.pi/agent/skills/)",
+          status: "fail",
+          message: `Failed to install Pi skills: ${msg}`,
+        };
+      }
+    }
+
+    return {
+      name: "Pi skills (~/.pi/agent/skills/)",
+      status: "fail",
+      message: `${missing.length} missing Pi skill(s): ${missingList}. Run 'foreman init' or 'foreman doctor --fix' to install.`,
+    };
+  }
+
   async checkRepository(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check for .beads initialization.
     const results: CheckResult[] = [];
@@ -326,6 +386,7 @@ export class Doctor {
     results.push(await this.checkProjectRegistered());
     results.push(await this.checkBeadsInitialized());
     results.push(await this.checkPrompts(opts));
+    results.push(await this.checkPiSkills(opts));
     return results;
   }
 

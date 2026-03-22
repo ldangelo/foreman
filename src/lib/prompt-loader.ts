@@ -51,6 +51,20 @@ const BUNDLED_DEFAULTS_DIR = join(
   "prompts",
 );
 
+/** Bundled Pi skills directory (relative to this source file). */
+const BUNDLED_SKILLS_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "defaults",
+  "skills",
+);
+
+/** Pi global skills directory. */
+const PI_SKILLS_DIR = join(homedir(), ".pi", "agent", "skills");
+
+/** Required Pi skill names bundled with foreman. */
+export const REQUIRED_SKILLS: ReadonlyArray<string> = ["send-mail"];
+
 // ── Template rendering ────────────────────────────────────────────────────────
 
 /**
@@ -243,4 +257,48 @@ export function findMissingPrompts(projectRoot: string): string[] {
   }
 
   return missing;
+}
+
+// ── Pi skill management ───────────────────────────────────────────────────────
+
+/**
+ * Install bundled Pi skills to ~/.pi/agent/skills/.
+ * Each skill is a directory containing SKILL.md. Always overwrites to keep up to date.
+ */
+export function installBundledSkills(): { installed: string[]; skipped: string[] } {
+  const installed: string[] = [];
+  const skipped: string[] = [];
+
+  if (!existsSync(BUNDLED_SKILLS_DIR)) {
+    return { installed, skipped };
+  }
+
+  mkdirSync(PI_SKILLS_DIR, { recursive: true });
+
+  const skillDirs = readdirSync(BUNDLED_SKILLS_DIR, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name);
+
+  for (const skillName of skillDirs) {
+    const srcDir = join(BUNDLED_SKILLS_DIR, skillName);
+    const destDir = join(PI_SKILLS_DIR, skillName);
+    mkdirSync(destDir, { recursive: true });
+
+    const files = readdirSync(srcDir);
+    for (const file of files) {
+      copyFileSync(join(srcDir, file), join(destDir, file));
+    }
+    installed.push(skillName);
+  }
+
+  return { installed, skipped };
+}
+
+/**
+ * Check which required Pi skills are missing from ~/.pi/agent/skills/.
+ */
+export function findMissingSkills(): string[] {
+  return REQUIRED_SKILLS.filter(
+    (name) => !existsSync(join(PI_SKILLS_DIR, name, "SKILL.md")),
+  );
 }

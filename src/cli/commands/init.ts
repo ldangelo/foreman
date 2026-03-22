@@ -7,7 +7,7 @@ import { basename, join, resolve } from "node:path";
 
 import { homedir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
-import { installBundledPrompts } from "../../lib/prompt-loader.js";
+import { installBundledPrompts, installBundledSkills } from "../../lib/prompt-loader.js";
 
 // ── Backend-specific init logic (TRD-018) ─────────────────────────────────
 
@@ -145,6 +145,21 @@ export const initCommand = new Command("init")
       spinner.fail("Failed to install prompt templates");
       console.error(chalk.red(e instanceof Error ? e.message : String(e)));
       process.exit(1);
+    }
+
+    // Install bundled Pi skills to ~/.pi/agent/skills/
+    const skillSpinner = ora("Installing Pi skills...").start();
+    try {
+      const { installed: skillsInstalled } = installBundledSkills();
+      if (skillsInstalled.length > 0) {
+        skillSpinner.succeed(
+          `Installed ${skillsInstalled.length} Pi skill(s) to ~/.pi/agent/skills/`,
+        );
+      } else {
+        skillSpinner.succeed("Pi skills up to date");
+      }
+    } catch (e) {
+      skillSpinner.warn(`Failed to install Pi skills: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     console.log();
