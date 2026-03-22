@@ -228,7 +228,8 @@ describe("PiRpcSpawnStrategy.spawn()", () => {
     expect(env.FOREMAN_MAX_TURNS).toBeDefined();
     expect(env.FOREMAN_MAX_TOKENS).toBeDefined();
     expect(env.PI_EXTENSIONS).toBe("foreman-tool-gate,foreman-budget,foreman-audit");
-    expect(env.FOREMAN_AGENT_MAIL_URL).toBeDefined();
+    // FOREMAN_AGENT_MAIL_URL was removed — SQLite mail client is used instead
+    expect(env.FOREMAN_AGENT_MAIL_URL).toBeUndefined();
   });
 
   it("strips CLAUDECODE from the spawned process env", async () => {

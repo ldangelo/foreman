@@ -35,7 +35,6 @@ import { resetSeedToOpen, addLabelsToBead, addNotesToBead } from "./task-backend
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
-import { AgentMailClient } from "./agent-mail-client.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
@@ -86,8 +85,8 @@ class NotificationClient {
 
 // ── Agent Mail helper ─────────────────────────────────────────────────────────
 
-/** Union type for either mail client implementation. */
-type AnyMailClient = AgentMailClient | SqliteMailClient;
+/** Mail client type. */
+type AnyMailClient = SqliteMailClient;
 
 /**
  * Fire-and-forget wrapper for AgentMailClient.sendMessage.
@@ -262,35 +261,16 @@ async function main(): Promise<void> {
   // Create notification client using FOREMAN_NOTIFY_URL (set in env above if provided by dispatcher)
   const notifyClient = new NotificationClient(process.env.FOREMAN_NOTIFY_URL);
 
-  // Create mail client. SqliteMailClient is the default (always available).
-  // AgentMailClient (HTTP) is used only when FOREMAN_AGENT_MAIL_URL is explicitly set.
+  // Create SQLite-backed mail client (no external dependencies)
   let agentMailClient: AnyMailClient | null = null;
-  if (process.env.FOREMAN_AGENT_MAIL_URL) {
-    // Opt-in: use external HTTP Agent Mail server
-    try {
-      const candidate = new AgentMailClient({ baseUrl: process.env.FOREMAN_AGENT_MAIL_URL });
-      const reachable = await candidate.healthCheck();
-      if (reachable) {
-        await candidate.ensureProject(storeProjectPath);
-        agentMailClient = candidate;
-        log(`[agent-mail] Using HTTP AgentMailClient at ${process.env.FOREMAN_AGENT_MAIL_URL}`);
-      }
-    } catch {
-      // Non-fatal — fall through to SqliteMailClient
-    }
-  }
-
-  // Default: use SQLite-backed mail client (no external dependencies)
-  if (!agentMailClient) {
-    try {
-      const sqliteClient = new SqliteMailClient();
-      await sqliteClient.ensureProject(storeProjectPath);
-      sqliteClient.setRunId(runId);
-      agentMailClient = sqliteClient;
-      log(`[agent-mail] Using SqliteMailClient (scoped to run ${runId})`);
-    } catch {
-      // Non-fatal — mail is optional infrastructure
-    }
+  try {
+    const sqliteClient = new SqliteMailClient();
+    await sqliteClient.ensureProject(storeProjectPath);
+    sqliteClient.setRunId(runId);
+    agentMailClient = sqliteClient;
+    log(`[agent-mail] Using SqliteMailClient (scoped to run ${runId})`);
+  } catch {
+    // Non-fatal — mail is optional infrastructure
   }
 
   // Build clean env for SDK
@@ -1418,26 +1398,25 @@ async function fatalHandler(err: unknown): Promise<void> {
       console.error(`[foreman-worker] Could not update run status: ${storeMsg}`);
     }
 
-    // Send Agent Mail notification so foreman knows this worker died.
+    // Send SQLite mail notification so the run record reflects the fatal error.
     // agentMailClient is not in scope here — create a fresh one.
-    if (seedId) {
+    if (seedId && runId) {
       try {
-        const mailCandidate = new AgentMailClient();
-        const reachable = await mailCandidate.healthCheck();
-        if (reachable) {
-          await mailCandidate.sendMessage(
-            "foreman",
-            "worker-error",
-            JSON.stringify({
-              runId,
-              seedId,
-              error: msg,
-              phase: currentPhase,
-            }),
-          );
-        }
+        const mailCandidate = new SqliteMailClient();
+        await mailCandidate.ensureProject(projectPath);
+        mailCandidate.setRunId(runId);
+        await mailCandidate.sendMessage(
+          "foreman",
+          "worker-error",
+          JSON.stringify({
+            runId,
+            seedId,
+            error: msg,
+            phase: currentPhase,
+          }),
+        );
       } catch {
-        // Agent Mail unavailable — SQLite update above is sufficient.
+        // Mail unavailable — SQLite update above is sufficient.
       }
     }
   }

@@ -17,7 +17,8 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import Database from "better-sqlite3";
 import type { SpawnStrategy, SpawnResult, WorkerConfig } from "./dispatcher.js";
-import { AgentMailClient } from "./agent-mail-client.js";
+import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
+import { ForemanStore } from "../lib/store.js";
 
 // ── Pi phase configuration ───────────────────────────────────────────────
 
@@ -245,8 +246,6 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
       // Run/seed IDs for audit and budget enforcement
       FOREMAN_RUN_ID: config.runId,
       FOREMAN_SEED_ID: config.seedId,
-      // Agent mail endpoint
-      FOREMAN_AGENT_MAIL_URL: config.env.FOREMAN_AGENT_MAIL_URL ?? "http://localhost:8765",
       // Pi extensions to load
       PI_EXTENSIONS: "foreman-tool-gate,foreman-budget,foreman-audit",
     };
@@ -310,25 +309,19 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
 
     log(`  Pi pid=${child.pid} for ${config.seedId}`);
 
-    // ── Background task: read JSONL stdout, tee to log, send Agent Mail on completion ──
+    // ── Background task: read JSONL stdout, tee to log, send SQLite mail on completion ──
     // This runs fire-and-forget — spawn() returns immediately.
     void (async () => {
-      // Set up Agent Mail client.  All failures are silent.
-      let agentMailClient: AgentMailClient | null = null;
+      // Set up SQLite mail client. All failures are silent.
+      let agentMailClient: SqliteMailClient | null = null;
       try {
-        const candidate = new AgentMailClient();
-        const reachable = await candidate.healthCheck();
-        if (reachable) {
-          await candidate.ensureProject(projectPath);
-          // Register this phase as a named sending identity
-          const phaseRoleHint = `${phase}-${config.seedId}`;
-          const generatedName = await candidate.ensureAgentRegistered(phaseRoleHint, projectPath);
-          if (generatedName) {
-            candidate.agentName = generatedName;
-            log(`[agent-mail] Pi phase registered as '${generatedName}' (role: ${phaseRoleHint})`);
-          }
-          agentMailClient = candidate;
-        }
+        const sqliteClient = new SqliteMailClient();
+        await sqliteClient.ensureProject(projectPath);
+        sqliteClient.setRunId(config.runId);
+        const phaseRoleHint = `${phase}-${config.seedId}`;
+        await sqliteClient.ensureAgentRegistered(phaseRoleHint);
+        agentMailClient = sqliteClient;
+        log(`[agent-mail] Pi phase using SqliteMailClient (role: ${phaseRoleHint})`);
       } catch {
         // Silent failure — Agent Mail is optional
       }
@@ -392,8 +385,7 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
           `agent_end=${agentEndReceived}`,
       );
 
-      // Update SQLite run status BEFORE sending Agent Mail so that the
-      // ForemanInboxProcessor's `run.status === "completed"` guard passes.
+      // Update SQLite run status so the merge queue can find the completed run.
       if (config.dbPath) {
         try {
           const db = new Database(config.dbPath);
@@ -408,7 +400,7 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
         }
       }
 
-      // Send Agent Mail phase lifecycle message to "foreman"
+      // Send SQLite mail phase lifecycle message to "foreman"
       if (agentMailClient) {
         try {
           if (success) {

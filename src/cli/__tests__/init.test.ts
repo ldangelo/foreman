@@ -7,8 +7,6 @@ function makeStore(overrides: Record<string, unknown> = {}) {
     registerProject: vi.fn().mockReturnValue({ id: "proj-new" }),
     getSentinelConfig: vi.fn().mockReturnValue(null),
     upsertSentinelConfig: vi.fn().mockReturnValue({}),
-    getMergeAgentConfig: vi.fn().mockReturnValue(null),
-    setMergeAgentConfig: vi.fn().mockReturnValue({}),
     ...overrides,
   } as unknown as import("../../lib/store.js").ForemanStore;
 }
