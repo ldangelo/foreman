@@ -7,7 +7,12 @@ import type { BvClient, BvTriageResult } from "../../lib/bv.js";
 import type { ForemanStore } from "../../lib/store.js";
 
 // Minimal mocks — we only need selectModel which doesn't touch store/seeds
-const mockStore = {} as unknown as ForemanStore;
+const mockStore = {
+  getActiveRuns: vi.fn().mockReturnValue([]),
+  getRunsByStatus: vi.fn().mockReturnValue([]),
+  getRunsByStatuses: vi.fn().mockReturnValue([]),
+  getStuckRunsForSeed: vi.fn().mockReturnValue([]),
+} as unknown as ForemanStore;
 const mockSeeds = {} as unknown as ITaskClient;
 
 function makeDispatcher(client?: ITaskClient, bvClient?: BvClient | null) {
@@ -250,6 +255,7 @@ describe("Dispatcher — BvClient ordering", () => {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
       getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
@@ -279,6 +285,7 @@ describe("Dispatcher — BvClient ordering", () => {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
       getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
     } as any;
 
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -310,6 +317,7 @@ describe("Dispatcher — BvClient ordering", () => {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
       getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
     } as any;
 
     // No bvClient passed (undefined)
@@ -333,6 +341,7 @@ describe("Dispatcher — BvClient ordering", () => {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
       getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
     } as any;
 
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -373,6 +382,7 @@ describe("Dispatcher — BvClient ordering", () => {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
       getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
@@ -578,6 +588,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
       getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
@@ -606,6 +617,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
       getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
@@ -630,6 +642,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
       getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
@@ -654,6 +667,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
       getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
@@ -734,6 +748,7 @@ describe("Dispatcher.dispatch — fetches seed details via show()", () => {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
       getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
@@ -781,6 +796,7 @@ describe("Dispatcher.dispatch — fetches seed details via show()", () => {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
       getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});

@@ -28,7 +28,7 @@ Foreman CLI / Dispatcher
   │                                    ├─ foreman-budget      (turn + token hard limits)
   │                                    └─ foreman-audit       (stream events → Agent Mail)
   │
-  ├─ Agent Mail server (optional, port 8766)
+  ├─ Agent Mail (SQLite, .foreman/mail.db — no external server)
   │    Mailboxes: foreman, merge-agent, phase agents
   │    Phase transitions: explorer→developer→qa→reviewer→merge
   │    File reservations: prevent concurrent worktree conflicts
@@ -48,6 +48,135 @@ Foreman CLI / Dispatcher
 
 Dev ↔ QA retries up to 2x before proceeding to Review.
 
+## Dispatch Flow
+
+The following diagram shows the full lifecycle of a bead from `foreman run` to merged branch:
+
+```mermaid
+flowchart TD
+    subgraph CLI["foreman run"]
+        A[User runs foreman run] --> B[Dispatcher.dispatch]
+        B --> C{Check agent slots\navailable?}
+        C -- No slots --> DONE[Return: skipped]
+        C -- Slots open --> D[br ready — fetch unblocked beads]
+        D --> E{bv client\navailable?}
+        E -- Yes --> F[bv.robotTriage → score + sort by AI recommendation]
+        E -- No --> G[Sort by priority P0→P4]
+        F --> H
+        G --> H[For each bead...]
+        H --> I{Skip checks}
+        I -- already active --> SKIP[Skip: already running]
+        I -- completed, unmerged --> SKIP2[Skip: awaiting merge]
+        I -- in backoff from stuck --> SKIP3[Skip: exponential backoff]
+        I -- over max agents limit --> SKIP4[Skip: agent limit]
+        I -- passes all checks --> J[Fetch full bead detail\ntitle, description, notes, labels]
+    end
+
+    subgraph SETUP["Per-bead setup"]
+        J --> K[resolveBaseBranch\nstack on dependency branch?]
+        K --> L[createWorktree\ngit worktree add foreman/bead-id]
+        L --> M[Write TASK.md\ninto worktree]
+        M --> N[store.createRun → SQLite]
+        N --> O[store.logEvent dispatch]
+        O --> P[br update bead → in_progress]
+        P --> Q[spawnAgent]
+    end
+
+    subgraph SPAWN["Agent spawn"]
+        Q --> R{Pi binary\non PATH?}
+        R -- Yes --> S[PiRpcSpawnStrategy\npi --mode rpc JSONL]
+        R -- No --> T[Claude SDK\nquery fallback]
+        S --> U[Write config.json\nto temp file]
+        T --> U
+        U --> V[spawn agent-worker.ts\nas detached child process]
+        V --> W[store.updateRun → running]
+    end
+
+    subgraph WORKER["agent-worker process (detached)"]
+        W --> X[Read + delete config.json]
+        X --> Y[Open SQLite store\nOpen ~/.foreman/logs/runId.log]
+        Y --> Z[Init SqliteMailClient\n.foreman/mail.db]
+        Z --> AA{pipeline mode?}
+        AA -- No --> AB[Single agent via Pi RPC]
+        AA -- Yes --> AC[runPipeline]
+    end
+
+    subgraph PIPELINE["Pipeline phases"]
+        AC --> P1
+
+        subgraph P1["Phase 1: Explorer (Haiku, 30 turns, read-only)"]
+            P1A[Register agent-mail identity] --> P1B[Run SDK query\nexplorerPrompt]
+            P1B --> P1C[Write EXPLORER_REPORT.md]
+            P1C --> P1D[Mail report to developer inbox]
+        end
+
+        P1 --> P1_ok{success?}
+        P1_ok -- No --> STUCK[markStuck → bead reset to open\nexponential backoff]
+        P1_ok -- Yes --> P2
+
+        subgraph P2["Phase 2: Developer (Sonnet, 80 turns, read+write)"]
+            P2A[Reserve worktree files via Agent Mail] --> P2B[Run SDK query\ndeveloperPrompt + explorer context]
+            P2B --> P2C[Write DEVELOPER_REPORT.md]
+            P2C --> P2D[Release file reservations]
+        end
+
+        P2 --> P2_ok{success?}
+        P2_ok -- No --> STUCK
+
+        P2_ok -- Yes --> P3
+
+        subgraph P3["Phase 3: QA (Sonnet, 30 turns, read+bash)"]
+            P3A[Run SDK query\nqaPrompt + dev report]
+            P3A --> P3B[Run tests\nWrite QA_REPORT.md]
+            P3B --> P3C[Parse verdict: PASS / FAIL]
+        end
+
+        P3 --> P3_ok{QA verdict?}
+        P3_ok -- FAIL, retries left --> RETRY[Increment devRetries\nPass QA feedback to dev]
+        RETRY --> P2
+        P3_ok -- FAIL, max retries --> P4
+
+        P3_ok -- PASS --> P4
+
+        subgraph P4["Phase 4: Reviewer (Sonnet, 20 turns, read-only)"]
+            P4A[Run SDK query\nreviewerPrompt]
+            P4A --> P4B[Write REVIEW.md]
+            P4B --> P4C{CRITICAL or\nWARNING issues?}
+            P4C -- Yes --> FAIL_REV[Mark pipeline FAILED_REVIEW]
+        end
+
+        P4C -- No --> P5
+
+        subgraph P5["Phase 5: Finalize"]
+            P5A[git add, commit, push\nforeman/bead-id branch]
+            P5A --> P5B[br close bead]
+            P5B --> P5C[Enqueue to MergeQueue\nmail branch-ready to merge-agent]
+        end
+    end
+
+    subgraph MERGE["Merge queue"]
+        P5C --> MQ1[MergeQueue picks up branch]
+        MQ1 --> MQ2{Conflict tier?}
+        MQ2 -- T1/T2: no conflicts --> MQ3[Auto-rebase + merge to main]
+        MQ2 -- T3/T4: conflicts --> MQ4[AI conflict resolution via Pi session]
+        MQ4 --> MQ3
+        MQ3 --> MQ5[mail merge-complete to foreman]
+        MQ5 --> MQ6[store.updateRun → merged]
+    end
+```
+
+**Key decision points:**
+
+| Decision | Outcome |
+|---|---|
+| **Backoff check** | Bead recently failed/stuck → exponential delay before retry |
+| **Dependency stacking** | Bead depends on open bead → worktree branches from that dependency's branch |
+| **Pi vs SDK** | `pi` binary on PATH → JSONL RPC protocol; otherwise Claude SDK `query()` |
+| **Pipeline vs single** | `--pipeline` flag → 4-phase orchestration; otherwise single agent |
+| **Dev↔QA retry** | Max 2 retries; QA feedback injected into next developer prompt |
+| **Reviewer FAIL** | CRITICAL/WARNING issues → run marked failed, bead reset to open |
+| **Merge tiers T1-T4** | T1/T2 = TypeScript auto-merge; T3/T4 = AI-assisted conflict resolution |
+
 ## Prerequisites
 
 - **Node.js 20+**
@@ -62,11 +191,7 @@ Dev ↔ QA retries up to 2x before proceeding to Review.
   brew install pi
   # or follow Pi's install instructions for your platform
   ```
-- **[Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail)** _(optional)_ — inter-agent messaging; Foreman operates normally without it
-  ```bash
-  pip install mcp-agent-mail
-  # Requires Python 3.11+
-  ```
+- **Agent Mail** — inter-agent messaging is now **built-in** via SQLite (`SqliteMailClient`). No external server required. State stored in `.foreman/mail.db`.
 - **Claude Code** — `npm install -g @anthropic-ai/claude-code`
 - **Anthropic API key** — `export ANTHROPIC_API_KEY=sk-ant-...`
 
@@ -96,23 +221,9 @@ foreman status
 foreman merge
 ```
 
-## Agent Mail Setup
+## Agent Mail
 
-Agent Mail provides reliable inter-agent messaging, phase-to-phase coordination, and file reservation leases. Foreman uses it automatically when the server is reachable.
-
-### Installation (optional)
-
-```bash
-pip install mcp-agent-mail
-# Requires Python 3.11+
-```
-
-### Environment variable
-
-```bash
-# Override default URL (default: http://localhost:8766)
-export FOREMAN_AGENT_MAIL_URL=http://localhost:8766
-```
+Agent Mail provides inter-agent messaging, phase-to-phase coordination, and file reservation leases. As of the SQLite migration, it is **fully embedded** — no external server or Python dependency required. State is stored in `.foreman/mail.db`.
 
 ### What Foreman uses Agent Mail for
 
@@ -123,8 +234,6 @@ export FOREMAN_AGENT_MAIL_URL=http://localhost:8766
 | `branch-ready` | foreman → merge-agent | Phase pipeline complete |
 | `merge-complete` | merge-agent → foreman | Branch merged to main |
 | `audit-event` | foreman-audit extension → foreman | Every tool call / turn |
-
-Foreman operates normally without Agent Mail — phase transitions fall back to direct SQLite state updates.
 
 ## Running with Pi
 

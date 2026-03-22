@@ -405,8 +405,8 @@ describe("dispatch loop: auto-merge after each batch", () => {
 
     await invokeRun(["--no-watch"]);
 
-    // MergeQueue.reconcile is called once in the final merge drain after dispatch loop exits.
-    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
+    // MergeQueue.reconcile is called twice: once in the startup drain, once in the final drain.
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
   });
 
   it("processes merge queue after waiting-for-active-agents watch completes", async () => {
@@ -417,8 +417,8 @@ describe("dispatch loop: auto-merge after each batch", () => {
 
     await invokeRun(["--no-watch"]);
 
-    // MergeQueue.reconcile is called once in the final merge drain after dispatch loop exits.
-    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
+    // MergeQueue.reconcile is called twice: once in the startup drain, once in the final drain.
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
   });
 
   it("does NOT process merge queue when --no-auto-merge is set", async () => {
@@ -493,7 +493,8 @@ describe("dispatch loop: auto-merge after each batch", () => {
 
     // autoMerge now runs BEFORE watchRunsInk — so reconcile is called even when detached
     // (only the final drain after the loop is skipped when detached)
-    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
+    // startup drain + in-loop (before watch) = 2 calls; final drain skipped
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
   });
 
   it("logs 'Auto-merging completed branches...' and merged count", async () => {
@@ -509,6 +510,7 @@ describe("dispatch loop: auto-merge after each batch", () => {
       resolved_tier: null, error: null,
     };
     mockMergeQueueDequeue
+      .mockReturnValueOnce(null)    // startup drain: empty queue
       .mockReturnValueOnce(fakeEntry)
       .mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValue({
@@ -562,6 +564,7 @@ describe("dispatch loop: auto-merge after each batch", () => {
       resolved_tier: null, error: null,
     };
     mockMergeQueueDequeue
+      .mockReturnValueOnce(null)    // startup drain: empty queue
       .mockReturnValueOnce(fakeEntry)
       .mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValue({
@@ -690,8 +693,9 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
       resolved_tier: null, error: null,
     };
 
-    // Final drain dequeue: return the pending entry, then null
+    // Final drain dequeue: startup gets null, final drain gets the pending entry
     mockMergeQueueDequeue
+      .mockReturnValueOnce(null)    // startup drain: empty queue
       .mockReturnValueOnce(lateEntry)
       .mockReturnValue(null);
 
@@ -716,8 +720,8 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
 
     await invokeRun(["--no-watch"]);
 
-    // reconcile called once in the final drain
-    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
+    // reconcile called twice: startup drain + final drain
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
     // The pending entry should have been processed in the final drain
     expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(99, "merged", expect.objectContaining({ completedAt: expect.any(String) }));
   });
@@ -733,8 +737,9 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
       resolved_tier: null, error: null,
     };
 
-    // With --no-watch, only the final drain runs and finds the entry
+    // Startup drain: empty; final drain finds the entry
     mockMergeQueueDequeue
+      .mockReturnValueOnce(null)    // startup drain: empty queue
       .mockReturnValueOnce(lateEntry)
       .mockReturnValue(null);
 
@@ -782,9 +787,9 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
 
     await invokeRun([]);
 
-    // autoMerge now runs BEFORE watchRunsInk — so reconcile is called once (in-loop, before watch)
+    // autoMerge now runs BEFORE watchRunsInk — startup drain + in-loop (before watch) = 2 calls
     // The final drain after the loop is skipped (userDetached=true)
-    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
   });
 
   it("final drain is skipped when --no-auto-merge is set", async () => {
@@ -823,8 +828,9 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
     };
 
     // In --no-watch mode, the in-loop autoMerge is never called.
-    // The final drain finds a previously-queued entry.
+    // Startup drain: empty; final drain finds the previously-queued entry.
     mockMergeQueueDequeue
+      .mockReturnValueOnce(null)    // startup drain: empty queue
       .mockReturnValueOnce(pendingEntry)
       .mockReturnValue(null);
 
@@ -849,8 +855,8 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
 
     await invokeRun(["--no-watch"]);
 
-    // Final drain should have processed the pending entry
-    expect(mockMergeQueueReconcile).toHaveBeenCalledOnce();
+    // Final drain should have processed the pending entry; reconcile: startup + final = 2
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
     expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(200, "merged", expect.objectContaining({ completedAt: expect.any(String) }));
   });
 
