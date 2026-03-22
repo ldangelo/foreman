@@ -453,16 +453,15 @@ export const resetCommand = new Command("reset")
           }
         }
 
-        // 4. Mark run as failed in store
-        if (run.status !== "failed") {
-          console.log(`    ${chalk.yellow("mark")} run as failed`);
-          if (!dryRun) {
-            store.updateRun(run.id, {
-              status: "failed",
-              completed_at: new Date().toISOString(),
-            });
-            runsMarkedFailed++;
-          }
+        // 4. Mark run as "reset" — keeps history/events intact but signals to
+        //    doctor that this run was intentionally cleared (not an active failure).
+        console.log(`    ${chalk.yellow("mark")} run as reset`);
+        if (!dryRun) {
+          store.updateRun(run.id, {
+            status: "reset",
+            completed_at: new Date().toISOString(),
+          });
+          runsMarkedFailed++;
         }
 
         // 5. Clean up orphaned worker config file (if it still exists)
@@ -597,7 +596,7 @@ export const resetCommand = new Command("reset")
         console.log(`  Processes killed:   ${killed}`);
         console.log(`  Worktrees removed:  ${worktreesRemoved}`);
         console.log(`  Branches deleted:   ${branchesDeleted}`);
-        console.log(`  Runs marked failed: ${runsMarkedFailed}`);
+        console.log(`  Runs marked reset:   ${runsMarkedFailed}`);
         console.log(`  Seeds reset:        ${seedsReset}`);
         console.log(`  Mismatches fixed:   ${mismatchResult.fixed}`);
       }
