@@ -112,6 +112,13 @@ export const inboxCommand = new Command("inbox")
         process.exit(1);
       }
 
+      // Resolve seed ID for display (run record carries seed_id)
+      const allRuns = store.getRunsByStatuses(
+        ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
+      );
+      const thisRun = allRuns.find((r) => r.id === runId);
+      const seedLabel = thisRun?.seed_id ? `  bead: ${thisRun.seed_id}` : "";
+
       if (!options.watch) {
         // One-shot: show current run lifecycle status then fetch and display messages
         const runStatusRuns = store.getRunsByStatuses(["completed", "failed"]);
@@ -123,9 +130,9 @@ export const inboxCommand = new Command("inbox")
 
         const messages = fetchMessages(store, runId, options.agent, options.unread ?? false, limit);
         if (messages.length === 0) {
-          console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
+          console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
         } else {
-          console.log(`\nInbox — run: ${runId}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
+          console.log(`\nInbox — run: ${runId}${seedLabel}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
           for (const msg of messages) {
             console.log(formatMessage(msg));
             console.log("");
@@ -142,14 +149,22 @@ export const inboxCommand = new Command("inbox")
         return;
       }
 
-      // Watch mode: poll every 2s, show only new messages
-      console.log(`Watching inbox for run ${runId}${options.agent ? ` (agent: ${options.agent})` : ""}... (Ctrl-C to stop)\n`);
+      // Watch mode: poll every 2s, show past messages first then new ones
+      console.log(`Watching inbox for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}... (Ctrl-C to stop)\n`);
       const seenIds = new Set<string>();
       const seenRunIds = new Set<string>();
 
-      // Initial fetch — populate seenIds without printing (so only truly new messages display)
+      // Initial fetch — print existing messages immediately, then track them as seen
       const initial = fetchMessages(store, runId, options.agent, false, limit);
-      for (const m of initial) seenIds.add(m.id);
+      if (initial.length > 0) {
+        console.log(`── past messages ${"─".repeat(53)}`);
+        for (const m of initial) {
+          console.log(formatMessage(m));
+          console.log("");
+          seenIds.add(m.id);
+        }
+        console.log(`── live ─────────────────────────────────────────────────────────────\n`);
+      }
 
       // Seed seenRunIds with any already-completed/failed runs so we only show new transitions
       const initialRuns = store.getRunsByStatuses(["completed", "failed"]);
