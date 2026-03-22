@@ -24,7 +24,7 @@ import { ForemanInboxProcessor } from "../../orchestrator/foreman-inbox-processo
 import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
-import { AgentMailClient, DEFAULT_AGENT_MAIL_CONFIG } from "../../orchestrator/agent-mail-client.js";
+import { AgentMailClient } from "../../orchestrator/agent-mail-client.js";
 import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
 import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
 
@@ -234,24 +234,23 @@ export const runCommand = new Command("run")
     try {
       const projectPath = await getRepoRoot(process.cwd());
 
-      // ── Agent Mail health check ──────────────────────────────────────────────
-      // Verify mcp_agent_mail is reachable before dispatching agents.
-      // Skipped in dry-run mode since no real work will happen.
+      // ── Agent Mail (optional) ────────────────────────────────────────────────
+      // Agent Mail is fully optional — a missing or unreachable service is not a
+      // fatal error. When unavailable, inbox-related features are simply skipped.
+      let agentMailClient: AgentMailClient | null = null;
       if (!dryRun) {
-        const agentMailClient = new AgentMailClient();
-        const agentMailRunning = await agentMailClient.healthCheck();
-        if (!agentMailRunning) {
-          const url = process.env.AGENT_MAIL_URL ?? DEFAULT_AGENT_MAIL_CONFIG.baseUrl;
-          const port = url.split(":").pop() ?? "8766";
-          console.error(chalk.red("\nError: Agent Mail service is not running.\n"));
-          console.error(`  Start it with:  ${chalk.cyan(`mcp_agent_mail serve --port ${port}`)}`);
-          console.error(`  Then re-run:    ${chalk.cyan("foreman run")}\n`);
-          console.error(chalk.dim(`  Expected URL: ${url}`));
-          console.error(chalk.dim(`  Configure via: .foreman/agent-mail.json or AGENT_MAIL_URL env var\n`));
-          process.exit(1);
+        try {
+          const candidate = new AgentMailClient();
+          const agentMailRunning = await candidate.healthCheck();
+          if (agentMailRunning) {
+            await candidate.ensureProject(projectPath);
+            agentMailClient = candidate;
+          } else {
+            console.log(chalk.dim("  Agent Mail not available — running without inbox support"));
+          }
+        } catch {
+          console.log(chalk.dim("  Agent Mail not available — running without inbox support"));
         }
-        // Ensure the project exists in Agent Mail (idempotent).
-        await agentMailClient.ensureProject(projectPath);
       }
 
       // ── Pi Extensions check ──────────────────────────────────────────────────
@@ -381,11 +380,10 @@ export const runCommand = new Command("run")
       // (which listens on the "refinery" inbox).
       // Non-fatal — if anything fails, log a warning and continue without it.
       let inboxProcessorInstance: ForemanInboxProcessor | null = null;
-      if (!dryRun && mergeAgentInstance !== null) {
+      if (!dryRun && mergeAgentInstance !== null && agentMailClient !== null) {
         try {
-          const agentMailForInbox = new AgentMailClient();
           inboxProcessorInstance = new ForemanInboxProcessor(
-            agentMailForInbox,
+            agentMailClient,
             store,
             projectPath,
           );
