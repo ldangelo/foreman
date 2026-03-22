@@ -684,8 +684,10 @@ async function finalize(
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("nothing to commit")) {
-      log(`[FINALIZE] Nothing to commit`);
-      report.push(`## Commit`, `- Status: SKIPPED (nothing to commit)`, "");
+      log(`[FINALIZE] Nothing to commit — agent produced no file changes`);
+      report.push(`## Commit`, `- Status: FAILED (nothing to commit)`, "");
+      await appendFile(logFile, `[FINALIZE] Error: agent produced no file changes\n`);
+      return { success: false, retryable: true };
     } else {
       log(`[FINALIZE] Commit failed: ${msg.slice(0, 200)}`);
       await appendFile(logFile, `[FINALIZE] Commit error: ${msg}\n`);
