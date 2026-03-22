@@ -20,17 +20,17 @@ Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.
 ## Phase Lifecycle Notifications
 At the very start of your session, run:
 ```bash
-foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-started --body '{"phase":"developer","seedId":"{{seedId}}"}'
+npx foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-started --body '{"phase":"developer","seedId":"{{seedId}}"}'
 ```
 
 When you finish writing DEVELOPER_REPORT.md, run:
 ```bash
-foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"developer","seedId":"{{seedId}}","status":"complete"}'
+npx foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"developer","seedId":"{{seedId}}","status":"complete"}'
 ```
 
 If you hit an unrecoverable error, run:
 ```bash
-foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"{{seedId}}","error":"<brief description>"}'
+npx foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"{{seedId}}","error":"<brief description>"}'
 ```
 
 If `FOREMAN_RUN_ID` is empty or the command fails, skip silently — mail is non-critical.
