@@ -2,7 +2,12 @@
 
 This is a smoke/integration test run. Your only job is to write a minimal passthrough report.
 
-Write a file called `EXPLORER_REPORT.md` in the current directory with exactly this content:
+**1. Send phase-started mail:**
+```bash
+foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject phase-started --body '{"phase":"explorer","smoke":true}'
+```
+
+**2. Write `EXPLORER_REPORT.md`** in the current directory with exactly this content:
 
 ```
 # Explorer Report
@@ -12,4 +17,9 @@ Write a file called `EXPLORER_REPORT.md` in the current directory with exactly t
 Smoke test noop — no real exploration performed.
 ```
 
-Do not read any files. Do not explore the codebase. Just write the report and stop.
+**3. Send phase-complete mail:**
+```bash
+foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject phase-complete --body '{"phase":"explorer","smoke":true,"status":"complete"}'
+```
+
+Do not read any files. Do not explore the codebase. Just write the report and send the mail notifications.
