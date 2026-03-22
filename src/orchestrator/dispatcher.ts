@@ -16,7 +16,6 @@ import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
 import { PiRpcSpawnStrategy, isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
-import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -241,24 +240,35 @@ export class Dispatcher {
           branchName,
         }, run.id);
 
+        // 5a. Send worktree-created mail so inbox shows worktree lifecycle event
+        try {
+          this.store.sendMessage(run.id, "foreman", "foreman", "worktree-created", JSON.stringify({
+            seedId: seed.id,
+            title: seed.title,
+            worktreePath,
+            branchName,
+            model,
+            timestamp: new Date().toISOString(),
+          }));
+        } catch {
+          // Non-fatal — mail is optional infrastructure
+        }
+
         // 6. Mark seed as in_progress before spawning agent
         await this.seeds.update(seed.id, { status: "in_progress" });
 
-        // 6a. Send mail: bead claimed (moved to in_progress)
-        await sendDispatchMail(this.projectPath, run.id, "bead-claimed", {
-          seedId: seed.id,
-          title: seed.title,
-          model,
-          runId: run.id,
-        });
-
-        // 6b. Send mail: worktree created
-        await sendDispatchMail(this.projectPath, run.id, "worktree-created", {
-          seedId: seed.id,
-          branchName,
-          worktreePath,
-          baseBranch: baseBranch ?? null,
-        });
+        // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
+        try {
+          this.store.sendMessage(run.id, "foreman", "foreman", "bead-claimed", JSON.stringify({
+            seedId: seed.id,
+            title: seed.title,
+            model,
+            runId: run.id,
+            timestamp: new Date().toISOString(),
+          }));
+        } catch {
+          // Non-fatal — mail is optional infrastructure
+        }
 
         // 7. Spawn the coding agent
         const { sessionKey } = await this.spawnAgent(
@@ -973,28 +983,6 @@ function buildWorkerEnv(
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 23);
   console.error(`[foreman ${ts}] ${msg}`);
-}
-
-/**
- * Send a fire-and-forget mail message from the dispatcher process.
- * Creates a fresh SqliteMailClient scoped to the given run.
- * Silent failure — mail is non-critical infrastructure.
- */
-async function sendDispatchMail(
-  projectPath: string,
-  runId: string,
-  subject: string,
-  body: Record<string, unknown>,
-): Promise<void> {
-  try {
-    const client = new SqliteMailClient();
-    client.agentName = "dispatcher";
-    await client.ensureProject(projectPath);
-    client.setRunId(runId);
-    await client.sendMessage("foreman", subject, JSON.stringify(body));
-  } catch {
-    // Silent failure — mail is non-critical infrastructure
-  }
 }
 
 /**
