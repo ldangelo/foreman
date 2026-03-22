@@ -183,6 +183,24 @@ describe("pipeline smoke test: explorer → developer → qa → reviewer → fi
 
     // Worker must exit cleanly (0) when all phases succeed.
     expect(exitCode, `Worker should exit 0. Check ${tmpDir}/.foreman/logs for details.`).toBe(0);
+
+    // ── Assert SQLite messages were produced ───────────────────────────────
+    // The pipeline sends inter-agent messages via SqliteMailClient.
+    // Re-open the same store the worker wrote to and verify messages exist.
+    const postStore = ForemanStore.forProject(projectDir);
+    const messages = postStore.getAllMessages(run.id);
+    postStore.close();
+
+    expect(messages.length, "Pipeline should produce at least one inter-agent message").toBeGreaterThan(0);
+
+    // Explorer should have sent its report to the developer inbox
+    const explorerMsg = messages.find((m) => m.subject.includes("Explorer Report"));
+    expect(explorerMsg, "Explorer Report message should be sent to developer inbox").toBeDefined();
+    expect(explorerMsg?.recipient_agent_type).toMatch(/developer/);
+
+    // phase-complete events should be sent to foreman
+    const phaseCompletes = messages.filter((m) => m.subject.includes("phase-complete"));
+    expect(phaseCompletes.length, "At least one phase-complete message should be sent to foreman").toBeGreaterThan(0);
   });
 
   // ── Phase ordering via log ─────────────────────────────────────────────────
