@@ -2,12 +2,11 @@ import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+
 import { homedir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
-import { AgentMailClient } from "../../orchestrator/agent-mail-client.js";
-import { MERGE_AGENT_MAILBOX } from "../../orchestrator/merge-agent.js";
 
 // ── Backend-specific init logic (TRD-018) ─────────────────────────────────
 
@@ -53,44 +52,6 @@ export async function initBackend(opts: InitBackendOpts): Promise<void> {
   }
 }
 
-// ── Agent Mail config init (AC-014-1) ─────────────────────────────────────
-
-/**
- * Write a default agent-mail.json to .foreman/ if it does not already exist.
- * AC-014-1: Given `foreman init`, when the project is initialized, then the
- * Agent Mail server configuration is stored in .foreman/agent-mail.json.
- *
- * Exported for unit testing.
- */
-export function initAgentMailConfig(
-  projectDir: string,
-  opts: { checkExists?: (path: string) => boolean; mkdirSyncFn?: typeof mkdirSync; writeFileSyncFn?: typeof writeFileSync } = {},
-): void {
-  const checkExists = opts.checkExists ?? existsSync;
-  const mkdirSyncFn = opts.mkdirSyncFn ?? mkdirSync;
-  const writeFileSyncFn = opts.writeFileSyncFn ?? writeFileSync;
-
-  const foremanDir = join(projectDir, ".foreman");
-  const configPath = join(foremanDir, "agent-mail.json");
-
-  if (checkExists(configPath)) {
-    // Already present — leave untouched
-    return;
-  }
-
-  try {
-    if (!checkExists(foremanDir)) {
-      mkdirSyncFn(foremanDir, { recursive: true });
-    }
-    const defaultConfig = { url: "http://localhost:8765", enabled: true };
-    writeFileSyncFn(configPath, JSON.stringify(defaultConfig, null, 2) + "\n", "utf-8");
-    console.log(chalk.dim("  Agent Mail: default config written (.foreman/agent-mail.json)"));
-  } catch (e) {
-    // Non-fatal — agent-mail.json is optional (AgentMailClient falls back to env vars / defaults)
-    console.warn(chalk.yellow(`  Agent Mail: could not write config (non-fatal): ${e instanceof Error ? e.message : String(e)}`));
-  }
-}
-
 // ── Store init logic ──────────────────────────────────────────────────────
 
 /**
@@ -125,25 +86,6 @@ export async function initProjectStore(
     console.log(chalk.dim("  Sentinel: enabled (npm test every 30m on main)"));
   }
 
-  // Seed default merge agent config only on first init
-  if (!store.getMergeAgentConfig()) {
-    store.setMergeAgentConfig({ enabled: 1, poll_interval_ms: 30_000 });
-    console.log(chalk.dim("  Merge Agent: enabled (polling every 30s)"));
-  }
-
-  // Register the "refinery" Agent Mail mailbox so MergeAgent can receive messages.
-  // Non-fatal — Agent Mail server may not be running at init time.
-  try {
-    const agentMail = new AgentMailClient();
-    const healthy = await agentMail.healthCheck();
-    if (healthy) {
-      await agentMail.ensureProject(projectDir);
-      await agentMail.registerAgent(MERGE_AGENT_MAILBOX);
-      console.log(chalk.dim(`  Agent Mail: registered "${MERGE_AGENT_MAILBOX}" mailbox`));
-    }
-  } catch {
-    // Non-fatal — Agent Mail registration will be retried when merge-agent starts
-  }
 }
 
 // ── Command ────────────────────────────────────────────────────────────────
@@ -161,9 +103,6 @@ export const initCommand = new Command("init")
 
     // Initialize the task-tracking backend
     await initBackend({ projectDir });
-
-    // Write default Agent Mail config (.foreman/agent-mail.json) if missing
-    initAgentMailConfig(projectDir);
 
     // Register project and seed sentinel config
     const store = ForemanStore.forProject(projectDir);

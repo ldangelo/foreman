@@ -19,12 +19,9 @@ import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import { Refinery } from "../../orchestrator/refinery.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
-import { MergeAgent } from "../../orchestrator/merge-agent.js";
-import { ForemanInboxProcessor } from "../../orchestrator/foreman-inbox-processor.js";
 import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
-import { AgentMailClient } from "../../orchestrator/agent-mail-client.js";
 import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
 import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
 
@@ -234,25 +231,6 @@ export const runCommand = new Command("run")
     try {
       const projectPath = await getRepoRoot(process.cwd());
 
-      // ── Agent Mail (optional) ────────────────────────────────────────────────
-      // Agent Mail is fully optional — a missing or unreachable service is not a
-      // fatal error. When unavailable, inbox-related features are simply skipped.
-      let agentMailClient: AgentMailClient | null = null;
-      if (!dryRun) {
-        try {
-          const candidate = new AgentMailClient();
-          const agentMailRunning = await candidate.healthCheck();
-          if (agentMailRunning) {
-            await candidate.ensureProject(projectPath);
-            agentMailClient = candidate;
-          } else {
-            console.log(chalk.dim("  Agent Mail not available — running without inbox support"));
-          }
-        } catch {
-          console.log(chalk.dim("  Agent Mail not available — running without inbox support"));
-        }
-      }
-
       // ── Pi Extensions check ──────────────────────────────────────────────────
       // If Pi is available, the extensions package must be built before dispatch.
       // Skipped in dry-run mode since no real agent work will happen.
@@ -332,78 +310,6 @@ export const runCommand = new Command("run")
         if (sentinelAgent?.isRunning()) {
           sentinelAgent.stop();
           console.log(chalk.dim("[sentinel] Stopped."));
-        }
-      };
-
-      // ── Merge Agent Auto-Start ───────────────────────────────────────────
-      // If merge_agent_config.enabled=1 in the DB config, start the merge agent
-      // daemon automatically alongside foreman run. The merge agent polls Agent
-      // Mail for "branch-ready" messages and triggers Refinery automatically.
-      // Non-fatal — if anything fails, log a warning and continue without it.
-      let mergeAgentInstance: MergeAgent | null = null;
-      if (!dryRun) {
-        try {
-          const mergeAgentConfig = store.getMergeAgentConfig();
-          if (mergeAgentConfig && mergeAgentConfig.enabled === 1) {
-            mergeAgentInstance = new MergeAgent(
-              projectPath,
-              store,
-              taskClient,
-              mergeAgentConfig.poll_interval_ms,
-            );
-            mergeAgentInstance.start();
-            console.log(
-              chalk.dim(
-                `[merge-agent] Auto-started (polling every ${mergeAgentConfig.poll_interval_ms / 1000}s)`
-              )
-            );
-          }
-        } catch (mergeAgentErr: unknown) {
-          const msg = mergeAgentErr instanceof Error ? mergeAgentErr.message : String(mergeAgentErr);
-          console.warn(chalk.yellow(`[merge-agent] Failed to auto-start (non-fatal): ${msg}`));
-        }
-      }
-
-      /** Stop the merge agent daemon if it is running. Non-fatal cleanup helper. */
-      const stopMergeAgent = (): void => {
-        if (mergeAgentInstance?.isRunning()) {
-          mergeAgentInstance.stop();
-          console.log(chalk.dim("[merge-agent] Stopped."));
-        }
-      };
-
-      // ── Foreman Inbox Processor Auto-Start ──────────────────────────────────
-      // If the merge agent is enabled, also start the ForemanInboxProcessor so
-      // that "phase-complete" messages from Pi agents are translated into
-      // "branch-ready" messages for the MergeAgent. This bridges the gap between
-      // PiRpcSpawnStrategy (which writes to the "foreman" inbox) and MergeAgent
-      // (which listens on the "refinery" inbox).
-      // Non-fatal — if anything fails, log a warning and continue without it.
-      let inboxProcessorInstance: ForemanInboxProcessor | null = null;
-      if (!dryRun && mergeAgentInstance !== null && agentMailClient !== null) {
-        try {
-          inboxProcessorInstance = new ForemanInboxProcessor(
-            agentMailClient,
-            store,
-            projectPath,
-          );
-          inboxProcessorInstance.start();
-          console.log(
-            chalk.dim("[foreman-inbox] Auto-started (translates phase-complete → branch-ready)"),
-          );
-        } catch (inboxErr: unknown) {
-          const msg = inboxErr instanceof Error ? inboxErr.message : String(inboxErr);
-          console.warn(
-            chalk.yellow(`[foreman-inbox] Failed to auto-start (non-fatal): ${msg}`),
-          );
-        }
-      }
-
-      /** Stop the inbox processor if it is running. Non-fatal cleanup helper. */
-      const stopInboxProcessor = (): void => {
-        if (inboxProcessorInstance?.isRunning()) {
-          inboxProcessorInstance.stop();
-          console.log(chalk.dim("[foreman-inbox] Stopped."));
         }
       };
 
@@ -510,16 +416,12 @@ export const runCommand = new Command("run")
           const { detached } = await watchRunsInk(store, runIds, { notificationBus });
           if (detached) {
             stopSentinel();
-            stopMergeAgent();
-            stopInboxProcessor();
             store.close();
             return;
           }
         }
 
         stopSentinel();
-        stopMergeAgent();
-        stopInboxProcessor();
         store.close();
         return;
       }
@@ -732,8 +634,6 @@ export const runCommand = new Command("run")
       }
 
       stopSentinel();
-      stopMergeAgent();
-      stopInboxProcessor();
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
