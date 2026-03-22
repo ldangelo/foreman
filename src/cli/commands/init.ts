@@ -8,6 +8,7 @@ import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
 import { installBundledPrompts, installBundledSkills } from "../../lib/prompt-loader.js";
+import { installBundledWorkflows } from "../../lib/workflow-loader.js";
 
 // ── Backend-specific init logic (TRD-018) ─────────────────────────────────
 
@@ -105,6 +106,20 @@ export function installPrompts(
   return installBundledPrompts(projectDir, force);
 }
 
+/**
+ * Install bundled workflow configs to <projectDir>/.foreman/workflows/.
+ * Exported for unit testing.
+ *
+ * @param projectDir - Absolute path to the project directory
+ * @param force      - Overwrite existing workflow files
+ */
+export function installWorkflows(
+  projectDir: string,
+  force: boolean = false,
+): { installed: string[]; skipped: string[] } {
+  return installBundledWorkflows(projectDir, force);
+}
+
 export const initCommand = new Command("init")
   .description("Initialize foreman in a project")
   .option("-n, --name <name>", "Project name (defaults to directory name)")
@@ -160,6 +175,27 @@ export const initCommand = new Command("init")
       }
     } catch (e) {
       skillSpinner.warn(`Failed to install Pi skills: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // Install bundled workflow configs to .foreman/workflows/
+    const workflowSpinner = ora("Installing workflow configs...").start();
+    try {
+      const { installed, skipped } = installWorkflows(projectDir, force);
+      if (installed.length > 0) {
+        workflowSpinner.succeed(
+          `Installed ${installed.length} workflow config(s) to .foreman/workflows/`,
+        );
+      } else if (skipped.length > 0) {
+        workflowSpinner.info(
+          `Workflow configs already installed (${skipped.length} skipped). Use --force to overwrite.`,
+        );
+      } else {
+        workflowSpinner.succeed("Workflow configs installed");
+      }
+    } catch (e) {
+      workflowSpinner.fail("Failed to install workflow configs");
+      console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+      process.exit(1);
     }
 
     console.log();

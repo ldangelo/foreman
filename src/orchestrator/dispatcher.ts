@@ -670,6 +670,7 @@ export class Dispatcher {
       skipReview: pipelineOpts?.skipReview,
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
       seedType,
+      seedLabels: seed.labels,
     });
 
     return { sessionKey };
@@ -850,6 +851,11 @@ export interface WorkerConfig {
    * Used for prompt-loader workflow scoping and spawn strategy selection.
    */
   seedType?: string;
+  /**
+   * Labels from the bead. Forwarded to agent-worker so it can resolve
+   * `workflow:<name>` label overrides.
+   */
+  seedLabels?: string[];
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

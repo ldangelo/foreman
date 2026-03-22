@@ -13,6 +13,7 @@ import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { findMissingPrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
+import { findMissingWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -379,6 +380,68 @@ export class Doctor {
     };
   }
 
+  /**
+   * Check that all bundled workflow YAML files are installed in .foreman/workflows/.
+   * With --fix, reinstalls missing workflow configs from bundled defaults.
+   */
+  async checkWorkflows(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
+    const missing = findMissingWorkflows(this.projectPath);
+
+    if (missing.length === 0) {
+      return {
+        name: "workflow configs (.foreman/workflows/)",
+        status: "pass",
+        message: "All required workflow config files are installed",
+      };
+    }
+
+    const missingList = missing.join(", ");
+
+    if (dryRun) {
+      return {
+        name: "workflow configs (.foreman/workflows/)",
+        status: "fail",
+        message: `${missing.length} missing workflow config(s): ${missingList}. Would reinstall (dry-run).`,
+      };
+    }
+
+    if (fix) {
+      try {
+        const { installed } = installBundledWorkflows(this.projectPath, false);
+        const stillMissing = findMissingWorkflows(this.projectPath);
+        if (stillMissing.length === 0) {
+          return {
+            name: "workflow configs (.foreman/workflows/)",
+            status: "fixed",
+            message: `${missing.length} missing workflow config(s)`,
+            fixApplied: `Installed ${installed.length} workflow config(s) from bundled defaults`,
+          };
+        } else {
+          return {
+            name: "workflow configs (.foreman/workflows/)",
+            status: "fail",
+            message: `${stillMissing.length} workflow config(s) still missing after reinstall: ${stillMissing.join(", ")}`,
+          };
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          name: "workflow configs (.foreman/workflows/)",
+          status: "fail",
+          message: `Failed to reinstall workflow configs: ${msg}`,
+        };
+      }
+    }
+
+    return {
+      name: "workflow configs (.foreman/workflows/)",
+      status: "fail",
+      message: `${missing.length} missing workflow config(s): ${missingList}. Run 'foreman init' or 'foreman doctor --fix' to reinstall.`,
+    };
+  }
+
   async checkRepository(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check for .beads initialization.
     const results: CheckResult[] = [];
@@ -387,6 +450,7 @@ export class Doctor {
     results.push(await this.checkBeadsInitialized());
     results.push(await this.checkPrompts(opts));
     results.push(await this.checkPiSkills(opts));
+    results.push(await this.checkWorkflows(opts));
     return results;
   }
 
