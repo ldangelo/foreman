@@ -947,7 +947,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // AC-006-1: Register the explorer agent with Agent Mail before the phase starts.
       await registerAgent(agentMailClient, `explorer-${seedId}`);
       rotateReport(worktreePath, "EXPLORER_REPORT.md");
-      const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description, comments), config, progress, logFile, store, notifyClient);
+      const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description, comments, runId), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
         name: "explorer",
         skipped: false,
@@ -1004,7 +1004,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
       const devResult = await runPhase(
         "developer",
-        developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext, comments),
+        developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext, comments, runId),
         config, progress, logFile, store, notifyClient,
       );
       // AC-007-3: Release file reservations on phase completion or failure.
@@ -1042,7 +1042,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // AC-006-1: Register the QA agent with Agent Mail before the phase starts.
       await registerAgent(agentMailClient, `qa-${seedId}`);
       rotateReport(worktreePath, "QA_REPORT.md");
-      const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
+      const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle, runId), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
         name: devRetries === 0 ? "qa" : `qa (retry ${devRetries})`,
         skipped: false,
@@ -1101,7 +1101,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // AC-006-1: Register the reviewer agent with Agent Mail before the phase starts.
       await registerAgent(agentMailClient, `reviewer-${seedId}`);
       rotateReport(worktreePath, "REVIEW.md");
-      const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description, comments), config, progress, logFile, store, notifyClient);
+      const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description, comments, runId), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
         name: "reviewer",
         skipped: false,
@@ -1151,7 +1151,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       rotateReport(worktreePath, "DEVELOPER_REPORT.md");
       const devResult = await runPhase(
         "developer",
-        developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback, comments),
+        developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback, comments, runId),
         config, progress, logFile, store, notifyClient,
       );
       // AC-007-3: Release file reservations on phase completion or failure.
@@ -1172,7 +1172,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
 
         rotateReport(worktreePath, "QA_REPORT.md");
-        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle), config, progress, logFile, store, notifyClient);
+        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle, runId), config, progress, logFile, store, notifyClient);
         phaseRecords.push({
           name: `qa (review-feedback)`,
           skipped: false,

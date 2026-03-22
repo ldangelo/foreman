@@ -285,9 +285,9 @@ export const SENTINEL_ROLE_CONFIG: RoleConfig = {
 
 // ── Prompt templates ────────────────────────────────────────────────────
 
-export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string): string {
+export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string, runId?: string): string {
   const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
-  return loadAndInterpolate("explorer-prompt.md", { seedId, seedTitle, seedDescription, commentsSection });
+  return loadAndInterpolate("explorer-prompt.md", { seedId, seedTitle, seedDescription, commentsSection, runId: runId ?? "", agentRole: "explorer" });
 }
 
 export function developerPrompt(
@@ -297,6 +297,7 @@ export function developerPrompt(
   hasExplorerReport: boolean,
   feedbackContext?: string,
   seedComments?: string,
+  runId?: string,
 ): string {
   // NOTE: These strings are injected at the {{explorerInstruction}} placeholder in
   // developer-prompt.md, which appears between hardcoded step 1 and step 3 in the
@@ -320,16 +321,18 @@ export function developerPrompt(
     explorerInstruction,
     feedbackSection,
     commentsSection,
+    runId: runId ?? "",
+    agentRole: "developer",
   });
 }
 
-export function qaPrompt(seedId: string, seedTitle: string): string {
-  return loadAndInterpolate("qa-prompt.md", { seedId, seedTitle });
+export function qaPrompt(seedId: string, seedTitle: string, runId?: string): string {
+  return loadAndInterpolate("qa-prompt.md", { seedId, seedTitle, runId: runId ?? "", agentRole: "qa" });
 }
 
-export function reviewerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string): string {
+export function reviewerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string, runId?: string): string {
   const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
-  return loadAndInterpolate("reviewer-prompt.md", { seedId, seedTitle, seedDescription, commentsSection });
+  return loadAndInterpolate("reviewer-prompt.md", { seedId, seedTitle, seedDescription, commentsSection, runId: runId ?? "", agentRole: "reviewer" });
 }
 
 export function sentinelPrompt(branch: string, testCommand: string): string {

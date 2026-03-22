@@ -45,8 +45,8 @@ When you finish writing EXPLORER_REPORT.md, send its contents to foreman by runn
 
 ```bash
 foreman mail send \
-  --run-id "$FOREMAN_RUN_ID" \
-  --from "$FOREMAN_AGENT_ROLE" \
+  --run-id "{{runId}}" \
+  --from "{{agentRole}}" \
   --to foreman \
   --subject phase-complete \
   --body "$(jq -n --arg phase explorer --arg seedId "{{seedId}}" --arg status complete --rawfile report EXPLORER_REPORT.md '{phase:$phase,seedId:$seedId,status:$status,report:$report}')"
