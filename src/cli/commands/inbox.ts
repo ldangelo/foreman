@@ -78,6 +78,7 @@ export const inboxCommand = new Command("inbox")
   .option("--agent <name>", "Filter to a specific agent/role (default: show all)")
   .option("--run <id>", "Filter to a specific run ID (default: latest run)")
   .option("--seed <id>", "Resolve run by seed/bead ID (uses most recent run for that seed)")
+  .option("--all", "Watch messages across all runs (ignores --run and --seed)")
   .option("--watch", "Poll every 2s for new messages (shows only new ones)")
   .option("--unread", "Show only unread messages")
   .option("--limit <n>", "Max messages to show", "50")
@@ -86,6 +87,7 @@ export const inboxCommand = new Command("inbox")
     agent?: string;
     run?: string;
     seed?: string;
+    all?: boolean;
     watch?: boolean;
     unread?: boolean;
     limit?: string;
@@ -104,6 +106,35 @@ export const inboxCommand = new Command("inbox")
     const store = ForemanStore.forProject(projectPath);
 
     try {
+      // ── Global watch mode (--all) ───────────────────────────────────────────
+      if (options.all && options.watch) {
+        console.log("Watching all runs... (Ctrl-C to stop)\n");
+        const seenIds = new Set<string>();
+        const seenRunIds = new Set<string>();
+        const initialGlobal = store.getAllMessagesGlobal(limit);
+        if (initialGlobal.length > 0) {
+          console.log(`── past messages ${"─".repeat(53)}`);
+          for (const m of initialGlobal) { console.log(formatMessage(m)); console.log(""); seenIds.add(m.id); }
+          console.log(`── live ─────────────────────────────────────────────────────────────\n`);
+        }
+        const initRuns = store.getRunsByStatuses(["completed", "failed"]);
+        for (const r of initRuns) seenRunIds.add(r.id);
+        const pollAll = (): void => {
+          const statusRuns = store.getRunsByStatuses(["completed", "failed"]);
+          for (const run of statusRuns) {
+            if (!seenRunIds.has(run.id)) { seenRunIds.add(run.id); console.log(formatRunStatus(run)); console.log(""); }
+          }
+          const msgs = store.getAllMessagesGlobal(limit);
+          for (const msg of msgs.filter((m) => !seenIds.has(m.id))) {
+            seenIds.add(msg.id); console.log(formatMessage(msg)); console.log("");
+          }
+        };
+        pollAll();
+        const interval = setInterval(pollAll, 2000);
+        process.on("SIGINT", () => { clearInterval(interval); store.close(); process.exit(0); });
+        return;
+      }
+
       const runId = options.run
         ?? (options.seed ? resolveRunIdBySeed(store, options.seed) : null)
         ?? resolveLatestRunId(store);
