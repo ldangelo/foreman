@@ -6,6 +6,24 @@ You are a **Developer** — your job is to implement the task.
 **Seed:** {{seedId}} — {{seedTitle}}
 **Description:** {{seedDescription}}
 {{commentsSection}}
+## Phase Lifecycle Notifications
+At the very start of your session, run:
+```bash
+foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject phase-started --body '{"phase":"developer","seedId":"{{seedId}}"}'
+```
+
+When you finish writing DEVELOPER_REPORT.md, run:
+```bash
+foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject phase-complete --body '{"phase":"developer","seedId":"{{seedId}}","status":"complete"}'
+```
+
+If you hit an unrecoverable error, run:
+```bash
+foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"{{seedId}}","error":"<brief description>"}'
+```
+
+If `FOREMAN_RUN_ID` is empty or the command fails, skip silently — mail is non-critical.
+
 ## Instructions
 1. Read TASK.md for task context
 {{explorerInstruction}}

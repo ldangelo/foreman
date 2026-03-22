@@ -5,6 +5,24 @@ You are a **QA Agent** — your job is to verify the implementation works correc
 ## Task
 Verify the implementation for: **{{seedId}} — {{seedTitle}}**
 
+## Phase Lifecycle Notifications
+At the very start of your session, run:
+```bash
+foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject phase-started --body '{"phase":"qa","seedId":"{{seedId}}"}'
+```
+
+When you finish writing QA_REPORT.md, run:
+```bash
+foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject phase-complete --body '{"phase":"qa","seedId":"{{seedId}}","status":"complete"}'
+```
+
+If you hit an unrecoverable error, run:
+```bash
+foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject agent-error --body '{"phase":"qa","seedId":"{{seedId}}","error":"<brief description>"}'
+```
+
+If `FOREMAN_RUN_ID` is empty or the command fails, skip silently — mail is non-critical.
+
 ## Pre-flight: Conflict marker check
 Run: grep -rn --include="*.ts" --include="*.tsx" --include="*.js" '<<<<<<<\|>>>>>>>\||||||||' src/ 2>/dev/null || true
 If ANY output appears, IMMEDIATELY report QA FAIL with message:
