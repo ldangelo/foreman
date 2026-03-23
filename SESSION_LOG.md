@@ -1,26 +1,26 @@
-# Session Log: reviewer agent for bd-k5wt
+# Session Log: reviewer agent for bd-154x
 
 ## Metadata
-- Start: 2026-03-23T00:00:00.000Z
+- Start: 2026-03-23T18:45:00Z
 - Role: reviewer
-- Seed: bd-k5wt
+- Seed: bd-154x
 - Status: completed
 
 ## Key Activities
-- Read TASK.md for requirement: remove `--no-auto-merge` flag from `foreman run`
-- Read EXPLORER_REPORT.md for architecture context (3 call sites, 2 tests to remove)
-- Read QA_REPORT.md: 2061 tests passed, type check clean, no issues found by QA
-- Read `src/cli/commands/run.ts` — confirmed full removal of flag definition, `enableAutoMerge` assignment, and all conditional guards; verified always-on autoMerge at startup, in-loop, and final drain
-- Read `src/orchestrator/auto-merge.ts` — confirmed module is correct standalone implementation with mail notifications and `syncBeadStatusAfterMerge` export
-- Read `src/cli/__tests__/run-auto-merge.test.ts` — confirmed two obsolete flag tests removed, reconcile call counts updated correctly, header comment updated
-- Grep confirmed zero remaining references to `no-auto-merge`, `enableAutoMerge`, or `autoMerge !== false` in `src/`
-- Checked README.md — flag was never documented there; always-on behaviour noted in code comments
-- Identified pre-existing NOTEs (split imports, unused type imports) — not introduced by this change
+- Read TASK.md — task asks to remove or rewrite `foreman attach` (originally tmux-specific)
+- Read EXPLORER_REPORT.md — confirms tmux is already gone; attach is already log/SDK-based; recommends Option 1 (keep as-is) or Option 2 (enhance with Agent Mail)
+- Read QA_REPORT.md — PASS verdict, 2069 tests all green, tsc clean
+- Reviewed `src/cli/commands/attach.ts` in full — assessed new `--stream` mode and `handleStream` implementation
+- Reviewed `src/cli/commands/inbox.ts` in full — assessed `--all` one-shot mode and `running` status fix
+- Reviewed `src/cli/__tests__/attach.test.ts` — 6 new stream tests covering terminal state, existing messages, AbortSignal, live polling, JSON formatting
+- Reviewed `src/cli/__tests__/inbox.test.ts` — 245-line new suite covering global message aggregation, filters, watch mode
+- Checked `src/lib/store.ts` for `getAllMessages`, `getAllMessagesGlobal`, `sendMessage`, `markMessageRead`, `getRunsByStatuses` — all correct and consistent
+- Identified 4 minor NOTEs (no CRITICAL or WARNING issues)
 
 ## Artifacts Created
-- REVIEW.md — verdict PASS with three NOTEs (all pre-existing, none blocking)
+- REVIEW.md — verdict: PASS
 - SESSION_LOG.md (this file)
 
 ## End
-- Completion time: 2026-03-23T00:05:00.000Z
+- Completion time: 2026-03-23T18:48:00Z
 - Next phase: finalize
