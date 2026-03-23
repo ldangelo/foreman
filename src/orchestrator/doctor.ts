@@ -1,4 +1,4 @@
-import { access, stat, rm } from "node:fs/promises";
+import { access, stat, rm, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -47,15 +47,23 @@ function isSDKBasedRun(sessionKey: string | null): boolean {
 export class Doctor {
   private mergeQueue?: MergeQueue;
   private taskClient?: ITaskClient;
+  /**
+   * Injected execFile-like function used only by `isBranchMerged`.
+   * Defaults to the real `execFileAsync`; can be overridden in tests to avoid
+   * spawning real git processes.
+   */
+  private execFn: ExecFileAsyncFn;
 
   constructor(
     private store: ForemanStore,
     private projectPath: string,
     mergeQueue?: MergeQueue,
     taskClient?: ITaskClient,
+    execFn?: ExecFileAsyncFn,
   ) {
     this.mergeQueue = mergeQueue;
     this.taskClient = taskClient;
+    this.execFn = execFn ?? (execFileAsync as ExecFileAsyncFn);
   }
 
   // ── System checks ──────────────────────────────────────────────────
@@ -766,31 +774,140 @@ export class Doctor {
     };
   }
 
+  /**
+   * Read the beads JSONL and return a Set of seed IDs that are closed.
+   * Falls back to an empty set on any read/parse error (non-fatal).
+   */
+  private async getClosedSeedIds(): Promise<Set<string>> {
+    const jsonlPath = join(this.projectPath, ".beads", "issues.jsonl");
+    const closed = new Set<string>();
+    try {
+      const raw = await readFile(jsonlPath, "utf8");
+      for (const line of raw.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const entry = JSON.parse(trimmed) as { id?: string; status?: string };
+          if (entry.id && entry.status === "closed") {
+            closed.add(entry.id);
+          }
+        } catch {
+          // malformed line — skip
+        }
+      }
+    } catch {
+      // File missing or unreadable — return empty set
+    }
+    return closed;
+  }
+
+  /**
+   * Check whether `foreman/<seedId>` has already been merged into `defaultBranch`.
+   *
+   * Uses `git merge-base --is-ancestor` which exits 0 if the branch tip is an
+   * ancestor of the default branch (i.e. fully merged).  Returns false on any
+   * git error so the caller treats the run as still problematic.
+   */
+  private async isBranchMerged(seedId: string, defaultBranch: string): Promise<boolean> {
+    const branchName = `foreman/${seedId}`;
+    try {
+      await this.execFn(
+        "git",
+        ["merge-base", "--is-ancestor", branchName, defaultBranch],
+        { cwd: this.projectPath },
+      );
+      return true; // exit 0 → branch is an ancestor → already merged
+    } catch {
+      return false; // non-zero exit or any error → not merged / branch missing
+    }
+  }
+
   async checkFailedStuckRuns(): Promise<CheckResult[]> {
     const project = this.store.getProjectByPath(this.projectPath);
     if (!project) return [];
 
     const results: CheckResult[] = [];
 
+    // Detect the default branch once; fall back gracefully on errors.
+    let defaultBranch: string;
+    try {
+      defaultBranch = await detectDefaultBranch(this.projectPath);
+    } catch {
+      defaultBranch = "main";
+    }
+
+    // Collect seed IDs that are already closed in beads so we can auto-resolve
+    // stale run records without hitting git at all.
+    const closedSeeds = await this.getClosedSeedIds();
+
+    /**
+     * For a set of runs (all failed or all stuck), filter out those that are
+     * already resolved (seed closed or branch merged) and auto-mark them as
+     * completed in the store.  Returns the subset that still needs attention.
+     */
+    const filterAutoResolved = async (
+      runs: import("../lib/store.js").Run[],
+    ): Promise<{ unresolved: import("../lib/store.js").Run[]; autoResolvedCount: number }> => {
+      let autoResolvedCount = 0;
+      const unresolved: import("../lib/store.js").Run[] = [];
+
+      for (const run of runs) {
+        // If the bead/seed is already closed, the run record is stale.
+        if (closedSeeds.has(run.seed_id)) {
+          this.store.updateRun(run.id, { status: "completed" });
+          autoResolvedCount++;
+          continue;
+        }
+
+        // If the branch has already been merged, the run is done.
+        const merged = await this.isBranchMerged(run.seed_id, defaultBranch);
+        if (merged) {
+          this.store.updateRun(run.id, { status: "completed" });
+          autoResolvedCount++;
+          continue;
+        }
+
+        unresolved.push(run);
+      }
+
+      return { unresolved, autoResolvedCount };
+    };
+
     const failedRuns = this.store.getRunsByStatus("failed", project.id);
-    if (failedRuns.length > 0) {
+    const stuckRuns = this.store.getRunsByStatus("stuck", project.id);
+
+    const { unresolved: unresolvedFailed, autoResolvedCount: failedResolved } =
+      await filterAutoResolved(failedRuns);
+    const { unresolved: unresolvedStuck, autoResolvedCount: stuckResolved } =
+      await filterAutoResolved(stuckRuns);
+
+    const totalResolved = failedResolved + stuckResolved;
+    if (totalResolved > 0) {
+      results.push({
+        name: "failed/stuck runs (auto-resolved)",
+        status: "fixed",
+        message: `Auto-resolved ${totalResolved} run(s) whose branch was already merged or seed was already closed`,
+        fixApplied: `Marked ${totalResolved} run(s) as completed`,
+      });
+    }
+
+    if (unresolvedFailed.length > 0) {
       results.push({
         name: `failed runs`,
         status: "warn",
-        message: `${failedRuns.length} failed run(s): ${failedRuns.slice(0, 5).map((r) => r.seed_id).join(", ")}${failedRuns.length > 5 ? "..." : ""}. Use 'foreman reset' to retry.`,
+        message: `${unresolvedFailed.length} failed run(s): ${unresolvedFailed.slice(0, 5).map((r) => r.seed_id).join(", ")}${unresolvedFailed.length > 5 ? "..." : ""}. Use 'foreman reset' to retry.`,
       });
     }
 
-    const stuckRuns = this.store.getRunsByStatus("stuck", project.id);
-    if (stuckRuns.length > 0) {
+    if (unresolvedStuck.length > 0) {
       results.push({
         name: `stuck runs`,
         status: "warn",
-        message: `${stuckRuns.length} stuck run(s): ${stuckRuns.slice(0, 5).map((r) => r.seed_id).join(", ")}${stuckRuns.length > 5 ? "..." : ""}. Use 'foreman reset' to retry or 'foreman run --resume' to continue.`,
+        message: `${unresolvedStuck.length} stuck run(s): ${unresolvedStuck.slice(0, 5).map((r) => r.seed_id).join(", ")}${unresolvedStuck.length > 5 ? "..." : ""}. Use 'foreman reset' to retry or 'foreman run --resume' to continue.`,
       });
     }
 
-    if (failedRuns.length === 0 && stuckRuns.length === 0) {
+    if (unresolvedFailed.length === 0 && unresolvedStuck.length === 0 && totalResolved === 0) {
       results.push({
         name: "failed/stuck runs",
         status: "pass",

@@ -424,6 +424,186 @@ describe("Doctor", () => {
 
       expect(results.some((r) => r.name === "failed runs" && r.status === "warn")).toBe(true);
     });
+
+    // ── Merge-detection tests ──────────────────────────────────────────
+
+    /**
+     * Helper: build a Doctor with a controllable execFn (for git merge-base calls)
+     * and a project that has a temporary directory (for .beads/issues.jsonl).
+     */
+    async function makeMergeDetectionMocks(
+      tmpDir: string,
+      execFn: (...args: any[]) => Promise<{ stdout: string; stderr: string }>,
+    ) {
+      const store = {
+        getProjectByPath: vi.fn(() => ({
+          id: "proj-1",
+          name: "test",
+          status: "active",
+          path: tmpDir,
+          created_at: "",
+          updated_at: "",
+        })),
+        getRunsByStatus: vi.fn(() => [] as Run[]),
+        getRunsForSeed: vi.fn(() => [] as Run[]),
+        getActiveRuns: vi.fn(() => [] as Run[]),
+        updateRun: vi.fn(),
+        logEvent: vi.fn(),
+      };
+      const doctor = new Doctor(store as any, tmpDir, undefined, undefined, execFn as any);
+      return { store, doctor };
+    }
+
+    it("auto-resolves a failed run whose branch is already merged into default branch", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        // No .beads/issues.jsonl — seed not closed via beads
+        // execFn returns successfully (exit 0) → branch is merged
+        const execFn = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+        const failedRun = makeRun({ id: "run-merged", seed_id: "bd-merged", status: "failed" });
+        store.getRunsByStatus
+          .mockReturnValueOnce([failedRun]) // failed runs
+          .mockReturnValueOnce([]);          // stuck runs
+
+        const results = await doctor.checkFailedStuckRuns();
+
+        // Should have auto-resolved the run
+        const resolvedResult = results.find((r) => r.name === "failed/stuck runs (auto-resolved)");
+        expect(resolvedResult).toBeDefined();
+        expect(resolvedResult!.status).toBe("fixed");
+        expect(resolvedResult!.message).toContain("Auto-resolved 1");
+
+        // Store should have been updated to completed
+        expect(store.updateRun).toHaveBeenCalledWith("run-merged", { status: "completed" });
+
+        // No warning about failed runs should appear
+        expect(results.find((r) => r.name === "failed runs")).toBeUndefined();
+
+        // execFn should have been called with git merge-base --is-ancestor
+        expect(execFn).toHaveBeenCalledWith(
+          "git",
+          ["merge-base", "--is-ancestor", "foreman/bd-merged", "main"],
+          expect.objectContaining({ cwd: tmpDir }),
+        );
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("keeps a failed run in the warning list when branch is NOT merged", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        // execFn throws (non-zero exit) → branch is not merged
+        const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
+        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+        const failedRun = makeRun({ id: "run-unmerged", seed_id: "bd-unmerged", status: "failed" });
+        store.getRunsByStatus
+          .mockReturnValueOnce([failedRun])
+          .mockReturnValueOnce([]);
+
+        const results = await doctor.checkFailedStuckRuns();
+
+        // Run should still appear as a warning
+        const warnResult = results.find((r) => r.name === "failed runs");
+        expect(warnResult).toBeDefined();
+        expect(warnResult!.status).toBe("warn");
+        expect(warnResult!.message).toContain("bd-unmerged");
+
+        // No auto-resolve
+        expect(results.find((r) => r.name === "failed/stuck runs (auto-resolved)")).toBeUndefined();
+        expect(store.updateRun).not.toHaveBeenCalled();
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("auto-resolves a failed run whose seed is already closed in beads", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        // Write a .beads/issues.jsonl with the seed marked as closed
+        const beadsDir = join(tmpDir, ".beads");
+        await mkdir(beadsDir, { recursive: true });
+        const beadEntry = JSON.stringify({ id: "bd-closed", status: "closed" });
+        await writeFile(join(beadsDir, "issues.jsonl"), beadEntry + "\n");
+
+        // execFn should NOT be called because the seed-closed check fires first
+        const execFn = vi.fn().mockRejectedValue(new Error("should not be called"));
+        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+        const failedRun = makeRun({ id: "run-closed-seed", seed_id: "bd-closed", status: "failed" });
+        store.getRunsByStatus
+          .mockReturnValueOnce([failedRun])
+          .mockReturnValueOnce([]);
+
+        const results = await doctor.checkFailedStuckRuns();
+
+        // Should have auto-resolved
+        const resolvedResult = results.find((r) => r.name === "failed/stuck runs (auto-resolved)");
+        expect(resolvedResult).toBeDefined();
+        expect(resolvedResult!.status).toBe("fixed");
+        expect(store.updateRun).toHaveBeenCalledWith("run-closed-seed", { status: "completed" });
+
+        // execFn should NOT have been called — seed-closed check short-circuits
+        expect(execFn).not.toHaveBeenCalled();
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("gracefully handles git errors during merge check — run stays in warning", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        // execFn throws a git error (e.g. corrupted repo)
+        const execFn = vi.fn().mockRejectedValue(new Error("fatal: not a git repository"));
+        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+        const failedRun = makeRun({ id: "run-git-err", seed_id: "bd-git-err", status: "failed" });
+        store.getRunsByStatus
+          .mockReturnValueOnce([failedRun])
+          .mockReturnValueOnce([]);
+
+        const results = await doctor.checkFailedStuckRuns();
+
+        // Run should remain as a warning — error treated as "not merged"
+        const warnResult = results.find((r) => r.name === "failed runs");
+        expect(warnResult).toBeDefined();
+        expect(warnResult!.status).toBe("warn");
+        expect(store.updateRun).not.toHaveBeenCalled();
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("auto-resolves a stuck run whose branch is already merged", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        const execFn = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+        vi.mocked(detectDefaultBranch).mockResolvedValue("dev");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+        const stuckRun = makeRun({ id: "run-stuck", seed_id: "bd-stuck", status: "stuck" });
+        store.getRunsByStatus
+          .mockReturnValueOnce([])         // failed runs
+          .mockReturnValueOnce([stuckRun]); // stuck runs
+
+        const results = await doctor.checkFailedStuckRuns();
+
+        const resolvedResult = results.find((r) => r.name === "failed/stuck runs (auto-resolved)");
+        expect(resolvedResult).toBeDefined();
+        expect(resolvedResult!.status).toBe("fixed");
+        expect(store.updateRun).toHaveBeenCalledWith("run-stuck", { status: "completed" });
+        expect(results.find((r) => r.name === "stuck runs")).toBeUndefined();
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
   });
 
   describe("checkCompletedRunsNotQueued", () => {
