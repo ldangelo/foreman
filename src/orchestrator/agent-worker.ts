@@ -32,7 +32,7 @@ import {
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import { rotateReport } from "./agent-worker-finalize.js";
-import { resetSeedToOpen, addLabelsToBead, addNotesToBead } from "./task-backend-ops.js";
+import { resetSeedToOpen, markBeadFailed, addLabelsToBead, addNotesToBead } from "./task-backend-ops.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
@@ -379,8 +379,10 @@ async function main(): Promise<void> {
       log(`COMPLETED (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
     } else {
       const reason = piResult.errorMessage ?? "Pi agent failed";
-      store.updateRun(runId, { status: "failed", completed_at: now });
-      notifyClient.send({ type: "status", runId, status: "failed", timestamp: now, details: { reason } });
+      const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
+      const runStatus = isRateLimit ? "stuck" : "failed";
+      store.updateRun(runId, { status: runStatus, completed_at: now });
+      notifyClient.send({ type: "status", runId, status: runStatus, timestamp: now, details: { reason } });
       store.logEvent(projectId, "fail", {
         seedId,
         reason,
@@ -388,9 +390,16 @@ async function main(): Promise<void> {
         numTurns: progress.turns,
         resumed: !!resume,
       }, runId);
-      log(`FAILED: ${reason.slice(0, 300)}`);
-      // Reset seed back to open so it can be retried
-      await resetSeedToOpen(seedId, storeProjectPath);
+      log(`${isRateLimit ? "RATE LIMITED" : "FAILED"}: ${reason.slice(0, 300)}`);
+      // Reset seed to open for transient errors; mark as failed for permanent errors.
+      if (isRateLimit) {
+        await resetSeedToOpen(seedId, storeProjectPath);
+      } else {
+        await markBeadFailed(seedId, storeProjectPath);
+      }
+      // Add a note so the failure reason is visible in 'br show <seedId>'.
+      const notePrefix = isRateLimit ? "[RATE_LIMITED]" : "[FAILED]";
+      addNotesToBead(seedId, `${notePrefix} [PI_RESULT] ${reason.slice(0, 500)}`, storeProjectPath);
     }
   } catch (err: unknown) {
     clearInterval(progressTimer);
@@ -415,8 +424,15 @@ async function main(): Promise<void> {
     }, runId);
     log(`${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason.slice(0, 200)}`);
     await appendFile(logFile, `\n[foreman-worker] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason}\n`);
-    // Reset seed back to open so it can be retried
-    await resetSeedToOpen(seedId, storeProjectPath);
+    // Reset seed to open for transient errors; mark as failed for permanent errors.
+    if (isRateLimit) {
+      await resetSeedToOpen(seedId, storeProjectPath);
+    } else {
+      await markBeadFailed(seedId, storeProjectPath);
+    }
+    // Add a note so the failure reason is visible in 'br show <seedId>'.
+    const notePrefix = isRateLimit ? "[RATE_LIMITED]" : "[FAILED]";
+    addNotesToBead(seedId, `${notePrefix} [CATCH] ${reason.slice(0, 500)}`, storeProjectPath);
   }
 
   store.close();
@@ -1094,13 +1110,20 @@ async function markStuck(
     rateLimit: isRateLimit,
   }, runId);
 
-  // Reset seed back to open so it appears in the ready queue for retry.
+  // For transient errors (rate limit), reset to open so the task retries automatically.
+  // For permanent failures (SDK error, max retries exceeded), mark as failed so the
+  // task does NOT auto-retry and the failure is clearly visible in 'br show <seedId>'.
   // Pass projectPath (repo root) so br finds .beads/ — the worktree has none.
-  await resetSeedToOpen(seedId, projectPath);
-  log(`Reset seed ${seedId} back to open`);
+  if (isRateLimit) {
+    await resetSeedToOpen(seedId, projectPath);
+    log(`Reset seed ${seedId} back to open (transient rate-limit failure)`);
+  } else {
+    await markBeadFailed(seedId, projectPath);
+    log(`Marked seed ${seedId} as failed (permanent failure)`);
+  }
 
   // Add failure reason as a note on the bead for visibility.
-  // This allows anyone looking at the bead to see why it was reset without
+  // This allows anyone looking at the bead to see why it was reset/failed without
   // having to dig into log files or SQLite.
   const notePrefix = isRateLimit ? "[RATE_LIMITED]" : "[FAILED]";
   const failureNote = `${notePrefix} [${phase.toUpperCase()}] ${reason}`;

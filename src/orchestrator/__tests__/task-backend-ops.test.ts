@@ -20,7 +20,7 @@ vi.mock("node:os", () => ({
   homedir: mockHomedir,
 }));
 
-import { closeSeed, resetSeedToOpen, addLabelsToBead, addNotesToBead } from "../task-backend-ops.js";
+import { closeSeed, resetSeedToOpen, markBeadFailed, addLabelsToBead, addNotesToBead } from "../task-backend-ops.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -254,6 +254,125 @@ describe("resetSeedToOpen — br backend", () => {
       (call) => Array.isArray(call[1]) && (call[1] as string[])[0] === "sync",
     );
     expect(syncCalls).toHaveLength(0);
+  });
+});
+
+// ── markBeadFailed ───────────────────────────────────────────────────────────
+
+describe("markBeadFailed — br backend", () => {
+  beforeEach(() => {
+    mockExecFileSync.mockReset();
+    process.env.FOREMAN_TASK_BACKEND = "br";
+    process.env.HOME = HOME;
+  });
+
+  afterEach(() => {
+    delete process.env.FOREMAN_TASK_BACKEND;
+  });
+
+  it("calls br update with --status failed", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    await markBeadFailed("bd-perm-001");
+
+    const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    expect(cmd).toContain("br");
+    expect(args).toEqual(["update", "bd-perm-001", "--status", "failed"]);
+  });
+
+  it("uses ~/.local/bin/br path", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    await markBeadFailed("bd-perm-002");
+
+    const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    expect(cmd).toBe(`${HOME}/.local/bin/br`);
+  });
+
+  it("does not throw when br update fails (error suppressed)", async () => {
+    mockExecFileSync.mockImplementation(() => { throw new Error("br binary missing"); });
+
+    await expect(markBeadFailed("bd-perm-fail")).resolves.toBeUndefined();
+  });
+
+  it("passes --status failed as the status value", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    await markBeadFailed("bd-perm-003");
+
+    const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    const statusIdx = args.indexOf("--status");
+    expect(statusIdx).toBeGreaterThanOrEqual(0);
+    expect(args[statusIdx + 1]).toBe("failed");
+  });
+
+  it("passes projectPath as cwd to execFileSync", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    await markBeadFailed("bd-perm-004", "/my/project/root");
+
+    const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(opts.cwd).toBe("/my/project/root");
+  });
+
+  it("omits cwd when projectPath is not provided", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    await markBeadFailed("bd-perm-005");
+
+    const [, , opts] = mockExecFileSync.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(opts.cwd).toBeUndefined();
+  });
+
+  it("calls br sync --flush-only after marking as failed", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    await markBeadFailed("bd-perm-006", "/my/project");
+
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
+    expect(syncArgs).toEqual(["sync", "--flush-only"]);
+    expect(syncOpts).toMatchObject({ cwd: "/my/project" });
+  });
+
+  it("calls br sync --flush-only without cwd when projectPath not provided", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    await markBeadFailed("bd-perm-007");
+
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
+    expect(syncArgs).toEqual(["sync", "--flush-only"]);
+    expect(syncOpts).not.toHaveProperty("cwd");
+  });
+
+  it("does not throw when br sync --flush-only fails (flush is non-fatal)", async () => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "sync") throw new Error("sync failed");
+      return Buffer.from("");
+    });
+
+    await expect(markBeadFailed("bd-perm-008", "/my/project")).resolves.toBeUndefined();
+  });
+
+  it("does not call br sync --flush-only when br update fails", async () => {
+    mockExecFileSync.mockImplementation(() => { throw new Error("br binary missing"); });
+
+    await markBeadFailed("bd-perm-009");
+
+    const syncCalls = mockExecFileSync.mock.calls.filter(
+      (call) => Array.isArray(call[1]) && (call[1] as string[])[0] === "sync",
+    );
+    expect(syncCalls).toHaveLength(0);
+  });
+
+  it("uses os.homedir() for br path", async () => {
+    mockExecFileSync.mockReturnValue(Buffer.from(""));
+
+    await markBeadFailed("bd-perm-010");
+
+    const [cmd] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    expect(cmd).toBe(`${HOME}/.local/bin/br`);
   });
 });
 

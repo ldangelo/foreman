@@ -110,36 +110,62 @@ describe("agent-worker.ts", () => {
     // (e.g., store init failure) — that's acceptable for this test
   });
 
-  describe("seed reset to open on failure — source regression tests", () => {
+  describe("seed reset / failure handling — source regression tests", () => {
     /**
-     * These tests verify by source inspection that resetSeedToOpen() is called
-     * in the critical failure paths of agent-worker.ts.
+     * These tests verify by source inspection that the correct bead status
+     * update functions are called in the critical failure paths of agent-worker.ts.
+     *
+     * Transient failures (rate limit) → resetSeedToOpen() so the task retries.
+     * Permanent failures (SDK error, max retries) → markBeadFailed() so the task
+     * is NOT auto-retried and the failure is visible in 'br show <seedId>'.
+     * Both paths also call addNotesToBead() with the failure reason.
      *
      * Source-inspection is used here because the integration approach (spawning
-     * the worker with a bad API key) fails before reaching resetSeedToOpen due to
-     * SQLite FOREIGN KEY constraints on the unregistered project_id. The source
-     * inspection approach is lighter and catches the same regression risk: that
-     * a refactor accidentally removes the resetSeedToOpen calls.
+     * the worker with a bad API key) fails before reaching these functions due to
+     * SQLite FOREIGN KEY constraints on the unregistered project_id.
      */
     const WORKER_SRC_PATH = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
-
-    it("catch block (main error path) calls resetSeedToOpen", () => {
-      const source = readFileSync(WORKER_SRC_PATH, "utf-8");
-      // The main catch block must call resetSeedToOpen after the error log
-      // Pattern: "ERROR": ... then resetSeedToOpen
-      expect(source).toContain("await resetSeedToOpen(seedId, storeProjectPath)");
-    });
 
     it("resetSeedToOpen is imported from task-backend-ops", () => {
       const source = readFileSync(WORKER_SRC_PATH, "utf-8");
       expect(source).toMatch(/import.*resetSeedToOpen.*from.*task-backend-ops/);
     });
 
-    it("resetSeedToOpen is called at least once after a failed result", () => {
+    it("markBeadFailed is imported from task-backend-ops", () => {
       const source = readFileSync(WORKER_SRC_PATH, "utf-8");
-      // Count occurrences — there should be at least 2 (catch block + failed result block)
+      expect(source).toMatch(/import.*markBeadFailed.*from.*task-backend-ops/);
+    });
+
+    it("addNotesToBead is imported from task-backend-ops", () => {
+      const source = readFileSync(WORKER_SRC_PATH, "utf-8");
+      expect(source).toMatch(/import.*addNotesToBead.*from.*task-backend-ops/);
+    });
+
+    it("resetSeedToOpen is used for transient (rate-limit) failures", () => {
+      const source = readFileSync(WORKER_SRC_PATH, "utf-8");
+      // resetSeedToOpen must still exist (used for rate-limit paths)
       const matches = source.match(/await resetSeedToOpen\(/g) ?? [];
+      expect(matches.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("markBeadFailed is used for permanent failures", () => {
+      const source = readFileSync(WORKER_SRC_PATH, "utf-8");
+      const matches = source.match(/await markBeadFailed\(/g) ?? [];
+      expect(matches.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("addNotesToBead is called with failure reason in failure paths", () => {
+      const source = readFileSync(WORKER_SRC_PATH, "utf-8");
+      const matches = source.match(/addNotesToBead\(/g) ?? [];
       expect(matches.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("catch block differentiates rate-limit vs permanent failures", () => {
+      const source = readFileSync(WORKER_SRC_PATH, "utf-8");
+      // The catch block must use isRateLimit to branch between resetSeedToOpen and markBeadFailed
+      expect(source).toContain("isRateLimit");
+      expect(source).toContain("await resetSeedToOpen(seedId, storeProjectPath)");
+      expect(source).toContain("await markBeadFailed(seedId, storeProjectPath)");
     });
   });
 });

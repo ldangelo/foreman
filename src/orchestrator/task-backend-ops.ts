@@ -162,6 +162,43 @@ export function addNotesToBead(seedId: string, notes: string, projectPath?: stri
 }
 
 /**
+ * Mark a bead as permanently failed in the br backend.
+ * Called by markStuck() for permanent (non-transient) failures so the task
+ * does NOT reappear in the ready queue but is visible as failed.
+ *
+ * br update <seedId> --status failed
+ * br sync --flush-only  (persists the change to .beads/beads.jsonl)
+ *
+ * TRD-024: sd backend removed. Always uses br.
+ * Errors are caught and logged to stderr; the function never throws.
+ *
+ * @param projectPath - The project root directory that contains .beads/.
+ *   Must be provided so br auto-discovers the correct database when called
+ *   from a worktree that has no .beads/ of its own.
+ */
+export async function markBeadFailed(seedId: string, projectPath?: string): Promise<void> {
+  const bin = brPath();
+  const args = ["update", seedId, "--status", "failed"];
+
+  try {
+    execFileSync(bin, args, execOpts(projectPath));
+    console.error(`[task-backend-ops] Marked seed ${seedId} as failed via br`);
+
+    // Flush changes to .beads/beads.jsonl so the status survives a process restart.
+    try {
+      execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
+      console.error(`[task-backend-ops] Flushed JSONL for failed seed ${seedId}`);
+    } catch (flushErr: unknown) {
+      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
+      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: br update --status failed failed for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
  * Add labels to a bead in the br backend.
  * Called after each pipeline phase completes to track phase progress.
  *
