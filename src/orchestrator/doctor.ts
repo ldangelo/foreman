@@ -5,7 +5,8 @@ import { homedir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import type { ForemanStore, Run } from "../lib/store.js";
+import { ForemanStore } from "../lib/store.js";
+import type { Run } from "../lib/store.js";
 import { listWorktrees, removeWorktree, branchExistsOnOrigin, detectDefaultBranch } from "../lib/git.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { CheckResult, DoctorReport } from "./types.js";
@@ -14,6 +15,7 @@ import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue
 import type { ITaskClient } from "../lib/task-client.js";
 import { findMissingPrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
 import { findMissingWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
+import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1071,6 +1073,124 @@ export class Doctor {
     return results;
   }
 
+  /**
+   * Check for bead status drift between SQLite and the br backend.
+   *
+   * Calls syncBeadStatusOnStartup() to detect (and optionally fix) mismatches
+   * between the run status recorded in SQLite and the corresponding seed status
+   * in br.  Drift occurs when foreman was interrupted before a br update could
+   * complete (e.g. after a crash, token exhaustion, or manual reset).
+   *
+   * Modes:
+   *   - No flags / warn-only: detects mismatches but does not fix them.
+   *   - fix=true, dryRun=false: detects and applies fixes via br update.
+   *   - dryRun=true: detects mismatches but never applies fixes (dryRun wins over fix).
+   *
+   * Returns:
+   *   pass  — no mismatches detected
+   *   warn  — mismatches detected but not fixed (no --fix or dryRun mode)
+   *   fixed — mismatches were detected and fixed
+   *   fail  — the sync operation itself threw an unexpected error
+   *   skip  — no project registered or no task client configured
+   */
+  async checkBeadStatusSync(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+    const projectPath = opts.projectPath ?? this.projectPath;
+
+    if (!this.taskClient) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "skip",
+        message: "No task client configured — skipping bead status reconciliation",
+      };
+    }
+
+    const project = this.store.getProjectByPath(this.projectPath);
+    if (!project) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "skip",
+        message: "No project registered — skipping bead status reconciliation",
+      };
+    }
+
+    let result: Awaited<ReturnType<typeof syncBeadStatusOnStartup>>;
+    try {
+      // First pass: always run in dry-run mode to detect mismatches without side effects
+      result = await syncBeadStatusOnStartup(this.store, this.taskClient, project.id, {
+        dryRun: true,
+        projectPath,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "fail",
+        message: `Bead status sync failed: ${msg}`,
+      };
+    }
+
+    if (result.mismatches.length === 0) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "pass",
+        message: "SQLite and br bead statuses are in sync",
+      };
+    }
+
+    const mismatchList = result.mismatches
+      .slice(0, 5)
+      .map((m) => `${m.seedId}: br=${m.actualSeedStatus} → expected=${m.expectedSeedStatus}`)
+      .join("; ");
+    const truncated = result.mismatches.length > 5 ? ` … +${result.mismatches.length - 5} more` : "";
+
+    if (dryRun) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "warn",
+        message: `${result.mismatches.length} bead status mismatch(es) detected. Would fix (dry-run): ${mismatchList}${truncated}`,
+        details: mismatchList + truncated,
+      };
+    }
+
+    if (fix) {
+      // Second pass: apply fixes
+      let fixResult: Awaited<ReturnType<typeof syncBeadStatusOnStartup>>;
+      try {
+        fixResult = await syncBeadStatusOnStartup(this.store, this.taskClient, project.id, {
+          dryRun: false,
+          projectPath,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          name: "bead status sync (SQLite ↔ br)",
+          status: "fail",
+          message: `Bead status sync (fix pass) failed: ${msg}`,
+          details: mismatchList + truncated,
+        };
+      }
+
+      const errSuffix = fixResult.errors.length > 0
+        ? ` (${fixResult.errors.length} error(s): ${fixResult.errors[0]})`
+        : "";
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "fixed",
+        message: `${fixResult.mismatches.length} bead status mismatch(es) detected`,
+        fixApplied: `Fixed ${fixResult.synced} seed status(es) in br${errSuffix}`,
+        details: mismatchList + truncated,
+      };
+    }
+
+    return {
+      name: "bead status sync (SQLite ↔ br)",
+      status: "warn",
+      message: `${result.mismatches.length} bead status mismatch(es) detected between SQLite and br. Use --fix to repair: ${mismatchList}${truncated}`,
+      details: mismatchList + truncated,
+    };
+  }
+
   async checkBrRecoveryArtifacts(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
@@ -1479,10 +1599,269 @@ export class Doctor {
     return [stale, duplicates, orphaned, notQueued, stuckConflictFailed];
   }
 
+  /**
+   * Check for run records in the legacy global store (~/.foreman/foreman.db) that
+   * are absent from the project-local store (.foreman/foreman.db).  This can occur
+   * when a run completed before the bd-sjd migration to project-local stores was
+   * fully rolled out.
+   *
+   * With --fix the orphaned records (and their associated costs/events) are copied
+   * into the project-local store so that 'foreman merge' can see them.
+   */
+  async checkOrphanedGlobalStoreRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+    const checkName = "orphaned global-store runs";
+    const globalDbPath = join(homedir(), ".foreman", "foreman.db");
+
+    // If the global store doesn't exist there is nothing to migrate.
+    if (!existsSync(globalDbPath)) {
+      return { name: checkName, status: "pass", message: "No legacy global store found" };
+    }
+
+    let globalStore: ForemanStore | null = null;
+    try {
+      globalStore = new ForemanStore(globalDbPath);
+      const globalDb = globalStore.getDb();
+      const projects = globalStore.listProjects();
+
+      // Collect orphaned runs: completed or pr-created runs in the global store
+      // whose project-local store already exists on disk (meaning the project
+      // migrated to project-local storage but this particular run record was
+      // written before the migration).
+      const orphaned: Array<{
+        run: Run;
+        projectPath: string;
+        projectName: string;
+        projectId: string;
+      }> = [];
+
+      for (const project of projects) {
+        const localDbPath = join(project.path, ".foreman", "foreman.db");
+        if (!existsSync(localDbPath)) {
+          // Project has no local store yet — nothing to migrate into.
+          continue;
+        }
+
+        // Query global store for completed/pr-created runs for this project.
+        const globalRuns = (globalDb
+          .prepare(
+            "SELECT * FROM runs WHERE project_id = ? AND status IN ('completed', 'pr-created') ORDER BY created_at ASC"
+          )
+          .all(project.id) as Run[]);
+
+        if (globalRuns.length === 0) continue;
+
+        // Open the local store and check which run IDs are already present.
+        let localStore: ForemanStore | null = null;
+        try {
+          localStore = ForemanStore.forProject(project.path);
+          const localDb = localStore.getDb();
+          const existingIds = new Set(
+            (localDb.prepare("SELECT id FROM runs").all() as Array<{ id: string }>).map(
+              (r) => r.id
+            )
+          );
+
+          for (const run of globalRuns) {
+            if (!existingIds.has(run.id)) {
+              orphaned.push({
+                run,
+                projectPath: project.path,
+                projectName: project.name,
+                projectId: project.id,
+              });
+            }
+          }
+        } finally {
+          localStore?.close();
+        }
+      }
+
+      if (orphaned.length === 0) {
+        return {
+          name: checkName,
+          status: "pass",
+          message: "No orphaned global-store runs found",
+        };
+      }
+
+      const summary = `${orphaned.length} orphaned run(s) found in legacy global store across ${new Set(orphaned.map((o) => o.projectPath)).size} project(s)`;
+
+      if (dryRun) {
+        const details = orphaned
+          .map((o) => `  ${o.run.id} (seed: ${o.run.seed_id}, project: ${o.projectName})`)
+          .join("\n");
+        return {
+          name: checkName,
+          status: "warn",
+          message: `${summary}. Would migrate (dry-run).`,
+          details,
+        };
+      }
+
+      if (!fix) {
+        return {
+          name: checkName,
+          status: "warn",
+          message: `${summary}. Use --fix to migrate them to the project-local store.`,
+        };
+      }
+
+      // Apply fix: copy each orphaned run (and related costs/events) into the
+      // project-local store.
+      let migratedCount = 0;
+      const errors: string[] = [];
+
+      for (const { run, projectPath, projectName, projectId } of orphaned) {
+        let localStore: ForemanStore | null = null;
+        try {
+          localStore = ForemanStore.forProject(projectPath);
+          const localDb = localStore.getDb();
+
+          // Ensure the project record exists in the local store so the FK
+          // constraint on runs.project_id is satisfied.
+          const localProject = localStore.getProjectByPath(projectPath);
+          const targetProjectId = localProject?.id ?? projectId;
+
+          if (!localProject) {
+            // Register the project in the local store using the same ID so that
+            // we don't need to rewrite the run's project_id.
+            localDb
+              .prepare(
+                `INSERT OR IGNORE INTO projects (id, name, path, status, created_at, updated_at)
+                 VALUES (?, ?, ?, 'active', ?, ?)`
+              )
+              .run(
+                projectId,
+                projectName,
+                projectPath,
+                new Date().toISOString(),
+                new Date().toISOString()
+              );
+          }
+
+          const effectiveProjectId = localProject ? targetProjectId : projectId;
+
+          // Insert the run record — INSERT OR IGNORE to be idempotent.
+          localDb
+            .prepare(
+              `INSERT OR IGNORE INTO runs
+                 (id, project_id, seed_id, agent_type, session_key, worktree_path,
+                  status, started_at, completed_at, created_at, base_branch, tmux_session, progress)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            )
+            .run(
+              run.id,
+              effectiveProjectId,
+              run.seed_id,
+              run.agent_type,
+              run.session_key,
+              run.worktree_path,
+              run.status,
+              run.started_at,
+              run.completed_at,
+              run.created_at,
+              run.base_branch ?? null,
+              run.tmux_session ?? null,
+              run.progress
+            );
+
+          // Copy associated cost records.
+          const globalCosts = globalDb
+            .prepare("SELECT * FROM costs WHERE run_id = ?")
+            .all(run.id) as Array<{
+              id: string;
+              run_id: string;
+              tokens_in: number;
+              tokens_out: number;
+              cache_read: number;
+              estimated_cost: number;
+              recorded_at: string;
+            }>;
+
+          for (const cost of globalCosts) {
+            localDb
+              .prepare(
+                `INSERT OR IGNORE INTO costs
+                   (id, run_id, tokens_in, tokens_out, cache_read, estimated_cost, recorded_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`
+              )
+              .run(
+                cost.id,
+                cost.run_id,
+                cost.tokens_in,
+                cost.tokens_out,
+                cost.cache_read,
+                cost.estimated_cost,
+                cost.recorded_at
+              );
+          }
+
+          // Copy associated event records.
+          const globalEvents = globalDb
+            .prepare("SELECT * FROM events WHERE run_id = ?")
+            .all(run.id) as Array<{
+              id: string;
+              project_id: string;
+              run_id: string | null;
+              event_type: string;
+              details: string | null;
+              created_at: string;
+            }>;
+
+          for (const event of globalEvents) {
+            localDb
+              .prepare(
+                `INSERT OR IGNORE INTO events
+                   (id, project_id, run_id, event_type, details, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)`
+              )
+              .run(
+                event.id,
+                effectiveProjectId,
+                event.run_id,
+                event.event_type,
+                event.details,
+                event.created_at
+              );
+          }
+
+          migratedCount++;
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push(`run ${run.id} (project: ${projectName}): ${msg}`);
+        } finally {
+          localStore?.close();
+        }
+      }
+
+      if (errors.length > 0) {
+        return {
+          name: checkName,
+          status: "warn",
+          message: `Migrated ${migratedCount}/${orphaned.length} run(s); ${errors.length} error(s): ${errors.slice(0, 3).join("; ")}`,
+          fixApplied: migratedCount > 0 ? `Migrated ${migratedCount} run(s) from global store to project-local stores` : undefined,
+        };
+      }
+
+      return {
+        name: checkName,
+        status: "fixed",
+        message: `Migrated ${migratedCount} run(s) from legacy global store to project-local stores`,
+        fixApplied: `Migrated ${migratedCount} run(s) from global store to project-local stores`,
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { name: checkName, status: "warn", message: `Could not check global store: ${msg}` };
+    } finally {
+      globalStore?.close();
+    }
+  }
+
   async checkDataIntegrity(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
 
-    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult] =
+    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult, beadSyncResult] =
       await Promise.all([
         this.checkOrphanedWorktrees(opts),
         this.checkZombieRuns(opts),
@@ -1491,9 +1870,10 @@ export class Doctor {
         this.checkRunStateConsistency(opts),
         this.checkBlockedSeeds(),
         this.checkBrRecoveryArtifacts(opts),
+        this.checkBeadStatusSync(opts),
       ]);
 
-    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult, recoveryResult);
+    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult, recoveryResult, beadSyncResult);
 
     // Merge queue checks (only when merge queue is configured)
     if (this.mergeQueue) {

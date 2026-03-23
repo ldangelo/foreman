@@ -204,13 +204,16 @@ export interface ResetSeedResult {
 /**
  * Reset a single seed back to "open" status.
  *
- * - If the seed is "closed" AND `force` is false, the update is skipped.
- * - If the seed is "closed" AND `force` is true, it is re-opened (used by --seed).
- * - If the seed is already "open", the update is also skipped (idempotent).
- * - If the seed is in any other state (e.g. "in_progress"), it is reset.
+ * - ALL non-open seeds are re-opened, including "closed" ones — this ensures
+ *   that `foreman reset` always makes a seed retryable regardless of its
+ *   previous state.
+ * - If the seed is already "open", the update is skipped (idempotent).
  * - If the seed is not found, returns "not-found" without throwing.
  * - In dry-run mode, the `show()` check still runs (read-only) but `update()`
  *   is skipped — the returned `action` accurately reflects what would happen.
+ *
+ * Note: The `force` parameter is retained for API compatibility but no longer
+ * changes behaviour (closed seeds are always reopened).
  */
 export async function resetSeedToOpen(
   seedId: string,
@@ -218,13 +221,8 @@ export async function resetSeedToOpen(
   opts?: { dryRun?: boolean; force?: boolean },
 ): Promise<ResetSeedResult> {
   const dryRun = opts?.dryRun ?? false;
-  const force = opts?.force ?? false;
   try {
     const seedDetail = await seeds.show(seedId);
-
-    if (seedDetail.status === "closed" && !force) {
-      return { action: "skipped-closed", seedId, previousStatus: seedDetail.status };
-    }
 
     if (seedDetail.status === "open") {
       return { action: "already-open", seedId, previousStatus: seedDetail.status };
@@ -476,8 +474,10 @@ export const resetCommand = new Command("reset")
         const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!seedFilter });
         switch (result.action) {
           case "skipped-closed":
+            // This case is no longer reachable — resetSeedToOpen now always reopens
+            // closed seeds. Kept to satisfy the exhaustive switch type check.
             console.log(
-              `  ${chalk.dim("skip")} bead ${chalk.cyan(seedId)} is already closed — not reopening (use --seed to force)`,
+              `  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already closed — not reopening`,
             );
             break;
           case "already-open":
@@ -532,8 +532,12 @@ export const resetCommand = new Command("reset")
       if (!dryRun) {
         const worktreesDir = `${projectPath}/.foreman-worktrees`;
         if (existsSync(worktreesDir)) {
-          // Paths that still have active/non-terminal runs (keep these)
-          const activeStatuses = ["pending", "running", "failed", "stuck"] as const;
+          // Paths that still have truly active runs (pending or running) — keep these.
+          // "failed" and "stuck" are terminal states: their agents have stopped, so
+          // their worktrees are safe to remove during cleanup. Including them in the
+          // "active" set was the bug: it prevented orphaned worktrees from being
+          // cleaned up when a run had no worktree_path recorded in the DB.
+          const activeStatuses = ["pending", "running"] as const;
           const activeRuns = activeStatuses.flatMap((s) => store.getRunsByStatus(s, project.id));
           const activeWorktreePaths = new Set(activeRuns.map((r) => r.worktree_path).filter(Boolean));
 

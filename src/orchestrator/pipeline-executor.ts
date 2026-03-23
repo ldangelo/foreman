@@ -13,7 +13,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader.js";
-import { resolveWorkflowModel } from "../lib/workflow-loader.js";
+import { resolvePhaseModel } from "../lib/workflow-loader.js";
+import { ROLE_CONFIGS } from "./roles.js";
 import { buildPhasePrompt, parseVerdict, extractIssues } from "./roles.js";
 import { addLabelsToBead } from "./task-backend-ops.js";
 import { rotateReport } from "./agent-worker-finalize.js";
@@ -57,6 +58,11 @@ export interface PipelineRunConfig {
   seedComments?: string;
   seedType?: string;
   seedLabels?: string[];
+  /**
+   * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
+   * Used to select the per-priority model from the workflow YAML models map.
+   */
+  seedPriority?: string;
   model: string;
   worktreePath: string;
   projectPath?: string;
@@ -215,8 +221,15 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       worktreePath,
     }, ctx.promptOpts);
 
+    // Resolve the model for this phase from the workflow YAML + bead priority.
+    // Falls back to ROLE_CONFIGS[phaseName] if the phase has no models map.
+    const roleConfigFallback = (ROLE_CONFIGS as Record<string, { model: string } | undefined>)[phaseName];
+    const fallbackModel = roleConfigFallback?.model ?? config.model;
+    const phaseModel = resolvePhaseModel(phase, config.seedPriority, fallbackModel);
+    const phaseConfig = { ...config, model: phaseModel };
+
     const result = await ctx.runPhase(
-      phaseName, prompt, config, progress, logFile, store, notifyClient, agentMailClient,
+      phaseName, prompt, phaseConfig, progress, logFile, store, notifyClient, agentMailClient,
     );
 
     // 6. Release files

@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { ForemanStore, type Run, type RunProgress } from "../../lib/store.js";
+import { ForemanStore, type Run, type RunProgress, type Message } from "../../lib/store.js";
 
 // ── Exported action for testing ─────────────────────────────────────────
 
@@ -11,8 +11,11 @@ export interface AttachOpts {
   follow?: boolean;
   kill?: boolean;
   worktree?: boolean;
-  /** Internal: AbortSignal for follow mode (used by tests) */
+  stream?: boolean;
+  /** Internal: AbortSignal for follow/stream mode (used by tests) */
   _signal?: AbortSignal;
+  /** Internal: poll interval ms for stream mode (used by tests) */
+  _pollIntervalMs?: number;
 }
 
 /**
@@ -51,6 +54,11 @@ export async function attachAction(
   // ── --worktree ────────────────────────────────────────────────────────
   if (opts.worktree) {
     return handleWorktree(run);
+  }
+
+  // ── --stream ──────────────────────────────────────────────────────────
+  if (opts.stream) {
+    return handleStream(run, store, opts._signal, opts._pollIntervalMs);
   }
 
   // ── --follow ──────────────────────────────────────────────────────────
@@ -224,6 +232,111 @@ async function handleFollow(
   });
 }
 
+/**
+ * Stream mode: polls Agent Mail messages for the run and prints them as they arrive.
+ * Continues until the run reaches a terminal state or the signal fires.
+ * This is the post-tmux replacement for tmux capture-pane streaming.
+ */
+async function handleStream(
+  run: Run,
+  store: ForemanStore,
+  signal?: AbortSignal,
+  pollIntervalMs = 1000,
+): Promise<number> {
+  const terminalStatuses = new Set(["completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created"]);
+
+  console.log(`Streaming agent mail for ${run.seed_id} [${run.id}] | Ctrl+C to stop`);
+  console.log(`  Status: ${run.status}`);
+  if (run.worktree_path) {
+    console.log(`  Worktree: ${run.worktree_path}`);
+  }
+  console.log();
+
+  const seenIds = new Set<string>();
+
+  // Print any existing messages first
+  const existing = store.getAllMessages(run.id);
+  for (const msg of existing) {
+    seenIds.add(msg.id);
+    printMessage(msg);
+  }
+
+  // If already in terminal state, we're done
+  const currentRun = store.getRun(run.id);
+  if (currentRun && terminalStatuses.has(currentRun.status)) {
+    console.log(`\nRun ${run.seed_id} is already ${currentRun.status}.`);
+    return 0;
+  }
+
+  return new Promise<number>((resolve) => {
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    let resolved = false;
+
+    const cleanup = (code: number) => {
+      if (resolved) return;
+      resolved = true;
+      if (intervalId !== null) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+      resolve(code);
+    };
+
+    const poll = () => {
+      // Check for new messages
+      const messages = store.getAllMessages(run.id);
+      for (const msg of messages) {
+        if (!seenIds.has(msg.id)) {
+          seenIds.add(msg.id);
+          printMessage(msg);
+        }
+      }
+
+      // Check if run has reached terminal state
+      const latestRun = store.getRun(run.id);
+      if (latestRun && terminalStatuses.has(latestRun.status)) {
+        console.log(`\nRun ${run.seed_id} reached terminal state: ${latestRun.status}`);
+        cleanup(0);
+      }
+    };
+
+    intervalId = setInterval(poll, pollIntervalMs);
+
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        console.log("\nStream interrupted.");
+        cleanup(0);
+      });
+    }
+  });
+}
+
+/**
+ * Format and print a single Agent Mail message to stdout.
+ */
+function printMessage(msg: Message): void {
+  const ts = new Date(msg.created_at).toLocaleTimeString();
+  const from = msg.sender_agent_type.padEnd(12);
+  const to = msg.recipient_agent_type.padEnd(12);
+  const subject = msg.subject;
+
+  // Summarise body: parse JSON if possible, else truncate
+  let bodySummary = "";
+  try {
+    const parsed = JSON.parse(msg.body) as Record<string, unknown>;
+    const parts: string[] = [];
+    if (typeof parsed["phase"] === "string") parts.push(`phase=${parsed["phase"]}`);
+    if (typeof parsed["status"] === "string") parts.push(`status=${parsed["status"]}`);
+    if (typeof parsed["error"] === "string") parts.push(`error=${parsed["error"]}`);
+    if (typeof parsed["currentPhase"] === "string") parts.push(`currentPhase=${parsed["currentPhase"]}`);
+    bodySummary = parts.length > 0 ? parts.join(", ") : msg.body.slice(0, 80);
+  } catch {
+    bodySummary = msg.body.slice(0, 80);
+  }
+
+  console.log(`  [${ts}] ${from} → ${to} | ${subject}: ${bodySummary}`);
+}
+
 async function handleKill(run: Run, store: ForemanStore): Promise<number> {
   const pid = extractPid(run.session_key);
   if (!pid) {
@@ -310,7 +423,8 @@ export const attachCommand = new Command("attach")
   .description("Attach to a running or completed agent's Claude session")
   .argument("[id]", "Run ID or bead ID to attach to")
   .option("--list", "List all attachable sessions")
-  .option("--follow", "Read-only follow mode via capture-pane polling")
+  .option("--follow", "Follow agent log file in real-time (tail -f)")
+  .option("--stream", "Stream Agent Mail messages for the run in real-time")
   .option("--kill", "Kill the agent process for this run")
   .option("--worktree", "Open a shell in the agent's worktree instead of attaching")
   .action(async (id: string | undefined, opts: AttachOpts) => {
@@ -326,6 +440,7 @@ export const attachCommand = new Command("attach")
       console.error("Usage: foreman attach <run-id|bead-id>");
       console.error("       foreman attach --list");
       console.error("       foreman attach --follow <id>");
+      console.error("       foreman attach --stream <id>");
       console.error("       foreman attach --kill <id>");
       store.close();
       process.exit(1);
