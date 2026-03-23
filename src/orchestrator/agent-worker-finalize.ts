@@ -21,7 +21,7 @@ import { homedir } from "node:os";
 import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { detectDefaultBranch } from "../lib/git.js";
+import { detectDefaultBranch as _detectDefaultBranch } from "../lib/git.js"; // reserved for future use
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -314,37 +314,8 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     }
   }
 
-  // Seed lifecycle note: the bead is NOT closed here.
-  // Enqueue to merge queue (fire-and-forget — must not block finalization)
-  if (pushSucceeded) {
-    const defaultBranch = await detectDefaultBranch(storeProjectPath).catch(() => "main");
-    try {
-      const enqueueStore = ForemanStore.forProject(storeProjectPath);
-      const enqueueResult = enqueueToMergeQueue({
-        db: enqueueStore.getDb(),
-        seedId,
-        runId: config.runId,
-        worktreePath,
-        getFilesModified: () => {
-          const output = execFileSync("git", ["diff", "--name-only", `${defaultBranch}...HEAD`], opts).toString().trim();
-          return output ? output.split("\n") : [];
-        },
-      });
-      enqueueStore.close();
-
-      if (enqueueResult.success) {
-        log(`[FINALIZE] Enqueued to merge queue`);
-        report.push(`## Merge Queue`, `- Status: ENQUEUED`, "");
-      } else {
-        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error}`);
-        report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueResult.error?.slice(0, 300)}`, "");
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${msg}`);
-      report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
-    }
-  }
+  // Note: merge queue enqueue already happened before push (pre-push enqueue above).
+  // No second enqueue needed here — the pre-push entry covers the successful-push case too.
 
   // Seed lifecycle: set bead to 'review' after a successful push.
   // This signals "pipeline done, branch pushed, awaiting foreman merge".

@@ -14,13 +14,13 @@ Send a foreman inter-agent mail message via the CLI.
 /send-mail --to <recipient> --subject <subject> --body '<json>'
 ```
 
-## What to do
+## What Pi does (do NOT run this yourself)
 
-Run this bash command:
+Pi will execute this bash command internally on your behalf. You do not need to run it yourself — just invoke `/send-mail` and Pi handles the rest.
 
 ```bash
 foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to {{to}} --subject {{subject}} --body '{{body}}'
 ```
 
 If `FOREMAN_RUN_ID` or `FOREMAN_AGENT_ROLE` are not set, skip silently — mail is non-critical.
-Do not print anything to the user. Just run the command.
+Do not print anything to the user. Just invoke the skill and Pi will run the command.
