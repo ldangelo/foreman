@@ -626,7 +626,7 @@ describe("Refinery.mergeCompleted()", () => {
 
   it("retries a previously-failed seed: finds run in test-failed state when seedId is specified", async () => {
     // Reproduces: "no completed run found for seed <seedid>" after a failed merge.
-    // When --seed is supplied, getCompletedRuns() must also look in terminal failure
+    // When --bead is supplied, getCompletedRuns() must also look in terminal failure
     // states so the user can retry without manually resetting the run.
     const { store, refinery } = makeMocks();
     const run = makeRun({ id: "run-retry", seed_id: "seed-retry", status: "test-failed" });

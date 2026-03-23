@@ -288,7 +288,7 @@ describe("Queue integration with merge CLI flow", () => {
     mq.enqueue({ branchName: "foreman/s1", seedId: "s1", runId: "r1" });
     mq.enqueue({ branchName: "foreman/s2", seedId: "s2", runId: "r2" });
 
-    // For --seed filter, find matching entry in pending list, then dequeue+process
+    // For --bead filter, find matching entry in pending list, then dequeue+process
     const target = "s2";
     const pending = mq.list("pending");
     const match = pending.find((e) => e.seed_id === target);

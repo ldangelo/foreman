@@ -38,7 +38,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 **Persona 1: Engineering Lead ("Elena")**
 - Manages 3-5 concurrent Foreman agent runs daily
 - Needs high-level visibility into agent progress without deep diving
-- Primary workflow: `foreman run --seed X`, check `foreman status`, occasionally `foreman attach` to investigate stuck agents
+- Primary workflow: `foreman run --bead X`, check `foreman status`, occasionally `foreman attach` to investigate stuck agents
 - Pain point: Cannot tell if an agent is making progress or spinning its wheels without checking logs or the SQLite store
 - Success metric: Can glance at a tmux pane and immediately understand agent state
 
@@ -65,7 +65,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 
 ### 2.3 User Journey (Desired State)
 
-1. User runs `foreman run --seed abc123`
+1. User runs `foreman run --bead abc123`
 2. Foreman creates worktree, writes TASK.md, spawns `pipeline-runner.ts` inside tmux session
 3. `pipeline-runner.ts` invokes `claude` in interactive mode -- user sees dispatch confirmation with tmux session name
 4. User runs `foreman attach abc123` and sees a live Claude Code session: streaming text, tool calls executing, files being read/written
@@ -127,7 +127,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 - Preserve the `CLAUDECODE` env var stripping to avoid nested session conflicts
 
 **Acceptance Criteria:**
-- AC-1.1: Running `foreman run --seed X` creates a tmux session where `claude` is the running process (not `tsx agent-worker.ts` directly calling SDK)
+- AC-1.1: Running `foreman run --bead X` creates a tmux session where `claude` is the running process (not `tsx agent-worker.ts` directly calling SDK)
 - AC-1.2: The tmux pane shows live Claude Code TUI output (streaming text, tool call indicators)
 - AC-1.3: `foreman attach X` connects to the tmux session and the user sees an active Claude Code UI
 - AC-1.4: The user can type into the attached session to interact with the running `claude` process
@@ -280,7 +280,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 | tmux version | Continue to support tmux 3.x (no new tmux features required) |
 | macOS / Linux | Must work on both platforms (current requirement) |
 | Node.js version | Continue to support Node.js 20+ |
-| Existing CLI flags | All existing `foreman run` flags must continue working: `--seed`, `--attach`, `--no-attach`, `--follow`, `--model`, `--no-pipeline`, `--skip-explore`, `--skip-review`, `--resume`, `--dry-run`, `--telemetry` |
+| Existing CLI flags | All existing `foreman run` flags must continue working: `--bead`, `--attach`, `--no-attach`, `--follow`, `--model`, `--no-pipeline`, `--skip-explore`, `--skip-review`, `--resume`, `--dry-run`, `--telemetry` |
 
 ### NFR-4: Observability
 
@@ -299,7 +299,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 
 ```
 Given: A seed "abc123" is ready
-When: User runs `foreman run --seed abc123`
+When: User runs `foreman run --bead abc123`
 Then: A tmux session "foreman-abc123" is created
   And: The tmux pane shows a live Claude Code session (Explorer phase)
   And: `foreman attach abc123` connects and shows the Claude Code UI

@@ -277,7 +277,7 @@ Dispatch AI coding agents to ready tasks. Enters a watch loop that auto-merges c
 
 ```bash
 foreman run                              # Dispatch to all ready tasks
-foreman run --seed bd-abc               # Dispatch one specific task
+foreman run --bead bd-abc               # Dispatch one specific task
 foreman run --max-agents 3               # Limit concurrent agents
 foreman run --model claude-opus-4-6      # Override model for all agents
 foreman run --no-tests                   # Skip test suite in merge step
