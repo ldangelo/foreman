@@ -45,11 +45,13 @@ Run `npm ci` to perform a clean, deterministic dependency install. If it fails, 
 ### Step 2: Type Check (non-fatal)
 Run `npx tsc --noEmit` to check for type errors. If it fails, log the error in FINALIZE_REPORT.md and continue — do not stop.
 
-### Step 3: Stage all files
+### Step 3: Stage all files (excluding diagnostic artifacts)
 Run:
 ```
 git add -A
+git reset HEAD SESSION_LOG.md RUN_LOG.md 2>/dev/null || true
 ```
+SESSION_LOG.md and RUN_LOG.md are diagnostic artifacts that cause merge conflicts when multiple pipelines run concurrently. They remain in the worktree for debugging but are excluded from the commit.
 
 ### Step 4: Commit
 Run:
@@ -140,4 +142,4 @@ After a successful push, send:
 - **DO NOT modify any source code files** — only write FINALIZE_REPORT.md and run git commands
 - Run steps in order — do not skip any step unless explicitly told to stop
 - All failures except "nothing to commit" are logged and continue (non-fatal) unless they prevent git push
-- Write SESSION_LOG.md in the worktree root documenting your session (see CLAUDE.md Session Logging section)
+- Do NOT commit SESSION_LOG.md or RUN_LOG.md — they are excluded from commits to prevent merge conflicts
