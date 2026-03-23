@@ -188,7 +188,19 @@ export class Dispatcher {
         // Non-fatal: if show() fails, proceed without detail context
         log(`Warning: failed to fetch details for seed ${seed.id}`);
       }
-      const seedInfo = seedToInfo(seed, seedDetail);
+
+      // Fetch bead comments (design notes, reviewer feedback, etc.) for agent context
+      let beadComments: string | null = null;
+      if (this.seeds.comments) {
+        try {
+          beadComments = await this.seeds.comments(seed.id);
+        } catch {
+          // Non-fatal: proceed without comments if fetch fails
+          log(`Warning: failed to fetch comments for seed ${seed.id}`);
+        }
+      }
+
+      const seedInfo = seedToInfo(seed, seedDetail, beadComments);
       const runtime: RuntimeSelection = "claude-code";
       const model = opts?.model ?? this.selectModel(seedInfo);
 
@@ -992,7 +1004,22 @@ function extractSessionId(sessionKey: string | null): string | null {
   return m ? m[1] : null;
 }
 
-function seedToInfo(seed: Issue, detail?: { description?: string | null; notes?: string | null; labels?: string[] }): SeedInfo {
+function seedToInfo(
+  seed: Issue,
+  detail?: { description?: string | null; notes?: string | null; labels?: string[] },
+  beadComments?: string | null,
+): SeedInfo {
+  // Combine notes (from br show) and comments (from br comments) into a single
+  // "Additional Context" block so agents receive all annotated context.
+  const notesSection = detail?.notes ?? undefined;
+  const commentsSection = beadComments ?? undefined;
+  let combinedComments: string | undefined;
+  if (notesSection && commentsSection) {
+    combinedComments = `${notesSection}\n\n---\n\n**Comments:**\n\n${commentsSection}`;
+  } else {
+    combinedComments = notesSection ?? commentsSection;
+  }
+
   return {
     id: seed.id,
     title: seed.title,
@@ -1000,7 +1027,7 @@ function seedToInfo(seed: Issue, detail?: { description?: string | null; notes?:
     priority: seed.priority,
     type: seed.type,
     labels: detail?.labels ?? seed.labels,
-    comments: detail?.notes ?? undefined,
+    comments: combinedComments,
   };
 }
 
