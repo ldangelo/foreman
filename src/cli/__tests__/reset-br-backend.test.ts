@@ -78,7 +78,7 @@ function makeBrMocks() {
 // ── detectAndFixMismatches with BeadsRustClient ──────────────────────────
 
 describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
-  it("detects mismatch when completed run has br issue in open state (should be in_progress awaiting merge)", async () => {
+  it("detects mismatch when completed run has br issue in open state (should be review awaiting merge)", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-abc", status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
@@ -99,11 +99,11 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
       runId: "run-1",
       runStatus: "completed",
       actualSeedStatus: "open",
-      expectedSeedStatus: "in_progress",
+      expectedSeedStatus: "review",
     });
   });
 
-  it("calls brClient.update to fix a mismatch (completed run should have in_progress bead)", async () => {
+  it("calls brClient.update to fix a mismatch (completed run should have review bead — pipeline done, awaiting merge)", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-abc", status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
@@ -118,7 +118,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
       new Set(),
     );
 
-    expect(brClient.update).toHaveBeenCalledWith("bd-abc", { status: "in_progress" });
+    expect(brClient.update).toHaveBeenCalledWith("bd-abc", { status: "review" });
     expect(result.fixed).toBe(1);
   });
 
@@ -143,14 +143,14 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
     expect(result.mismatches).toHaveLength(1);
   });
 
-  it("reports no mismatch when br issue status already matches expected", async () => {
+  it("reports no mismatch when br issue status already matches expected (review for completed run)", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-abc", status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    // completed → in_progress: bead already in_progress means no mismatch
-    brClient.show.mockResolvedValue(makeBrDetail("in_progress"));
+    // completed → review: bead already in 'review' means no mismatch
+    brClient.show.mockResolvedValue(makeBrDetail("review"));
 
     const result = await detectAndFixMismatches(
       store,
@@ -207,7 +207,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
     store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    // Use "open" so there IS a mismatch (completed → in_progress, but bead is open)
+    // Use "open" so there IS a mismatch (completed → review, but bead is open)
     brClient.show.mockResolvedValue(makeBrDetail("open"));
     brClient.update.mockRejectedValue(new Error("br update failed: permission denied"));
 
@@ -273,14 +273,14 @@ describe("resetSeedToOpen", () => {
     };
   }
 
-  it("does NOT reopen a seed that is already closed (the core bug fix)", async () => {
+  it("reopens a seed that is already closed (foreman reset must always make seeds retryable)", async () => {
     const seeds = makeSeedsClient("closed");
 
     const result = await resetSeedToOpen("bd-completed", seeds);
 
-    expect(result.action).toBe("skipped-closed");
+    expect(result.action).toBe("reset");
     expect(result.previousStatus).toBe("closed");
-    expect(seeds.update).not.toHaveBeenCalled();
+    expect(seeds.update).toHaveBeenCalledWith("bd-completed", { status: "open" });
   });
 
   it("resets a seed that is in_progress to open", async () => {
@@ -355,13 +355,14 @@ describe("resetSeedToOpen", () => {
     expect(seeds.update).not.toHaveBeenCalled();
   });
 
-  it("dry-run: returns 'skipped-closed' for a closed seed (consistent with non-dry-run)", async () => {
+  it("dry-run: returns 'reset' for a closed seed (would reopen, consistent with non-dry-run)", async () => {
     const seeds = makeSeedsClient("closed");
 
     const result = await resetSeedToOpen("bd-completed", seeds, { dryRun: true });
 
-    expect(result.action).toBe("skipped-closed");
+    expect(result.action).toBe("reset");
     expect(result.previousStatus).toBe("closed");
+    // In dry-run, update must NOT be called even though action is "reset"
     expect(seeds.update).not.toHaveBeenCalled();
   });
 

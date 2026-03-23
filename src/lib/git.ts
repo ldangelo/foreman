@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
+import type { WorkflowSetupStep } from "./workflow-loader.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -56,6 +57,45 @@ export async function installDependencies(dir: string): Promise<void> {
   }
 }
 
+/**
+ * Run workflow setup steps in a worktree directory.
+ *
+ * Each step's `command` is split on whitespace to form an argv array and
+ * executed via execFileAsync with `cwd` set to `dir`.
+ *
+ * Steps with `failFatal !== false` (i.e. default true) throw on non-zero exit.
+ * Steps with `failFatal === false` log a warning and continue.
+ */
+export async function runSetupSteps(
+  dir: string,
+  steps: WorkflowSetupStep[],
+): Promise<void> {
+  for (const step of steps) {
+    const label = step.description ?? step.command;
+    console.error(`[setup] Running: ${step.command}`);
+
+    const argv = step.command.trim().split(/\s+/);
+    const [cmd, ...args] = argv;
+
+    try {
+      await execFileAsync(cmd, args, { cwd: dir, maxBuffer: 10 * 1024 * 1024 });
+    } catch (err: unknown) {
+      const e = err as { stdout?: string; stderr?: string; message?: string };
+      const joined = [e.stdout, e.stderr]
+        .map((s) => (s ?? "").trim())
+        .filter(Boolean)
+        .join("\n");
+      const combined = joined || (e.message ?? String(err));
+
+      if (step.failFatal !== false) {
+        throw new Error(`Setup step failed (${label}): ${combined}`);
+      } else {
+        console.error(`[setup] Warning: step failed (non-fatal) — ${label}: ${combined}`);
+      }
+    }
+  }
+}
+
 // ── Interfaces ──────────────────────────────────────────────────────────
 
 export interface Worktree {
@@ -106,6 +146,24 @@ export async function getRepoRoot(path: string): Promise<string> {
 }
 
 /**
+ * Find the main (primary) worktree root from any git worktree.
+ *
+ * `git rev-parse --show-toplevel` returns the *current* worktree root,
+ * which for a linked worktree is the worktree directory itself — not the
+ * main project root.  This function resolves the common `.git` directory
+ * and strips the trailing `/.git` to always return the main project root.
+ */
+export async function getMainRepoRoot(path: string): Promise<string> {
+  const commonDir = await git(["rev-parse", "--git-common-dir"], path);
+  // commonDir is e.g. "/path/to/project/.git" — strip the trailing "/.git"
+  if (commonDir.endsWith("/.git")) {
+    return commonDir.slice(0, -5);
+  }
+  // Fallback: if not a standard path, use show-toplevel
+  return git(["rev-parse", "--show-toplevel"], path);
+}
+
+/**
  * Detect the default/parent branch for a repository.
  *
  * Resolution order:
@@ -116,7 +174,18 @@ export async function getRepoRoot(path: string): Promise<string> {
  * 4. Fall back to the current branch.
  */
 export async function detectDefaultBranch(repoPath: string): Promise<string> {
-  // 1. Try origin/HEAD symbolic ref
+  // 1. Respect git-town.main-branch config (user's explicit development trunk)
+  try {
+    const gtMain = await git(
+      ["config", "get", "git-town.main-branch"],
+      repoPath,
+    );
+    if (gtMain) return gtMain;
+  } catch {
+    // git-town not configured or command unavailable — fall through
+  }
+
+  // 2. Try origin/HEAD symbolic ref
   try {
     const ref = await git(
       ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
@@ -130,7 +199,7 @@ export async function detectDefaultBranch(repoPath: string): Promise<string> {
     // origin/HEAD not set or no remote — fall through
   }
 
-  // 2. Check if "main" exists locally
+  // 3. Check if "main" exists locally
   try {
     await git(["rev-parse", "--verify", "main"], repoPath);
     return "main";
@@ -138,7 +207,7 @@ export async function detectDefaultBranch(repoPath: string): Promise<string> {
     // "main" does not exist — fall through
   }
 
-  // 3. Check if "master" exists locally
+  // 4. Check if "master" exists locally
   try {
     await git(["rev-parse", "--verify", "master"], repoPath);
     return "master";
@@ -168,6 +237,7 @@ export async function createWorktree(
   repoPath: string,
   seedId: string,
   baseBranch?: string,
+  setupSteps?: WorkflowSetupStep[],
 ): Promise<{ worktreePath: string; branchName: string }> {
   const base = baseBranch ?? await getCurrentBranch(repoPath);
   const branchName = `foreman/${seedId}`;
@@ -209,7 +279,12 @@ export async function createWorktree(
       }
     }
     // Reinstall in case dependencies changed after rebase
-    await installDependencies(worktreePath);
+    if (setupSteps && setupSteps.length > 0) {
+      await runSetupSteps(worktreePath, setupSteps);
+    } else {
+      // Fallback: Node.js projects get npm/yarn/pnpm install for backward compat
+      await installDependencies(worktreePath);
+    }
     return { worktreePath, branchName };
   }
 
@@ -229,8 +304,13 @@ export async function createWorktree(
     }
   }
 
-  // Install Node.js dependencies in the new worktree
-  await installDependencies(worktreePath);
+  // Run setup steps (or fallback to Node.js dependency install)
+  if (setupSteps && setupSteps.length > 0) {
+    await runSetupSteps(worktreePath, setupSteps);
+  } else {
+    // Fallback: Node.js projects get npm/yarn/pnpm install for backward compat
+    await installDependencies(worktreePath);
+  }
 
   return { worktreePath, branchName };
 }

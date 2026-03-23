@@ -12,12 +12,12 @@ import type { MergeValidator, ValidationResult } from "../merge-validator.js";
 
 // ── Mock pi-runner ────────────────────────────────────────────────────────
 
-vi.mock("../pi-runner.js", () => ({
-  runWithPi: vi.fn(),
+vi.mock("../pi-sdk-runner.js", () => ({
+  runWithPiSdk: vi.fn(),
 }));
 
-import { runWithPi } from "../pi-runner.js";
-const mockRunWithPi = vi.mocked(runWithPi);
+import { runWithPiSdk } from "../pi-sdk-runner.js";
+const mockRunWithPi = vi.mocked(runWithPiSdk);
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -33,6 +33,8 @@ function makeSuccessPiResult(costUsd = 0.05) {
     turns: 3,
     toolCalls: 5,
     toolBreakdown: { Bash: 3, Write: 2 },
+    tokensIn: 2000,
+    tokensOut: 1000,
   };
 }
 
@@ -43,6 +45,8 @@ function makeFailPiResult(errorMessage = "Pi session failed") {
     turns: 1,
     toolCalls: 0,
     toolBreakdown: {},
+    tokensIn: 0,
+    tokensOut: 0,
     errorMessage,
   };
 }
@@ -143,7 +147,7 @@ describe("ConflictResolver - Tier 4 Pi Reimagination", () => {
       await resolver.attemptTier4Resolution("src/file.ts", "feature/test", "main");
 
       expect(mockRunWithPi).toHaveBeenCalledOnce();
-      expect(mockRunWithPi.mock.calls[0][0].model).toBe("claude-opus-4-6");
+      expect(mockRunWithPi.mock.calls[0][0].model).toBe("anthropic/claude-opus-4-6");
     });
 
     it("prompt tells Pi to read git context and write the file", async () => {
@@ -253,7 +257,7 @@ describe("ConflictResolver - Tier 4 Pi Reimagination", () => {
       expect(result.success).toBe(true);
       expect(result.cost).toBeDefined();
       expect(result.cost!.actualCostUsd).toBeCloseTo(0.05, 6);
-      expect(result.cost!.model).toBe("claude-opus-4-6");
+      expect(result.cost!.model).toBe("anthropic/claude-opus-4-6");
     });
 
     it("checks budget before invoking Pi", async () => {

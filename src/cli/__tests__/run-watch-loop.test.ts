@@ -24,7 +24,6 @@ const {
   mockGetProjectByPath,
   MockForemanStore,
   mockWatchRunsInk,
-  mockHealthCheck,
 } = vi.hoisted(() => {
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
   const MockBeadsRustClient = vi.fn(function (this: Record<string, unknown>) {
@@ -49,10 +48,6 @@ const {
 
   const mockWatchRunsInk = vi.fn().mockResolvedValue({ detached: false });
 
-  // AgentMailClient.healthCheck() returns true so the startup check passes
-  // without making a real network request to localhost:8766.
-  const mockHealthCheck = vi.fn().mockResolvedValue(true);
-
   return {
     mockEnsureBrInstalled,
     MockBeadsRustClient,
@@ -63,7 +58,6 @@ const {
     mockGetProjectByPath,
     MockForemanStore,
     mockWatchRunsInk,
-    mockHealthCheck,
   };
 });
 
@@ -84,13 +78,6 @@ vi.mock("../../orchestrator/notification-server.js", () => ({
 }));
 vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }));
 vi.mock("../watch-ui.js", () => ({ watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args) }));
-vi.mock("../../orchestrator/agent-mail-client.js", () => ({
-  AgentMailClient: vi.fn(function (this: Record<string, unknown>) {
-    this.healthCheck = mockHealthCheck;
-    this.ensureProject = vi.fn().mockResolvedValue(undefined);
-  }),
-  DEFAULT_AGENT_MAIL_CONFIG: { baseUrl: "http://localhost:8766" },
-}));
 vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
   isPiAvailable: vi.fn().mockReturnValue(false),
   PiRpcSpawnStrategy: vi.fn(),
@@ -117,7 +104,6 @@ describe("dispatch loop: watch-and-continue when nothing dispatched but agents a
     vi.spyOn(console, "error").mockImplementation(() => {});
 
     // Restore constructor implementations after clearAllMocks resets them
-    mockHealthCheck.mockResolvedValue(true);
     mockEnsureBrInstalled.mockResolvedValue(undefined);
     MockBeadsRustClient.mockImplementation(function (this: Record<string, unknown>) {
       this.ensureBrInstalled = mockEnsureBrInstalled;

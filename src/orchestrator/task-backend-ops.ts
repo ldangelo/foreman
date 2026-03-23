@@ -124,6 +124,33 @@ export async function resetSeedToOpen(seedId: string, projectPath?: string): Pro
 }
 
 /**
+ * Mark a bead as failed in the br backend.
+ *
+ * br update <seedId> --status failed
+ *
+ * Errors are caught and logged to stderr; the function never throws.
+ */
+export async function markBeadFailed(seedId: string, projectPath?: string): Promise<void> {
+  const bin = brPath();
+  const args = ["update", seedId, "--status", "failed"];
+
+  try {
+    execFileSync(bin, args, execOpts(projectPath));
+    console.error(`[task-backend-ops] Marked seed ${seedId} as failed via br`);
+
+    try {
+      execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
+    } catch (flushErr: unknown) {
+      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
+      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: br update --status failed for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
  * Add a note/comment to a bead in the br backend.
  * Used by markStuck() to explain why a bead was reset to open.
  *

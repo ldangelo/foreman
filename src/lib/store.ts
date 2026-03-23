@@ -904,6 +904,20 @@ export class ForemanStore {
   }
 
   /**
+   * Get all messages across all runs (for global watch mode).
+   */
+  getAllMessagesGlobal(limit = 200): Message[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM messages
+         WHERE deleted_at IS NULL
+         ORDER BY created_at ASC, rowid ASC
+         LIMIT ?`
+      )
+      .all(limit) as Message[];
+  }
+
+  /**
    * Mark a message as read.
    * @returns true if the message was found and updated, false if no such message exists.
    */

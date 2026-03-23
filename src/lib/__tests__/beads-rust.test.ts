@@ -474,6 +474,110 @@ describe("BeadsRustClient.ready", () => {
   });
 });
 
+// ── BeadsRustClient.comments ────────────────────────────────────────────────
+
+describe("BeadsRustClient.comments", () => {
+  beforeEach(() => {
+    mockExecFile.mockReset();
+  });
+
+  it("returns null when there are no comments", async () => {
+    mockExecFile.mockImplementation(
+      (_cmd: string, _args: string[], _opts: unknown, callback: Function) => {
+        callback(null, { stdout: JSON.stringify([]), stderr: "" });
+      },
+    );
+    const client = new BeadsRustClient("/tmp/mock-project");
+    const result = await client.comments("bd-001");
+    expect(result).toBeNull();
+  });
+
+  it("formats a single comment as markdown", async () => {
+    const comments = [
+      {
+        id: 1,
+        issue_id: "bd-001",
+        author: "alice",
+        text: "Please add rate limiting",
+        created_at: "2026-03-20T14:30:00Z",
+      },
+    ];
+    mockExecFile.mockImplementation(
+      (_cmd: string, _args: string[], _opts: unknown, callback: Function) => {
+        callback(null, { stdout: JSON.stringify(comments), stderr: "" });
+      },
+    );
+    const client = new BeadsRustClient("/tmp/mock-project");
+    const result = await client.comments("bd-001");
+    expect(result).toContain("**alice**");
+    expect(result).toContain("2026-03-20T14:30:00Z");
+    expect(result).toContain("Please add rate limiting");
+  });
+
+  it("formats multiple comments separated by blank lines", async () => {
+    const comments = [
+      {
+        id: 1,
+        issue_id: "bd-001",
+        author: "alice",
+        text: "First comment",
+        created_at: "2026-03-20T14:30:00Z",
+      },
+      {
+        id: 2,
+        issue_id: "bd-001",
+        author: "bob",
+        text: "Second comment",
+        created_at: "2026-03-20T15:45:00Z",
+      },
+    ];
+    mockExecFile.mockImplementation(
+      (_cmd: string, _args: string[], _opts: unknown, callback: Function) => {
+        callback(null, { stdout: JSON.stringify(comments), stderr: "" });
+      },
+    );
+    const client = new BeadsRustClient("/tmp/mock-project");
+    const result = await client.comments("bd-001");
+    expect(result).toContain("**alice**");
+    expect(result).toContain("**bob**");
+    expect(result).toContain("First comment");
+    expect(result).toContain("Second comment");
+    // Should be separated by double newline
+    expect(result).toMatch(/First comment\n\nSecond comment|\n\n/);
+  });
+
+  it("invokes br comments <id> --json", async () => {
+    mockExecFile.mockImplementation(
+      (_cmd: string, _args: string[], _opts: unknown, callback: Function) => {
+        callback(null, { stdout: JSON.stringify([]), stderr: "" });
+      },
+    );
+    const client = new BeadsRustClient("/tmp/mock-project");
+    await client.comments("bd-abc");
+
+    const commentsCall = mockExecFile.mock.calls.find(
+      (call: unknown[]) => (call[1] as string[])?.[0] === "comments",
+    );
+    expect(commentsCall).toBeDefined();
+    const commentsArgs = (commentsCall as unknown[])[1] as string[];
+    expect(commentsArgs).toContain("bd-abc");
+    expect(commentsArgs).toContain("--json");
+  });
+
+  it("throws when br command fails", async () => {
+    mockExecFile.mockImplementation(
+      (_cmd: string, _args: string[], _opts: unknown, callback: Function) => {
+        const err = new Error("exit 1") as Error & { stderr: string; stdout: string };
+        err.stderr = "error: issue not found";
+        err.stdout = "";
+        callback(err);
+      },
+    );
+    const client = new BeadsRustClient("/tmp/mock-project");
+    await expect(client.comments("bd-bad")).rejects.toThrow("br comments");
+  });
+});
+
 // ── BeadsRustClient error handling ──────────────────────────────────────────
 
 describe("BeadsRustClient error handling", () => {

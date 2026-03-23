@@ -13,12 +13,12 @@ import { MergeValidator } from "../merge-validator.js";
 
 // ── Mock pi-runner ────────────────────────────────────────────────────────
 
-vi.mock("../pi-runner.js", () => ({
-  runWithPi: vi.fn(),
+vi.mock("../pi-sdk-runner.js", () => ({
+  runWithPiSdk: vi.fn(),
 }));
 
-import { runWithPi } from "../pi-runner.js";
-const mockRunWithPi = vi.mocked(runWithPi);
+import { runWithPiSdk } from "../pi-sdk-runner.js";
+const mockRunWithPi = vi.mocked(runWithPiSdk);
 
 /** A file with conflict markers for testing. */
 const CONFLICTED_TS_FILE = [
@@ -49,6 +49,8 @@ function makeSuccessPiResult(costUsd = 0.006) {
     turns: 2,
     toolCalls: 3,
     toolBreakdown: { Read: 1, Write: 2 },
+    tokensIn: 1000,
+    tokensOut: 500,
   };
 }
 
@@ -59,6 +61,8 @@ function makeFailPiResult(errorMessage = "Pi session failed") {
     turns: 1,
     toolCalls: 0,
     toolBreakdown: {},
+    tokensIn: 0,
+    tokensOut: 0,
     errorMessage,
   };
 }
@@ -102,7 +106,7 @@ describe("ConflictResolver - Tier 3 Pi Resolution", () => {
       expect(result.success).toBe(true);
       expect(result.resolvedContent).toBe(RESOLVED_TS_CONTENT);
       expect(result.cost).toBeDefined();
-      expect(result.cost!.model).toBe("claude-sonnet-4-6");
+      expect(result.cost!.model).toBe("anthropic/claude-sonnet-4-6");
     });
 
     it("passes the file path and cwd to runWithPi", async () => {
@@ -114,7 +118,7 @@ describe("ConflictResolver - Tier 3 Pi Resolution", () => {
       expect(mockRunWithPi).toHaveBeenCalledOnce();
       const callOpts = mockRunWithPi.mock.calls[0][0];
       expect(callOpts.cwd).toBe(tmpDir);
-      expect(callOpts.model).toBe("claude-sonnet-4-6");
+      expect(callOpts.model).toBe("anthropic/claude-sonnet-4-6");
       expect(callOpts.prompt).toContain("src/shared.ts");
     });
 
@@ -259,7 +263,7 @@ describe("ConflictResolver - Tier 3 Pi Resolution", () => {
       expect(result.cost).toBeDefined();
       const cost = result.cost!;
       expect(cost.actualCostUsd).toBeCloseTo(0.006, 6);
-      expect(cost.model).toBe("claude-sonnet-4-6");
+      expect(cost.model).toBe("anthropic/claude-sonnet-4-6");
     });
 
     it("provides pre-call cost estimate using 4 chars/token heuristic", async () => {

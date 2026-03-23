@@ -47,6 +47,7 @@ function makeStore(runsForSeed: Run[] = []): ForemanStore {
     getActiveRuns: vi.fn().mockReturnValue([]),
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
     getRunsForSeed: vi.fn().mockReturnValue(runsForSeed),
+    getRunsByStatus: vi.fn().mockReturnValue([]),
     createRun: vi.fn().mockReturnValue({ id: "new-run" }),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
@@ -245,6 +246,7 @@ describe("Dispatcher.dispatch — stuck backoff", () => {
       getRunsForSeed: vi.fn().mockImplementation((seedId: string) => {
         return seedId === "bd-001" ? [stuckRun] : [];
       }),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
     const seeds = makeSeeds([stuckSeed, cleanSeed]);

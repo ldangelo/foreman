@@ -204,13 +204,16 @@ export interface ResetSeedResult {
 /**
  * Reset a single seed back to "open" status.
  *
- * - If the seed is "closed" AND `force` is false, the update is skipped.
- * - If the seed is "closed" AND `force` is true, it is re-opened (used by --seed).
- * - If the seed is already "open", the update is also skipped (idempotent).
- * - If the seed is in any other state (e.g. "in_progress"), it is reset.
+ * - ALL non-open seeds are re-opened, including "closed" ones — this ensures
+ *   that `foreman reset` always makes a seed retryable regardless of its
+ *   previous state.
+ * - If the seed is already "open", the update is skipped (idempotent).
  * - If the seed is not found, returns "not-found" without throwing.
  * - In dry-run mode, the `show()` check still runs (read-only) but `update()`
  *   is skipped — the returned `action` accurately reflects what would happen.
+ *
+ * Note: The `force` parameter is retained for API compatibility but no longer
+ * changes behaviour (closed seeds are always reopened).
  */
 export async function resetSeedToOpen(
   seedId: string,
@@ -218,13 +221,8 @@ export async function resetSeedToOpen(
   opts?: { dryRun?: boolean; force?: boolean },
 ): Promise<ResetSeedResult> {
   const dryRun = opts?.dryRun ?? false;
-  const force = opts?.force ?? false;
   try {
     const seedDetail = await seeds.show(seedId);
-
-    if (seedDetail.status === "closed" && !force) {
-      return { action: "skipped-closed", seedId, previousStatus: seedDetail.status };
-    }
 
     if (seedDetail.status === "open") {
       return { action: "already-open", seedId, previousStatus: seedDetail.status };
@@ -245,7 +243,7 @@ export async function resetSeedToOpen(
 
 export const resetCommand = new Command("reset")
   .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
-  .option("--seed <id>", "Reset a specific seed by ID (clears all runs for that seed, including stale pending ones)")
+  .option("--seed <id>", "Reset a specific bead by ID (clears all runs for that bead, including stale pending ones)")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
   .option("--detect-stuck", "Run stuck detection first, adding newly-detected stuck runs to the reset list")
   .option(
@@ -324,9 +322,9 @@ export const resetCommand = new Command("reset")
         // --seed: get ALL runs for this seed regardless of status, so stale pending/running are included
         runs = store.getRunsForSeed(seedFilter, project.id);
         if (runs.length === 0) {
-          console.log(chalk.yellow(`No runs found for seed ${seedFilter}.\n`));
+          console.log(chalk.yellow(`No runs found for bead ${seedFilter}.\n`));
         } else {
-          console.log(chalk.bold(`Resetting all ${runs.length} run(s) for seed ${seedFilter}:\n`));
+          console.log(chalk.bold(`Resetting all ${runs.length} run(s) for bead ${seedFilter}:\n`));
         }
       } else {
         const statuses = all
@@ -400,6 +398,8 @@ export const resetCommand = new Command("reset")
         // 3. Delete the branch — switch to main first if it is currently checked out
         console.log(`    ${chalk.yellow("delete")} branch ${branchName}`);
         if (!dryRun) {
+          const { execFile } = await import("node:child_process");
+          const { promisify } = await import("node:util");
           try {
             const delResult = await deleteBranch(projectPath, branchName, { force: true });
             if (delResult.deleted) branchesDeleted++;
@@ -409,8 +409,6 @@ export const resetCommand = new Command("reset")
               // Branch is HEAD of the main worktree — switch to main then retry
               try {
                 console.log(`    ${chalk.dim("checkout")} main (branch is current HEAD)`);
-                const { execFile } = await import("node:child_process");
-                const { promisify } = await import("node:util");
                 await promisify(execFile)("git", ["checkout", "-f", "main"], { cwd: projectPath });
                 const retryResult = await deleteBranch(projectPath, branchName, { force: true });
                 if (retryResult.deleted) branchesDeleted++;
@@ -423,6 +421,19 @@ export const resetCommand = new Command("reset")
               errors.push(`Failed to delete branch ${branchName}: ${msg}`);
               console.log(`    ${chalk.red("error")} deleting branch: ${msg}`);
             }
+          }
+
+          // 3b. Delete the remote branch to prevent stale remote tracking refs.
+          // reconcile() checks refs/remotes/origin/foreman/<seedId> to recover
+          // runs that crashed after pushing but before updating their status.
+          // If the local branch is deleted but the remote ref persists, reconcile()
+          // will falsely mark the newly re-dispatched (empty) run as "completed"
+          // and insert a merge queue entry that immediately fails with "no-commits".
+          console.log(`    ${chalk.yellow("delete")} remote branch origin/${branchName}`);
+          try {
+            await promisify(execFile)("git", ["push", "origin", "--delete", branchName], { cwd: projectPath });
+          } catch {
+            // Non-fatal: remote branch may not exist (never pushed, or already deleted)
           }
         }
 
@@ -463,24 +474,26 @@ export const resetCommand = new Command("reset")
         const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!seedFilter });
         switch (result.action) {
           case "skipped-closed":
+            // This case is no longer reachable — resetSeedToOpen now always reopens
+            // closed seeds. Kept to satisfy the exhaustive switch type check.
             console.log(
-              `  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already closed — not reopening (use --seed to force)`,
+              `  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already closed — not reopening`,
             );
             break;
           case "already-open":
-            // Seed was already open — no update was made (or would be made).
-            console.log(`  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already open`);
+            // Bead was already open — no update was made (or would be made).
+            console.log(`  ${chalk.dim("skip")} bead ${chalk.cyan(seedId)} is already open`);
             break;
           case "reset":
-            console.log(`  ${chalk.yellow("reset")} seed ${chalk.cyan(seedId)} → open`);
+            console.log(`  ${chalk.yellow("reset")} bead ${chalk.cyan(seedId)} → open`);
             seedsReset++;
             break;
           case "not-found":
-            console.log(`    ${chalk.dim("skip")} seed ${seedId} no longer exists`);
+            console.log(`    ${chalk.dim("skip")} bead ${seedId} no longer exists`);
             break;
           case "error":
-            errors.push(`Failed to reset seed ${seedId}: ${result.error ?? "unknown error"}`);
-            console.log(`    ${chalk.red("error")} resetting seed: ${result.error ?? "unknown error"}`);
+            errors.push(`Failed to reset bead ${seedId}: ${result.error ?? "unknown error"}`);
+            console.log(`    ${chalk.red("error")} resetting bead: ${result.error ?? "unknown error"}`);
             break;
         }
       }
@@ -499,12 +512,15 @@ export const resetCommand = new Command("reset")
         }
       }
 
-      // 6. Prune stale worktree entries
+      // 6. Prune stale worktree entries and remote tracking refs
       if (!dryRun) {
         try {
           const { execFile } = await import("node:child_process");
           const { promisify } = await import("node:util");
           await promisify(execFile)("git", ["worktree", "prune"], { cwd: projectPath });
+          // Prune stale remote tracking refs so reconcile() doesn't see deleted
+          // remote branches and falsely recover newly-dispatched empty runs.
+          await promisify(execFile)("git", ["fetch", "--prune"], { cwd: projectPath });
         } catch {
           // Non-critical
         }
@@ -516,8 +532,12 @@ export const resetCommand = new Command("reset")
       if (!dryRun) {
         const worktreesDir = `${projectPath}/.foreman-worktrees`;
         if (existsSync(worktreesDir)) {
-          // Paths that still have active/non-terminal runs (keep these)
-          const activeStatuses = ["pending", "running", "failed", "stuck"] as const;
+          // Paths that still have truly active runs (pending or running) — keep these.
+          // "failed" and "stuck" are terminal states: their agents have stopped, so
+          // their worktrees are safe to remove during cleanup. Including them in the
+          // "active" set was the bug: it prevented orphaned worktrees from being
+          // cleaned up when a run had no worktree_path recorded in the DB.
+          const activeStatuses = ["pending", "running"] as const;
           const activeRuns = activeStatuses.flatMap((s) => store.getRunsByStatus(s, project.id));
           const activeWorktreePaths = new Set(activeRuns.map((r) => r.worktree_path).filter(Boolean));
 
@@ -574,7 +594,7 @@ export const resetCommand = new Command("reset")
       }
 
       // 7. Detect and fix seed/run state mismatches for terminal runs
-      console.log(chalk.bold("\nChecking for seed/run state mismatches..."));
+      console.log(chalk.bold("\nChecking for bead/run state mismatches..."));
       const mismatchResult = await detectAndFixMismatches(store, seeds, project.id, seedIds, { dryRun });
 
       if (mismatchResult.mismatches.length > 0) {
@@ -584,7 +604,7 @@ export const resetCommand = new Command("reset")
             : chalk.green("fixed");
           console.log(
             `  ${chalk.yellow("mismatch")} ${chalk.cyan(m.seedId)}: ` +
-            `run=${m.runStatus}, seed=${m.actualSeedStatus} → ${m.expectedSeedStatus} ${action}`,
+            `run=${m.runStatus}, bead=${m.actualSeedStatus} → ${m.expectedSeedStatus} ${action}`,
           );
         }
       } else {
@@ -594,7 +614,7 @@ export const resetCommand = new Command("reset")
       // Summary
       console.log(chalk.bold("\nSummary:"));
       if (dryRun) {
-        console.log(chalk.yellow(`  Would reset ${runs.length} runs across ${seedIds.size} seeds`));
+        console.log(chalk.yellow(`  Would reset ${runs.length} runs across ${seedIds.size} beads`));
         if (mismatchResult.mismatches.length > 0) {
           console.log(chalk.yellow(`  Would fix ${mismatchResult.mismatches.length} mismatch(es)`));
         }
@@ -604,7 +624,7 @@ export const resetCommand = new Command("reset")
         console.log(`  Branches deleted:   ${branchesDeleted}`);
         console.log(`  Runs marked reset:   ${runsMarkedFailed}`);
         console.log(`  MQ entries removed:  ${mqEntriesRemoved}`);
-        console.log(`  Seeds reset:        ${seedsReset}`);
+        console.log(`  Beads reset:        ${seedsReset}`);
         console.log(`  Mismatches fixed:   ${mismatchResult.fixed}`);
       }
 

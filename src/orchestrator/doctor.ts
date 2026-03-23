@@ -1,18 +1,21 @@
-import { access, stat, rm } from "node:fs/promises";
+import { access, stat, rm, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import type { ForemanStore, Run } from "../lib/store.js";
+import { ForemanStore } from "../lib/store.js";
+import type { Run } from "../lib/store.js";
 import { listWorktrees, removeWorktree, branchExistsOnOrigin, detectDefaultBranch } from "../lib/git.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
-import type { MergeQueue, MergeQueueEntry } from "./merge-queue.js";
+import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue.js";
 import type { ITaskClient } from "../lib/task-client.js";
-import { AgentMailClient, DEFAULT_AGENT_MAIL_CONFIG } from "./agent-mail-client.js";
+import { findMissingPrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
+import { findMissingWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
+import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -46,15 +49,23 @@ function isSDKBasedRun(sessionKey: string | null): boolean {
 export class Doctor {
   private mergeQueue?: MergeQueue;
   private taskClient?: ITaskClient;
+  /**
+   * Injected execFile-like function used only by `isBranchMerged`.
+   * Defaults to the real `execFileAsync`; can be overridden in tests to avoid
+   * spawning real git processes.
+   */
+  private execFn: ExecFileAsyncFn;
 
   constructor(
     private store: ForemanStore,
     private projectPath: string,
     mergeQueue?: MergeQueue,
     taskClient?: ITaskClient,
+    execFn?: ExecFileAsyncFn,
   ) {
     this.mergeQueue = mergeQueue;
     this.taskClient = taskClient;
+    this.execFn = execFn ?? (execFileAsync as ExecFileAsyncFn);
   }
 
   // ── System checks ──────────────────────────────────────────────────
@@ -110,28 +121,6 @@ export class Doctor {
         message: "git not found in PATH",
       };
     }
-  }
-
-  async checkAgentMailLiveness(): Promise<CheckResult> {
-    const client = new AgentMailClient();
-    const alive = await client.healthCheck();
-    if (alive) {
-      const url = process.env.AGENT_MAIL_URL ?? DEFAULT_AGENT_MAIL_CONFIG.baseUrl;
-      return {
-        name: "Agent Mail service",
-        status: "pass",
-        message: `Reachable at ${url}`,
-      };
-    }
-
-    const url = process.env.AGENT_MAIL_URL ?? DEFAULT_AGENT_MAIL_CONFIG.baseUrl;
-    const port = url.split(":").pop() ?? "8766";
-    return {
-      name: "Agent Mail service",
-      status: "fail",
-      message: `Not reachable at ${url}. foreman run will exit until this is resolved.`,
-      details: `Start it with: mcp_agent_mail serve --port ${port}\nConfigure via: .foreman/agent-mail.json or AGENT_MAIL_URL env var`,
-    };
   }
 
   async checkGitTownInstalled(): Promise<CheckResult> {
@@ -216,15 +205,14 @@ export class Doctor {
 
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.
-    const [brResult, bvResult, gitResult, agentMailResult, gitTownInstalled, gitTownMainBranch] = await Promise.all([
+    const [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch] = await Promise.all([
       this.checkBrBinary(),
       this.checkBvBinary(),
       this.checkGitBinary(),
-      this.checkAgentMailLiveness(),
       this.checkGitTownInstalled(),
       this.checkGitTownMainBranch(),
     ]);
-    return [brResult, bvResult, gitResult, agentMailResult, gitTownInstalled, gitTownMainBranch];
+    return [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch];
   }
 
   // ── Repository checks ──────────────────────────────────────────────
@@ -279,12 +267,199 @@ export class Doctor {
     };
   }
 
-  async checkRepository(): Promise<CheckResult[]> {
+  /**
+   * Check that all required prompt files are installed in .foreman/prompts/.
+   * With --fix, reinstalls missing prompts from bundled defaults.
+   */
+  async checkPrompts(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
+    const missing = findMissingPrompts(this.projectPath);
+
+    if (missing.length === 0) {
+      return {
+        name: "prompt templates (.foreman/prompts/)",
+        status: "pass",
+        message: "All required prompt files are installed",
+      };
+    }
+
+    const missingList = missing.join(", ");
+
+    if (dryRun) {
+      return {
+        name: "prompt templates (.foreman/prompts/)",
+        status: "fail",
+        message: `${missing.length} missing prompt file(s): ${missingList}. Would reinstall (dry-run).`,
+      };
+    }
+
+    if (fix) {
+      try {
+        const { installed } = installBundledPrompts(this.projectPath, false);
+        // Re-check after install
+        const stillMissing = findMissingPrompts(this.projectPath);
+        if (stillMissing.length === 0) {
+          return {
+            name: "prompt templates (.foreman/prompts/)",
+            status: "fixed",
+            message: `${missing.length} missing prompt file(s)`,
+            fixApplied: `Installed ${installed.length} prompt file(s) from bundled defaults`,
+          };
+        } else {
+          return {
+            name: "prompt templates (.foreman/prompts/)",
+            status: "fail",
+            message: `${stillMissing.length} prompt file(s) still missing after reinstall: ${stillMissing.join(", ")}`,
+          };
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          name: "prompt templates (.foreman/prompts/)",
+          status: "fail",
+          message: `Failed to reinstall prompts: ${msg}`,
+        };
+      }
+    }
+
+    return {
+      name: "prompt templates (.foreman/prompts/)",
+      status: "fail",
+      message: `${missing.length} missing prompt file(s): ${missingList}. Run 'foreman init' or 'foreman doctor --fix' to reinstall.`,
+    };
+  }
+
+  /**
+   * Check that required Pi skills are installed in ~/.pi/agent/skills/.
+   * With --fix, installs missing skills from bundled defaults.
+   */
+  async checkPiSkills(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+    const missing = findMissingSkills();
+
+    if (missing.length === 0) {
+      return {
+        name: "Pi skills (~/.pi/agent/skills/)",
+        status: "pass",
+        message: "All required Pi skills are installed",
+      };
+    }
+
+    const missingList = missing.join(", ");
+
+    if (dryRun) {
+      return {
+        name: "Pi skills (~/.pi/agent/skills/)",
+        status: "fail",
+        message: `${missing.length} missing Pi skill(s): ${missingList}. Would install (dry-run).`,
+      };
+    }
+
+    if (fix) {
+      try {
+        const { installed } = installBundledSkills();
+        const stillMissing = findMissingSkills();
+        if (stillMissing.length === 0) {
+          return {
+            name: "Pi skills (~/.pi/agent/skills/)",
+            status: "fixed",
+            message: `${missing.length} missing Pi skill(s)`,
+            fixApplied: `Installed ${installed.length} skill(s) to ~/.pi/agent/skills/`,
+          };
+        }
+        return {
+          name: "Pi skills (~/.pi/agent/skills/)",
+          status: "fail",
+          message: `${stillMissing.length} Pi skill(s) still missing after install: ${stillMissing.join(", ")}`,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          name: "Pi skills (~/.pi/agent/skills/)",
+          status: "fail",
+          message: `Failed to install Pi skills: ${msg}`,
+        };
+      }
+    }
+
+    return {
+      name: "Pi skills (~/.pi/agent/skills/)",
+      status: "fail",
+      message: `${missing.length} missing Pi skill(s): ${missingList}. Run 'foreman init' or 'foreman doctor --fix' to install.`,
+    };
+  }
+
+  /**
+   * Check that all bundled workflow YAML files are installed in .foreman/workflows/.
+   * With --fix, reinstalls missing workflow configs from bundled defaults.
+   */
+  async checkWorkflows(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
+    const missing = findMissingWorkflows(this.projectPath);
+
+    if (missing.length === 0) {
+      return {
+        name: "workflow configs (.foreman/workflows/)",
+        status: "pass",
+        message: "All required workflow config files are installed",
+      };
+    }
+
+    const missingList = missing.map((n) => `${n}.yaml`).join(", ");
+
+    if (dryRun) {
+      return {
+        name: "workflow configs (.foreman/workflows/)",
+        status: "fail",
+        message: `${missing.length} missing workflow config(s): ${missingList}. Would reinstall (dry-run).`,
+      };
+    }
+
+    if (fix) {
+      try {
+        const { installed } = installBundledWorkflows(this.projectPath, false);
+        const stillMissing = findMissingWorkflows(this.projectPath);
+        if (stillMissing.length === 0) {
+          return {
+            name: "workflow configs (.foreman/workflows/)",
+            status: "fixed",
+            message: `${missing.length} missing workflow config(s)`,
+            fixApplied: `Installed ${installed.length} workflow config(s) from bundled defaults`,
+          };
+        }
+        return {
+          name: "workflow configs (.foreman/workflows/)",
+          status: "fail",
+          message: `${stillMissing.length} workflow config(s) still missing after reinstall: ${stillMissing.map((n) => `${n}.yaml`).join(", ")}`,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          name: "workflow configs (.foreman/workflows/)",
+          status: "fail",
+          message: `Failed to reinstall workflow configs: ${msg}`,
+        };
+      }
+    }
+
+    return {
+      name: "workflow configs (.foreman/workflows/)",
+      status: "fail",
+      message: `${missing.length} missing workflow config(s): ${missingList}. Run 'foreman init' or 'foreman doctor --fix' to reinstall.`,
+    };
+  }
+
+  async checkRepository(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check for .beads initialization.
     const results: CheckResult[] = [];
     results.push(await this.checkDatabaseFile());
     results.push(await this.checkProjectRegistered());
     results.push(await this.checkBeadsInitialized());
+    results.push(await this.checkPrompts(opts));
+    results.push(await this.checkPiSkills(opts));
+    results.push(await this.checkWorkflows(opts));
     return results;
   }
 
@@ -601,31 +776,220 @@ export class Doctor {
     };
   }
 
-  async checkFailedStuckRuns(): Promise<CheckResult[]> {
+  /**
+   * Read the beads JSONL and return a Set of seed IDs that are closed.
+   * Falls back to an empty set on any read/parse error (non-fatal).
+   */
+  private async getClosedSeedIds(): Promise<Set<string>> {
+    const jsonlPath = join(this.projectPath, ".beads", "issues.jsonl");
+    const closed = new Set<string>();
+    try {
+      const raw = await readFile(jsonlPath, "utf8");
+      for (const line of raw.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const entry = JSON.parse(trimmed) as { id?: string; status?: string };
+          if (entry.id && entry.status === "closed") {
+            closed.add(entry.id);
+          }
+        } catch {
+          // malformed line — skip
+        }
+      }
+    } catch {
+      // File missing or unreadable — return empty set
+    }
+    return closed;
+  }
+
+  /**
+   * Check whether `foreman/<seedId>` has already been merged into `defaultBranch`.
+   *
+   * Uses `git merge-base --is-ancestor` which exits 0 if the branch tip is an
+   * ancestor of the default branch (i.e. fully merged).  Returns false on any
+   * git error so the caller treats the run as still problematic.
+   */
+  private async isBranchMerged(seedId: string, defaultBranch: string): Promise<boolean> {
+    const branchName = `foreman/${seedId}`;
+    try {
+      await this.execFn(
+        "git",
+        ["merge-base", "--is-ancestor", branchName, defaultBranch],
+        { cwd: this.projectPath },
+      );
+      return true; // exit 0 → branch is an ancestor → already merged
+    } catch {
+      return false; // non-zero exit or any error → not merged / branch missing
+    }
+  }
+
+  async checkFailedStuckRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
+    const { fix = false, dryRun = false } = opts;
     const project = this.store.getProjectByPath(this.projectPath);
     if (!project) return [];
 
     const results: CheckResult[] = [];
 
+    // Detect the default branch once; fall back gracefully on errors.
+    let defaultBranch: string;
+    try {
+      defaultBranch = await detectDefaultBranch(this.projectPath);
+    } catch {
+      defaultBranch = "main";
+    }
+
+    // Collect seed IDs that are already closed in beads so we can auto-resolve
+    // stale run records without hitting git at all.
+    const closedSeeds = await this.getClosedSeedIds();
+
+    /**
+     * For a set of runs (all failed or all stuck), filter out those that are
+     * already resolved (seed closed or branch merged) and auto-mark them as
+     * completed in the store.  Returns the subset that still needs attention.
+     */
+    const filterAutoResolved = async (
+      runs: import("../lib/store.js").Run[],
+    ): Promise<{ unresolved: import("../lib/store.js").Run[]; autoResolvedCount: number }> => {
+      let autoResolvedCount = 0;
+      const unresolved: import("../lib/store.js").Run[] = [];
+
+      for (const run of runs) {
+        // If the bead/seed is already closed, the run record is stale.
+        if (closedSeeds.has(run.seed_id)) {
+          this.store.updateRun(run.id, { status: "completed" });
+          autoResolvedCount++;
+          continue;
+        }
+
+        // If the branch has already been merged, the run is done.
+        const merged = await this.isBranchMerged(run.seed_id, defaultBranch);
+        if (merged) {
+          this.store.updateRun(run.id, { status: "completed" });
+          autoResolvedCount++;
+          continue;
+        }
+
+        unresolved.push(run);
+      }
+
+      return { unresolved, autoResolvedCount };
+    };
+
     const failedRuns = this.store.getRunsByStatus("failed", project.id);
-    if (failedRuns.length > 0) {
+    const stuckRuns = this.store.getRunsByStatus("stuck", project.id);
+
+    const { unresolved: unresolvedFailed, autoResolvedCount: failedResolved } =
+      await filterAutoResolved(failedRuns);
+    const { unresolved: unresolvedStuck, autoResolvedCount: stuckResolved } =
+      await filterAutoResolved(stuckRuns);
+
+    const totalResolved = failedResolved + stuckResolved;
+    if (totalResolved > 0) {
+      results.push({
+        name: "failed/stuck runs (auto-resolved)",
+        status: "fixed",
+        message: `Auto-resolved ${totalResolved} run(s) whose branch was already merged or seed was already closed`,
+        fixApplied: `Marked ${totalResolved} run(s) as completed`,
+      });
+    }
+
+    // ── Distinguish actionable vs. noise failures ─────────────────────────────
+    // A failed run is "noise" (historical retry) if the same seed has a later
+    // successful run (completed or merged).  These are not actionable.
+    const { actionable: actionableFailed, historical: historicalFailed } =
+      this.partitionByHistoricalRetry(unresolvedFailed);
+
+    // ── Age-based cleanup of historical-retry runs ────────────────────────────
+    // Historical retries that are older than the retention threshold can be
+    // cleaned up automatically with --fix.
+    const retentionMs = PIPELINE_TIMEOUTS.failedRunRetentionDays * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const agedHistoricalFailed = historicalFailed.filter((r) => {
+      const age = now - new Date(r.created_at).getTime();
+      return age > retentionMs;
+    });
+    const recentHistoricalFailed = historicalFailed.filter((r) => {
+      const age = now - new Date(r.created_at).getTime();
+      return age <= retentionMs;
+    });
+
+    // Also age-partition unresolved stuck runs (no historical-retry check for stuck)
+    const agedStuck = unresolvedStuck.filter((r) => {
+      const age = now - new Date(r.created_at).getTime();
+      return age > retentionMs;
+    });
+    const recentStuck = unresolvedStuck.filter((r) => {
+      const age = now - new Date(r.created_at).getTime();
+      return age <= retentionMs;
+    });
+
+    // Total runs eligible for age-based cleanup
+    const agedTotal = agedHistoricalFailed.length + agedStuck.length;
+
+    if (agedTotal > 0) {
+      if (dryRun) {
+        results.push({
+          name: `failed/stuck runs (aged, dry-run)`,
+          status: "warn",
+          message: `${agedTotal} failed/stuck run(s) older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s) are eligible for cleanup. Would mark as completed (dry-run). Re-run with --fix to apply.`,
+        });
+      } else if (fix) {
+        const allAged = [...agedHistoricalFailed, ...agedStuck];
+        for (const run of allAged) {
+          this.store.updateRun(run.id, { status: "completed" });
+        }
+        results.push({
+          name: `failed/stuck runs (aged, cleaned up)`,
+          status: "fixed",
+          message: `Cleaned up ${agedTotal} aged failed/stuck run(s) older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s)`,
+          fixApplied: `Marked ${agedTotal} aged run(s) as completed`,
+        });
+      } else {
+        results.push({
+          name: `failed/stuck runs (aged)`,
+          status: "warn",
+          message: `${agedTotal} failed/stuck run(s) are older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s). Use --fix to clean up.`,
+        });
+      }
+    }
+
+    // Report historical retries that are within the retention window (informational)
+    if (recentHistoricalFailed.length > 0) {
+      results.push({
+        name: `failed runs (historical retries)`,
+        status: "warn",
+        message: `${recentHistoricalFailed.length} failed run(s) are historical retries (seed later completed): ${recentHistoricalFailed.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentHistoricalFailed.length > 5 ? "..." : ""}. These will be auto-cleaned after ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s).`,
+      });
+    }
+
+    // Actionable failures: seeds with ONLY failed runs — need attention
+    if (actionableFailed.length > 0) {
       results.push({
         name: `failed runs`,
         status: "warn",
-        message: `${failedRuns.length} failed run(s): ${failedRuns.slice(0, 5).map((r) => r.seed_id).join(", ")}${failedRuns.length > 5 ? "..." : ""}. Use 'foreman reset' to retry.`,
+        message: `${actionableFailed.length} failed run(s): ${actionableFailed.slice(0, 5).map((r) => r.seed_id).join(", ")}${actionableFailed.length > 5 ? "..." : ""}. Use 'foreman reset' to retry.`,
       });
     }
 
-    const stuckRuns = this.store.getRunsByStatus("stuck", project.id);
-    if (stuckRuns.length > 0) {
+    // Stuck runs that are recent (actionable)
+    if (recentStuck.length > 0) {
       results.push({
         name: `stuck runs`,
         status: "warn",
-        message: `${stuckRuns.length} stuck run(s): ${stuckRuns.slice(0, 5).map((r) => r.seed_id).join(", ")}${stuckRuns.length > 5 ? "..." : ""}. Use 'foreman reset' to retry or 'foreman run --resume' to continue.`,
+        message: `${recentStuck.length} stuck run(s): ${recentStuck.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentStuck.length > 5 ? "..." : ""}. Use 'foreman reset' to retry or 'foreman run --resume' to continue.`,
       });
     }
 
-    if (failedRuns.length === 0 && stuckRuns.length === 0) {
+    const hasAnyIssue =
+      totalResolved > 0 ||
+      agedTotal > 0 ||
+      recentHistoricalFailed.length > 0 ||
+      actionableFailed.length > 0 ||
+      recentStuck.length > 0;
+
+    if (!hasAnyIssue) {
       results.push({
         name: "failed/stuck runs",
         status: "pass",
@@ -634,6 +998,33 @@ export class Doctor {
     }
 
     return results;
+  }
+
+  /**
+   * Partition unresolved failed runs into "actionable" (seed has only failed runs)
+   * and "historical" (seed has a later completed or merged run — noise from retries).
+   */
+  private partitionByHistoricalRetry(
+    runs: import("../lib/store.js").Run[],
+  ): { actionable: import("../lib/store.js").Run[]; historical: import("../lib/store.js").Run[] } {
+    const actionable: import("../lib/store.js").Run[] = [];
+    const historical: import("../lib/store.js").Run[] = [];
+
+    for (const run of runs) {
+      const allSeedRuns = this.store.getRunsForSeed(run.seed_id);
+      const hasLaterSuccess = allSeedRuns.some(
+        (r) =>
+          ["completed", "merged"].includes(r.status) &&
+          new Date(r.created_at).getTime() > new Date(run.created_at).getTime(),
+      );
+      if (hasLaterSuccess) {
+        historical.push(run);
+      } else {
+        actionable.push(run);
+      }
+    }
+
+    return { actionable, historical };
   }
 
   async checkRunStateConsistency(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
@@ -680,6 +1071,124 @@ export class Doctor {
     }
 
     return results;
+  }
+
+  /**
+   * Check for bead status drift between SQLite and the br backend.
+   *
+   * Calls syncBeadStatusOnStartup() to detect (and optionally fix) mismatches
+   * between the run status recorded in SQLite and the corresponding seed status
+   * in br.  Drift occurs when foreman was interrupted before a br update could
+   * complete (e.g. after a crash, token exhaustion, or manual reset).
+   *
+   * Modes:
+   *   - No flags / warn-only: detects mismatches but does not fix them.
+   *   - fix=true, dryRun=false: detects and applies fixes via br update.
+   *   - dryRun=true: detects mismatches but never applies fixes (dryRun wins over fix).
+   *
+   * Returns:
+   *   pass  — no mismatches detected
+   *   warn  — mismatches detected but not fixed (no --fix or dryRun mode)
+   *   fixed — mismatches were detected and fixed
+   *   fail  — the sync operation itself threw an unexpected error
+   *   skip  — no project registered or no task client configured
+   */
+  async checkBeadStatusSync(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+    const projectPath = opts.projectPath ?? this.projectPath;
+
+    if (!this.taskClient) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "skip",
+        message: "No task client configured — skipping bead status reconciliation",
+      };
+    }
+
+    const project = this.store.getProjectByPath(this.projectPath);
+    if (!project) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "skip",
+        message: "No project registered — skipping bead status reconciliation",
+      };
+    }
+
+    let result: Awaited<ReturnType<typeof syncBeadStatusOnStartup>>;
+    try {
+      // First pass: always run in dry-run mode to detect mismatches without side effects
+      result = await syncBeadStatusOnStartup(this.store, this.taskClient, project.id, {
+        dryRun: true,
+        projectPath,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "fail",
+        message: `Bead status sync failed: ${msg}`,
+      };
+    }
+
+    if (result.mismatches.length === 0) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "pass",
+        message: "SQLite and br bead statuses are in sync",
+      };
+    }
+
+    const mismatchList = result.mismatches
+      .slice(0, 5)
+      .map((m) => `${m.seedId}: br=${m.actualSeedStatus} → expected=${m.expectedSeedStatus}`)
+      .join("; ");
+    const truncated = result.mismatches.length > 5 ? ` … +${result.mismatches.length - 5} more` : "";
+
+    if (dryRun) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "warn",
+        message: `${result.mismatches.length} bead status mismatch(es) detected. Would fix (dry-run): ${mismatchList}${truncated}`,
+        details: mismatchList + truncated,
+      };
+    }
+
+    if (fix) {
+      // Second pass: apply fixes
+      let fixResult: Awaited<ReturnType<typeof syncBeadStatusOnStartup>>;
+      try {
+        fixResult = await syncBeadStatusOnStartup(this.store, this.taskClient, project.id, {
+          dryRun: false,
+          projectPath,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          name: "bead status sync (SQLite ↔ br)",
+          status: "fail",
+          message: `Bead status sync (fix pass) failed: ${msg}`,
+          details: mismatchList + truncated,
+        };
+      }
+
+      const errSuffix = fixResult.errors.length > 0
+        ? ` (${fixResult.errors.length} error(s): ${fixResult.errors[0]})`
+        : "";
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "fixed",
+        message: `${fixResult.mismatches.length} bead status mismatch(es) detected`,
+        fixApplied: `Fixed ${fixResult.synced} seed status(es) in br${errSuffix}`,
+        details: mismatchList + truncated,
+      };
+    }
+
+    return {
+      name: "bead status sync (SQLite ↔ br)",
+      status: "warn",
+      message: `${result.mismatches.length} bead status mismatch(es) detected between SQLite and br. Use --fix to repair: ${mismatchList}${truncated}`,
+      details: mismatchList + truncated,
+    };
   }
 
   async checkBrRecoveryArtifacts(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
@@ -946,8 +1455,17 @@ export class Doctor {
    * Detects runs that completed but were never enqueued — e.g. because their
    * branch was deleted before reconciliation ran, or because a system crash
    * prevented reconciliation from completing.
+   *
+   * When fix=true, calls mergeQueue.reconcile() to enqueue the missing runs.
    */
-  async checkCompletedRunsNotQueued(): Promise<CheckResult> {
+  async checkCompletedRunsNotQueued(opts: {
+    fix?: boolean;
+    dryRun?: boolean;
+    projectPath?: string;
+    execFileFn?: ExecFileAsyncFn | undefined;
+  } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
     if (!this.mergeQueue) {
       return {
         name: "completed runs queued",
@@ -967,6 +1485,41 @@ export class Doctor {
     }
 
     const details = missing.map((r) => `${r.seed_id} (run ${r.run_id})`).join(", ");
+
+    if (dryRun) {
+      return {
+        name: "completed runs queued",
+        status: "warn",
+        message: `MQ-011: ${missing.length} completed run(s) not in merge queue. Would reconcile (dry-run).`,
+        details,
+      };
+    }
+
+    if (fix && opts.projectPath) {
+      try {
+        const execFn: ExecFileAsyncFn = opts.execFileFn ?? (execFileAsync as ExecFileAsyncFn);
+        const result = await this.mergeQueue.reconcile(
+          this.store.getDb(),
+          opts.projectPath,
+          execFn,
+        );
+        return {
+          name: "completed runs queued",
+          status: "fixed",
+          message: `MQ-011: ${missing.length} completed run(s) not in merge queue`,
+          fixApplied: `Reconciled: ${result.enqueued} enqueued, ${result.skipped} skipped, ${result.invalidBranch} invalid branch(es)`,
+        };
+      } catch (reconcileErr: unknown) {
+        const msg = reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr);
+        return {
+          name: "completed runs queued",
+          status: "warn",
+          message: `MQ-011: ${missing.length} completed run(s) not in merge queue. Reconcile failed: ${msg}`,
+          details,
+        };
+      }
+    }
+
     return {
       name: "completed runs queued",
       status: "warn",
@@ -1035,32 +1588,292 @@ export class Doctor {
   /**
    * Run all merge queue health checks.
    */
-  async checkMergeQueueHealth(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
+  async checkMergeQueueHealth(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
     const [stale, duplicates, orphaned, notQueued, stuckConflictFailed] = await Promise.all([
       this.checkStaleMergeQueueEntries(opts),
       this.checkDuplicateMergeQueueEntries(opts),
       this.checkOrphanedMergeQueueEntries(opts),
-      this.checkCompletedRunsNotQueued(),
+      this.checkCompletedRunsNotQueued({ fix: opts.fix, dryRun: opts.dryRun, projectPath: opts.projectPath }),
       this.checkStuckConflictFailedEntries(opts),
     ]);
     return [stale, duplicates, orphaned, notQueued, stuckConflictFailed];
   }
 
-  async checkDataIntegrity(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
+  /**
+   * Check for run records in the legacy global store (~/.foreman/foreman.db) that
+   * are absent from the project-local store (.foreman/foreman.db).  This can occur
+   * when a run completed before the bd-sjd migration to project-local stores was
+   * fully rolled out.
+   *
+   * With --fix the orphaned records (and their associated costs/events) are copied
+   * into the project-local store so that 'foreman merge' can see them.
+   */
+  async checkOrphanedGlobalStoreRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+    const checkName = "orphaned global-store runs";
+    const globalDbPath = join(homedir(), ".foreman", "foreman.db");
+
+    // If the global store doesn't exist there is nothing to migrate.
+    if (!existsSync(globalDbPath)) {
+      return { name: checkName, status: "pass", message: "No legacy global store found" };
+    }
+
+    let globalStore: ForemanStore | null = null;
+    try {
+      globalStore = new ForemanStore(globalDbPath);
+      const globalDb = globalStore.getDb();
+      const projects = globalStore.listProjects();
+
+      // Collect orphaned runs: completed or pr-created runs in the global store
+      // whose project-local store already exists on disk (meaning the project
+      // migrated to project-local storage but this particular run record was
+      // written before the migration).
+      const orphaned: Array<{
+        run: Run;
+        projectPath: string;
+        projectName: string;
+        projectId: string;
+      }> = [];
+
+      for (const project of projects) {
+        const localDbPath = join(project.path, ".foreman", "foreman.db");
+        if (!existsSync(localDbPath)) {
+          // Project has no local store yet — nothing to migrate into.
+          continue;
+        }
+
+        // Query global store for completed/pr-created runs for this project.
+        const globalRuns = (globalDb
+          .prepare(
+            "SELECT * FROM runs WHERE project_id = ? AND status IN ('completed', 'pr-created') ORDER BY created_at ASC"
+          )
+          .all(project.id) as Run[]);
+
+        if (globalRuns.length === 0) continue;
+
+        // Open the local store and check which run IDs are already present.
+        let localStore: ForemanStore | null = null;
+        try {
+          localStore = ForemanStore.forProject(project.path);
+          const localDb = localStore.getDb();
+          const existingIds = new Set(
+            (localDb.prepare("SELECT id FROM runs").all() as Array<{ id: string }>).map(
+              (r) => r.id
+            )
+          );
+
+          for (const run of globalRuns) {
+            if (!existingIds.has(run.id)) {
+              orphaned.push({
+                run,
+                projectPath: project.path,
+                projectName: project.name,
+                projectId: project.id,
+              });
+            }
+          }
+        } finally {
+          localStore?.close();
+        }
+      }
+
+      if (orphaned.length === 0) {
+        return {
+          name: checkName,
+          status: "pass",
+          message: "No orphaned global-store runs found",
+        };
+      }
+
+      const summary = `${orphaned.length} orphaned run(s) found in legacy global store across ${new Set(orphaned.map((o) => o.projectPath)).size} project(s)`;
+
+      if (dryRun) {
+        const details = orphaned
+          .map((o) => `  ${o.run.id} (seed: ${o.run.seed_id}, project: ${o.projectName})`)
+          .join("\n");
+        return {
+          name: checkName,
+          status: "warn",
+          message: `${summary}. Would migrate (dry-run).`,
+          details,
+        };
+      }
+
+      if (!fix) {
+        return {
+          name: checkName,
+          status: "warn",
+          message: `${summary}. Use --fix to migrate them to the project-local store.`,
+        };
+      }
+
+      // Apply fix: copy each orphaned run (and related costs/events) into the
+      // project-local store.
+      let migratedCount = 0;
+      const errors: string[] = [];
+
+      for (const { run, projectPath, projectName, projectId } of orphaned) {
+        let localStore: ForemanStore | null = null;
+        try {
+          localStore = ForemanStore.forProject(projectPath);
+          const localDb = localStore.getDb();
+
+          // Ensure the project record exists in the local store so the FK
+          // constraint on runs.project_id is satisfied.
+          const localProject = localStore.getProjectByPath(projectPath);
+          const targetProjectId = localProject?.id ?? projectId;
+
+          if (!localProject) {
+            // Register the project in the local store using the same ID so that
+            // we don't need to rewrite the run's project_id.
+            localDb
+              .prepare(
+                `INSERT OR IGNORE INTO projects (id, name, path, status, created_at, updated_at)
+                 VALUES (?, ?, ?, 'active', ?, ?)`
+              )
+              .run(
+                projectId,
+                projectName,
+                projectPath,
+                new Date().toISOString(),
+                new Date().toISOString()
+              );
+          }
+
+          const effectiveProjectId = localProject ? targetProjectId : projectId;
+
+          // Insert the run record — INSERT OR IGNORE to be idempotent.
+          localDb
+            .prepare(
+              `INSERT OR IGNORE INTO runs
+                 (id, project_id, seed_id, agent_type, session_key, worktree_path,
+                  status, started_at, completed_at, created_at, base_branch, tmux_session, progress)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            )
+            .run(
+              run.id,
+              effectiveProjectId,
+              run.seed_id,
+              run.agent_type,
+              run.session_key,
+              run.worktree_path,
+              run.status,
+              run.started_at,
+              run.completed_at,
+              run.created_at,
+              run.base_branch ?? null,
+              run.tmux_session ?? null,
+              run.progress
+            );
+
+          // Copy associated cost records.
+          const globalCosts = globalDb
+            .prepare("SELECT * FROM costs WHERE run_id = ?")
+            .all(run.id) as Array<{
+              id: string;
+              run_id: string;
+              tokens_in: number;
+              tokens_out: number;
+              cache_read: number;
+              estimated_cost: number;
+              recorded_at: string;
+            }>;
+
+          for (const cost of globalCosts) {
+            localDb
+              .prepare(
+                `INSERT OR IGNORE INTO costs
+                   (id, run_id, tokens_in, tokens_out, cache_read, estimated_cost, recorded_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`
+              )
+              .run(
+                cost.id,
+                cost.run_id,
+                cost.tokens_in,
+                cost.tokens_out,
+                cost.cache_read,
+                cost.estimated_cost,
+                cost.recorded_at
+              );
+          }
+
+          // Copy associated event records.
+          const globalEvents = globalDb
+            .prepare("SELECT * FROM events WHERE run_id = ?")
+            .all(run.id) as Array<{
+              id: string;
+              project_id: string;
+              run_id: string | null;
+              event_type: string;
+              details: string | null;
+              created_at: string;
+            }>;
+
+          for (const event of globalEvents) {
+            localDb
+              .prepare(
+                `INSERT OR IGNORE INTO events
+                   (id, project_id, run_id, event_type, details, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)`
+              )
+              .run(
+                event.id,
+                effectiveProjectId,
+                event.run_id,
+                event.event_type,
+                event.details,
+                event.created_at
+              );
+          }
+
+          migratedCount++;
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push(`run ${run.id} (project: ${projectName}): ${msg}`);
+        } finally {
+          localStore?.close();
+        }
+      }
+
+      if (errors.length > 0) {
+        return {
+          name: checkName,
+          status: "warn",
+          message: `Migrated ${migratedCount}/${orphaned.length} run(s); ${errors.length} error(s): ${errors.slice(0, 3).join("; ")}`,
+          fixApplied: migratedCount > 0 ? `Migrated ${migratedCount} run(s) from global store to project-local stores` : undefined,
+        };
+      }
+
+      return {
+        name: checkName,
+        status: "fixed",
+        message: `Migrated ${migratedCount} run(s) from legacy global store to project-local stores`,
+        fixApplied: `Migrated ${migratedCount} run(s) from global store to project-local stores`,
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { name: checkName, status: "warn", message: `Could not check global store: ${msg}` };
+    } finally {
+      globalStore?.close();
+    }
+  }
+
+  async checkDataIntegrity(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
 
-    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult] =
+    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult, beadSyncResult] =
       await Promise.all([
         this.checkOrphanedWorktrees(opts),
         this.checkZombieRuns(opts),
         this.checkStalePendingRuns(opts),
-        this.checkFailedStuckRuns(),
+        this.checkFailedStuckRuns(opts),
         this.checkRunStateConsistency(opts),
         this.checkBlockedSeeds(),
         this.checkBrRecoveryArtifacts(opts),
+        this.checkBeadStatusSync(opts),
       ]);
 
-    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult, recoveryResult);
+    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult, recoveryResult, beadSyncResult);
 
     // Merge queue checks (only when merge queue is configured)
     if (this.mergeQueue) {
@@ -1071,10 +1884,10 @@ export class Doctor {
     return results;
   }
 
-  async runAll(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<DoctorReport> {
+  async runAll(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<DoctorReport> {
     const [system, repository, dataIntegrity] = await Promise.all([
       this.checkSystem(),
-      this.checkRepository(),
+      this.checkRepository(opts),
       this.checkDataIntegrity(opts),
     ]);
 

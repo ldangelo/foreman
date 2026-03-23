@@ -17,10 +17,11 @@ import { writeFileSync, renameSync, existsSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { homedir } from "node:os";
 import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { detectDefaultBranch } from "../lib/git.js";
+import { detectDefaultBranch as _detectDefaultBranch } from "../lib/git.js"; // reserved for future use
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -191,6 +192,48 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     );
   }
 
+  // Enqueue to merge queue BEFORE push — source-of-truth write.
+  //
+  // Writing the queue entry BEFORE git push eliminates the crash window where
+  // the push succeeded but the agent died before enqueue() ran. With this order:
+  //   - If the agent crashes after enqueue but before push: entry exists in
+  //     'pending' state; on re-dispatch the agent will push the branch and
+  //     refinery processes the pre-existing entry (enqueue is idempotent).
+  //   - If the agent crashes after push: entry already exists; no duplicate push
+  //     needed — refinery picks up the 'pending' entry and merges as normal.
+  //   - If push ultimately fails: entry exists in 'pending' state; refinery will
+  //     attempt the merge and fail gracefully, leaving the seed for re-dispatch.
+  //
+  // Fire-and-forget semantics are preserved: an enqueue failure is non-fatal.
+  if (branchVerified) {
+    try {
+      const enqueueStore = ForemanStore.forProject(storeProjectPath);
+      const enqueueResult = enqueueToMergeQueue({
+        db: enqueueStore.getDb(),
+        seedId,
+        runId: config.runId,
+        worktreePath,
+        getFilesModified: () => {
+          const output = execFileSync("git", ["diff", "--name-only", "main...HEAD"], opts).toString().trim();
+          return output ? output.split("\n") : [];
+        },
+      });
+      enqueueStore.close();
+
+      if (enqueueResult.success) {
+        log(`[FINALIZE] Enqueued to merge queue (pre-push)`);
+        report.push(`## Merge Queue`, `- Status: ENQUEUED`, "");
+      } else {
+        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error}`);
+        report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueResult.error?.slice(0, 300)}`, "");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${msg}`);
+      report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
+    }
+  }
+
   // Push — with automatic rebase recovery on non-fast-forward rejections.
   //
   // Non-fast-forward errors are deterministic (diverged history) and will
@@ -271,46 +314,33 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     }
   }
 
-  // Enqueue to merge queue (fire-and-forget — must not block finalization)
-  if (pushSucceeded) {
-    const defaultBranch = await detectDefaultBranch(storeProjectPath).catch(() => "main");
-    try {
-      const enqueueStore = ForemanStore.forProject(storeProjectPath);
-      const enqueueResult = enqueueToMergeQueue({
-        db: enqueueStore.getDb(),
-        seedId,
-        runId: config.runId,
-        worktreePath,
-        getFilesModified: () => {
-          const output = execFileSync("git", ["diff", "--name-only", `${defaultBranch}...HEAD`], opts).toString().trim();
-          return output ? output.split("\n") : [];
-        },
-      });
-      enqueueStore.close();
+  // Note: merge queue enqueue already happened before push (pre-push enqueue above).
+  // No second enqueue needed here — the pre-push entry covers the successful-push case too.
 
-      if (enqueueResult.success) {
-        log(`[FINALIZE] Enqueued to merge queue`);
-        report.push(`## Merge Queue`, `- Status: ENQUEUED`, "");
-      } else {
-        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error}`);
-        report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueResult.error?.slice(0, 300)}`, "");
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${msg}`);
-      report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
-    }
-  }
-
-  // Seed lifecycle note: the bead is NOT closed here.
+  // Seed lifecycle: set bead to 'review' after a successful push.
+  // This signals "pipeline done, branch pushed, awaiting foreman merge".
   // Closing happens only after the branch successfully merges (via refinery.ts).
-  // The bead stays in_progress while the run is in the merge queue.
+  // On push failure the bead stays in_progress (caller resets to open via resetSeedToOpen).
   if (pushSucceeded) {
-    log(`[FINALIZE] Seed ${seedId} queued for merge — bead will be closed by refinery after merge`);
-    report.push(`## Seed Status`, `- Status: AWAITING_MERGE`, `- Note: bead closed by refinery after successful merge`, "");
+    const brBin = join(homedir(), ".local", "bin", "br");
+    const brOpts = {
+      stdio: "pipe" as const,
+      timeout: PIPELINE_TIMEOUTS.beadClosureMs,
+      ...(storeProjectPath ? { cwd: storeProjectPath } : {}),
+    };
+    try {
+      execFileSync(brBin, ["update", seedId, "--status", "review"], brOpts);
+      log(`[FINALIZE] Seed ${seedId} set to review — bead will be closed by refinery after merge`);
+      report.push(`## Seed Status`, `- Status: AWAITING_MERGE (review)`, `- Note: bead closed by refinery after successful merge`, "");
+    } catch (brErr: unknown) {
+      const brMsg = brErr instanceof Error ? brErr.message : String(brErr);
+      log(`[FINALIZE] Warning: br update --status review failed for ${seedId}: ${brMsg.slice(0, 200)}`);
+      await appendFile(logFile, `[FINALIZE] br update review error: ${brMsg}\n`);
+      report.push(`## Seed Status`, `- Status: AWAITING_MERGE`, `- Note: bead status update to review failed (non-fatal)`, "");
+    }
   } else {
-    log(`[FINALIZE] Skipped merge queue — push failed for ${seedId}`);
-    report.push(`## Seed Status`, `- Status: SKIPPED (push failed)`, "");
+    log(`[FINALIZE] Push failed for ${seedId} — merge queue entry written pre-push; refinery will handle gracefully on re-dispatch`);
+    report.push(`## Seed Status`, `- Status: PUSH_FAILED`, `- Note: merge queue entry written before push attempt`, "");
   }
 
   // Write finalize report

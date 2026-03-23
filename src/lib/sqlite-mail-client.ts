@@ -9,9 +9,22 @@
  */
 
 import { ForemanStore } from "./store.js";
-import type { AgentMailMessage } from "../orchestrator/agent-mail-client.js";
 
-export type { AgentMailMessage };
+// ── Public types ──────────────────────────────────────────────────────────────
+
+export interface AgentMailMessage {
+  /** Unique message identifier. */
+  id: string;
+  /** Sender agent type / role. */
+  from: string;
+  /** Recipient agent type / role. */
+  to: string;
+  subject: string;
+  body: string;
+  /** ISO timestamp when the message was created. */
+  receivedAt: string;
+  acknowledged: boolean;
+}
 
 export class SqliteMailClient {
   /** The registered agent name for this instance. Used as sender for outgoing messages. */

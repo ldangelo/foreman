@@ -8,8 +8,8 @@ describe("mapRunStatusToSeedStatus", () => {
   it("maps running to in_progress", () => {
     expect(mapRunStatusToSeedStatus("running")).toBe("in_progress");
   });
-  it("maps completed to in_progress — waiting for merge, not yet closed", () => {
-    expect(mapRunStatusToSeedStatus("completed")).toBe("in_progress");
+  it("maps completed to review — pipeline done, awaiting merge (not yet closed)", () => {
+    expect(mapRunStatusToSeedStatus("completed")).toBe("review");
   });
   it("maps merged to closed", () => {
     expect(mapRunStatusToSeedStatus("merged")).toBe("closed");
@@ -17,22 +17,25 @@ describe("mapRunStatusToSeedStatus", () => {
   it("maps pr-created to closed", () => {
     expect(mapRunStatusToSeedStatus("pr-created")).toBe("closed");
   });
-  it("maps failed to open", () => {
-    expect(mapRunStatusToSeedStatus("failed")).toBe("open");
+  it("maps failed to failed — unexpected merge exception", () => {
+    expect(mapRunStatusToSeedStatus("failed")).toBe("failed");
   });
-  it("maps stuck to open", () => {
+  it("maps stuck to open — agent pipeline stuck, safe to retry", () => {
     expect(mapRunStatusToSeedStatus("stuck")).toBe("open");
   });
-  it("maps conflict to open", () => {
-    expect(mapRunStatusToSeedStatus("conflict")).toBe("open");
+  it("maps conflict to blocked — merge conflict needs human intervention", () => {
+    expect(mapRunStatusToSeedStatus("conflict")).toBe("blocked");
   });
-  it("maps test-failed to open", () => {
-    expect(mapRunStatusToSeedStatus("test-failed")).toBe("open");
+  it("maps test-failed to blocked — post-merge tests failed, needs intervention", () => {
+    expect(mapRunStatusToSeedStatus("test-failed")).toBe("blocked");
   });
   it("maps unknown status to open (safe default)", () => {
     expect(mapRunStatusToSeedStatus("unknown-status")).toBe("open");
   });
   it("completed does NOT map to closed — bead stays visible until merge lands", () => {
     expect(mapRunStatusToSeedStatus("completed")).not.toBe("closed");
+  });
+  it("completed does NOT map to in_progress — visually distinct from actively-running tasks", () => {
+    expect(mapRunStatusToSeedStatus("completed")).not.toBe("in_progress");
   });
 });

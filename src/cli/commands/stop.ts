@@ -270,7 +270,7 @@ function formatElapsed(startedAt: string | null): string {
 
 export const stopCommand = new Command("stop")
   .description("Gracefully stop running foreman agents without destroying infrastructure")
-  .argument("[id]", "Run ID or seed ID to stop (omit to stop all active runs)")
+  .argument("[id]", "Run ID or bead ID to stop (omit to stop all active runs)")
   .option("--list", "List all active runs")
   .option("--force", "Force kill with SIGKILL instead of SIGTERM")
   .option("--dry-run", "Show what would be stopped without doing it")

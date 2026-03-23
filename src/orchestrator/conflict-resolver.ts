@@ -7,7 +7,7 @@ import type { MergeQueueConfig } from "./merge-config.js";
 import { MergeValidator } from "./merge-validator.js";
 import type { ConflictPatterns } from "./conflict-patterns.js";
 import { REPORT_FILES } from "../lib/archive-reports.js";
-import { runWithPi } from "./pi-runner.js";
+import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -86,8 +86,8 @@ export interface Tier2Result {
   reason?: string;
 }
 
-const TIER3_MODEL = "claude-sonnet-4-6";
-const TIER4_MODEL = "claude-opus-4-6";
+const TIER3_MODEL = "anthropic/claude-sonnet-4-6";
+const TIER4_MODEL = "anthropic/claude-opus-4-6";
 
 /** Heuristic: approximate 4 characters per token. */
 const CHARS_PER_TOKEN = 4;
@@ -471,12 +471,11 @@ export class ConflictResolver {
       `- Write ONLY valid code — no explanations, no markdown fencing, no prose`,
     ].join("\n");
 
-    const piResult = await runWithPi({
+    const piResult = await runWithPiSdk({
       prompt,
       systemPrompt: "",
       cwd: this.projectPath,
       model: TIER3_MODEL,
-      env: process.env as Record<string, string>,
     });
 
     if (!piResult.success) {
@@ -600,12 +599,11 @@ export class ConflictResolver {
       `- The result must be valid code with ALL intended changes from both branches preserved`,
     ].join("\n");
 
-    const piResult = await runWithPi({
+    const piResult = await runWithPiSdk({
       prompt,
       systemPrompt: "",
       cwd: this.projectPath,
       model: TIER4_MODEL,
-      env: process.env as Record<string, string>,
     });
 
     if (!piResult.success) {

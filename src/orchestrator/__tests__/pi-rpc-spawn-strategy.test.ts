@@ -1,97 +1,29 @@
 /**
- * Tests for PiRpcSpawnStrategy and isPiAvailable().
+ * Tests for isPiAvailable(), PI_PHASE_CONFIGS, and parsePiEvent().
  *
  * Strategy:
  * - Mock execFileSync to control Pi availability detection.
- * - Mock child_process.spawn to verify correct args / env vars.
  * - Verify parsePiEvent handles well-formed and malformed input.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Mocks set up BEFORE importing the module under test ──────────────────
 
-// We mock child_process at the module level so isPiAvailable() and
-// PiRpcSpawnStrategy.spawn() both use our stubs.
 vi.mock("node:child_process", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:child_process")>();
   return {
     ...original,
     execFileSync: vi.fn(),
-    spawn: vi.fn(),
   };
 });
 
-// Mock fs/promises so we avoid real file I/O
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const original = await importOriginal<typeof import("node:fs/promises")>();
-  return {
-    ...original,
-    mkdir: vi.fn().mockResolvedValue(undefined),
-    open: vi.fn().mockResolvedValue({
-      fd: 3,
-      close: vi.fn().mockResolvedValue(undefined),
-    }),
-  };
-});
-
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import {
   isPiAvailable,
-  PiRpcSpawnStrategy,
   parsePiEvent,
   PI_PHASE_CONFIGS,
 } from "../pi-rpc-spawn-strategy.js";
-import type { WorkerConfig } from "../dispatcher.js";
-
-// ── Helpers ──────────────────────────────────────────────────────────────
-
-function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
-  return {
-    runId: "run-abc123",
-    projectId: "proj-1",
-    seedId: "seed-xyz",
-    seedTitle: "Test task",
-    seedDescription: "Do the thing",
-    model: "claude-sonnet-4-6",
-    worktreePath: "/tmp/worktree/seed-xyz",
-    projectPath: "/tmp/project",
-    prompt: "Read TASK.md and implement.",
-    env: {
-      HOME: "/home/user",
-      PATH: "/usr/bin:/bin",
-    },
-    ...overrides,
-  };
-}
-
-function makeFakeProcess() {
-  // Minimal EventEmitter-like stub so background async code can call child.on("close")
-  const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
-  const fakeEmitter = {
-    on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-      listeners[event] = listeners[event] ?? [];
-      listeners[event].push(cb);
-    }),
-    emit: (event: string, ...args: unknown[]) => {
-      (listeners[event] ?? []).forEach((cb) => cb(...args));
-    },
-  };
-  return {
-    pid: 12345,
-    exitCode: null as number | null,
-    stdin: {
-      write: vi.fn(),
-      end: vi.fn(),
-    },
-    // stdout is read via readline — provide a minimal async iterable that ends immediately
-    stdout: {
-      [Symbol.asyncIterator]: async function* () { /* no events */ },
-    },
-    unref: vi.fn(),
-    ...fakeEmitter,
-  };
-}
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
@@ -139,11 +71,11 @@ describe("PI_PHASE_CONFIGS", () => {
     expect(PI_PHASE_CONFIGS).toHaveProperty("reviewer");
   });
 
-  it("uses haiku for explorer and sonnet for other phases", () => {
-    expect(PI_PHASE_CONFIGS.explorer.model).toBe("claude-haiku-4-5-20251001");
-    expect(PI_PHASE_CONFIGS.developer.model).toBe("claude-sonnet-4-6");
-    expect(PI_PHASE_CONFIGS.qa.model).toBe("claude-sonnet-4-6");
-    expect(PI_PHASE_CONFIGS.reviewer.model).toBe("claude-sonnet-4-6");
+  it("does not have hardcoded models — models come from workflow config", () => {
+    expect(PI_PHASE_CONFIGS.explorer).not.toHaveProperty("model");
+    expect(PI_PHASE_CONFIGS.developer).not.toHaveProperty("model");
+    expect(PI_PHASE_CONFIGS.qa).not.toHaveProperty("model");
+    expect(PI_PHASE_CONFIGS.reviewer).not.toHaveProperty("model");
   });
 
   it("has correct maxTurns for each phase", () => {
@@ -177,154 +109,6 @@ describe("PI_PHASE_CONFIGS", () => {
   });
 });
 
-describe("PiRpcSpawnStrategy.spawn()", () => {
-  const spawnMock = spawn as ReturnType<typeof vi.fn>;
-  const execFileSyncMock = execFileSync as ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    spawnMock.mockReset();
-    execFileSyncMock.mockReset();
-  });
-
-  it("spawns `pi --mode rpc` with correct args", async () => {
-    const fakeProcess = makeFakeProcess();
-    spawnMock.mockReturnValue(fakeProcess);
-    // Make which pi succeed to get a deterministic binary path
-    execFileSyncMock.mockReturnValue("/opt/homebrew/bin/pi");
-
-    const strategy = new PiRpcSpawnStrategy();
-    const result = await strategy.spawn(makeConfig());
-
-    expect(spawnMock).toHaveBeenCalledOnce();
-    const [bin, args] = spawnMock.mock.calls[0] as [string, string[], unknown];
-    expect(bin).toMatch(/pi$/);
-    expect(args).toEqual(["--mode", "rpc", "--provider", "anthropic", "--model", expect.stringContaining("claude")]);
-    expect(result).toEqual({});
-  });
-
-  it("sets required Foreman env vars on the spawned process", async () => {
-    const fakeProcess = makeFakeProcess();
-    spawnMock.mockReturnValue(fakeProcess);
-    execFileSyncMock.mockReturnValue("/opt/homebrew/bin/pi");
-
-    const strategy = new PiRpcSpawnStrategy();
-    await strategy.spawn(
-      makeConfig({
-        env: {
-          HOME: "/home/user",
-          PATH: "/usr/bin",
-          FOREMAN_PHASE: "developer",
-        },
-      }),
-    );
-
-    const spawnOptions = spawnMock.mock.calls[0][2] as { env?: Record<string, string> };
-    const env = spawnOptions.env ?? {};
-
-    expect(env.FOREMAN_PHASE).toBe("developer");
-    expect(env.FOREMAN_RUN_ID).toBe("run-abc123");
-    expect(env.FOREMAN_SEED_ID).toBe("seed-xyz");
-    expect(env.FOREMAN_ALLOWED_TOOLS).toBeDefined();
-    expect(env.FOREMAN_MAX_TURNS).toBeDefined();
-    expect(env.FOREMAN_MAX_TOKENS).toBeDefined();
-    expect(env.PI_EXTENSIONS).toBe("foreman-tool-gate,foreman-budget,foreman-audit");
-    expect(env.FOREMAN_AGENT_MAIL_URL).toBeDefined();
-  });
-
-  it("strips CLAUDECODE from the spawned process env", async () => {
-    const fakeProcess = makeFakeProcess();
-    spawnMock.mockReturnValue(fakeProcess);
-    execFileSyncMock.mockReturnValue("/opt/homebrew/bin/pi");
-
-    const strategy = new PiRpcSpawnStrategy();
-    await strategy.spawn(
-      makeConfig({
-        env: {
-          HOME: "/home/user",
-          CLAUDECODE: "1",
-        },
-      }),
-    );
-
-    const spawnOptions = spawnMock.mock.calls[0][2] as { env?: Record<string, string> };
-    const env = spawnOptions.env ?? {};
-    expect(env).not.toHaveProperty("CLAUDECODE");
-  });
-
-  it("uses developer phase config when FOREMAN_PHASE is absent", async () => {
-    const fakeProcess = makeFakeProcess();
-    spawnMock.mockReturnValue(fakeProcess);
-    execFileSyncMock.mockReturnValue("/opt/homebrew/bin/pi");
-
-    const strategy = new PiRpcSpawnStrategy();
-    await strategy.spawn(makeConfig()); // no FOREMAN_PHASE in env
-
-    const spawnOptions = spawnMock.mock.calls[0][2] as { env?: Record<string, string> };
-    const env = spawnOptions.env ?? {};
-    expect(env.FOREMAN_PHASE).toBe("developer");
-    expect(env.FOREMAN_MAX_TURNS).toBe(String(PI_PHASE_CONFIGS.developer.maxTurns));
-  });
-
-  it("writes set_context and prompt messages to stdin", async () => {
-    const fakeProcess = makeFakeProcess();
-    spawnMock.mockReturnValue(fakeProcess);
-    execFileSyncMock.mockReturnValue("/opt/homebrew/bin/pi");
-
-    const strategy = new PiRpcSpawnStrategy();
-    await strategy.spawn(makeConfig({ prompt: "Do the work." }));
-
-    const writeCalls: string[] = (fakeProcess.stdin.write.mock.calls as unknown[][]).map(
-      (c) => c[0] as string,
-    );
-
-    expect(writeCalls.length).toBeGreaterThanOrEqual(2);
-
-    const contextMsg = JSON.parse(writeCalls[0]) as { type: string };
-    expect(contextMsg.type).toBe("set_context");
-
-    const promptMsg = JSON.parse(writeCalls[1]) as { type: string; message: string };
-    expect(promptMsg.type).toBe("prompt");
-    expect(promptMsg.message).toBe("Do the work.");
-  });
-
-  it("calls process.unref() so agent survives parent exit", async () => {
-    const fakeProcess = makeFakeProcess();
-    spawnMock.mockReturnValue(fakeProcess);
-    execFileSyncMock.mockReturnValue("/opt/homebrew/bin/pi");
-
-    const strategy = new PiRpcSpawnStrategy();
-    await strategy.spawn(makeConfig());
-
-    expect(fakeProcess.unref).toHaveBeenCalledOnce();
-  });
-
-  it("returns empty SpawnResult", async () => {
-    const fakeProcess = makeFakeProcess();
-    spawnMock.mockReturnValue(fakeProcess);
-    execFileSyncMock.mockReturnValue("/opt/homebrew/bin/pi");
-
-    const strategy = new PiRpcSpawnStrategy();
-    const result = await strategy.spawn(makeConfig());
-
-    expect(result).toEqual({});
-  });
-
-  it("uses explorer phase config when FOREMAN_PHASE=explorer", async () => {
-    const fakeProcess = makeFakeProcess();
-    spawnMock.mockReturnValue(fakeProcess);
-    execFileSyncMock.mockReturnValue("/opt/homebrew/bin/pi");
-
-    const strategy = new PiRpcSpawnStrategy();
-    await strategy.spawn(
-      makeConfig({ env: { HOME: "/home/user", FOREMAN_PHASE: "explorer" } }),
-    );
-
-    const spawnOptions = spawnMock.mock.calls[0][2] as { env?: Record<string, string> };
-    const env = spawnOptions.env ?? {};
-    expect(env.FOREMAN_MAX_TURNS).toBe(String(PI_PHASE_CONFIGS.explorer.maxTurns));
-    expect(env.FOREMAN_MAX_TOKENS).toBe(String(PI_PHASE_CONFIGS.explorer.maxTokens));
-  });
-});
 
 describe("parsePiEvent()", () => {
   it("parses agent_start event", () => {

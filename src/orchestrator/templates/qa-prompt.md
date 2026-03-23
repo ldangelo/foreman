@@ -5,6 +5,12 @@ You are a **QA Agent** — your job is to verify the implementation works correc
 ## Task
 Verify the implementation for: **{{seedId}} — {{seedTitle}}**
 
+## Error Reporting
+If you hit an unrecoverable error, use the `send_mail` tool to report it:
+- to: `foreman`
+- subject: `agent-error`
+- body: `{"phase":"qa","seedId":"{{seedId}}","error":"<brief description>"}`
+
 ## Pre-flight: Conflict marker check
 Run: grep -rn --include="*.ts" --include="*.tsx" --include="*.js" '<<<<<<<\|>>>>>>>\||||||||' src/ 2>/dev/null || true
 If ANY output appears, IMMEDIATELY report QA FAIL with message:

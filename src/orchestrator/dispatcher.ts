@@ -3,7 +3,7 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { runWithPi } from "./pi-runner.js";
+import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
@@ -14,8 +14,9 @@ import { BeadsRustClient } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
-import { PiRpcSpawnStrategy, isPiAvailable } from "./pi-rpc-spawn-strategy.js";
+import { isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
+import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -136,12 +137,25 @@ export class Dispatcher {
     // Skip seeds that already have an active run
     const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
 
+    // Also skip seeds that have a completed-but-unmerged run (prevent duplicate runs)
+    const completedRuns = this.store.getRunsByStatus("completed", projectId);
+    const completedSeedIds = new Set(completedRuns.map((r) => r.seed_id));
+
     for (const seed of readySeeds) {
       if (activeSeedIds.has(seed.id)) {
         skipped.push({
           seedId: seed.id,
           title: seed.title,
           reason: "Already has an active run",
+        });
+        continue;
+      }
+
+      if (completedSeedIds.has(seed.id)) {
+        skipped.push({
+          seedId: seed.id,
+          title: seed.title,
+          reason: "Has completed run awaiting merge — run 'foreman merge' or wait for auto-merge",
         });
         continue;
       }
@@ -174,9 +188,25 @@ export class Dispatcher {
         // Non-fatal: if show() fails, proceed without detail context
         log(`Warning: failed to fetch details for seed ${seed.id}`);
       }
-      const seedInfo = seedToInfo(seed, seedDetail);
+
+      // Fetch bead comments (design notes, reviewer feedback, etc.) for agent context
+      let beadComments: string | null = null;
+      if (this.seeds.comments) {
+        try {
+          beadComments = await this.seeds.comments(seed.id);
+        } catch {
+          // Non-fatal: proceed without comments if fetch fails
+          log(`Warning: failed to fetch comments for seed ${seed.id}`);
+        }
+      }
+
+      const seedInfo = seedToInfo(seed, seedDetail, beadComments);
       const runtime: RuntimeSelection = "claude-code";
-      const model = opts?.model ?? this.selectModel(seedInfo);
+      // Pipeline model is now resolved per-phase from the workflow YAML + bead priority.
+      // Use opts.model if provided (e.g. --model flag), otherwise fall back to the
+      // developer-role default.  This value is the outer fallback only — executePipeline
+      // will override it per phase via resolvePhaseModel().
+      const model: ModelSelection = opts?.model ?? "anthropic/claude-sonnet-4-6";
 
       if (opts?.dryRun) {
         dispatched.push({
@@ -198,11 +228,23 @@ export class Dispatcher {
           log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
         }
 
+        // 1a. Load workflow config to get setup steps for worktree initialization
+        const resolvedWorkflow = resolveWorkflowName(seedInfo.type ?? "feature", seedInfo.labels);
+        let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
+        try {
+          const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
+          setupSteps = wfConfig.setup;
+        } catch {
+          // Non-fatal: fall back to default installDependencies behavior
+          log(`[foreman] Could not load workflow config '${resolvedWorkflow}' for setup steps — using default dependency install`);
+        }
+
         // 2. Create git worktree (optionally branched from a dependency branch)
         const { worktreePath, branchName } = await createWorktree(
           this.projectPath,
           seed.id,
           baseBranch,
+          setupSteps,
         );
 
         // 3. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
@@ -227,8 +269,35 @@ export class Dispatcher {
           branchName,
         }, run.id);
 
+        // 5a. Send worktree-created mail so inbox shows worktree lifecycle event
+        try {
+          this.store.sendMessage(run.id, "foreman", "foreman", "worktree-created", JSON.stringify({
+            seedId: seed.id,
+            title: seed.title,
+            worktreePath,
+            branchName,
+            model,
+            timestamp: new Date().toISOString(),
+          }));
+        } catch {
+          // Non-fatal — mail is optional infrastructure
+        }
+
         // 6. Mark seed as in_progress before spawning agent
         await this.seeds.update(seed.id, { status: "in_progress" });
+
+        // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
+        try {
+          this.store.sendMessage(run.id, "foreman", "foreman", "bead-claimed", JSON.stringify({
+            seedId: seed.id,
+            title: seed.title,
+            model,
+            runId: run.id,
+            timestamp: new Date().toISOString(),
+          }));
+        } catch {
+          // Non-fatal — mail is optional infrastructure
+        }
 
         // 7. Spawn the coding agent
         const { sessionKey } = await this.spawnAgent(
@@ -440,20 +509,12 @@ export class Dispatcher {
       started_at: new Date().toISOString(),
     });
 
-    // 4. Build clean env for Pi (strip CLAUDECODE, ensure PATH includes homebrew)
-    const piEnv: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (k !== "CLAUDECODE" && v !== undefined) piEnv[k] = v;
-    }
-    piEnv.PATH = `/opt/homebrew/bin:${piEnv.PATH ?? ""}`;
-
     try {
-      const planResult = await runWithPi({
+      const planResult = await runWithPiSdk({
         prompt,
         systemPrompt: `You are a planning agent. ${ensembleCommand} for the task: ${seed.title}`,
         cwd: this.projectPath,
         model: PLAN_STEP_CONFIG.model,
-        env: piEnv,
       });
 
       if (planResult.success) {
@@ -506,42 +567,16 @@ export class Dispatcher {
   }
 
   /**
-   * Pick a Claude model based on task complexity signals.
-   *
-   * - Opus: P0 critical tasks, or keywords: refactor, architect, design, complex, migrate, overhaul
-   * - Haiku: P3/P4 low-priority tasks with light keywords, or typo/config/rename/etc.
-   * - Sonnet: default for most implementation tasks
-   *
-   * Priority comparisons use normalizePriority() to handle both "P0"–"P4" and "0"–"4" formats.
-   */
-  selectModel(task: SeedInfo): ModelSelection {
-    const text = `${task.title} ${task.description ?? ""}`.toLowerCase();
-    const priority = normalizePriority(task.priority ?? "P2");
-
-    // P0 critical tasks always get the most capable model
-    if (priority === 0) {
-      return "claude-opus-4-6";
-    }
-
-    const heavy = ["refactor", "architect", "design", "complex", "migrate", "overhaul"];
-    if (heavy.some((kw) => text.includes(kw))) {
-      return "claude-opus-4-6";
-    }
-
-    const light = ["typo", "rename", "config", "bump version", "update readme"];
-    // Only use haiku for non-critical (P1+) light tasks
-    if (light.some((kw) => text.includes(kw)) && priority >= 1) {
-      return "claude-haiku-4-5-20251001";
-    }
-
-    return "claude-sonnet-4-6";
-  }
-
-  /**
    * Build the TASK.md content for a seed (exposed for testing).
+   *
+   * Model selection is now handled per-phase by the workflow YAML `models` map
+   * (see resolvePhaseModel in workflow-loader.ts). The TASK.md model field shows
+   * the developer-phase default as informational context.
    */
   generateAgentInstructions(seed: SeedInfo, worktreePath: string): string {
-    const model = this.selectModel(seed);
+    // Use developer-role default for TASK.md informational display.
+    // The actual per-phase model is resolved from workflow YAML at runtime.
+    const model: ModelSelection = "anthropic/claude-sonnet-4-6";
     return workerAgentMd(seed, worktreePath, model);
   }
 
@@ -630,6 +665,8 @@ export class Dispatcher {
       skipReview: pipelineOpts?.skipReview,
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
       seedType,
+      seedLabels: seed.labels,
+      seedPriority: seed.priority,
     });
 
     return { sessionKey };
@@ -810,6 +847,16 @@ export interface WorkerConfig {
    * Used for prompt-loader workflow scoping and spawn strategy selection.
    */
   seedType?: string;
+  /**
+   * Labels from the bead. Forwarded to agent-worker so it can resolve
+   * `workflow:<name>` label overrides.
+   */
+  seedLabels?: string[];
+  /**
+   * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
+   * Forwarded to the pipeline executor to resolve per-priority models from YAML.
+   */
+  seedPriority?: string;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────
@@ -879,28 +926,14 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
 }
 
 /**
- * Spawn agent-worker using the best available strategy.
+ * Spawn agent-worker using DetachedSpawnStrategy.
  *
- * Strategy selection:
- * 1. If `pi` binary is available, use PiRpcSpawnStrategy (always preferred)
- * 2. Fallback: DetachedSpawnStrategy (runs agent-worker.js as a detached child)
- *
- * Smoke seeds get FOREMAN_SMOKE_TEST=true injected into env before spawning.
+ * DetachedSpawnStrategy spawns agent-worker.ts, which runs the full pipeline
+ * (explorer → developer → QA → reviewer → finalize) and calls runWithPi()
+ * per phase with the correct phase prompt and Pi extension env vars.
  */
 export async function spawnWorkerProcess(config: WorkerConfig): Promise<SpawnResult> {
-  // Inject FOREMAN_SMOKE_TEST for smoke seeds before dispatching to any strategy
-  const effectiveConfig: WorkerConfig =
-    config.seedType === "smoke"
-      ? { ...config, env: { ...config.env, FOREMAN_SMOKE_TEST: "true" } }
-      : config;
-
-  if (isPiAvailable()) {
-    log(`[foreman] pi binary found — using PiRpcSpawnStrategy for ${effectiveConfig.seedId}`);
-    return new PiRpcSpawnStrategy().spawn(effectiveConfig);
-  }
-
-  // Pi not available — fall back to detached child process
-  return new DetachedSpawnStrategy().spawn(effectiveConfig);
+  return new DetachedSpawnStrategy().spawn(config);
 }
 
 /**
@@ -955,7 +988,22 @@ function extractSessionId(sessionKey: string | null): string | null {
   return m ? m[1] : null;
 }
 
-function seedToInfo(seed: Issue, detail?: { description?: string | null; notes?: string | null; labels?: string[] }): SeedInfo {
+function seedToInfo(
+  seed: Issue,
+  detail?: { description?: string | null; notes?: string | null; labels?: string[] },
+  beadComments?: string | null,
+): SeedInfo {
+  // Combine notes (from br show) and comments (from br comments) into a single
+  // "Additional Context" block so agents receive all annotated context.
+  const notesSection = detail?.notes ?? undefined;
+  const commentsSection = beadComments ?? undefined;
+  let combinedComments: string | undefined;
+  if (notesSection && commentsSection) {
+    combinedComments = `${notesSection}\n\n---\n\n**Comments:**\n\n${commentsSection}`;
+  } else {
+    combinedComments = notesSection ?? commentsSection;
+  }
+
   return {
     id: seed.id,
     title: seed.title,
@@ -963,7 +1011,7 @@ function seedToInfo(seed: Issue, detail?: { description?: string | null; notes?:
     priority: seed.priority,
     type: seed.type,
     labels: detail?.labels ?? seed.labels,
-    comments: detail?.notes ?? undefined,
+    comments: combinedComments,
   };
 }
 

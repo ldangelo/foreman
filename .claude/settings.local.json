@@ -1,47 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Read(//Users/ldangelo/Development/Curantis/monorepo/**)",
-      "Bash(bd show monorepo-7zd)",
-      "Bash(bd show:*)",
-      "Bash(bd create:*)",
-      "Bash(git rebase:*)",
-      "Bash(gh pr:*)",
-      "Bash(git rm:*)",
-      "Bash(git checkout:*)",
-      "Bash(cp:*)",
-      "Bash(git add:*)",
-      "Bash(git push:*)",
-      "Bash(GIT_EDITOR=true git rebase:*)",
-      "Bash(npx tsc:*)",
-      "Bash(sd create:*)",
+      "Bash(br:*)",
       "Bash(git:*)",
-      "Bash(sd dep:*)",
-      "Bash(br create:*)",
-      "Bash(npx vitest:*)",
-      "Bash(br list:*)",
-      "Bash(sd list:*)",
-      "Bash(sd close:*)",
-      "Bash(br close:*)",
-      "Bash(npx tsx:*)",
-      "Bash(npm run:*)",
-      "Bash(br dep:*)",
-      "Bash(br ready:*)",
-      "Bash(br show:*)",
-      "Bash(gh api:*)",
-      "Bash(npm test:*)",
-      "Skill(commit-commands:commit-push-pr)",
-      "Bash(git commit:*)",
-      "Bash(active agents\" path:*)"
+      "Bash(gh:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(foreman:*)",
+      "Bash(cp:*)",
+      "Bash(cloc:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "Skill(commit-commands:commit-push-pr)"
     ]
-  },
-  "mcpServers": {
-    "mcp-agent-mail": {
-      "type": "http",
-      "url": "http://127.0.0.1:8765/api/",
-      "headers": {
-        "Authorization": "Bearer 784369ff0f5e97851726c198b8db9036034c91567d8925550f4216b6a9236584"
-      }
-    }
   }
 }

@@ -150,4 +150,28 @@ describe("archiveWorktreeReports", () => {
     expect(REPORT_FILES).toContain("TASK.md");
     expect(REPORT_FILES).toContain("BLOCKED.md");
   });
+
+  it("REPORT_FILES contains diagnostic artifact files that should never cause merge conflicts", () => {
+    // SESSION_LOG.md and RUN_LOG.md are excluded from commits in finalize prompts,
+    // but must also be in REPORT_FILES so the conflict resolver auto-resolves
+    // them if they were committed by an older pipeline version.
+    expect(REPORT_FILES).toContain("SESSION_LOG.md");
+    expect(REPORT_FILES).toContain("RUN_LOG.md");
+  });
+
+  it("archives SESSION_LOG.md if present", async () => {
+    const { projectPath, worktreePath } = makeDirs();
+    const seedId = "seed-session-log";
+
+    const content = "# Session Log\n\n## Phase: developer\n";
+    writeFileSync(join(worktreePath, "SESSION_LOG.md"), content);
+
+    const count = await archiveWorktreeReports(projectPath, worktreePath, seedId);
+
+    expect(count).toBe(1);
+    const destDir = join(projectPath, ".foreman", "reports", seedId);
+    expect(existsSync(join(destDir, "SESSION_LOG.md"))).toBe(true);
+    const archived = readFileSync(join(destDir, "SESSION_LOG.md"), "utf-8");
+    expect(archived).toBe(content);
+  });
 });
