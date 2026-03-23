@@ -135,7 +135,8 @@ describe("syncBeadStatusOnStartup", () => {
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
     expect(result.mismatches).toHaveLength(1);
-    expect(result.mismatches[0].expectedSeedStatus).toBe("open");
+    // failed (unexpected merge exception) → expected 'failed' in br
+    expect(result.mismatches[0].expectedSeedStatus).toBe("failed");
   });
 
   it("detects mismatch when stuck run has seed still in_progress", async () => {
@@ -293,8 +294,8 @@ describe("syncBeadStatusOnStartup", () => {
 
     // Should only check once (deduplicated by seed_id)
     expect(taskClient.show).toHaveBeenCalledTimes(1);
-    // Should use the newer run's status (failed → open)
-    expect(result.mismatches[0].expectedSeedStatus).toBe("open");
+    // Should use the newer run's status (failed → failed for unexpected merge exception)
+    expect(result.mismatches[0].expectedSeedStatus).toBe("failed");
     expect(result.mismatches[0].runStatus).toBe("failed");
   });
 
