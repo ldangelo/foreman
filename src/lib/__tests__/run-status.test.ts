@@ -17,17 +17,17 @@ describe("mapRunStatusToSeedStatus", () => {
   it("maps pr-created to closed", () => {
     expect(mapRunStatusToSeedStatus("pr-created")).toBe("closed");
   });
-  it("maps failed to open", () => {
-    expect(mapRunStatusToSeedStatus("failed")).toBe("open");
+  it("maps failed to failed — unexpected merge exception", () => {
+    expect(mapRunStatusToSeedStatus("failed")).toBe("failed");
   });
-  it("maps stuck to open", () => {
+  it("maps stuck to open — agent pipeline stuck, safe to retry", () => {
     expect(mapRunStatusToSeedStatus("stuck")).toBe("open");
   });
-  it("maps conflict to open", () => {
-    expect(mapRunStatusToSeedStatus("conflict")).toBe("open");
+  it("maps conflict to blocked — merge conflict needs human intervention", () => {
+    expect(mapRunStatusToSeedStatus("conflict")).toBe("blocked");
   });
-  it("maps test-failed to open", () => {
-    expect(mapRunStatusToSeedStatus("test-failed")).toBe("open");
+  it("maps test-failed to blocked — post-merge tests failed, needs intervention", () => {
+    expect(mapRunStatusToSeedStatus("test-failed")).toBe("blocked");
   });
   it("maps unknown status to open (safe default)", () => {
     expect(mapRunStatusToSeedStatus("unknown-status")).toBe("open");

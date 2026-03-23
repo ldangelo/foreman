@@ -90,8 +90,22 @@ export interface WorkflowPhaseConfig {
    * Omitted for builtin phases (e.g., finalize).
    */
   prompt?: string;
-  /** Model shorthand: "haiku" | "sonnet" | "opus". Defaults to role default. */
+  /**
+   * Model shorthand: "haiku" | "sonnet" | "opus" or full model ID.
+   * Defaults to role default. @deprecated Use `models` map instead.
+   */
   model?: string;
+  /**
+   * Priority-based model overrides. Keys are "default" or "P0"–"P4".
+   * Takes precedence over the single `model` field.
+   *
+   * @example
+   * models:
+   *   default: sonnet
+   *   P0: opus
+   *   P1: sonnet
+   */
+  models?: Record<string, string>;
   /** Maximum turns. Overrides the role's default maxTurns. */
   maxTurns?: number;
   /**
@@ -227,6 +241,32 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
 
     if (typeof p["prompt"] === "string") phase.prompt = p["prompt"];
     if (typeof p["model"] === "string") phase.model = p["model"];
+
+    // Parse priority-based models map (takes precedence over single model field)
+    if (isRecord(p["models"])) {
+      const modelsRaw = p["models"];
+      const models: Record<string, string> = {};
+      const validKeys = new Set(["default", "P0", "P1", "P2", "P3", "P4"]);
+      for (const [key, value] of Object.entries(modelsRaw)) {
+        if (!validKeys.has(key)) {
+          throw new WorkflowConfigError(
+            workflowName,
+            `phases[${i}].models key '${key}' is invalid; must be 'default' or 'P0'–'P4'`,
+          );
+        }
+        if (typeof value !== "string" || !value) {
+          throw new WorkflowConfigError(
+            workflowName,
+            `phases[${i}].models.${key} must be a non-empty string`,
+          );
+        }
+        models[key] = value;
+      }
+      if (Object.keys(models).length > 0) {
+        phase.models = models;
+      }
+    }
+
     if (typeof p["maxTurns"] === "number") phase.maxTurns = p["maxTurns"];
     if (typeof p["skipIfArtifact"] === "string") phase.skipIfArtifact = p["skipIfArtifact"];
     if (typeof p["artifact"] === "string") phase.artifact = p["artifact"];
@@ -446,4 +486,54 @@ const MODEL_SHORTHANDS: Record<string, string> = {
 export function resolveWorkflowModel(model: string | undefined): string | undefined {
   if (!model) return undefined;
   return MODEL_SHORTHANDS[model] ?? model;
+}
+
+/**
+ * Resolve the effective model for a pipeline phase at runtime.
+ *
+ * Resolution order (first defined wins):
+ *   1. `phase.models[priorityKey]`  — per-priority YAML override (e.g. "P0: opus")
+ *   2. `phase.models.default`       — per-phase YAML default
+ *   3. `phase.model`                — legacy single-model YAML field (backward compat)
+ *   4. `fallbackModel`              — caller-supplied fallback (typically ROLE_CONFIGS value)
+ *
+ * @param phase         - Loaded workflow phase config.
+ * @param priorityStr   - Bead priority string ("P0"–"P4", "0"–"4", or undefined).
+ * @param fallbackModel - Model to use when no YAML config is present (e.g. ROLE_CONFIGS[role].model).
+ * @returns Full model ID string.
+ */
+export function resolvePhaseModel(
+  phase: WorkflowPhaseConfig,
+  priorityStr: string | undefined,
+  fallbackModel: string,
+): string {
+  if (phase.models) {
+    // Normalise priority to "P0"–"P4" format
+    const priorityKey = normalisePriorityKey(priorityStr);
+    const priorityOverride = priorityKey ? phase.models[priorityKey] : undefined;
+    const resolved = priorityOverride ?? phase.models["default"];
+    if (resolved) return resolveWorkflowModel(resolved) ?? resolved;
+  }
+  // Legacy single-model field
+  if (phase.model) {
+    const resolved = resolveWorkflowModel(phase.model);
+    if (resolved) return resolved;
+  }
+  return fallbackModel;
+}
+
+/**
+ * Convert a priority string in any format ("P0"–"P4" or "0"–"4") to the
+ * canonical "P0"–"P4" format used as YAML models map keys.
+ *
+ * Returns undefined for unrecognised inputs.
+ */
+function normalisePriorityKey(p: string | undefined): string | undefined {
+  if (!p) return undefined;
+  const upper = p.trim().toUpperCase();
+  // Already in "P0"–"P4" format
+  if (/^P[0-4]$/.test(upper)) return upper;
+  // Numeric string "0"–"4"
+  if (/^[0-4]$/.test(upper)) return `P${upper}`;
+  return undefined;
 }
