@@ -45,11 +45,13 @@ Run `npm ci` to perform a clean, deterministic dependency install. If it fails, 
 ### Step 2: Type Check (non-fatal)
 Run `npx tsc --noEmit` to check for type errors. If it fails, log the error in FINALIZE_REPORT.md and continue — do not stop.
 
-### Step 3: Stage all files
+### Step 3: Stage all files (excluding diagnostic artifacts)
 Run:
 ```
 git add -A
+git reset HEAD SESSION_LOG.md RUN_LOG.md 2>/dev/null || true
 ```
+SESSION_LOG.md and RUN_LOG.md are diagnostic artifacts that cause merge conflicts when multiple pipelines run concurrently. They remain in the worktree for debugging but are excluded from the commit.
 
 ### Step 4: Commit
 Run:
@@ -72,33 +74,30 @@ If the output is NOT `foreman/{{seedId}}`, check it out:
 git checkout foreman/{{seedId}}
 ```
 
-### Step 6: Push to origin
+### Step 6: Rebase onto target branch
+Always rebase before pushing so the branch is up-to-date with the target branch. This ensures the refinery can fast-forward merge without conflicts.
+```
+git fetch origin
+git rebase origin/{{baseBranch}}
+```
+
+**If the rebase has conflicts**, run `git rebase --abort` to clean up, then send an error and stop:
+```
+/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"rebase_conflict","retryable":false}'
+```
+
+### Step 7: Push to origin
 Run:
 ```
-git push origin foreman/{{seedId}}
+git push -u origin foreman/{{seedId}}
 ```
 
-**If the push fails with "non-fast-forward" or "fetch first":**
-1. Run `git fetch origin && git rebase origin/{{baseBranch}}`
-2. If the rebase succeeds, retry the push once: `git push origin foreman/{{seedId}}`
-   - If the retry push also fails (transient error), send:
-     ```
-     /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"push_failed","retryable":true}'
-     ```
-     Then stop.
-3. If the rebase has conflicts, run `git rebase --abort` to clean up, then send:
-   ```
-   /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"push_conflict","retryable":false}'
-   ```
-   Then stop.
-
-**If the push fails for any other reason (network, permissions, etc.):**
+**If the push fails for any reason**, send an error and stop:
 ```
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"push_failed","retryable":true}'
 ```
-Then stop.
 
-### Step 7: Write FINALIZE_REPORT.md
+### Step 8: Write FINALIZE_REPORT.md
 Write a `FINALIZE_REPORT.md` file in the worktree root summarizing:
 - Whether `npm ci` succeeded or failed (include any error details)
 - Whether `npx tsc --noEmit` passed or failed (include any error details)
@@ -130,7 +129,7 @@ Use this format:
 - Branch: foreman/{{seedId}}
 ```
 
-### Step 8: Send phase-complete mail
+### Step 9: Send phase-complete mail
 After a successful push, send:
 ```
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"finalize","seedId":"{{seedId}}","commitHash":"<short-hash>","status":"complete"}'
@@ -140,4 +139,4 @@ After a successful push, send:
 - **DO NOT modify any source code files** — only write FINALIZE_REPORT.md and run git commands
 - Run steps in order — do not skip any step unless explicitly told to stop
 - All failures except "nothing to commit" are logged and continue (non-fatal) unless they prevent git push
-- Write SESSION_LOG.md in the worktree root documenting your session (see CLAUDE.md Session Logging section)
+- Do NOT commit SESSION_LOG.md or RUN_LOG.md — they are excluded from commits to prevent merge conflicts
