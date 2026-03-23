@@ -551,4 +551,164 @@ describe("foreman attach", () => {
       consoleErrSpy.mockRestore();
     });
   });
+
+  // ── --stream mode ─────────────────────────────────────────────────────
+
+  describe("--stream mode", () => {
+    it("returns 0 immediately when run is already in terminal state", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      createTestRun(store, projectId, {
+        seedId: "stream-done",
+        status: "completed",
+      });
+
+      const { attachAction } = await import("../commands/attach.js");
+      const exitCode = await attachAction("stream-done", { stream: true, _pollIntervalMs: 50 }, store, tmpDir);
+
+      expect(exitCode).toBe(0);
+      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain("stream-done");
+
+      consoleSpy.mockRestore();
+    });
+
+    it("prints existing messages before polling", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      const run = createTestRun(store, projectId, {
+        seedId: "stream-existing",
+        status: "completed",
+      });
+
+      // Insert a message before streaming
+      store.sendMessage(run.id, "developer", "foreman", "phase-started", '{"phase":"developer"}');
+
+      const { attachAction } = await import("../commands/attach.js");
+      await attachAction("stream-existing", { stream: true, _pollIntervalMs: 50 }, store, tmpDir);
+
+      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain("phase-started");
+      expect(output).toContain("phase=developer");
+
+      consoleSpy.mockRestore();
+    });
+
+    it("stops when AbortSignal fires", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      createTestRun(store, projectId, {
+        seedId: "stream-abort",
+        status: "running",
+      });
+
+      const { attachAction } = await import("../commands/attach.js");
+      const abortController = new AbortController();
+
+      const resultPromise = attachAction(
+        "stream-abort",
+        { stream: true, _signal: abortController.signal, _pollIntervalMs: 50 },
+        store,
+        tmpDir,
+      );
+
+      // Abort after a tick
+      await new Promise((r) => setTimeout(r, 80));
+      abortController.abort();
+
+      const exitCode = await resultPromise;
+      expect(exitCode).toBe(0);
+
+      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain("stream-abort");
+
+      consoleSpy.mockRestore();
+    });
+
+    it("stops when run transitions to terminal state", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      const run = createTestRun(store, projectId, {
+        seedId: "stream-terminal",
+        status: "running",
+      });
+
+      const { attachAction } = await import("../commands/attach.js");
+
+      // Transition the run to completed after a short delay
+      const transitionTimeout = setTimeout(() => {
+        store.updateRun(run.id, { status: "completed" });
+      }, 80);
+
+      const exitCode = await attachAction(
+        "stream-terminal",
+        { stream: true, _pollIntervalMs: 30 },
+        store,
+        tmpDir,
+      );
+
+      clearTimeout(transitionTimeout);
+
+      expect(exitCode).toBe(0);
+      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain("completed");
+
+      consoleSpy.mockRestore();
+    });
+
+    it("prints new messages as they arrive", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      const run = createTestRun(store, projectId, {
+        seedId: "stream-live",
+        status: "running",
+      });
+
+      const { attachAction } = await import("../commands/attach.js");
+
+      // Send a message after a short delay, then complete the run
+      const msgTimeout = setTimeout(() => {
+        store.sendMessage(run.id, "qa", "foreman", "phase-complete", '{"phase":"qa","status":"pass"}');
+        setTimeout(() => {
+          store.updateRun(run.id, { status: "completed" });
+        }, 50);
+      }, 80);
+
+      const exitCode = await attachAction(
+        "stream-live",
+        { stream: true, _pollIntervalMs: 30 },
+        store,
+        tmpDir,
+      );
+
+      clearTimeout(msgTimeout);
+
+      expect(exitCode).toBe(0);
+      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain("phase-complete");
+      expect(output).toContain("phase=qa");
+
+      consoleSpy.mockRestore();
+    });
+
+    it("formats JSON body with status summary", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      const run = createTestRun(store, projectId, {
+        seedId: "stream-fmt",
+        status: "completed",
+      });
+
+      store.sendMessage(run.id, "developer", "foreman", "agent-error", '{"phase":"developer","error":"test failure"}');
+
+      const { attachAction } = await import("../commands/attach.js");
+      await attachAction("stream-fmt", { stream: true, _pollIntervalMs: 50 }, store, tmpDir);
+
+      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain("agent-error");
+      expect(output).toContain("error=test failure");
+
+      consoleSpy.mockRestore();
+    });
+  });
 });
