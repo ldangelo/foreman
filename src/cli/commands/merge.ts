@@ -1,9 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { join } from "node:path";
-import { homedir } from "node:os";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { ITaskClient } from "../../lib/task-client.js";
@@ -14,48 +12,7 @@ import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { MergeQueueStatus } from "../../orchestrator/merge-queue.js";
 import type { MergedRun, ConflictRun, FailedRun, CreatedPr } from "../../orchestrator/types.js";
 import { MergeCostTracker } from "../../orchestrator/merge-cost-tracker.js";
-import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
-import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
-
-// ── Bead status sync helpers ───────────────────────────────────────────
-
-/** Absolute path to the br binary (mirrors task-backend-ops.ts). */
-function brPath(): string {
-  return join(homedir(), ".local", "bin", "br");
-}
-
-/**
- * Immediately sync a bead's status in the br backend after a merge outcome.
- *
- * Fetches the latest run status from SQLite, maps it to the expected bead
- * status via mapRunStatusToSeedStatus(), updates br, then flushes with
- * `br sync --flush-only`.
- *
- * Non-fatal — logs a warning on failure and lets the caller continue.
- */
-async function syncBeadStatusAfterMerge(
-  store: ForemanStore,
-  seeds: ITaskClient,
-  runId: string,
-  seedId: string,
-  projectPath: string,
-): Promise<void> {
-  const run = store.getRun(runId);
-  if (!run) return;
-
-  const expectedStatus = mapRunStatusToSeedStatus(run.status);
-  try {
-    await seeds.update(seedId, { status: expectedStatus });
-    execFileSync(brPath(), ["sync", "--flush-only"], {
-      stdio: "pipe",
-      timeout: PIPELINE_TIMEOUTS.beadClosureMs,
-      cwd: projectPath,
-    });
-  } catch (syncErr: unknown) {
-    const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
-    console.warn(chalk.yellow(`  [merge] Warning: Failed to sync bead status for ${seedId}: ${msg}`));
-  }
-}
+import { syncBeadStatusAfterMerge } from "../../orchestrator/auto-merge.js";
 
 // ── Backend Client Factory (TRD-017) ──────────────────────────────────
 
@@ -362,6 +319,8 @@ export const mergeCommand = new Command("merge")
 
         console.log(`Processing: ${chalk.cyan(entry.seed_id)} (${chalk.dim(entry.branch_name)})`);
 
+        // Track failure reason for immediate bead note (declared outside try for finally access)
+        let mergeFailureReason: string | undefined;
         try {
           const report = await refinery.mergeCompleted({
             targetBranch,
@@ -378,17 +337,26 @@ export const mergeCommand = new Command("merge")
             mq.updateStatus(entry.id, "conflict", { error: "Code conflicts" });
             conflicts.push(...report.conflicts);
             prsCreated.push(...report.prsCreated);
+            // Build failure reason for bead note
+            if (report.conflicts.length > 0) {
+              const files = report.conflicts.flatMap((c) => c.conflictFiles).slice(0, 10);
+              mergeFailureReason = `Merge conflict detected in branch foreman/${entry.seed_id}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
+            } else if (report.prsCreated.length > 0) {
+              const pr = report.prsCreated[0];
+              mergeFailureReason = `Merge conflict: a PR was created for manual review.\nPR URL: ${pr.prUrl}\nBranch: ${pr.branchName}`;
+            }
           } else if (report.testFailures.length > 0) {
             mq.updateStatus(entry.id, "failed", { error: "Test failures" });
             testFailures.push(...report.testFailures);
+            // Build failure reason for bead note
+            const firstFailure = report.testFailures[0];
+            const errorSummary = firstFailure.error?.slice(0, 800) ?? "no details";
+            mergeFailureReason = `Post-merge tests failed (${report.testFailures.length} failure(s)).\nFirst failure:\n${errorSummary}`;
           } else {
             // No completed run found for this seed (already merged or no run)
             mq.updateStatus(entry.id, "failed", { error: "No completed run found" });
+            mergeFailureReason = `Merge failed: no completed run found for seed ${entry.seed_id}. The run may have been deleted or not yet finalized.`;
           }
-
-          // Immediately sync bead status in br so it reflects the merge outcome
-          // without waiting for the next foreman startup reconciliation.
-          await syncBeadStatusAfterMerge(store, seeds, entry.run_id, entry.seed_id, projectPath);
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
           mq.updateStatus(entry.id, "failed", { error: message });
@@ -398,8 +366,12 @@ export const mergeCommand = new Command("merge")
             branchName: entry.branch_name,
             error: message,
           });
-          // Sync bead status even when refinery throws (run may have been updated before exception)
-          await syncBeadStatusAfterMerge(store, seeds, entry.run_id, entry.seed_id, projectPath);
+          mergeFailureReason = `Unexpected error during merge: ${message.slice(0, 800)}`;
+        } finally {
+          // Immediately sync bead status in br so it reflects the merge outcome
+          // without waiting for the next foreman startup reconciliation.
+          // Pass mergeFailureReason to add an explanatory note to the bead.
+          await syncBeadStatusAfterMerge(store, seeds, entry.run_id, entry.seed_id, projectPath, mergeFailureReason);
         }
 
         // If --seed filter, stop after processing the target
@@ -439,6 +411,7 @@ export const mergeCommand = new Command("merge")
               const toProcess = mq.dequeue();
               if (!toProcess) continue;
 
+              let retryFailureReason: string | undefined;
               try {
                 const report = await refinery.mergeCompleted({
                   targetBranch,
@@ -455,11 +428,21 @@ export const mergeCommand = new Command("merge")
                   mq.updateStatus(toProcess.id, "conflict", { error: "Code conflicts" });
                   conflicts.push(...report.conflicts);
                   prsCreated.push(...report.prsCreated);
+                  if (report.conflicts.length > 0) {
+                    const files = report.conflicts.flatMap((c) => c.conflictFiles).slice(0, 10);
+                    retryFailureReason = `Merge conflict (retry) in branch foreman/${toProcess.seed_id}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
+                  } else if (report.prsCreated.length > 0) {
+                    const pr = report.prsCreated[0];
+                    retryFailureReason = `Merge conflict (retry): a PR was created for manual review.\nPR URL: ${pr.prUrl}\nBranch: ${pr.branchName}`;
+                  }
                 } else if (report.testFailures.length > 0) {
                   mq.updateStatus(toProcess.id, "failed", { error: "Test failures" });
                   testFailures.push(...report.testFailures);
+                  const firstFailure = report.testFailures[0];
+                  retryFailureReason = `Post-merge tests failed on retry (${report.testFailures.length} failure(s)).\nFirst failure:\n${firstFailure.error?.slice(0, 800) ?? "no details"}`;
                 } else {
                   mq.updateStatus(toProcess.id, "failed", { error: "No completed run found" });
+                  retryFailureReason = `Merge failed on retry: no completed run found for seed ${toProcess.seed_id}.`;
                 }
               } catch (err: unknown) {
                 const message = err instanceof Error ? err.message : String(err);
@@ -470,6 +453,9 @@ export const mergeCommand = new Command("merge")
                   branchName: toProcess.branch_name,
                   error: message,
                 });
+                retryFailureReason = `Unexpected error during merge retry: ${message.slice(0, 800)}`;
+              } finally {
+                await syncBeadStatusAfterMerge(store, seeds, toProcess.run_id, toProcess.seed_id, projectPath, retryFailureReason);
               }
             }
           }

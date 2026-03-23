@@ -38,7 +38,9 @@ const {
   MockMergeQueue,
   mockRefineryMergeCompleted,
   MockRefinery,
+  mockAddNotesToBead,
 } = vi.hoisted(() => {
+  const mockAddNotesToBead = vi.fn();
   const mockExecFileSync = vi.fn().mockReturnValue(Buffer.from(""));
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
   const MockBeadsRustClient = vi.fn(function (this: Record<string, unknown>) {
@@ -109,6 +111,7 @@ const {
     MockMergeQueue,
     mockRefineryMergeCompleted,
     MockRefinery,
+    mockAddNotesToBead,
   };
 });
 
@@ -136,6 +139,7 @@ vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }
 vi.mock("../watch-ui.js", () => ({ watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args) }));
 vi.mock("../../orchestrator/merge-queue.js", () => ({ MergeQueue: MockMergeQueue }));
 vi.mock("../../orchestrator/refinery.js", () => ({ Refinery: MockRefinery }));
+vi.mock("../../orchestrator/task-backend-ops.js", () => ({ addNotesToBead: mockAddNotesToBead }));
 vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
   isPiAvailable: vi.fn().mockReturnValue(false),
   PiRpcSpawnStrategy: vi.fn(),
@@ -901,7 +905,7 @@ describe("autoMerge() — immediate bead status sync", () => {
     );
   });
 
-  it("calls taskClient.update() with status 'open' when run status is 'conflict'", async () => {
+  it("calls taskClient.update() with status 'blocked' when run status is 'conflict'", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
@@ -931,10 +935,10 @@ describe("autoMerge() — immediate bead status sync", () => {
       projectPath: "/mock/project",
     });
 
-    expect(mockUpdate).toHaveBeenCalledWith("s2", { status: "open" });
+    expect(mockUpdate).toHaveBeenCalledWith("s2", { status: "blocked" });
   });
 
-  it("calls taskClient.update() with status 'open' when run status is 'test-failed'", async () => {
+  it("calls taskClient.update() with status 'blocked' when run status is 'test-failed'", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
@@ -963,10 +967,10 @@ describe("autoMerge() — immediate bead status sync", () => {
       projectPath: "/mock/project",
     });
 
-    expect(mockUpdate).toHaveBeenCalledWith("s3", { status: "open" });
+    expect(mockUpdate).toHaveBeenCalledWith("s3", { status: "blocked" });
   });
 
-  it("calls taskClient.update() with status 'open' when refinery throws (exception path)", async () => {
+  it("calls taskClient.update() with status 'failed' when refinery throws (exception path)", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
@@ -993,7 +997,7 @@ describe("autoMerge() — immediate bead status sync", () => {
     });
 
     expect(result.failed).toBe(1);
-    expect(mockUpdate).toHaveBeenCalledWith("s4", { status: "open" });
+    expect(mockUpdate).toHaveBeenCalledWith("s4", { status: "failed" });
   });
 
   it("skips bead update when getRun returns null (no run found)", async () => {

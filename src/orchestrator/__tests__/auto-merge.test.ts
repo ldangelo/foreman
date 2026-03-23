@@ -31,6 +31,7 @@ const {
   MockRefinery,
   mockDetectDefaultBranch,
   mockTaskClientUpdate,
+  mockAddNotesToBead,
 } = vi.hoisted(() => {
   const mockExecFileSync = vi.fn().mockReturnValue(Buffer.from(""));
 
@@ -48,6 +49,7 @@ const {
 
   const mockMergeQueueReconcile = vi.fn().mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
   const mockMergeQueueDequeue = vi.fn().mockReturnValue(null);
+  const mockAddNotesToBead = vi.fn();
   const mockMergeQueueUpdateStatus = vi.fn();
   const MockMergeQueue = vi.fn(function (this: Record<string, unknown>) {
     this.reconcile = mockMergeQueueReconcile;
@@ -82,6 +84,7 @@ const {
     MockRefinery,
     mockDetectDefaultBranch,
     mockTaskClientUpdate,
+    mockAddNotesToBead,
   };
 });
 
@@ -95,6 +98,9 @@ vi.mock("../merge-queue.js", () => ({ MergeQueue: MockMergeQueue }));
 vi.mock("../refinery.js", () => ({ Refinery: MockRefinery }));
 vi.mock("../../lib/git.js", () => ({
   detectDefaultBranch: mockDetectDefaultBranch,
+}));
+vi.mock("../task-backend-ops.js", () => ({
+  addNotesToBead: mockAddNotesToBead,
 }));
 
 import { autoMerge, syncBeadStatusAfterMerge, type AutoMergeOpts } from "../auto-merge.js";
@@ -150,6 +156,7 @@ function resetMocks(): void {
     prsCreated: [],
   });
   mockTaskClientUpdate.mockResolvedValue(undefined);
+  mockAddNotesToBead.mockReturnValue(undefined);
 }
 
 // ── autoMerge() — no project registered ─────────────────────────────────────
@@ -437,5 +444,208 @@ describe("syncBeadStatusAfterMerge()", () => {
     await expect(
       syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj"),
     ).resolves.not.toThrow();
+  });
+
+  it("calls addNotesToBead with the failure reason when failureReason is provided", async () => {
+    const store = makeStore({
+      getRun: vi.fn().mockReturnValue({ id: "run-1", status: "conflict" }),
+    });
+    const taskClient = makeTaskClient({ update: vi.fn().mockResolvedValue(undefined) });
+
+    await syncBeadStatusAfterMerge(
+      store as never,
+      taskClient as never,
+      "run-1",
+      "bd-test-001",
+      "/proj",
+      "Merge conflict detected in branch foreman/bd-test-001.\nConflicting files:\n  - src/foo.ts",
+    );
+
+    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      "bd-test-001",
+      "Merge conflict detected in branch foreman/bd-test-001.\nConflicting files:\n  - src/foo.ts",
+      "/proj",
+    );
+  });
+
+  it("does NOT call addNotesToBead when failureReason is not provided", async () => {
+    const store = makeStore({
+      getRun: vi.fn().mockReturnValue({ id: "run-1", status: "merged" }),
+    });
+    const taskClient = makeTaskClient({ update: vi.fn().mockResolvedValue(undefined) });
+
+    await syncBeadStatusAfterMerge(
+      store as never,
+      taskClient as never,
+      "run-1",
+      "bd-test-001",
+      "/proj",
+      // no failureReason
+    );
+
+    expect(mockAddNotesToBead).not.toHaveBeenCalled();
+  });
+
+  it("maps conflict run status to blocked", async () => {
+    const store = makeStore({
+      getRun: vi.fn().mockReturnValue({ id: "run-1", status: "conflict" }),
+    });
+    const taskClient = makeTaskClient({ update: vi.fn().mockResolvedValue(undefined) });
+
+    await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
+
+    expect(taskClient.update).toHaveBeenCalledWith("bd-x", { status: "blocked" });
+  });
+
+  it("maps test-failed run status to blocked", async () => {
+    const store = makeStore({
+      getRun: vi.fn().mockReturnValue({ id: "run-1", status: "test-failed" }),
+    });
+    const taskClient = makeTaskClient({ update: vi.fn().mockResolvedValue(undefined) });
+
+    await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
+
+    expect(taskClient.update).toHaveBeenCalledWith("bd-x", { status: "blocked" });
+  });
+
+  it("maps failed run status to failed", async () => {
+    const store = makeStore({
+      getRun: vi.fn().mockReturnValue({ id: "run-1", status: "failed" }),
+    });
+    const taskClient = makeTaskClient({ update: vi.fn().mockResolvedValue(undefined) });
+
+    await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
+
+    expect(taskClient.update).toHaveBeenCalledWith("bd-x", { status: "failed" });
+  });
+
+  it("still calls addNotesToBead even when status update fails", async () => {
+    const store = makeStore({
+      getRun: vi.fn().mockReturnValue({ id: "run-1", status: "conflict" }),
+    });
+    // Status update fails — but notes should still be attempted
+    const taskClient = makeTaskClient({
+      update: vi.fn().mockRejectedValue(new Error("br error")),
+    });
+
+    await syncBeadStatusAfterMerge(
+      store as never,
+      taskClient as never,
+      "run-1",
+      "bd-x",
+      "/proj",
+      "Merge conflict in foo.ts",
+    );
+
+    // Should not throw, and notes should still be attempted
+    expect(mockAddNotesToBead).toHaveBeenCalledWith("bd-x", "Merge conflict in foo.ts", "/proj");
+  });
+});
+
+// ── autoMerge() — bead failure notes ────────────────────────────────────────
+
+describe("autoMerge() — bead failure notes via addNotesToBead", () => {
+  beforeEach(() => {
+    resetMocks();
+    mockGetProjectByPath.mockReturnValue({ id: "proj-1" });
+    mockGetRun.mockReturnValue({ id: "run-001", status: "conflict" });
+  });
+
+  function makeEntry(id: number = 1) {
+    return { id, seed_id: `bd-test-00${id}`, run_id: `run-00${id}`, branch_name: `foreman/bd-test-00${id}` };
+  }
+
+  it("calls addNotesToBead with conflict files when merge conflict occurs", async () => {
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [],
+      conflicts: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", conflictFiles: ["src/foo.ts", "src/bar.ts"] }],
+      testFailures: [],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts({
+      store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", status: "conflict" }) }) as never,
+    }));
+
+    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      "bd-test-001",
+      expect.stringContaining("src/foo.ts"),
+      "/mock/project",
+    );
+  });
+
+  it("calls addNotesToBead with PR URL when PR was created on conflict", async () => {
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [],
+      conflicts: [],
+      testFailures: [],
+      prsCreated: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", prUrl: "https://github.com/x/y/pull/42" }],
+    });
+
+    await autoMerge(makeOpts({
+      store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", status: "pr-created" }) }) as never,
+    }));
+
+    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      "bd-test-001",
+      expect.stringContaining("https://github.com/x/y/pull/42"),
+      "/mock/project",
+    );
+  });
+
+  it("calls addNotesToBead with test failure summary when post-merge tests fail", async () => {
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [],
+      conflicts: [],
+      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL src/foo.test.ts\n  ✕ should work (50ms)" }],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts({
+      store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", status: "test-failed" }) }) as never,
+    }));
+
+    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      "bd-test-001",
+      expect.stringContaining("FAIL src/foo.test.ts"),
+      "/mock/project",
+    );
+  });
+
+  it("calls addNotesToBead with exception message when refinery throws", async () => {
+    mockMergeQueueDequeue
+      .mockReturnValueOnce({ id: 1, seed_id: "bd-err-001", run_id: "run-001", branch_name: "foreman/bd-err-001" })
+      .mockReturnValue(null);
+    mockRefineryMergeCompleted.mockRejectedValueOnce(new Error("git rebase failed: conflict in HEAD"));
+    mockGetRun.mockReturnValue({ id: "run-001", status: "failed" });
+
+    await autoMerge(makeOpts({
+      store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", status: "failed" }) }) as never,
+    }));
+
+    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      "bd-err-001",
+      expect.stringContaining("git rebase failed: conflict in HEAD"),
+      "/mock/project",
+    );
+  });
+
+  it("does NOT call addNotesToBead when merge succeeds", async () => {
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001" }],
+      conflicts: [],
+      testFailures: [],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts({
+      store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", status: "merged" }) }) as never,
+    }));
+
+    expect(mockAddNotesToBead).not.toHaveBeenCalled();
   });
 });
