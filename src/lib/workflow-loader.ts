@@ -61,6 +61,26 @@ export interface WorkflowSetupStep {
   description?: string;
 }
 
+/** Mail hooks configuration for a workflow phase. */
+export interface WorkflowPhaseMail {
+  /** Send phase-started mail to foreman before the phase runs. Default: true. */
+  onStart?: boolean;
+  /** Send phase-complete mail to foreman after the phase succeeds. Default: true. */
+  onComplete?: boolean;
+  /** On failure, send artifact content to this agent (e.g. "developer"). */
+  onFail?: string;
+  /** On success, forward the artifact content to this agent (e.g. "developer", "foreman"). */
+  forwardArtifactTo?: string;
+}
+
+/** File reservation configuration for a workflow phase. */
+export interface WorkflowPhaseFiles {
+  /** Reserve the worktree before this phase runs. */
+  reserve?: boolean;
+  /** Lease duration in seconds. Default: 600. */
+  leaseSecs?: number;
+}
+
 /** Per-phase configuration in a workflow YAML. */
 export interface WorkflowPhaseConfig {
   /** Phase name: "explorer" | "developer" | "qa" | "reviewer" | "finalize" | custom */
@@ -79,11 +99,24 @@ export interface WorkflowPhaseConfig {
    * Used for resume-from-crash semantics (e.g., "EXPLORER_REPORT.md").
    */
   skipIfArtifact?: string;
+  /** Expected output artifact filename (e.g. "EXPLORER_REPORT.md"). */
+  artifact?: string;
+  /** Parse PASS/FAIL verdict from the artifact. */
+  verdict?: boolean;
   /**
-   * For QA phase: if QA fails, retry (go back to developer) up to N times.
-   * Replaces the hardcoded MAX_DEV_RETRIES constant.
+   * On verdict FAIL, loop back to this phase name for retry.
+   * Used with retryOnFail to create QA⇄developer or reviewer⇄developer loops.
+   */
+  retryWith?: string;
+  /**
+   * Max retry count when this phase fails (verdict FAIL).
+   * When retryWith is set, the executor loops back retryOnFail times.
    */
   retryOnFail?: number;
+  /** Mail hooks for this phase. */
+  mail?: WorkflowPhaseMail;
+  /** File reservation config for this phase. */
+  files?: WorkflowPhaseFiles;
   /**
    * When true, this phase is implemented as a built-in TypeScript function
    * rather than an SDK agent call. Currently only "finalize" uses this.
@@ -196,8 +229,29 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["model"] === "string") phase.model = p["model"];
     if (typeof p["maxTurns"] === "number") phase.maxTurns = p["maxTurns"];
     if (typeof p["skipIfArtifact"] === "string") phase.skipIfArtifact = p["skipIfArtifact"];
+    if (typeof p["artifact"] === "string") phase.artifact = p["artifact"];
+    if (typeof p["verdict"] === "boolean") phase.verdict = p["verdict"];
+    if (typeof p["retryWith"] === "string") phase.retryWith = p["retryWith"];
     if (typeof p["retryOnFail"] === "number") phase.retryOnFail = p["retryOnFail"];
     if (typeof p["builtin"] === "boolean") phase.builtin = p["builtin"];
+
+    // Parse mail hooks
+    if (isRecord(p["mail"])) {
+      const m = p["mail"];
+      phase.mail = {};
+      if (typeof m["onStart"] === "boolean") phase.mail.onStart = m["onStart"];
+      if (typeof m["onComplete"] === "boolean") phase.mail.onComplete = m["onComplete"];
+      if (typeof m["onFail"] === "string") phase.mail.onFail = m["onFail"];
+      if (typeof m["forwardArtifactTo"] === "string") phase.mail.forwardArtifactTo = m["forwardArtifactTo"];
+    }
+
+    // Parse file reservation config
+    if (isRecord(p["files"])) {
+      const f = p["files"];
+      phase.files = {};
+      if (typeof f["reserve"] === "boolean") phase.files.reserve = f["reserve"];
+      if (typeof f["leaseSecs"] === "number") phase.files.leaseSecs = f["leaseSecs"];
+    }
 
     phases.push(phase);
   }

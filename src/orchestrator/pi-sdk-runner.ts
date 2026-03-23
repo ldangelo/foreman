@@ -16,6 +16,8 @@ import {
   createAgentSession,
   SessionManager,
   SettingsManager,
+  AuthStorage,
+  getAgentDir,
   createReadTool,
   createBashTool,
   createEditTool,
@@ -28,6 +30,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { getModel } from "@mariozechner/pi-ai";
 import { appendFile } from "node:fs/promises";
+import { join } from "node:path";
 
 // ── Public interface (compatible with pi-runner.ts) ─────────────────────
 
@@ -129,8 +132,14 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
   };
 
   try {
+    // Explicitly set agentDir and auth so detached worker processes find credentials.
+    const agentDir = getAgentDir();
+    const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+
     const { session } = await createAgentSession({
       cwd: opts.cwd,
+      agentDir,
+      authStorage,
       model,
       thinkingLevel: "medium",
       tools,

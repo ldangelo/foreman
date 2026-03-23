@@ -339,6 +339,50 @@ function resolvePrompt(
 
 export { PromptNotFoundError };
 
+/**
+ * Generic prompt builder for any workflow phase.
+ * Builds template variables from the pipeline context and resolves the prompt
+ * via the standard prompt loader (project-local → bundled fallback).
+ */
+export function buildPhasePrompt(
+  phaseName: string,
+  context: {
+    seedId: string;
+    seedTitle: string;
+    seedDescription: string;
+    seedComments?: string;
+    runId?: string;
+    hasExplorerReport?: boolean;
+    feedbackContext?: string;
+    baseBranch?: string;
+  },
+  opts?: PromptLoaderOpts,
+): string {
+  const commentsSection = context.seedComments ? `\n## Additional Context\n${context.seedComments}\n` : "";
+  const explorerInstruction = context.hasExplorerReport
+    ? `2. Read **EXPLORER_REPORT.md** for codebase context and recommended approach`
+    : `2. Explore the codebase to understand the relevant architecture`;
+  const feedbackSection = context.feedbackContext
+    ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${context.feedbackContext}\n`
+    : "";
+
+  const vars: Record<string, string> = {
+    seedId: context.seedId,
+    seedTitle: context.seedTitle,
+    seedDescription: context.seedDescription,
+    commentsSection,
+    explorerInstruction,
+    feedbackSection,
+    runId: context.runId ?? "",
+    agentRole: phaseName,
+    baseBranch: context.baseBranch ?? "main",
+  };
+
+  // Map phase names to legacy template filenames for bundled fallback.
+  const legacyFilename = `${phaseName}-prompt.md`;
+  return resolvePrompt(phaseName, vars, legacyFilename, opts);
+}
+
 export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string, runId?: string, opts?: PromptLoaderOpts): string {
   const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
   return resolvePrompt(

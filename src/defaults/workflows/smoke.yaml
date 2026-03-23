@@ -12,25 +12,53 @@ phases:
     prompt: explorer.md
     model: haiku
     maxTurns: 5
+    artifact: EXPLORER_REPORT.md
     skipIfArtifact: EXPLORER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: developer
 
   - name: developer
     prompt: developer.md
     model: haiku
     maxTurns: 5
+    artifact: DEVELOPER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
 
   - name: qa
     prompt: qa.md
     model: haiku
     maxTurns: 5
+    artifact: QA_REPORT.md
+    verdict: true
+    retryWith: developer
     retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
 
   - name: reviewer
     prompt: reviewer.md
     model: sonnet
     maxTurns: 5
+    artifact: REVIEW.md
+    verdict: true
+    retryWith: developer
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+      forwardArtifactTo: foreman
 
   - name: finalize
     prompt: finalize.md
     model: haiku
     maxTurns: 10
+    mail:
+      onStart: true
+      onComplete: true
