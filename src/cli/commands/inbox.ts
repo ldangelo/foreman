@@ -44,9 +44,16 @@ function formatMessage(msg: Message): string {
 
 function formatRunStatus(run: Run): string {
   const ts = formatTimestamp(new Date().toISOString());
-  const statusStr = run.status === "completed"
-    ? chalk.green(`COMPLETED`)
-    : chalk.red(`FAILED`);
+  let statusStr: string;
+  if (run.status === "completed") {
+    statusStr = chalk.green("COMPLETED");
+  } else if (run.status === "failed") {
+    statusStr = chalk.red("FAILED");
+  } else if (run.status === "running") {
+    statusStr = chalk.blue("RUNNING");
+  } else {
+    statusStr = chalk.yellow(run.status.toUpperCase());
+  }
   return `[${ts}] ${chalk.bold("●")} ${run.seed_id} ${statusStr} (run ${run.id})`;
 }
 
@@ -106,7 +113,41 @@ export const inboxCommand = new Command("inbox")
     const store = ForemanStore.forProject(projectPath);
 
     try {
-      // ── Global watch mode (--all) ───────────────────────────────────────────
+      // ── One-shot global mode (--all without --watch) ───────────────────────
+      if (options.all && !options.watch) {
+        let messages = store.getAllMessagesGlobal(limit);
+
+        // Apply agent filter (by recipient, matching single-run behavior)
+        if (options.agent) {
+          messages = messages.filter((m) => m.recipient_agent_type === options.agent);
+        }
+
+        // Apply unread filter
+        if (options.unread) {
+          messages = messages.filter((m) => m.read === 0);
+        }
+
+        if (messages.length === 0) {
+          console.log(`No ${options.unread ? "unread " : ""}messages found across all runs${options.agent ? ` (agent: ${options.agent})` : ""}.`);
+        } else {
+          console.log(`\nInbox — all runs${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
+          for (const msg of messages) {
+            console.log(formatMessage(msg));
+            console.log("");
+          }
+          console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
+        }
+
+        if (options.ack && messages.length > 0) {
+          for (const msg of messages) {
+            store.markMessageRead(msg.id);
+          }
+          console.log(`Marked ${messages.length} message(s) as read.`);
+        }
+        return;
+      }
+
+      // ── Global watch mode (--all --watch) ──────────────────────────────────
       if (options.all && options.watch) {
         console.log("Watching all runs... (Ctrl-C to stop)\n");
         const seenIds = new Set<string>();
@@ -117,10 +158,10 @@ export const inboxCommand = new Command("inbox")
           for (const m of initialGlobal) { console.log(formatMessage(m)); console.log(""); seenIds.add(m.id); }
           console.log(`── live ─────────────────────────────────────────────────────────────\n`);
         }
-        const initRuns = store.getRunsByStatuses(["completed", "failed"]);
+        const initRuns = store.getRunsByStatuses(["completed", "failed", "running"]);
         for (const r of initRuns) seenRunIds.add(r.id);
         const pollAll = (): void => {
-          const statusRuns = store.getRunsByStatuses(["completed", "failed"]);
+          const statusRuns = store.getRunsByStatuses(["completed", "failed", "running"]);
           for (const run of statusRuns) {
             if (!seenRunIds.has(run.id)) { seenRunIds.add(run.id); console.log(formatRunStatus(run)); console.log(""); }
           }
