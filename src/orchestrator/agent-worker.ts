@@ -25,12 +25,13 @@ import {
   developerPrompt,
   qaPrompt,
   reviewerPrompt,
+  finalizePrompt,
   parseVerdict,
   extractIssues,
   hasActionableIssues,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { rotateReport, type FinalizeResult } from "./agent-worker-finalize.js";
+import { rotateReport } from "./agent-worker-finalize.js";
 import { resetSeedToOpen, addLabelsToBead, addNotesToBead } from "./task-backend-ops.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
@@ -453,6 +454,7 @@ async function runPhase(
       qa: "QA_REPORT.md",
       reviewer: "REVIEW.md",
       reproducer: "REPRODUCER_REPORT.md",
+      finalize: "FINALIZE_REPORT.md",
     };
     const artifact = smokeArtifacts[role];
     if (artifact) {
@@ -461,6 +463,22 @@ async function runPhase(
         join(config.worktreePath, artifact),
         `# ${role.charAt(0).toUpperCase() + role.slice(1)} Report\n\n${verdictLine}\n\nSmoke test noop — no real ${role} work performed.\n`,
       );
+    }
+    // For finalize smoke noop, run git add/commit so the branch has content,
+    // but skip the actual push.
+    if (role === "finalize") {
+      const { seedId, seedTitle, worktreePath } = config;
+      const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
+      try {
+        execFileSync("git", ["add", "-A"], opts);
+        execFileSync("git", ["commit", "-m", `${seedTitle} (${seedId})`], opts);
+        log(`[FINALIZE] SMOKE NOOP — committed (no push)`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("nothing to commit")) {
+          log(`[FINALIZE] SMOKE NOOP — git commit failed (non-fatal): ${msg.slice(0, 200)}`);
+        }
+      }
     }
     log(`[${role.toUpperCase()}] SMOKE NOOP — bypassing SDK call, writing ${artifact ?? "(no artifact)"}`);
     await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] SMOKE NOOP — skipping SDK call\n`);
@@ -551,368 +569,6 @@ function readReport(worktreePath: string, filename: string): string | null {
   try { return readFileSync(p, "utf-8"); } catch { return null; }
 }
 
-// FinalizeResult is imported from "./agent-worker-finalize.js" — see that module for the type definition.
-
-async function finalize(
-  config: WorkerConfig,
-  logFile: string,
-  progress: RunProgress,
-  pipelineStartedAt: string,
-  pipelineStatus = "ALL_CHECKS_PASSED",
-  agentMailClient: AnyMailClient | null = null,
-): Promise<FinalizeResult> {
-  const { seedId, seedTitle, worktreePath } = config;
-
-  // ── SMOKE TEST BYPASS ────────────────────────────────────────────────────────
-  // Skip git/npm/push operations entirely; write a synthetic FINALIZE_REPORT.md.
-  if (process.env.FOREMAN_SMOKE_TEST === "true") {
-    await appendFile(logFile, `\n${"─".repeat(40)}\n[FINALIZE] SMOKE NOOP — skipping git/npm/push\n`);
-    log(`[FINALIZE] SMOKE NOOP — skipping git/npm/push`);
-    writeFileSync(
-      join(worktreePath, "FINALIZE_REPORT.md"),
-      `# Finalize Report: ${seedTitle}\n\n## Seed: ${seedId}\n## Status: COMPLETE\n\nSmoke test noop — no git operations performed.\n`,
-    );
-    return { success: true, retryable: false };
-  }
-  // ── END SMOKE TEST BYPASS ────────────────────────────────────────────────────
-
-  const storeProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
-  const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
-
-  const report: string[] = [
-    `# Finalize Report: ${seedTitle}`,
-    "",
-    `## Seed: ${seedId}`,
-    `## Timestamp: ${new Date().toISOString()}`,
-    "",
-  ];
-
-  // Dependency install — required before type check so tsc can resolve module types.
-  // Use npm ci (clean install) for deterministic, lock-file-based installs.
-  // Allow up to 120 s to handle slow network / large dependency trees.
-  const installOpts = { ...opts, timeout: 120_000 };
-  let installSucceeded = false;
-  try {
-    execFileSync("npm", ["ci"], installOpts);
-    log(`[FINALIZE] npm ci succeeded`);
-    report.push(`## Dependency Install`, `- Status: SUCCESS`, "");
-    installSucceeded = true;
-  } catch (err: unknown) {
-    const rawMsg = err instanceof Error ? err.message : String(err);
-    const stderr =
-      err instanceof Error && "stderr" in err
-        ? String((err as NodeJS.ErrnoException & { stderr?: Buffer }).stderr ?? "")
-        : "";
-    const detail = (stderr || rawMsg).slice(0, 500);
-    log(`[FINALIZE] npm ci failed: ${detail.slice(0, 200)}`);
-    await appendFile(logFile, `[FINALIZE] npm ci error:\n${detail}\n`);
-    report.push(`## Dependency Install`, `- Status: FAILED`, `- Errors:`, "```", detail, "```", "");
-  }
-
-  // Bug scan (pre-commit type check) — 60 s timeout to handle TypeScript cold-start.
-  // Skip if npm ci failed: without node_modules tsc will always fail with "Cannot find module".
-  const buildOpts = { ...opts, timeout: 60_000 };
-  if (!installSucceeded) {
-    log(`[FINALIZE] Skipping type check — dependency install failed`);
-    report.push(`## Build / Type Check`, `- Status: SKIPPED (dependency install failed)`, "");
-  } else {
-    try {
-      execFileSync("npx", ["tsc", "--noEmit"], buildOpts);
-      log(`[FINALIZE] Type check passed`);
-      report.push(`## Build / Type Check`, `- Status: SUCCESS`, "");
-    } catch (err: unknown) {
-      const rawMsg = err instanceof Error ? err.message : String(err);
-      // execFileSync throws with stderr in the message when stdio:"pipe"
-      const stderr =
-        err instanceof Error && "stderr" in err
-          ? String((err as NodeJS.ErrnoException & { stderr?: Buffer }).stderr ?? "")
-          : "";
-      const detail = (stderr || rawMsg).slice(0, 500);
-      log(`[FINALIZE] Type check failed: ${detail.slice(0, 200)}`);
-      await appendFile(logFile, `[FINALIZE] Type check error:\n${detail}\n`);
-      report.push(`## Build / Type Check`, `- Status: FAILED`, `- Errors:`, "```", detail, "```", "");
-    }
-  }
-
-  // Commit
-  let commitHash = "(none)";
-  try {
-    execFileSync("git", ["add", "-A"], opts);
-
-    // Detect silently-ignored new files (files skipped by git add -A due to .gitignore)
-    try {
-      const ignoredOutput = execFileSync(
-        "git",
-        ["ls-files", "--others", "--ignored", "--exclude-standard"],
-        opts,
-      )
-        .toString()
-        .trim();
-      if (ignoredOutput) {
-        const ignoredFiles = ignoredOutput.split("\n").filter(Boolean);
-        // Fast-path guard: if the list is very large (e.g., node_modules/ was enumerated),
-        // skip detailed reporting to avoid slow log writes and high memory use.
-        // The inner try/catch ensures this is non-fatal either way.
-        if (ignoredFiles.length > 500) {
-          log(`[FINALIZE] Detected ${ignoredFiles.length} silently-ignored file(s) — too many to log individually`);
-          report.push(
-            `## Silently Ignored Files`,
-            `- Count: ${ignoredFiles.length} (truncated — too many to display)`,
-            `- Note: A large ignored directory (e.g. node_modules/) may be present in the worktree`,
-            "",
-          );
-        } else {
-          // Truncate to avoid bloating the report
-          const displayFiles = ignoredFiles.slice(0, 50);
-          const truncated = ignoredFiles.length > 50 ? ` (showing first 50 of ${ignoredFiles.length})` : "";
-          log(`[FINALIZE] Detected ${ignoredFiles.length} silently-ignored file(s)${truncated}`);
-          await appendFile(logFile, `[FINALIZE] Silently-ignored files:\n${ignoredFiles.join("\n")}\n`);
-          report.push(
-            `## Silently Ignored Files`,
-            `- Count: ${ignoredFiles.length}${truncated}`,
-            `- Files:`,
-            ...displayFiles.map((f) => `  - ${f}`),
-            "",
-          );
-        }
-      } else {
-        report.push(`## Silently Ignored Files`, `- Count: 0`, "");
-      }
-    } catch {
-      // Detection is non-fatal — log and continue
-      log(`[FINALIZE] Could not detect silently-ignored files (non-fatal)`);
-    }
-
-    execFileSync("git", ["commit", "-m", `${seedTitle} (${seedId})`], opts);
-    commitHash = execFileSync("git", ["rev-parse", "--short", "HEAD"], opts).toString().trim();
-    log(`[FINALIZE] Committed ${commitHash}`);
-    report.push(`## Commit`, `- Status: SUCCESS`, `- Hash: ${commitHash}`, "");
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("nothing to commit")) {
-      log(`[FINALIZE] Nothing to commit — agent produced no file changes`);
-      report.push(`## Commit`, `- Status: FAILED (nothing to commit)`, "");
-      await appendFile(logFile, `[FINALIZE] Error: agent produced no file changes\n`);
-      return { success: false, retryable: true };
-    } else {
-      log(`[FINALIZE] Commit failed: ${msg.slice(0, 200)}`);
-      await appendFile(logFile, `[FINALIZE] Commit error: ${msg}\n`);
-      report.push(`## Commit`, `- Status: FAILED`, `- Error: ${msg.slice(0, 300)}`, "");
-    }
-  }
-
-  // Branch Verification — ensure we're on the correct branch before pushing.
-  // Worktrees can end up in detached HEAD or on a wrong branch (e.g. after a
-  // failed rebase or manual intervention), causing `git push foreman/<seedId>`
-  // to fail with "src refspec does not match any".
-  const expectedBranch = `foreman/${seedId}`;
-  let branchVerified = false;
-  try {
-    const currentBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], opts)
-      .toString()
-      .trim();
-    if (currentBranch !== expectedBranch) {
-      log(`[FINALIZE] Branch mismatch: on '${currentBranch}', expected '${expectedBranch}' — attempting checkout`);
-      execFileSync("git", ["checkout", expectedBranch], opts);
-      log(`[FINALIZE] Checked out ${expectedBranch}`);
-      report.push(
-        `## Branch Verification`,
-        `- Was: ${currentBranch}`,
-        `- Expected: ${expectedBranch}`,
-        `- Status: RECOVERED (checkout succeeded)`,
-        "",
-      );
-    } else {
-      log(`[FINALIZE] Branch verified: ${currentBranch}`);
-      report.push(
-        `## Branch Verification`,
-        `- Current: ${currentBranch}`,
-        `- Status: OK`,
-        "",
-      );
-    }
-    branchVerified = true;
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`[FINALIZE] Branch verification failed: ${msg.slice(0, 200)}`);
-    await appendFile(logFile, `[FINALIZE] Branch verification error: ${msg}\n`);
-    report.push(
-      `## Branch Verification`,
-      `- Expected: ${expectedBranch}`,
-      `- Status: FAILED`,
-      `- Error: ${msg.slice(0, 300)}`,
-      "",
-    );
-  }
-
-  // Push — with automatic rebase recovery on non-fast-forward rejections.
-  //
-  // Non-fast-forward errors are deterministic (diverged history) and will
-  // always fail on retry unless the local branch is rebased onto the remote.
-  // Attempting git pull --rebase here resolves the common case where origin
-  // received a commit (e.g. from a previous partial run) while the worktree
-  // continued on a different history.  If the rebase itself fails (real
-  // conflicts), we return retryable=false so runPipeline() does NOT reset the
-  // seed to open — preventing the infinite re-dispatch loop described in bd-zwtr.
-  let pushSucceeded = false;
-  let pushRetryable = true; // default: transient failures may be retried
-  if (!branchVerified) {
-    log(`[FINALIZE] Skipping push (branch verification failed)`);
-    report.push(`## Push`, `- Status: SKIPPED (branch verification failed)`, "");
-  } else {
-    try {
-      execFileSync("git", ["push", "-u", "origin", expectedBranch], opts);
-      log(`[FINALIZE] Pushed to origin`);
-      report.push(`## Push`, `- Status: SUCCESS`, `- Branch: ${expectedBranch}`, "");
-      pushSucceeded = true;
-    } catch (pushErr: unknown) {
-      const pushMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
-      // "non-fast-forward" covers the standard rejection message.
-      // "fetch first" covers the case where git phrases it differently (e.g. older git versions).
-      // We do NOT trigger rebase for other rejection types (permission errors, missing refs, etc.).
-      const isNonFastForward =
-        pushMsg.includes("non-fast-forward") ||
-        pushMsg.includes("fetch first");
-
-      if (isNonFastForward) {
-        log(`[FINALIZE] Push rejected (non-fast-forward) — attempting git pull --rebase`);
-        await appendFile(logFile, `[FINALIZE] Push rejected (non-fast-forward): ${pushMsg}\n`);
-        report.push(`## Push`, `- Status: REJECTED (non-fast-forward) — attempting rebase`, "");
-
-        // Attempt rebase. A failed rebase is deterministic — do NOT reset seed to open.
-        let rebaseSucceeded = false;
-        try {
-          execFileSync("git", ["pull", "--rebase", "origin", expectedBranch], opts);
-          log(`[FINALIZE] Rebase succeeded — retrying push`);
-          report.push(`## Rebase`, `- Status: SUCCESS`, "");
-          rebaseSucceeded = true;
-        } catch (rebaseErr: unknown) {
-          const rebaseMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
-          log(`[FINALIZE] Rebase failed: ${rebaseMsg.slice(0, 200)}`);
-          await appendFile(logFile, `[FINALIZE] Rebase error: ${rebaseMsg}\n`);
-          report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${rebaseMsg.slice(0, 300)}`, "");
-          report.push(`## Push`, `- Status: FAILED (rebase could not resolve diverged history)`, "");
-          // Abort any partial rebase to leave the worktree clean
-          try { execFileSync("git", ["rebase", "--abort"], opts); } catch { /* already clean */ }
-          // Deterministic failure — do NOT reset seed to open (prevents infinite loop)
-          pushRetryable = false;
-        }
-
-        // Retry push only if rebase succeeded. A post-rebase push failure is treated
-        // as transient (retryable=true) — it is distinct from a rebase conflict.
-        if (rebaseSucceeded) {
-          try {
-            execFileSync("git", ["push", "-u", "origin", expectedBranch], opts);
-            log(`[FINALIZE] Pushed to origin (after rebase)`);
-            report.push(`## Push`, `- Status: SUCCESS (after rebase)`, `- Branch: ${expectedBranch}`, "");
-            pushSucceeded = true;
-          } catch (retryPushErr: unknown) {
-            const retryMsg = retryPushErr instanceof Error ? retryPushErr.message : String(retryPushErr);
-            log(`[FINALIZE] Push failed after rebase: ${retryMsg.slice(0, 200)}`);
-            await appendFile(logFile, `[FINALIZE] Post-rebase push error: ${retryMsg}\n`);
-            report.push(`## Push`, `- Status: FAILED (after rebase)`, `- Error: ${retryMsg.slice(0, 300)}`, "");
-            // Transient failure — allow retry
-            pushRetryable = true;
-          }
-        }
-      } else {
-        log(`[FINALIZE] Push failed: ${pushMsg.slice(0, 200)}`);
-        await appendFile(logFile, `[FINALIZE] Push error: ${pushMsg}\n`);
-        report.push(`## Push`, `- Status: FAILED`, `- Error: ${pushMsg.slice(0, 300)}`, "");
-        // Non-classification failures (network, permissions, etc.) may be transient
-        pushRetryable = true;
-      }
-    }
-  }
-
-  // Enqueue to merge queue (fire-and-forget — must not block finalization)
-  if (pushSucceeded) {
-    try {
-      const enqueueStore = ForemanStore.forProject(storeProjectPath);
-      const enqueueResult = enqueueToMergeQueue({
-        db: enqueueStore.getDb(),
-        seedId,
-        runId: config.runId,
-        worktreePath,
-        getFilesModified: () => {
-          const output = execFileSync("git", ["diff", "--name-only", "main...HEAD"], opts).toString().trim();
-          return output ? output.split("\n") : [];
-        },
-      });
-      enqueueStore.close();
-
-      if (enqueueResult.success) {
-        log(`[FINALIZE] Enqueued to merge queue`);
-        report.push(`## Merge Queue`, `- Status: ENQUEUED`, "");
-        sendMail(agentMailClient, "refinery", "branch-ready", {
-          seedId,
-          runId: config.runId,
-          branch: `foreman/${seedId}`,
-          worktreePath,
-        });
-      } else {
-        const enqueueErr = enqueueResult.error ?? "Merge queue enqueue failed";
-        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueErr}`);
-        report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueErr.slice(0, 300)}`, "");
-        sendMail(agentMailClient, "foreman", "agent-error", {
-          seedId, phase: "finalize", error: enqueueErr, retryable: false,
-        });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${msg}`);
-      report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
-      sendMail(agentMailClient, "foreman", "agent-error", {
-        seedId, phase: "finalize", error: msg, retryable: false,
-      });
-    }
-  }
-
-  // NOTE: We do NOT close the bead here. The bead is closed only after the code
-  // has successfully landed in main branch (i.e., after autoMerge() calls
-  // refinery.mergeCompleted() and the merge succeeds). Closing here would
-  // falsely mark the bead as done even if the merge later fails with conflicts
-  // or test failures. See: refinery.ts mergeCompleted() and resolveConflict().
-
-  // Create session transcript in SessionLogs/
-  try {
-    const logData: import("./session-log.js").SessionLogData = {
-      seedId,
-      seedTitle,
-      seedDescription: config.seedDescription ?? "",
-      branchName: `foreman/${seedId}`,
-      projectName: config.projectPath ? config.projectPath.split("/").pop() : undefined,
-      phases: [],
-      totalCostUsd: progress.costUsd ?? 0,
-      totalTurns: progress.turns ?? 0,
-      filesChanged: commitHash !== "(none)" ? (() => {
-        try {
-          return execFileSync("git", ["diff", "--name-only", "HEAD~1", "HEAD"], opts).toString().trim().split("\n").filter(Boolean);
-        } catch { return []; }
-      })() : [],
-      devRetries: 0,
-      qaVerdict: pipelineStatus === "ALL_CHECKS_PASSED" ? "pass" : "fail",
-    };
-    const sessionLogPath = await writeSessionLog(worktreePath, logData);
-    log(`[FINALIZE] Session log written: ${sessionLogPath}`);
-    report.push(`## Session Log`, `- Status: CREATED`, `- Path: ${sessionLogPath}`, "");
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`[FINALIZE] Session log creation failed (non-fatal): ${msg}`);
-    report.push(`## Session Log`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
-  }
-
-  // Write finalize report
-  try {
-    rotateReport(worktreePath, "FINALIZE_REPORT.md");
-    writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), report.join("\n"));
-  } catch {
-    // Non-fatal — finalize report is for debugging
-  }
-
-  return { success: pushSucceeded, retryable: pushRetryable };
-}
-
 
 const MAX_DEV_RETRIES = PIPELINE_LIMITS.maxDevRetries;
 
@@ -955,7 +611,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         { name: "developer", prompt: "developer.md" },
         { name: "qa", prompt: "qa.md", retryOnFail: 2 },
         { name: "reviewer", prompt: "reviewer.md" },
-        { name: "finalize", builtin: true },
+        { name: "finalize", prompt: "finalize.md" },
       ],
     };
   }
@@ -988,8 +644,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   currentPhase = "pipeline";
 
   const phaseNames = workflowConfig.phases.map((p) => p.name).join(" → ");
-  log(`Pipeline starting for ${seedId} [workflow: ${resolvedWorkflow}] [phases: ${phaseNames}]`);
-  await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n`);
+  log(`Pipeline starting for ${seedId} [workflow: ${resolvedWorkflow}]`);
+  log(`[PIPELINE] Phase sequence: ${phaseNames}`);
+  await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n[PIPELINE] Phase sequence: ${phaseNames}\n`);
 
   // Accumulate phase records for the session log written at pipeline completion.
   // /ensemble:sessionlog is a human-only Claude Code skill (not reachable from
@@ -1046,7 +703,11 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   let qaVerdict: "pass" | "fail" | "unknown" = "unknown";
   let pipelineStatus = "ALL_CHECKS_PASSED";
 
-  while (devRetries <= workflowMaxDevRetries) {
+  const MAX_ATTEMPTS = workflowMaxDevRetries + 1; // e.g. retryOnFail=2 → 3 total attempts
+  let attempt = 0;
+  while (attempt < MAX_ATTEMPTS) {
+    attempt++;
+    log(`[PIPELINE] Developer/QA attempt ${attempt}/${MAX_ATTEMPTS}`);
     // Developer — skip on first pass if artifact already exists (resume after crash)
     const developerArtifact = join(worktreePath, "DEVELOPER_REPORT.md");
     const developerAlreadyDone = devRetries === 0 && existsSync(developerArtifact);
@@ -1133,19 +794,19 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       break;
     }
 
-    // QA failed — retry developer with feedback.
+    // QA failed — decide whether to retry developer with feedback.
     // AC-010-2: Send QA feedback as a message to developer's inbox before retry.
     feedbackContext = qaReport ? extractIssues(qaReport) : "(QA failed but no report written)";
     devRetries++;
-    if (devRetries <= workflowMaxDevRetries) {
-      log(`[QA] FAIL — sending back to Developer (retry ${devRetries}/${workflowMaxDevRetries})`);
-      await appendFile(logFile, `\n[PIPELINE] QA failed, retrying developer (${devRetries}/${workflowMaxDevRetries})\n`);
+    if (attempt < MAX_ATTEMPTS) {
+      log(`[QA] FAIL — sending back to Developer (attempt ${attempt}/${MAX_ATTEMPTS}, retry ${devRetries}/${workflowMaxDevRetries})`);
+      await appendFile(logFile, `\n[PIPELINE] QA failed, retrying developer (attempt ${attempt}/${MAX_ATTEMPTS})\n`);
       if (qaReport) {
         sendMailText(agentMailClient, `developer-${seedId}`, `QA Feedback - Retry ${devRetries}`, qaReport);
       }
     } else {
-      log(`[QA] FAIL — max retries exhausted, proceeding with current state`);
-      await appendFile(logFile, `\n[PIPELINE] QA failed after ${workflowMaxDevRetries} retries, proceeding anyway\n`);
+      log(`[QA] FAIL — max attempts (${MAX_ATTEMPTS}) exhausted, proceeding with current state`);
+      await appendFile(logFile, `\n[PIPELINE] QA failed after ${MAX_ATTEMPTS} attempts (${workflowMaxDevRetries} retries), proceeding anyway\n`);
     }
   }
 
@@ -1198,8 +859,10 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
     if ((reviewVerdict === "fail" || (reviewVerdict === "pass" && hasIssues)) && devRetries < workflowMaxDevRetries) {
       const reviewFeedback = reviewReport ? extractIssues(reviewReport) : "(Review failed but no issues listed)";
+      const issueCount = reviewReport ? (reviewReport.match(/\*\*\[(CRITICAL|WARNING)\]\*\*/g) ?? []).length : 0;
       const reason = reviewVerdict === "fail" ? "FAIL" : "PASS with issues";
-      log(`[REVIEW] ${reason} — sending back to Developer with review feedback`);
+      // Flaw C fix: log clearly when review feedback triggers a dev/QA re-run
+      log(`[REVIEW] Verdict ${reviewVerdict} with ${issueCount} issues — sending developer back for review feedback (attempt ${devRetries + 1}/${workflowMaxDevRetries})`);
       await appendFile(logFile, `\n[PIPELINE] Review ${reason}, retrying developer with review feedback\n`);
       devRetries++;
 
@@ -1224,31 +887,43 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         turns: devResult.turns,
         error: devResult.error,
       });
-      if (devResult.success) {
-        sendMail(agentMailClient, "foreman", "phase-complete", {
-          seedId, phase: "developer", status: "completed", cost: devResult.costUsd, turns: devResult.turns,
+      // Flaw A fix: if developer fails during review-feedback cycle, mark stuck and return
+      if (!devResult.success) {
+        sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: "developer-review-feedback", error: devResult.error ?? "Developer failed during review feedback", retryable: true,
         });
-        store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
-        addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
-
-        rotateReport(worktreePath, "QA_REPORT.md");
-        const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle, runId, promptOpts), config, progress, logFile, store, notifyClient);
-        phaseRecords.push({
-          name: `qa (review-feedback)`,
-          skipped: false,
-          success: qaResult.success,
-          costUsd: qaResult.costUsd,
-          turns: qaResult.turns,
-          error: qaResult.error,
-        });
-        if (qaResult.success) {
-          sendMail(agentMailClient, "foreman", "phase-complete", {
-            seedId, phase: "qa", status: "completed", cost: qaResult.costUsd, turns: qaResult.turns,
-          });
-          store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
-          addLabelsToBead(seedId, ["phase:qa"], config.projectPath);
-        }
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "developer-review-feedback", devResult.error ?? "Developer failed during review feedback", notifyClient, config.projectPath);
+        return;
       }
+      sendMail(agentMailClient, "foreman", "phase-complete", {
+        seedId, phase: "developer", status: "completed", cost: devResult.costUsd, turns: devResult.turns,
+      });
+      store.logEvent(projectId, "complete", { seedId, phase: "developer", costUsd: devResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
+      addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
+
+      rotateReport(worktreePath, "QA_REPORT.md");
+      const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle, runId, promptOpts), config, progress, logFile, store, notifyClient);
+      phaseRecords.push({
+        name: `qa (review-feedback)`,
+        skipped: false,
+        success: qaResult.success,
+        costUsd: qaResult.costUsd,
+        turns: qaResult.turns,
+        error: qaResult.error,
+      });
+      // Flaw A fix: if QA fails during review-feedback cycle, mark stuck and return
+      if (!qaResult.success) {
+        sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: "qa-review-feedback", error: qaResult.error ?? "QA failed during review feedback", retryable: true,
+        });
+        await markStuck(store, runId, projectId, seedId, seedTitle, progress, "qa-review-feedback", qaResult.error ?? "QA failed during review feedback", notifyClient, config.projectPath);
+        return;
+      }
+      sendMail(agentMailClient, "foreman", "phase-complete", {
+        seedId, phase: "qa", status: "completed", cost: qaResult.costUsd, turns: qaResult.turns,
+      });
+      store.logEvent(projectId, "complete", { seedId, phase: "qa", costUsd: qaResult.costUsd, retry: devRetries, trigger: "review-feedback" }, runId);
+      addLabelsToBead(seedId, ["phase:qa"], config.projectPath);
     } else if (reviewVerdict === "fail") {
       log(`[REVIEW] FAIL — max retries exhausted, finalizing with current state`);
       pipelineStatus = "PIPELINE_COMPLETE (REVIEWER FAIL — no retries remaining)";
@@ -1296,15 +971,86 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   }
 
   // ── Phase 5: Finalize ──────────────────────────────────────────────
+  // Finalize is now a prompt-driven agent phase (finalize.md), not a builtin TypeScript function.
+  // The agent commits, pushes, and sends phase-complete or agent-error mail.
   progress.currentPhase = "finalize";
   store.updateRunProgress(runId, progress);
   await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: FINALIZE]\n`);
 
-  const finalizeResult = await finalize(config, logFile, progress, pipelineStartedAt, pipelineStatus, agentMailClient);
-  const finalizeSucceeded = finalizeResult.success;
+  await registerAgent(agentMailClient, `finalize-${seedId}`);
+  const finalizePhaseResult = await runPhase(
+    "finalize",
+    finalizePrompt(seedId, seedTitle, runId, undefined, promptOpts),
+    config, progress, logFile, store, notifyClient,
+  );
+  phaseRecords.push({
+    name: "finalize",
+    skipped: false,
+    success: finalizePhaseResult.success,
+    costUsd: finalizePhaseResult.costUsd,
+    turns: finalizePhaseResult.turns,
+    error: finalizePhaseResult.error,
+  });
+
+  // Read the finalize outcome from agent mail.
+  // The agent sends phase-complete (success) or agent-error (failure) to "foreman".
+  // If agentMailClient is null, fall back to using runPhase success directly.
+  let finalizeSucceeded = false;
+  let finalizeRetryable = true; // default: transient failures are retryable
+  if (agentMailClient) {
+    const foremanMsgs = await agentMailClient.fetchInbox("foreman");
+    const finalizeMsg = foremanMsgs.find(
+      (m) => (m.subject === "phase-complete" || m.subject === "agent-error") &&
+              m.from === "finalize",
+    );
+    if (finalizeMsg?.subject === "phase-complete") {
+      finalizeSucceeded = true;
+      log(`[FINALIZE] phase-complete mail received — push succeeded`);
+    } else if (finalizeMsg?.subject === "agent-error") {
+      const body = (() => { try { return JSON.parse(finalizeMsg.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
+      finalizeRetryable = body["retryable"] !== false; // default retryable unless explicitly false
+      const errorDetail = typeof body["error"] === "string" ? body["error"] : "unknown finalize error";
+      log(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
+    } else {
+      // No mail found — fall back to runPhase success flag
+      log(`[FINALIZE] No phase-complete or agent-error mail found — using runPhase result (success=${String(finalizePhaseResult.success)})`);
+      finalizeSucceeded = finalizePhaseResult.success;
+    }
+  } else {
+    // No mail client — fall back to runPhase success
+    log(`[FINALIZE] agentMailClient is null — using runPhase result (success=${String(finalizePhaseResult.success)})`);
+    finalizeSucceeded = finalizePhaseResult.success;
+  }
 
   const now = new Date().toISOString();
   if (finalizeSucceeded) {
+    // Enqueue the completed branch to the merge queue
+    try {
+      const enqueueStore = ForemanStore.forProject(pipelineProjectPath);
+      const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
+      const enqueueResult = enqueueToMergeQueue({
+        db: enqueueStore.getDb(),
+        seedId,
+        runId,
+        worktreePath,
+        getFilesModified: () => {
+          const output = execFileSync("git", ["diff", "--name-only", "main...HEAD"], opts).toString().trim();
+          return output ? output.split("\n") : [];
+        },
+      });
+      enqueueStore.close();
+      if (enqueueResult.success) {
+        log(`[FINALIZE] Enqueued to merge queue`);
+        sendMail(agentMailClient, "refinery", "branch-ready", {
+          seedId, runId, branch: `foreman/${seedId}`, worktreePath,
+        });
+      } else {
+        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error ?? "(unknown)"}`);
+      }
+    } catch (enqErr: unknown) {
+      const enqMsg = enqErr instanceof Error ? enqErr.message : String(enqErr);
+      log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqMsg}`);
+    }
     store.updateRun(runId, { status: "completed", completed_at: now });
     notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
   } else {
@@ -1312,14 +1058,14 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     store.updateRun(runId, { status: "stuck", completed_at: now });
     notifyClient.send({ type: "status", runId, status: "stuck", timestamp: now });
     sendMail(agentMailClient, "foreman", "agent-error", {
-      seedId, phase: "finalize", error: "Push failed", retryable: finalizeResult.retryable,
+      seedId, phase: "finalize", error: finalizePhaseResult.error ?? "Push failed", retryable: finalizeRetryable,
     });
     // Only reset the seed to "open" for retryable failures (e.g. transient network
     // errors).  Deterministic failures — like a diverged history that could not be
     // rebased — must NOT trigger a reset, because that would cause the dispatcher
     // to immediately re-dispatch the seed, observe the same push failure, and loop
     // indefinitely (observed: bd-qtqs accumulated 151 stuck runs in ~20 minutes).
-    if (finalizeResult.retryable) {
+    if (finalizeRetryable) {
       await resetSeedToOpen(seedId, config.projectPath);
     } else {
       log(`[PIPELINE] Deterministic push failure for ${seedId} — seed left stuck (no reset to open)`);
@@ -1345,8 +1091,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
     await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
   } else {
-    log(`PIPELINE STUCK for ${seedId} — push failed (${progress.turns} turns, $${progress.costUsd.toFixed(4)})`);
-    await appendFile(logFile, `\n[PIPELINE] STUCK — push failed ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
+    log(`PIPELINE STUCK for ${seedId} — finalize failed (${progress.turns} turns, $${progress.costUsd.toFixed(4)})`);
+    await appendFile(logFile, `\n[PIPELINE] STUCK — finalize failed ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
   }
 }
 

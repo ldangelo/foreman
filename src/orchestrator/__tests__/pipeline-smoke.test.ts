@@ -264,7 +264,8 @@ describe("pipeline smoke test: explorer → developer → qa → reviewer → fi
       const developerPos = logContent.indexOf("[PHASE: DEVELOPER]");
       const qaPos = logContent.indexOf("[PHASE: QA]");
       const reviewerPos = logContent.indexOf("[PHASE: REVIEWER]");
-      const finalizePos = logContent.indexOf("[FINALIZE]");
+      // Finalize is now a prompt-driven phase — logged as [PHASE: FINALIZE] by runPhase()
+      const finalizePos = logContent.indexOf("[PHASE: FINALIZE]");
 
       expect(explorerPos, "EXPLORER phase should appear in the log").toBeGreaterThanOrEqual(0);
       expect(developerPos, "DEVELOPER phase should appear in the log").toBeGreaterThanOrEqual(0);
@@ -485,11 +486,14 @@ describe("FOREMAN_SMOKE_TEST bypass: structural invariants", () => {
     expect(source).toContain("REPRODUCER_REPORT.md");
   });
 
-  it("finalize() smoke bypass is present and returns success: true", () => {
+  it("finalize smoke bypass is present: commits without pushing and writes FINALIZE_REPORT.md", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
-    // The finalize bypass must return { success: true, retryable: false }
-    expect(source).toContain("SMOKE NOOP — skipping git/npm/push");
-    expect(source).toContain("return { success: true, retryable: false }");
+    // Finalize is now a prompt-driven phase; the smoke bypass in runPhase() handles it
+    // by running git add/commit (so the branch has content) but skipping the push.
+    expect(source).toContain("SMOKE NOOP — committed (no push)");
+    expect(source).toContain("FINALIZE_REPORT.md");
+    // The generic smoke bypass returns { success: true, costUsd: 0, turns: 1 }
+    expect(source).toContain("return { success: true, costUsd: 0, turns: 1 }");
   });
 
   it("smoke bypass returns { success: true, costUsd: 0, turns: 1 } from runPhase()", () => {

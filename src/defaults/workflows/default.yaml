@@ -27,4 +27,6 @@ phases:
     maxTurns: 20
 
   - name: finalize
-    builtin: true
+    prompt: finalize.md
+    model: haiku
+    maxTurns: 20

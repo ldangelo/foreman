@@ -162,6 +162,7 @@ const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker" | "se
   developer: "claude-sonnet-4-6",
   qa: "claude-sonnet-4-6",
   reviewer: "claude-sonnet-4-6",
+  finalize: "claude-haiku-4-5-20251001",
 };
 
 /**
@@ -212,6 +213,14 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
       permissionMode: "acceptEdits",
       reportFile: "REVIEW.md",
       allowedTools: ["Glob", "Grep", "Read", "Write"],
+    },
+    finalize: {
+      role: "finalize",
+      model: DEFAULT_MODELS.finalize,
+      maxBudgetUsd: 1.00,
+      permissionMode: "acceptEdits",
+      reportFile: "FINALIZE_REPORT.md",
+      allowedTools: ["Bash", "Glob", "Grep", "Read", "Write"],
     },
   };
 }
@@ -269,6 +278,14 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
         permissionMode: "acceptEdits",
         reportFile: "REVIEW.md",
         allowedTools: ["Glob", "Grep", "Read", "Write"],
+      },
+      finalize: {
+        role: "finalize",
+        model: DEFAULT_MODELS.finalize,
+        maxBudgetUsd: 1.00,
+        permissionMode: "acceptEdits",
+        reportFile: "FINALIZE_REPORT.md",
+        allowedTools: ["Bash", "Glob", "Grep", "Read", "Write"],
       },
     };
   }
@@ -389,6 +406,15 @@ export function reviewerPrompt(seedId: string, seedTitle: string, seedDescriptio
     "reviewer",
     { seedId, seedTitle, seedDescription, commentsSection, runId: runId ?? "", agentRole: "reviewer" },
     "reviewer-prompt.md",
+    opts,
+  );
+}
+
+export function finalizePrompt(seedId: string, seedTitle: string, runId?: string, baseBranch?: string, opts?: PromptLoaderOpts): string {
+  return resolvePrompt(
+    "finalize",
+    { seedId, seedTitle, runId: runId ?? "", agentRole: "finalize", baseBranch: baseBranch ?? "main" },
+    "finalize-prompt.md",
     opts,
   );
 }
