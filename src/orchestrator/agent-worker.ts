@@ -29,6 +29,8 @@ import { resetSeedToOpen, markBeadFailed, addLabelsToBead, addNotesToBead } from
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
+import { autoMerge } from "./auto-merge.js";
+import { BeadsRustClient } from "../lib/beads-rust.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -609,6 +611,26 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
             sendMail(agentMailClient, "refinery", "branch-ready", {
               seedId, runId, branch: `foreman/${seedId}`, worktreePath,
             });
+
+            // Trigger autoMerge immediately so the branch is merged even if
+            // `foreman run` is no longer active (fixes: bd-0qv2).
+            // This is non-fatal — any merge error is logged but does not
+            // affect the run's completion status.
+            try {
+              const mergeStore = ForemanStore.forProject(pipelineProjectPath);
+              const mergeTaskClient = new BeadsRustClient(pipelineProjectPath);
+              log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}`);
+              const mergeResult = await autoMerge({
+                store: mergeStore,
+                taskClient: mergeTaskClient,
+                projectPath: pipelineProjectPath,
+              });
+              mergeStore.close();
+              log(`[FINALIZE] autoMerge result: merged=${mergeResult.merged} conflicts=${mergeResult.conflicts} failed=${mergeResult.failed}`);
+            } catch (mergeErr: unknown) {
+              const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+              log(`[FINALIZE] autoMerge failed (non-fatal): ${mergeMsg}`);
+            }
           } else {
             log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error ?? "(unknown)"}`);
           }
