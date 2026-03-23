@@ -939,6 +939,42 @@ describe("Doctor", () => {
       expect(results[0].message).toContain("not on origin");
       expect(results[0].message).toContain("--fix");
     });
+
+    it("reports pass for running SDK-based worker (no zombie false positive)", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      mockListWorktrees.mockResolvedValue([
+        { path: "/tmp/wt", branch: "foreman/bd-vrst", head: "abc123", bare: false },
+      ]);
+      // SDK-based worker: session_key starts with "foreman:sdk:"
+      store.getRunsForSeed.mockReturnValue([
+        makeRun({ status: "running", seed_id: "bd-vrst", worktree_path: "/tmp/wt", session_key: "foreman:sdk:claude-sonnet-4-6:run-123" }),
+      ]);
+
+      const results = await doctor.checkOrphanedWorktrees();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("pass");
+      expect(results[0].message).toContain("SDK-based worker");
+    });
+
+    it("reports pass for running SDK-based worker with session suffix", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      mockListWorktrees.mockResolvedValue([
+        { path: "/tmp/wt", branch: "foreman/bd-u5oq", head: "abc123", bare: false },
+      ]);
+      // SDK worker with session suffix (after first agent message)
+      store.getRunsForSeed.mockReturnValue([
+        makeRun({ status: "running", seed_id: "bd-u5oq", worktree_path: "/tmp/wt", session_key: "foreman:sdk:claude-haiku-3-5:run-xyz:session-abc123" }),
+      ]);
+
+      const results = await doctor.checkOrphanedWorktrees();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("pass");
+      expect(results[0].message).toContain("SDK-based worker");
+    });
   });
 
   describe("checkGitTownInstalled", () => {
