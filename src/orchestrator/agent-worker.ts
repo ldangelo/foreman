@@ -606,6 +606,90 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         store.updateRun(runId, { status: "completed", completed_at: now });
         notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
 
+  // Enqueue to merge queue BEFORE push — source-of-truth write.
+  //
+  // Writing the queue entry BEFORE git push eliminates the crash window where
+  // the push succeeded but the agent died before enqueue() ran. With this order:
+  //   - If the agent crashes after enqueue but before push: entry exists in
+  //     'pending' state; on re-dispatch the agent will push the branch and
+  //     refinery processes the pre-existing entry (enqueue is idempotent).
+  //   - If the agent crashes after push: entry already exists; no duplicate push
+  //     needed — refinery picks up the 'pending' entry and merges as normal.
+  //   - If push ultimately fails: entry exists in 'pending' state; refinery will
+  //     attempt the merge and fail gracefully, leaving the seed for re-dispatch.
+  //
+  // Fire-and-forget semantics are preserved: an enqueue failure is non-fatal.
+  if (branchVerified) {
+    try {
+      const enqueueStore = ForemanStore.forProject(storeProjectPath);
+      const enqueueResult = enqueueToMergeQueue({
+        db: enqueueStore.getDb(),
+        seedId,
+        runId: config.runId,
+        worktreePath,
+        getFilesModified: () => {
+          const output = execFileSync("git", ["diff", "--name-only", "main...HEAD"], opts).toString().trim();
+          return output ? output.split("\n") : [];
+        },
+      });
+      enqueueStore.close();
+
+      if (enqueueResult.success) {
+        log(`[FINALIZE] Enqueued to merge queue (pre-push)`);
+        report.push(`## Merge Queue`, `- Status: ENQUEUED`, "");
+        sendMail(agentMailClient, "refinery", "branch-ready", {
+          seedId,
+          runId: config.runId,
+          branch: `foreman/${seedId}`,
+          worktreePath,
+        });
+      } else {
+        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error}`);
+        report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueResult.error?.slice(0, 300)}`, "");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${msg}`);
+      report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
+    }
+  }
+
+  // Push — with automatic rebase recovery on non-fast-forward rejections.
+  //
+  // Non-fast-forward errors are deterministic (diverged history) and will
+  // always fail on retry unless the local branch is rebased onto the remote.
+  // Attempting git pull --rebase here resolves the common case where origin
+  // received a commit (e.g. from a previous partial run) while the worktree
+  // continued on a different history.  If the rebase itself fails (real
+  // conflicts), we return retryable=false so runPipeline() does NOT reset the
+  // seed to open — preventing the infinite re-dispatch loop described in bd-zwtr.
+  let pushSucceeded = false;
+  let pushRetryable = true; // default: transient failures may be retried
+  if (!branchVerified) {
+    log(`[FINALIZE] Skipping push (branch verification failed)`);
+    report.push(`## Push`, `- Status: SKIPPED (branch verification failed)`, "");
+  } else {
+    try {
+      execFileSync("git", ["push", "-u", "origin", expectedBranch], opts);
+      log(`[FINALIZE] Pushed to origin`);
+      report.push(`## Push`, `- Status: SUCCESS`, `- Branch: ${expectedBranch}`, "");
+      pushSucceeded = true;
+    } catch (pushErr: unknown) {
+      const pushMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+      // "non-fast-forward" covers the standard rejection message.
+      // "fetch first" covers the case where git phrases it differently (e.g. older git versions).
+      // We do NOT trigger rebase for other rejection types (permission errors, missing refs, etc.).
+      const isNonFastForward =
+        pushMsg.includes("non-fast-forward") ||
+        pushMsg.includes("fetch first");
+
+      if (isNonFastForward) {
+        log(`[FINALIZE] Push rejected (non-fast-forward) — attempting git pull --rebase`);
+        await appendFile(logFile, `[FINALIZE] Push rejected (non-fast-forward): ${pushMsg}\n`);
+        report.push(`## Push`, `- Status: REJECTED (non-fast-forward) — attempting rebase`, "");
+
+        // Attempt rebase. A failed rebase is deterministic — do NOT reset seed to open.
+        let rebaseSucceeded = false;
         try {
           const enqueueStore = ForemanStore.forProject(pipelineProjectPath);
           const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
@@ -663,27 +747,47 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         }
       }
 
-      // Log terminal event
-      const completedPhases = workflowConfig.phases.map((p) => p.name).join("→");
-      store.logEvent(projectId, finalizeSucceeded ? "complete" : "stuck", {
-        seedId,
-        title: seedTitle,
-        costUsd: progress.costUsd,
-        numTurns: progress.turns,
-        toolCalls: progress.toolCalls,
-        filesChanged: progress.filesChanged.length,
-        phases: completedPhases,
-      }, runId);
+  // NOTE: We do NOT close the bead here. The bead is closed only after the code
+  // has successfully landed in main branch (i.e., after autoMerge() calls
+  // refinery.mergeCompleted() and the merge succeeds). Closing here would
+  // falsely mark the bead as done even if the merge later fails with conflicts
+  // or test failures. See: refinery.ts mergeCompleted() and resolveConflict().
 
-      if (finalizeSucceeded) {
-        log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, ${progress.filesChanged.length} files, $${progress.costUsd.toFixed(4)})`);
-        await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
-      } else {
-        log(`PIPELINE STUCK for ${seedId} — finalize failed (${progress.turns} turns, $${progress.costUsd.toFixed(4)})`);
-        await appendFile(logFile, `\n[PIPELINE] STUCK — finalize failed ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
-      }
-    },
-  });
+  // Create session transcript in SessionLogs/
+  try {
+    const logData: import("./session-log.js").SessionLogData = {
+      seedId,
+      seedTitle,
+      seedDescription: config.seedDescription ?? "",
+      branchName: `foreman/${seedId}`,
+      projectName: config.projectPath ? config.projectPath.split("/").pop() : undefined,
+      phases: [],
+      totalCostUsd: progress.costUsd ?? 0,
+      totalTurns: progress.turns ?? 0,
+      filesChanged: commitHash !== "(none)" ? (() => {
+        try {
+          return execFileSync("git", ["diff", "--name-only", "HEAD~1", "HEAD"], opts).toString().trim().split("\n").filter(Boolean);
+        } catch { return []; }
+      })() : [],
+      devRetries: 0,
+      qaVerdict: pipelineStatus === "ALL_CHECKS_PASSED" ? "pass" : "fail",
+    };
+    const sessionLogPath = await writeSessionLog(worktreePath, logData);
+    log(`[FINALIZE] Session log written: ${sessionLogPath}`);
+    report.push(`## Session Log`, `- Status: CREATED`, `- Path: ${sessionLogPath}`, "");
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[FINALIZE] Session log creation failed (non-fatal): ${msg}`);
+    report.push(`## Session Log`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
+  }
+
+  // Write finalize report
+  try {
+    rotateReport(worktreePath, "FINALIZE_REPORT.md");
+    writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), report.join("\n"));
+  } catch {
+    // Non-fatal — finalize report is for debugging
+  }
 
 }
 

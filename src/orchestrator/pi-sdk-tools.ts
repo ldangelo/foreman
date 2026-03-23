@@ -13,7 +13,7 @@ import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 
 const SendMailParams = Type.Object({
   to: Type.String({ description: "Recipient name (e.g. 'foreman')" }),
-  subject: Type.String({ description: "Mail subject (e.g. 'phase-started', 'phase-complete', 'agent-error')" }),
+  subject: Type.String({ description: "Mail subject (e.g. 'agent-error')" }),
   body: Type.String({ description: "Mail body — JSON string or plain text" }),
 });
 
@@ -31,11 +31,9 @@ export function createSendMailTool(
   return {
     name: "send_mail",
     label: "Send Mail",
-    description: "Send an Agent Mail message to another agent or to foreman. Use this to report phase-started, phase-complete, and agent-error lifecycle events.",
-    promptSnippet: "Send Agent Mail messages for lifecycle reporting (phase-started, phase-complete, agent-error)",
+    description: "Send an Agent Mail message to another agent or to foreman. Use this to report errors only. Do NOT send phase-started or phase-complete — the executor handles those automatically.",
+    promptSnippet: "Send error reports to foreman",
     promptGuidelines: [
-      "Send a 'phase-started' mail at the beginning of your phase",
-      "Send a 'phase-complete' mail when your phase succeeds",
       "Send an 'agent-error' mail if you encounter a fatal error",
     ],
     parameters: SendMailParams,

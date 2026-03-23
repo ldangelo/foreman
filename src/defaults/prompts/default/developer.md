@@ -25,17 +25,7 @@ If it is missing, invoke and stop — do not proceed with implementation:
 ```
 Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.
 
-## Phase Lifecycle Notifications
-At the very start of your session, invoke:
-```
-/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-started --body '{"phase":"developer","seedId":"{{seedId}}"}'
-```
-
-When you finish writing DEVELOPER_REPORT.md, invoke:
-```
-/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"developer","seedId":"{{seedId}}","status":"complete"}'
-```
-
+## Error Reporting
 If you hit an unrecoverable error, invoke:
 ```
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"{{seedId}}","error":"<brief description>"}'

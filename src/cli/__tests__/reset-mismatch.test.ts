@@ -50,8 +50,8 @@ describe("mapRunStatusToSeedStatus", () => {
     expect(mapRunStatusToSeedStatus("completed")).toBe("review");
   });
 
-  it("maps failed to open", () => {
-    expect(mapRunStatusToSeedStatus("failed")).toBe("open");
+  it("maps failed to failed — unexpected merge exception", () => {
+    expect(mapRunStatusToSeedStatus("failed")).toBe("failed");
   });
 
   it("maps stuck to open", () => {
@@ -66,12 +66,12 @@ describe("mapRunStatusToSeedStatus", () => {
     expect(mapRunStatusToSeedStatus("pr-created")).toBe("closed");
   });
 
-  it("maps conflict to open", () => {
-    expect(mapRunStatusToSeedStatus("conflict")).toBe("open");
+  it("maps conflict to blocked — merge conflict needs human intervention", () => {
+    expect(mapRunStatusToSeedStatus("conflict")).toBe("blocked");
   });
 
-  it("maps test-failed to open", () => {
-    expect(mapRunStatusToSeedStatus("test-failed")).toBe("open");
+  it("maps test-failed to blocked — post-merge test failure needs intervention", () => {
+    expect(mapRunStatusToSeedStatus("test-failed")).toBe("blocked");
   });
 
   it("maps unknown status to open", () => {
@@ -268,8 +268,8 @@ describe("detectAndFixMismatches", () => {
   });
 
   it("handles multiple seeds with different mismatch states", async () => {
-    // run1: completed → expected in_progress; seed-a is "closed" → mismatch
-    // run2: conflict → expected open; seed-b is "in_progress" → mismatch
+    // run1: completed → expected review; seed-a is "closed" → mismatch
+    // run2: conflict → expected blocked; seed-b is "in_progress" → mismatch
     const { store, seeds } = makeMocks();
     const run1 = makeRun({ id: "run-1", seed_id: "seed-a", status: "completed" });
     const run2 = makeRun({ id: "run-2", seed_id: "seed-b", status: "conflict" });
@@ -280,7 +280,7 @@ describe("detectAndFixMismatches", () => {
     });
     seeds.show.mockImplementation(async (...args: any[]) => {
       if (args[0] === "seed-a") return { status: "closed" };      // wrong for completed (expects review)
-      if (args[0] === "seed-b") return { status: "in_progress" }; // wrong for conflict (expects open)
+      if (args[0] === "seed-b") return { status: "in_progress" }; // wrong for conflict (expects blocked)
       return { status: "open" };
     });
 
