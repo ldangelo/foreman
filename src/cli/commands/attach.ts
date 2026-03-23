@@ -421,7 +421,7 @@ function formatElapsed(startedAt: string | null): string {
 
 export const attachCommand = new Command("attach")
   .description("Attach to a running or completed agent's Claude session")
-  .argument("[id]", "Run ID or seed ID to attach to")
+  .argument("[id]", "Run ID or bead ID to attach to")
   .option("--list", "List all attachable sessions")
   .option("--follow", "Follow agent log file in real-time (tail -f)")
   .option("--stream", "Stream Agent Mail messages for the run in real-time")
@@ -437,7 +437,7 @@ export const attachCommand = new Command("attach")
     }
 
     if (!id) {
-      console.error("Usage: foreman attach <run-id|seed-id>");
+      console.error("Usage: foreman attach <run-id|bead-id>");
       console.error("       foreman attach --list");
       console.error("       foreman attach --follow <id>");
       console.error("       foreman attach --stream <id>");

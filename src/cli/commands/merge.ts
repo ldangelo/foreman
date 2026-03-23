@@ -49,8 +49,8 @@ export const mergeCommand = new Command("merge")
   .option("--target-branch <branch>", "Branch to merge into (default: auto-detected)")
   .option("--no-tests", "Skip running tests after merge")
   .option("--test-command <cmd>", "Test command to run", "npm test")
-  .option("--seed <id>", "Merge a single seed by ID")
-  .option("--list", "List seeds ready to merge (no merge performed)")
+  .option("--seed <id>", "Merge a single bead by ID")
+  .option("--list", "List beads ready to merge (no merge performed)")
   .option("--dry-run", "Preview merge results without modifying git state")
   .option("--resolve <runId>", "Resolve a conflicting run by ID")
   .option("--strategy <strategy>", "Conflict resolution strategy: theirs|abort")
@@ -249,7 +249,7 @@ export const mergeCommand = new Command("merge")
         }
 
         if (entries.length === 0) {
-          console.log(chalk.yellow("No seeds in merge queue."));
+          console.log(chalk.yellow("No beads in merge queue."));
           store.close();
           return;
         }
@@ -272,7 +272,7 @@ export const mergeCommand = new Command("merge")
         }
 
         console.log(chalk.dim("\nMerge all:    foreman merge"));
-        console.log(chalk.dim("Merge one:    foreman merge --seed <id>"));
+        console.log(chalk.dim("Merge one:    foreman merge --bead <id>"));
 
         store.close();
         return;
@@ -522,8 +522,8 @@ export const mergeCommand = new Command("merge")
 
       if (merged.length === 0 && conflicts.length === 0 && testFailures.length === 0 && prsCreated.length === 0) {
         if (opts.seed) {
-          console.log(chalk.yellow(`No completed run found for seed ${opts.seed}.`));
-          console.log(chalk.dim("Use 'foreman merge --list' to see seeds ready to merge."));
+          console.log(chalk.yellow(`No completed run found for bead ${opts.seed}.`));
+          console.log(chalk.dim("Use 'foreman merge --list' to see beads ready to merge."));
         } else {
           console.log(chalk.yellow("No completed tasks to merge."));
         }

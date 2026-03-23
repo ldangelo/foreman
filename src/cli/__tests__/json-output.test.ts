@@ -532,8 +532,8 @@ describe("foreman merge --list --json", () => {
 
   it("sanity: outputs human-readable text (not JSON) when --json is omitted", async () => {
     const { stdout } = await runCommand(mergeCommand, ["--list"]);
-    // With empty queue, formatted output shows "No seeds in merge queue."
-    expect(stdout).toContain("No seeds in merge queue.");
+    // With empty queue, formatted output shows "No beads in merge queue."
+    expect(stdout).toContain("No beads in merge queue.");
     expect(() => JSON.parse(stdout)).toThrow();
   });
 
