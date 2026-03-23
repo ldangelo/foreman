@@ -8,6 +8,7 @@ import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
 import { installBundledPrompts, installBundledSkills } from "../../lib/prompt-loader.js";
+import { installBundledWorkflows } from "../../lib/workflow-loader.js";
 
 // ── Backend-specific init logic (TRD-018) ─────────────────────────────────
 
@@ -160,6 +161,25 @@ export const initCommand = new Command("init")
       }
     } catch (e) {
       skillSpinner.warn(`Failed to install Pi skills: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // Install bundled workflow configs to .foreman/workflows/
+    const workflowSpinner = ora("Installing workflow configs...").start();
+    try {
+      const { installed: workflowsInstalled, skipped: workflowsSkipped } = installBundledWorkflows(projectDir, force);
+      if (workflowsInstalled.length > 0) {
+        workflowSpinner.succeed(
+          `Installed ${workflowsInstalled.length} workflow config(s) to .foreman/workflows/`,
+        );
+      } else if (workflowsSkipped.length > 0) {
+        workflowSpinner.info(
+          `Workflow configs already installed (${workflowsSkipped.length} skipped). Use --force to overwrite.`,
+        );
+      } else {
+        workflowSpinner.succeed("Workflow configs installed");
+      }
+    } catch (e) {
+      workflowSpinner.warn(`Failed to install workflow configs: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     console.log();

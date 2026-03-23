@@ -1,0 +1,30 @@
+# Smoke workflow: lightweight pipeline using Haiku for all phases.
+#
+# Used when a bead has the `workflow:smoke` label or type "smoke".
+# Designed for fast, low-cost validation — not for production tasks.
+name: smoke
+phases:
+  - name: explorer
+    prompt: explorer.md
+    model: haiku
+    maxTurns: 5
+    skipIfArtifact: EXPLORER_REPORT.md
+
+  - name: developer
+    prompt: developer.md
+    model: haiku
+    maxTurns: 5
+
+  - name: qa
+    prompt: qa.md
+    model: haiku
+    maxTurns: 5
+    retryOnFail: 2
+
+  - name: reviewer
+    prompt: reviewer.md
+    model: sonnet
+    maxTurns: 5
+
+  - name: finalize
+    builtin: true

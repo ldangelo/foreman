@@ -1,0 +1,30 @@
+# Default workflow: Explorer → Developer ⇄ QA → Reviewer → Finalize
+#
+# This is the standard Foreman pipeline. All bead types except "smoke" use
+# this workflow unless overridden by a `workflow:<name>` label.
+name: default
+phases:
+  - name: explorer
+    prompt: explorer.md
+    model: haiku
+    maxTurns: 30
+    skipIfArtifact: EXPLORER_REPORT.md
+
+  - name: developer
+    prompt: developer.md
+    model: sonnet
+    maxTurns: 80
+
+  - name: qa
+    prompt: qa.md
+    model: sonnet
+    maxTurns: 30
+    retryOnFail: 2
+
+  - name: reviewer
+    prompt: reviewer.md
+    model: sonnet
+    maxTurns: 20
+
+  - name: finalize
+    builtin: true

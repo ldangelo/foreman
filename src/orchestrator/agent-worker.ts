@@ -36,6 +36,7 @@ import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
+import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -201,10 +202,15 @@ interface WorkerConfig {
   skipExplore?: boolean;
   skipReview?: boolean;
   /**
-   * Resolved workflow type (e.g. "default", "smoke").
-   * Used for prompt-loader workflow scoping.
+   * Bead type field (e.g. "feature", "bug", "task", "smoke").
+   * Used to resolve the workflow name when no `workflow:<name>` label is set.
    */
   seedType?: string;
+  /**
+   * Labels from the bead. Used to resolve `workflow:<name>` overrides.
+   * e.g. ["phase:explorer", "workflow:smoke"]
+   */
+  seedLabels?: string[];
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -922,15 +928,48 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   // Prompt loader options: when projectPath is available, use unified loader
   // so that project-local overrides are respected and missing prompts cause a clear error.
   //
-  // Workflow normalization: only "smoke" seeds use the smoke prompt set.
-  // All other bead types (feature, bug, task, chore, etc.) use the "default" prompts.
-  // Custom workflows may be added in future via workflow:<name> labels.
+  // Workflow selection: resolved from `workflow:<name>` labels or bead type.
+  // The workflow YAML defines the phase sequence; defaults live in
+  // src/defaults/workflows/ and are installed by `foreman init`.
   const pipelineProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
-  const resolvedWorkflow = config.seedType === "smoke" ? "smoke" : "default";
+  const resolvedWorkflow = resolveWorkflowName(config.seedType ?? "feature", config.seedLabels);
   const promptOpts = {
     projectRoot: pipelineProjectPath,
     workflow: resolvedWorkflow,
   };
+
+  // Load the workflow config (phase sequence + per-phase overrides).
+  // Falls back to bundled defaults if the project-local file is missing.
+  let workflowConfig: WorkflowConfig;
+  try {
+    workflowConfig = loadWorkflowConfig(resolvedWorkflow, pipelineProjectPath);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[PIPELINE] Failed to load workflow config '${resolvedWorkflow}': ${msg}`);
+    log(`[PIPELINE] Falling back to hardcoded phase sequence`);
+    // Construct a minimal default WorkflowConfig matching the old hardcoded sequence.
+    workflowConfig = {
+      name: resolvedWorkflow,
+      phases: [
+        { name: "explorer", prompt: "explorer.md", skipIfArtifact: "EXPLORER_REPORT.md" },
+        { name: "developer", prompt: "developer.md" },
+        { name: "qa", prompt: "qa.md", retryOnFail: 2 },
+        { name: "reviewer", prompt: "reviewer.md" },
+        { name: "finalize", builtin: true },
+      ],
+    };
+  }
+
+  // Derive skipExplore / skipReview from the workflow phase list,
+  // while still respecting explicit config overrides from the dispatcher.
+  const workflowHasExplorer = workflowConfig.phases.some((p) => p.name === "explorer");
+  const workflowHasReviewer = workflowConfig.phases.some((p) => p.name === "reviewer");
+  const skipExplore = config.skipExplore ?? !workflowHasExplorer;
+  const skipReview = config.skipReview ?? !workflowHasReviewer;
+
+  // Extract per-phase overrides from the workflow config.
+  const qaPhaseConfig = workflowConfig.phases.find((p) => p.name === "qa");
+  const workflowMaxDevRetries = qaPhaseConfig?.retryOnFail ?? MAX_DEV_RETRIES;
 
   const progress: RunProgress = {
     toolCalls: 0,
@@ -948,7 +987,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   const pipelineStartedAt = new Date().toISOString();
   currentPhase = "pipeline";
 
-  log(`Pipeline starting for ${seedId} [phases: ${config.skipExplore ? "skip-explore" : "explore"} → dev → qa → ${config.skipReview ? "skip-review" : "review"} → finalize]`);
+  const phaseNames = workflowConfig.phases.map((p) => p.name).join(" → ");
+  log(`Pipeline starting for ${seedId} [workflow: ${resolvedWorkflow}] [phases: ${phaseNames}]`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n`);
 
   // Accumulate phase records for the session log written at pipeline completion.
@@ -957,7 +997,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   const phaseRecords: PhaseRecord[] = [];
 
   // ── Phase 1: Explorer ──────────────────────────────────────────────
-  if (!config.skipExplore) {
+  if (!skipExplore) {
     const explorerArtifact = join(worktreePath, "EXPLORER_REPORT.md");
     if (existsSync(explorerArtifact)) {
       log(`[EXPLORER] Skipping — EXPLORER_REPORT.md already exists (resuming from previous run)`);
@@ -1006,7 +1046,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   let qaVerdict: "pass" | "fail" | "unknown" = "unknown";
   let pipelineStatus = "ALL_CHECKS_PASSED";
 
-  while (devRetries <= MAX_DEV_RETRIES) {
+  while (devRetries <= workflowMaxDevRetries) {
     // Developer — skip on first pass if artifact already exists (resume after crash)
     const developerArtifact = join(worktreePath, "DEVELOPER_REPORT.md");
     const developerAlreadyDone = devRetries === 0 && existsSync(developerArtifact);
@@ -1089,7 +1129,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     qaVerdict = qaReport ? parseVerdict(qaReport) : "unknown";
 
     if (qaVerdict === "pass" || qaVerdict === "unknown") {
-      log(`[QA] Verdict: ${qaVerdict} — proceeding to ${config.skipReview ? "finalize" : "review"}`);
+      log(`[QA] Verdict: ${qaVerdict} — proceeding to ${skipReview ? "finalize" : "review"}`);
       break;
     }
 
@@ -1097,20 +1137,20 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     // AC-010-2: Send QA feedback as a message to developer's inbox before retry.
     feedbackContext = qaReport ? extractIssues(qaReport) : "(QA failed but no report written)";
     devRetries++;
-    if (devRetries <= MAX_DEV_RETRIES) {
-      log(`[QA] FAIL — sending back to Developer (retry ${devRetries}/${MAX_DEV_RETRIES})`);
-      await appendFile(logFile, `\n[PIPELINE] QA failed, retrying developer (${devRetries}/${MAX_DEV_RETRIES})\n`);
+    if (devRetries <= workflowMaxDevRetries) {
+      log(`[QA] FAIL — sending back to Developer (retry ${devRetries}/${workflowMaxDevRetries})`);
+      await appendFile(logFile, `\n[PIPELINE] QA failed, retrying developer (${devRetries}/${workflowMaxDevRetries})\n`);
       if (qaReport) {
         sendMailText(agentMailClient, `developer-${seedId}`, `QA Feedback - Retry ${devRetries}`, qaReport);
       }
     } else {
       log(`[QA] FAIL — max retries exhausted, proceeding with current state`);
-      await appendFile(logFile, `\n[PIPELINE] QA failed after ${MAX_DEV_RETRIES} retries, proceeding anyway\n`);
+      await appendFile(logFile, `\n[PIPELINE] QA failed after ${workflowMaxDevRetries} retries, proceeding anyway\n`);
     }
   }
 
   // ── Phase 4: Reviewer ──────────────────────────────────────────────
-  if (!config.skipReview) {
+  if (!skipReview) {
     const reviewerArtifact = join(worktreePath, "REVIEW.md");
     const reviewerAlreadyDone = existsSync(reviewerArtifact);
     if (reviewerAlreadyDone) {
@@ -1156,7 +1196,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
     const hasIssues = reviewReport ? hasActionableIssues(reviewReport) : false;
 
-    if ((reviewVerdict === "fail" || (reviewVerdict === "pass" && hasIssues)) && devRetries < MAX_DEV_RETRIES) {
+    if ((reviewVerdict === "fail" || (reviewVerdict === "pass" && hasIssues)) && devRetries < workflowMaxDevRetries) {
       const reviewFeedback = reviewReport ? extractIssues(reviewReport) : "(Review failed but no issues listed)";
       const reason = reviewVerdict === "fail" ? "FAIL" : "PASS with issues";
       log(`[REVIEW] ${reason} — sending back to Developer with review feedback`);
@@ -1285,12 +1325,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       log(`[PIPELINE] Deterministic push failure for ${seedId} — seed left stuck (no reset to open)`);
     }
   }
-  const phaseList: string[] = [];
-  if (!config.skipExplore) phaseList.push("explore");
-  phaseList.push("dev", "qa");
-  if (!config.skipReview) phaseList.push("review");
-  phaseList.push("finalize");
-  const completedPhases = phaseList.join("→");
+  const completedPhases = workflowConfig.phases.map((p) => p.name).join("→");
 
   // Log the terminal event with the correct type so analytics / retry logic
   // can distinguish completed runs from stuck ones by querying the event log.

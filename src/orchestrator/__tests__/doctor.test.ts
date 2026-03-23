@@ -993,4 +993,75 @@ describe("Doctor.checkPrompts", () => {
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("checkWorkflows fails when workflow configs are missing", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-workflows-"));
+    try {
+      const store = {
+        getProjectByPath: vi.fn(() => null),
+        getRunsByStatus: vi.fn(() => []),
+        getActiveRuns: vi.fn(() => []),
+      };
+      const doctor = new Doctor(store as any, tmpDir);
+      const result = await doctor.checkWorkflows();
+      expect(result.status).toBe("fail");
+      expect(result.name).toContain("workflow configs");
+      expect(result.message).toContain("missing");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("checkWorkflows passes after install", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-workflows-installed-"));
+    try {
+      const { installBundledWorkflows } = await import("../../lib/workflow-loader.js");
+      installBundledWorkflows(tmpDir);
+      const store = {
+        getProjectByPath: vi.fn(() => null),
+        getRunsByStatus: vi.fn(() => []),
+        getActiveRuns: vi.fn(() => []),
+      };
+      const doctor = new Doctor(store as any, tmpDir);
+      const result = await doctor.checkWorkflows();
+      expect(result.status).toBe("pass");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("checkWorkflows with --fix installs missing configs", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-workflows-fix-"));
+    try {
+      const store = {
+        getProjectByPath: vi.fn(() => null),
+        getRunsByStatus: vi.fn(() => []),
+        getActiveRuns: vi.fn(() => []),
+      };
+      const doctor = new Doctor(store as any, tmpDir);
+      const result = await doctor.checkWorkflows({ fix: true });
+      expect(result.status).toBe("fixed");
+      expect(result.fixApplied).toContain("Installed");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("checkRepository includes workflow configs check", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-repo-workflows-"));
+    try {
+      const store = {
+        getProjectByPath: vi.fn(() => null),
+        getRunsByStatus: vi.fn(() => []),
+        getActiveRuns: vi.fn(() => []),
+      };
+      const doctor = new Doctor(store as any, tmpDir);
+      const results = await doctor.checkRepository();
+      const workflowCheck = results.find((r) => r.name.includes("workflow configs"));
+      expect(workflowCheck).toBeDefined();
+      expect(workflowCheck?.status).toBe("fail");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
