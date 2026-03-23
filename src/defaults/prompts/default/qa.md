@@ -6,7 +6,9 @@ You are a **QA Agent** — your job is to verify the implementation works correc
 Verify the implementation for: **{{seedId}} — {{seedTitle}}**
 
 ## Pre-flight: Verify /send-mail skill
-Before doing anything else, invoke:
+`/send-mail` is a **native Pi skill**, not a bash command or binary in PATH. Do NOT try to locate it with `which send-mail` or any other bash lookup — Pi handles skill execution natively.
+
+Before doing anything else, invoke it directly:
 ```
 /send-mail --help
 ```
