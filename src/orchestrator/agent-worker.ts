@@ -592,6 +592,12 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       const now = new Date().toISOString();
       if (finalizeSucceeded) {
         // Enqueue to merge queue
+        // Mark run as completed BEFORE enqueue/autoMerge — autoMerge looks
+        // for completed runs, so this must happen first (fixes race condition
+        // where autoMerge returned failed=1 / "no-completed-run").
+        store.updateRun(runId, { status: "completed", completed_at: now });
+        notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
+
         try {
           const enqueueStore = ForemanStore.forProject(pipelineProjectPath);
           const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
@@ -614,8 +620,6 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
             // Trigger autoMerge immediately so the branch is merged even if
             // `foreman run` is no longer active (fixes: bd-0qv2).
-            // This is non-fatal — any merge error is logged but does not
-            // affect the run's completion status.
             try {
               const mergeStore = ForemanStore.forProject(pipelineProjectPath);
               const mergeTaskClient = new BeadsRustClient(pipelineProjectPath);
@@ -638,8 +642,6 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           const enqMsg = enqErr instanceof Error ? enqErr.message : String(enqErr);
           log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqMsg}`);
         }
-        store.updateRun(runId, { status: "completed", completed_at: now });
-        notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
       } else {
         store.updateRun(runId, { status: "stuck", completed_at: now });
         notifyClient.send({ type: "status", runId, status: "stuck", timestamp: now });
