@@ -331,8 +331,8 @@ async function main(): Promise<void> {
         progress.lastToolCall = name;
         progress.lastActivity = new Date().toISOString();
 
-        if ((name === "Write" || name === "Edit") && input?.file_path) {
-          const filePath = String(input.file_path);
+        if ((name === "write" || name === "edit" || name === "Write" || name === "Edit") && (input?.path || input?.file_path)) {
+          const filePath = String(input.path ?? input.file_path);
           if (!progress.filesChanged.includes(filePath)) {
             progress.filesChanged.push(filePath);
           }
@@ -475,8 +475,8 @@ async function runPhase(
         progress.lastToolCall = name;
         progress.lastActivity = new Date().toISOString();
 
-        if ((name === "Write" || name === "Edit") && input?.file_path) {
-          const filePath = String(input.file_path);
+        if ((name === "write" || name === "edit" || name === "Write" || name === "Edit") && (input?.path || input?.file_path)) {
+          const filePath = String(input.path ?? input.file_path);
           if (!progress.filesChanged.includes(filePath)) {
             progress.filesChanged.push(filePath);
           }
