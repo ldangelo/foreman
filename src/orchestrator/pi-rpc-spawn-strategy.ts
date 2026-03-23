@@ -10,7 +10,6 @@
  */
 
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { mkdir, readFile } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
@@ -296,21 +295,23 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
 
     log(`Spawning pi --mode rpc for ${config.seedId} phase=${phase} in ${config.worktreePath}`);
 
-    // stdout is "pipe" so we can read JSONL lines; we tee each line to the log file.
+    // stdout and stderr go directly to file fds — Pi writes to disk regardless of
+    // whether the parent process stays alive. This prevents EPIPE crashes when the
+    // parent exits (e.g. foreman run is killed) before Pi finishes.
     const child = spawn(piBin, piArgs, {
       detached: true,
-      stdio: ["pipe", "pipe", errFd.fd],
+      stdio: ["pipe", outFd.fd, errFd.fd],
       cwd: config.worktreePath,
       env: cleanEnv,
     });
 
     child.unref();
 
-    // Close the error fd handle in the parent after the child has inherited it.
-    // We keep outFd open until the background task finishes writing.
+    // Close both file handles in the parent — child has inherited them.
+    await outFd.close();
     await errFd.close();
 
-    // Send context then prompt over stdin JSONL
+    // Send context then prompt over stdin JSONL, then close stdin.
     if (child.stdin) {
       const setContext: PiSetContextMessage = {
         type: "set_context",
@@ -335,8 +336,11 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
 
     log(`  Pi pid=${child.pid} for ${config.seedId}`);
 
-    // ── Background task: read JSONL stdout, tee to log, send SQLite mail on completion ──
-    // This runs fire-and-forget — spawn() returns immediately.
+    // ── Background task: wait for Pi exit, update DB, send mail as fallback ──
+    // Pi's prompts send phase-complete/agent-error mail via /send-mail skill.
+    // This task acts as a safety net: if Pi exits without sending mail (e.g. crash),
+    // it updates the DB and sends agent-error mail so the orchestrator isn't stuck.
+    // Runs fire-and-forget — spawn() returns immediately.
     void (async () => {
       // Set up SQLite mail client. All failures are silent.
       let agentMailClient: SqliteMailClient | null = null;
@@ -352,63 +356,18 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
         // Silent failure — Agent Mail is optional
       }
 
-      // Read Pi stdout JSONL, tee each line to the .out log file.
-      let agentEndReceived = false;
-      let agentEndSuccess = true;
-      let agentEndMessage: string | undefined;
-
-      try {
-        if (child.stdout) {
-          const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-          for await (const line of rl) {
-            // Tee to log file
-            try {
-              await outFd.write(line + "\n");
-            } catch {
-              // Non-fatal log write failure
-            }
-
-            const event = parsePiEvent(line);
-            if (!event) continue;
-
-            if (event.type === "agent_end") {
-              agentEndReceived = true;
-              // Real Pi emits agent_end without a `success` field on normal completion.
-              // Treat absence of `success: false` as success.
-              agentEndSuccess = event.success !== false;
-              agentEndMessage = event.message;
-            }
-          }
-        }
-      } catch {
-        // stdout read failure — treat as error
-        agentEndSuccess = false;
-      }
-
-      // Wait for child exit
+      // Wait for Pi to exit.
       const exitCode = await new Promise<number | null>((resolve) => {
         child.on("close", (code) => resolve(code));
-        // If already exited (no stdout), resolve immediately
         if (child.exitCode !== null) resolve(child.exitCode);
       });
 
-      // Close the log file handle now that we're done writing
-      try {
-        await outFd.close();
-      } catch {
-        // Non-fatal
-      }
-
-      // Determine success: exit code 0 = success unless agent_end explicitly
-      // signals failure (success: false). Not receiving agent_end is not an error
-      // — Pi may not emit it in all cases (e.g. budget-exceeded short-circuits).
-      const explicitFailure = agentEndReceived && !agentEndSuccess;
-      const success = (exitCode === 0 || exitCode === null) && !explicitFailure;
+      // Exit code 0 (or null/detached) = success.
+      const success = exitCode === 0 || exitCode === null;
 
       log(
         `[pi-rpc] Phase ${phase} for ${config.seedId} finished: ` +
-          `success=${success} exitCode=${exitCode ?? "null"} ` +
-          `agent_end=${agentEndReceived}`,
+          `success=${success} exitCode=${exitCode ?? "null"}`,
       );
 
       // Update SQLite run status so the merge queue can find the completed run.
@@ -426,35 +385,23 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
         }
       }
 
-      // Send SQLite mail phase lifecycle message to "foreman"
-      if (agentMailClient) {
+      // Send mail as a fallback — Pi's /send-mail skill should have already sent
+      // phase-complete or agent-error. We send here only if Pi exited non-zero,
+      // which typically means a crash before /send-mail could run.
+      if (agentMailClient && !success) {
         try {
-          if (success) {
-            await agentMailClient.sendMessage(
-              "foreman",
-              "phase-complete",
-              JSON.stringify({
-                seedId: config.seedId,
-                phase,
-                runId: config.runId,
-                status: "complete",
-              }),
-            );
-            log(`[agent-mail] Sent phase-complete for ${phase}/${config.seedId}`);
-          } else {
-            await agentMailClient.sendMessage(
-              "foreman",
-              "agent-error",
-              JSON.stringify({
-                seedId: config.seedId,
-                phase,
-                runId: config.runId,
-                status: "error",
-                message: agentEndMessage ?? `Pi exited with code ${exitCode ?? "null"}`,
-              }),
-            );
-            log(`[agent-mail] Sent agent-error for ${phase}/${config.seedId}`);
-          }
+          await agentMailClient.sendMessage(
+            "foreman",
+            "agent-error",
+            JSON.stringify({
+              seedId: config.seedId,
+              phase,
+              runId: config.runId,
+              status: "error",
+              message: `Pi exited with code ${exitCode ?? "null"}`,
+            }),
+          );
+          log(`[agent-mail] Sent agent-error (crash fallback) for ${phase}/${config.seedId}`);
         } catch {
           // Silent failure — mail errors must never surface
         }
