@@ -16,9 +16,11 @@ import {
   installBundledWorkflows,
   findMissingWorkflows,
   resolveWorkflowName,
+  resolvePhaseModel,
   WorkflowConfigError,
   BUNDLED_WORKFLOW_NAMES,
   type WorkflowSetupStep,
+  type WorkflowPhaseConfig,
 } from "../workflow-loader.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -434,5 +436,172 @@ describe("resolveWorkflowName", () => {
 
   it("returns 'default' when labels is undefined", () => {
     expect(resolveWorkflowName("feature", undefined)).toBe("default");
+  });
+});
+
+// ── validateWorkflowConfig — models map ──────────────────────────────────────
+
+describe("validateWorkflowConfig — models map", () => {
+  const minimalPhases = [{ name: "finalize", builtin: true }];
+
+  it("parses a models map with default and priority overrides", () => {
+    const raw = {
+      name: "w",
+      phases: [
+        {
+          name: "developer",
+          models: { default: "sonnet", P0: "opus", P1: "sonnet" },
+        },
+        ...minimalPhases,
+      ],
+    };
+    const config = validateWorkflowConfig(raw, "w");
+    const devPhase = config.phases[0];
+    expect(devPhase.models).toBeDefined();
+    expect(devPhase.models!["default"]).toBe("sonnet");
+    expect(devPhase.models!["P0"]).toBe("opus");
+    expect(devPhase.models!["P1"]).toBe("sonnet");
+  });
+
+  it("accepts models map with only 'default' key", () => {
+    const raw = {
+      name: "w",
+      phases: [{ name: "explorer", models: { default: "haiku" } }],
+    };
+    const config = validateWorkflowConfig(raw, "w");
+    expect(config.phases[0].models).toEqual({ default: "haiku" });
+  });
+
+  it("throws on invalid models map key", () => {
+    const raw = {
+      name: "w",
+      phases: [{ name: "explorer", models: { default: "haiku", P5: "opus" } }],
+    };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+
+  it("throws on non-string models map value", () => {
+    const raw = {
+      name: "w",
+      phases: [{ name: "explorer", models: { default: 42 } }],
+    };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+
+  it("throws on empty string models map value", () => {
+    const raw = {
+      name: "w",
+      phases: [{ name: "explorer", models: { default: "" } }],
+    };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+
+  it("coexists with legacy 'model' field (models takes precedence)", () => {
+    const raw = {
+      name: "w",
+      phases: [{ name: "developer", model: "haiku", models: { default: "sonnet" } }],
+    };
+    const config = validateWorkflowConfig(raw, "w");
+    // Both fields are preserved; resolvePhaseModel() determines precedence
+    expect(config.phases[0].model).toBe("haiku");
+    expect(config.phases[0].models).toEqual({ default: "sonnet" });
+  });
+
+  it("bundled default workflow phases have models map", () => {
+    // Bundled YAMLs have been updated to models map
+    const tmpDir2 = tmpdir() + `/wl-test-${Date.now()}`;
+    mkdirSync(tmpDir2, { recursive: true });
+    const config = loadWorkflowConfig("default", tmpDir2);
+    rmSync(tmpDir2, { recursive: true, force: true });
+    for (const phase of config.phases) {
+      if (!phase.builtin) {
+        expect(phase.models).toBeDefined();
+        expect(phase.models!["default"]).toBeTruthy();
+      }
+    }
+  });
+});
+
+// ── resolvePhaseModel ─────────────────────────────────────────────────────────
+
+describe("resolvePhaseModel", () => {
+  const fallback = "anthropic/claude-haiku-4-5";
+
+  it("uses priority override when priority matches", () => {
+    const phase: WorkflowPhaseConfig = {
+      name: "developer",
+      models: { default: "sonnet", P0: "opus" },
+    };
+    expect(resolvePhaseModel(phase, "P0", fallback)).toBe("anthropic/claude-opus-4-6");
+  });
+
+  it("falls back to models.default when priority has no override", () => {
+    const phase: WorkflowPhaseConfig = {
+      name: "developer",
+      models: { default: "sonnet", P0: "opus" },
+    };
+    expect(resolvePhaseModel(phase, "P2", fallback)).toBe("anthropic/claude-sonnet-4-6");
+  });
+
+  it("falls back to models.default when priority is undefined", () => {
+    const phase: WorkflowPhaseConfig = {
+      name: "developer",
+      models: { default: "haiku" },
+    };
+    expect(resolvePhaseModel(phase, undefined, fallback)).toBe("anthropic/claude-haiku-4-5");
+  });
+
+  it("accepts numeric string priority '0' as P0", () => {
+    const phase: WorkflowPhaseConfig = {
+      name: "developer",
+      models: { default: "sonnet", P0: "opus" },
+    };
+    expect(resolvePhaseModel(phase, "0", fallback)).toBe("anthropic/claude-opus-4-6");
+  });
+
+  it("falls back to legacy model field when no models map", () => {
+    const phase: WorkflowPhaseConfig = { name: "developer", model: "haiku" };
+    expect(resolvePhaseModel(phase, "P0", fallback)).toBe("anthropic/claude-haiku-4-5");
+  });
+
+  it("falls back to fallbackModel when no models map or model field", () => {
+    const phase: WorkflowPhaseConfig = { name: "developer" };
+    expect(resolvePhaseModel(phase, "P0", fallback)).toBe(fallback);
+  });
+
+  it("returns fallback when fallbackModel is the only option", () => {
+    const phase: WorkflowPhaseConfig = { name: "finalize", builtin: true };
+    expect(resolvePhaseModel(phase, undefined, fallback)).toBe(fallback);
+  });
+
+  it("expands shorthands in models map (haiku → full ID)", () => {
+    const phase: WorkflowPhaseConfig = {
+      name: "explorer",
+      models: { default: "haiku" },
+    };
+    expect(resolvePhaseModel(phase, undefined, fallback)).toBe("anthropic/claude-haiku-4-5");
+  });
+
+  it("expands shorthands in legacy model field", () => {
+    const phase: WorkflowPhaseConfig = { name: "explorer", model: "sonnet" };
+    expect(resolvePhaseModel(phase, undefined, fallback)).toBe("anthropic/claude-sonnet-4-6");
+  });
+
+  it("passes through full model IDs unchanged (custom provider)", () => {
+    const phase: WorkflowPhaseConfig = {
+      name: "developer",
+      models: { default: "openai/gpt-4o", P0: "google/gemini-2.0-pro" },
+    };
+    expect(resolvePhaseModel(phase, "P1", fallback)).toBe("openai/gpt-4o");
+    expect(resolvePhaseModel(phase, "P0", fallback)).toBe("google/gemini-2.0-pro");
+  });
+
+  it("treats unrecognised priority string as missing (falls back to default)", () => {
+    const phase: WorkflowPhaseConfig = {
+      name: "developer",
+      models: { default: "sonnet", P0: "opus" },
+    };
+    // "high" is not a valid priority key → use default
+    expect(resolvePhaseModel(phase, "high", fallback)).toBe("anthropic/claude-sonnet-4-6");
   });
 });
