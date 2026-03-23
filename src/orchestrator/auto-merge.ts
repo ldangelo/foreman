@@ -22,6 +22,7 @@ import { MergeQueue } from "./merge-queue.js";
 import { Refinery } from "./refinery.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
+import { addNotesToBead } from "./task-backend-ops.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -60,6 +61,12 @@ function sendMail(
  * status via mapRunStatusToSeedStatus(), updates br, then flushes with
  * `br sync --flush-only`.
  *
+ * When `failureReason` is provided (non-empty), adds it as a note on the bead
+ * so that the bead record explains WHY it was blocked/failed. This is the
+ * immediate fix described in the task: rather than waiting for
+ * syncBeadStatusOnStartup() on the next restart, the bead is updated right
+ * away with both status and context.
+ *
  * Non-fatal — logs a warning on failure and lets the caller continue.
  */
 export async function syncBeadStatusAfterMerge(
@@ -68,6 +75,7 @@ export async function syncBeadStatusAfterMerge(
   runId: string,
   seedId: string,
   projectPath: string,
+  failureReason?: string,
 ): Promise<void> {
   const run = store.getRun(runId);
   if (!run) return;
@@ -83,6 +91,13 @@ export async function syncBeadStatusAfterMerge(
   } catch (syncErr: unknown) {
     const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
     console.warn(`[merge] Warning: Failed to sync bead status for ${seedId}: ${msg}`);
+  }
+
+  // Add explanatory notes to the bead when there's a failure reason.
+  // Done after the status update so that the status change is always attempted
+  // even if the note fails. addNotesToBead() is itself non-fatal.
+  if (failureReason) {
+    addNotesToBead(seedId, failureReason, projectPath);
   }
 }
 
@@ -149,6 +164,9 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
   let entry = mq.dequeue();
   while (entry) {
     const currentEntry = entry;
+    // Track the failure reason to attach as a bead note (if any failure occurs).
+    // Declared outside try/catch so it's accessible in the finally block.
+    let mergeFailureReason: string | undefined;
     try {
       const report = await refinery.mergeCompleted({
         targetBranch,
@@ -157,6 +175,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         projectId: project.id,
         seedId: currentEntry.seed_id,
       });
+
 
       if (report.merged.length > 0) {
         mq.updateStatus(currentEntry.id, "merged", { completedAt: new Date().toISOString() });
@@ -173,6 +192,15 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       } else if (report.conflicts.length > 0 || report.prsCreated.length > 0) {
         mq.updateStatus(currentEntry.id, "conflict", { error: "Code conflicts" });
         conflictCount += report.conflicts.length + report.prsCreated.length;
+
+        // Build failure reason for the bead note
+        if (report.conflicts.length > 0) {
+          const files = report.conflicts.flatMap((c) => c.conflictFiles).slice(0, 10);
+          mergeFailureReason = `Merge conflict detected in branch foreman/${currentEntry.seed_id}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
+        } else if (report.prsCreated.length > 0) {
+          const pr = report.prsCreated[0];
+          mergeFailureReason = `Merge conflict: a PR was created for manual review.\nPR URL: ${pr.prUrl}\nBranch: ${pr.branchName}`;
+        }
 
         // Send merge-conflict mail for each conflicted run
         for (const conflictRun of report.conflicts) {
@@ -196,6 +224,11 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         mq.updateStatus(currentEntry.id, "failed", { error: "Test failures" });
         failedCount += report.testFailures.length;
 
+        // Build failure reason for the bead note (summarise first failure)
+        const firstFailure = report.testFailures[0];
+        const errorSummary = firstFailure.error?.slice(0, 800) ?? "no details";
+        mergeFailureReason = `Post-merge tests failed (${report.testFailures.length} failure(s)).\nFirst failure:\n${errorSummary}`;
+
         // Send merge-failed mail for each test failure
         for (const failedRun of report.testFailures) {
           sendMail(store, currentEntry.run_id, "merge-failed", {
@@ -208,6 +241,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       } else {
         mq.updateStatus(currentEntry.id, "failed", { error: "No completed run found" });
         failedCount++;
+        mergeFailureReason = `Merge failed: no completed run found for seed ${currentEntry.seed_id}. The run may have been deleted or not yet finalized.`;
 
         // Send merge-failed mail when no completed run was found in the queue
         sendMail(store, currentEntry.run_id, "merge-failed", {
@@ -220,6 +254,9 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       mq.updateStatus(currentEntry.id, "failed", { error: message });
       failedCount++;
 
+      // Capture the failure reason so the finally block can add it as a bead note
+      mergeFailureReason = `Unexpected error during merge: ${message.slice(0, 800)}`;
+
       // Send merge-failed mail when an unexpected error occurs in the merge pipeline
       sendMail(store, currentEntry.run_id, "merge-failed", {
         seedId: currentEntry.seed_id,
@@ -228,8 +265,9 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       });
     } finally {
       // Sync bead status after every merge outcome (success or failure).
-      // Always runs — ensures br reflects the latest run status.
-      await syncBeadStatusAfterMerge(store, taskClient, currentEntry.run_id, currentEntry.seed_id, projectPath);
+      // Pass mergeFailureReason so the bead gets a note explaining the failure.
+      // Always runs — ensures br reflects the latest run status immediately.
+      await syncBeadStatusAfterMerge(store, taskClient, currentEntry.run_id, currentEntry.seed_id, projectPath, mergeFailureReason);
 
       // Send bead-closed mail after bead status is synced.
       // Always sent so inbox shows lifecycle completion for every queue entry.

@@ -112,6 +112,8 @@ export const PIPELINE_TIMEOUTS = {
   monitorPollMs: envInt("FOREMAN_MONITOR_POLL_MS", 3_000),
   /** Stale pending-run threshold in hours (for doctor check) */
   staleRunHours: envInt("FOREMAN_STALE_RUN_HOURS", 24),
+  /** Failed-run retention threshold in days; older runs are eligible for cleanup with --fix */
+  failedRunRetentionDays: envInt("FOREMAN_FAILED_RUN_RETENTION_DAYS", 7),
 } as const;
 
 // ── Retry / concurrency limits ────────────────────────────────────────────
