@@ -32,6 +32,8 @@ const {
   mockDetectDefaultBranch,
   mockTaskClientUpdate,
   mockAddNotesToBead,
+  mockMarkBeadFailed,
+  mockGetRunsByStatuses,
 } = vi.hoisted(() => {
   const mockExecFileSync = vi.fn().mockReturnValue(Buffer.from(""));
 
@@ -69,6 +71,8 @@ const {
 
   const mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
   const mockTaskClientUpdate = vi.fn().mockResolvedValue(undefined);
+  const mockMarkBeadFailed = vi.fn().mockResolvedValue(undefined);
+  const mockGetRunsByStatuses = vi.fn().mockReturnValue([]);
 
   return {
     mockExecFileSync,
@@ -85,6 +89,8 @@ const {
     mockDetectDefaultBranch,
     mockTaskClientUpdate,
     mockAddNotesToBead,
+    mockMarkBeadFailed,
+    mockGetRunsByStatuses,
   };
 });
 
@@ -94,13 +100,17 @@ vi.mock("node:child_process", () => ({
 }));
 
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
-vi.mock("../merge-queue.js", () => ({ MergeQueue: MockMergeQueue }));
+vi.mock("../merge-queue.js", () => ({
+  MergeQueue: MockMergeQueue,
+  RETRY_CONFIG: { maxRetries: 3, initialDelayMs: 60_000, maxDelayMs: 3_600_000, backoffMultiplier: 2 },
+}));
 vi.mock("../refinery.js", () => ({ Refinery: MockRefinery }));
 vi.mock("../../lib/git.js", () => ({
   detectDefaultBranch: mockDetectDefaultBranch,
 }));
 vi.mock("../task-backend-ops.js", () => ({
   addNotesToBead: mockAddNotesToBead,
+  markBeadFailed: mockMarkBeadFailed,
 }));
 
 import { autoMerge, syncBeadStatusAfterMerge, type AutoMergeOpts } from "../auto-merge.js";
@@ -111,12 +121,15 @@ function makeStore(overrides: Partial<{
   getProjectByPath: ReturnType<typeof vi.fn>;
   getDb: ReturnType<typeof vi.fn>;
   getRun: ReturnType<typeof vi.fn>;
+  getRunsByStatuses: ReturnType<typeof vi.fn>;
 }> = {}): ReturnType<typeof vi.fn> {
   return {
     close: vi.fn(),
     getProjectByPath: overrides.getProjectByPath ?? mockGetProjectByPath,
     getDb: overrides.getDb ?? mockGetDb,
     getRun: overrides.getRun ?? mockGetRun,
+    getRunsByStatuses: overrides.getRunsByStatuses ?? mockGetRunsByStatuses,
+    sendMessage: vi.fn(),
   } as unknown as ReturnType<typeof vi.fn>;
 }
 
@@ -157,6 +170,8 @@ function resetMocks(): void {
   });
   mockTaskClientUpdate.mockResolvedValue(undefined);
   mockAddNotesToBead.mockReturnValue(undefined);
+  mockMarkBeadFailed.mockResolvedValue(undefined);
+  mockGetRunsByStatuses.mockReturnValue([]);
 }
 
 // ── autoMerge() — no project registered ─────────────────────────────────────
@@ -647,5 +662,202 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
     }));
 
     expect(mockAddNotesToBead).not.toHaveBeenCalled();
+  });
+});
+
+// ── autoMerge() — test failure retry exhaustion ──────────────────────────────
+
+describe("autoMerge() — test failure retry exhaustion (infinite loop prevention)", () => {
+  beforeEach(() => {
+    resetMocks();
+    mockGetProjectByPath.mockReturnValue({ id: "proj-1" });
+  });
+
+  function makeEntry(id: number = 1) {
+    return { id, seed_id: `bd-test-00${id}`, run_id: `run-00${id}`, branch_name: `foreman/bd-test-00${id}` };
+  }
+
+  it("does NOT call markBeadFailed when test-failed count is below the retry limit", async () => {
+    // Only 1 test-failed run (first attempt) — under the limit of 3
+    mockGetRunsByStatuses.mockReturnValue([
+      { seed_id: "bd-test-001", status: "test-failed" },
+    ]);
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [],
+      conflicts: [],
+      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts({
+      store: makeStore({
+        getProjectByPath: mockGetProjectByPath,
+        getRun: vi.fn().mockReturnValue({ id: "run-001", status: "test-failed" }),
+      }) as never,
+    }));
+
+    // Should NOT permanently fail the bead yet
+    expect(mockMarkBeadFailed).not.toHaveBeenCalled();
+  });
+
+  it("calls markBeadFailed when test-failed count reaches RETRY_CONFIG.maxRetries (3)", async () => {
+    // 3 test-failed runs for this seed — at the retry limit
+    mockGetRunsByStatuses.mockReturnValue([
+      { seed_id: "bd-test-001", status: "test-failed" },
+      { seed_id: "bd-test-001", status: "test-failed" },
+      { seed_id: "bd-test-001", status: "test-failed" },
+    ]);
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [],
+      conflicts: [],
+      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts({
+      store: makeStore({
+        getProjectByPath: mockGetProjectByPath,
+        getRun: vi.fn().mockReturnValue({ id: "run-001", status: "test-failed" }),
+      }) as never,
+    }));
+
+    // Should permanently fail the bead to break the infinite loop
+    expect(mockMarkBeadFailed).toHaveBeenCalledWith("bd-test-001", "/mock/project");
+  });
+
+  it("calls markBeadFailed when test-failed count exceeds RETRY_CONFIG.maxRetries", async () => {
+    // 5 test-failed runs — well over the limit
+    mockGetRunsByStatuses.mockReturnValue([
+      { seed_id: "bd-test-001", status: "test-failed" },
+      { seed_id: "bd-test-001", status: "test-failed" },
+      { seed_id: "bd-test-001", status: "test-failed" },
+      { seed_id: "bd-test-001", status: "test-failed" },
+      { seed_id: "bd-test-001", status: "test-failed" },
+    ]);
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [],
+      conflicts: [],
+      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "Tests failed" }],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts({
+      store: makeStore({
+        getProjectByPath: mockGetProjectByPath,
+        getRun: vi.fn().mockReturnValue({ id: "run-001", status: "test-failed" }),
+      }) as never,
+    }));
+
+    expect(mockMarkBeadFailed).toHaveBeenCalledWith("bd-test-001", "/mock/project");
+  });
+
+  it("only counts test-failed runs for the specific seed — not other seeds", async () => {
+    // 3 test-failed runs but for a different seed — should not trigger retry exhaustion
+    mockGetRunsByStatuses.mockReturnValue([
+      { seed_id: "bd-other-001", status: "test-failed" },
+      { seed_id: "bd-other-001", status: "test-failed" },
+      { seed_id: "bd-other-001", status: "test-failed" },
+    ]);
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [],
+      conflicts: [],
+      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts({
+      store: makeStore({
+        getProjectByPath: mockGetProjectByPath,
+        getRun: vi.fn().mockReturnValue({ id: "run-001", status: "test-failed" }),
+      }) as never,
+    }));
+
+    // Other seed's failures should not affect this seed
+    expect(mockMarkBeadFailed).not.toHaveBeenCalled();
+  });
+
+  it("includes retry exhaustion context in the failure message when limit is reached", async () => {
+    mockGetRunsByStatuses.mockReturnValue([
+      { seed_id: "bd-test-001", status: "test-failed" },
+      { seed_id: "bd-test-001", status: "test-failed" },
+      { seed_id: "bd-test-001", status: "test-failed" },
+    ]);
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [],
+      conflicts: [],
+      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts({
+      store: makeStore({
+        getProjectByPath: mockGetProjectByPath,
+        getRun: vi.fn().mockReturnValue({ id: "run-001", status: "test-failed" }),
+      }) as never,
+    }));
+
+    // The failure note should mention exhaustion and manual intervention
+    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      "bd-test-001",
+      expect.stringContaining("exhausted"),
+      "/mock/project",
+    );
+  });
+
+  it("includes attempt count in the failure message when under retry limit", async () => {
+    mockGetRunsByStatuses.mockReturnValue([
+      { seed_id: "bd-test-001", status: "test-failed" },
+    ]);
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [],
+      conflicts: [],
+      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts({
+      store: makeStore({
+        getProjectByPath: mockGetProjectByPath,
+        getRun: vi.fn().mockReturnValue({ id: "run-001", status: "test-failed" }),
+      }) as never,
+    }));
+
+    // The failure note should mention the attempt number
+    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      "bd-test-001",
+      expect.stringContaining("attempt"),
+      "/mock/project",
+    );
+  });
+
+  it("still marks the MQ entry as failed regardless of retry exhaustion", async () => {
+    // At retry limit
+    mockGetRunsByStatuses.mockReturnValue([
+      { seed_id: "bd-test-001", status: "test-failed" },
+      { seed_id: "bd-test-001", status: "test-failed" },
+      { seed_id: "bd-test-001", status: "test-failed" },
+    ]);
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [],
+      conflicts: [],
+      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "Tests failed" }],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts({
+      store: makeStore({
+        getProjectByPath: mockGetProjectByPath,
+        getRun: vi.fn().mockReturnValue({ id: "run-001", status: "test-failed" }),
+      }) as never,
+    }));
+
+    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "failed", { error: "Test failures" });
   });
 });
