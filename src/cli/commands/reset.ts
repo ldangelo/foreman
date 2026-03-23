@@ -245,7 +245,7 @@ export async function resetSeedToOpen(
 
 export const resetCommand = new Command("reset")
   .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
-  .option("--seed <id>", "Reset a specific seed by ID (clears all runs for that seed, including stale pending ones)")
+  .option("--seed <id>", "Reset a specific bead by ID (clears all runs for that bead, including stale pending ones)")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
   .option("--detect-stuck", "Run stuck detection first, adding newly-detected stuck runs to the reset list")
   .option(
@@ -324,9 +324,9 @@ export const resetCommand = new Command("reset")
         // --seed: get ALL runs for this seed regardless of status, so stale pending/running are included
         runs = store.getRunsForSeed(seedFilter, project.id);
         if (runs.length === 0) {
-          console.log(chalk.yellow(`No runs found for seed ${seedFilter}.\n`));
+          console.log(chalk.yellow(`No runs found for bead ${seedFilter}.\n`));
         } else {
-          console.log(chalk.bold(`Resetting all ${runs.length} run(s) for seed ${seedFilter}:\n`));
+          console.log(chalk.bold(`Resetting all ${runs.length} run(s) for bead ${seedFilter}:\n`));
         }
       } else {
         const statuses = all
@@ -477,23 +477,23 @@ export const resetCommand = new Command("reset")
         switch (result.action) {
           case "skipped-closed":
             console.log(
-              `  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already closed — not reopening (use --seed to force)`,
+              `  ${chalk.dim("skip")} bead ${chalk.cyan(seedId)} is already closed — not reopening (use --seed to force)`,
             );
             break;
           case "already-open":
-            // Seed was already open — no update was made (or would be made).
-            console.log(`  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already open`);
+            // Bead was already open — no update was made (or would be made).
+            console.log(`  ${chalk.dim("skip")} bead ${chalk.cyan(seedId)} is already open`);
             break;
           case "reset":
-            console.log(`  ${chalk.yellow("reset")} seed ${chalk.cyan(seedId)} → open`);
+            console.log(`  ${chalk.yellow("reset")} bead ${chalk.cyan(seedId)} → open`);
             seedsReset++;
             break;
           case "not-found":
-            console.log(`    ${chalk.dim("skip")} seed ${seedId} no longer exists`);
+            console.log(`    ${chalk.dim("skip")} bead ${seedId} no longer exists`);
             break;
           case "error":
-            errors.push(`Failed to reset seed ${seedId}: ${result.error ?? "unknown error"}`);
-            console.log(`    ${chalk.red("error")} resetting seed: ${result.error ?? "unknown error"}`);
+            errors.push(`Failed to reset bead ${seedId}: ${result.error ?? "unknown error"}`);
+            console.log(`    ${chalk.red("error")} resetting bead: ${result.error ?? "unknown error"}`);
             break;
         }
       }
@@ -590,7 +590,7 @@ export const resetCommand = new Command("reset")
       }
 
       // 7. Detect and fix seed/run state mismatches for terminal runs
-      console.log(chalk.bold("\nChecking for seed/run state mismatches..."));
+      console.log(chalk.bold("\nChecking for bead/run state mismatches..."));
       const mismatchResult = await detectAndFixMismatches(store, seeds, project.id, seedIds, { dryRun });
 
       if (mismatchResult.mismatches.length > 0) {
@@ -600,7 +600,7 @@ export const resetCommand = new Command("reset")
             : chalk.green("fixed");
           console.log(
             `  ${chalk.yellow("mismatch")} ${chalk.cyan(m.seedId)}: ` +
-            `run=${m.runStatus}, seed=${m.actualSeedStatus} → ${m.expectedSeedStatus} ${action}`,
+            `run=${m.runStatus}, bead=${m.actualSeedStatus} → ${m.expectedSeedStatus} ${action}`,
           );
         }
       } else {
@@ -610,7 +610,7 @@ export const resetCommand = new Command("reset")
       // Summary
       console.log(chalk.bold("\nSummary:"));
       if (dryRun) {
-        console.log(chalk.yellow(`  Would reset ${runs.length} runs across ${seedIds.size} seeds`));
+        console.log(chalk.yellow(`  Would reset ${runs.length} runs across ${seedIds.size} beads`));
         if (mismatchResult.mismatches.length > 0) {
           console.log(chalk.yellow(`  Would fix ${mismatchResult.mismatches.length} mismatch(es)`));
         }
@@ -620,7 +620,7 @@ export const resetCommand = new Command("reset")
         console.log(`  Branches deleted:   ${branchesDeleted}`);
         console.log(`  Runs marked reset:   ${runsMarkedFailed}`);
         console.log(`  MQ entries removed:  ${mqEntriesRemoved}`);
-        console.log(`  Seeds reset:        ${seedsReset}`);
+        console.log(`  Beads reset:        ${seedsReset}`);
         console.log(`  Mismatches fixed:   ${mismatchResult.fixed}`);
       }
 

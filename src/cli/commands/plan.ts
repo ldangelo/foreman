@@ -135,7 +135,7 @@ export const planCommand = new Command("plan")
               "\nWhen run without --dry-run, Foreman will:",
             ),
           );
-          console.log(chalk.dim("  1. Create an epic seed with child seeds (sequential dependencies)"));
+          console.log(chalk.dim("  1. Create an epic bead with child beads (sequential dependencies)"));
           console.log(chalk.dim("  2. Dispatch each step via Claude Code + Ensemble"));
           console.log(chalk.dim("  3. Track progress in SQLite"));
           console.log(chalk.dim("  4. Suggest 'foreman sling trd <output-dir>/TRD.md' on completion"));
@@ -150,7 +150,7 @@ export const planCommand = new Command("plan")
           description: `Planning pipeline for: ${productDescription.slice(0, 200)}`,
         });
         console.log(
-          chalk.dim(`\nEpic seed: ${epic.id} — ${epicTitle}`),
+          chalk.dim(`\nEpic bead: ${epic.id} — ${epicTitle}`),
         );
 
         // Create child seeds with sequential dependencies
@@ -172,7 +172,7 @@ export const planCommand = new Command("plan")
           seedIds.push(child.id);
           console.log(
             chalk.dim(
-              `  Seed ${child.id}: ${step.name}${i > 0 ? ` (depends on ${seedIds[i - 1]})` : " (ready)"}`,
+              `  Bead ${child.id}: ${step.name}${i > 0 ? ` (depends on ${seedIds[i - 1]})` : " (ready)"}`,
             ),
           );
         }

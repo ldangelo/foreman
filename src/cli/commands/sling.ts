@@ -217,7 +217,7 @@ const trdSubcommand = new Command("trd")
   .option("--dry-run", "Preview without creating tasks")
   .option("--auto", "Skip confirmation prompt")
   .option("--json", "Output parsed structure as JSON")
-  .option("--sd-only", "Write to seeds (sd) only")
+  .option("--sd-only", "Write to beads_rust (br) only (deprecated, use --br-only)")
   .option("--br-only", "Write to beads_rust (br) only")
   .option("--skip-completed", "Skip [x] tasks (not created)")
   .option("--close-completed", "Create [x] tasks and immediately close them")
@@ -285,7 +285,7 @@ const trdSubcommand = new Command("trd")
     // Confirmation
     if (!opts.auto) {
       const targets: string[] = [];
-      if (!opts.brOnly) targets.push("sd (seeds)");
+      if (!opts.brOnly) targets.push("sd (beads)");
       if (!opts.sdOnly) targets.push("br (beads_rust)");
 
       const answer = await new Promise<string>((resolve) => {
