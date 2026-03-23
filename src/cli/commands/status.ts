@@ -161,7 +161,14 @@ async function renderStatus(): Promise<void> {
       for (let i = 0; i < activeRuns.length; i++) {
         const run = activeRuns[i];
         const progress = store.getRunProgress(run.id);
-        console.log(renderAgentCard(run, progress));
+
+        // Fetch run history to show attempt count and previous outcome
+        const allRuns = store.getRunsForSeed(run.seed_id, project.id);
+        const attemptNumber = allRuns.length > 1 ? allRuns.length : undefined;
+        const previousRun = allRuns.length > 1 ? allRuns[1] : null;
+        const previousStatus = previousRun?.status;
+
+        console.log(renderAgentCard(run, progress, true, undefined, attemptNumber, previousStatus));
         // For running agents, show last Pi activity from the .out log file
         if (run.status === "running") {
           const lastActivity = await getLastPiActivity(run.id);
