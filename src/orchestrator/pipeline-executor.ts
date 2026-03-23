@@ -161,6 +161,8 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
 
   // Track feedback context for retry loops (QA/reviewer → developer)
   let feedbackContext: string | undefined;
+  // Track QA verdict for session log
+  let qaVerdictForLog: "pass" | "fail" | "unknown" = "unknown";
   // Track retry counts per retryWith target (e.g. "developer" → count)
   const retryCounts: Record<string, number> = {};
 
@@ -291,13 +293,21 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       const report = readReport(worktreePath, phase.artifact);
       const verdict = report ? parseVerdict(report) : "unknown";
 
+      // Track QA verdict for session log
+      if (phaseName === "qa") {
+        qaVerdictForLog = verdict as "pass" | "fail" | "unknown";
+      }
+
       if (verdict === "fail" && phase.retryWith) {
         const retryTarget = phase.retryWith;
         const maxRetries = phase.retryOnFail ?? 0;
-        const currentRetries = retryCounts[retryTarget] ?? 0;
+        // Key retry counter by the phase performing the verdict check (e.g. "qa", "reviewer")
+        // NOT by the retry target ("developer"), so QA and Reviewer have independent retry budgets.
+        const retryCountKey = phaseName;
+        const currentRetries = retryCounts[retryCountKey] ?? 0;
 
         if (currentRetries < maxRetries) {
-          retryCounts[retryTarget] = currentRetries + 1;
+          retryCounts[retryCountKey] = currentRetries + 1;
 
           // Send failure feedback to retry target
           if (phase.mail?.onFail && report) {
@@ -349,7 +359,7 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       totalTurns: progress.turns,
       filesChanged: progress.filesChanged,
       devRetries: retryCounts["developer"] ?? 0,
-      qaVerdict: "unknown",
+      qaVerdict: qaVerdictForLog,
     };
     const sessionLogPath = await writeSessionLog(worktreePath, sessionLogData);
     ctx.log(`[SESSION LOG] Written: ${sessionLogPath}`);

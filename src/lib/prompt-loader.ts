@@ -35,12 +35,13 @@ export const REQUIRED_PHASES: Readonly<Record<string, ReadonlyArray<string>>> =
       "developer",
       "qa",
       "reviewer",
+      "finalize",
       "sentinel",
       "lead",
       "lead-explorer",
       "lead-reviewer",
     ],
-    smoke: ["explorer", "developer", "qa", "reviewer"],
+    smoke: ["explorer", "developer", "qa", "reviewer", "finalize"],
   };
 
 /** Bundled defaults directory (relative to this source file). */

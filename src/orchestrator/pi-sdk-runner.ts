@@ -96,12 +96,14 @@ function buildTools(allowedNames: readonly string[], cwd: string) {
 
 /**
  * Parse a model string like "anthropic/claude-sonnet-4-6" into provider+modelId.
+ * Supports any provider (anthropic, openai, google, etc.) — the Pi SDK's
+ * getModel() handles provider-specific API resolution.
  */
 function parseModelString(model: string) {
   const slash = model.indexOf("/");
-  if (slash === -1) return { provider: "anthropic" as const, modelId: model };
+  if (slash === -1) return { provider: "anthropic", modelId: model };
   return {
-    provider: model.slice(0, slash) as "anthropic",
+    provider: model.slice(0, slash),
     modelId: model.slice(slash + 1),
   };
 }
@@ -115,10 +117,10 @@ function parseModelString(model: string) {
  * to track tool calls / turns / cost, and resolves with structured results.
  */
 export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
-  // Resolve model
+  // Resolve model — getModel is strictly typed for known providers/IDs;
+  // use type assertions for dynamic values from workflow YAML.
   const { provider, modelId } = parseModelString(opts.model);
-  // getModel is strictly typed for known model IDs; use type assertion for dynamic IDs
-  const model = getModel(provider, modelId as never);
+  const model = getModel(provider as never, modelId as never);
 
   // Build tool set from allowed names
   const tools = opts.allowedTools
@@ -204,8 +206,13 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       writeLog(JSON.stringify(event));
     });
 
-    // Send the prompt and await completion
-    await session.prompt(opts.prompt);
+    // Send the prompt and await completion.
+    // Prepend systemPrompt as role context since the Pi SDK manages its own
+    // system prompt (from CLAUDE.md, extensions, etc.) and doesn't accept one directly.
+    const fullPrompt = opts.systemPrompt
+      ? `${opts.systemPrompt}\n\n${opts.prompt}`
+      : opts.prompt;
+    await session.prompt(fullPrompt);
 
     // Extract cost and token usage from session stats
     const stats = session.getSessionStats();
