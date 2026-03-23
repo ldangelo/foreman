@@ -41,6 +41,8 @@ export interface PiRunResult {
   toolCalls: number;
   toolBreakdown: Record<string, number>;
   errorMessage?: string;
+  /** Captured assistant text output (concatenated from all text deltas). */
+  outputText?: string;
 }
 
 export interface PiRunOptions {
@@ -56,6 +58,8 @@ export interface PiRunOptions {
   logFile?: string;
   onToolCall?: (name: string, input: Record<string, unknown>) => void;
   onTurnEnd?: (turn: number) => void;
+  /** Called with text deltas as the assistant streams output. */
+  onText?: (text: string) => void;
 }
 
 // ── Tool name → factory mapping ─────────────────────────────────────────
@@ -125,6 +129,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
   const toolBreakdown: Record<string, number> = {};
   let success = true;
   let errorMessage: string | undefined;
+  const textChunks: string[] = [];
 
   const writeLog = (line: string): void => {
     if (!opts.logFile) return;
@@ -158,6 +163,20 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
         case "turn_end":
           opts.onTurnEnd?.(totalTurns);
           break;
+
+        case "message_update": {
+          // Capture assistant text deltas
+          const updateEvent = event as Record<string, unknown>;
+          const assistantEvent = updateEvent.assistantMessageEvent as Record<string, unknown> | undefined;
+          if (assistantEvent?.type === "text_delta") {
+            const delta = assistantEvent.delta as string | undefined;
+            if (delta) {
+              textChunks.push(delta);
+              opts.onText?.(delta);
+            }
+          }
+          break;
+        }
 
         case "tool_execution_start": {
           const toolName = (event as Record<string, unknown>).toolName as string | undefined;
@@ -204,6 +223,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       toolCalls: totalToolCalls,
       toolBreakdown,
       errorMessage: success ? undefined : errorMessage,
+      outputText: textChunks.length > 0 ? textChunks.join("") : undefined,
     };
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
