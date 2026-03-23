@@ -1,30 +1,33 @@
-# Session Log: foreman status should show retry count and previous attempt outcomes
+# Session Log: [Sentinel] Test failures on main @ a192a3b9
 
 ## Metadata
-- Date: 2026-03-23
+- Date: 2026-03-23T00:00:00Z
 - Phase: reviewer
-- Seed: bd-38i1
-- Run ID: 861bae55-f7ef-4b4c-adfc-ff2355c07723
+- Seed: bd-tg9l
+- Run ID: 72a5ad5a-eb47-4db7-a08e-409b2b0d8eff
 
 ## Key Activities
-- Read TASK.md, EXPLORER_REPORT.md, and QA_REPORT.md for context
-- Read full implementation in `src/cli/watch-ui.ts` (renderAgentCard, renderAgentCardSummary changes)
-- Read full implementation in `src/cli/commands/status.ts` (renderStatus loop changes)
-- Read test file `src/cli/__tests__/status-display.test.ts` (11 new retry-info tests)
-- Verified `store.getRunsForSeed` ordering in `src/lib/store.ts`
-- Checked `renderWatchDisplay` call sites in watch-ui.ts for the watch-mode gap
-- Assessed JSON output path for missing attempt fields
-
-## Findings
-- Implementation for `foreman status` is correct and well-tested
-- `foreman run --watch` does NOT show retry info — `renderWatchDisplay` calls `renderAgentCard` without `attemptNumber`/`previousStatus` because `WatchState` doesn't carry that data
-- JSON `--json` output path doesn't include attempt fields
-- These are the only issues found; no bugs, logic errors, or security issues
+1. Read TASK.md — confirmed sentinel detected 2 consecutive test failures at commit `a192a3b9`
+2. Read EXPLORER_REPORT.md — understood root cause analysis for both failures
+3. Read DEVELOPER_REPORT.md — confirmed fixes were already in place from prior pipeline run
+4. Read QA_REPORT.md — confirmed all 2175 tests pass with no failures
+5. Reviewed `src/orchestrator/agent-worker-finalize.ts` — examined enqueue-before-push implementation
+6. Reviewed `src/orchestrator/__tests__/agent-worker-finalize.test.ts` — examined 64 test cases
+7. Reviewed `src/orchestrator/__tests__/doctor-bead-status-sync.test.ts` — verified conflict markers resolved
+8. Reviewed `src/orchestrator/agent-worker-enqueue.ts` — confirmed enqueue interface
+9. Reviewed `src/lib/run-status.ts` — verified `mapRunStatusToSeedStatus` mapping correctness
+10. Wrote REVIEW.md with verdict PASS
 
 ## Artifacts Created
-- REVIEW.md — code review with verdict FAIL (1 WARNING, 2 NOTEs)
-- SESSION_LOG.md — this file
+- REVIEW.md — Code review with verdict PASS
+- SESSION_LOG.md — This file
+
+## Decisions
+- Verdict PASS: No critical or warning-level issues found. The single NOTE (dead `_detectDefaultBranch` import) does not affect correctness or test reliability.
+- The enqueue-before-push architectural fix is correct, well-tested, and clearly documented.
+- The doctor test conflict resolution correctly aligns test expectations with the `mapRunStatusToSeedStatus` implementation.
 
 ## Notes
-- The WARNING (watch-mode gap) is fixable: `poll()` already has store access; WatchState just needs per-run attempt fields populated there
-- Core requirement (foreman status showing retry info) is fully implemented and correct
+- All 2175 tests pass per QA report
+- No new code changes were required in this pipeline run — fixes were already present
+- The `agent-worker.ts` files-changed counter using uppercase tool names is tracked separately (not in scope for this task)
