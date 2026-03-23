@@ -1,26 +1,31 @@
-# Session Log: reviewer agent for bd-0qv2
+# Session Log: reviewer agent for bd-9dlq
 
 ## Metadata
 - Start: 2026-03-23T00:00:00Z
 - Role: reviewer
-- Seed: bd-0qv2
+- Seed: bd-9dlq
 - Status: completed
 
 ## Key Activities
-- Read TASK.md: confirmed task is to fix auto-merge not triggering when `foreman run` exits before completion
-- Read EXPLORER_REPORT.md: architecture context — `autoMerge()` was only called in the `foreman run` dispatch loop, never from agent-worker
-- Read QA_REPORT.md: all 2016 tests pass, types clean, build clean
-- Reviewed `src/orchestrator/auto-merge.ts` (new file): standalone autoMerge extraction with correct non-fatal design
-- Reviewed `src/cli/commands/run.ts`: autoMerge implementation removed, re-exported from auto-merge.ts for backward compat
-- Reviewed `src/orchestrator/agent-worker.ts` onPipelineComplete callback (~line 560–680): core fix — autoMerge triggered after enqueue succeeds
-- Reviewed `src/orchestrator/__tests__/auto-merge.test.ts`: comprehensive 18-test suite covering all paths
-- Identified WARNING: `mergeStore` not closed in catch block (resource leak if autoMerge throws)
-- Identified NOTEs: hardcoded testCommand (redundant), hardcoded `main` base branch in getFilesModified (pre-existing)
+- Read TASK.md: confirmed task is exponential backoff for repeatedly-stuck seeds
+- Read QA_REPORT.md: all 2016 tests pass, 12 new tests added in dispatcher-stuck-backoff.test.ts
+- Read EXPLORER_REPORT.md: architecture context, confirmed feature was implemented (not pre-existing)
+- Reviewed src/lib/config.ts (lines 142–167): STUCK_RETRY_CONFIG and calculateStuckBackoffMs()
+- Reviewed src/orchestrator/dispatcher.ts (lines 120–787): checkStuckBackoff(), getRecentStuckRuns(), integration with dispatch loop
+- Reviewed src/lib/store.ts: getRunsForSeed() — confirmed DESC order by created_at, rowid
+- Reviewed full test file: src/orchestrator/__tests__/dispatcher-stuck-backoff.test.ts (262 lines)
+- Verified envInt/envNonNegativeInt semantics for config validation
+- Checked dryRun handling in dispatch loop to validate test assertions
+
+## Key Decisions
+- Verdict: PASS — no critical or warning issues found
+- Three informational NOTEs added: envInt zero-value limitation, unused fake timers in tests, missing logEvent for backoff skips
+- Highlighted strong positives: clean config design, correct ordering assumption, time-window decay preventing permanent blockage
 
 ## Artifacts Created
-- REVIEW.md — verdict FAIL (1 WARNING: mergeStore resource leak in catch path)
+- REVIEW.md — verdict PASS with detailed notes
 - SESSION_LOG.md — this file
 
 ## End
-- Completion time: 2026-03-23T00:10:00Z
-- Next phase: Developer fix (close mergeStore in finally block)
+- Completion time: 2026-03-23T00:05:00Z
+- Next phase: finalize
