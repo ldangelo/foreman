@@ -593,13 +593,13 @@ npm test
 # --- Part 1: Agent Mail transport ---
 
 # Integration smoke test (requires running Agent Mail server)
-foreman run --seed <seed-id>
+foreman run --bead <seed-id>
 # Watch logs for:
 #   [agent-mail] Fetched "QA Feedback - Retry 1" from inbox "developer-{seedId}" (id=...)
 #   [agent-mail] Fetched "Review Findings" from inbox "developer-{seedId}" (id=...)
 
 # Backward compat test (stop Agent Mail server first)
-foreman run --seed <seed-id>
+foreman run --bead <seed-id>
 # Should complete normally using disk fallback — no errors logged
 
 # --- Part 2: External prompts and workflow config ---
@@ -612,7 +612,7 @@ foreman init
 # Re-run a seed and verify the custom line appears in the agent session log
 
 # Bug workflow test: create a seed with type=bug
-foreman run --seed <bug-seed-id>
+foreman run --bead <bug-seed-id>
 # Verify: logs show phases ["reproducer", "developer", "qa", "finalize"] — no Explorer, no Reviewer
 
 # Custom workflow test: add "chore" workflow to ~/.foreman/workflows.json

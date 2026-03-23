@@ -63,7 +63,7 @@ export const runCommand = new Command("run")
   .option("--no-pipeline", "Skip the explorer/qa/reviewer pipeline — run as single worker agent")
   .option("--skip-explore", "Skip the explorer phase in the pipeline")
   .option("--skip-review", "Skip the reviewer phase in the pipeline")
-  .option("--seed <id>", "Dispatch only this specific seed (must be ready)")
+  .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
@@ -76,7 +76,7 @@ export const runCommand = new Command("run")
     const pipeline = opts.pipeline as boolean;  // --no-pipeline sets to false
     const skipExplore = opts.skipExplore as boolean | undefined;
     const skipReview = opts.skipReview as boolean | undefined;
-    const seedFilter = opts.seed as string | undefined;
+    const beadFilter = opts.bead as string | undefined;
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
 
     // Start notification server so workers can POST status updates immediately
@@ -234,7 +234,7 @@ export const runCommand = new Command("run")
               pipeline,
               skipExplore,
               skipReview,
-              seedId: seedFilter,
+              seedId: beadFilter,
               notifyUrl,
             });
             return newResult.dispatched.map((t) => t.runId);
@@ -337,7 +337,7 @@ export const runCommand = new Command("run")
           pipeline,
           skipExplore,
           skipReview,
-          seedId: seedFilter,
+          seedId: beadFilter,
           notifyUrl,
         });
 
