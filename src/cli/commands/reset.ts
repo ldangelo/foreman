@@ -400,6 +400,8 @@ export const resetCommand = new Command("reset")
         // 3. Delete the branch — switch to main first if it is currently checked out
         console.log(`    ${chalk.yellow("delete")} branch ${branchName}`);
         if (!dryRun) {
+          const { execFile } = await import("node:child_process");
+          const { promisify } = await import("node:util");
           try {
             const delResult = await deleteBranch(projectPath, branchName, { force: true });
             if (delResult.deleted) branchesDeleted++;
@@ -409,8 +411,6 @@ export const resetCommand = new Command("reset")
               // Branch is HEAD of the main worktree — switch to main then retry
               try {
                 console.log(`    ${chalk.dim("checkout")} main (branch is current HEAD)`);
-                const { execFile } = await import("node:child_process");
-                const { promisify } = await import("node:util");
                 await promisify(execFile)("git", ["checkout", "-f", "main"], { cwd: projectPath });
                 const retryResult = await deleteBranch(projectPath, branchName, { force: true });
                 if (retryResult.deleted) branchesDeleted++;
@@ -423,6 +423,19 @@ export const resetCommand = new Command("reset")
               errors.push(`Failed to delete branch ${branchName}: ${msg}`);
               console.log(`    ${chalk.red("error")} deleting branch: ${msg}`);
             }
+          }
+
+          // 3b. Delete the remote branch to prevent stale remote tracking refs.
+          // reconcile() checks refs/remotes/origin/foreman/<seedId> to recover
+          // runs that crashed after pushing but before updating their status.
+          // If the local branch is deleted but the remote ref persists, reconcile()
+          // will falsely mark the newly re-dispatched (empty) run as "completed"
+          // and insert a merge queue entry that immediately fails with "no-commits".
+          console.log(`    ${chalk.yellow("delete")} remote branch origin/${branchName}`);
+          try {
+            await promisify(execFile)("git", ["push", "origin", "--delete", branchName], { cwd: projectPath });
+          } catch {
+            // Non-fatal: remote branch may not exist (never pushed, or already deleted)
           }
         }
 
@@ -499,12 +512,15 @@ export const resetCommand = new Command("reset")
         }
       }
 
-      // 6. Prune stale worktree entries
+      // 6. Prune stale worktree entries and remote tracking refs
       if (!dryRun) {
         try {
           const { execFile } = await import("node:child_process");
           const { promisify } = await import("node:util");
           await promisify(execFile)("git", ["worktree", "prune"], { cwd: projectPath });
+          // Prune stale remote tracking refs so reconcile() doesn't see deleted
+          // remote branches and falsely recover newly-dispatched empty runs.
+          await promisify(execFile)("git", ["fetch", "--prune"], { cwd: projectPath });
         } catch {
           // Non-critical
         }
