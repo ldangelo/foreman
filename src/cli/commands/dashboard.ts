@@ -2,6 +2,50 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { ForemanStore, type Project, type Run, type RunProgress, type Metrics, type Event } from "../../lib/store.js";
 import { elapsed, renderAgentCard } from "../watch-ui.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
+import type { BrIssue } from "../../lib/beads-rust.js";
+import type { Issue } from "../../lib/task-client.js";
+
+// ── Task count helpers (for --simple mode) ───────────────────────────────
+
+/**
+ * Task counts fetched from the br backend for display in dashboard --simple.
+ */
+export interface DashboardTaskCounts {
+  total: number;
+  ready: number;
+  inProgress: number;
+  completed: number;
+  blocked: number;
+}
+
+/**
+ * Fetch br task counts for the compact status view (used by --simple mode).
+ * Returns zeros if br is not initialized or binary is missing.
+ */
+export async function fetchDashboardTaskCounts(projectPath: string): Promise<DashboardTaskCounts> {
+  const brClient = new BeadsRustClient(projectPath);
+
+  let openIssues: BrIssue[] = [];
+  try { openIssues = await brClient.list(); } catch { /* br not available */ }
+
+  let closedIssues: BrIssue[] = [];
+  try { closedIssues = await brClient.list({ status: "closed" }); } catch { /* no closed */ }
+
+  let readyIssues: Issue[] = [];
+  try { readyIssues = await brClient.ready(); } catch { /* br ready failed */ }
+
+  const inProgress = openIssues.filter((i) => i.status === "in_progress").length;
+  const completed = closedIssues.length;
+  const readyIds = new Set(readyIssues.map((i) => i.id));
+  const ready = readyIssues.length;
+  const blocked = openIssues.filter(
+    (i) => i.status !== "in_progress" && !readyIds.has(i.id),
+  ).length;
+  const total = openIssues.length + completed;
+
+  return { total, ready, inProgress, completed, blocked };
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -241,6 +285,89 @@ export function pollDashboard(store: ForemanStore, projectId?: string, eventsLim
   };
 }
 
+// ── Simple (compact) dashboard renderer ─────────────────────────────────
+
+/**
+ * Render a simplified single-project dashboard view.
+ * Used by `dashboard --simple` for a compact status display similar to
+ * `foreman status --watch` but using the dashboard's data layer.
+ *
+ * Shows: task counts (from br), active agents, costs — no event timeline,
+ * no recently-completed section, no multi-project header.
+ */
+export function renderSimpleDashboard(
+  state: DashboardState,
+  counts: DashboardTaskCounts,
+  projectId?: string,
+): string {
+  const lines: string[] = [];
+
+  // Pick the target project (first, or the filtered one)
+  const project = projectId
+    ? state.projects.find((p) => p.id === projectId)
+    : state.projects[0];
+
+  lines.push(
+    `${chalk.bold("Foreman Status")} ${chalk.dim("— compact view")}  ${chalk.dim("(Ctrl+C to stop)")}`,
+  );
+  lines.push(THICK_RULE);
+  lines.push("");
+
+  // Task counts section
+  lines.push(chalk.bold("Tasks"));
+  lines.push(`  Total:       ${chalk.white(counts.total)}`);
+  lines.push(`  Ready:       ${chalk.green(counts.ready)}`);
+  lines.push(`  In Progress: ${chalk.yellow(counts.inProgress)}`);
+  lines.push(`  Completed:   ${chalk.cyan(counts.completed)}`);
+  if (counts.blocked > 0) {
+    lines.push(`  Blocked:     ${chalk.red(counts.blocked)}`);
+  }
+  lines.push("");
+
+  if (!project) {
+    lines.push(chalk.dim("  No projects registered. Run 'foreman init' to get started."));
+    lines.push("");
+    lines.push(THICK_RULE);
+    lines.push(chalk.dim(`Last updated: ${state.lastUpdated.toLocaleTimeString()}`));
+    return lines.join("\n");
+  }
+
+  const activeRuns = state.activeRuns.get(project.id) ?? [];
+  const projectMetrics = state.metrics.get(project.id) ?? {
+    totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [],
+  };
+
+  // Active agents
+  lines.push(chalk.bold("Active Agents"));
+  if (activeRuns.length === 0) {
+    lines.push(chalk.dim("  (no agents running)"));
+  } else {
+    for (const run of activeRuns) {
+      const progress = state.progresses.get(run.id) ?? null;
+      const card = renderAgentCard(run, progress)
+        .split("\n")
+        .map((l) => "  " + l)
+        .join("\n");
+      lines.push(card);
+    }
+  }
+  lines.push("");
+
+  // Cost summary (only if non-zero)
+  if (projectMetrics.totalCost > 0) {
+    lines.push(chalk.bold("Costs"));
+    lines.push(`  Total: ${chalk.yellow(`$${projectMetrics.totalCost.toFixed(2)}`)}`);
+    lines.push(`  Tokens: ${chalk.dim(`${(projectMetrics.totalTokens / 1000).toFixed(1)}k`)}`);
+    lines.push("");
+  }
+
+  lines.push(THICK_RULE);
+  lines.push(chalk.dim(`Last updated: ${state.lastUpdated.toLocaleTimeString()}`));
+  lines.push(chalk.dim(`Tip: use 'foreman status --live' for a full unified dashboard`));
+
+  return lines.join("\n");
+}
+
 // ── Command ───────────────────────────────────────────────────────────────
 
 export const dashboardCommand = new Command("dashboard")
@@ -249,14 +376,65 @@ export const dashboardCommand = new Command("dashboard")
   .option("--project <id>", "Filter to specific project ID")
   .option("--no-watch", "Single snapshot, no polling")
   .option("--events <n>", "Number of recent events to show per project", "8")
-  .action(async (opts: { interval: string; project?: string; watch: boolean; events: string }) => {
+  .option("--simple", "Compact single-project view with task counts (like 'foreman status --watch')")
+  .action(async (opts: { interval: string; project?: string; watch: boolean; events: string; simple?: boolean }) => {
     const store = ForemanStore.forProject(process.cwd());
     const intervalMs = Math.max(1000, parseInt(opts.interval, 10) || 3000);
     const projectId = opts.project;
     const watch = opts.watch !== false;
     const eventsLimit = Math.max(1, parseInt(opts.events, 10) || 8);
+    const simple = opts.simple === true;
 
-    // Single-shot mode
+    // ── Simple (compact) mode ─────────────────────────────────────────────
+    if (simple) {
+      // Tip: prefer 'foreman status --live' for the full unified experience
+      const projectPath = process.cwd();
+
+      // Single-shot simple mode
+      if (!watch) {
+        try {
+          const state = pollDashboard(store, projectId, eventsLimit);
+          let counts: DashboardTaskCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+          try { counts = await fetchDashboardTaskCounts(projectPath); } catch { /* ignore */ }
+          console.log(renderSimpleDashboard(state, counts, projectId));
+        } finally {
+          store.close();
+        }
+        return;
+      }
+
+      // Live simple mode
+      let detachedSimple = false;
+      const onSigintSimple = () => {
+        if (detachedSimple) return;
+        detachedSimple = true;
+        process.stdout.write("\x1b[?25h\n");
+        console.log(chalk.dim("  Detached — agents continue in background."));
+        console.log(chalk.dim("  Tip: 'foreman status --live' for a full unified dashboard."));
+        store.close();
+        process.exit(0);
+      };
+      process.on("SIGINT", onSigintSimple);
+      process.stdout.write("\x1b[?25l");
+
+      try {
+        while (!detachedSimple) {
+          const state = pollDashboard(store, projectId, eventsLimit);
+          let counts: DashboardTaskCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+          try { counts = await fetchDashboardTaskCounts(projectPath); } catch { /* ignore */ }
+          const display = renderSimpleDashboard(state, counts, projectId);
+          process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
+          await new Promise<void>((r) => setTimeout(r, intervalMs));
+        }
+      } finally {
+        process.stdout.write("\x1b[?25h");
+        process.removeListener("SIGINT", onSigintSimple);
+        store.close();
+      }
+      return;
+    }
+
+    // ── Single-shot full mode ─────────────────────────────────────────────
     if (!watch) {
       try {
         const state = pollDashboard(store, projectId, eventsLimit);
@@ -267,7 +445,7 @@ export const dashboardCommand = new Command("dashboard")
       return;
     }
 
-    // Live polling mode
+    // ── Live full dashboard mode ──────────────────────────────────────────
     let detached = false;
 
     const onSigint = () => {
