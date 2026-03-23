@@ -11,6 +11,7 @@ import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { BrIssue } from "../../lib/beads-rust.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
 import type { Issue } from "../../lib/task-client.js";
+import { pollDashboard, renderDashboard } from "./dashboard.js";
 
 // ── Pi log activity helper ────────────────────────────────────────────────
 
@@ -216,11 +217,32 @@ async function renderStatus(): Promise<void> {
   store.close();
 }
 
+// ── Live status header (used by --live mode) ─────────────────────────────
+
+/**
+ * Render a compact task-count header for use in the live dashboard view.
+ * Shows br task counts (ready, in-progress, blocked, completed) as a
+ * one-line summary suitable for prepending to the dashboard display.
+ */
+export function renderLiveStatusHeader(counts: StatusCounts): string {
+  const { total, ready, inProgress, completed, blocked } = counts;
+  const parts: string[] = [
+    chalk.bold("Tasks:"),
+    `total ${chalk.white(total)}`,
+    `ready ${chalk.green(ready)}`,
+    `in-progress ${chalk.yellow(inProgress)}`,
+    `completed ${chalk.cyan(completed)}`,
+  ];
+  if (blocked > 0) parts.push(`blocked ${chalk.red(blocked)}`);
+  return parts.join("  ");
+}
+
 export const statusCommand = new Command("status")
   .description("Show project status from beads_rust (br) + sqlite")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
+  .option("--live", "Enable full dashboard TUI with event stream (implies --watch; use instead of 'foreman dashboard')")
   .option("--json", "Output status as JSON")
-  .action(async (opts: { watch?: boolean | string; json?: boolean }) => {
+  .action(async (opts: { watch?: boolean | string; json?: boolean; live?: boolean }) => {
     if (opts.json) {
       // JSON output path — gather data and serialize
       try {
@@ -275,6 +297,58 @@ export const statusCommand = new Command("status")
         const message = err instanceof Error ? err.message : String(err);
         console.error(JSON.stringify({ error: message }));
         process.exit(1);
+      }
+      return;
+    }
+
+    if (opts.live) {
+      // ── Full dashboard TUI mode (--live) ─────────────────────────────────
+      // Combines br task counts with the dashboard's multi-project display,
+      // event timeline, and recently-completed agents.
+      const interval = typeof opts.watch === "string" ? parseInt(opts.watch, 10) : 3;
+      const seconds = Number.isFinite(interval) && interval > 0 ? interval : 3;
+
+      let detached = false;
+      const onSigint = () => {
+        if (detached) return;
+        detached = true;
+        process.stdout.write("\x1b[?25h\n");
+        console.log(chalk.dim("  Detached — agents continue in background."));
+        console.log(chalk.dim("  Check status: foreman status"));
+        process.exit(0);
+      };
+      process.on("SIGINT", onSigint);
+      process.stdout.write("\x1b[?25l"); // hide cursor
+
+      try {
+        while (!detached) {
+          const projectPath = await getRepoRoot(process.cwd());
+          const store = ForemanStore.forProject(projectPath);
+
+          let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+          try {
+            counts = await fetchStatusCounts(projectPath);
+          } catch { /* br not available — show zero counts */ }
+
+          const dashState = pollDashboard(store, undefined, 8);
+          store.close();
+
+          const taskLine = renderLiveStatusHeader(counts);
+          const dashDisplay = renderDashboard(dashState);
+
+          // Prepend the task-count line to the dashboard display.
+          // Insert it after the first line (the "Foreman Dashboard" header).
+          const dashLines = dashDisplay.split("\n");
+          // Insert task counts as second line (index 1), shifting the rule down.
+          dashLines.splice(1, 0, taskLine);
+          const combined = dashLines.join("\n");
+
+          process.stdout.write("\x1B[2J\x1B[H" + combined + "\n");
+          await new Promise<void>((r) => setTimeout(r, seconds * 1000));
+        }
+      } finally {
+        process.stdout.write("\x1b[?25h");
+        process.removeListener("SIGINT", onSigint);
       }
       return;
     }

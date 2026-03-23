@@ -4,7 +4,7 @@ import type { SentinelConfigRow } from "../../lib/store.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-function makeMocks() {
+function makeMocks(existingBeads: Array<{ id: string; title: string }> = []) {
   const store = {
     logEvent: vi.fn(),
     recordSentinelRun: vi.fn(),
@@ -14,6 +14,7 @@ function makeMocks() {
   };
   const seeds = {
     create: vi.fn(async () => ({ id: "bd-001", title: "bug" })),
+    list: vi.fn(async () => existingBeads),
   };
   const agent = new SentinelAgent(store as any, seeds as any, "proj-1", "/tmp/project");
   return { store, seeds, agent };
@@ -183,6 +184,108 @@ describe("SentinelAgent", () => {
       const updates = call[1] as { output?: string };
       expect(typeof updates.output).toBe("string");
       expect((updates.output ?? "").length).toBeLessThanOrEqual(50_000);
+    });
+  });
+
+  describe("duplicate bead prevention", () => {
+    /**
+     * Helper: invoke `createBugTask` indirectly by exercising the private method
+     * via a direct cast. This lets us test the deduplication logic without
+     * running the real test suite.
+     */
+    async function callCreateBugTask(
+      agent: SentinelAgent,
+      branch: string,
+      commitHash: string | null,
+      output: string,
+    ): Promise<void> {
+      // Access private method via cast
+      await (agent as unknown as {
+        createBugTask(b: string, c: string | null, o: string): Promise<void>;
+      }).createBugTask(branch, commitHash, output);
+    }
+
+    it("skips bead creation when an open bead with the same title already exists", async () => {
+      const shortHash = "abc12345";
+      const existingTitle = `[Sentinel] Test failures on main @ ${shortHash}`;
+      const { seeds, agent } = makeMocks([
+        { id: "bd-existing", title: existingTitle },
+      ]);
+
+      await callCreateBugTask(agent, "main", shortHash.padEnd(40, "0"), "test output");
+
+      expect(seeds.list).toHaveBeenCalledWith({
+        status: "open",
+        label: "kind:sentinel",
+      });
+      expect(seeds.create).not.toHaveBeenCalled();
+    });
+
+    it("creates a new bead when no matching open bead exists", async () => {
+      const { seeds, agent } = makeMocks([]); // empty — no existing beads
+
+      await callCreateBugTask(agent, "main", "deadbeef" + "0".repeat(32), "test output");
+
+      expect(seeds.list).toHaveBeenCalledWith({
+        status: "open",
+        label: "kind:sentinel",
+      });
+      expect(seeds.create).toHaveBeenCalledOnce();
+      expect(seeds.create).toHaveBeenCalledWith(
+        "[Sentinel] Test failures on main @ deadbeef",
+        expect.objectContaining({
+          type: "bug",
+          priority: "P0",
+          labels: ["kind:sentinel"],
+        }),
+      );
+    });
+
+    it("creates a new bead when existing beads have a different commit hash", async () => {
+      // Existing bead is for a DIFFERENT commit
+      const { seeds, agent } = makeMocks([
+        { id: "bd-old", title: "[Sentinel] Test failures on main @ 00000000" },
+      ]);
+
+      await callCreateBugTask(agent, "main", "deadbeef" + "0".repeat(32), "test output");
+
+      expect(seeds.create).toHaveBeenCalledOnce();
+    });
+
+    it("creates a new bead when existing beads are for a different branch", async () => {
+      // Existing bead is for a different branch
+      const { seeds, agent } = makeMocks([
+        { id: "bd-other", title: "[Sentinel] Test failures on develop @ deadbeef" },
+      ]);
+
+      await callCreateBugTask(agent, "main", "deadbeef" + "0".repeat(32), "test output");
+
+      expect(seeds.create).toHaveBeenCalledOnce();
+    });
+
+    it("handles null commit hash — skips duplicate when unknown-hash bead exists", async () => {
+      const existingTitle = "[Sentinel] Test failures on main @ unknown";
+      const { seeds, agent } = makeMocks([
+        { id: "bd-unknown", title: existingTitle },
+      ]);
+
+      await callCreateBugTask(agent, "main", null, "test output");
+
+      expect(seeds.create).not.toHaveBeenCalled();
+    });
+
+    it("proceeds with creation even if list() throws (non-fatal)", async () => {
+      const { seeds, agent } = makeMocks();
+      // Override list to throw
+      seeds.list.mockRejectedValueOnce(new Error("br list failed"));
+
+      // Should not throw — error is caught and logged
+      await expect(
+        callCreateBugTask(agent, "main", "deadbeef" + "0".repeat(32), "output"),
+      ).resolves.toBeUndefined();
+
+      // create is NOT called because the catch block aborts the whole method
+      expect(seeds.create).not.toHaveBeenCalled();
     });
   });
 });

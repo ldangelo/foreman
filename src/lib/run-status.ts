@@ -35,10 +35,13 @@ export interface StateMismatch {
  * defines the correct seed state given a run's terminal state.
  *
  * Mapping:
- *   pending / running / completed → in_progress
- *   merged / pr-created           → closed
- *   failed / stuck / conflict / test-failed → open
- *   (unknown)                → open   (safe default: makes task visible again)
+ *   pending / running              → in_progress
+ *   completed                      → review  (awaiting merge queue)
+ *   merged / pr-created            → closed
+ *   conflict / test-failed         → blocked (merge failed, needs intervention)
+ *   failed                         → failed  (unexpected merge exception)
+ *   stuck                          → open    (agent pipeline stuck, safe to retry)
+ *   (unknown)                      → open    (safe default: makes task visible again)
  */
 export function mapRunStatusToSeedStatus(runStatus: string): string {
   switch (runStatus) {
@@ -51,15 +54,20 @@ export function mapRunStatusToSeedStatus(runStatus: string): string {
     // Using 'review' so the bead is visually distinct from actively-running tasks.
     case "completed":
       return "review";
-    case "failed":
+    // Agent pipeline stuck — safe to retry, put back in open queue
     case "stuck":
       return "open";
+    // Successfully merged/PR-created — bead is done
     case "merged":
     case "pr-created":
       return "closed";
+    // Merge failures — blocked, needs human intervention or retry
     case "conflict":
     case "test-failed":
-      return "open";
+      return "blocked";
+    // Unexpected exception during merge — mark as failed
+    case "failed":
+      return "failed";
     default:
       return "open";
   }

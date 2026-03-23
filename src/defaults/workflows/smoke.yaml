@@ -2,6 +2,8 @@
 #
 # Used when a bead has the `workflow:smoke` label or type "smoke".
 # Designed for fast, low-cost validation — not for production tasks.
+#
+# Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
 name: smoke
 setup:
   - command: npm install --prefer-offline --no-audit
@@ -10,7 +12,8 @@ setup:
 phases:
   - name: explorer
     prompt: explorer.md
-    model: haiku
+    models:
+      default: haiku
     maxTurns: 5
     artifact: EXPLORER_REPORT.md
     skipIfArtifact: EXPLORER_REPORT.md
@@ -21,7 +24,8 @@ phases:
 
   - name: developer
     prompt: developer.md
-    model: haiku
+    models:
+      default: haiku
     maxTurns: 5
     artifact: DEVELOPER_REPORT.md
     mail:
@@ -30,7 +34,8 @@ phases:
 
   - name: qa
     prompt: qa.md
-    model: haiku
+    models:
+      default: haiku
     maxTurns: 5
     artifact: QA_REPORT.md
     verdict: true
@@ -43,7 +48,8 @@ phases:
 
   - name: reviewer
     prompt: reviewer.md
-    model: sonnet
+    models:
+      default: sonnet
     maxTurns: 5
     artifact: REVIEW.md
     verdict: true
@@ -57,7 +63,8 @@ phases:
 
   - name: finalize
     prompt: finalize.md
-    model: haiku
+    models:
+      default: haiku
     maxTurns: 10
     mail:
       onStart: true
