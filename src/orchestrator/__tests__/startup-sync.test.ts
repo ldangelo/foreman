@@ -135,7 +135,7 @@ describe("syncBeadStatusOnStartup", () => {
     const result = await syncBeadStatusOnStartup(store as any, taskClient as any, "proj-1");
 
     expect(result.mismatches).toHaveLength(1);
-    // failed (unexpected merge exception) → expected 'failed' in br
+    // failed (unexpected exception) → expected 'failed' in br to indicate permanent failure
     expect(result.mismatches[0].expectedSeedStatus).toBe("failed");
   });
 
@@ -294,7 +294,7 @@ describe("syncBeadStatusOnStartup", () => {
 
     // Should only check once (deduplicated by seed_id)
     expect(taskClient.show).toHaveBeenCalledTimes(1);
-    // Should use the newer run's status (failed → failed for unexpected merge exception)
+    // Should use the newer run's status (failed → failed for unexpected exceptions)
     expect(result.mismatches[0].expectedSeedStatus).toBe("failed");
     expect(result.mismatches[0].runStatus).toBe("failed");
   });

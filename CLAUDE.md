@@ -258,6 +258,31 @@ git commit -m "..."     # Commit everything
 git push                # Push to remote
 ```
 
+### Session Logging
+
+Saving a session log is **required** — not optional. At the end of every agent session, write a `SESSION_LOG.md` in the worktree root documenting what was done.
+
+Agent worker logs are automatically written to `~/.foreman/logs/<runId>.log` and streamed in real time. The SESSION_LOG.md is a higher-level human-readable record.
+
+**SESSION_LOG.md format:**
+
+```markdown
+## Metadata
+- Date: <ISO date>
+- Phase: <explorer | developer | qa | reviewer | finalize>
+- Seed: <seed-id>
+- Run ID: <run-id>
+
+## Key Activities
+- <brief description of each major action taken>
+
+## Artifacts Created
+- <list of files created or modified>
+
+## Notes
+- <any observations, blockers, or context for the next agent>
+```
+
 ### Best Practices
 
 - Check `br ready` at session start to find available work
