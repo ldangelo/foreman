@@ -221,7 +221,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Read and delete config file (contains prompt, not secrets, but clean up)
+  // Read and delete config file (contains env vars including credentials — delete immediately)
   const config: WorkerConfig = JSON.parse(readFileSync(configPath, "utf-8"));
   try { unlinkSync(configPath); } catch { /* already deleted */ }
 
@@ -331,8 +331,8 @@ async function main(): Promise<void> {
         progress.lastToolCall = name;
         progress.lastActivity = new Date().toISOString();
 
-        if ((name === "Write" || name === "Edit") && input?.file_path) {
-          const filePath = String(input.file_path);
+        if ((name === "write" || name === "edit" || name === "Write" || name === "Edit") && (input?.path || input?.file_path)) {
+          const filePath = String(input.path ?? input.file_path);
           if (!progress.filesChanged.includes(filePath)) {
             progress.filesChanged.push(filePath);
           }
@@ -475,8 +475,8 @@ async function runPhase(
         progress.lastToolCall = name;
         progress.lastActivity = new Date().toISOString();
 
-        if ((name === "Write" || name === "Edit") && input?.file_path) {
-          const filePath = String(input.file_path);
+        if ((name === "write" || name === "edit" || name === "Write" || name === "Edit") && (input?.path || input?.file_path)) {
+          const filePath = String(input.path ?? input.file_path);
           if (!progress.filesChanged.includes(filePath)) {
             progress.filesChanged.push(filePath);
           }
@@ -576,9 +576,10 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       let finalizeRetryable = true;
       if (agentMailClient) {
         const foremanMsgs = await agentMailClient.fetchInbox("foreman");
+        const finalizeSender = `finalize-${seedId}`;
         const finalizeMsg = foremanMsgs.find(
           (m) => (m.subject === "phase-complete" || m.subject === "agent-error") &&
-                  m.from === "finalize",
+                  (m.from === finalizeSender || m.from === "finalize"),
         );
         if (finalizeMsg?.subject === "phase-complete") {
           finalizeSucceeded = true;
@@ -735,8 +736,7 @@ async function markStuck(
   const failureNote = `${notePrefix} [${phase.toUpperCase()}] ${reason}`;
   addNotesToBead(seedId, failureNote, projectPath);
   log(`Added failure note to seed ${seedId}`);
-
-  store.close();
+  // Note: do NOT close store here — the caller (main()) owns the store lifecycle.
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

@@ -27,12 +27,18 @@ dist/
 # bv (beads viewer) local config and caches
 .bv/
 
-# br (beads_rust) shell history
+# br (beads_rust) shell history and bv lock
 .beads/.br_history/
+.beads/.bv.lock
 
 # Backup files
 *.bak
 
 # Session logs
 SessionLogs/
+SESSION_LOG.md
+RUN_LOG.md
+
+# Claude Code local config and worktrees
 .claude/settings.local.json
+.claude/worktrees/

@@ -18,11 +18,11 @@ import { homedir } from "node:os";
 import type { ForemanStore } from "../lib/store.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { detectDefaultBranch } from "../lib/git.js";
-import { MergeQueue } from "./merge-queue.js";
+import { MergeQueue, RETRY_CONFIG } from "./merge-queue.js";
 import { Refinery } from "./refinery.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
-import { addNotesToBead } from "./task-backend-ops.js";
+import { addNotesToBead, markBeadFailed } from "./task-backend-ops.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -224,10 +224,43 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         mq.updateStatus(currentEntry.id, "failed", { error: "Test failures" });
         failedCount += report.testFailures.length;
 
-        // Build failure reason for the bead note (summarise first failure)
-        const firstFailure = report.testFailures[0];
-        const errorSummary = firstFailure.error?.slice(0, 800) ?? "no details";
-        mergeFailureReason = `Post-merge tests failed (${report.testFailures.length} failure(s)).\nFirst failure:\n${errorSummary}`;
+        // Check if this seed has exceeded the post-merge test retry limit.
+        //
+        // refinery.mergeCompleted() already called resetSeedToOpen() which returns
+        // the bead to "open" status so the dispatcher re-dispatches it. If the seed
+        // has failed post-merge tests too many times (typically due to pre-existing
+        // failures on the dev branch that are unrelated to the feature branch), we
+        // override that "open" reset with a permanent failure to break the cycle.
+        //
+        // The current failure was already recorded by refinery (run status = "test-failed")
+        // so the count includes it.
+        const testFailedRunsForSeed = store.getRunsByStatuses(["test-failed"], project.id)
+          .filter((r: { seed_id: string }) => r.seed_id === currentEntry.seed_id);
+        const totalTestFailCount = testFailedRunsForSeed.length;
+
+        if (totalTestFailCount >= RETRY_CONFIG.maxRetries) {
+          // Retry limit exhausted — permanently mark the bead as failed to prevent
+          // infinite re-dispatch. The operator must manually re-open if appropriate.
+          await markBeadFailed(currentEntry.seed_id, projectPath);
+          mergeFailureReason = [
+            `Post-merge tests failed ${totalTestFailCount} time(s) — retry limit (${RETRY_CONFIG.maxRetries}) exhausted.`,
+            `Pre-existing failures on the dev branch may be causing false positives.`,
+            `Manual investigation required. Use 'foreman retry ${currentEntry.seed_id}' after fixing dev-branch failures.`,
+          ].join(" ");
+          console.error(
+            `[auto-merge] Seed ${currentEntry.seed_id} permanently failed after ${totalTestFailCount}` +
+            ` test-failed attempts (limit: ${RETRY_CONFIG.maxRetries}). Preventing infinite re-dispatch.`,
+          );
+        } else {
+          // Still within retry limit — build a note explaining the transient failure.
+          const firstFailure = report.testFailures[0];
+          const errorSummary = firstFailure.error?.slice(0, 800) ?? "no details";
+          mergeFailureReason = [
+            `Post-merge tests failed (attempt ${totalTestFailCount}/${RETRY_CONFIG.maxRetries}).`,
+            `Will retry after the developer addresses the failures.`,
+            `\nFirst failure:\n${errorSummary}`,
+          ].join(" ");
+        }
 
         // Send merge-failed mail for each test failure
         for (const failedRun of report.testFailures) {
@@ -236,6 +269,9 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
             branchName: failedRun.branchName,
             reason: "test-failure",
             error: failedRun.error?.slice(0, 400),
+            retryAttempt: totalTestFailCount,
+            retryLimit: RETRY_CONFIG.maxRetries,
+            retryExhausted: totalTestFailCount >= RETRY_CONFIG.maxRetries,
           });
         }
       } else {

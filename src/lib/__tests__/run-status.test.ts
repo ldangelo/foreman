@@ -17,7 +17,7 @@ describe("mapRunStatusToSeedStatus", () => {
   it("maps pr-created to closed", () => {
     expect(mapRunStatusToSeedStatus("pr-created")).toBe("closed");
   });
-  it("maps failed to failed — unexpected merge exception", () => {
+  it("maps failed to failed — unexpected pipeline exception", () => {
     expect(mapRunStatusToSeedStatus("failed")).toBe("failed");
   });
   it("maps stuck to open — agent pipeline stuck, safe to retry", () => {

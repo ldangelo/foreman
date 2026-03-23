@@ -50,7 +50,7 @@ describe("mapRunStatusToSeedStatus", () => {
     expect(mapRunStatusToSeedStatus("completed")).toBe("review");
   });
 
-  it("maps failed to failed — unexpected merge exception", () => {
+  it("maps failed to failed — unexpected pipeline exception", () => {
     expect(mapRunStatusToSeedStatus("failed")).toBe("failed");
   });
 
