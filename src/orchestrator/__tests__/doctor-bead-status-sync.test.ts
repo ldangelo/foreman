@@ -228,7 +228,7 @@ describe("Doctor.checkBeadStatusSync()", () => {
     const tmp = makeTempDir();
     const runs = [makeRun({ seed_id: "seed-abc", status: "failed" })];
     const store = makeStore({ projectPath: tmp, runs });
-    // seed is 'in_progress' but should be 'failed' after a failed run
+    // seed is 'in_progress' but should be 'failed' after pipeline failure
     const taskClient = makeTaskClient({ "seed-abc": "in_progress" });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
@@ -311,7 +311,7 @@ describe("Doctor.checkBeadStatusSync()", () => {
     const store = makeStore({ projectPath: tmp, runs });
     const taskClient = makeTaskClient({
       "seed-abc": "in_progress", // mismatch: completed → review
-      "seed-xyz": "in_progress", // mismatch: failed → open
+      "seed-xyz": "in_progress", // mismatch: failed → failed
     });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
@@ -333,7 +333,7 @@ describe("Doctor.checkBeadStatusSync()", () => {
     const store = makeStore({ projectPath: tmp, runs });
     const taskClient = makeTaskClient({
       "seed-comp": "in_progress",   // completed → review
-      "seed-fail": "in_progress",   // failed → failed (mapRunStatusToSeedStatus("failed") === "failed")
+      "seed-fail": "in_progress",   // failed → failed
       "seed-merged": "in_progress", // merged → closed
     });
 

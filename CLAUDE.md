@@ -260,28 +260,27 @@ git push                # Push to remote
 
 ### Session Logging
 
-Session logging is **required** for every agent session. At the end of your work, write a `SESSION_LOG.md` in the worktree root.
+Saving a session log is **required** — not optional. At the end of every agent session, write a `SESSION_LOG.md` in the worktree root documenting what was done.
 
-The automatic worker log is also written to `~/.foreman/logs/<runId>.log` for reference.
+Agent worker logs are automatically written to `~/.foreman/logs/<runId>.log` and streamed in real time. The SESSION_LOG.md is a higher-level human-readable record.
 
 **SESSION_LOG.md format:**
 
 ```markdown
-# Session Log: <task title>
-
 ## Metadata
 - Date: <ISO date>
-- Seed: <seed ID>
-- Phase: <developer / qa / reviewer / etc>
+- Phase: <explorer | developer | qa | reviewer | finalize>
+- Seed: <seed-id>
+- Run ID: <run-id>
 
 ## Key Activities
-- What you did step by step
+- <brief description of each major action taken>
 
 ## Artifacts Created
-- List of files created or modified
+- <list of files created or modified>
 
-## Decisions
-- Any design decisions or trade-offs made
+## Notes
+- <any observations, blockers, or context for the next agent>
 ```
 
 ### Best Practices
