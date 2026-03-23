@@ -226,12 +226,14 @@ describe("finalize() — push FAILS", () => {
     expect(result.success).toBe(false);
   });
 
-  it("does NOT enqueue to merge queue when push fails", async () => {
+  it("enqueues to merge queue BEFORE push, even when push fails (source-of-truth write)", async () => {
+    // The fix for bd-neph: enqueue happens BEFORE push, so even if push fails
+    // the merge queue entry exists and the branch won't be silently orphaned.
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    expect(mockEnqueueToMergeQueue).not.toHaveBeenCalled();
+    expect(mockEnqueueToMergeQueue).toHaveBeenCalledOnce();
   });
 
-  it("writes FINALIZE_REPORT.md with FAILED push and SKIPPED seed status", async () => {
+  it("writes FINALIZE_REPORT.md with FAILED push and PUSH_FAILED seed status", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
     const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
     expect(existsSync(reportPath)).toBe(true);
@@ -239,7 +241,7 @@ describe("finalize() — push FAILS", () => {
     expect(content).toContain("## Push");
     expect(content).toContain("Status: FAILED");
     expect(content).toContain("## Seed Status");
-    expect(content).toContain("SKIPPED (push failed)");
+    expect(content).toContain("PUSH_FAILED");
   });
 
   it("does not throw even when push fails", async () => {
@@ -257,6 +259,108 @@ describe("finalize() — push FAILS", () => {
         call[1].includes("review"),
     );
     expect(reviewCall).toBeUndefined();
+  });
+});
+
+// ── finalize — enqueue-before-push ordering (bd-neph fix) ────────────────────
+//
+// The core fix for bd-neph: the merge queue entry MUST be written BEFORE the
+// git push.  This closes the crash window where push succeeded but the agent
+// died before enqueue() ran, leaving the pushed branch orphaned in git with
+// no corresponding merge_queue entry.
+//
+// With the new order:
+//   1. Branch verified
+//   2. enqueueToMergeQueue() — entry written with status='pending'
+//   3. git push
+//   4. (even if agent crashes here, entry already exists)
+
+describe("finalize() — enqueue-before-push ordering (bd-neph)", () => {
+  let logFile: string;
+  let tmpDir: string;
+  // Track the call order so we can assert enqueue happened before push
+  const callOrder: string[] = [];
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-order-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    callOrder.length = 0; // reset
+
+    mockExecFileSync.mockReset();
+    mockEnqueueToMergeQueue.mockReset().mockImplementation(() => {
+      callOrder.push("enqueue");
+      return { success: true };
+    });
+
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "push") {
+        callOrder.push("push");
+      }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("calls enqueueToMergeQueue BEFORE git push", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const enqueueIdx = callOrder.indexOf("enqueue");
+    const pushIdx = callOrder.indexOf("push");
+    expect(enqueueIdx).toBeGreaterThanOrEqual(0);
+    expect(pushIdx).toBeGreaterThanOrEqual(0);
+    expect(enqueueIdx).toBeLessThan(pushIdx);
+  });
+
+  it("enqueue is called even when push subsequently fails", async () => {
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "push") {
+        callOrder.push("push");
+        throw new Error("remote: Permission to repo denied.");
+      }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+
+    // Enqueue must have been called even though push failed
+    expect(mockEnqueueToMergeQueue).toHaveBeenCalledOnce();
+    // And enqueue must have happened before push
+    const enqueueIdx = callOrder.indexOf("enqueue");
+    const pushIdx = callOrder.indexOf("push");
+    expect(enqueueIdx).toBeLessThan(pushIdx);
+  });
+
+  it("does NOT enqueue when branch verification fails (branchVerified=false)", async () => {
+    // When we can't verify the branch, we skip both enqueue and push
+    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") throw new Error("not a git repository");
+      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      return Buffer.from("");
+    });
+
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+
+    expect(mockEnqueueToMergeQueue).not.toHaveBeenCalled();
+  });
+
+  it("writes FINALIZE_REPORT.md with Merge Queue section BEFORE Push section", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
+
+    const mergeQueueIdx = content.indexOf("## Merge Queue");
+    const pushIdx = content.indexOf("## Push");
+
+    expect(mergeQueueIdx).toBeGreaterThanOrEqual(0);
+    expect(pushIdx).toBeGreaterThanOrEqual(0);
+    expect(mergeQueueIdx).toBeLessThan(pushIdx);
   });
 });
 
@@ -793,7 +897,9 @@ describe("finalize() — branch verification", () => {
     expect(content).toContain("## Push");
     expect(content).toContain("Status: SKIPPED (branch verification failed)");
     expect(content).toContain("## Seed Status");
-    expect(content).toContain("Status: SKIPPED (push failed)");
+    // When push fails (or is skipped due to branch verification failure),
+    // the Seed Status reflects PUSH_FAILED (branch not pushed).
+    expect(content).toContain("Status: PUSH_FAILED");
   });
 
   it("skips push and returns false when rev-parse itself fails", async () => {

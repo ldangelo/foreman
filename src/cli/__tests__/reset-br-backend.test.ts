@@ -273,14 +273,14 @@ describe("resetSeedToOpen", () => {
     };
   }
 
-  it("does NOT reopen a seed that is already closed (the core bug fix)", async () => {
+  it("reopens a seed that is already closed (foreman reset must always make seeds retryable)", async () => {
     const seeds = makeSeedsClient("closed");
 
     const result = await resetSeedToOpen("bd-completed", seeds);
 
-    expect(result.action).toBe("skipped-closed");
+    expect(result.action).toBe("reset");
     expect(result.previousStatus).toBe("closed");
-    expect(seeds.update).not.toHaveBeenCalled();
+    expect(seeds.update).toHaveBeenCalledWith("bd-completed", { status: "open" });
   });
 
   it("resets a seed that is in_progress to open", async () => {
@@ -355,13 +355,14 @@ describe("resetSeedToOpen", () => {
     expect(seeds.update).not.toHaveBeenCalled();
   });
 
-  it("dry-run: returns 'skipped-closed' for a closed seed (consistent with non-dry-run)", async () => {
+  it("dry-run: returns 'reset' for a closed seed (would reopen, consistent with non-dry-run)", async () => {
     const seeds = makeSeedsClient("closed");
 
     const result = await resetSeedToOpen("bd-completed", seeds, { dryRun: true });
 
-    expect(result.action).toBe("skipped-closed");
+    expect(result.action).toBe("reset");
     expect(result.previousStatus).toBe("closed");
+    // In dry-run, update must NOT be called even though action is "reset"
     expect(seeds.update).not.toHaveBeenCalled();
   });
 
