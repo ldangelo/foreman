@@ -3,7 +3,7 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { runWithPi } from "./pi-runner.js";
+import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
@@ -493,20 +493,12 @@ export class Dispatcher {
       started_at: new Date().toISOString(),
     });
 
-    // 4. Build clean env for Pi (strip CLAUDECODE, ensure PATH includes homebrew)
-    const piEnv: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (k !== "CLAUDECODE" && v !== undefined) piEnv[k] = v;
-    }
-    piEnv.PATH = `/opt/homebrew/bin:${piEnv.PATH ?? ""}`;
-
     try {
-      const planResult = await runWithPi({
+      const planResult = await runWithPiSdk({
         prompt,
         systemPrompt: `You are a planning agent. ${ensembleCommand} for the task: ${seed.title}`,
         cwd: this.projectPath,
         model: PLAN_STEP_CONFIG.model,
-        env: piEnv,
       });
 
       if (planResult.success) {

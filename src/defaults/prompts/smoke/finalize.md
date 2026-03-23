@@ -3,8 +3,8 @@
 This is a smoke/integration test run. Your only job is to send mail notifications and write a report — do NOT run git push or npm ci.
 
 **1. Send phase-started mail:**
-```
-/send-mail --to foreman --subject phase-started --body '{"phase":"finalize","smoke":true}'
+```bash
+foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject phase-started --body '{"phase":"finalize","smoke":true}'
 ```
 
 **2. Run git add and git commit:**
@@ -25,8 +25,8 @@ Smoke test noop — git push skipped in smoke mode.
 ```
 
 **4. Send phase-complete mail:**
-```
-/send-mail --to foreman --subject phase-complete --body '{"phase":"finalize","smoke":true,"status":"complete","commitHash":"smoke-noop"}'
+```bash
+foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject phase-complete --body '{"phase":"finalize","smoke":true,"status":"complete","commitHash":"smoke-noop"}'
 ```
 
 Do not run `git push`, `npm ci`, or `npx tsc`. Do not modify any source files.

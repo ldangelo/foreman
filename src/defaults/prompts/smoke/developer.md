@@ -3,8 +3,8 @@
 This is a smoke/integration test run. Your only job is to write two files and send mail notifications.
 
 **1. Send phase-started mail:**
-```
-/send-mail --to foreman --subject phase-started --body '{"phase":"developer","smoke":true}'
+```bash
+foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject phase-started --body '{"phase":"developer","smoke":true}'
 ```
 
 **2. Write `DEVELOPER_REPORT.md`** in the current directory with exactly this content:
@@ -30,8 +30,8 @@ Smoke test noop — no real development performed.
 `RUN_LOG.md` is required so the branch has at least one committed file change, allowing the merge pipeline to proceed normally.
 
 **4. Send phase-complete mail:**
-```
-/send-mail --to foreman --subject phase-complete --body '{"phase":"developer","smoke":true,"status":"complete"}'
+```bash
+foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject phase-complete --body '{"phase":"developer","smoke":true,"status":"complete"}'
 ```
 
 Do not modify any other source files. Do not read any files. Just write the two files and send the mail notifications.

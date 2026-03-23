@@ -14,7 +14,8 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { execFileSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
-import { runWithPi } from "./pi-runner.js";
+import { runWithPiSdk } from "./pi-sdk-runner.js";
+import { createSendMailTool } from "./pi-sdk-tools.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS, getSessionLogBudget } from "../lib/config.js";
@@ -38,7 +39,6 @@ import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
-import { PI_PHASE_CONFIGS } from "./pi-rpc-spawn-strategy.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -322,19 +322,13 @@ async function main(): Promise<void> {
 
   try {
     // Build clean env for Pi (strip CLAUDECODE, convert to string-only map)
-    const piEnv: Record<string, string> = {};
-    for (const [k, v] of Object.entries(env)) {
-      if (k !== "CLAUDECODE" && v !== undefined) piEnv[k] = v as string;
-    }
-
-    const piResult = await runWithPi({
+    const piResult = await runWithPiSdk({
       prompt,
       systemPrompt: `You are an agent working on task: ${seedTitle}`,
       cwd: worktreePath,
       model,
-      env: piEnv,
       logFile,
-      onToolCall: (name, input) => {
+      onToolCall: (name: string, input: Record<string, unknown>) => {
         progress.toolCalls++;
         progress.toolBreakdown[name] = (progress.toolBreakdown[name] ?? 0) + 1;
         progress.lastToolCall = name;
@@ -348,7 +342,7 @@ async function main(): Promise<void> {
         }
         progressDirty = true;
       },
-      onTurnEnd: (turn) => {
+      onTurnEnd: (turn: number) => {
         progress.turns = turn;
         progress.lastActivity = new Date().toISOString();
         progressDirty = true;
@@ -447,6 +441,7 @@ async function runPhase(
   logFile: string,
   store: ForemanStore,
   notifyClient: NotificationClient,
+  agentMailClient?: AnyMailClient | null,
 ): Promise<PhaseResult> {
   const roleConfig = ROLE_CONFIGS[role];
   progress.currentPhase = role;
@@ -457,33 +452,20 @@ async function runPhase(
   await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxBudgetUsd=${roleConfig.maxBudgetUsd}, allowedTools=[${allowedSummary}])\n`);
   log(`[${role.toUpperCase()}] Starting phase for ${config.seedId} (${roleConfig.allowedTools.length} allowed tools, ${disallowedTools.length} disallowed)`);
 
-  // Build clean env for Pi (string-only, strip CLAUDECODE)
-  const piEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(config.env)) {
-    if (k !== "CLAUDECODE" && v !== undefined) piEnv[k] = v;
-  }
-
-  // Inject Pi extension env vars so foreman-tool-gate, foreman-budget, and
-  // foreman-audit extensions can enforce phase-specific constraints.
-  piEnv.PI_EXTENSIONS = "foreman-tool-gate,foreman-budget,foreman-audit";
-  piEnv.FOREMAN_PHASE = role;
-  piEnv.FOREMAN_AGENT_ROLE = `${role}-${config.seedId}`;
-  piEnv.FOREMAN_ALLOWED_TOOLS = roleConfig.allowedTools.join(",");
-  piEnv.FOREMAN_RUN_ID = config.runId;
-  piEnv.FOREMAN_SEED_ID = config.seedId;
-  const phaseConfig = PI_PHASE_CONFIGS[role];
-  if (phaseConfig) {
-    piEnv.FOREMAN_MAX_TURNS = String(phaseConfig.maxTurns);
-    piEnv.FOREMAN_MAX_TOKENS = String(phaseConfig.maxTokens);
+  // Build custom tools for this phase (e.g. send_mail).
+  const customTools = [];
+  if (agentMailClient) {
+    customTools.push(createSendMailTool(agentMailClient, `${role}-${config.seedId}`));
   }
 
   try {
-    const phaseResult = await runWithPi({
+    const phaseResult = await runWithPiSdk({
       prompt,
       systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
       cwd: config.worktreePath,
       model: roleConfig.model,
-      env: piEnv,
+      allowedTools: roleConfig.allowedTools,
+      customTools,
       logFile,
       onToolCall: (name, input) => {
         progress.toolCalls++;
@@ -641,7 +623,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       await registerAgent(agentMailClient, `explorer-${seedId}`);
       sendMail(agentMailClient, "foreman", "phase-started", { seedId, phase: "explorer" });
       rotateReport(worktreePath, "EXPLORER_REPORT.md");
-      const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description, comments, runId, promptOpts), config, progress, logFile, store, notifyClient);
+      const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description, comments, runId, promptOpts), config, progress, logFile, store, notifyClient, agentMailClient);
       phaseRecords.push({
         name: "explorer",
         skipped: false,
@@ -704,7 +686,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       const devResult = await runPhase(
         "developer",
         developerPrompt(seedId, seedTitle, description, hasExplorerReport, feedbackContext, comments, runId, promptOpts),
-        config, progress, logFile, store, notifyClient,
+        config, progress, logFile, store, notifyClient, agentMailClient,
       );
       // AC-007-3: Release file reservations on phase completion or failure.
       releaseFiles(agentMailClient, [worktreePath], developerAgentName);
@@ -741,7 +723,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // AC-006-1: Register the QA agent with Agent Mail before the phase starts.
       await registerAgent(agentMailClient, `qa-${seedId}`);
       rotateReport(worktreePath, "QA_REPORT.md");
-      const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle, runId, promptOpts), config, progress, logFile, store, notifyClient);
+      const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle, runId, promptOpts), config, progress, logFile, store, notifyClient, agentMailClient);
       phaseRecords.push({
         name: devRetries === 0 ? "qa" : `qa (retry ${devRetries})`,
         skipped: false,
@@ -800,7 +782,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // AC-006-1: Register the reviewer agent with Agent Mail before the phase starts.
       await registerAgent(agentMailClient, `reviewer-${seedId}`);
       rotateReport(worktreePath, "REVIEW.md");
-      const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description, comments, runId, promptOpts), config, progress, logFile, store, notifyClient);
+      const reviewResult = await runPhase("reviewer", reviewerPrompt(seedId, seedTitle, description, comments, runId, promptOpts), config, progress, logFile, store, notifyClient, agentMailClient);
       phaseRecords.push({
         name: "reviewer",
         skipped: false,
@@ -853,7 +835,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       const devResult = await runPhase(
         "developer",
         developerPrompt(seedId, seedTitle, description, hasExplorerReport, reviewFeedback, comments, runId, promptOpts),
-        config, progress, logFile, store, notifyClient,
+        config, progress, logFile, store, notifyClient, agentMailClient,
       );
       // AC-007-3: Release file reservations on phase completion or failure.
       releaseFiles(agentMailClient, [worktreePath], reviewFeedbackDevAgent);
@@ -880,7 +862,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       addLabelsToBead(seedId, ["phase:developer"], config.projectPath);
 
       rotateReport(worktreePath, "QA_REPORT.md");
-      const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle, runId, promptOpts), config, progress, logFile, store, notifyClient);
+      const qaResult = await runPhase("qa", qaPrompt(seedId, seedTitle, runId, promptOpts), config, progress, logFile, store, notifyClient, agentMailClient);
       phaseRecords.push({
         name: `qa (review-feedback)`,
         skipped: false,
@@ -959,7 +941,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   const finalizePhaseResult = await runPhase(
     "finalize",
     finalizePrompt(seedId, seedTitle, runId, undefined, promptOpts),
-    config, progress, logFile, store, notifyClient,
+    config, progress, logFile, store, notifyClient, agentMailClient,
   );
   phaseRecords.push({
     name: "finalize",

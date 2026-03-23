@@ -159,24 +159,17 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(existsSync(WORKER_SRC)).toBe(true);
   });
 
-  it("single-agent mode uses runWithPi instead of SDK query()", () => {
+  it("single-agent mode uses runWithPiSdk instead of old SDK query()", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
-    // Single-agent mode must use runWithPi for Pi RPC
-    expect(source).toContain("runWithPi(");
-    // Must NOT use the old SDK query() call in this file
+    // Single-agent mode must use runWithPiSdk for Pi SDK
+    expect(source).toContain("runWithPiSdk(");
+    // Must NOT use the old Claude Agent SDK query() call
     expect(source).not.toContain("from \"@anthropic-ai/claude-agent-sdk\"");
   });
 
-  it("single-agent mode strips CLAUDECODE from Pi env", () => {
+  it("pipeline runPhase() uses runWithPiSdk for phase execution", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
-    // Pi env construction must strip CLAUDECODE to avoid nested session errors
-    expect(source).toContain("CLAUDECODE");
-  });
-
-  it("pipeline runPhase() uses runWithPi for phase execution", () => {
-    const source = readFileSync(WORKER_SRC, "utf-8");
-    // The runPhase() function must use runWithPi
-    const pipelineMatch = source.match(/runWithPi\(\{/);
+    const pipelineMatch = source.match(/runWithPiSdk\(\{/);
     expect(pipelineMatch).not.toBeNull();
   });
 

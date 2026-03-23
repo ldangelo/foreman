@@ -12,12 +12,12 @@ import type { MergeValidator, ValidationResult } from "../merge-validator.js";
 
 // ── Mock pi-runner ────────────────────────────────────────────────────────
 
-vi.mock("../pi-runner.js", () => ({
-  runWithPi: vi.fn(),
+vi.mock("../pi-sdk-runner.js", () => ({
+  runWithPiSdk: vi.fn(),
 }));
 
-import { runWithPi } from "../pi-runner.js";
-const mockRunWithPi = vi.mocked(runWithPi);
+import { runWithPiSdk } from "../pi-sdk-runner.js";
+const mockRunWithPi = vi.mocked(runWithPiSdk);
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
