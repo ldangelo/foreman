@@ -18,6 +18,7 @@ import {
   resolveWorkflowName,
   WorkflowConfigError,
   BUNDLED_WORKFLOW_NAMES,
+  type WorkflowSetupStep,
 } from "../workflow-loader.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -87,6 +88,140 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[0].name).toBe("explorer");
     // unknown fields are simply not included
     expect((config.phases[0] as unknown as Record<string, unknown>)["unknown"]).toBeUndefined();
+  });
+});
+
+// ── validateWorkflowConfig — setup block ─────────────────────────────────────
+
+describe("validateWorkflowConfig — setup block", () => {
+  const minimalPhases = [{ name: "finalize", builtin: true }];
+
+  it("parses a setup block with all fields", () => {
+    const raw = {
+      name: "w",
+      setup: [
+        { command: "npm install --prefer-offline --no-audit", description: "Install deps", failFatal: true },
+        { command: "make build", failFatal: false },
+      ],
+      phases: minimalPhases,
+    };
+    const config = validateWorkflowConfig(raw, "w");
+    expect(config.setup).toHaveLength(2);
+    const [step0, step1] = config.setup as WorkflowSetupStep[];
+    expect(step0.command).toBe("npm install --prefer-offline --no-audit");
+    expect(step0.description).toBe("Install deps");
+    expect(step0.failFatal).toBe(true);
+    expect(step1.command).toBe("make build");
+    expect(step1.failFatal).toBe(false);
+  });
+
+  it("setup is optional — no setup block means config.setup is undefined", () => {
+    const raw = { name: "w", phases: minimalPhases };
+    const config = validateWorkflowConfig(raw, "w");
+    expect(config.setup).toBeUndefined();
+  });
+
+  it("failFatal defaults to undefined (caller treats undefined as true)", () => {
+    const raw = {
+      name: "w",
+      setup: [{ command: "npm install" }],
+      phases: minimalPhases,
+    };
+    const config = validateWorkflowConfig(raw, "w");
+    expect(config.setup![0].failFatal).toBeUndefined();
+  });
+
+  it("throws WorkflowConfigError when setup[i].command is missing", () => {
+    const raw = {
+      name: "w",
+      setup: [{ description: "no command here" }],
+      phases: minimalPhases,
+    };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+
+  it("throws WorkflowConfigError when setup[i].command is empty string", () => {
+    const raw = {
+      name: "w",
+      setup: [{ command: "" }],
+      phases: minimalPhases,
+    };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+
+  it("throws WorkflowConfigError when setup is not an array", () => {
+    const raw = {
+      name: "w",
+      setup: "npm install",
+      phases: minimalPhases,
+    };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+
+  it("throws WorkflowConfigError when a setup entry is not an object", () => {
+    const raw = {
+      name: "w",
+      setup: ["npm install"],
+      phases: minimalPhases,
+    };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+});
+
+describe("loadWorkflowConfig — setup block integration", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("bundled default workflow has a setup block", () => {
+    const config = loadWorkflowConfig("default", tmpDir);
+    expect(config.setup).toBeDefined();
+    expect(Array.isArray(config.setup)).toBe(true);
+    expect(config.setup!.length).toBeGreaterThan(0);
+    expect(config.setup![0].command).toBeTruthy();
+  });
+
+  it("bundled smoke workflow has a setup block", () => {
+    const config = loadWorkflowConfig("smoke", tmpDir);
+    expect(config.setup).toBeDefined();
+    expect(config.setup![0].command).toBeTruthy();
+  });
+
+  it("project-local workflow without setup block has undefined setup", () => {
+    writeWorkflowFile(tmpDir, "default", `
+name: default
+phases:
+  - name: finalize
+    builtin: true
+`);
+    const config = loadWorkflowConfig("default", tmpDir);
+    expect(config.setup).toBeUndefined();
+  });
+
+  it("project-local workflow with setup block parses correctly", () => {
+    writeWorkflowFile(tmpDir, "default", `
+name: default
+setup:
+  - command: bundle install
+    description: Install Ruby gems
+    failFatal: true
+phases:
+  - name: developer
+    prompt: developer.md
+  - name: finalize
+    builtin: true
+`);
+    const config = loadWorkflowConfig("default", tmpDir);
+    expect(config.setup).toHaveLength(1);
+    expect(config.setup![0].command).toBe("bundle install");
+    expect(config.setup![0].description).toBe("Install Ruby gems");
+    expect(config.setup![0].failFatal).toBe(true);
   });
 });
 

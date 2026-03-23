@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
+import type { WorkflowSetupStep } from "./workflow-loader.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -53,6 +54,45 @@ export async function installDependencies(dir: string): Promise<void> {
       .filter(Boolean)
       .join("\n") || err.message;
     throw new Error(`${pm} install failed in ${dir}: ${combined}`);
+  }
+}
+
+/**
+ * Run workflow setup steps in a worktree directory.
+ *
+ * Each step's `command` is split on whitespace to form an argv array and
+ * executed via execFileAsync with `cwd` set to `dir`.
+ *
+ * Steps with `failFatal !== false` (i.e. default true) throw on non-zero exit.
+ * Steps with `failFatal === false` log a warning and continue.
+ */
+export async function runSetupSteps(
+  dir: string,
+  steps: WorkflowSetupStep[],
+): Promise<void> {
+  for (const step of steps) {
+    const label = step.description ?? step.command;
+    console.error(`[setup] Running: ${step.command}`);
+
+    const argv = step.command.trim().split(/\s+/);
+    const [cmd, ...args] = argv;
+
+    try {
+      await execFileAsync(cmd, args, { cwd: dir, maxBuffer: 10 * 1024 * 1024 });
+    } catch (err: unknown) {
+      const e = err as { stdout?: string; stderr?: string; message?: string };
+      const joined = [e.stdout, e.stderr]
+        .map((s) => (s ?? "").trim())
+        .filter(Boolean)
+        .join("\n");
+      const combined = joined || (e.message ?? String(err));
+
+      if (step.failFatal !== false) {
+        throw new Error(`Setup step failed (${label}): ${combined}`);
+      } else {
+        console.error(`[setup] Warning: step failed (non-fatal) — ${label}: ${combined}`);
+      }
+    }
   }
 }
 
@@ -179,6 +219,7 @@ export async function createWorktree(
   repoPath: string,
   seedId: string,
   baseBranch?: string,
+  setupSteps?: WorkflowSetupStep[],
 ): Promise<{ worktreePath: string; branchName: string }> {
   const base = baseBranch ?? await getCurrentBranch(repoPath);
   const branchName = `foreman/${seedId}`;
@@ -220,7 +261,12 @@ export async function createWorktree(
       }
     }
     // Reinstall in case dependencies changed after rebase
-    await installDependencies(worktreePath);
+    if (setupSteps && setupSteps.length > 0) {
+      await runSetupSteps(worktreePath, setupSteps);
+    } else {
+      // Fallback: Node.js projects get npm/yarn/pnpm install for backward compat
+      await installDependencies(worktreePath);
+    }
     return { worktreePath, branchName };
   }
 
@@ -240,8 +286,13 @@ export async function createWorktree(
     }
   }
 
-  // Install Node.js dependencies in the new worktree
-  await installDependencies(worktreePath);
+  // Run setup steps (or fallback to Node.js dependency install)
+  if (setupSteps && setupSteps.length > 0) {
+    await runSetupSteps(worktreePath, setupSteps);
+  } else {
+    // Fallback: Node.js projects get npm/yarn/pnpm install for backward compat
+    await installDependencies(worktreePath);
+  }
 
   return { worktreePath, branchName };
 }

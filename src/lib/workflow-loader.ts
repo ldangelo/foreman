@@ -48,6 +48,19 @@ import { load as yamlLoad } from "js-yaml";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/**
+ * A single setup step from the workflow YAML `setup` block.
+ * Setup steps run before the pipeline phases begin (e.g. dependency installation).
+ */
+export interface WorkflowSetupStep {
+  /** Shell command to run (split on whitespace to form argv). */
+  command: string;
+  /** If true (default), a non-zero exit aborts the pipeline. */
+  failFatal?: boolean;
+  /** Human-readable description for logs. */
+  description?: string;
+}
+
 /** Per-phase configuration in a workflow YAML. */
 export interface WorkflowPhaseConfig {
   /** Phase name: "explorer" | "developer" | "qa" | "reviewer" | "finalize" | custom */
@@ -82,6 +95,11 @@ export interface WorkflowPhaseConfig {
 export interface WorkflowConfig {
   /** Workflow name (e.g. "default", "smoke"). */
   name: string;
+  /**
+   * Optional setup steps to run before pipeline phases begin.
+   * When present, these replace the Node.js-specific installDependencies() fallback.
+   */
+  setup?: WorkflowSetupStep[];
   /** Ordered list of phases to execute. */
   phases: WorkflowPhaseConfig[];
 }
@@ -133,6 +151,31 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
 
   const name = typeof raw["name"] === "string" ? raw["name"] : workflowName;
 
+  // ── Parse optional setup block ─────────────────────────────────────────────
+  let setup: WorkflowSetupStep[] | undefined;
+  if (raw["setup"] !== undefined) {
+    if (!Array.isArray(raw["setup"])) {
+      throw new WorkflowConfigError(workflowName, "'setup' must be an array");
+    }
+    setup = [];
+    for (let i = 0; i < raw["setup"].length; i++) {
+      const s = raw["setup"][i];
+      if (!isRecord(s)) {
+        throw new WorkflowConfigError(workflowName, `setup[${i}] must be an object`);
+      }
+      if (typeof s["command"] !== "string" || !s["command"]) {
+        throw new WorkflowConfigError(
+          workflowName,
+          `setup[${i}].command must be a non-empty string`,
+        );
+      }
+      const step: WorkflowSetupStep = { command: s["command"] as string };
+      if (typeof s["failFatal"] === "boolean") step.failFatal = s["failFatal"];
+      if (typeof s["description"] === "string") step.description = s["description"];
+      setup.push(step);
+    }
+  }
+
   if (!Array.isArray(raw["phases"])) {
     throw new WorkflowConfigError(workflowName, "missing required 'phases' array");
   }
@@ -163,7 +206,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     throw new WorkflowConfigError(workflowName, "phases array must not be empty");
   }
 
-  return { name, phases };
+  const config: WorkflowConfig = { name, phases };
+  if (setup !== undefined) config.setup = setup;
+  return config;
 }
 
 // ── Loader ────────────────────────────────────────────────────────────────────

@@ -3,6 +3,10 @@
 # Used when a bead has the `workflow:smoke` label or type "smoke".
 # Designed for fast, low-cost validation — not for production tasks.
 name: smoke
+setup:
+  - command: npm install --prefer-offline --no-audit
+    description: Install Node.js dependencies
+    failFatal: true
 phases:
   - name: explorer
     prompt: explorer.md

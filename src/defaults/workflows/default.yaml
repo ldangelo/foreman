@@ -3,6 +3,10 @@
 # This is the standard Foreman pipeline. All bead types except "smoke" use
 # this workflow unless overridden by a `workflow:<name>` label.
 name: default
+setup:
+  - command: npm install --prefer-offline --no-audit
+    description: Install Node.js dependencies
+    failFatal: true
 phases:
   - name: explorer
     prompt: explorer.md

@@ -16,6 +16,7 @@ import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
 import { PiRpcSpawnStrategy, isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
+import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -211,11 +212,23 @@ export class Dispatcher {
           log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
         }
 
+        // 1a. Load workflow config to get setup steps for worktree initialization
+        const resolvedWorkflow = resolveWorkflowName(seedInfo.type ?? "feature", seedInfo.labels);
+        let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
+        try {
+          const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
+          setupSteps = wfConfig.setup;
+        } catch {
+          // Non-fatal: fall back to default installDependencies behavior
+          log(`[foreman] Could not load workflow config '${resolvedWorkflow}' for setup steps — using default dependency install`);
+        }
+
         // 2. Create git worktree (optionally branched from a dependency branch)
         const { worktreePath, branchName } = await createWorktree(
           this.projectPath,
           seed.id,
           baseBranch,
+          setupSteps,
         );
 
         // 3. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
