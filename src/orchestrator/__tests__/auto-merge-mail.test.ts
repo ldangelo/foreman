@@ -88,10 +88,19 @@ vi.mock("../../lib/store.js", () => ({
     this.getDb = mockGetDb;
     this.getRun = mockGetRun;
     this.sendMessage = mockSendMessage;
+    this.getRunsByStatuses = vi.fn().mockReturnValue([]);
   }),
 }));
 
-vi.mock("../merge-queue.js", () => ({ MergeQueue: MockMergeQueue }));
+vi.mock("../task-backend-ops.js", () => ({
+  addNotesToBead: vi.fn(),
+  markBeadFailed: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../merge-queue.js", () => ({
+  MergeQueue: MockMergeQueue,
+  RETRY_CONFIG: { maxRetries: 3, initialDelayMs: 60_000, maxDelayMs: 3_600_000, backoffMultiplier: 2 },
+}));
 vi.mock("../refinery.js", () => ({ Refinery: MockRefinery }));
 vi.mock("../../lib/git.js", () => ({
   detectDefaultBranch: mockDetectDefaultBranch,
@@ -107,6 +116,7 @@ function makeStore(): {
   getDb: ReturnType<typeof vi.fn>;
   getRun: ReturnType<typeof vi.fn>;
   sendMessage: ReturnType<typeof vi.fn>;
+  getRunsByStatuses: ReturnType<typeof vi.fn>;
 } {
   return {
     close: vi.fn(),
@@ -114,6 +124,7 @@ function makeStore(): {
     getDb: mockGetDb,
     getRun: mockGetRun,
     sendMessage: mockSendMessage,
+    getRunsByStatuses: vi.fn().mockReturnValue([]),
   };
 }
 
