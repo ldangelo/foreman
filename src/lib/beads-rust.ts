@@ -36,6 +36,14 @@ export interface BrIssueDetail extends BrIssue {
   notes?: string | null;
 }
 
+export interface BrComment {
+  id: number;
+  issue_id: string;
+  author: string;
+  text: string;
+  created_at: string;
+}
+
 // ── Low-level helper ────────────────────────────────────────────────────
 
 /**
@@ -220,6 +228,20 @@ export class BeadsRustClient implements ITaskClient {
     if (opts?.status) args.push("--status", opts.status);
     if (opts?.label) args.push("--label", opts.label);
     return ((await execBr(args, this.projectPath)) as BrIssue[]) ?? [];
+  }
+
+  /**
+   * Fetch comments for an issue and return them as a formatted markdown string.
+   * Returns null if there are no comments or the fetch fails.
+   */
+  async comments(id: string): Promise<string | null> {
+    await this.requireInit();
+    const result = await execBr(["comments", id], this.projectPath);
+    const items = (Array.isArray(result) ? result : []) as BrComment[];
+    if (items.length === 0) return null;
+    return items
+      .map((c) => `**${c.author}** (${c.created_at}):\n${c.text}`)
+      .join("\n\n");
   }
 
   // ── Private helpers ─────────────────────────────────────────────────

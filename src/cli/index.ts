@@ -19,6 +19,9 @@ import { stopCommand } from "./commands/stop.js";
 import { sentinelCommand } from "./commands/sentinel.js";
 import { retryCommand } from "./commands/retry.js";
 import { purgeZombieRunsCommand } from "./commands/purge-zombie-runs.js";
+import { inboxCommand } from "./commands/inbox.js";
+import { mailCommand } from "./commands/mail.js";
+import { debugCommand } from "./commands/debug.js";
 
 const program = new Command();
 
@@ -45,5 +48,8 @@ program.addCommand(stopCommand);
 program.addCommand(sentinelCommand);
 program.addCommand(retryCommand);
 program.addCommand(purgeZombieRunsCommand);
+program.addCommand(inboxCommand);
+program.addCommand(mailCommand);
+program.addCommand(debugCommand);
 
 program.parse();

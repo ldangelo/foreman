@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { ForemanStore } from "../lib/store.js";
 import type { BeadGraph } from "../lib/beads.js";
 import type { UpdateOptions } from "../lib/task-client.js";
-import { mergeWorktree, removeWorktree, detectDefaultBranch } from "../lib/git.js";
+import { mergeWorktree, removeWorktree, detectDefaultBranch, gitBranchExists } from "../lib/git.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -82,27 +82,28 @@ export class Refinery {
   }
 
   /**
-   * Scan a directory for unresolved git conflict markers in source files.
-   * Checks for <<<<<<< and ||||||| (diff3 style) markers.
-   * Returns a list of files containing markers (relative to worktreePath), or an empty array if clean.
+   * Scan the committed diff between branchName and targetBranch for conflict markers.
+   * Only looks at committed content (git diff), never at uncommitted working-tree files.
+   * Uncommitted conflict markers (e.g. from a failed agent rebase) are intentionally ignored —
+   * they don't exist in the branch that will be merged.
+   * Returns a list of files containing markers (relative to repo root), or an empty array if clean.
    */
-  private async scanForConflictMarkers(worktreePath: string): Promise<string[]> {
-    const extensions = ["*.ts", "*.tsx", "*.js", "*.jsx", "*.mts", "*.mjs"];
-    const includeArgs = extensions.flatMap((ext) => ["--include", ext]);
+  private async scanForConflictMarkers(branchName: string, targetBranch: string): Promise<string[]> {
     try {
-      const { stdout } = await execFileAsync(
-        "grep",
-        ["-rl", ...includeArgs, "--exclude-dir=node_modules", "--exclude-dir=.git", "-e", "<<<<<<<", "-e", "|||||||", worktreePath],
-        { maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
-      );
-      const lines = stdout.trim().split("\n").filter(Boolean);
-      // Return paths relative to worktreePath
-      return lines.map((f) => f.startsWith(worktreePath) ? f.slice(worktreePath.length).replace(/^\//, "") : f);
-    } catch (err: unknown) {
-      // grep exits with code 1 when no matches are found — that's a clean result
-      const exitCode = (err as NodeJS.ErrnoException & { code?: number }).code;
-      if (exitCode === 1) return [];
-      // Any other error (e.g. directory missing) — return clean to avoid blocking merge
+      const diff = await git(["diff", `${targetBranch}..${branchName}`, "--"], this.projectPath);
+      if (!diff.trim()) return [];
+      const files = new Set<string>();
+      let currentFile = "";
+      for (const line of diff.split("\n")) {
+        if (line.startsWith("+++ b/")) {
+          currentFile = line.slice(6); // strip "+++ b/"
+        } else if ((line.startsWith("+<<<<<<<") || line.startsWith("+|||||||")) && currentFile) {
+          files.add(currentFile);
+        }
+      }
+      return [...files];
+    } catch {
+      // Any error (e.g. branch not found) — return clean to avoid blocking merge
       return [];
     }
   }
@@ -179,6 +180,25 @@ export class Refinery {
   }
 
   /**
+   * Fire-and-forget helper to send a mail message via the store.
+   * Never throws — failures are silently ignored (mail is optional infrastructure).
+   */
+  private sendMail(
+    runId: string,
+    subject: string,
+    body: Record<string, unknown>,
+  ): void {
+    try {
+      this.store.sendMessage(runId, "refinery", "foreman", subject, JSON.stringify({
+        ...body,
+        timestamp: new Date().toISOString(),
+      }));
+    } catch {
+      // Non-fatal — mail is optional infrastructure
+    }
+  }
+
+  /**
    * Attempt to add a note to a bead explaining what went wrong.
    * Non-fatal — a failure to annotate the bead must not mask the original error.
    */
@@ -190,6 +210,50 @@ export class Refinery {
       // Non-fatal: best-effort annotation
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[Refinery] Failed to add failure note to bead ${seedId}: ${message}`);
+    }
+  }
+
+  /**
+   * After a successful merge of `mergedBranch` into `targetBranch`, find all
+   * stacked branches (seeds whose worktree was branched from `mergedBranch`)
+   * and rebase them onto `targetBranch` so they pick up the latest code.
+   *
+   * Non-fatal: failures are logged as warnings; they do not abort the merge.
+   */
+  private async rebaseStackedBranches(
+    mergedBranch: string,
+    targetBranch: string,
+  ): Promise<void> {
+    try {
+      // Query runs that were stacked on the just-merged branch
+      const stackedRuns = this.store.getRunsByBaseBranch(mergedBranch);
+      if (stackedRuns.length === 0) return;
+
+      for (const stackedRun of stackedRuns) {
+        // Only rebase active (non-terminal) runs
+        const activeStatuses: import("../lib/store.js").Run["status"][] = ["pending", "running", "completed"];
+        if (!activeStatuses.includes(stackedRun.status)) continue;
+
+        const stackedBranch = `foreman/${stackedRun.seed_id}`;
+        const branchExists = await gitBranchExists(this.projectPath, stackedBranch);
+        if (!branchExists) continue;
+
+        try {
+          await git(["rebase", "--onto", targetBranch, mergedBranch, stackedBranch], this.projectPath);
+          console.error(`[Refinery] Rebased stacked branch ${stackedBranch} onto ${targetBranch} (was on ${mergedBranch})`);
+          // Update the run's base_branch to reflect it's now on targetBranch
+          this.store.updateRun(stackedRun.id, { base_branch: null });
+        } catch (rebaseErr: unknown) {
+          const msg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+          console.warn(`[Refinery] Warning: failed to rebase stacked branch ${stackedBranch} onto ${targetBranch}: ${msg.slice(0, 300)}`);
+          // Abort any partial rebase to leave the repo in a clean state
+          try { await git(["rebase", "--abort"], this.projectPath); } catch { /* already clean */ }
+        }
+      }
+    } catch (err: unknown) {
+      // Non-fatal: log and continue — stacked rebase failure must not block the merge
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[Refinery] Warning: rebaseStackedBranches failed: ${msg.slice(0, 200)}`);
     }
   }
 
@@ -386,12 +450,37 @@ export class Refinery {
       const branchName = `foreman/${run.seed_id}`;
 
       try {
-        // Scan for unresolved conflict markers in source files before attempting merge.
-        // If any are found, skip rebase and create a PR for manual resolution.
-        if (run.worktree_path) {
-          const markedFiles = await this.scanForConflictMarkers(run.worktree_path);
+        // Early guard: if the branch has no unique commits vs target, the agent committed
+        // nothing. Creating a PR would fail ("no commits between ..."). Don't reset to open
+        // (that would cause infinite redispatch to the same broken worktree). Mark as a
+        // conflict so the user can investigate.
+        const branchCommits = await git(["log", "--oneline", `${targetBranch}..${branchName}`], this.projectPath).catch(() => "");
+        if (!branchCommits.trim()) {
+          console.warn(`[Refinery] Branch ${branchName} has no commits beyond ${targetBranch} — agent may not have committed work`);
+          await this.addFailureNote(run.seed_id, `Branch ${branchName} has no unique commits beyond ${targetBranch}. The agent may not have committed its work. Manual intervention required — do not auto-reset.`);
+          this.sendMail(run.id, "merge-failed", {
+            seedId: run.seed_id,
+            branchName,
+            reason: "no-commits",
+            detail: `Branch ${branchName} has no unique commits beyond ${targetBranch}`,
+          });
+          conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
+          continue;
+        }
+
+        // Scan for conflict markers in COMMITTED branch content (not working tree).
+        // Working-tree conflict markers (e.g. leftover from a failed agent rebase) are
+        // intentionally ignored — they don't exist in the commits that will be merged.
+        {
+          const markedFiles = await this.scanForConflictMarkers(branchName, targetBranch);
           if (markedFiles.length > 0) {
             await resetSeedToOpen(run.seed_id, this.projectPath);
+            this.sendMail(run.id, "merge-failed", {
+              seedId: run.seed_id,
+              branchName,
+              reason: "conflict-markers",
+              conflictFiles: markedFiles,
+            });
             const pr = await this.createPrForConflict(
               run,
               branchName,
@@ -465,13 +554,22 @@ export class Refinery {
             if (stashedBeforeRebase) {
               try { await git(["stash", "pop"], this.projectPath); } catch { /* best effort */ }
             }
+            // Add failure note before resetting so the bead records why it was reset
+            await this.addFailureNote(
+              run.seed_id,
+              `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — branch reset to open for retry. Rebase conflicts detected.`,
+            );
             // Rebase failed — reset seed to open so it can be retried, then create a PR for manual conflict resolution
             await resetSeedToOpen(run.seed_id, this.projectPath);
+            this.sendMail(run.id, "merge-failed", {
+              seedId: run.seed_id,
+              branchName,
+              reason: "rebase-conflict",
+            });
             const pr = await this.createPrForConflict(run, branchName, targetBranch, "Rebase conflicts");
             if (pr) {
               prsCreated.push(pr);
             } else {
-              await this.addFailureNote(run.seed_id, "Merge conflict: rebase failed. PR creation also failed — manual intervention required.");
               conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
             }
             continue;
@@ -502,15 +600,26 @@ export class Refinery {
               // merge --abort may fail if already clean
             }
 
+            // Add failure note before resetting so the bead records why it was reset
+            await this.addFailureNote(
+              run.seed_id,
+              `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — branch reset to open for retry. Conflicting files: ${codeConflicts.join(", ")}`,
+            );
+
             // Reset seed to open so it can be retried after manual conflict resolution
             await resetSeedToOpen(run.seed_id, this.projectPath);
+            this.sendMail(run.id, "merge-failed", {
+              seedId: run.seed_id,
+              branchName,
+              reason: "merge-conflict",
+              conflictFiles: codeConflicts,
+            });
 
             const pr = await this.createPrForConflict(run, branchName, targetBranch,
               `Conflicts in: ${codeConflicts.join(", ")}`);
             if (pr) {
               prsCreated.push(pr);
             } else {
-              await this.addFailureNote(run.seed_id, `Merge conflict: code conflicts in ${codeConflicts.join(", ")}. PR creation also failed — manual intervention required.`);
               conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: codeConflicts });
             }
             continue;
@@ -535,6 +644,12 @@ export class Refinery {
             // Revert the merge + archive commits
             await git(["reset", "--hard", preMergeHead], this.projectPath);
 
+            // Add failure note before resetting so the bead records why it was reset
+            await this.addFailureNote(
+              run.seed_id,
+              `Merge failed: post-merge tests failed on ${new Date().toISOString().slice(0, 10)} — branch reset for retry. ${testResult.output.slice(0, 300)}`,
+            );
+
             // Reset seed to open so it can be retried
             await resetSeedToOpen(run.seed_id, this.projectPath);
 
@@ -545,7 +660,12 @@ export class Refinery {
               { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
               run.id,
             );
-            await this.addFailureNote(run.seed_id, `Merge failed: tests failed after merge. ${testResult.output.slice(0, 300)}`);
+            this.sendMail(run.id, "merge-failed", {
+              seedId: run.seed_id,
+              branchName,
+              reason: "test-failure",
+              output: testResult.output.slice(0, 500),
+            });
             testFailures.push({
               runId: run.id,
               seedId: run.seed_id,
@@ -581,9 +701,26 @@ export class Refinery {
           run.id,
         );
 
+        // Send merge-complete mail so inbox shows a successful merge event
+        this.sendMail(run.id, "merge-complete", {
+          seedId: run.seed_id,
+          branchName,
+          targetBranch,
+        });
+
         // Close the bead NOW — after the code has actually landed in main.
         // projectPath (repo root) is where .beads/ lives; not the worktree dir.
         await closeSeed(run.seed_id, this.projectPath);
+
+        // Send bead-closed mail so inbox shows bead lifecycle completion
+        this.sendMail(run.id, "bead-closed", {
+          seedId: run.seed_id,
+          branchName,
+          targetBranch,
+        });
+
+        // Rebase any stacked branches (seeds that branched from this one) onto target.
+        await this.rebaseStackedBranches(branchName, targetBranch);
 
         merged.push({
           runId: run.id,
@@ -601,6 +738,12 @@ export class Refinery {
           { seedId: run.seed_id, branchName, error: message },
           run.id,
         );
+        this.sendMail(run.id, "merge-failed", {
+          seedId: run.seed_id,
+          branchName,
+          reason: "unexpected-error",
+          error: message.slice(0, 400),
+        });
         await this.addFailureNote(run.seed_id, `Merge failed: ${message.slice(0, 400)}`);
         testFailures.push({
           runId: run.id,

@@ -50,7 +50,7 @@ describe("detached process survival", () => {
       setTimeout(() => {
         writeFileSync("${markerFile.replace(/\\/g, "\\\\")}", "alive", "utf-8");
         process.exit(0);
-      }, 500);
+      }, 200);
     `);
 
     // Spawn the child as detached + unref (same as spawnWorkerProcess)
@@ -67,8 +67,8 @@ describe("detached process survival", () => {
     // At this point, if we were in a separate parent process, it could exit.
     // The child should still run independently.
 
-    // Wait for the child to complete its work
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // Wait for the child to complete its work (tsx startup can take 2-3s under load)
+    await new Promise((resolve) => setTimeout(resolve, 5000));
 
     expect(existsSync(markerFile)).toBe(true);
     expect(readFileSync(markerFile, "utf-8")).toBe("alive");

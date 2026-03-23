@@ -13,17 +13,26 @@ import { tmpdir } from "node:os";
 // vi.hoisted() ensures mock variables are initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
 
-const { mockExecFileSync, mockEnqueueToMergeQueue } = vi.hoisted(() => ({
+const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
   mockEnqueueToMergeQueue: vi.fn().mockReturnValue({ success: true }),
+  mockAppendFile: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("node:child_process", () => ({
   execFileSync: mockExecFileSync,
 }));
 
+vi.mock("node:fs/promises", () => ({
+  appendFile: mockAppendFile,
+}));
+
 vi.mock("../agent-worker-enqueue.js", () => ({
   enqueueToMergeQueue: mockEnqueueToMergeQueue,
+}));
+
+vi.mock("../../lib/git.js", () => ({
+  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
 }));
 
 // Mock ForemanStore so we don't need a real SQLite database
@@ -125,6 +134,30 @@ describe("finalize() — push succeeds", () => {
     expect(result.success).toBe(true);
   });
 
+  it("sets bead to 'review' status after successful push (not closing it)", async () => {
+    // The bead lifecycle fix: after push succeeds, set bead to 'review' so it's
+    // visible as "pipeline done, awaiting merge" — distinct from in_progress tasks.
+    await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-test-001" }), logFile);
+    const reviewCall = mockExecFileSync.mock.calls.find(
+      (call) =>
+        Array.isArray(call[1]) &&
+        call[1][0] === "update" &&
+        call[1].includes("--status") &&
+        call[1].includes("review"),
+    );
+    expect(reviewCall).toBeDefined();
+    expect(reviewCall![1]).toContain("bd-test-001");
+  });
+
+  it("does NOT call br close after push succeeds (bead lifecycle fix)", async () => {
+    // Before the fix, closeSeed() was called here. Now it must NOT be called.
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const closeCall = mockExecFileSync.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1][0] === "close",
+    );
+    expect(closeCall).toBeUndefined();
+  });
+
   it("calls git push with correct branch name", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-xyz-999" }), logFile);
     const pushCall = mockExecFileSync.mock.calls.find(
@@ -134,7 +167,7 @@ describe("finalize() — push succeeds", () => {
     expect(pushCall![1]).toContain("foreman/bd-xyz-999");
   });
 
-  it("writes FINALIZE_REPORT.md with AWAITING_MERGE status after successful push", async () => {
+  it("writes FINALIZE_REPORT.md with AWAITING_MERGE (review) status after successful push", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
     const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
     expect(existsSync(reportPath)).toBe(true);
@@ -214,6 +247,18 @@ describe("finalize() — push FAILS", () => {
   it("does not throw even when push fails", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
     expect(result.success).toBe(false);
+  });
+
+  it("does NOT set bead to review when push fails (bead stays in_progress for caller to reset)", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const reviewCall = mockExecFileSync.mock.calls.find(
+      (call) =>
+        Array.isArray(call[1]) &&
+        call[1][0] === "update" &&
+        call[1].includes("--status") &&
+        call[1].includes("review"),
+    );
+    expect(reviewCall).toBeUndefined();
   });
 });
 

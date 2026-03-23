@@ -1,9 +1,8 @@
 import { Command } from "commander";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { ForemanStore, type Run, type RunProgress } from "../../lib/store.js";
-import { TmuxClient } from "../../lib/tmux.js";
 
 // ── Exported action for testing ─────────────────────────────────────────
 
@@ -27,8 +26,6 @@ export async function attachAction(
   store: ForemanStore,
   projectPath: string,
 ): Promise<number> {
-  const tmux = new TmuxClient();
-
   // Look up by run ID first, then by seed ID (most recent run)
   let run = store.getRun(id);
   if (!run) {
@@ -48,7 +45,7 @@ export async function attachAction(
 
   // ── --kill ────────────────────────────────────────────────────────────
   if (opts.kill) {
-    return handleKill(run, store, tmux);
+    return handleKill(run, store);
   }
 
   // ── --worktree ────────────────────────────────────────────────────────
@@ -58,11 +55,11 @@ export async function attachAction(
 
   // ── --follow ──────────────────────────────────────────────────────────
   if (opts.follow) {
-    return handleFollow(run, tmux, opts._signal);
+    return handleFollow(run, opts._signal);
   }
 
-  // ── Default: interactive tmux attach or SDK fallback ──────────────────
-  return handleDefaultAttach(run, tmux);
+  // ── Default: tail log file or SDK session resume ──────────────────────
+  return handleDefaultAttach(run);
 }
 
 /**
@@ -115,10 +112,9 @@ export function listSessionsEnhanced(store: ForemanStore, projectPath: string): 
     "PROGRESS".padEnd(20) +
     "COST".padEnd(10) +
     "ELAPSED".padEnd(12) +
-    "TMUX".padEnd(24) +
     "WORKTREE",
   );
-  console.log("  " + "\u2500".repeat(130));
+  console.log("  " + "\u2500".repeat(106));
 
   for (const run of sorted) {
     const progress = parseProgress(run.progress);
@@ -128,7 +124,6 @@ export function listSessionsEnhanced(store: ForemanStore, projectPath: string): 
       : "-";
     const cost = progress ? `$${progress.costUsd.toFixed(2)}` : "-";
     const elapsed = formatElapsed(run.started_at);
-    const tmuxName = run.tmux_session ?? "(none)";
     const worktree = run.worktree_path ?? "-";
 
     console.log(
@@ -139,7 +134,6 @@ export function listSessionsEnhanced(store: ForemanStore, projectPath: string): 
       progressStr.padEnd(20) +
       cost.padEnd(10) +
       elapsed.padEnd(12) +
-      tmuxName.padEnd(24) +
       worktree,
     );
   }
@@ -148,26 +142,10 @@ export function listSessionsEnhanced(store: ForemanStore, projectPath: string): 
 
 // ── Internal handlers ─────────────────────────────────────────────────
 
-async function handleDefaultAttach(run: Run, tmux: TmuxClient): Promise<number> {
-  // Try tmux attach first
-  if (run.tmux_session) {
-    const sessionExists = await tmux.hasSession(run.tmux_session);
-    if (sessionExists) {
-      const progress = parseProgress(run.progress);
-      const phase = progress?.currentPhase ?? run.agent_type;
-      console.log(`Attaching to ${run.tmux_session} [${phase}] | Ctrl+B, D to detach`);
-
-      const result = spawnSync("tmux", ["attach-session", "-t", run.tmux_session], {
-        stdio: "inherit",
-      });
-      return result.status ?? 0;
-    }
-  }
-
-  // Fallback to SDK session resume
+async function handleDefaultAttach(run: Run): Promise<number> {
+  // Try SDK session resume
   const sessionId = extractSessionId(run.session_key);
   if (sessionId) {
-    console.log("Tmux session not found. Falling back to SDK session resume.");
     console.log(`Attaching to ${run.seed_id} [${run.agent_type}] session=${sessionId}`);
     console.log(`  Status: ${run.status}`);
     if (run.worktree_path) {
@@ -193,110 +171,74 @@ async function handleDefaultAttach(run: Run, tmux: TmuxClient): Promise<number> 
     });
   }
 
-  // Both unavailable
-  console.error(`No active session found for "${run.seed_id}". The agent may have completed or crashed.`);
-  console.error("Use 'foreman attach --list' to see available sessions.");
-  return 1;
+  // Tail the log file as a fallback
+  const logPath = join(homedir(), ".foreman", "logs", `${run.id}.out`);
+  console.log(`No SDK session found. Tailing log file: ${logPath}`);
+  console.log("Press Ctrl+C to stop.\n");
+
+  return new Promise<number>((resolve) => {
+    const child = spawn("tail", ["-f", logPath], { stdio: "inherit" });
+
+    child.on("error", (err) => {
+      console.error(`Failed to tail log file: ${err.message}`);
+      console.error(`No active session found for "${run.seed_id}". The agent may have completed or crashed.`);
+      resolve(1);
+    });
+
+    child.on("exit", (code) => {
+      resolve(code ?? 0);
+    });
+  });
 }
 
 async function handleFollow(
   run: Run,
-  tmux: TmuxClient,
   signal?: AbortSignal,
 ): Promise<number> {
-  // Check if tmux session is available
-  const hasTmux = run.tmux_session
-    ? await tmux.hasSession(run.tmux_session)
-    : false;
-
-  if (!hasTmux || !run.tmux_session) {
-    // Fallback to tailing log file
-    console.log("No tmux session for this run. Tailing log file instead.");
-    const logPath = join(homedir(), ".foreman", "logs", `${run.id}.out`);
-
-    return new Promise<number>((resolve) => {
-      const child = spawn("tail", ["-f", logPath], { stdio: "inherit" });
-
-      child.on("error", (err) => {
-        console.error(`Failed to tail log file: ${err.message}`);
-        resolve(1);
-      });
-
-      child.on("exit", (code) => {
-        resolve(code ?? 0);
-      });
-    });
-  }
-
-  // Follow mode with tmux capture-pane polling
-  const progress = parseProgress(run.progress);
-  const phase = progress?.currentPhase ?? run.agent_type;
-  console.log(
-    `Following ${run.tmux_session} [${phase}] | Ctrl+C to stop | foreman attach ${run.seed_id} for interactive`,
-  );
-
-  const intervalMs = parseInt(
-    process.env.FOREMAN_TMUX_FOLLOW_INTERVAL_MS ?? "1000",
-    10,
-  );
-
-  let previousLineCount = 0;
-  let aborted = false;
-
-  // Set up signal handling
-  const abortHandler = () => {
-    aborted = true;
-  };
-
-  if (signal) {
-    signal.addEventListener("abort", abortHandler);
-  }
+  // Tail log file
+  const logPath = join(homedir(), ".foreman", "logs", `${run.id}.out`);
+  console.log(`Following log for ${run.seed_id} [${run.agent_type}] | Ctrl+C to stop`);
+  console.log(`Log: ${logPath}\n`);
 
   return new Promise<number>((resolve) => {
-    const poll = async () => {
-      if (aborted) {
-        console.log("\nStopped following. Agent continues running.");
-        if (signal) signal.removeEventListener("abort", abortHandler);
-        resolve(0);
-        return;
-      }
+    const child = spawn("tail", ["-f", logPath], { stdio: "inherit" });
 
-      // Check if session still exists
-      const stillAlive = await tmux.hasSession(run.tmux_session!);
-      if (!stillAlive) {
-        console.log("Session ended.");
-        if (signal) signal.removeEventListener("abort", abortHandler);
-        resolve(0);
-        return;
-      }
-
-      // Capture output and print new lines
-      const lines = await tmux.capturePaneOutput(run.tmux_session!);
-      if (lines.length > previousLineCount) {
-        for (let i = previousLineCount; i < lines.length; i++) {
-          console.log(lines[i]);
-        }
-        previousLineCount = lines.length;
-      }
-
-      // Schedule next poll
-      setTimeout(() => {
-        poll().catch(() => resolve(1));
-      }, intervalMs);
+    const abortHandler = () => {
+      child.kill("SIGTERM");
     };
 
-    poll().catch(() => resolve(1));
+    if (signal) {
+      signal.addEventListener("abort", abortHandler);
+    }
+
+    child.on("error", (err) => {
+      if (signal) signal.removeEventListener("abort", abortHandler);
+      console.error(`Failed to tail log file: ${err.message}`);
+      resolve(1);
+    });
+
+    child.on("exit", (code) => {
+      if (signal) signal.removeEventListener("abort", abortHandler);
+      resolve(code ?? 0);
+    });
   });
 }
 
-async function handleKill(run: Run, store: ForemanStore, tmux: TmuxClient): Promise<number> {
-  if (!run.tmux_session) {
-    console.log("No tmux session to kill for this run.");
+async function handleKill(run: Run, store: ForemanStore): Promise<number> {
+  const pid = extractPid(run.session_key);
+  if (!pid) {
+    console.log("No pid found for this run.");
     return 0;
   }
 
-  await tmux.killSession(run.tmux_session);
-  console.log(`Killed tmux session ${run.tmux_session}`);
+  try {
+    process.kill(pid, "SIGTERM");
+    console.log(`Sent SIGTERM to pid ${pid}`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to kill pid ${pid}: ${msg}`);
+    return 1;
+  }
 
   // Mark active runs as stuck
   if (run.status === "running" || run.status === "pending") {
@@ -331,6 +273,12 @@ function extractSessionId(sessionKey: string | null): string | null {
   return m ? m[1] : null;
 }
 
+function extractPid(sessionKey: string | null): number | null {
+  if (!sessionKey) return null;
+  const m = sessionKey.match(/pid-(\d+)/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
 function parseProgress(progressJson: string | null): RunProgress | null {
   if (!progressJson) return null;
   try {
@@ -363,7 +311,7 @@ export const attachCommand = new Command("attach")
   .argument("[id]", "Run ID or seed ID to attach to")
   .option("--list", "List all attachable sessions")
   .option("--follow", "Read-only follow mode via capture-pane polling")
-  .option("--kill", "Kill the tmux session for this run")
+  .option("--kill", "Kill the agent process for this run")
   .option("--worktree", "Open a shell in the agent's worktree instead of attaching")
   .action(async (id: string | undefined, opts: AttachOpts) => {
     const store = ForemanStore.forProject(process.cwd());

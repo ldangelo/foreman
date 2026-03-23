@@ -22,12 +22,15 @@ export interface Run {
   agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
-  status: "pending" | "running" | "completed" | "failed" | "stuck" | "merged" | "conflict" | "test-failed" | "pr-created";
+  status: "pending" | "running" | "completed" | "failed" | "stuck" | "merged" | "conflict" | "test-failed" | "pr-created" | "reset";
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
   progress: string | null;
-  tmux_session: string | null;
+  /** @deprecated tmux removed; column kept for DB backward compat */
+  tmux_session?: string | null;
+  /** Branch that this seed's worktree was branched from (null = default branch). Used for branch stacking. */
+  base_branch?: string | null;
 }
 
 export interface Cost {
@@ -314,6 +317,7 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
+  `ALTER TABLE runs ADD COLUMN base_branch TEXT DEFAULT NULL`,
 ];
 
 // One-time destructive migrations that cannot be made idempotent via failure
@@ -458,7 +462,8 @@ export class ForemanStore {
     projectId: string,
     seedId: string,
     agentType: Run["agent_type"],
-    worktreePath?: string
+    worktreePath?: string,
+    opts?: { baseBranch?: string | null },
   ): Run {
     const now = new Date().toISOString();
     const run: Run = {
@@ -474,11 +479,12 @@ export class ForemanStore {
       created_at: now,
       progress: null,
       tmux_session: null,
+      base_branch: opts?.baseBranch ?? null,
     };
     this.db
       .prepare(
-        `INSERT INTO runs (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at)
-         VALUES (@id, @project_id, @seed_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at)`
+        `INSERT INTO runs (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch)
+         VALUES (@id, @project_id, @seed_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at, @base_branch)`
       )
       .run(run);
     return run;
@@ -486,7 +492,7 @@ export class ForemanStore {
 
   updateRun(
     id: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "tmux_session">>
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch">>
   ): void {
     const fields: string[] = [];
     const values: Record<string, unknown> = { id };
@@ -611,6 +617,23 @@ export class ForemanStore {
     return this.db
       .prepare("SELECT * FROM runs WHERE seed_id = ? ORDER BY created_at DESC, rowid DESC")
       .all(seedId) as Run[];
+  }
+
+  /**
+   * Find all runs that were branched from the given base branch (i.e. stacked on it).
+   * Used by rebaseStackedBranches() to find dependent seeds after a merge.
+   */
+  getRunsByBaseBranch(baseBranch: string, projectId?: string): Run[] {
+    if (projectId) {
+      return this.db
+        .prepare(
+          "SELECT * FROM runs WHERE project_id = ? AND base_branch = ? ORDER BY created_at DESC"
+        )
+        .all(projectId, baseBranch) as Run[];
+    }
+    return this.db
+      .prepare("SELECT * FROM runs WHERE base_branch = ? ORDER BY created_at DESC")
+      .all(baseBranch) as Run[];
   }
 
   getRunEvents(runId: string, eventType?: EventType): Event[] {
@@ -878,6 +901,20 @@ export class ForemanStore {
          ORDER BY created_at ASC, rowid ASC`
       )
       .all(runId) as Message[];
+  }
+
+  /**
+   * Get all messages across all runs (for global watch mode).
+   */
+  getAllMessagesGlobal(limit = 200): Message[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM messages
+         WHERE deleted_at IS NULL
+         ORDER BY created_at ASC, rowid ASC
+         LIMIT ?`
+      )
+      .all(limit) as Message[];
   }
 
   /**

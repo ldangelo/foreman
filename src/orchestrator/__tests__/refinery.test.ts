@@ -11,6 +11,7 @@ vi.mock("../../lib/git.js", () => ({
   mergeWorktree: vi.fn(),
   removeWorktree: vi.fn(),
   detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+  gitBranchExists: vi.fn().mockResolvedValue(false),
 }));
 
 // Mock task-backend-ops so closeSeed() / resetSeedToOpen() don't try to execute the real `br` binary.
@@ -39,9 +40,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     started_at: new Date().toISOString(),
     completed_at: null,
     created_at: new Date().toISOString(),
-    progress: null,
-    tmux_session: null,
-    ...overrides,
+    progress: null,    ...overrides,
   };
 }
 
@@ -52,6 +51,7 @@ function makeMocks() {
     getRun: vi.fn(() => null as Run | null),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
+    getRunsByBaseBranch: vi.fn(() => [] as Run[]),
   };
   const seeds = {
     getGraph: vi.fn(async () => ({ edges: [] })),
@@ -363,6 +363,19 @@ describe("Refinery.resolveConflict()", () => {
 describe("Refinery.mergeCompleted()", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default execFile mock for mergeCompleted tests:
+    // - git log returns a non-empty commit list so the "no unique commits" guard passes.
+    // - All other git/gh calls succeed with empty stdout.
+    // Individual tests can override this for specific scenarios.
+    (execFile as any).mockImplementation(
+      (cmd: string, args: string[], _opts: any, callback: Function) => {
+        if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
+          callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
+        } else {
+          callback(null, { stdout: "", stderr: "" });
+        }
+      },
+    );
   });
 
   it("returns empty report when no completed runs exist", async () => {
@@ -404,12 +417,14 @@ describe("Refinery.mergeCompleted()", () => {
 
     // git calls succeed, but gh (PR creation) fails so we fall back to conflict reporting
     (execFile as any).mockImplementation(
-      (cmd: string, _args: string[], _opts: any, callback: Function) => {
+      (cmd: string, args: string[], _opts: any, callback: Function) => {
         if (cmd === "gh") {
           const err = new Error("gh not available") as any;
           err.stdout = "";
           err.stderr = "gh not available";
           callback(err);
+        } else if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
+          callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
         } else {
           callback(null, { stdout: "", stderr: "" });
         }
@@ -439,12 +454,14 @@ describe("Refinery.mergeCompleted()", () => {
 
     // git calls succeed, but gh (PR creation) fails
     (execFile as any).mockImplementation(
-      (cmd: string, _args: string[], _opts: any, callback: Function) => {
+      (cmd: string, args: string[], _opts: any, callback: Function) => {
         if (cmd === "gh") {
           const err = new Error("gh not available") as any;
           err.stdout = "";
           err.stderr = "gh not available";
           callback(err);
+        } else if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
+          callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
         } else {
           callback(null, { stdout: "", stderr: "" });
         }
@@ -454,11 +471,11 @@ describe("Refinery.mergeCompleted()", () => {
     const report = await refinery.mergeCompleted({ runTests: false });
 
     expect(report.conflicts).toHaveLength(1);
-    // Must add a note explaining what happened since there's no PR URL to reference
+    // Must add a note explaining what happened before the reset
     expect(seeds.update).toHaveBeenCalledWith(
       run.seed_id,
       expect.objectContaining({
-        notes: expect.stringContaining("PR creation also failed"),
+        notes: expect.stringContaining("branch reset to open for retry"),
       }),
     );
   });
@@ -492,6 +509,8 @@ describe("Refinery.mergeCompleted()", () => {
         } else if (Array.isArray(args) && args[0] === "diff" && args.includes("--diff-filter=U")) {
           // git diff --name-only --diff-filter=U → real code conflict file
           callback(null, { stdout: "src/index.ts\n", stderr: "" });
+        } else if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
+          callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
         } else {
           callback(null, { stdout: "", stderr: "" });
         }
@@ -501,10 +520,11 @@ describe("Refinery.mergeCompleted()", () => {
     const report = await refinery.mergeCompleted({ runTests: false });
 
     expect(report.conflicts).toHaveLength(1);
+    // Must add a note explaining what happened before the reset
     expect(seeds.update).toHaveBeenCalledWith(
       run.seed_id,
       expect.objectContaining({
-        notes: expect.stringContaining("PR creation also failed"),
+        notes: expect.stringContaining("branch reset to open for retry"),
       }),
     );
   });
@@ -518,14 +538,16 @@ describe("Refinery.mergeCompleted()", () => {
     // First call for tests (npm test), fails; second call for git reset, succeeds
     let callCount = 0;
     (execFile as any).mockImplementation(
-      (_cmd: string, args: string[], _opts: any, callback: Function) => {
+      (cmd: string, args: string[], _opts: any, callback: Function) => {
         callCount++;
-        if (args.includes("test") || _cmd.includes("npm")) {
+        if (args.includes("test") || cmd.includes("npm")) {
           // Test command failure
           const err = new Error("Tests failed") as any;
           err.stdout = "FAIL src/foo.test.ts";
           err.stderr = "Tests failed";
           callback(err);
+        } else if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
+          callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
         } else {
           // git reset success
           callback(null, { stdout: "", stderr: "" });
@@ -698,9 +720,11 @@ describe("Refinery.mergeCompleted()", () => {
     });
     // git and gh calls fail (gh not available → fallback to conflict tracking)
     (execFile as any).mockImplementation(
-      (cmd: string, _args: string[], _opts: any, callback: Function) => {
+      (cmd: string, args: string[], _opts: any, callback: Function) => {
         if (cmd === "gh") {
           callback(new Error("gh not available"), { stdout: "", stderr: "" });
+        } else if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
+          callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
         } else {
           callback(null, { stdout: "", stderr: "" });
         }
@@ -727,6 +751,8 @@ describe("Refinery.mergeCompleted()", () => {
           err.stdout = "FAIL";
           err.stderr = "Tests failed";
           callback(err);
+        } else if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
+          callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
         } else {
           callback(null, { stdout: "", stderr: "" });
         }

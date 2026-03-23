@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import * as os from "node:os";
 import {
   ConflictResolver,
-  type AnthropicClient,
   type CostInfo,
   type Tier3Result,
 } from "../conflict-resolver.js";
@@ -9,60 +11,14 @@ import { DEFAULT_MERGE_CONFIG } from "../merge-config.js";
 import type { MergeQueueConfig } from "../merge-config.js";
 import { MergeValidator } from "../merge-validator.js";
 
-/**
- * Helper: build a mock Anthropic client that returns a given text response.
- */
-function mockAnthropicClient(
-  responseText: string,
-  inputTokens: number = 200,
-  outputTokens: number = 150,
-): AnthropicClient {
-  return {
-    messages: {
-      create: async (_params: unknown) => ({
-        content: [{ type: "text" as const, text: responseText }],
-        usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-      }),
-    },
-  };
-}
+// ── Mock pi-runner ────────────────────────────────────────────────────────
 
-/**
- * Helper: build a mock Anthropic client that rejects with an error.
- */
-function mockAnthropicClientError(errorMessage: string): AnthropicClient {
-  return {
-    messages: {
-      create: async (_params: unknown) => {
-        throw new Error(errorMessage);
-      },
-    },
-  };
-}
+vi.mock("../pi-sdk-runner.js", () => ({
+  runWithPiSdk: vi.fn(),
+}));
 
-/**
- * Helper: build a mock that captures the params passed to create().
- */
-function mockAnthropicClientCapture(): {
-  client: AnthropicClient;
-  getCapturedParams: () => unknown;
-} {
-  let captured: unknown = null;
-  return {
-    client: {
-      messages: {
-        create: async (params: unknown) => {
-          captured = params;
-          return {
-            content: [{ type: "text" as const, text: 'const a = 1;\nconst b = 2;\n' }],
-            usage: { input_tokens: 100, output_tokens: 80 },
-          };
-        },
-      },
-    },
-    getCapturedParams: () => captured,
-  };
-}
+import { runWithPiSdk } from "../pi-sdk-runner.js";
+const mockRunWithPi = vi.mocked(runWithPiSdk);
 
 /** A file with conflict markers for testing. */
 const CONFLICTED_TS_FILE = [
@@ -84,17 +40,63 @@ const RESOLVED_TS_CONTENT = [
   "",
 ].join("\n");
 
-describe("ConflictResolver - Tier 3 AI Resolution", () => {
-  let config: MergeQueueConfig;
+// ── Helpers ───────────────────────────────────────────────────────────────
 
-  beforeEach(() => {
+function makeSuccessPiResult(costUsd = 0.006) {
+  return {
+    success: true,
+    costUsd,
+    turns: 2,
+    toolCalls: 3,
+    toolBreakdown: { Read: 1, Write: 2 },
+    tokensIn: 1000,
+    tokensOut: 500,
+  };
+}
+
+function makeFailPiResult(errorMessage = "Pi session failed") {
+  return {
+    success: false,
+    costUsd: 0,
+    turns: 1,
+    toolCalls: 0,
+    toolBreakdown: {},
+    tokensIn: 0,
+    tokensOut: 0,
+    errorMessage,
+  };
+}
+
+/**
+ * Mock runWithPi to write resolvedContent to opts.cwd/filePath and succeed.
+ */
+function mockPiWritesFile(filePath: string, resolvedContent: string, costUsd = 0.006) {
+  mockRunWithPi.mockImplementation(async (opts) => {
+    const fullPath = path.join(opts.cwd, filePath);
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.writeFile(fullPath, resolvedContent, "utf-8");
+    return makeSuccessPiResult(costUsd);
+  });
+}
+
+describe("ConflictResolver - Tier 3 Pi Resolution", () => {
+  let config: MergeQueueConfig;
+  let tmpDir: string;
+
+  beforeEach(async () => {
     config = { ...DEFAULT_MERGE_CONFIG };
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "cr-t3-test-"));
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
   describe("MQ-T030: attemptTier3Resolution", () => {
-    it("returns resolved content on successful AI resolution", async () => {
-      const client = mockAnthropicClient(RESOLVED_TS_CONTENT);
-      const resolver = new ConflictResolver("/fake/path", config, client);
+    it("returns resolved content on successful Pi resolution", async () => {
+      mockPiWritesFile("shared.ts", RESOLVED_TS_CONTENT);
+      const resolver = new ConflictResolver(tmpDir, config);
 
       const result = await resolver.attemptTier3Resolution(
         "shared.ts",
@@ -104,33 +106,72 @@ describe("ConflictResolver - Tier 3 AI Resolution", () => {
       expect(result.success).toBe(true);
       expect(result.resolvedContent).toBe(RESOLVED_TS_CONTENT);
       expect(result.cost).toBeDefined();
-      expect(result.cost!.model).toBe("claude-sonnet-4-6");
+      expect(result.cost!.model).toBe("anthropic/claude-sonnet-4-6");
+    });
+
+    it("passes the file path and cwd to runWithPi", async () => {
+      mockPiWritesFile("src/shared.ts", RESOLVED_TS_CONTENT);
+      const resolver = new ConflictResolver(tmpDir, config);
+
+      await resolver.attemptTier3Resolution("src/shared.ts", CONFLICTED_TS_FILE);
+
+      expect(mockRunWithPi).toHaveBeenCalledOnce();
+      const callOpts = mockRunWithPi.mock.calls[0][0];
+      expect(callOpts.cwd).toBe(tmpDir);
+      expect(callOpts.model).toBe("anthropic/claude-sonnet-4-6");
+      expect(callOpts.prompt).toContain("src/shared.ts");
+    });
+
+    it("prompt instructs Pi to resolve conflict markers", async () => {
+      mockPiWritesFile("shared.ts", RESOLVED_TS_CONTENT);
+      const resolver = new ConflictResolver(tmpDir, config);
+
+      await resolver.attemptTier3Resolution("shared.ts", CONFLICTED_TS_FILE);
+
+      const prompt = mockRunWithPi.mock.calls[0][0].prompt;
+      expect(prompt).toContain("conflict");
+      expect(prompt).toContain("shared.ts");
+      expect(prompt).toContain("ZERO conflict markers");
+    });
+
+    it("writes conflicted content to disk before invoking Pi", async () => {
+      const writtenFiles: string[] = [];
+      mockRunWithPi.mockImplementation(async (opts) => {
+        // Check the file was written
+        const content = await fs.readFile(path.join(opts.cwd, "shared.ts"), "utf-8");
+        writtenFiles.push(content);
+        // Write resolved content
+        await fs.writeFile(path.join(opts.cwd, "shared.ts"), RESOLVED_TS_CONTENT);
+        return makeSuccessPiResult();
+      });
+
+      const resolver = new ConflictResolver(tmpDir, config);
+      await resolver.attemptTier3Resolution("shared.ts", CONFLICTED_TS_FILE);
+
+      expect(writtenFiles).toHaveLength(1);
+      expect(writtenFiles[0]).toBe(CONFLICTED_TS_FILE);
     });
 
     it("skips resolution when file exceeds maxFileLines (MQ-013)", async () => {
-      const client = mockAnthropicClient(RESOLVED_TS_CONTENT);
       const smallLimitConfig: MergeQueueConfig = {
         ...config,
         costControls: { ...config.costControls, maxFileLines: 5 },
       };
-      const resolver = new ConflictResolver("/fake/path", smallLimitConfig, client);
+      const resolver = new ConflictResolver(tmpDir, smallLimitConfig);
 
-      // Create a file with more than 5 lines
       const bigFile = Array.from({ length: 10 }, (_, i) => `line ${i}`).join("\n");
 
-      const result = await resolver.attemptTier3Resolution(
-        "big.ts",
-        bigFile,
-      );
+      const result = await resolver.attemptTier3Resolution("big.ts", bigFile);
 
       expect(result.success).toBe(false);
       expect(result.errorCode).toBe("MQ-013");
       expect(result.error).toMatch(/file.*lines|size/i);
+      expect(mockRunWithPi).not.toHaveBeenCalled();
     });
 
-    it("returns error when API call fails", async () => {
-      const client = mockAnthropicClientError("API timeout");
-      const resolver = new ConflictResolver("/fake/path", config, client);
+    it("returns error when Pi fails", async () => {
+      mockRunWithPi.mockResolvedValue(makeFailPiResult("API timeout"));
+      const resolver = new ConflictResolver(tmpDir, config);
 
       const result = await resolver.attemptTier3Resolution(
         "shared.ts",
@@ -139,34 +180,6 @@ describe("ConflictResolver - Tier 3 AI Resolution", () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toMatch(/API timeout/);
-    });
-
-    it("uses correct model (claude-sonnet-4-6)", async () => {
-      const { client, getCapturedParams } = mockAnthropicClientCapture();
-      const resolver = new ConflictResolver("/fake/path", config, client);
-
-      await resolver.attemptTier3Resolution(
-        "shared.ts",
-        CONFLICTED_TS_FILE,
-      );
-
-      const params = getCapturedParams() as Record<string, unknown>;
-      expect(params.model).toBe("claude-sonnet-4-6");
-    });
-
-    it("sends correct system prompt", async () => {
-      const { client, getCapturedParams } = mockAnthropicClientCapture();
-      const resolver = new ConflictResolver("/fake/path", config, client);
-
-      await resolver.attemptTier3Resolution(
-        "shared.ts",
-        CONFLICTED_TS_FILE,
-      );
-
-      const params = getCapturedParams() as Record<string, unknown>;
-      const system = params.system as string;
-      expect(system).toContain("merge conflict resolver");
-      expect(system).toContain("ONLY the resolved file content");
     });
   });
 
@@ -182,8 +195,8 @@ describe("ConflictResolver - Tier 3 AI Resolution", () => {
         "",
       ].join("\n");
 
-      const client = mockAnthropicClient(badOutput);
-      const resolver = new ConflictResolver("/fake/path", config, client);
+      mockPiWritesFile("shared.ts", badOutput);
+      const resolver = new ConflictResolver(tmpDir, config);
 
       const result = await resolver.attemptTier3Resolution(
         "shared.ts",
@@ -203,8 +216,8 @@ describe("ConflictResolver - Tier 3 AI Resolution", () => {
         "```",
       ].join("\n");
 
-      const client = mockAnthropicClient(fencedOutput);
-      const resolver = new ConflictResolver("/fake/path", config, client);
+      mockPiWritesFile("shared.ts", fencedOutput);
+      const resolver = new ConflictResolver(tmpDir, config);
 
       const result = await resolver.attemptTier3Resolution(
         "shared.ts",
@@ -223,8 +236,8 @@ describe("ConflictResolver - Tier 3 AI Resolution", () => {
         "I chose to merge them by keeping both changes.",
       ].join("\n");
 
-      const client = mockAnthropicClient(proseOutput);
-      const resolver = new ConflictResolver("/fake/path", config, client);
+      mockPiWritesFile("shared.ts", proseOutput);
+      const resolver = new ConflictResolver(tmpDir, config);
 
       const result = await resolver.attemptTier3Resolution(
         "shared.ts",
@@ -237,9 +250,9 @@ describe("ConflictResolver - Tier 3 AI Resolution", () => {
   });
 
   describe("MQ-T032: Cost tracking", () => {
-    it("tracks cost from API response usage", async () => {
-      const client = mockAnthropicClient(RESOLVED_TS_CONTENT, 500, 300);
-      const resolver = new ConflictResolver("/fake/path", config, client);
+    it("tracks cost from Pi result", async () => {
+      mockPiWritesFile("shared.ts", RESOLVED_TS_CONTENT, 0.006);
+      const resolver = new ConflictResolver(tmpDir, config);
 
       const result = await resolver.attemptTier3Resolution(
         "shared.ts",
@@ -249,16 +262,13 @@ describe("ConflictResolver - Tier 3 AI Resolution", () => {
       expect(result.success).toBe(true);
       expect(result.cost).toBeDefined();
       const cost = result.cost!;
-      expect(cost.inputTokens).toBe(500);
-      expect(cost.outputTokens).toBe(300);
-      expect(cost.model).toBe("claude-sonnet-4-6");
-      // Actual cost: (500/1M * 3.0) + (300/1M * 15.0) = 0.0015 + 0.0045 = 0.006
       expect(cost.actualCostUsd).toBeCloseTo(0.006, 6);
+      expect(cost.model).toBe("anthropic/claude-sonnet-4-6");
     });
 
     it("provides pre-call cost estimate using 4 chars/token heuristic", async () => {
-      const client = mockAnthropicClient(RESOLVED_TS_CONTENT, 200, 150);
-      const resolver = new ConflictResolver("/fake/path", config, client);
+      mockPiWritesFile("shared.ts", RESOLVED_TS_CONTENT);
+      const resolver = new ConflictResolver(tmpDir, config);
 
       const result = await resolver.attemptTier3Resolution(
         "shared.ts",
@@ -266,21 +276,15 @@ describe("ConflictResolver - Tier 3 AI Resolution", () => {
       );
 
       expect(result.cost).toBeDefined();
-      const cost = result.cost!;
-      // Estimated input tokens = content.length / 4 (plus system prompt overhead)
-      // Estimated cost should be > 0
-      expect(cost.estimatedCostUsd).toBeGreaterThan(0);
+      expect(result.cost!.estimatedCostUsd).toBeGreaterThan(0);
     });
 
     it("skips resolution when budget is exhausted (MQ-012)", async () => {
-      const client = mockAnthropicClient(RESOLVED_TS_CONTENT);
       const tinyBudget: MergeQueueConfig = {
         ...config,
         costControls: { ...config.costControls, maxSessionBudgetUsd: 0.0001 },
       };
-      const resolver = new ConflictResolver("/fake/path", tinyBudget, client);
-
-      // First, exhaust the budget by setting session cost high
+      const resolver = new ConflictResolver(tmpDir, tinyBudget);
       resolver.addSessionCost(0.0001);
 
       const result = await resolver.attemptTier3Resolution(
@@ -291,48 +295,23 @@ describe("ConflictResolver - Tier 3 AI Resolution", () => {
       expect(result.success).toBe(false);
       expect(result.errorCode).toBe("MQ-012");
       expect(result.error).toMatch(/budget/i);
+      expect(mockRunWithPi).not.toHaveBeenCalled();
     });
 
     it("accumulates session cost across multiple calls", async () => {
-      const client = mockAnthropicClient(RESOLVED_TS_CONTENT, 500, 300);
-      const resolver = new ConflictResolver("/fake/path", config, client);
+      mockPiWritesFile("file1.ts", RESOLVED_TS_CONTENT, 0.006);
+      const resolver = new ConflictResolver(tmpDir, config);
 
-      await resolver.attemptTier3Resolution(
-        "file1.ts",
-        CONFLICTED_TS_FILE,
-      );
-
+      await resolver.attemptTier3Resolution("file1.ts", CONFLICTED_TS_FILE);
       const costAfterFirst = resolver.getSessionCost();
       expect(costAfterFirst).toBeGreaterThan(0);
 
-      await resolver.attemptTier3Resolution(
-        "file2.ts",
-        CONFLICTED_TS_FILE,
-      );
+      mockPiWritesFile("file2.ts", RESOLVED_TS_CONTENT, 0.006);
+      await resolver.attemptTier3Resolution("file2.ts", CONFLICTED_TS_FILE);
 
       const costAfterSecond = resolver.getSessionCost();
       expect(costAfterSecond).toBeGreaterThan(costAfterFirst);
-      // Should be approximately 2x the first cost
       expect(costAfterSecond).toBeCloseTo(costAfterFirst * 2, 6);
-    });
-
-    it("cost estimate uses 4 chars per token heuristic correctly", async () => {
-      const client = mockAnthropicClient(RESOLVED_TS_CONTENT, 200, 150);
-      const resolver = new ConflictResolver("/fake/path", config, client);
-
-      // Use a content string of known length
-      const knownContent = "a".repeat(400); // 400 chars = ~100 tokens
-
-      const result = await resolver.attemptTier3Resolution(
-        "shared.ts",
-        knownContent,
-      );
-
-      expect(result.cost).toBeDefined();
-      const cost = result.cost!;
-      // The estimate should account for the system prompt + user message
-      // 400 chars / 4 = 100 estimated input tokens (plus system prompt)
-      expect(cost.estimatedCostUsd).toBeGreaterThan(0);
     });
   });
 });

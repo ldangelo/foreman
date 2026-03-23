@@ -51,7 +51,6 @@ const {
     this.getProjectByPath = vi.fn().mockReturnValue(null);
     this.getSentinelConfig = vi.fn().mockReturnValue(null);
     this.getRunsByStatuses = vi.fn().mockReturnValue([]);
-    this.getMergeAgentConfig = vi.fn().mockReturnValue(null);
   });
   (MockForemanStore as any).forProject = vi.fn(
     (...args: unknown[]) => new (MockForemanStore as any)(...args),
@@ -105,22 +104,6 @@ vi.mock("../../orchestrator/sentinel.js", () => ({
     this.stop = vi.fn();
     this.isRunning = vi.fn().mockReturnValue(false);
   }),
-}));
-vi.mock("../../orchestrator/merge-agent.js", () => ({
-  MergeAgent: vi.fn(function (this: Record<string, unknown>) {
-    this.start = vi.fn().mockResolvedValue(undefined);
-    this.stop = vi.fn();
-    this.isRunning = vi.fn().mockReturnValue(false);
-  }),
-  MERGE_AGENT_MAILBOX: "refinery",
-  DEFAULT_POLL_INTERVAL_MS: 30_000,
-}));
-vi.mock("../../orchestrator/agent-mail-client.js", () => ({
-  AgentMailClient: vi.fn(function (this: Record<string, unknown>) {
-    this.healthCheck = vi.fn().mockResolvedValue(true);
-    this.ensureProject = vi.fn().mockResolvedValue(undefined);
-  }),
-  DEFAULT_AGENT_MAIL_CONFIG: { baseUrl: "http://localhost:8766" },
 }));
 vi.mock("../../orchestrator/task-backend-ops.js", () => ({
   syncBeadStatusOnStartup: vi.fn().mockResolvedValue({ synced: 0, mismatches: [], errors: [] }),

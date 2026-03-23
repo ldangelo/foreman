@@ -76,7 +76,7 @@ function createTestRun(
   }> = {},
 ): Run {
   const seedId = overrides.seedId ?? "bd-test";
-  const agentType = overrides.agentType ?? "claude-sonnet-4-6";
+  const agentType = overrides.agentType ?? "anthropic/claude-sonnet-4-6";
   const run = store.createRun(
     projectId,
     seedId,
@@ -84,13 +84,11 @@ function createTestRun(
     overrides.worktreePath ?? "/tmp/wt",
   );
   const updates: Partial<
-    Pick<Run, "status" | "session_key" | "tmux_session" | "started_at">
+    Pick<Run, "status" | "session_key" | "started_at">
   > = {};
   if (overrides.status) updates.status = overrides.status;
   if (overrides.sessionKey !== undefined)
     updates.session_key = overrides.sessionKey;
-  if (overrides.tmuxSession !== undefined)
-    updates.tmux_session = overrides.tmuxSession;
   if (overrides.startedAt !== undefined)
     updates.started_at = overrides.startedAt;
   if (Object.keys(updates).length > 0) store.updateRun(run.id, updates);
@@ -509,7 +507,7 @@ describe("foreman retry", () => {
             seedId: "bd-test",
             title: "Test bead",
             runtime: "claude-code",
-            model: "claude-sonnet-4-6",
+            model: "anthropic/claude-sonnet-4-6",
             worktreePath: "/tmp/wt/bd-test",
             runId: "run-123",
             branchName: "foreman/bd-test",
@@ -547,7 +545,7 @@ describe("foreman retry", () => {
             seedId: "bd-test",
             title: "Test bead",
             runtime: "claude-code",
-            model: "claude-sonnet-4-6",
+            model: "anthropic/claude-sonnet-4-6",
             worktreePath: "/tmp/wt/bd-test",
             runId: "run-123",
             branchName: "foreman/bd-test",
@@ -615,14 +613,14 @@ describe("foreman retry", () => {
       const { retryAction } = await import("../commands/retry.js");
       await retryAction(
         "bd-test",
-        { dispatch: true, model: "claude-opus-4-6" },
+        { dispatch: true, model: "anthropic/claude-opus-4-6" },
         beadsClient,
         store,
         tmpDir,
       );
 
       expect(mockDispatch).toHaveBeenCalledWith(
-        expect.objectContaining({ model: "claude-opus-4-6" }),
+        expect.objectContaining({ model: "anthropic/claude-opus-4-6" }),
       );
 
       consoleSpy.mockRestore();

@@ -19,9 +19,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     started_at: new Date().toISOString(),
     completed_at: new Date().toISOString(),
     created_at: new Date().toISOString(),
-    progress: null,
-    tmux_session: null,
-    ...overrides,
+    progress: null,    ...overrides,
   };
 }
 
@@ -48,8 +46,8 @@ describe("mapRunStatusToSeedStatus", () => {
     expect(mapRunStatusToSeedStatus("running")).toBe("in_progress");
   });
 
-  it("maps completed to in_progress", () => {
-    expect(mapRunStatusToSeedStatus("completed")).toBe("in_progress");
+  it("maps completed to review — pipeline done, awaiting merge", () => {
+    expect(mapRunStatusToSeedStatus("completed")).toBe("review");
   });
 
   it("maps failed to open", () => {
@@ -99,7 +97,7 @@ describe("detectAndFixMismatches", () => {
   });
 
   it("detects mismatch when completed run has seed incorrectly closed", async () => {
-    // After fix: completed → in_progress. A seed "closed" when run is only "completed" is a mismatch.
+    // After fix: completed → review. A seed "closed" when run is only "completed" is a mismatch.
     const { store, seeds } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: any[]) =>
@@ -115,7 +113,7 @@ describe("detectAndFixMismatches", () => {
       runId: "run-1",
       runStatus: "completed",
       actualSeedStatus: "closed",
-      expectedSeedStatus: "in_progress",
+      expectedSeedStatus: "review",
     });
   });
 
@@ -134,7 +132,7 @@ describe("detectAndFixMismatches", () => {
   });
 
   it("fixes mismatches by calling seeds.update", async () => {
-    // completed run with seed incorrectly "closed" → update to "in_progress"
+    // completed run with seed incorrectly "closed" → update to "review"
     const { store, seeds } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: any[]) =>
@@ -144,7 +142,7 @@ describe("detectAndFixMismatches", () => {
 
     const result = await detectAndFixMismatches(store as any, seeds as any, "proj-1", new Set());
 
-    expect(seeds.update).toHaveBeenCalledWith("seed-abc", { status: "in_progress" });
+    expect(seeds.update).toHaveBeenCalledWith("seed-abc", { status: "review" });
     expect(result.fixed).toBe(1);
   });
 
@@ -179,13 +177,13 @@ describe("detectAndFixMismatches", () => {
   });
 
   it("reports no mismatch when seed status already matches expected", async () => {
-    // After fix: completed → in_progress. Seed at "in_progress" = no mismatch.
+    // After fix: completed → review. Seed at "review" = no mismatch.
     const { store, seeds } = makeMocks();
     const run = makeRun({ status: "completed" });
     store.getRunsByStatus.mockImplementation((...args: any[]) =>
       args[0] === "completed" ? [run] : []
     );
-    seeds.show.mockResolvedValue({ status: "in_progress" });
+    seeds.show.mockResolvedValue({ status: "review" });
 
     const result = await detectAndFixMismatches(store as any, seeds as any, "proj-1", new Set());
 
@@ -281,7 +279,7 @@ describe("detectAndFixMismatches", () => {
       return [];
     });
     seeds.show.mockImplementation(async (...args: any[]) => {
-      if (args[0] === "seed-a") return { status: "closed" };      // wrong for completed (expects in_progress)
+      if (args[0] === "seed-a") return { status: "closed" };      // wrong for completed (expects review)
       if (args[0] === "seed-b") return { status: "in_progress" }; // wrong for conflict (expects open)
       return { status: "open" };
     });
@@ -346,7 +344,7 @@ describe("detectAndFixMismatches", () => {
       args[0] === "completed" ? [terminalRunSafe, terminalRunBusy] : []
     );
     store.getActiveRuns.mockReturnValue([activeRunBusy]);
-    // After fix: completed → in_progress. Seed is "closed" (incorrect) → triggers mismatch.
+    // After fix: completed → review. Seed is "closed" (incorrect) → triggers mismatch.
     seeds.show.mockResolvedValue({ status: "closed" });
 
     const result = await detectAndFixMismatches(store as any, seeds as any, "proj-1", new Set());
@@ -354,7 +352,7 @@ describe("detectAndFixMismatches", () => {
     // Only seed-safe should be checked and fixed (seed-busy is skipped due to active run)
     expect(seeds.show).toHaveBeenCalledTimes(1);
     expect(seeds.show).toHaveBeenCalledWith("seed-safe");
-    expect(seeds.update).toHaveBeenCalledWith("seed-safe", { status: "in_progress" });
+    expect(seeds.update).toHaveBeenCalledWith("seed-safe", { status: "review" });
     expect(result.mismatches).toHaveLength(1);
     expect(result.fixed).toBe(1);
   });

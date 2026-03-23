@@ -1,0 +1,354 @@
+/**
+ * pipeline-executor.ts — Generic workflow-driven pipeline executor.
+ *
+ * Iterates the phases defined in a WorkflowConfig YAML and executes each
+ * one via runPhase(). All phase-specific behavior (mail hooks, artifacts,
+ * retry loops, file reservations, verdict parsing) is driven by the YAML
+ * config — no hardcoded phase names.
+ *
+ * This replaces the ~450-line hardcoded runPipeline() in agent-worker.ts.
+ */
+
+import { existsSync, readFileSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
+import { join, basename } from "node:path";
+import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader.js";
+import { resolveWorkflowModel } from "../lib/workflow-loader.js";
+import { buildPhasePrompt, parseVerdict, extractIssues } from "./roles.js";
+import { addLabelsToBead } from "./task-backend-ops.js";
+import { rotateReport } from "./agent-worker-finalize.js";
+import { writeSessionLog } from "./session-log.js";
+import type { PhaseRecord, SessionLogData } from "./session-log.js";
+import type { SqliteMailClient } from "../lib/sqlite-mail-client.js";
+import type { ForemanStore, RunProgress } from "../lib/store.js";
+
+// ── Types ──────────────────────────────────────────────────────────────────
+
+type AnyMailClient = SqliteMailClient;
+
+/** Function signature matching the runPhase() in agent-worker.ts. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type RunPhaseFn = (
+  role: any,
+  prompt: string,
+  config: any,
+  progress: RunProgress,
+  logFile: string,
+  store: ForemanStore,
+  notifyClient: any,
+  agentMailClient?: AnyMailClient | null,
+) => Promise<PhaseResult>;
+
+export interface PhaseResult {
+  success: boolean;
+  costUsd: number;
+  turns: number;
+  tokensIn: number;
+  tokensOut: number;
+  error?: string;
+}
+
+export interface PipelineRunConfig {
+  runId: string;
+  projectId: string;
+  seedId: string;
+  seedTitle: string;
+  seedDescription?: string;
+  seedComments?: string;
+  seedType?: string;
+  seedLabels?: string[];
+  model: string;
+  worktreePath: string;
+  projectPath?: string;
+  skipExplore?: boolean;
+  skipReview?: boolean;
+  env: Record<string, string | undefined>;
+}
+
+export interface PipelineContext {
+  config: PipelineRunConfig;
+  workflowConfig: WorkflowConfig;
+  store: ForemanStore;
+  logFile: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  notifyClient: any;
+  agentMailClient: AnyMailClient | null;
+  /** The runPhase function from agent-worker.ts */
+  runPhase: RunPhaseFn;
+  /** Register an agent identity for mail */
+  registerAgent: (client: AnyMailClient | null, roleHint: string) => Promise<void>;
+  /** Send structured mail */
+  sendMail: (client: AnyMailClient | null, to: string, subject: string, body: Record<string, unknown>) => void;
+  /** Send plain-text mail */
+  sendMailText: (client: AnyMailClient | null, to: string, subject: string, body: string) => void;
+  /** Reserve files for an agent */
+  reserveFiles: (client: AnyMailClient | null, paths: string[], agentName: string, leaseSecs?: number) => void;
+  /** Release file reservations */
+  releaseFiles: (client: AnyMailClient | null, paths: string[], agentName: string) => void;
+  /** Mark pipeline as stuck */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  markStuck: (...args: any[]) => Promise<void>;
+  /** Log function */
+  log: (msg: string) => void;
+  /** Prompt loader options */
+  promptOpts: { projectRoot: string; workflow: string };
+  /**
+   * Called after the last phase (finalize) completes successfully.
+   * Responsible for: reading finalize mail, enqueuing to merge queue,
+   * updating run status, resetting seed on failure, sending branch-ready mail.
+   */
+  onPipelineComplete?: (info: {
+    progress: RunProgress;
+    phaseRecords: PhaseRecord[];
+    retryCounts: Record<string, number>;
+  }) => Promise<void>;
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function readReport(worktreePath: string, filename: string): string | null {
+  const p = join(worktreePath, filename);
+  try { return readFileSync(p, "utf-8"); } catch { return null; }
+}
+
+// ── Generic Pipeline Executor ───────────────────────────────────────────────
+
+/**
+ * Execute a workflow pipeline driven entirely by the YAML config.
+ *
+ * Iterates workflowConfig.phases in order. For each phase:
+ *  1. Check skipIfArtifact (resume from crash)
+ *  2. Register agent mail identity
+ *  3. Send phase-started mail (if mail.onStart)
+ *  4. Reserve files (if files.reserve)
+ *  5. Run the phase via runPhase()
+ *  6. Release files
+ *  7. Handle success: send phase-complete mail, forward artifact, add labels
+ *  8. Handle failure: send error mail, mark stuck
+ *  9. If verdict phase: parse PASS/FAIL, handle retryWith loop
+ */
+export async function executePipeline(ctx: PipelineContext): Promise<void> {
+  const { config, workflowConfig, store, logFile, notifyClient, agentMailClient } = ctx;
+  const { runId, projectId, seedId, seedTitle, worktreePath } = config;
+  const description = config.seedDescription ?? "(no description)";
+  const comments = config.seedComments;
+
+  const progress: RunProgress = {
+    toolCalls: 0,
+    toolBreakdown: {},
+    filesChanged: [],
+    turns: 0,
+    costUsd: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    lastToolCall: null,
+    lastActivity: new Date().toISOString(),
+    currentPhase: workflowConfig.phases[0]?.name ?? "unknown",
+  };
+
+  const phaseNames = workflowConfig.phases.map((p) => p.name).join(" → ");
+  ctx.log(`Pipeline starting for ${seedId} [workflow: ${workflowConfig.name}]`);
+  ctx.log(`[PIPELINE] Phase sequence: ${phaseNames}`);
+  await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n[PIPELINE] Phase sequence: ${phaseNames}\n`);
+
+  const phaseRecords: PhaseRecord[] = [];
+
+  // Track feedback context for retry loops (QA/reviewer → developer)
+  let feedbackContext: string | undefined;
+  // Track retry counts per retryWith target (e.g. "developer" → count)
+  const retryCounts: Record<string, number> = {};
+
+  // Build a phase index for retryWith lookups
+  const phaseIndex = new Map<string, number>();
+  for (let i = 0; i < workflowConfig.phases.length; i++) {
+    phaseIndex.set(workflowConfig.phases[i].name, i);
+  }
+
+  let i = 0;
+  while (i < workflowConfig.phases.length) {
+    const phase = workflowConfig.phases[i];
+    const phaseName = phase.name;
+    const agentName = `${phaseName}-${seedId}`;
+    const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
+
+    progress.currentPhase = phaseName;
+    store.updateRunProgress(runId, progress);
+
+    // 1. Skip if artifact already exists (resume from crash)
+    if (phase.skipIfArtifact) {
+      const artifactPath = join(worktreePath, phase.skipIfArtifact);
+      if (existsSync(artifactPath)) {
+        ctx.log(`[${phaseName.toUpperCase()}] Skipping — ${phase.skipIfArtifact} already exists`);
+        await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] SKIPPED (artifact already present)\n`);
+        phaseRecords.push({ name: phaseName, skipped: true });
+        i++;
+        continue;
+      }
+    }
+
+    // 2. Register agent mail identity
+    await ctx.registerAgent(agentMailClient, agentName);
+
+    // 3. Send phase-started mail
+    if (phase.mail?.onStart !== false) {
+      ctx.sendMail(agentMailClient, "foreman", "phase-started", { seedId, phase: phaseName });
+    }
+
+    // 4. Reserve files
+    if (phase.files?.reserve) {
+      ctx.reserveFiles(agentMailClient, [worktreePath], agentName, phase.files.leaseSecs ?? 600);
+    }
+
+    // 5. Rotate and run phase
+    if (phase.artifact) {
+      rotateReport(worktreePath, phase.artifact);
+    }
+
+    const prompt = buildPhasePrompt(phaseName, {
+      seedId,
+      seedTitle,
+      seedDescription: description,
+      seedComments: comments,
+      runId,
+      hasExplorerReport,
+      feedbackContext,
+      worktreePath,
+    }, ctx.promptOpts);
+
+    const result = await ctx.runPhase(
+      phaseName, prompt, config, progress, logFile, store, notifyClient, agentMailClient,
+    );
+
+    // 6. Release files
+    if (phase.files?.reserve) {
+      ctx.releaseFiles(agentMailClient, [worktreePath], agentName);
+    }
+
+    // Record phase result
+    phaseRecords.push({
+      name: feedbackContext ? `${phaseName} (retry)` : phaseName,
+      skipped: false,
+      success: result.success,
+      costUsd: result.costUsd,
+      turns: result.turns,
+      error: result.error,
+    });
+
+    progress.costUsd += result.costUsd;
+    progress.tokensIn += result.tokensIn;
+    progress.tokensOut += result.tokensOut;
+    progress.costByPhase ??= {};
+    progress.costByPhase[phaseName] = (progress.costByPhase[phaseName] ?? 0) + result.costUsd;
+    store.updateRunProgress(runId, progress);
+
+    // 7. Handle failure
+    if (!result.success) {
+      ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+        seedId, phase: phaseName, error: result.error ?? `${phaseName} failed`, retryable: true,
+      });
+      await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, result.error ?? `${phaseName} failed`, notifyClient, config.projectPath);
+      return;
+    }
+
+    // 8. Handle success: send phase-complete, labels, forward artifact
+    if (phase.mail?.onComplete !== false) {
+      ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
+        seedId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
+      });
+    }
+    store.logEvent(projectId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, runId);
+    addLabelsToBead(seedId, [`phase:${phaseName}`], config.projectPath);
+
+    // Forward artifact to another agent's inbox
+    if (phase.mail?.forwardArtifactTo && phase.artifact) {
+      const artifactContent = readReport(worktreePath, phase.artifact);
+      if (artifactContent) {
+        const targetAgent = phase.mail.forwardArtifactTo === "foreman"
+          ? "foreman"
+          : `${phase.mail.forwardArtifactTo}-${seedId}`;
+        const subject = phase.mail.forwardArtifactTo === "foreman"
+          ? `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Complete`
+          : `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Report`;
+        ctx.sendMailText(agentMailClient, targetAgent, subject, artifactContent);
+      }
+    }
+
+    // 9. Verdict handling: parse PASS/FAIL, retry if needed
+    if (phase.verdict && phase.artifact) {
+      const report = readReport(worktreePath, phase.artifact);
+      const verdict = report ? parseVerdict(report) : "unknown";
+
+      if (verdict === "fail" && phase.retryWith) {
+        const retryTarget = phase.retryWith;
+        const maxRetries = phase.retryOnFail ?? 0;
+        const currentRetries = retryCounts[retryTarget] ?? 0;
+
+        if (currentRetries < maxRetries) {
+          retryCounts[retryTarget] = currentRetries + 1;
+
+          // Send failure feedback to retry target
+          if (phase.mail?.onFail && report) {
+            const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
+            ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, report);
+          }
+          feedbackContext = report ? extractIssues(report) : `(${phaseName} failed but no report)`;
+
+          ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
+          await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
+
+          // Jump back to the retryWith phase
+          const targetIdx = phaseIndex.get(retryTarget);
+          if (targetIdx !== undefined) {
+            i = targetIdx;
+            continue;
+          }
+          // If retryWith target not found, fall through
+          ctx.log(`[${phaseName.toUpperCase()}] retryWith target '${retryTarget}' not found in workflow — continuing`);
+        } else {
+          ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted, continuing`);
+          await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries, continuing\n`);
+          // Clear feedback for subsequent phases
+          feedbackContext = undefined;
+        }
+      } else {
+        // Verdict passed or no retry config — clear feedback
+        feedbackContext = undefined;
+      }
+    } else {
+      // Non-verdict phase — clear feedback
+      feedbackContext = undefined;
+    }
+
+    i++;
+  }
+
+  // ── Session log ──────────────────────────────────────────────────────
+  try {
+    const pipelineProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
+    const sessionLogData: SessionLogData = {
+      seedId,
+      seedTitle,
+      seedDescription: description,
+      branchName: `foreman/${seedId}`,
+      projectName: basename(pipelineProjectPath),
+      phases: phaseRecords,
+      totalCostUsd: progress.costUsd,
+      totalTurns: progress.turns,
+      filesChanged: progress.filesChanged,
+      devRetries: retryCounts["developer"] ?? 0,
+      qaVerdict: "unknown",
+    };
+    const sessionLogPath = await writeSessionLog(worktreePath, sessionLogData);
+    ctx.log(`[SESSION LOG] Written: ${sessionLogPath}`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    ctx.log(`[SESSION LOG] Failed to write (non-fatal): ${msg}`);
+  }
+
+  // ── Pipeline completion ──────────────────────────────────────────────
+  // Delegate finalize-specific post-processing (merge queue, run status)
+  // to the caller via the onPipelineComplete callback.
+  if (ctx.onPipelineComplete) {
+    await ctx.onPipelineComplete({ progress, phaseRecords, retryCounts });
+  }
+}

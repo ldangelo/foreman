@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { orderByCluster } from "./conflict-cluster.js";
+import { detectDefaultBranch } from "../lib/git.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -369,6 +370,8 @@ export class MergeQueue {
     const existingRunIds = new Set(mqRows.map((r) => r.run_id));
     const existingSeedIds = new Set(mqRows.map((r) => r.seed_id));
 
+    const defaultBranch = await detectDefaultBranch(repoPath);
+
     let enqueued = 0;
     let skipped = 0;
     let invalidBranch = 0;
@@ -408,7 +411,7 @@ export class MergeQueue {
       try {
         const { stdout } = await execFileAsync(
           "git",
-          ["diff", "--name-only", `main...${branchName}`],
+          ["diff", "--name-only", `${defaultBranch}...${branchName}`],
           { cwd: repoPath }
         );
         filesModified = stdout.trim().split("\n").filter(Boolean);
@@ -436,7 +439,7 @@ export class MergeQueue {
       .prepare(
         "SELECT * FROM runs WHERE status IN ('pending', 'running') ORDER BY created_at ASC"
       )
-      .all() as Array<{ id: string; seed_id: string }>;
+      .all() as Array<{ id: string; seed_id: string; created_at: string | null }>;
 
     // Deduplicate by seed_id: only process the oldest run per seed. A seed maps
     // 1-to-1 with a branch name (foreman/<seedId>), so if multiple runs exist for
@@ -473,7 +476,42 @@ export class MergeQueue {
         continue;
       }
 
-      // Remote branch exists but run status was never updated — recover it
+      // Guard against stale remote tracking refs after `foreman reset`:
+      // `foreman reset` deletes the local branch but the remote tracking ref
+      // (refs/remotes/origin/foreman/<seedId>) may persist until a `git fetch
+      // --prune` is run. If the remote branch's latest commit predates this
+      // run's creation time, the ref is left over from a previous (reset) run —
+      // not from this one. Enqueuing it would cause an immediate merge-failed
+      // with reason "no-commits" because the newly-dispatched branch is empty.
+      //
+      // If we cannot determine the commit timestamp, we skip conservatively to
+      // avoid false-positive recovery (the reconcile() primary pass handles the
+      // normal completion path).
+      if (run.created_at) {
+        const runCreatedMs = new Date(run.created_at).getTime();
+        try {
+          const { stdout: commitEpochStr } = await execFileAsync(
+            "git",
+            ["log", "-1", "--format=%ct", `refs/remotes/origin/${branchName}`],
+            { cwd: repoPath }
+          );
+          const commitMs = parseInt(commitEpochStr.trim(), 10) * 1000;
+          if (!isNaN(commitMs) && commitMs < runCreatedMs) {
+            // Remote branch was pushed before this run was created — stale ref
+            // from a previous run (e.g. after foreman reset --seed <id>).
+            // Skip to prevent the refinery from attempting a merge with no commits.
+            continue;
+          }
+        } catch {
+          // Cannot determine commit timestamp — skip to avoid false recovery.
+          // The reconcile() primary pass handles completed runs normally.
+          continue;
+        }
+      }
+
+      // Remote branch exists and its commit is at-or-after this run's creation —
+      // this run pushed its branch but crashed before updating its status.
+      // Recover it now.
       const recoveredAt = new Date().toISOString();
       db.prepare("UPDATE runs SET status = 'completed', completed_at = ? WHERE id = ?").run(
         recoveredAt,
@@ -485,7 +523,7 @@ export class MergeQueue {
       try {
         const { stdout } = await execFileAsync(
           "git",
-          ["diff", "--name-only", `main...${branchName}`],
+          ["diff", "--name-only", `${defaultBranch}...${branchName}`],
           { cwd: repoPath }
         );
         recoveredFiles = stdout.trim().split("\n").filter(Boolean);

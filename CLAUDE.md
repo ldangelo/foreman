@@ -12,18 +12,27 @@ npm run build          # tsc compile
 npm test               # vitest run
 npm run dev            # tsx watch mode
 npx tsc --noEmit       # type check only
+npx vitest run <file>  # run a single test file
 
 # CLI (after build or via tsx)
 foreman init           # Initialize project + beads
 foreman run            # Dispatch ready tasks to agents
 foreman run --seed X   # Dispatch specific task
 foreman status         # Show tasks + active agents
+foreman dashboard      # Live dashboard UI
 foreman monitor        # Check agent health
+foreman sentinel       # Background health daemon
 foreman reset          # Clean up failed/stuck runs
+foreman retry <seed>   # Re-run a failed pipeline phase
+foreman stop           # Gracefully stop all agents
+foreman doctor         # Health checks (br, Pi, DB integrity)
 foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
 foreman plan X         # PRD -> TRD pipeline
 foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
+foreman attach         # Attach to a running agent session
+foreman worktree       # Git worktree management
+foreman inbox          # Agent mail inbox viewer
 
 # br (beads_rust) task tracking
 br ready               # Unblocked tasks
@@ -47,17 +56,18 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 ```
 
 **Key modules:**
-- `src/cli/commands/` — 10 CLI commands
-- `src/orchestrator/` — dispatcher, agent-worker, roles, planner, refinery
-- `src/lib/` — beads-rust.ts (br wrapper), bv.ts (bv client), git.ts (worktrees), store.ts (SQLite)
+- `src/cli/commands/` — 19 CLI commands
+- `src/orchestrator/` — dispatcher, agent-worker, roles, planner, refinery, conflict-resolver, merge-queue, sentinel
+- `src/lib/` — beads-rust.ts (br wrapper), bv.ts (bv client), git.ts (worktrees), store.ts (SQLite), sqlite-mail-client.ts (embedded Agent Mail)
 - `src/orchestrator/roles.ts` — agent role prompts (explorerPrompt, developerPrompt, qaPrompt, reviewerPrompt, sentinelPrompt) generated as inline TypeScript functions
 - `src/orchestrator/templates.ts` — TASK.md template generated via workerAgentMd() function
+- `packages/foreman-pi-extensions/` — Pi RPC spawn strategy extensions (tool-gate, budget-enforcer, audit-logger)
 
 **Agent pipeline** (orchestrated by TypeScript, not AI):
-1. **Explorer** (Haiku, 30 turns) — read-only codebase analysis -> EXPLORER_REPORT.md
-2. **Developer** (Sonnet, 80 turns) — implementation + tests
-3. **QA** (Sonnet, 30 turns) — test verification -> QA_REPORT.md
-4. **Reviewer** (Sonnet, 20 turns) — code review -> REVIEW.md
+1. **Explorer** (Haiku, $1.00 budget) — read-only codebase analysis -> EXPLORER_REPORT.md
+2. **Developer** (Sonnet, $5.00 budget) — implementation + tests
+3. **QA** (Sonnet, $3.00 budget) — test verification -> QA_REPORT.md
+4. **Reviewer** (Sonnet, $2.00 budget) — code review -> REVIEW.md
 5. **Finalize** — git add/commit/push, br close
 
 Dev <-> QA retries up to 2x before proceeding to Review. Reviewer FAILs on CRITICAL/WARNING issues.
@@ -92,6 +102,37 @@ Dev <-> QA retries up to 2x before proceeding to Review. Reviewer FAILs on CRITI
 - **FileHandle cleanup**: Always close `fs.promises.open()` handles after spawn inherits fds (Node v25+)
 - **Worktree reuse**: `createWorktree()` handles existing worktree (rebase) and existing branch (attach)
 - **Auto-reset on failure**: `markStuck()` resets bead to open when pipeline fails
+- **Agent Mail is SQLite-backed**: `SqliteMailClient` (src/lib/sqlite-mail-client.ts) replaced HTTP Agent Mail — no external server needed; state stored in `.foreman/mail.db`
+
+## Debugging & Recovery
+
+```bash
+# Stuck or failed runs
+foreman doctor         # Check br binary, Pi binary, DB integrity
+foreman status         # See all active/failed agents
+foreman reset          # Reset all failed/stuck runs to open
+foreman reset --seed X # Reset a specific run
+foreman retry <seed>   # Re-run a specific pipeline phase
+
+# Agent logs (streamed during run)
+ls ~/.foreman/logs/    # One .log file per runId
+cat ~/.foreman/logs/<runId>.log
+
+# Worktree cleanup
+foreman worktree list   # See all active worktrees
+foreman worktree clean  # Remove orphaned worktrees
+
+# Test failures
+npm test               # Run all tests
+npx vitest run src/orchestrator/__tests__/dispatcher.test.ts  # Single file
+npx tsc --noEmit       # Type-check without building
+```
+
+**Common failure modes:**
+- Agent stuck in Developer phase → `foreman retry <seed>` or `foreman reset --seed <seed>`
+- Merge conflict T3/T4 → AI resolution via Pi session; check `~/.foreman/logs/<runId>.log`
+- Branch not merged after completion → `foreman merge` to trigger manually
+- br state diverged from git → `br sync --flush-only && git add .beads/ && git commit -m "sync beads"`
 
 <!-- br-agent-instructions-v1 -->
 
@@ -99,13 +140,13 @@ Dev <-> QA retries up to 2x before proceeding to Review. Reviewer FAILs on CRITI
 
 ## Beads Workflow Integration
 
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`/`bd`) for issue tracking. Issues are stored in `.beads/` and tracked in git.
+This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking. Issues are stored in `.beads/` and tracked in git.
 
 ### Essential Commands
 
 ```bash
 # View ready issues (open, unblocked, not deferred)
-br ready              # or: bd ready
+br ready
 
 # List and search
 br list --status=open # All open issues

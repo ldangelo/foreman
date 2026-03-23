@@ -1,0 +1,67 @@
+# Default workflow: Explorer → Developer ⇄ QA → Reviewer → Finalize
+#
+# This is the standard Foreman pipeline. All bead types except "smoke" use
+# this workflow unless overridden by a `workflow:<name>` label.
+name: default
+setup:
+  - command: npm install --prefer-offline --no-audit
+    description: Install Node.js dependencies
+    failFatal: true
+phases:
+  - name: explorer
+    prompt: explorer.md
+    model: opus
+    maxTurns: 30
+    artifact: EXPLORER_REPORT.md
+    skipIfArtifact: EXPLORER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: developer
+
+  - name: developer
+    prompt: developer.md
+    model: sonnet
+    maxTurns: 80
+    artifact: DEVELOPER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  - name: qa
+    prompt: qa.md
+    model: sonnet
+    maxTurns: 30
+    artifact: QA_REPORT.md
+    verdict: true
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  - name: reviewer
+    prompt: reviewer.md
+    model: opus
+    maxTurns: 20
+    artifact: REVIEW.md
+    verdict: true
+    retryWith: developer
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+      forwardArtifactTo: foreman
+
+  - name: finalize
+    prompt: finalize.md
+    model: haiku
+    maxTurns: 20
+    mail:
+      onStart: true
+      onComplete: true

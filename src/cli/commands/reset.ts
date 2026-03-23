@@ -4,14 +4,15 @@ import chalk from "chalk";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { getRepoRoot, getCurrentBranch } from "../../lib/git.js";
 import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
+import { existsSync, readdirSync } from "node:fs";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
-import { TmuxClient } from "../../lib/tmux.js";
 import type { UpdateOptions } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { deleteWorkerConfigFile } from "../../orchestrator/dispatcher.js";
+import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { StateMismatch } from "../../lib/run-status.js";
 // Re-export for callers that import these from this module (backward compatibility).
 export { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
@@ -136,8 +137,7 @@ export interface StuckDetectionResult {
 
 /**
  * Detect stuck active runs by:
- *  1. Tmux liveness check — if a tmux session is dead, the run is stuck.
- *  2. Timeout check — if elapsed time > stuckTimeoutMinutes, the run is stuck.
+ *  1. Timeout check — if elapsed time > stuckTimeoutMinutes, the run is stuck.
  *
  * Updates the store for each newly-detected stuck run and returns the list.
  * Runs that are already in "stuck" status are not re-detected here (they will
@@ -148,13 +148,11 @@ export async function detectStuckRuns(
   projectId: string,
   opts?: {
     stuckTimeoutMinutes?: number;
-    tmux?: Pick<TmuxClient, "hasSession">;
     dryRun?: boolean;
   },
 ): Promise<StuckDetectionResult> {
   const stuckTimeout = opts?.stuckTimeoutMinutes ?? PIPELINE_LIMITS.stuckDetectionMinutes;
   const dryRun = opts?.dryRun ?? false;
-  const tmux = opts?.tmux;
 
   // Only look at "running" (not pending/failed/stuck — those are handled elsewhere)
   const activeRuns = store.getActiveRuns(projectId).filter((r) => r.status === "running");
@@ -165,29 +163,7 @@ export async function detectStuckRuns(
 
   for (const run of activeRuns) {
     try {
-      // 1. Tmux liveness check (runs BEFORE seed-status check, matching Monitor priority)
-      if (tmux && run.tmux_session) {
-        const tmuxAlive = await tmux.hasSession(run.tmux_session);
-        if (!tmuxAlive) {
-          if (!dryRun) {
-            store.updateRun(run.id, { status: "stuck" });
-            store.logEvent(
-              run.project_id,
-              "stuck",
-              {
-                seedId: run.seed_id,
-                detectedBy: "tmux-liveness",
-                tmuxSession: run.tmux_session,
-              },
-              run.id,
-            );
-          }
-          stuck.push({ ...run, status: "stuck" });
-          continue;
-        }
-      }
-
-      // 2. Timeout check — if elapsed time exceeds stuckTimeout
+      // Timeout check — if elapsed time exceeds stuckTimeout
       if (run.started_at) {
         const startedAt = new Date(run.started_at).getTime();
         const elapsedMinutes = (now - startedAt) / (1000 * 60);
@@ -226,10 +202,10 @@ export interface ResetSeedResult {
 }
 
 /**
- * Reset a single seed back to "open" status, but ONLY if it is not already
- * closed (terminal state).
+ * Reset a single seed back to "open" status.
  *
- * - If the seed is "closed", the update is skipped entirely.
+ * - If the seed is "closed" AND `force` is false, the update is skipped.
+ * - If the seed is "closed" AND `force` is true, it is re-opened (used by --seed).
  * - If the seed is already "open", the update is also skipped (idempotent).
  * - If the seed is in any other state (e.g. "in_progress"), it is reset.
  * - If the seed is not found, returns "not-found" without throwing.
@@ -239,13 +215,14 @@ export interface ResetSeedResult {
 export async function resetSeedToOpen(
   seedId: string,
   seeds: IShowUpdateClient,
-  opts?: { dryRun?: boolean },
+  opts?: { dryRun?: boolean; force?: boolean },
 ): Promise<ResetSeedResult> {
   const dryRun = opts?.dryRun ?? false;
+  const force = opts?.force ?? false;
   try {
     const seedDetail = await seeds.show(seedId);
 
-    if (seedDetail.status === "closed") {
+    if (seedDetail.status === "closed" && !force) {
       return { action: "skipped-closed", seedId, previousStatus: seedDetail.status };
     }
 
@@ -268,6 +245,7 @@ export async function resetSeedToOpen(
 
 export const resetCommand = new Command("reset")
   .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
+  .option("--seed <id>", "Reset a specific seed by ID (clears all runs for that seed, including stale pending ones)")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
   .option("--detect-stuck", "Run stuck detection first, adding newly-detected stuck runs to the reset list")
   .option(
@@ -280,6 +258,7 @@ export const resetCommand = new Command("reset")
     const dryRun = opts.dryRun as boolean | undefined;
     const all = opts.all as boolean | undefined;
     const detectStuck = opts.detectStuck as boolean | undefined;
+    const seedFilter = opts.seed as string | undefined;
     const timeoutMinutes = parseInt(opts.timeout as string, 10);
 
     if (isNaN(timeoutMinutes)) {
@@ -305,16 +284,13 @@ export const resetCommand = new Command("reset")
         process.exit(1);
       }
 
-      // Shared TmuxClient — used for both stuck detection and session cleanup
-      const tmux = new TmuxClient();
-      const tmuxAvailable = await tmux.isAvailable();
+      const mergeQueue = new MergeQueue(store.getDb());
 
       // Optional: run stuck detection first, mark newly-stuck runs in the store
       if (detectStuck) {
         console.log(chalk.bold("Detecting stuck runs...\n"));
         const detectionResult = await detectStuckRuns(store, project.id, {
           stuckTimeoutMinutes: timeoutMinutes,
-          tmux: tmuxAvailable ? tmux : undefined,
           dryRun,
         });
 
@@ -342,19 +318,30 @@ export const resetCommand = new Command("reset")
       }
 
       // Find runs to reset
-      const statuses = all
-        ? ["pending", "running", "failed", "stuck"] as const
-        : ["failed", "stuck"] as const;
+      let runs: Run[];
 
-      const runs = statuses.flatMap((s) => store.getRunsByStatus(s, project.id));
+      if (seedFilter) {
+        // --seed: get ALL runs for this seed regardless of status, so stale pending/running are included
+        runs = store.getRunsForSeed(seedFilter, project.id);
+        if (runs.length === 0) {
+          console.log(chalk.yellow(`No runs found for seed ${seedFilter}.\n`));
+        } else {
+          console.log(chalk.bold(`Resetting all ${runs.length} run(s) for seed ${seedFilter}:\n`));
+        }
+      } else {
+        const statuses = all
+          ? ["pending", "running", "failed", "stuck"] as const
+          : ["failed", "stuck"] as const;
+        runs = statuses.flatMap((s) => store.getRunsByStatus(s, project.id));
+      }
 
       if (dryRun) {
         console.log(chalk.yellow("(dry run — no changes will be made)\n"));
       }
 
-      if (runs.length === 0) {
+      if (!seedFilter && runs.length === 0) {
         console.log(chalk.yellow("No active runs to reset.\n"));
-      } else {
+      } else if (!seedFilter) {
         console.log(chalk.bold(`Resetting ${runs.length} run(s):\n`));
       }
 
@@ -364,6 +351,7 @@ export const resetCommand = new Command("reset")
       let worktreesRemoved = 0;
       let branchesDeleted = 0;
       let runsMarkedFailed = 0;
+      let mqEntriesRemoved = 0;
       let seedsReset = 0;
       const errors: string[] = [];
 
@@ -409,29 +397,57 @@ export const resetCommand = new Command("reset")
           }
         }
 
-        // 3. Delete the branch
+        // 3. Delete the branch — switch to main first if it is currently checked out
         console.log(`    ${chalk.yellow("delete")} branch ${branchName}`);
         if (!dryRun) {
+          const { execFile } = await import("node:child_process");
+          const { promisify } = await import("node:util");
           try {
             const delResult = await deleteBranch(projectPath, branchName, { force: true });
             if (delResult.deleted) branchesDeleted++;
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            errors.push(`Failed to delete branch ${branchName}: ${msg}`);
-            console.log(`    ${chalk.red("error")} deleting branch: ${msg}`);
+            if (msg.includes("used by worktree")) {
+              // Branch is HEAD of the main worktree — switch to main then retry
+              try {
+                console.log(`    ${chalk.dim("checkout")} main (branch is current HEAD)`);
+                await promisify(execFile)("git", ["checkout", "-f", "main"], { cwd: projectPath });
+                const retryResult = await deleteBranch(projectPath, branchName, { force: true });
+                if (retryResult.deleted) branchesDeleted++;
+              } catch (retryErr: unknown) {
+                const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+                errors.push(`Failed to delete branch ${branchName}: ${retryMsg}`);
+                console.log(`    ${chalk.red("error")} deleting branch: ${retryMsg}`);
+              }
+            } else {
+              errors.push(`Failed to delete branch ${branchName}: ${msg}`);
+              console.log(`    ${chalk.red("error")} deleting branch: ${msg}`);
+            }
+          }
+
+          // 3b. Delete the remote branch to prevent stale remote tracking refs.
+          // reconcile() checks refs/remotes/origin/foreman/<seedId> to recover
+          // runs that crashed after pushing but before updating their status.
+          // If the local branch is deleted but the remote ref persists, reconcile()
+          // will falsely mark the newly re-dispatched (empty) run as "completed"
+          // and insert a merge queue entry that immediately fails with "no-commits".
+          console.log(`    ${chalk.yellow("delete")} remote branch origin/${branchName}`);
+          try {
+            await promisify(execFile)("git", ["push", "origin", "--delete", branchName], { cwd: projectPath });
+          } catch {
+            // Non-fatal: remote branch may not exist (never pushed, or already deleted)
           }
         }
 
-        // 4. Mark run as failed in store
-        if (run.status !== "failed") {
-          console.log(`    ${chalk.yellow("mark")} run as failed`);
-          if (!dryRun) {
-            store.updateRun(run.id, {
-              status: "failed",
-              completed_at: new Date().toISOString(),
-            });
-            runsMarkedFailed++;
-          }
+        // 4. Mark run as "reset" — keeps history/events intact but signals to
+        //    doctor that this run was intentionally cleared (not an active failure).
+        console.log(`    ${chalk.yellow("mark")} run as reset`);
+        if (!dryRun) {
+          store.updateRun(run.id, {
+            status: "reset",
+            completed_at: new Date().toISOString(),
+          });
+          runsMarkedFailed++;
         }
 
         // 5. Clean up orphaned worker config file (if it still exists)
@@ -439,17 +455,29 @@ export const resetCommand = new Command("reset")
           await deleteWorkerConfigFile(run.id);
         }
 
+        // 5b. Remove merge queue entries for this seed
+        const mqEntries = mergeQueue.list().filter((e) => e.seed_id === run.seed_id);
+        if (mqEntries.length > 0) {
+          console.log(`    ${chalk.yellow("remove")} ${mqEntries.length} merge queue entry(ies)`);
+          if (!dryRun) {
+            for (const entry of mqEntries) {
+              mergeQueue.remove(entry.id);
+              mqEntriesRemoved++;
+            }
+          }
+        }
+
         seedIds.add(run.seed_id);
         console.log();
       }
 
-      // 5. Reset seeds to open (only if not already closed)
+      // 5. Reset seeds to open (force-reopen if --seed was explicitly provided)
       for (const seedId of seedIds) {
-        const result = await resetSeedToOpen(seedId, seeds, { dryRun });
+        const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!seedFilter });
         switch (result.action) {
           case "skipped-closed":
             console.log(
-              `  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already closed — not reopening`,
+              `  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already closed — not reopening (use --seed to force)`,
             );
             break;
           case "already-open":
@@ -470,26 +498,98 @@ export const resetCommand = new Command("reset")
         }
       }
 
-      // 6. Prune stale worktree entries
+      // 5c. Mark all completed runs with no MQ entry as "reset" — their branches
+      //     have been removed or were never queued, so they can never be merged.
+      //     Leaving them as "completed" triggers the MQ-011 doctor warning.
+      if (!dryRun) {
+        const unqueuedCompleted = mergeQueue.missingFromQueue();
+        for (const entry of unqueuedCompleted) {
+          store.updateRun(entry.run_id, { status: "reset", completed_at: new Date().toISOString() });
+          runsMarkedFailed++;
+        }
+        if (unqueuedCompleted.length > 0) {
+          console.log(`  ${chalk.yellow("reset")} ${unqueuedCompleted.length} completed run(s) with no merge queue entry`);
+        }
+      }
+
+      // 6. Prune stale worktree entries and remote tracking refs
       if (!dryRun) {
         try {
           const { execFile } = await import("node:child_process");
           const { promisify } = await import("node:util");
           await promisify(execFile)("git", ["worktree", "prune"], { cwd: projectPath });
+          // Prune stale remote tracking refs so reconcile() doesn't see deleted
+          // remote branches and falsely recover newly-dispatched empty runs.
+          await promisify(execFile)("git", ["fetch", "--prune"], { cwd: projectPath });
         } catch {
           // Non-critical
         }
       }
 
-      // 7. Kill all foreman tmux sessions
+      // 6b. Clean up orphaned worktrees — directories in .foreman-worktrees/ that either have
+      //     no SQLite run record OR only have completed/merged runs (finalize should remove them
+      //     but sometimes fails to do so)
       if (!dryRun) {
-        const tmuxResult = await cleanupTmuxSessions(tmux);
-        if (!tmuxResult.skipped && tmuxResult.killed > 0) {
-          console.log(`\n  ${chalk.yellow("Killed")} ${tmuxResult.killed} tmux session(s)`);
+        const worktreesDir = `${projectPath}/.foreman-worktrees`;
+        if (existsSync(worktreesDir)) {
+          // Paths that still have active/non-terminal runs (keep these)
+          const activeStatuses = ["pending", "running", "failed", "stuck"] as const;
+          const activeRuns = activeStatuses.flatMap((s) => store.getRunsByStatus(s, project.id));
+          const activeWorktreePaths = new Set(activeRuns.map((r) => r.worktree_path).filter(Boolean));
+
+          let entries: string[] = [];
+          try {
+            entries = readdirSync(worktreesDir);
+          } catch {
+            // Directory may have been removed already
+          }
+
+          for (const entry of entries) {
+            const fullPath = `${worktreesDir}/${entry}`;
+            // Skip if this worktree belongs to an active run (may still be in use)
+            if (activeWorktreePaths.has(fullPath)) continue;
+
+            console.log(`  ${chalk.yellow("orphan")} worktree ${fullPath}`);
+            try {
+              await removeWorktree(projectPath, fullPath);
+              worktreesRemoved++;
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              if (!msg.includes("is not a working tree")) {
+                console.log(`    ${chalk.red("error")} removing orphaned worktree: ${msg}`);
+              }
+            }
+            // Delete the corresponding branch if it exists
+            const orphanBranch = `foreman/${entry}`;
+            try {
+              const delResult = await deleteBranch(projectPath, orphanBranch, { force: true });
+              if (delResult.deleted) {
+                branchesDeleted++;
+                console.log(`    ${chalk.yellow("delete")} orphan branch ${orphanBranch}`);
+              }
+            } catch {
+              // Branch may not exist — skip silently
+            }
+          }
         }
       }
 
-      // 8. Detect and fix seed/run state mismatches for terminal runs
+      // 6c. Purge all remaining conflict/failed merge queue entries (catches seeds not
+      //     in this reset batch that are still clogging the queue)
+      if (!dryRun) {
+        const staleEntries = mergeQueue.list().filter(
+          (e) => e.status === "conflict" || e.status === "failed",
+        );
+        for (const entry of staleEntries) {
+          mergeQueue.remove(entry.id);
+          mqEntriesRemoved++;
+        }
+        if (staleEntries.length > 0) {
+          console.log(`  ${chalk.yellow("purged")} ${staleEntries.length} stale merge queue entry(ies)`);
+        }
+      }
+
+      // 7. Detect and fix seed/run state mismatches for terminal runs
       console.log(chalk.bold("\nChecking for seed/run state mismatches..."));
       const mismatchResult = await detectAndFixMismatches(store, seeds, project.id, seedIds, { dryRun });
 
@@ -518,7 +618,8 @@ export const resetCommand = new Command("reset")
         console.log(`  Processes killed:   ${killed}`);
         console.log(`  Worktrees removed:  ${worktreesRemoved}`);
         console.log(`  Branches deleted:   ${branchesDeleted}`);
-        console.log(`  Runs marked failed: ${runsMarkedFailed}`);
+        console.log(`  Runs marked reset:   ${runsMarkedFailed}`);
+        console.log(`  MQ entries removed:  ${mqEntriesRemoved}`);
         console.log(`  Seeds reset:        ${seedsReset}`);
         console.log(`  Mismatches fixed:   ${mismatchResult.fixed}`);
       }
@@ -540,43 +641,6 @@ export const resetCommand = new Command("reset")
       process.exit(1);
     }
   });
-
-// ── Tmux cleanup ─────────────────────────────────────────────────────────
-
-export interface TmuxCleanupResult {
-  killed: number;
-  errors: number;
-  skipped: boolean;
-}
-
-/**
- * Kill all foreman-* tmux sessions.
- * Skips silently if tmux is unavailable.
- * Individual kill failures do not abort the loop.
- */
-export async function cleanupTmuxSessions(
-  tmux: Pick<TmuxClient, "isAvailable" | "listForemanSessions" | "killSession">,
-): Promise<TmuxCleanupResult> {
-  const available = await tmux.isAvailable();
-  if (!available) {
-    return { killed: 0, errors: 0, skipped: true };
-  }
-
-  const sessions = await tmux.listForemanSessions();
-  let killed = 0;
-  let errors = 0;
-
-  for (const session of sessions) {
-    const success = await tmux.killSession(session.sessionName);
-    if (success) {
-      killed++;
-    } else {
-      errors++;
-    }
-  }
-
-  return { killed, errors, skipped: false };
-}
 
 function extractPid(sessionKey: string | null): number | null {
   if (!sessionKey) return null;

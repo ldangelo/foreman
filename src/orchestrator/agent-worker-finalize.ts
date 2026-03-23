@@ -17,9 +17,11 @@ import { writeFileSync, renameSync, existsSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { homedir } from "node:os";
 import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
+import { detectDefaultBranch } from "../lib/git.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -313,11 +315,58 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
   }
 
   // Seed lifecycle note: the bead is NOT closed here.
-  // Closing happens only after the branch successfully merges (via refinery.ts).
-  // The bead stays in_progress while the run is in the merge queue.
+  // Enqueue to merge queue (fire-and-forget — must not block finalization)
   if (pushSucceeded) {
-    log(`[FINALIZE] Seed ${seedId} queued for merge — bead will be closed by refinery after merge`);
-    report.push(`## Seed Status`, `- Status: AWAITING_MERGE`, `- Note: bead closed by refinery after successful merge`, "");
+    const defaultBranch = await detectDefaultBranch(storeProjectPath).catch(() => "main");
+    try {
+      const enqueueStore = ForemanStore.forProject(storeProjectPath);
+      const enqueueResult = enqueueToMergeQueue({
+        db: enqueueStore.getDb(),
+        seedId,
+        runId: config.runId,
+        worktreePath,
+        getFilesModified: () => {
+          const output = execFileSync("git", ["diff", "--name-only", `${defaultBranch}...HEAD`], opts).toString().trim();
+          return output ? output.split("\n") : [];
+        },
+      });
+      enqueueStore.close();
+
+      if (enqueueResult.success) {
+        log(`[FINALIZE] Enqueued to merge queue`);
+        report.push(`## Merge Queue`, `- Status: ENQUEUED`, "");
+      } else {
+        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error}`);
+        report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueResult.error?.slice(0, 300)}`, "");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${msg}`);
+      report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
+    }
+  }
+
+  // Seed lifecycle: set bead to 'review' after a successful push.
+  // This signals "pipeline done, branch pushed, awaiting foreman merge".
+  // Closing happens only after the branch successfully merges (via refinery.ts).
+  // On push failure the bead stays in_progress (caller resets to open via resetSeedToOpen).
+  if (pushSucceeded) {
+    const brBin = join(homedir(), ".local", "bin", "br");
+    const brOpts = {
+      stdio: "pipe" as const,
+      timeout: PIPELINE_TIMEOUTS.beadClosureMs,
+      ...(storeProjectPath ? { cwd: storeProjectPath } : {}),
+    };
+    try {
+      execFileSync(brBin, ["update", seedId, "--status", "review"], brOpts);
+      log(`[FINALIZE] Seed ${seedId} set to review — bead will be closed by refinery after merge`);
+      report.push(`## Seed Status`, `- Status: AWAITING_MERGE (review)`, `- Note: bead closed by refinery after successful merge`, "");
+    } catch (brErr: unknown) {
+      const brMsg = brErr instanceof Error ? brErr.message : String(brErr);
+      log(`[FINALIZE] Warning: br update --status review failed for ${seedId}: ${brMsg.slice(0, 200)}`);
+      await appendFile(logFile, `[FINALIZE] br update review error: ${brMsg}\n`);
+      report.push(`## Seed Status`, `- Status: AWAITING_MERGE`, `- Note: bead status update to review failed (non-fatal)`, "");
+    }
   } else {
     log(`[FINALIZE] Push failed for ${seedId} — merge queue entry written pre-push; refinery will handle gracefully on re-dispatch`);
     report.push(`## Seed Status`, `- Status: PUSH_FAILED`, `- Note: merge queue entry written before push attempt`, "");

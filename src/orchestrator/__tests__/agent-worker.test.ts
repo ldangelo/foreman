@@ -152,36 +152,24 @@ describe("agent-worker.ts", () => {
  * a lightweight alternative to spy-based tests that would require refactoring
  * the module structure.
  */
-describe("agent-worker.ts: sessionLogDir option regression tests", () => {
+describe("agent-worker.ts: Pi RPC integration regression tests", () => {
   const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
 
   it("agent-worker.ts source file exists", () => {
     expect(existsSync(WORKER_SRC)).toBe(true);
   });
 
-  it("single-agent resume branch includes sessionLogDir: worktreePath", () => {
+  it("single-agent mode uses runWithPiSdk instead of old SDK query()", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
-    // The resume branch (with persistSession: true, resume: ...) must include sessionLogDir
-    // Find the resume branch options block and verify sessionLogDir is present
-    const resumeBlockMatch = source.match(
-      /resume,\s*\n\s*persistSession: true,\s*\n\s*sessionLogDir:\s*worktreePath/
-    );
-    expect(resumeBlockMatch).not.toBeNull();
+    // Single-agent mode must use runWithPiSdk for Pi SDK
+    expect(source).toContain("runWithPiSdk(");
+    // Must NOT use the old Claude Agent SDK query() call
+    expect(source).not.toContain("from \"@anthropic-ai/claude-agent-sdk\"");
   });
 
-  it("single-agent non-resume branch includes sessionLogDir: worktreePath", () => {
+  it("pipeline runPhase() uses runWithPiSdk for phase execution", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
-    // The non-resume branch (with persistSession: true, no resume) must include sessionLogDir
-    const nonResumeBlockMatch = source.match(
-      /persistSession: true,\s*\n\s*sessionLogDir:\s*worktreePath/
-    );
-    expect(nonResumeBlockMatch).not.toBeNull();
-  });
-
-  it("pipeline runPhase() includes sessionLogDir: config.worktreePath", () => {
-    const source = readFileSync(WORKER_SRC, "utf-8");
-    // The runPhase() function must include sessionLogDir: config.worktreePath
-    const pipelineMatch = source.match(/sessionLogDir:\s*config\.worktreePath/);
+    const pipelineMatch = source.match(/runWithPiSdk\(\{/);
     expect(pipelineMatch).not.toBeNull();
   });
 

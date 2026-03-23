@@ -1,29 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   ConflictResolver,
-  type AnthropicClient,
-  type AnthropicMessage,
 } from "../conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "../merge-config.js";
 import type { MergeQueueConfig } from "../merge-config.js";
 import type { MergeValidator, ValidationResult } from "../merge-validator.js";
-
-// ── Helpers ──────────────────────────────────────────────────────────────
-
-function mockAnthropicClient(
-  responseText: string,
-  inputTokens = 200,
-  outputTokens = 150,
-): AnthropicClient {
-  return {
-    messages: {
-      create: vi.fn().mockResolvedValue({
-        content: [{ type: "text", text: responseText }],
-        usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-      } satisfies AnthropicMessage),
-    },
-  };
-}
 
 function mockValidator(
   result: ValidationResult = { valid: true },
@@ -79,8 +60,6 @@ describe("ConflictResolver - Cascade Orchestration (MQ-T038)", () => {
   describe("resolveConflicts(): multi-file cascade", () => {
     it("cascades per file: file A at Tier 2, file B at Tier 3", async () => {
       const resolvedContent = "const resolved = true;\n";
-      const client = mockAnthropicClient(resolvedContent);
-      resolver.setAnthropicClient(client);
       resolver.setValidator(mockValidator());
 
       // Tier 1 fails with two conflicted files
@@ -132,9 +111,7 @@ describe("ConflictResolver - Cascade Orchestration (MQ-T038)", () => {
   });
 
   describe("resolveConflicts(): fallback aborts entire merge", () => {
-    it("aborts merge when a single file reaches fallback (no AI client)", async () => {
-      // No Anthropic client set - AI tiers are skipped
-
+    it("aborts merge when a single file reaches fallback (all tiers fail)", async () => {
       vi.spyOn(resolver, "attemptMerge").mockResolvedValue({
         success: false,
         conflictedFiles: ["src/problem.ts"],
@@ -145,10 +122,21 @@ describe("ConflictResolver - Cascade Orchestration (MQ-T038)", () => {
         reason: "Hunk verification failed",
       });
 
+      vi.spyOn(resolver, "attemptTier3Resolution").mockResolvedValue({
+        success: false,
+        error: "Pi failed",
+      });
+
+      vi.spyOn(resolver, "attemptTier4Resolution").mockResolvedValue({
+        success: false,
+        error: "Pi failed",
+      });
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const resolverAny = resolver as any;
       resolverAny.gitTry = vi.fn().mockResolvedValue({ ok: true, stdout: "", stderr: "" });
       resolverAny.git = vi.fn().mockResolvedValue("");
+      resolverAny.readConflictedFile = vi.fn().mockResolvedValue("conflicted content");
 
       const result = await resolver.resolveConflicts("feature/hard", "main");
 
@@ -159,8 +147,6 @@ describe("ConflictResolver - Cascade Orchestration (MQ-T038)", () => {
     });
 
     it("aborts when one file fails all tiers even if others succeed", async () => {
-      const client = mockAnthropicClient("resolved content");
-      resolver.setAnthropicClient(client);
       resolver.setValidator(mockValidator());
 
       vi.spyOn(resolver, "attemptMerge").mockResolvedValue({
@@ -206,8 +192,6 @@ describe("ConflictResolver - Cascade Orchestration (MQ-T038)", () => {
 
   describe("resolveConflicts(): resolvedTiers map", () => {
     it("populates resolvedTiers correctly for each file", async () => {
-      const client = mockAnthropicClient("resolved");
-      resolver.setAnthropicClient(client);
       resolver.setValidator(mockValidator());
 
       vi.spyOn(resolver, "attemptMerge").mockResolvedValue({
@@ -281,8 +265,6 @@ describe("ConflictResolver - Cascade Orchestration (MQ-T038)", () => {
 
   describe("resolveConflicts(): cost accumulation", () => {
     it("accumulates costs from Tier 3 and Tier 4 across files", async () => {
-      const client = mockAnthropicClient("resolved");
-      resolver.setAnthropicClient(client);
       resolver.setValidator(mockValidator());
 
       const tier3Cost = {
@@ -347,15 +329,21 @@ describe("ConflictResolver - Cascade Orchestration (MQ-T038)", () => {
     });
   });
 
-  describe("resolveConflicts(): skips AI tiers when no client", () => {
-    it("skips Tier 3 and Tier 4 when no Anthropic client, goes to fallback", async () => {
-      // No anthropic client set on resolver
+  describe("resolveConflicts(): Tier 3 and Tier 4 always attempted (Pi is always available)", () => {
+    it("tries Tier 3 then Tier 4 when Tier 2 fails", async () => {
+      const tier3Spy = vi.spyOn(resolver, "attemptTier3Resolution").mockResolvedValue({
+        success: false,
+        error: "Pi Tier 3 failed",
+      });
+      const tier4Spy = vi.spyOn(resolver, "attemptTier4Resolution").mockResolvedValue({
+        success: false,
+        error: "Pi Tier 4 failed",
+      });
 
       vi.spyOn(resolver, "attemptMerge").mockResolvedValue({
         success: false,
-        conflictedFiles: ["src/noai.ts"],
+        conflictedFiles: ["src/hard.ts"],
       });
-
       vi.spyOn(resolver, "attemptTier2Resolution").mockResolvedValue({
         success: false,
         reason: "Failed",
@@ -365,11 +353,14 @@ describe("ConflictResolver - Cascade Orchestration (MQ-T038)", () => {
       const resolverAny = resolver as any;
       resolverAny.gitTry = vi.fn().mockResolvedValue({ ok: true, stdout: "", stderr: "" });
       resolverAny.git = vi.fn().mockResolvedValue("");
+      resolverAny.readConflictedFile = vi.fn().mockResolvedValue("conflicted content");
 
-      const result = await resolver.resolveConflicts("feature/noai", "main");
+      const result = await resolver.resolveConflicts("feature/hard", "main");
 
       expect(result.success).toBe(false);
-      expect(result.fallbackFiles).toContain("src/noai.ts");
+      expect(result.fallbackFiles).toContain("src/hard.ts");
+      expect(tier3Spy).toHaveBeenCalled();
+      expect(tier4Spy).toHaveBeenCalled();
     });
   });
 });

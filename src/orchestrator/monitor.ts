@@ -6,7 +6,6 @@ import { removeWorktree, createWorktree } from "../lib/git.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { MonitorReport } from "./types.js";
 import { PIPELINE_LIMITS } from "../lib/config.js";
-import type { TmuxClient } from "../lib/tmux.js";
 
 /**
  * Pipeline artifact filenames written by each phase.
@@ -47,15 +46,11 @@ export function isNotFoundError(err: unknown): boolean {
 // ── Monitor ──────────────────────────────────────────────────────────────
 
 export class Monitor {
-  private tmux?: TmuxClient;
-
   constructor(
     private store: ForemanStore,
     private taskClient: ITaskClient,
     private projectPath: string,
-    tmux?: TmuxClient,
   ) {
-    this.tmux = tmux;
   }
 
   /**
@@ -80,26 +75,6 @@ export class Monitor {
 
     for (const run of activeRuns) {
       try {
-        // ── Tmux liveness check (runs BEFORE seed-status check) ──────
-        if (this.tmux && run.tmux_session) {
-          const tmuxAlive = await this.tmux.hasSession(run.tmux_session);
-          if (!tmuxAlive) {
-            this.store.updateRun(run.id, { status: "stuck" });
-            this.store.logEvent(
-              run.project_id,
-              "stuck",
-              {
-                seedId: run.seed_id,
-                detectedBy: "tmux-liveness",
-                tmuxSession: run.tmux_session,
-              },
-              run.id,
-            );
-            report.stuck.push({ ...run, status: "stuck" });
-            continue;
-          }
-        }
-
         // ── Completion check via taskClient.show() ────────────────────
         let issueStatus: string | null = null;
         try {

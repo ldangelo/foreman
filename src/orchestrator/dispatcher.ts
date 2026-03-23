@@ -3,19 +3,20 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { SDKResultSuccess, SDKResultError } from "@anthropic-ai/claude-agent-sdk";
+import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
-import { createWorktree } from "../lib/git.js";
+import { createWorktree, gitBranchExists } from "../lib/git.js";
+import { BeadsRustClient } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
-import { TmuxClient, tmuxSessionName } from "../lib/tmux.js";
-import { PiRpcSpawnStrategy, isPiAvailable } from "./pi-rpc-spawn-strategy.js";
+import { isPiAvailable } from "./pi-rpc-spawn-strategy.js";
+import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
+import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -136,12 +137,25 @@ export class Dispatcher {
     // Skip seeds that already have an active run
     const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
 
+    // Also skip seeds that have a completed-but-unmerged run (prevent duplicate runs)
+    const completedRuns = this.store.getRunsByStatus("completed", projectId);
+    const completedSeedIds = new Set(completedRuns.map((r) => r.seed_id));
+
     for (const seed of readySeeds) {
       if (activeSeedIds.has(seed.id)) {
         skipped.push({
           seedId: seed.id,
           title: seed.title,
           reason: "Already has an active run",
+        });
+        continue;
+      }
+
+      if (completedSeedIds.has(seed.id)) {
+        skipped.push({
+          seedId: seed.id,
+          title: seed.title,
+          reason: "Has completed run awaiting merge — run 'foreman merge' or wait for auto-merge",
         });
         continue;
       }
@@ -166,15 +180,27 @@ export class Dispatcher {
         continue;
       }
 
-      // Fetch full issue details (description, notes/comments) for agent context
-      let seedDetail: { description?: string | null; notes?: string | null } | undefined;
+      // Fetch full issue details (description, notes/comments, labels) for agent context
+      let seedDetail: { description?: string | null; notes?: string | null; labels?: string[] } | undefined;
       try {
         seedDetail = await this.seeds.show(seed.id);
       } catch {
         // Non-fatal: if show() fails, proceed without detail context
         log(`Warning: failed to fetch details for seed ${seed.id}`);
       }
-      const seedInfo = seedToInfo(seed, seedDetail);
+
+      // Fetch bead comments (design notes, reviewer feedback, etc.) for agent context
+      let beadComments: string | null = null;
+      if (this.seeds.comments) {
+        try {
+          beadComments = await this.seeds.comments(seed.id);
+        } catch {
+          // Non-fatal: proceed without comments if fetch fails
+          log(`Warning: failed to fetch comments for seed ${seed.id}`);
+        }
+      }
+
+      const seedInfo = seedToInfo(seed, seedDetail, beadComments);
       const runtime: RuntimeSelection = "claude-code";
       const model = opts?.model ?? this.selectModel(seedInfo);
 
@@ -192,22 +218,42 @@ export class Dispatcher {
       }
 
       try {
-        // 1. Create git worktree
+        // 1. Resolve base branch (may stack on a dependency branch)
+        const baseBranch = await resolveBaseBranch(seed.id, this.projectPath, this.store);
+        if (baseBranch) {
+          log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
+        }
+
+        // 1a. Load workflow config to get setup steps for worktree initialization
+        const resolvedWorkflow = resolveWorkflowName(seedInfo.type ?? "feature", seedInfo.labels);
+        let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
+        try {
+          const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
+          setupSteps = wfConfig.setup;
+        } catch {
+          // Non-fatal: fall back to default installDependencies behavior
+          log(`[foreman] Could not load workflow config '${resolvedWorkflow}' for setup steps — using default dependency install`);
+        }
+
+        // 2. Create git worktree (optionally branched from a dependency branch)
         const { worktreePath, branchName } = await createWorktree(
           this.projectPath,
           seed.id,
+          baseBranch,
+          setupSteps,
         );
 
-        // 2. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
+        // 3. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
         const taskMd = workerAgentMd(seedInfo, worktreePath, model);
         await writeFile(join(worktreePath, "TASK.md"), taskMd, "utf-8");
 
-        // 4. Record run in store
+        // 4. Record run in store (include base_branch for stacking awareness)
         const run = this.store.createRun(
           projectId,
           seed.id,
           model,
           worktreePath,
+          { baseBranch: baseBranch ?? null },
         );
 
         // 5. Log dispatch event
@@ -219,11 +265,38 @@ export class Dispatcher {
           branchName,
         }, run.id);
 
+        // 5a. Send worktree-created mail so inbox shows worktree lifecycle event
+        try {
+          this.store.sendMessage(run.id, "foreman", "foreman", "worktree-created", JSON.stringify({
+            seedId: seed.id,
+            title: seed.title,
+            worktreePath,
+            branchName,
+            model,
+            timestamp: new Date().toISOString(),
+          }));
+        } catch {
+          // Non-fatal — mail is optional infrastructure
+        }
+
         // 6. Mark seed as in_progress before spawning agent
         await this.seeds.update(seed.id, { status: "in_progress" });
 
+        // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
+        try {
+          this.store.sendMessage(run.id, "foreman", "foreman", "bead-claimed", JSON.stringify({
+            seedId: seed.id,
+            title: seed.title,
+            model,
+            runId: run.id,
+            timestamp: new Date().toISOString(),
+          }));
+        } catch {
+          // Non-fatal — mail is optional infrastructure
+        }
+
         // 7. Spawn the coding agent
-        const { sessionKey, tmuxSession } = await this.spawnAgent(
+        const { sessionKey } = await this.spawnAgent(
           model,
           worktreePath,
           seedInfo,
@@ -237,12 +310,11 @@ export class Dispatcher {
           opts?.notifyUrl,
         );
 
-        // Update run with session key (AT-T015: persist tmux_session if present)
+        // Update run with session key
         this.store.updateRun(run.id, {
           session_key: sessionKey,
           status: "running",
           started_at: new Date().toISOString(),
-          ...(tmuxSession ? { tmux_session: tmuxSession } : {}),
         });
 
         dispatched.push({
@@ -366,7 +438,7 @@ export class Dispatcher {
       await this.seeds.update(run.seed_id, { status: "in_progress" });
 
       // Spawn the resumed agent
-      const { sessionKey, tmuxSession } = await this.resumeAgent(
+      const { sessionKey } = await this.resumeAgent(
         model,
         run.worktree_path,
         { id: run.seed_id, title: run.seed_id },
@@ -380,7 +452,6 @@ export class Dispatcher {
         session_key: sessionKey,
         status: "running",
         started_at: new Date().toISOString(),
-        ...(tmuxSession ? { tmux_session: tmuxSession } : {}),
       });
 
       resumed.push({
@@ -434,33 +505,15 @@ export class Dispatcher {
       started_at: new Date().toISOString(),
     });
 
-    // 4. Build env with telemetry tags
-    const env: Record<string, string | undefined> = { ...process.env };
-    delete env.CLAUDECODE;
-    env.PATH = `/opt/homebrew/bin:${env.PATH}`;
-
     try {
-      let resultMsg: SDKResultSuccess | SDKResultError | undefined;
-
-      for await (const message of query({
+      const planResult = await runWithPiSdk({
         prompt,
-        options: {
-          cwd: this.projectPath,
-          model: PLAN_STEP_CONFIG.model,
-          permissionMode: "bypassPermissions",
-          allowDangerouslySkipPermissions: true,
-          maxBudgetUsd: PLAN_STEP_CONFIG.maxBudgetUsd,
-          maxTurns: PLAN_STEP_CONFIG.maxTurns,
-          env,
-          persistSession: false,
-        },
-      })) {
-        if (message.type === "result") {
-          resultMsg = message as SDKResultSuccess | SDKResultError;
-        }
-      }
+        systemPrompt: `You are a planning agent. ${ensembleCommand} for the task: ${seed.title}`,
+        cwd: this.projectPath,
+        model: PLAN_STEP_CONFIG.model,
+      });
 
-      if (resultMsg && resultMsg.subtype === "success") {
+      if (planResult.success) {
         this.store.updateRun(run.id, {
           status: "completed",
           completed_at: new Date().toISOString(),
@@ -468,13 +521,11 @@ export class Dispatcher {
         this.store.logEvent(projectId, "complete", {
           seedId: seed.id,
           title: seed.title,
-          costUsd: resultMsg.total_cost_usd,
-          numTurns: resultMsg.num_turns,
-          durationMs: resultMsg.duration_ms,
+          costUsd: planResult.costUsd,
+          numTurns: planResult.turns,
         }, run.id);
-      } else if (resultMsg) {
-        const errResult = resultMsg as SDKResultError;
-        const reason = errResult.errors?.join("; ") ?? errResult.subtype;
+      } else {
+        const reason = planResult.errorMessage ?? "Pi plan step failed";
         this.store.updateRun(run.id, {
           status: "failed",
           completed_at: new Date().toISOString(),
@@ -482,7 +533,7 @@ export class Dispatcher {
         this.store.logEvent(projectId, "fail", {
           seedId: seed.id,
           reason,
-          costUsd: errResult.total_cost_usd,
+          costUsd: planResult.costUsd,
         }, run.id);
         throw new Error(reason);
       }
@@ -526,21 +577,21 @@ export class Dispatcher {
 
     // P0 critical tasks always get the most capable model
     if (priority === 0) {
-      return "claude-opus-4-6";
+      return "anthropic/claude-opus-4-6";
     }
 
     const heavy = ["refactor", "architect", "design", "complex", "migrate", "overhaul"];
     if (heavy.some((kw) => text.includes(kw))) {
-      return "claude-opus-4-6";
+      return "anthropic/claude-opus-4-6";
     }
 
     const light = ["typo", "rename", "config", "bump version", "update readme"];
     // Only use haiku for non-critical (P1+) light tasks
     if (light.some((kw) => text.includes(kw)) && priority >= 1) {
-      return "claude-haiku-4-5-20251001";
+      return "anthropic/claude-haiku-4-5";
     }
 
-    return "claude-sonnet-4-6";
+    return "anthropic/claude-sonnet-4-6";
   }
 
   /**
@@ -563,11 +614,11 @@ export class Dispatcher {
       `Use br (beads_rust) to track your progress.`,
       `When completely finished:`,
       `  Save your session log to SessionLogs/session-$(date +%d%m%y-%H:%M).md (mkdir -p SessionLogs first)`,
-      `  br close ${seedId} --reason "Completed"`,
       `  br sync --flush-only`,
       `  git add .`,
       `  git commit -m "${seedTitle} (${seedId})"`,
       `  git push -u origin foreman/${seedId}`,
+      `NOTE: Do NOT close the bead manually — it will be closed automatically after the branch merges to main.`,
     ].join("\n");
   }
 
@@ -580,11 +631,11 @@ export class Dispatcher {
       `Continue where you left off. Check your progress so far and complete the remaining work.`,
       `When completely finished:`,
       `  Save your session log to SessionLogs/session-$(date +%d%m%y-%H:%M).md (mkdir -p SessionLogs first)`,
-      `  br close ${seedId} --reason "Completed"`,
       `  br sync --flush-only`,
       `  git add .`,
       `  git commit -m "${seedTitle} (${seedId})"`,
       `  git push -u origin foreman/${seedId}`,
+      `NOTE: Do NOT close the bead manually — it will be closed automatically after the branch merges to main.`,
     ].join("\n");
   }
 
@@ -608,7 +659,7 @@ export class Dispatcher {
       skipReview?: boolean;
     },
     notifyUrl?: string,
-  ): Promise<{ sessionKey: string; tmuxSession?: string }> {
+  ): Promise<{ sessionKey: string }> {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
@@ -617,7 +668,9 @@ export class Dispatcher {
 
     log(`Spawning ${usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}`);
 
-    const spawnResult = await spawnWorkerProcess({
+    const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
+
+    await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
       seedId: seed.id,
@@ -633,9 +686,11 @@ export class Dispatcher {
       skipExplore: pipelineOpts?.skipExplore,
       skipReview: pipelineOpts?.skipReview,
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
+      seedType,
+      seedLabels: seed.labels,
     });
 
-    return { sessionKey, tmuxSession: spawnResult.tmuxSession };
+    return { sessionKey };
   }
 
   // ── Session Resume ───────────────────────────────────────────────────
@@ -652,7 +707,7 @@ export class Dispatcher {
     sdkSessionId: string,
     telemetry?: boolean,
     notifyUrl?: string,
-  ): Promise<{ sessionKey: string; tmuxSession?: string }> {
+  ): Promise<{ sessionKey: string }> {
     const resumePrompt = this.buildResumePrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
@@ -660,7 +715,7 @@ export class Dispatcher {
 
     log(`Resuming worker for ${seed.id} [${model}] session=${sdkSessionId}`);
 
-    const spawnResult = await spawnWorkerProcess({
+    await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
       seedId: seed.id,
@@ -673,7 +728,7 @@ export class Dispatcher {
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
     });
 
-    return { sessionKey, tmuxSession: spawnResult.tmuxSession };
+    return { sessionKey };
   }
 
   // ── Private helpers ───────────────────────────────────────────────────
@@ -745,6 +800,47 @@ export class Dispatcher {
 
 // ── Utility ─────────────────────────────────────────────────────────────
 
+/**
+ * Resolve the base branch for a seed's worktree.
+ *
+ * If any of the seed's blocking dependencies have an unmerged local branch
+ * (i.e. a `foreman/<depId>` branch exists locally and its latest run is
+ * "completed" but not yet "merged"), stack the new worktree on top of that
+ * dependency branch instead of the default branch.
+ *
+ * This allows agent B to build on top of agent A's work before A is merged.
+ * After A merges, the refinery will rebase B onto main.
+ *
+ * Returns the dependency branch name (e.g. "foreman/story-1") or undefined
+ * when no stacking is needed.
+ */
+export async function resolveBaseBranch(
+  seedId: string,
+  projectPath: string,
+  store: Pick<ForemanStore, "getRunsForSeed">,
+): Promise<string | undefined> {
+  const brClient = new BeadsRustClient(projectPath);
+  try {
+    const detail = await brClient.show(seedId);
+    // detail.dependencies is string[] of dep IDs that this seed depends on
+    for (const depId of detail.dependencies ?? []) {
+      const depBranch = `foreman/${depId}`;
+      // Check if this branch exists locally
+      const branchExists = await gitBranchExists(projectPath, depBranch);
+      if (!branchExists) continue;
+      // Check if the dep's most recent run is "completed" (done but not yet merged)
+      const depRuns = store.getRunsForSeed(depId);
+      const latestDepRun = depRuns[0]; // DESC order → first = most recent
+      if (latestDepRun && latestDepRun.status === "completed") {
+        return depBranch; // Stack on this dependency branch
+      }
+    }
+  } catch {
+    // br may not be initialized or the seed may not have dependency info — ignore
+  }
+  return undefined; // Default: branch from main/current
+}
+
 // ── Worker Config (must match agent-worker.ts interface) ────────────────
 
 export interface WorkerConfig {
@@ -766,13 +862,23 @@ export interface WorkerConfig {
   skipReview?: boolean;
   /** Absolute path to the SQLite DB file (e.g. .foreman/foreman.db) */
   dbPath?: string;
+  /**
+   * Resolved workflow type (e.g. "smoke", "feature", "bug").
+   * Derived from label-based override or bead type field.
+   * Used for prompt-loader workflow scoping and spawn strategy selection.
+   */
+  seedType?: string;
+  /**
+   * Labels from the bead. Forwarded to agent-worker so it can resolve
+   * `workflow:<name>` label overrides.
+   */
+  seedLabels?: string[];
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────
 
 /** Result returned by a SpawnStrategy */
 export interface SpawnResult {
-  tmuxSession?: string;
 }
 
 /** Strategy interface for spawning worker processes */
@@ -794,53 +900,6 @@ function resolveWorkerPaths(): { tsxBin: string; workerScript: string; logDir: s
   };
 }
 
-/**
- * Spawn worker inside a tmux session.
- * Builds a shell command string that tmux will execute.
- */
-export class TmuxSpawnStrategy implements SpawnStrategy {
-  private tmux = new TmuxClient();
-
-  async spawn(config: WorkerConfig): Promise<SpawnResult> {
-    const { tsxBin, workerScript, logDir } = resolveWorkerPaths();
-    const sessionName = tmuxSessionName(config.seedId);
-
-    // Write config to temp file (worker reads + deletes it)
-    const configDir = join(process.env.HOME ?? "/tmp", ".foreman", "tmp");
-    await mkdir(configDir, { recursive: true });
-    const configPath = join(configDir, `worker-${config.runId}.json`);
-    await writeFile(configPath, JSON.stringify(config), "utf-8");
-
-    await mkdir(logDir, { recursive: true });
-    const outLog = join(logDir, `${config.runId}.out`);
-    const errLog = join(logDir, `${config.runId}.err`);
-
-    // AT-T014: Kill stale session with same name before creating new one
-    const killed = await this.tmux.killSession(sessionName);
-    if (killed) {
-      log(`[foreman] Killed stale tmux session ${sessionName}`);
-    }
-
-    // Build the command string for tmux
-    const command = `${tsxBin} ${workerScript} ${configPath} > ${outLog} 2> ${errLog}`;
-
-    const result = await this.tmux.createSession({
-      sessionName,
-      command,
-      cwd: config.worktreePath,
-      env: config.env,
-    });
-
-    if (!result.created) {
-      // AT-T016: Log warning and signal failure so caller falls back
-      log(`[foreman] tmux session creation failed -- falling back to detached process`);
-      return {};
-    }
-
-    log(`  Worker tmux session=${sessionName} for ${config.seedId}`);
-    return { tmuxSession: sessionName };
-  }
-}
 
 /**
  * Spawn worker as a detached child process (original behavior).
@@ -883,44 +942,14 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
 }
 
 /**
- * Spawn agent-worker.ts using the best available strategy.
+ * Spawn agent-worker using DetachedSpawnStrategy.
  *
- * Strategy selection:
- * 1. If `pi` binary is available, use PiRpcSpawnStrategy
- * 2. If tmux is available, use TmuxSpawnStrategy (AT-T013)
- * 3. If tmux creation fails, fall back to DetachedSpawnStrategy (AT-T016)
- * 4. If tmux is unavailable, use DetachedSpawnStrategy directly
- *
- * Returns the spawn result including optional tmux session name.
+ * DetachedSpawnStrategy spawns agent-worker.ts, which runs the full pipeline
+ * (explorer → developer → QA → reviewer → finalize) and calls runWithPi()
+ * per phase with the correct phase prompt and Pi extension env vars.
  */
 export async function spawnWorkerProcess(config: WorkerConfig): Promise<SpawnResult> {
-  // Pi RPC takes highest priority when available
-  if (isPiAvailable()) {
-    log(`[foreman] pi binary found — using PiRpcSpawnStrategy for ${config.seedId}`);
-    const piStrategy = new PiRpcSpawnStrategy();
-    return piStrategy.spawn(config);
-  }
-
-  const tmux = new TmuxClient();
-  const available = await tmux.isAvailable();
-
-  if (available) {
-    const tmuxStrategy = new TmuxSpawnStrategy();
-    const result = await tmuxStrategy.spawn(config);
-
-    // AT-T016: If tmux creation failed, fall back to detached spawn
-    if (result.tmuxSession) {
-      return result;
-    }
-
-    // Tmux was available but session creation failed — fall back
-    const detachedStrategy = new DetachedSpawnStrategy();
-    return detachedStrategy.spawn(config);
-  }
-
-  // Tmux not available — use detached spawn directly
-  const detachedStrategy = new DetachedSpawnStrategy();
-  return detachedStrategy.spawn(config);
+  return new DetachedSpawnStrategy().spawn(config);
 }
 
 /**
@@ -975,14 +1004,30 @@ function extractSessionId(sessionKey: string | null): string | null {
   return m ? m[1] : null;
 }
 
-function seedToInfo(seed: Issue, detail?: { description?: string | null; notes?: string | null }): SeedInfo {
+function seedToInfo(
+  seed: Issue,
+  detail?: { description?: string | null; notes?: string | null; labels?: string[] },
+  beadComments?: string | null,
+): SeedInfo {
+  // Combine notes (from br show) and comments (from br comments) into a single
+  // "Additional Context" block so agents receive all annotated context.
+  const notesSection = detail?.notes ?? undefined;
+  const commentsSection = beadComments ?? undefined;
+  let combinedComments: string | undefined;
+  if (notesSection && commentsSection) {
+    combinedComments = `${notesSection}\n\n---\n\n**Comments:**\n\n${commentsSection}`;
+  } else {
+    combinedComments = notesSection ?? commentsSection;
+  }
+
   return {
     id: seed.id,
     title: seed.title,
     description: detail?.description ?? seed.description ?? undefined,
     priority: seed.priority,
     type: seed.type,
-    comments: detail?.notes ?? undefined,
+    labels: detail?.labels ?? seed.labels,
+    comments: combinedComments,
   };
 }
 

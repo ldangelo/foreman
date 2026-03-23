@@ -32,7 +32,10 @@
       "Bash(npm test:*)",
       "Skill(commit-commands:commit-push-pr)",
       "Bash(git commit:*)",
-      "Bash(active agents\" path:*)"
+      "Bash(active agents\" path:*)",
+      "Bash(cloc /Users/ldangelo/Development/Fortium/foreman/src --json)",
+      "Bash(find /Users/ldangelo/Development/Fortium/foreman/src -name *.ts)",
+      "Bash(wc -l /Users/ldangelo/Development/Fortium/foreman/src/**/*.ts)"
     ]
   },
   "mcpServers": {

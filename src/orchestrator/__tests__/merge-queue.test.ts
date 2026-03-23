@@ -3,6 +3,10 @@ import Database from "better-sqlite3";
 import { MergeQueue } from "../merge-queue.js";
 import type { MergeQueueEntry, MergeQueueStatus } from "../merge-queue.js";
 
+vi.mock("../../lib/git.js", () => ({
+  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+}));
+
 // Minimal schema needed for tests (merge_queue + runs for FK)
 const TEST_SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
@@ -595,12 +599,25 @@ describe("MergeQueue.reconcile", () => {
   });
 
   it("recovers a running run whose branch was pushed before process crashed", async () => {
-    insertRun(db, "run-1", "seed-1", "running");
+    // Insert run with an explicit UTC ISO timestamp so timezone parsing is unambiguous.
+    // The run was "created" at 2026-01-01T00:00:00Z.
+    db.prepare(
+      `INSERT INTO runs (id, project_id, seed_id, agent_type, status, created_at)
+       VALUES ('run-1', 'proj-1', 'seed-1', 'worker', 'running', '2026-01-01T00:00:00.000Z')`
+    ).run();
+
+    // Commit epoch: 2026-01-02 (after the run was created) — should trigger recovery.
+    // 2026-01-02T00:00:00Z in Unix seconds:
+    const commitEpoch = Math.floor(new Date("2026-01-02T00:00:00.000Z").getTime() / 1000);
 
     const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
       if (args[0] === "rev-parse" && args[2] === "refs/remotes/origin/foreman/seed-1") {
         // Remote branch exists — push succeeded before crash
         return Promise.resolve({ stdout: "abc123\n", stderr: "" });
+      }
+      if (args[0] === "log" && args.includes("--format=%ct")) {
+        // Remote branch commit time is after run creation → not a stale ref → recover
+        return Promise.resolve({ stdout: `${commitEpoch}\n`, stderr: "" });
       }
       if (args[0] === "diff") {
         return Promise.resolve({ stdout: "src/foo.ts\nsrc/bar.ts\n", stderr: "" });
@@ -626,11 +643,20 @@ describe("MergeQueue.reconcile", () => {
   });
 
   it("recovers a pending run whose branch was pushed before process crashed", async () => {
-    insertRun(db, "run-1", "seed-1", "pending");
+    db.prepare(
+      `INSERT INTO runs (id, project_id, seed_id, agent_type, status, created_at)
+       VALUES ('run-1', 'proj-1', 'seed-1', 'worker', 'pending', '2026-01-01T00:00:00.000Z')`
+    ).run();
+
+    // Commit 24 hours after run creation — definitely a legitimate recovery
+    const commitEpoch = Math.floor(new Date("2026-01-02T00:00:00.000Z").getTime() / 1000);
 
     const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
       if (args[0] === "rev-parse" && args[2] === "refs/remotes/origin/foreman/seed-1") {
         return Promise.resolve({ stdout: "abc123\n", stderr: "" });
+      }
+      if (args[0] === "log" && args.includes("--format=%ct")) {
+        return Promise.resolve({ stdout: `${commitEpoch}\n`, stderr: "" });
       }
       if (args[0] === "diff") {
         return Promise.resolve({ stdout: "src/changed.ts\n", stderr: "" });
@@ -646,6 +672,45 @@ describe("MergeQueue.reconcile", () => {
 
     const updatedRun = db.prepare("SELECT status FROM runs WHERE id = ?").get("run-1") as { status: string };
     expect(updatedRun.status).toBe("completed");
+  });
+
+  it("skips recovery when remote branch commit predates run creation (stale ref after foreman reset)", async () => {
+    // Simulate the bd-yd8x bug:
+    //   1. Old run pushed branch at T=past (remote ref exists with an old commit)
+    //   2. foreman reset deleted local branch but left remote tracking ref
+    //   3. New run created AFTER the old push
+    //   → reconcile() secondary pass must NOT falsely mark new run as "completed"
+    //
+    // Run created at 2026-02-01T00:00:00Z (after the old push on 2026-01-01)
+    db.prepare(
+      `INSERT INTO runs (id, project_id, seed_id, agent_type, status, created_at)
+       VALUES ('run-new', 'proj-1', 'seed-1', 'worker', 'pending', '2026-02-01T00:00:00.000Z')`
+    ).run();
+
+    // Remote branch was last committed on 2026-01-01 — BEFORE this run was created
+    const staleCommitEpoch = Math.floor(new Date("2026-01-01T00:00:00.000Z").getTime() / 1000);
+
+    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[2] === "refs/remotes/origin/foreman/seed-1") {
+        // Stale remote ref still exists after foreman reset
+        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
+      }
+      if (args[0] === "log" && args.includes("--format=%ct")) {
+        // Remote branch was last committed before this run was created — stale!
+        return Promise.resolve({ stdout: `${staleCommitEpoch}\n`, stderr: "" });
+      }
+      return Promise.reject(new Error("unexpected git call"));
+    });
+
+    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+
+    // Should NOT be enqueued — stale remote ref from previous run
+    expect(result.enqueued).toBe(0);
+    expect(queue.list()).toHaveLength(0);
+
+    // Run status must remain "pending" — it was NOT falsely marked "completed"
+    const run = db.prepare("SELECT status FROM runs WHERE id = ?").get("run-new") as { status: string };
+    expect(run.status).toBe("pending");
   });
 
   it("does not recover a running run already in merge_queue", async () => {
@@ -667,13 +732,28 @@ describe("MergeQueue.reconcile", () => {
   });
 
   it("recovers completed run and running run with pushed branch in single reconcile", async () => {
-    insertRun(db, "run-1", "seed-1", "completed");
-    insertRun(db, "run-2", "seed-2", "running");
+    // Use explicit UTC timestamps to avoid timezone parsing ambiguity.
+    // Both runs "created" well before the commit epoch below.
+    db.prepare(
+      `INSERT INTO runs (id, project_id, seed_id, agent_type, status, created_at)
+       VALUES ('run-1', 'proj-1', 'seed-1', 'worker', 'completed', '2026-01-01T00:00:00.000Z')`
+    ).run();
+    db.prepare(
+      `INSERT INTO runs (id, project_id, seed_id, agent_type, status, created_at)
+       VALUES ('run-2', 'proj-1', 'seed-2', 'worker', 'running', '2026-01-01T00:00:00.000Z')`
+    ).run();
+
+    // Commit epoch after both runs were created — recovery should proceed for seed-2
+    const commitEpoch = Math.floor(new Date("2026-01-02T00:00:00.000Z").getTime() / 1000);
 
     const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
       if (args[0] === "rev-parse") {
         // Both local (completed first-pass) and remote (secondary pass) branches exist
         return Promise.resolve({ stdout: "abc123\n", stderr: "" });
+      }
+      if (args[0] === "log" && args.includes("--format=%ct")) {
+        // Commit after run creation — not a stale ref → recover
+        return Promise.resolve({ stdout: `${commitEpoch}\n`, stderr: "" });
       }
       if (args[0] === "diff") {
         return Promise.resolve({ stdout: "src/foo.ts\n", stderr: "" });
@@ -691,19 +771,35 @@ describe("MergeQueue.reconcile", () => {
     // Simulate: old run crashed after push (status stuck at "running"),
     // dispatcher later created a new run for the same seed (also "running", not yet pushed).
     // Both share the same seed_id → same remote branch name.
+    //
+    // run-old: created 2026-01-01, pushed branch at 2026-01-01T12:00Z
+    // run-new: created 2026-01-02 (after the push)
+    //
+    // The timestamp guard checks commitEpoch >= run.created_at:
+    //   run-old (oldest, processed first): commitEpoch (Jan 1 noon) >= run-old.created_at (Jan 1 midnight) ✓ → recover
+    //   run-new: skipped by seenSeedIds deduplication (seed-1 already seen)
     db.prepare(
       `INSERT INTO runs (id, project_id, seed_id, agent_type, status, created_at)
-       VALUES (?, 'proj-1', 'seed-1', 'worker', 'running', '2026-01-01T00:00:00.000Z')`
-    ).run("run-old");
+       VALUES ('run-old', 'proj-1', 'seed-1', 'worker', 'running', '2026-01-01T00:00:00.000Z')`
+    ).run();
     db.prepare(
       `INSERT INTO runs (id, project_id, seed_id, agent_type, status, created_at)
-       VALUES (?, 'proj-1', 'seed-1', 'worker', 'running', '2026-01-02T00:00:00.000Z')`
-    ).run("run-new");
+       VALUES ('run-new', 'proj-1', 'seed-1', 'worker', 'running', '2026-01-02T00:00:00.000Z')`
+    ).run();
+
+    // Commit epoch: 2026-01-01T12:00Z — after run-old was created, before run-new.
+    // The guard passes for run-old (oldest, processed first by ORDER BY created_at ASC).
+    // run-new is never tested because seenSeedIds deduplication skips it.
+    const commitEpoch = Math.floor(new Date("2026-01-01T12:00:00.000Z").getTime() / 1000);
 
     const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
       if (args[0] === "rev-parse" && args[2] === "refs/remotes/origin/foreman/seed-1") {
-        // Remote branch exists — pushed by the old run before it crashed
+        // Remote branch exists — pushed by run-old before it crashed
         return Promise.resolve({ stdout: "abc123\n", stderr: "" });
+      }
+      if (args[0] === "log" && args.includes("--format=%ct")) {
+        // Commit at Jan 1 noon — after run-old was created → run-old is recovered
+        return Promise.resolve({ stdout: `${commitEpoch}\n`, stderr: "" });
       }
       if (args[0] === "diff") {
         return Promise.resolve({ stdout: "src/foo.ts\n", stderr: "" });

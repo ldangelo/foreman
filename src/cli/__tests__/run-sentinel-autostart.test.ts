@@ -55,7 +55,6 @@ const {
     this.getProjectByPath = mockGetProjectByPath;
     this.getSentinelConfig = mockGetSentinelConfig;
     this.getRunsByStatuses = mockGetRunsByStatuses;
-    this.getMergeAgentConfig = vi.fn().mockReturnValue(null);
   });
   (MockForemanStore as any).forProject = vi.fn(
     (...args: unknown[]) => new (MockForemanStore as any)(...args)
@@ -111,26 +110,11 @@ vi.mock("../watch-ui.js", () => ({
   watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args),
 }));
 vi.mock("../../orchestrator/sentinel.js", () => ({ SentinelAgent: MockSentinelAgent }));
-vi.mock("../../orchestrator/agent-mail-client.js", () => ({
-  AgentMailClient: vi.fn(function (this: Record<string, unknown>) {
-    this.healthCheck = vi.fn().mockResolvedValue(true);
-    this.ensureProject = vi.fn().mockResolvedValue(undefined);
-  }),
-  DEFAULT_AGENT_MAIL_CONFIG: { baseUrl: "http://localhost:8766" },
-}));
 vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
   isPiAvailable: vi.fn().mockReturnValue(false),
   PiRpcSpawnStrategy: vi.fn(),
   PI_PHASE_CONFIGS: {},
   parsePiEvent: vi.fn().mockReturnValue(null),
-}));
-vi.mock("../../orchestrator/merge-agent.js", () => ({
-  MergeAgent: vi.fn(function (this: Record<string, unknown>) {
-    this.start = vi.fn().mockResolvedValue(undefined);
-    this.stop = vi.fn();
-  }),
-  MERGE_AGENT_MAILBOX: "refinery",
-  DEFAULT_POLL_INTERVAL_MS: 30_000,
 }));
 
 // ── Module under test ─────────────────────────────────────────────────────────
