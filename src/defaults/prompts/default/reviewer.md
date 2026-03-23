@@ -14,17 +14,7 @@ Before doing anything else, invoke:
 If Pi responds that the `/send-mail` skill is not found or unavailable, stop immediately with this message:
 > ERROR: /send-mail skill not available — pipeline cannot proceed without mail notifications. Ensure send-mail is installed in ~/.pi/agent/skills/ (run: foreman doctor --fix) and restart the pipeline.
 
-## Phase Lifecycle Notifications
-At the very start of your session, invoke:
-```
-/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-started --body '{"phase":"reviewer","seedId":"{{seedId}}"}'
-```
-
-When you finish writing REVIEW.md, invoke:
-```
-/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"reviewer","seedId":"{{seedId}}","status":"complete"}'
-```
-
+## Error Reporting
 If you hit an unrecoverable error, invoke:
 ```
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"reviewer","seedId":"{{seedId}}","error":"<brief description>"}'
