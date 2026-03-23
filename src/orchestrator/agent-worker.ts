@@ -205,6 +205,11 @@ interface WorkerConfig {
    * e.g. ["phase:explorer", "workflow:smoke"]
    */
   seedLabels?: string[];
+  /**
+   * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
+   * Forwarded to the pipeline executor to resolve per-priority models from YAML.
+   */
+  seedPriority?: string;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -438,12 +443,15 @@ async function runPhase(
   agentMailClient?: AnyMailClient | null,
 ): Promise<PhaseResult> {
   const roleConfig = ROLE_CONFIGS[role];
+  // Use the model resolved by the pipeline executor (from workflow YAML + bead priority).
+  // Falls back to ROLE_CONFIGS[role].model for backward compat (no-YAML / direct invocation).
+  const resolvedModel: string = config.model || roleConfig.model;
   progress.currentPhase = role;
   store.updateRunProgress(config.runId, progress);
 
   const disallowedTools = getDisallowedTools(roleConfig);
   const allowedSummary = roleConfig.allowedTools.join(", ");
-  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${roleConfig.model}, maxBudgetUsd=${roleConfig.maxBudgetUsd}, allowedTools=[${allowedSummary}])\n`);
+  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${resolvedModel}, maxBudgetUsd=${roleConfig.maxBudgetUsd}, allowedTools=[${allowedSummary}])\n`);
   log(`[${role.toUpperCase()}] Starting phase for ${config.seedId} (${roleConfig.allowedTools.length} allowed tools, ${disallowedTools.length} disallowed)`);
 
   // Build custom tools for this phase (e.g. send_mail).
@@ -457,7 +465,7 @@ async function runPhase(
       prompt,
       systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
       cwd: config.worktreePath,
-      model: roleConfig.model,
+      model: resolvedModel,
       allowedTools: roleConfig.allowedTools,
       customTools,
       logFile,
@@ -495,7 +503,7 @@ async function runPhase(
     progress.costByPhase ??= {};
     progress.costByPhase[role] = (progress.costByPhase[role] ?? 0) + phaseResult.costUsd;
     progress.agentByPhase ??= {};
-    progress.agentByPhase[role] = roleConfig.model;
+    progress.agentByPhase[role] = resolvedModel;
 
     store.updateRunProgress(config.runId, progress);
 
