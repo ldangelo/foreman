@@ -64,7 +64,6 @@ export const runCommand = new Command("run")
   .option("--skip-explore", "Skip the explorer phase in the pipeline")
   .option("--skip-review", "Skip the reviewer phase in the pipeline")
   .option("--seed <id>", "Dispatch only this specific seed (must be ready)")
-  .option("--no-auto-merge", "Disable automatic merge queue processing after each batch")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
@@ -78,7 +77,6 @@ export const runCommand = new Command("run")
     const skipExplore = opts.skipExplore as boolean | undefined;
     const skipReview = opts.skipReview as boolean | undefined;
     const seedFilter = opts.seed as string | undefined;
-    const enableAutoMerge = opts.autoMerge !== false;  // --no-auto-merge sets autoMerge to false
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
 
     // Start notification server so workers can POST status updates immediately
@@ -302,8 +300,10 @@ export const runCommand = new Command("run")
 
       // ── Startup merge drain ─────────────────────────────────────────────────
       // Drain any completed-but-unmerged runs from previous interrupted sessions
-      // BEFORE dispatching new work. Non-fatal.
-      if (enableAutoMerge && !dryRun && project) {
+      // BEFORE dispatching new work. Non-fatal. Merge is always-on — the
+      // MergeAgentDaemon runs continuously alongside sentinel, and per-dispatch
+      // drains here provide an additional safety net.
+      if (!dryRun && project) {
         try {
           const startupMerge = await autoMerge({ store, taskClient, projectPath });
           if (startupMerge.merged > 0) {
@@ -386,7 +386,7 @@ export const runCommand = new Command("run")
             const activeRuns = store.getActiveRuns();
             const runIds = activeRuns.map((r) => r.id);
             // Auto-merge completed branches BEFORE blocking on watch
-            if (enableAutoMerge) {
+            {
               console.log(chalk.dim("Auto-merging completed branches..."));
               try {
                 const mergeResult = await autoMerge({ store, taskClient, projectPath });
@@ -440,7 +440,7 @@ export const runCommand = new Command("run")
         // Watch mode: wait for this batch to finish, then loop to check for more
         if (watch) {
           // Auto-merge completed branches BEFORE blocking on watch
-          if (enableAutoMerge) {
+          {
             console.log(chalk.dim("Auto-merging completed branches..."));
             try {
               const mergeResult = await autoMerge({ store, taskClient, projectPath });
@@ -482,7 +482,7 @@ export const runCommand = new Command("run")
       //
       // Skipped when the user detached (Ctrl+C) — agents are still running in
       // the background and the user did not intend to block on merging.
-      if (enableAutoMerge && !dryRun && !userDetached) {
+      if (!dryRun && !userDetached) {
         console.log(chalk.dim("Processing remaining merge queue entries..."));
         try {
           const mergeResult = await autoMerge({ store, taskClient, projectPath });

@@ -6,7 +6,7 @@
  * - autoMerge() reconciles and drains queue when project exists but queue is empty
  * - autoMerge() counts merged / conflict / failed results correctly
  * - autoMerge() catches per-entry refinery errors and increments failedCount without throwing
- * - The dispatch loop processes the merge queue after each watchRunsInk unless --no-auto-merge
+ * - The dispatch loop always processes the merge queue after each watchRunsInk (always-on via daemon)
  * - autoMerge errors are non-fatal — the dispatch loop continues
  * - autoMerge() immediately syncs bead status in br after each merge outcome (bd-k8tx)
  */
@@ -421,25 +421,6 @@ describe("dispatch loop: auto-merge after each batch", () => {
     expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
   });
 
-  it("does NOT process merge queue when --no-auto-merge is set", async () => {
-    mockDispatch.mockResolvedValueOnce({
-      dispatched: [
-        {
-          seedId: "s-2", runId: "run-222", title: "Task 2",
-          model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
-          branchName: "foreman/s-2", runtime: "claude-code",
-        },
-      ],
-      skipped: [],
-      activeAgents: 1,
-    });
-
-    await invokeRun(["--no-auto-merge", "--no-watch"]);
-
-    expect(mockMergeQueueReconcile).not.toHaveBeenCalled();
-    expect(MockMergeQueue).not.toHaveBeenCalled();
-  });
-
   it("continues dispatch loop even when autoMerge internals throw (non-fatal)", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
     // Make reconcile throw to simulate a broken merge system
@@ -790,22 +771,6 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
     // autoMerge now runs BEFORE watchRunsInk — startup drain + in-loop (before watch) = 2 calls
     // The final drain after the loop is skipped (userDetached=true)
     expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
-  });
-
-  it("final drain is skipped when --no-auto-merge is set", async () => {
-    mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
-
-    mockDispatch.mockResolvedValueOnce({
-      dispatched: [{ seedId: "s-nm", runId: "run-nm", title: "No Merge", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-nm", runtime: "claude-code" }],
-      skipped: [],
-      activeAgents: 1,
-    });
-
-    await invokeRun(["--no-auto-merge", "--no-watch"]);
-
-    // No merge queue operations at all
-    expect(mockMergeQueueReconcile).not.toHaveBeenCalled();
-    expect(MockMergeQueue).not.toHaveBeenCalled();
   });
 
   it("final drain is skipped in --dry-run mode", async () => {
