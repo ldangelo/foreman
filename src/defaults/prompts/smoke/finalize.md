@@ -2,6 +2,9 @@
 
 This is a smoke/integration test run. Your only job is to commit files and write a report — do NOT run git push or npm ci.
 
+**0. Verify working directory:**
+Run `pwd` and confirm you are in `{{worktreePath}}`. If not, run `cd {{worktreePath}}` first.
+
 **1. Run git add and git commit:**
 ```
 git add -A

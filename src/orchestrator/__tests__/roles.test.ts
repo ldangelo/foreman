@@ -8,7 +8,9 @@ import {
   developerPrompt,
   qaPrompt,
   reviewerPrompt,
+  finalizePrompt,
   sentinelPrompt,
+  buildPhasePrompt,
   parseVerdict,
   extractIssues,
 } from "../roles.js";
@@ -131,6 +133,63 @@ describe("prompt templates", () => {
     expect(prompt).toContain("main");
     expect(prompt).toContain("npm test");
     expect(prompt).toContain("SENTINEL_REPORT.md");
+  });
+
+  it("finalizePrompt includes seed context", () => {
+    const prompt = finalizePrompt("bd-123", "Fix auth", "run-xyz", "main");
+    expect(prompt).toContain("bd-123");
+    expect(prompt).toContain("Fix auth");
+    expect(prompt).toContain("git add");
+    expect(prompt).toContain("git commit");
+  });
+
+  it("finalizePrompt interpolates worktreePath into the template", () => {
+    const prompt = finalizePrompt("bd-123", "Fix auth", "run-xyz", "main", undefined, "/tmp/worktrees/bd-123");
+    expect(prompt).toContain("/tmp/worktrees/bd-123");
+  });
+
+  it("finalizePrompt leaves {{worktreePath}} unresolved when not provided", () => {
+    // When worktreePath is not given, the template placeholder stays empty string
+    // (renderTemplate uses "" for undefined keys, so {{worktreePath}} → "")
+    const prompt = finalizePrompt("bd-123", "Fix auth");
+    // Should not contain the raw un-interpolated placeholder
+    expect(prompt).not.toContain("{{worktreePath}}");
+  });
+});
+
+describe("buildPhasePrompt — worktreePath propagation", () => {
+  it("injects worktreePath into finalize prompt", () => {
+    const prompt = buildPhasePrompt("finalize", {
+      seedId: "bd-abc",
+      seedTitle: "My task",
+      seedDescription: "desc",
+      runId: "run-1",
+      worktreePath: "/home/user/worktrees/bd-abc",
+    });
+    expect(prompt).toContain("/home/user/worktrees/bd-abc");
+  });
+
+  it("does not break other phases when worktreePath is provided", () => {
+    // Other phases don't use {{worktreePath}} but it should be harmless to pass it
+    const prompt = buildPhasePrompt("developer", {
+      seedId: "bd-abc",
+      seedTitle: "My task",
+      seedDescription: "desc",
+      runId: "run-1",
+      worktreePath: "/home/user/worktrees/bd-abc",
+    });
+    expect(prompt).toContain("bd-abc");
+    expect(prompt).toContain("My task");
+  });
+
+  it("produces empty string for worktreePath when omitted", () => {
+    // buildPhasePrompt should not leave {{worktreePath}} un-interpolated
+    const prompt = buildPhasePrompt("finalize", {
+      seedId: "bd-abc",
+      seedTitle: "My task",
+      seedDescription: "desc",
+    });
+    expect(prompt).not.toContain("{{worktreePath}}");
   });
 });
 

@@ -30,6 +30,7 @@ const LEGACY_FILENAME_MAP: Readonly<Record<string, string>> = {
   "developer-prompt.md": "developer.md",
   "qa-prompt.md": "qa.md",
   "reviewer-prompt.md": "reviewer.md",
+  "finalize-prompt.md": "finalize.md",
   "sentinel-prompt.md": "sentinel.md",
   "lead-prompt.md": "lead.md",
   "lead-prompt-explorer.md": "lead-explorer.md",

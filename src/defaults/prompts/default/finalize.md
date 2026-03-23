@@ -21,6 +21,24 @@ At the very start of your session, invoke:
 
 ## Instructions
 
+### Step 0: Verify working directory
+Before running any git commands, ensure you are in the correct worktree directory.
+
+Run:
+```
+pwd
+```
+
+The output MUST be `{{worktreePath}}`. If it is not, run:
+```
+cd {{worktreePath}}
+```
+
+Then verify again with `pwd`. If you cannot change to that directory, send an error mail and stop:
+```
+/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"cannot_cd_to_worktree","worktreePath":"{{worktreePath}}"}'
+```
+
 ### Step 1: Dependency Install (non-fatal)
 Run `npm ci` to perform a clean, deterministic dependency install. If it fails, log the error in FINALIZE_REPORT.md and continue — do not stop.
 

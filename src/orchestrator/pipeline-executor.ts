@@ -212,6 +212,7 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       runId,
       hasExplorerReport,
       feedbackContext,
+      worktreePath,
     }, ctx.promptOpts);
 
     const result = await ctx.runPhase(

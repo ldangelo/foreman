@@ -36,6 +36,31 @@ const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 // Verify the smoke infrastructure (prompts + workflow config) without spawning
 // subprocesses or making API calls.
 
+describe("default/finalize.md: worktree cwd fix", () => {
+  const DEFAULT_FINALIZE = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "finalize.md");
+
+  it("default/finalize.md contains {{worktreePath}} placeholder", () => {
+    const content = readFileSync(DEFAULT_FINALIZE, "utf-8");
+    expect(content).toContain("{{worktreePath}}");
+  });
+
+  it("default/finalize.md instructs agent to cd to worktree before git commands", () => {
+    const content = readFileSync(DEFAULT_FINALIZE, "utf-8");
+    // Must have an explicit cd instruction referencing the worktreePath placeholder
+    expect(content).toContain("cd {{worktreePath}}");
+  });
+
+  it("default/finalize.md has a working directory verification step before Step 1", () => {
+    const content = readFileSync(DEFAULT_FINALIZE, "utf-8");
+    // Step 0 (or equivalent) must come before the git add step
+    const cdPos = content.indexOf("cd {{worktreePath}}");
+    const gitAddPos = content.indexOf("git add -A");
+    expect(cdPos).toBeGreaterThan(-1);
+    expect(gitAddPos).toBeGreaterThan(-1);
+    expect(cdPos).toBeLessThan(gitAddPos);
+  });
+});
+
 describe("smoke workflow: structural invariants", () => {
   const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
   const SMOKE_PROMPTS_DIR = join(PROJECT_ROOT, "src", "defaults", "prompts", "smoke");
@@ -106,6 +131,12 @@ describe("smoke workflow: structural invariants", () => {
     // Must explicitly NOT push in smoke mode
     expect(content).toContain("git push");
     expect(content.toLowerCase()).toContain("do not run");
+  });
+
+  it("smoke/finalize.md contains worktreePath placeholder for cwd verification", () => {
+    const content = readFileSync(join(SMOKE_PROMPTS_DIR, "finalize.md"), "utf-8");
+    // Template must reference {{worktreePath}} so the agent can cd to the correct dir
+    expect(content).toContain("{{worktreePath}}");
   });
 
   it("smoke prompts include error reporting instructions (lifecycle mail handled by executor)", () => {

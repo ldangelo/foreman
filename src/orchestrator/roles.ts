@@ -355,6 +355,9 @@ export function buildPhasePrompt(
     hasExplorerReport?: boolean;
     feedbackContext?: string;
     baseBranch?: string;
+    /** Absolute path to the worktree. Passed to finalize prompt so it can cd
+     *  to the correct directory before running git commands. */
+    worktreePath?: string;
   },
   opts?: PromptLoaderOpts,
 ): string {
@@ -376,6 +379,7 @@ export function buildPhasePrompt(
     runId: context.runId ?? "",
     agentRole: phaseName,
     baseBranch: context.baseBranch ?? "main",
+    worktreePath: context.worktreePath ?? "",
   };
 
   // Map phase names to legacy template filenames for bundled fallback.
@@ -454,10 +458,10 @@ export function reviewerPrompt(seedId: string, seedTitle: string, seedDescriptio
   );
 }
 
-export function finalizePrompt(seedId: string, seedTitle: string, runId?: string, baseBranch?: string, opts?: PromptLoaderOpts): string {
+export function finalizePrompt(seedId: string, seedTitle: string, runId?: string, baseBranch?: string, opts?: PromptLoaderOpts, worktreePath?: string): string {
   return resolvePrompt(
     "finalize",
-    { seedId, seedTitle, runId: runId ?? "", agentRole: "finalize", baseBranch: baseBranch ?? "main" },
+    { seedId, seedTitle, runId: runId ?? "", agentRole: "finalize", baseBranch: baseBranch ?? "main", worktreePath: worktreePath ?? "" },
     "finalize-prompt.md",
     opts,
   );
