@@ -1,27 +1,31 @@
-# Session Log: reviewer agent for bd-wyic
+# Session Log: reviewer agent for bd-8ctu
 
 ## Metadata
-- Start: 2026-03-23T00:00:00Z
+- Start: 2026-03-23T00:00:00.000Z
 - Role: reviewer
-- Seed: bd-wyic
+- Seed: bd-8ctu
 - Status: completed
 
 ## Key Activities
-- Read TASK.md: confirmed root cause is finalize agent running git commands from wrong cwd
-- Read EXPLORER_REPORT.md: confirmed explorer identified finalize.md prompt as lacking any working directory verification, and that pipeline-executor.ts / agent-worker.ts pass cwd correctly
-- Read QA_REPORT.md: confirmed all 2043 tests pass; QA fixed a pre-existing bug in template-loader.ts (missing LEGACY_FILENAME_MAP entry for finalize-prompt.md)
-- Read `src/defaults/prompts/default/finalize.md`: Step 0 correctly verifies pwd, conditionally cds to {{worktreePath}}, and sends error mail if cd fails — before any git commands
-- Read `src/defaults/prompts/smoke/finalize.md`: Has {{worktreePath}} placeholder with cd instruction (less verbose than default)
-- Read `src/orchestrator/roles.ts`: `finalizePrompt()` accepts worktreePath as last optional param; `buildPhasePrompt()` context type includes optional `worktreePath?: string` and passes it to interpolation vars
-- Read `src/orchestrator/pipeline-executor.ts`: confirms `buildPhasePrompt()` is called with `worktreePath` from `config.worktreePath` (required field in PipelineRunConfig)
-- Read `src/orchestrator/template-loader.ts`: QA's fix adds `"finalize-prompt.md": "finalize.md"` to LEGACY_FILENAME_MAP
-- Read `src/orchestrator/auto-merge.ts`: mail notifications added with sendMail() helper, syncBeadStatusAfterMerge moved to finally block
-- Read test files: roles.test.ts, pipeline-smoke.test.ts, auto-merge-mail.test.ts — all new test paths verified
+
+- Read TASK.md to understand the original requirement (startup bead-status reconciliation + foreman doctor --fix integration).
+- Read EXPLORER_REPORT.md for architecture context — confirmed that the Explorer documented the design as terminal-runs-only and pointed at specific locations.
+- Read QA_REPORT.md — QA confirmed 2059 tests passing with 0 failures; noted no issues.
+- Reviewed all new/modified source files:
+  - `src/lib/run-status.ts` — pure mapping function, stale comment found
+  - `src/orchestrator/task-backend-ops.ts` — `syncBeadStatusOnStartup` implementation; `running` status missing from query
+  - `src/orchestrator/doctor.ts` — `checkBeadStatusSync` and `checkDataIntegrity` integration; correct
+  - `src/cli/commands/run.ts` — startup call to `syncBeadStatusOnStartup`; correct
+  - `src/orchestrator/__tests__/startup-sync.test.ts` — 22 tests, comprehensive
+  - `src/lib/__tests__/run-status.test.ts` — 12 tests, comprehensive
+  - `src/orchestrator/__tests__/doctor-bead-status-sync.test.ts` — 16 tests, comprehensive
+- Identified two WARNING-level issues: missing `running` status in reconciliation query (spec deviation) and stale JSDoc comment contradicting the function's actual mapping.
 
 ## Artifacts Created
-- REVIEW.md — Verdict: PASS, no CRITICAL or WARNING issues
-- SESSION_LOG.md — this file
+
+- REVIEW.md — Verdict: FAIL (two WARNINGs)
+- SESSION_LOG.md (this file)
 
 ## End
-- Completion time: 2026-03-23T00:10:00Z
-- Next phase: finalize
+- Completion time: 2026-03-23T00:05:00.000Z
+- Next phase: Developer to fix WARNINGs, then re-review
