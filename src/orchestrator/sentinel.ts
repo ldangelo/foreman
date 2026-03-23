@@ -268,6 +268,20 @@ export class SentinelAgent {
       `**Test output (truncated):**\n\`\`\`\n${output.slice(0, 2_000)}\n\`\`\``;
 
     try {
+      // Check for an existing open bead with the same title to avoid duplicates.
+      // Filter by label to narrow the search to sentinel-created beads only.
+      const existingBeads = await this.seeds.list({
+        status: "open",
+        label: "kind:sentinel",
+      });
+      const duplicate = existingBeads.find((b) => b.title === title);
+      if (duplicate) {
+        console.log(
+          `[sentinel] Skipping duplicate bead creation — open bead ${duplicate.id} already exists for "${title}"`,
+        );
+        return;
+      }
+
       await this.seeds.create(title, {
         type: "bug",
         priority: "P0",

@@ -1,25 +1,26 @@
-# Session Log: reviewer agent for bd-k8tx
+# Session Log: reviewer agent for bd-gjqs
 
 ## Metadata
 - Start: 2026-03-23T00:00:00Z
 - Role: reviewer
-- Seed: bd-k8tx
+- Seed: bd-gjqs
 - Status: completed
 
 ## Key Activities
-- Read TASK.md to understand the original requirement (immediate bead status sync on merge failure)
-- Read QA_REPORT.md (PASS, 2054 tests, 15 new tests added)
-- Read EXPLORER_REPORT.md for architecture context (auto-merge.ts, merge.ts, run-status.ts, task-backend-ops.ts)
-- Reviewed `src/lib/run-status.ts` — confirmed `conflict`→`blocked`, `test-failed`→`blocked`, `failed`→`failed` mappings
-- Reviewed `src/orchestrator/auto-merge.ts` — confirmed `syncBeadStatusAfterMerge()` now exported with `failureReason` parameter, `finally` block pattern correct
-- Reviewed `src/cli/commands/merge.ts` — confirmed import from auto-merge.ts, deduplication complete, failure reasons built in both main loop and auto-retry loop
-- Reviewed test files: `auto-merge.test.ts`, `run-status.test.ts`, `reset-mismatch.test.ts`, `startup-sync.test.ts`
-- Identified `pr-created` → `closed` mapping as a WARNING: conflicting PRs leave bead as "closed" not "blocked"
-- Identified failure-reason logic duplicated 3+ times as a WARNING
+- Read TASK.md: task is to add deduplication in sentinel's `createBugTask()` to avoid filing duplicate beads for the same commit hash
+- Read EXPLORER_REPORT.md: architecture context, fix location confirmed as `createBugTask()` in `src/orchestrator/sentinel.ts`
+- Read QA_REPORT.md: all 2051 tests pass; 6 new deduplication tests added, all passing
+- Read `src/orchestrator/sentinel.ts`: reviewed the full implementation including the new duplicate-check logic using `list({ status: "open", label: "kind:sentinel" })`
+- Read `src/orchestrator/__tests__/sentinel.test.ts`: reviewed all 6 new tests for deduplication behavior
+- Read `src/lib/beads-rust.ts`: confirmed `list()` supports `label` and `status` filter parameters via CLI flags
+- Read `src/lib/task-client.ts`: reviewed `ITaskClient` interface; noted `BeadsRustClient` is typed directly (not via interface) in sentinel, so `label` filter is valid
+- Identified WARNING: duplicate check only covers `status: "open"`, not `status: "in_progress"` — a claimed but unresolved bead would not block creation once threshold is reached again
+- Identified two NOTEs: misleading error message when `list()` throws; misleading test name
 
 ## Artifacts Created
-- REVIEW.md — verdict FAIL with 2 WARNINGs and 2 NOTEs
+- REVIEW.md: verdict FAIL due to `in_progress` status gap (WARNING)
+- SESSION_LOG.md: this file
 
 ## End
-- Completion time: 2026-03-23T00:10:00Z
-- Next phase: finalize (if developer revises) or escalation
+- Completion time: 2026-03-23T00:05:00Z
+- Next phase: Developer (fix in_progress gap) or re-review if accepted as-is
