@@ -33,6 +33,27 @@ function brPath(): string {
 }
 
 /**
+ * Fire-and-forget helper to send a mail message via the store.
+ * Uses store.sendMessage() directly — same pattern as Refinery.sendMail().
+ * Never throws — failures are silently ignored (mail is optional infrastructure).
+ */
+function sendMail(
+  store: ForemanStore,
+  runId: string,
+  subject: string,
+  body: Record<string, unknown>,
+): void {
+  try {
+    store.sendMessage(runId, "auto-merge", "foreman", subject, JSON.stringify({
+      ...body,
+      timestamp: new Date().toISOString(),
+    }));
+  } catch {
+    // Non-fatal — mail is optional infrastructure
+  }
+}
+
+/**
  * Immediately sync a bead's status in the br backend after a merge outcome.
  *
  * Fetches the latest run status from SQLite, maps it to the expected bead
@@ -90,6 +111,16 @@ export interface AutoMergeResult {
  * Non-fatal — errors are logged and the caller continues. Returns a summary of
  * what happened (for logging / testing).
  *
+ * Sends mail notifications for each merge outcome so that `foreman inbox` shows
+ * the full lifecycle from dispatch through merge:
+ *   - merge-complete  — branch merged successfully, bead closed
+ *   - merge-conflict  — conflict detected, PR created or manual intervention needed
+ *   - merge-failed    — merge failed (test failures, no completed run, or unexpected error)
+ *   - bead-closed     — bead status synced in br after merge outcome
+ *
+ * Note: Refinery also sends per-run merge lifecycle messages. autoMerge sends
+ * wrapper-level messages from sender "auto-merge" to provide queue-level context.
+ *
  * This function is called from two places:
  *  1. `foreman run` dispatch loop — between agent batches (existing behaviour)
  *  2. `agent-worker` onPipelineComplete callback — immediately after finalize
@@ -130,26 +161,81 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       if (report.merged.length > 0) {
         mq.updateStatus(currentEntry.id, "merged", { completedAt: new Date().toISOString() });
         mergedCount += report.merged.length;
+
+        // Send merge-complete mail for each successfully merged run
+        for (const mergedRun of report.merged) {
+          sendMail(store, currentEntry.run_id, "merge-complete", {
+            seedId: mergedRun.seedId,
+            branchName: mergedRun.branchName,
+            targetBranch,
+          });
+        }
       } else if (report.conflicts.length > 0 || report.prsCreated.length > 0) {
         mq.updateStatus(currentEntry.id, "conflict", { error: "Code conflicts" });
         conflictCount += report.conflicts.length + report.prsCreated.length;
+
+        // Send merge-conflict mail for each conflicted run
+        for (const conflictRun of report.conflicts) {
+          sendMail(store, currentEntry.run_id, "merge-conflict", {
+            seedId: conflictRun.seedId,
+            branchName: conflictRun.branchName,
+            conflictFiles: conflictRun.conflictFiles,
+            prCreated: false,
+          });
+        }
+        // Send merge-conflict mail for PRs created on conflict
+        for (const pr of report.prsCreated) {
+          sendMail(store, currentEntry.run_id, "merge-conflict", {
+            seedId: pr.seedId,
+            branchName: pr.branchName,
+            prUrl: pr.prUrl,
+            prCreated: true,
+          });
+        }
       } else if (report.testFailures.length > 0) {
         mq.updateStatus(currentEntry.id, "failed", { error: "Test failures" });
         failedCount += report.testFailures.length;
+
+        // Send merge-failed mail for each test failure
+        for (const failedRun of report.testFailures) {
+          sendMail(store, currentEntry.run_id, "merge-failed", {
+            seedId: failedRun.seedId,
+            branchName: failedRun.branchName,
+            reason: "test-failure",
+            error: failedRun.error?.slice(0, 400),
+          });
+        }
       } else {
         mq.updateStatus(currentEntry.id, "failed", { error: "No completed run found" });
         failedCount++;
-      }
 
-      // Immediately sync bead status in br so it reflects the merge outcome
-      // without waiting for the next foreman startup reconciliation.
-      await syncBeadStatusAfterMerge(store, taskClient, currentEntry.run_id, currentEntry.seed_id, projectPath);
+        // Send merge-failed mail when no completed run was found in the queue
+        sendMail(store, currentEntry.run_id, "merge-failed", {
+          seedId: currentEntry.seed_id,
+          reason: "no-completed-run",
+        });
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       mq.updateStatus(currentEntry.id, "failed", { error: message });
       failedCount++;
-      // Sync bead status even when refinery throws (run may have been updated before exception)
+
+      // Send merge-failed mail when an unexpected error occurs in the merge pipeline
+      sendMail(store, currentEntry.run_id, "merge-failed", {
+        seedId: currentEntry.seed_id,
+        reason: "unexpected-error",
+        error: message.slice(0, 400),
+      });
+    } finally {
+      // Sync bead status after every merge outcome (success or failure).
+      // Always runs — ensures br reflects the latest run status.
       await syncBeadStatusAfterMerge(store, taskClient, currentEntry.run_id, currentEntry.seed_id, projectPath);
+
+      // Send bead-closed mail after bead status is synced.
+      // Always sent so inbox shows lifecycle completion for every queue entry.
+      sendMail(store, currentEntry.run_id, "bead-closed", {
+        seedId: currentEntry.seed_id,
+      });
     }
 
     entry = mq.dequeue();
