@@ -9,7 +9,7 @@
  * Usage: tsx agent-worker.ts <config-file>
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -246,7 +246,7 @@ async function main(): Promise<void> {
     `  run:       ${runId}`,
     `  worktree:  ${worktreePath}`,
     `  pid:       ${process.pid}`,
-    `  method:    ${pipeline ? "Pipeline (explorer→developer→qa→reviewer)" : "Claude Agent SDK (detached worker)"}`,
+    `  method:    ${pipeline ? "Pipeline (explorer→developer→qa→reviewer)" : "Pi (detached worker)"}`,
     resume ? `  resume:    ${resume}` : null,
     "─".repeat(80),
     "",
@@ -443,49 +443,6 @@ async function runPhase(
   store: ForemanStore,
   notifyClient: NotificationClient,
 ): Promise<PhaseResult> {
-  // ── SMOKE TEST BYPASS ────────────────────────────────────────────────────────
-  // When FOREMAN_SMOKE_TEST === "true", skip the real SDK call and write a
-  // synthetic pass report.  This exercises pipeline orchestration (phase ordering,
-  // artifact gating, verdict parsing, retry loops) without spending API budget.
-  if (process.env.FOREMAN_SMOKE_TEST === "true") {
-    const smokeArtifacts: Record<string, string> = {
-      explorer: "EXPLORER_REPORT.md",
-      developer: "DEVELOPER_REPORT.md",
-      qa: "QA_REPORT.md",
-      reviewer: "REVIEW.md",
-      reproducer: "REPRODUCER_REPORT.md",
-      finalize: "FINALIZE_REPORT.md",
-    };
-    const artifact = smokeArtifacts[role];
-    if (artifact) {
-      const verdictLine = role === "developer" ? "## Status: COMPLETE" : "## Verdict: PASS";
-      writeFileSync(
-        join(config.worktreePath, artifact),
-        `# ${role.charAt(0).toUpperCase() + role.slice(1)} Report\n\n${verdictLine}\n\nSmoke test noop — no real ${role} work performed.\n`,
-      );
-    }
-    // For finalize smoke noop, run git add/commit so the branch has content,
-    // but skip the actual push.
-    if (role === "finalize") {
-      const { seedId, seedTitle, worktreePath } = config;
-      const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
-      try {
-        execFileSync("git", ["add", "-A"], opts);
-        execFileSync("git", ["commit", "-m", `${seedTitle} (${seedId})`], opts);
-        log(`[FINALIZE] SMOKE NOOP — committed (no push)`);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes("nothing to commit")) {
-          log(`[FINALIZE] SMOKE NOOP — git commit failed (non-fatal): ${msg.slice(0, 200)}`);
-        }
-      }
-    }
-    log(`[${role.toUpperCase()}] SMOKE NOOP — bypassing SDK call, writing ${artifact ?? "(no artifact)"}`);
-    await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] SMOKE NOOP — skipping SDK call\n`);
-    return { success: true, costUsd: 0, turns: 1 };
-  }
-  // ── END SMOKE TEST BYPASS ────────────────────────────────────────────────────
-
   const roleConfig = ROLE_CONFIGS[role];
   progress.currentPhase = role;
   store.updateRunProgress(config.runId, progress);

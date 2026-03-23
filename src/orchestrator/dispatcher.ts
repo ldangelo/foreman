@@ -930,23 +930,15 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
  * Strategy selection:
  * 1. If `pi` binary is available, use PiRpcSpawnStrategy (always preferred)
  * 2. Fallback: DetachedSpawnStrategy (runs agent-worker.js as a detached child)
- *
- * Smoke seeds get FOREMAN_SMOKE_TEST=true injected into env before spawning.
  */
 export async function spawnWorkerProcess(config: WorkerConfig): Promise<SpawnResult> {
-  // Inject FOREMAN_SMOKE_TEST for smoke seeds before dispatching to any strategy
-  const effectiveConfig: WorkerConfig =
-    config.seedType === "smoke"
-      ? { ...config, env: { ...config.env, FOREMAN_SMOKE_TEST: "true" } }
-      : config;
-
   if (isPiAvailable()) {
-    log(`[foreman] pi binary found — using PiRpcSpawnStrategy for ${effectiveConfig.seedId}`);
-    return new PiRpcSpawnStrategy().spawn(effectiveConfig);
+    log(`[foreman] pi binary found — using PiRpcSpawnStrategy for ${config.seedId}`);
+    return new PiRpcSpawnStrategy().spawn(config);
   }
 
   // Pi not available — fall back to detached child process
-  return new DetachedSpawnStrategy().spawn(effectiveConfig);
+  return new DetachedSpawnStrategy().spawn(config);
 }
 
 /**

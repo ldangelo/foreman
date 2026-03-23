@@ -100,15 +100,18 @@ describe("spawnWorkerProcess strategy selection", () => {
     expect(opts?.detached).toBe(true);
   });
 
-  it("injects FOREMAN_SMOKE_TEST=true for smoke seeds", async () => {
+  it("smoke seeds dispatch through DetachedSpawnStrategy when Pi unavailable", async () => {
     mockIsPiAvailable.mockReturnValue(false);
     const smokeConfig: WorkerConfig = { ...baseConfig, seedType: "smoke" };
 
     await spawnWorkerProcess(smokeConfig);
 
-    // The env passed to DetachedSpawnStrategy should include FOREMAN_SMOKE_TEST
+    // Smoke seeds use the same dispatch path — no special env injection needed
+    // (the smoke workflow is selected via seedType → resolvedWorkflow in agent-worker)
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
     const opts = (mockSpawn.mock.calls[0] as unknown[])[2] as { env?: Record<string, string> } | undefined;
-    expect(opts?.env?.FOREMAN_SMOKE_TEST).toBe("true");
+    // FOREMAN_SMOKE_TEST must NOT be injected (bypass was removed)
+    expect(opts?.env?.FOREMAN_SMOKE_TEST).toBeUndefined();
   });
 
   it("smoke seeds use Pi when available", async () => {
@@ -119,9 +122,10 @@ describe("spawnWorkerProcess strategy selection", () => {
     await spawnWorkerProcess(smokeConfig);
 
     expect(mockPiSpawn).toHaveBeenCalledTimes(1);
-    // The config passed to Pi should have FOREMAN_SMOKE_TEST injected
+    // Config is passed through unmodified — no FOREMAN_SMOKE_TEST injection
     const calledConfig = mockPiSpawn.mock.calls[0]?.[0] as WorkerConfig | undefined;
-    expect(calledConfig?.env?.FOREMAN_SMOKE_TEST).toBe("true");
+    expect(calledConfig?.seedType).toBe("smoke");
+    expect(calledConfig?.env?.FOREMAN_SMOKE_TEST).toBeUndefined();
     expect(mockSpawn).not.toHaveBeenCalled();
   });
 });
