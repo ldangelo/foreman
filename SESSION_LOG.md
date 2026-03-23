@@ -1,27 +1,37 @@
-# Session Log: reviewer agent for bd-wyic
+# Session Log: QA agent for bd-swq
 
 ## Metadata
-- Start: 2026-03-23T00:00:00Z
-- Role: reviewer
-- Seed: bd-wyic
+- Start: 2026-03-23T13:02:00Z
+- Role: qa
+- Seed: bd-swq
 - Status: completed
 
 ## Key Activities
-- Read TASK.md: confirmed root cause is finalize agent running git commands from wrong cwd
-- Read EXPLORER_REPORT.md: confirmed explorer identified finalize.md prompt as lacking any working directory verification, and that pipeline-executor.ts / agent-worker.ts pass cwd correctly
-- Read QA_REPORT.md: confirmed all 2043 tests pass; QA fixed a pre-existing bug in template-loader.ts (missing LEGACY_FILENAME_MAP entry for finalize-prompt.md)
-- Read `src/defaults/prompts/default/finalize.md`: Step 0 correctly verifies pwd, conditionally cds to {{worktreePath}}, and sends error mail if cd fails — before any git commands
-- Read `src/defaults/prompts/smoke/finalize.md`: Has {{worktreePath}} placeholder with cd instruction (less verbose than default)
-- Read `src/orchestrator/roles.ts`: `finalizePrompt()` accepts worktreePath as last optional param; `buildPhasePrompt()` context type includes optional `worktreePath?: string` and passes it to interpolation vars
-- Read `src/orchestrator/pipeline-executor.ts`: confirms `buildPhasePrompt()` is called with `worktreePath` from `config.worktreePath` (required field in PipelineRunConfig)
-- Read `src/orchestrator/template-loader.ts`: QA's fix adds `"finalize-prompt.md": "finalize.md"` to LEGACY_FILENAME_MAP
-- Read `src/orchestrator/auto-merge.ts`: mail notifications added with sendMail() helper, syncBeadStatusAfterMerge moved to finally block
-- Read test files: roles.test.ts, pipeline-smoke.test.ts, auto-merge-mail.test.ts — all new test paths verified
+
+1. **Pre-flight checks**: Verified no actual git conflict markers in source files (found only in test fixtures and conflict-resolver logic — intentional).
+
+2. **Read context**: Reviewed TASK.md (orphaned global-store run migration) and EXPLORER_REPORT.md (architecture context for doctor.ts and store.ts patterns).
+
+3. **Reviewed git diff**: Developer changed ~691 lines across doctor.ts and doctor.test.ts. Key additions:
+   - `checkOrphanedGlobalStoreRuns()` — the primary feature requested
+   - `checkPrompts()`, `checkPiSkills()`, `checkWorkflows()` — bonus checks
+   - `checkFailedStuckRuns()` auto-resolve with injected `execFn` for testability
+   - New test suite `describe("checkOrphanedGlobalStoreRuns")` with 4 tests
+
+4. **Ran targeted tests**: `src/orchestrator/__tests__/doctor.test.ts` — 72 tests, all passed (479ms). `src/cli/__tests__/doctor.test.ts` — 13 tests, all passed.
+
+5. **Ran full test suite**: All 2047 tests across 124 test files passed.
+
+6. **TypeScript check**: `npx tsc --noEmit` — no errors.
+
+7. **Reviewed implementation quality**: Identified a minor test coverage gap — two tests set up the scenario for `checkOrphanedGlobalStoreRuns({fix:true})` but don't call the actual method because the path is hardcoded to `homedir()`. Documented in QA_REPORT.md.
+
+8. **Verified wiring**: Confirmed `checkOrphanedGlobalStoreRuns` is included in `checkDataIntegrity()` via `Promise.all()`.
 
 ## Artifacts Created
-- REVIEW.md — Verdict: PASS, no CRITICAL or WARNING issues
+- QA_REPORT.md — verdict: PASS, 2047/2047 tests passing
 - SESSION_LOG.md — this file
 
 ## End
-- Completion time: 2026-03-23T00:10:00Z
-- Next phase: finalize
+- Completion time: 2026-03-23T13:05:00Z
+- Next phase: Reviewer
