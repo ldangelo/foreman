@@ -202,7 +202,11 @@ export class Dispatcher {
 
       const seedInfo = seedToInfo(seed, seedDetail, beadComments);
       const runtime: RuntimeSelection = "claude-code";
-      const model = opts?.model ?? this.selectModel(seedInfo);
+      // Pipeline model is now resolved per-phase from the workflow YAML + bead priority.
+      // Use opts.model if provided (e.g. --model flag), otherwise fall back to the
+      // developer-role default.  This value is the outer fallback only — executePipeline
+      // will override it per phase via resolvePhaseModel().
+      const model: ModelSelection = opts?.model ?? "anthropic/claude-sonnet-4-6";
 
       if (opts?.dryRun) {
         dispatched.push({
@@ -563,42 +567,16 @@ export class Dispatcher {
   }
 
   /**
-   * Pick a Claude model based on task complexity signals.
-   *
-   * - Opus: P0 critical tasks, or keywords: refactor, architect, design, complex, migrate, overhaul
-   * - Haiku: P3/P4 low-priority tasks with light keywords, or typo/config/rename/etc.
-   * - Sonnet: default for most implementation tasks
-   *
-   * Priority comparisons use normalizePriority() to handle both "P0"–"P4" and "0"–"4" formats.
-   */
-  selectModel(task: SeedInfo): ModelSelection {
-    const text = `${task.title} ${task.description ?? ""}`.toLowerCase();
-    const priority = normalizePriority(task.priority ?? "P2");
-
-    // P0 critical tasks always get the most capable model
-    if (priority === 0) {
-      return "anthropic/claude-opus-4-6";
-    }
-
-    const heavy = ["refactor", "architect", "design", "complex", "migrate", "overhaul"];
-    if (heavy.some((kw) => text.includes(kw))) {
-      return "anthropic/claude-opus-4-6";
-    }
-
-    const light = ["typo", "rename", "config", "bump version", "update readme"];
-    // Only use haiku for non-critical (P1+) light tasks
-    if (light.some((kw) => text.includes(kw)) && priority >= 1) {
-      return "anthropic/claude-haiku-4-5";
-    }
-
-    return "anthropic/claude-sonnet-4-6";
-  }
-
-  /**
    * Build the TASK.md content for a seed (exposed for testing).
+   *
+   * Model selection is now handled per-phase by the workflow YAML `models` map
+   * (see resolvePhaseModel in workflow-loader.ts). The TASK.md model field shows
+   * the developer-phase default as informational context.
    */
   generateAgentInstructions(seed: SeedInfo, worktreePath: string): string {
-    const model = this.selectModel(seed);
+    // Use developer-role default for TASK.md informational display.
+    // The actual per-phase model is resolved from workflow YAML at runtime.
+    const model: ModelSelection = "anthropic/claude-sonnet-4-6";
     return workerAgentMd(seed, worktreePath, model);
   }
 
@@ -688,6 +666,7 @@ export class Dispatcher {
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
       seedType,
       seedLabels: seed.labels,
+      seedPriority: seed.priority,
     });
 
     return { sessionKey };
@@ -873,6 +852,11 @@ export interface WorkerConfig {
    * `workflow:<name>` label overrides.
    */
   seedLabels?: string[];
+  /**
+   * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
+   * Forwarded to the pipeline executor to resolve per-priority models from YAML.
+   */
+  seedPriority?: string;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────
