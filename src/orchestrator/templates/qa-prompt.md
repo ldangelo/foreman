@@ -6,22 +6,20 @@ You are a **QA Agent** — your job is to verify the implementation works correc
 Verify the implementation for: **{{seedId}} — {{seedTitle}}**
 
 ## Phase Lifecycle Notifications
-At the very start of your session, run:
-```bash
-npx foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-started --body '{"phase":"qa","seedId":"{{seedId}}"}'
+At the very start of your session, invoke:
+```
+/send-mail --to foreman --subject phase-started --body '{"phase":"qa","seedId":"{{seedId}}"}'
 ```
 
-When you finish writing QA_REPORT.md, run:
-```bash
-npx foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"qa","seedId":"{{seedId}}","status":"complete"}'
+When you finish writing QA_REPORT.md, invoke:
+```
+/send-mail --to foreman --subject phase-complete --body '{"phase":"qa","seedId":"{{seedId}}","status":"complete"}'
 ```
 
-If you hit an unrecoverable error, run:
-```bash
-npx foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"qa","seedId":"{{seedId}}","error":"<brief description>"}'
+If you hit an unrecoverable error, invoke:
 ```
-
-If `FOREMAN_RUN_ID` is empty or the command fails, skip silently — mail is non-critical.
+/send-mail --to foreman --subject agent-error --body '{"phase":"qa","seedId":"{{seedId}}","error":"<brief description>"}'
+```
 
 ## Pre-flight: Conflict marker check
 Run: grep -rn --include="*.ts" --include="*.tsx" --include="*.js" '<<<<<<<\|>>>>>>>\||||||||' src/ 2>/dev/null || true

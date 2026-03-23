@@ -146,6 +146,24 @@ export async function getRepoRoot(path: string): Promise<string> {
 }
 
 /**
+ * Find the main (primary) worktree root from any git worktree.
+ *
+ * `git rev-parse --show-toplevel` returns the *current* worktree root,
+ * which for a linked worktree is the worktree directory itself — not the
+ * main project root.  This function resolves the common `.git` directory
+ * and strips the trailing `/.git` to always return the main project root.
+ */
+export async function getMainRepoRoot(path: string): Promise<string> {
+  const commonDir = await git(["rev-parse", "--git-common-dir"], path);
+  // commonDir is e.g. "/path/to/project/.git" — strip the trailing "/.git"
+  if (commonDir.endsWith("/.git")) {
+    return commonDir.slice(0, -5);
+  }
+  // Fallback: if not a standard path, use show-toplevel
+  return git(["rev-parse", "--show-toplevel"], path);
+}
+
+/**
  * Detect the default/parent branch for a repository.
  *
  * Resolution order:

@@ -12,7 +12,7 @@
 
 import { Command } from "commander";
 import { ForemanStore } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { getMainRepoRoot } from "../../lib/git.js";
 
 // ── send subcommand ───────────────────────────────────────────────────────────
 
@@ -54,7 +54,7 @@ const sendCommand = new Command("send")
     // Resolve the project root so we can open the correct store
     let projectPath: string;
     try {
-      projectPath = await getRepoRoot(process.cwd());
+      projectPath = await getMainRepoRoot(process.cwd());
     } catch {
       projectPath = process.cwd();
     }

@@ -32,7 +32,7 @@ import {
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import { rotateReport } from "./agent-worker-finalize.js";
-import { resetSeedToOpen, addLabelsToBead, addNotesToBead } from "./task-backend-ops.js";
+import { resetSeedToOpen, markBeadFailed, addLabelsToBead, addNotesToBead } from "./task-backend-ops.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
@@ -389,8 +389,8 @@ async function main(): Promise<void> {
         resumed: !!resume,
       }, runId);
       log(`FAILED: ${reason.slice(0, 300)}`);
-      // Reset seed back to open so it can be retried
-      await resetSeedToOpen(seedId, storeProjectPath);
+      // Permanent failure — mark bead as 'failed' so it is NOT auto-retried.
+      await markBeadFailed(seedId, storeProjectPath);
     }
   } catch (err: unknown) {
     clearInterval(progressTimer);
@@ -415,8 +415,12 @@ async function main(): Promise<void> {
     }, runId);
     log(`${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason.slice(0, 200)}`);
     await appendFile(logFile, `\n[foreman-worker] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason}\n`);
-    // Reset seed back to open so it can be retried
-    await resetSeedToOpen(seedId, storeProjectPath);
+    // Transient (rate limit) → reset to 'open' for retry; permanent → mark 'failed'.
+    if (isRateLimit) {
+      await resetSeedToOpen(seedId, storeProjectPath);
+    } else {
+      await markBeadFailed(seedId, storeProjectPath);
+    }
   }
 
   store.close();
@@ -463,6 +467,7 @@ async function runPhase(
   // foreman-audit extensions can enforce phase-specific constraints.
   piEnv.PI_EXTENSIONS = "foreman-tool-gate,foreman-budget,foreman-audit";
   piEnv.FOREMAN_PHASE = role;
+  piEnv.FOREMAN_AGENT_ROLE = `${role}-${config.seedId}`;
   piEnv.FOREMAN_ALLOWED_TOOLS = roleConfig.allowedTools.join(",");
   piEnv.FOREMAN_RUN_ID = config.runId;
   piEnv.FOREMAN_SEED_ID = config.seedId;
@@ -634,6 +639,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     } else {
       // AC-006-1: Register the explorer agent with Agent Mail before the phase starts.
       await registerAgent(agentMailClient, `explorer-${seedId}`);
+      sendMail(agentMailClient, "foreman", "phase-started", { seedId, phase: "explorer" });
       rotateReport(worktreePath, "EXPLORER_REPORT.md");
       const result = await runPhase("explorer", explorerPrompt(seedId, seedTitle, description, comments, runId, promptOpts), config, progress, logFile, store, notifyClient);
       phaseRecords.push({
@@ -690,6 +696,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       // AC-006-1: Register the developer agent with Agent Mail before the phase starts.
       const developerAgentName = `developer-${seedId}`;
       await registerAgent(agentMailClient, developerAgentName);
+      sendMail(agentMailClient, "foreman", "phase-started", { seedId, phase: "developer" });
       // REQ-007 / AC-007-1: Reserve the worktree path before Developer edits files.
       // Lease 10 minutes (600 s) — generous to cover typical developer phase duration.
       reserveFiles(agentMailClient, [worktreePath], developerAgentName, 600);
@@ -1094,13 +1101,21 @@ async function markStuck(
     rateLimit: isRateLimit,
   }, runId);
 
-  // Reset seed back to open so it appears in the ready queue for retry.
+  // For transient errors (rate limits), reset to 'open' so the task re-enters
+  // the ready queue for automatic retry.
+  // For permanent failures, mark as 'failed' so the task is NOT auto-retried —
+  // the operator must investigate and re-open it manually.
   // Pass projectPath (repo root) so br finds .beads/ — the worktree has none.
-  await resetSeedToOpen(seedId, projectPath);
-  log(`Reset seed ${seedId} back to open`);
+  if (isRateLimit) {
+    await resetSeedToOpen(seedId, projectPath);
+    log(`Reset seed ${seedId} back to open (rate limited — will retry)`);
+  } else {
+    await markBeadFailed(seedId, projectPath);
+    log(`Marked seed ${seedId} as failed (permanent failure — manual intervention required)`);
+  }
 
   // Add failure reason as a note on the bead for visibility.
-  // This allows anyone looking at the bead to see why it was reset without
+  // This allows anyone looking at the bead to see why it failed without
   // having to dig into log files or SQLite.
   const notePrefix = isRateLimit ? "[RATE_LIMITED]" : "[FAILED]";
   const failureNote = `${notePrefix} [${phase.toUpperCase()}] ${reason}`;

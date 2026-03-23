@@ -7,22 +7,20 @@ Review the implementation for: **{{seedId}} — {{seedTitle}}**
 **Original requirement:** {{seedDescription}}
 {{commentsSection}}
 ## Phase Lifecycle Notifications
-At the very start of your session, run:
-```bash
-npx foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-started --body '{"phase":"reviewer","seedId":"{{seedId}}"}'
+At the very start of your session, invoke:
+```
+/send-mail --to foreman --subject phase-started --body '{"phase":"reviewer","seedId":"{{seedId}}"}'
 ```
 
-When you finish writing REVIEW.md, run:
-```bash
-npx foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"reviewer","seedId":"{{seedId}}","status":"complete"}'
+When you finish writing REVIEW.md, invoke:
+```
+/send-mail --to foreman --subject phase-complete --body '{"phase":"reviewer","seedId":"{{seedId}}","status":"complete"}'
 ```
 
-If you hit an unrecoverable error, run:
-```bash
-npx foreman mail send --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"reviewer","seedId":"{{seedId}}","error":"<brief description>"}'
+If you hit an unrecoverable error, invoke:
 ```
-
-If `FOREMAN_RUN_ID` is empty or the command fails, skip silently — mail is non-critical.
+/send-mail --to foreman --subject agent-error --body '{"phase":"reviewer","seedId":"{{seedId}}","error":"<brief description>"}'
+```
 
 ## Instructions
 1. Read TASK.md for the original task description
