@@ -168,3 +168,73 @@ describe("renderAgentCard (expanded) — tool breakdown", () => {
     expect(card).toContain("2");
   });
 });
+
+// ── renderAgentCard — attempt/retry info display ──────────────────────────
+
+describe("renderAgentCard (expanded) — retry attempt info", () => {
+  it("shows no attempt info for a first run (attemptNumber undefined)", () => {
+    const card = renderAgentCard(makeRun(), makeProgress(), true, undefined, undefined, undefined);
+    expect(card).not.toContain("attempt");
+  });
+
+  it("shows no attempt info when attemptNumber is 1", () => {
+    const card = renderAgentCard(makeRun(), makeProgress(), true, undefined, 1, undefined);
+    expect(card).not.toContain("attempt");
+  });
+
+  it("shows attempt number when attemptNumber > 1", () => {
+    const card = renderAgentCard(makeRun(), makeProgress(), true, undefined, 2, undefined);
+    expect(card).toContain("attempt 2");
+  });
+
+  it("shows previous status when both attemptNumber > 1 and previousStatus given", () => {
+    const card = renderAgentCard(makeRun(), makeProgress(), true, undefined, 2, "failed");
+    expect(card).toContain("attempt 2");
+    expect(card).toContain("prev: failed");
+  });
+
+  it("shows attempt 3 with prev stuck", () => {
+    const card = renderAgentCard(makeRun(), makeProgress(), true, undefined, 3, "stuck");
+    expect(card).toContain("attempt 3");
+    expect(card).toContain("prev: stuck");
+  });
+
+  it("omits 'prev:' portion when previousStatus is undefined even with attemptNumber > 1", () => {
+    const card = renderAgentCard(makeRun(), makeProgress(), true, undefined, 2, undefined);
+    expect(card).toContain("attempt 2");
+    expect(card).not.toContain("prev:");
+  });
+});
+
+// ── renderAgentCardSummary — attempt/retry info display ───────────────────
+
+describe("renderAgentCardSummary — retry attempt info", () => {
+  it("shows no attempt info for first run", () => {
+    const summary = renderAgentCardSummary(makeRun(), makeProgress(), undefined, undefined, undefined);
+    expect(summary).not.toContain("attempt");
+  });
+
+  it("shows no attempt info when attemptNumber is 1", () => {
+    const summary = renderAgentCardSummary(makeRun(), makeProgress(), undefined, 1, undefined);
+    expect(summary).not.toContain("attempt");
+  });
+
+  it("shows attempt number when attemptNumber > 1", () => {
+    const summary = renderAgentCardSummary(makeRun(), makeProgress(), undefined, 2, undefined);
+    expect(summary).toContain("attempt 2");
+  });
+
+  it("shows previous status in summary", () => {
+    const summary = renderAgentCardSummary(makeRun(), makeProgress(), undefined, 2, "failed");
+    expect(summary).toContain("attempt 2");
+    expect(summary).toContain("prev: failed");
+  });
+
+  it("collapsed card inherits attempt info from renderAgentCard", () => {
+    const run = makeRun();
+    const progress = makeProgress();
+    const collapsed = renderAgentCard(run, progress, false, undefined, 3, "stuck");
+    expect(collapsed).toContain("attempt 3");
+    expect(collapsed).toContain("prev: stuck");
+  });
+});

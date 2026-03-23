@@ -61,7 +61,7 @@ const RULE = chalk.dim("━".repeat(60));
  * Shows: indicator, status icon, seed ID, status, elapsed, model, and key
  * progress metrics on one line.
  */
-export function renderAgentCardSummary(run: Run, progress: RunProgress | null, index?: number): string {
+export function renderAgentCardSummary(run: Run, progress: RunProgress | null, index?: number, attemptNumber?: number, previousStatus?: string): string {
   const icon = STATUS_ICONS[run.status] ?? "?";
   const isRunning = run.status === "running";
   const isPending = run.status === "pending";
@@ -72,7 +72,11 @@ export function renderAgentCardSummary(run: Run, progress: RunProgress | null, i
   const expandIndicator = chalk.dim("▶");
   const indexPrefix = index !== undefined ? chalk.dim(`${index + 1}.`) + " " : "";
 
-  let line = `${indexPrefix}${expandIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}  ${chalk.magenta(shortModel(run.agent_type))}`;
+  const attemptInfo = attemptNumber && attemptNumber > 1
+    ? chalk.dim(` (attempt ${attemptNumber}${previousStatus ? ", prev: " + previousStatus : ""})`)
+    : "";
+
+  let line = `${indexPrefix}${expandIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}${attemptInfo}  ${chalk.magenta(shortModel(run.agent_type))}`;
 
   if (progress && progress.toolCalls > 0) {
     const activity = progress.currentPhase
@@ -96,10 +100,12 @@ export function renderAgentCardSummary(run: Run, progress: RunProgress | null, i
  * @param isExpanded - When false, delegates to the compact summary view.
  * @param index - Zero-based position in the run list; shown as a 1-based
  *   numeric prefix so users can press the matching key to toggle.
+ * @param attemptNumber - If > 1, indicates this is a retry (e.g. attempt 2 of 3).
+ * @param previousStatus - Status of the previous run (e.g. "failed", "stuck").
  */
-export function renderAgentCard(run: Run, progress: RunProgress | null, isExpanded = true, index?: number): string {
+export function renderAgentCard(run: Run, progress: RunProgress | null, isExpanded = true, index?: number, attemptNumber?: number, previousStatus?: string): string {
   if (!isExpanded) {
-    return renderAgentCardSummary(run, progress, index);
+    return renderAgentCardSummary(run, progress, index, attemptNumber, previousStatus);
   }
 
   const icon = STATUS_ICONS[run.status] ?? "?";
@@ -114,8 +120,11 @@ export function renderAgentCard(run: Run, progress: RunProgress | null, isExpand
   // Header: collapse indicator + index prefix + icon + seed ID + status + elapsed
   const collapseIndicator = chalk.dim("▼");
   const indexPrefix = index !== undefined ? chalk.dim(`${index + 1}.`) + " " : "";
+  const attemptInfo = attemptNumber && attemptNumber > 1
+    ? chalk.dim(` (attempt ${attemptNumber}${previousStatus ? ", prev: " + previousStatus : ""})`)
+    : "";
   lines.push(
-    `${indexPrefix}${collapseIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}`,
+    `${indexPrefix}${collapseIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}${attemptInfo}`,
   );
   lines.push(`  ${chalk.dim("Model     ")} ${chalk.magenta(shortModel(run.agent_type))}`);
 
