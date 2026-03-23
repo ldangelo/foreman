@@ -15,6 +15,13 @@ export const REPORT_FILES = [
   "TASK.md",
   "AGENTS.md",
   "BLOCKED.md",
+  // Diagnostic artifacts — written by every phase; excluded from commits via
+  // `git reset HEAD SESSION_LOG.md RUN_LOG.md` in the finalize prompt, but
+  // listed here so the conflict resolver auto-resolves them if they were
+  // committed by an older pipeline, and so they are archived before worktree
+  // deletion.
+  "SESSION_LOG.md",
+  "RUN_LOG.md",
 ];
 
 /**
