@@ -805,6 +805,54 @@ async function finalize(
     );
   }
 
+  // Enqueue to merge queue BEFORE push — source-of-truth write.
+  //
+  // Writing the queue entry BEFORE git push eliminates the crash window where
+  // the push succeeded but the agent died before enqueue() ran. With this order:
+  //   - If the agent crashes after enqueue but before push: entry exists in
+  //     'pending' state; on re-dispatch the agent will push the branch and
+  //     refinery processes the pre-existing entry (enqueue is idempotent).
+  //   - If the agent crashes after push: entry already exists; no duplicate push
+  //     needed — refinery picks up the 'pending' entry and merges as normal.
+  //   - If push ultimately fails: entry exists in 'pending' state; refinery will
+  //     attempt the merge and fail gracefully, leaving the seed for re-dispatch.
+  //
+  // Fire-and-forget semantics are preserved: an enqueue failure is non-fatal.
+  if (branchVerified) {
+    try {
+      const enqueueStore = ForemanStore.forProject(storeProjectPath);
+      const enqueueResult = enqueueToMergeQueue({
+        db: enqueueStore.getDb(),
+        seedId,
+        runId: config.runId,
+        worktreePath,
+        getFilesModified: () => {
+          const output = execFileSync("git", ["diff", "--name-only", "main...HEAD"], opts).toString().trim();
+          return output ? output.split("\n") : [];
+        },
+      });
+      enqueueStore.close();
+
+      if (enqueueResult.success) {
+        log(`[FINALIZE] Enqueued to merge queue (pre-push)`);
+        report.push(`## Merge Queue`, `- Status: ENQUEUED`, "");
+        sendMail(agentMailClient, "refinery", "branch-ready", {
+          seedId,
+          runId: config.runId,
+          branch: `foreman/${seedId}`,
+          worktreePath,
+        });
+      } else {
+        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error}`);
+        report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueResult.error?.slice(0, 300)}`, "");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${msg}`);
+      report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
+    }
+  }
+
   // Push — with automatic rebase recovery on non-fast-forward rejections.
   //
   // Non-fast-forward errors are deterministic (diverged history) and will
@@ -882,42 +930,6 @@ async function finalize(
         // Non-classification failures (network, permissions, etc.) may be transient
         pushRetryable = true;
       }
-    }
-  }
-
-  // Enqueue to merge queue (fire-and-forget — must not block finalization)
-  if (pushSucceeded) {
-    try {
-      const enqueueStore = ForemanStore.forProject(storeProjectPath);
-      const enqueueResult = enqueueToMergeQueue({
-        db: enqueueStore.getDb(),
-        seedId,
-        runId: config.runId,
-        worktreePath,
-        getFilesModified: () => {
-          const output = execFileSync("git", ["diff", "--name-only", "main...HEAD"], opts).toString().trim();
-          return output ? output.split("\n") : [];
-        },
-      });
-      enqueueStore.close();
-
-      if (enqueueResult.success) {
-        log(`[FINALIZE] Enqueued to merge queue`);
-        report.push(`## Merge Queue`, `- Status: ENQUEUED`, "");
-        sendMail(agentMailClient, "refinery", "branch-ready", {
-          seedId,
-          runId: config.runId,
-          branch: `foreman/${seedId}`,
-          worktreePath,
-        });
-      } else {
-        log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error}`);
-        report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${enqueueResult.error?.slice(0, 300)}`, "");
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${msg}`);
-      report.push(`## Merge Queue`, `- Status: FAILED (non-fatal)`, `- Error: ${msg.slice(0, 300)}`, "");
     }
   }
 
