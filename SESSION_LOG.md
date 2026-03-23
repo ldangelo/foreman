@@ -1,31 +1,26 @@
-# Session Log: reviewer agent for bd-ksbk
+# Session Log: reviewer agent for bd-j09i
 
 ## Metadata
 - Start: 2026-03-23T00:00:00Z
 - Role: reviewer
-- Seed: bd-ksbk
+- Seed: bd-j09i
 - Status: completed
 
 ## Key Activities
-- Read TASK.md: requirement to add `--fix` path to `checkFailedStuckRuns()`, distinguish actionable vs. historical failures, implement age-based cleanup
-- Read EXPLORER_REPORT.md: detailed architecture analysis, existing auto-resolve logic, recommended approach
-- Read QA_REPORT.md: 2052 tests passing, 7 new tests added, no type errors
-- Reviewed `src/lib/config.ts`: `failedRunRetentionDays` constant added correctly
-- Reviewed `src/orchestrator/doctor.ts` lines 825–1027: full implementation of `checkFailedStuckRuns()` with opts, `partitionByHistoricalRetry()` private method, age-based filtering
-- Reviewed `checkDataIntegrity()` at line 1482: confirms opts propagation
-- Reviewed `src/orchestrator/__tests__/doctor.test.ts` lines 404–860: 7 new test cases and all existing tests
-
-## Key Findings
-- Implementation is complete and correct
-- All three required changes implemented: config constant, doctor method, tests
-- Auto-resolve (merged/closed) still runs unconditionally in dry-run mode — pre-existing behaviour, noted but not blocking
-- O(N) getRunsForSeed queries in partitionByHistoricalRetry — acceptable for doctor use case
-- Opts propagation test coverage slightly weak but functional tests cover the gap
+- Read TASK.md to understand the original requirement (--all flag ignored without --watch, and --all --watch missing running runs)
+- Read EXPLORER_REPORT.md for architecture context (inbox.ts flow, store.ts methods)
+- Read QA_REPORT.md — verdict PASS, 11 new tests, 2063 total passing
+- Read full `src/cli/commands/inbox.ts` implementation
+- Read `src/lib/store.ts` getAllMessagesGlobal implementation
+- Read `src/cli/__tests__/inbox.test.ts` (11 tests)
+- Identified two WARNING issues:
+  1. `--ack` silently ignored in `--all --watch` global poll loop
+  2. Pre-existing running runs seeded into seenRunIds at watch startup, so completion/failure transitions are never shown via status banners
 
 ## Artifacts Created
-- REVIEW.md — verdict PASS with 3 NOTEs
-- SESSION_LOG.md (this file)
+- REVIEW.md — verdict FAIL (2 WARNINGs, 2 NOTEs)
+- SESSION_LOG.md — this file
 
 ## End
-- Completion time: 2026-03-23T00:10:00Z
-- Next phase: Finalize
+- Completion time: 2026-03-23T00:05:00Z
+- Next phase: Finalize (or Developer retry if warnings are addressed)
