@@ -27,48 +27,48 @@ describe("Dispatcher.selectModel", () => {
   const dispatcher = makeDispatcher();
 
   it("selects opus for 'refactor' in title", () => {
-    expect(dispatcher.selectModel(makeSeed("Refactor auth module"))).toBe("claude-opus-4-6");
+    expect(dispatcher.selectModel(makeSeed("Refactor auth module"))).toBe("anthropic/claude-opus-4-6");
   });
 
   it("selects opus for 'architect' in title", () => {
-    expect(dispatcher.selectModel(makeSeed("Architect the new data layer"))).toBe("claude-opus-4-6");
+    expect(dispatcher.selectModel(makeSeed("Architect the new data layer"))).toBe("anthropic/claude-opus-4-6");
   });
 
   it("selects opus for 'design' in title", () => {
-    expect(dispatcher.selectModel(makeSeed("Design the API schema"))).toBe("claude-opus-4-6");
+    expect(dispatcher.selectModel(makeSeed("Design the API schema"))).toBe("anthropic/claude-opus-4-6");
   });
 
   it("selects opus for 'migrate' in title", () => {
-    expect(dispatcher.selectModel(makeSeed("Migrate database to Postgres"))).toBe("claude-opus-4-6");
+    expect(dispatcher.selectModel(makeSeed("Migrate database to Postgres"))).toBe("anthropic/claude-opus-4-6");
   });
 
   it("selects haiku for 'typo' in title", () => {
-    expect(dispatcher.selectModel(makeSeed("Fix typo in README"))).toBe("claude-haiku-4-5-20251001");
+    expect(dispatcher.selectModel(makeSeed("Fix typo in README"))).toBe("anthropic/claude-haiku-4-5");
   });
 
   it("selects haiku for 'config' in title", () => {
-    expect(dispatcher.selectModel(makeSeed("Update config for staging"))).toBe("claude-haiku-4-5-20251001");
+    expect(dispatcher.selectModel(makeSeed("Update config for staging"))).toBe("anthropic/claude-haiku-4-5");
   });
 
   it("defaults to sonnet for implementation tasks", () => {
-    expect(dispatcher.selectModel(makeSeed("Build user profile page"))).toBe("claude-sonnet-4-6");
+    expect(dispatcher.selectModel(makeSeed("Build user profile page"))).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("defaults to sonnet for test tasks", () => {
-    expect(dispatcher.selectModel(makeSeed("Write unit tests for auth"))).toBe("claude-sonnet-4-6");
+    expect(dispatcher.selectModel(makeSeed("Write unit tests for auth"))).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("defaults to sonnet for fix tasks", () => {
-    expect(dispatcher.selectModel(makeSeed("Fix login bug"))).toBe("claude-sonnet-4-6");
+    expect(dispatcher.selectModel(makeSeed("Fix login bug"))).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("matches keywords case-insensitively", () => {
-    expect(dispatcher.selectModel(makeSeed("REFACTOR the codebase"))).toBe("claude-opus-4-6");
-    expect(dispatcher.selectModel(makeSeed("TYPO in variable name"))).toBe("claude-haiku-4-5-20251001");
+    expect(dispatcher.selectModel(makeSeed("REFACTOR the codebase"))).toBe("anthropic/claude-opus-4-6");
+    expect(dispatcher.selectModel(makeSeed("TYPO in variable name"))).toBe("anthropic/claude-haiku-4-5");
   });
 
   it("checks description for complexity signals", () => {
-    expect(dispatcher.selectModel(makeSeed("Update module", "This requires a complex overhaul"))).toBe("claude-opus-4-6");
+    expect(dispatcher.selectModel(makeSeed("Update module", "This requires a complex overhaul"))).toBe("anthropic/claude-opus-4-6");
   });
 });
 
@@ -76,44 +76,44 @@ describe("Dispatcher.selectModel — priority-based selection via normalizePrior
   const dispatcher = makeDispatcher();
 
   it("selects opus for P0 tasks regardless of title", () => {
-    expect(dispatcher.selectModel(makeSeed("Simple update", undefined, "P0"))).toBe("claude-opus-4-6");
+    expect(dispatcher.selectModel(makeSeed("Simple update", undefined, "P0"))).toBe("anthropic/claude-opus-4-6");
   });
 
   it("selects opus for priority '0' (numeric string, br format)", () => {
-    expect(dispatcher.selectModel(makeSeed("Simple update", undefined, "0"))).toBe("claude-opus-4-6");
+    expect(dispatcher.selectModel(makeSeed("Simple update", undefined, "0"))).toBe("anthropic/claude-opus-4-6");
   });
 
   it("selects opus for numeric priority 0", () => {
     // SeedInfo.priority is typed as string | undefined but normalizePriority handles numbers too
-    expect(dispatcher.selectModel(makeSeed("Simple fix", undefined, "P0"))).toBe("claude-opus-4-6");
+    expect(dispatcher.selectModel(makeSeed("Simple fix", undefined, "P0"))).toBe("anthropic/claude-opus-4-6");
   });
 
   it("does NOT force opus for P1 tasks without heavy keywords", () => {
-    expect(dispatcher.selectModel(makeSeed("Build feature", undefined, "P1"))).toBe("claude-sonnet-4-6");
+    expect(dispatcher.selectModel(makeSeed("Build feature", undefined, "P1"))).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("does NOT force opus for P2 tasks without heavy keywords", () => {
-    expect(dispatcher.selectModel(makeSeed("Build feature", undefined, "P2"))).toBe("claude-sonnet-4-6");
+    expect(dispatcher.selectModel(makeSeed("Build feature", undefined, "P2"))).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("selects haiku for P1 light task (config keyword)", () => {
-    expect(dispatcher.selectModel(makeSeed("Update config file", undefined, "P1"))).toBe("claude-haiku-4-5-20251001");
+    expect(dispatcher.selectModel(makeSeed("Update config file", undefined, "P1"))).toBe("anthropic/claude-haiku-4-5");
   });
 
   it("selects haiku for P3 light task (typo keyword)", () => {
-    expect(dispatcher.selectModel(makeSeed("Fix typo", undefined, "P3"))).toBe("claude-haiku-4-5-20251001");
+    expect(dispatcher.selectModel(makeSeed("Fix typo", undefined, "P3"))).toBe("anthropic/claude-haiku-4-5");
   });
 
   it("selects haiku for P4 light task (rename keyword)", () => {
-    expect(dispatcher.selectModel(makeSeed("Rename variable", undefined, "P4"))).toBe("claude-haiku-4-5-20251001");
+    expect(dispatcher.selectModel(makeSeed("Rename variable", undefined, "P4"))).toBe("anthropic/claude-haiku-4-5");
   });
 
   it("falls back to sonnet when priority is missing", () => {
-    expect(dispatcher.selectModel(makeSeed("Build feature"))).toBe("claude-sonnet-4-6");
+    expect(dispatcher.selectModel(makeSeed("Build feature"))).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("falls back to sonnet for unrecognized priority string", () => {
-    expect(dispatcher.selectModel(makeSeed("Build feature", undefined, "high"))).toBe("claude-sonnet-4-6");
+    expect(dispatcher.selectModel(makeSeed("Build feature", undefined, "high"))).toBe("anthropic/claude-sonnet-4-6");
   });
 });
 
@@ -144,8 +144,8 @@ describe("Dispatcher — ITaskClient injection", () => {
 
     const dispatcher = makeDispatcher(mockClient);
     // selectModel should work regardless of which ITaskClient is injected
-    expect(dispatcher.selectModel(makeSeed("Refactor the core system"))).toBe("claude-opus-4-6");
-    expect(dispatcher.selectModel(makeSeed("Build a feature"))).toBe("claude-sonnet-4-6");
+    expect(dispatcher.selectModel(makeSeed("Refactor the core system"))).toBe("anthropic/claude-opus-4-6");
+    expect(dispatcher.selectModel(makeSeed("Build a feature"))).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("ITaskClient interface has required methods", () => {
@@ -408,7 +408,7 @@ describe("Dispatcher.resumeRuns — seed in_progress marking", () => {
       id: "run-1",
       project_id: "proj-1",
       seed_id: "seed-1",
-      agent_type: "claude-sonnet-4-6",
+      agent_type: "anthropic/claude-sonnet-4-6",
       session_key: "foreman:sdk:claude-sonnet-4-6:run-1:session-abc123",
       worktree_path: "/tmp/worktree",
       status: "stuck" as const,
@@ -597,7 +597,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
     // show() must have been called to fetch the description
     expect(seedsClient.show).toHaveBeenCalledWith("bd-001");
     // The description "complex overhaul" should trigger opus model selection
-    expect(result.dispatched[0].model).toBe("claude-opus-4-6");
+    expect(result.dispatched[0].model).toBe("anthropic/claude-opus-4-6");
   });
 
   it("calls show() for each ready seed to fetch description", async () => {
@@ -650,7 +650,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
     const result = await dispatcher.dispatch({ dryRun: true });
     expect(result.dispatched).toHaveLength(1);
     // Without description, title-only task defaults to sonnet
-    expect(result.dispatched[0].model).toBe("claude-sonnet-4-6");
+    expect(result.dispatched[0].model).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("does not overwrite description when show() returns null description", async () => {
@@ -673,7 +673,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
     const result = await dispatcher.dispatch({ dryRun: true });
     // null description → no description-based opus upgrade, stays sonnet
-    expect(result.dispatched[0].model).toBe("claude-sonnet-4-6");
+    expect(result.dispatched[0].model).toBe("anthropic/claude-sonnet-4-6");
   });
 });
 
@@ -811,7 +811,7 @@ describe("Dispatcher.dispatch — fetches seed details via show()", () => {
 
 describe("PLAN_STEP_CONFIG", () => {
   it("has a valid model", () => {
-    expect(PLAN_STEP_CONFIG.model).toBe("claude-sonnet-4-6");
+    expect(PLAN_STEP_CONFIG.model).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("has a finite maxBudgetUsd within a reasonable range", () => {

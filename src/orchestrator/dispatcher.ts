@@ -573,21 +573,21 @@ export class Dispatcher {
 
     // P0 critical tasks always get the most capable model
     if (priority === 0) {
-      return "claude-opus-4-6";
+      return "anthropic/claude-opus-4-6";
     }
 
     const heavy = ["refactor", "architect", "design", "complex", "migrate", "overhaul"];
     if (heavy.some((kw) => text.includes(kw))) {
-      return "claude-opus-4-6";
+      return "anthropic/claude-opus-4-6";
     }
 
     const light = ["typo", "rename", "config", "bump version", "update readme"];
     // Only use haiku for non-critical (P1+) light tasks
     if (light.some((kw) => text.includes(kw)) && priority >= 1) {
-      return "claude-haiku-4-5-20251001";
+      return "anthropic/claude-haiku-4-5";
     }
 
-    return "claude-sonnet-4-6";
+    return "anthropic/claude-sonnet-4-6";
   }
 
   /**

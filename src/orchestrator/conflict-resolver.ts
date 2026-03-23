@@ -86,8 +86,8 @@ export interface Tier2Result {
   reason?: string;
 }
 
-const TIER3_MODEL = "claude-sonnet-4-6";
-const TIER4_MODEL = "claude-opus-4-6";
+const TIER3_MODEL = "anthropic/claude-sonnet-4-6";
+const TIER4_MODEL = "anthropic/claude-opus-4-6";
 
 /** Heuristic: approximate 4 characters per token. */
 const CHARS_PER_TOKEN = 4;

@@ -76,7 +76,7 @@ function createTestRun(
   }> = {},
 ): Run {
   const seedId = overrides.seedId ?? "bd-test";
-  const agentType = overrides.agentType ?? "claude-sonnet-4-6";
+  const agentType = overrides.agentType ?? "anthropic/claude-sonnet-4-6";
   const run = store.createRun(
     projectId,
     seedId,
@@ -507,7 +507,7 @@ describe("foreman retry", () => {
             seedId: "bd-test",
             title: "Test bead",
             runtime: "claude-code",
-            model: "claude-sonnet-4-6",
+            model: "anthropic/claude-sonnet-4-6",
             worktreePath: "/tmp/wt/bd-test",
             runId: "run-123",
             branchName: "foreman/bd-test",
@@ -545,7 +545,7 @@ describe("foreman retry", () => {
             seedId: "bd-test",
             title: "Test bead",
             runtime: "claude-code",
-            model: "claude-sonnet-4-6",
+            model: "anthropic/claude-sonnet-4-6",
             worktreePath: "/tmp/wt/bd-test",
             runId: "run-123",
             branchName: "foreman/bd-test",
@@ -613,14 +613,14 @@ describe("foreman retry", () => {
       const { retryAction } = await import("../commands/retry.js");
       await retryAction(
         "bd-test",
-        { dispatch: true, model: "claude-opus-4-6" },
+        { dispatch: true, model: "anthropic/claude-opus-4-6" },
         beadsClient,
         store,
         tmpDir,
       );
 
       expect(mockDispatch).toHaveBeenCalledWith(
-        expect.objectContaining({ model: "claude-opus-4-6" }),
+        expect.objectContaining({ model: "anthropic/claude-opus-4-6" }),
       );
 
       consoleSpy.mockRestore();

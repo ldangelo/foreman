@@ -377,9 +377,9 @@ export function getWorkflowPhase(
  * Allows YAML to use readable aliases instead of full model strings.
  */
 const MODEL_SHORTHANDS: Record<string, string> = {
-  haiku: "claude-haiku-4-5-20251001",
-  sonnet: "claude-sonnet-4-6",
-  opus: "claude-opus-4-6",
+  haiku: "anthropic/claude-haiku-4-5",
+  sonnet: "anthropic/claude-sonnet-4-6",
+  opus: "anthropic/claude-opus-4-6",
 };
 
 /**

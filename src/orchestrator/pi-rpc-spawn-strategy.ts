@@ -19,15 +19,14 @@ import Database from "better-sqlite3";
 import type { SpawnStrategy, SpawnResult, WorkerConfig } from "./dispatcher.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { ForemanStore } from "../lib/store.js";
+import {
+  loadWorkflowConfig,
+  resolveWorkflowName,
+  getWorkflowPhase,
+  resolveWorkflowModel,
+} from "../lib/workflow-loader.js";
 
 // ── Pi phase configuration ───────────────────────────────────────────────
-
-export interface PiPhaseConfig {
-  model: string;
-  allowedTools: readonly string[];
-  maxTurns: number;
-  maxTokens: number;
-}
 
 /**
  * Per-phase settings used when spawning Pi.
@@ -35,30 +34,46 @@ export interface PiPhaseConfig {
  * These are passed to Pi via environment variables so the Pi process
  * (and any extensions loaded by it) can enforce them.
  */
+export interface PiPhaseConfig {
+  allowedTools: readonly string[];
+  maxTurns: number;
+  maxTokens: number;
+}
+
+/** Fallback model per phase — used when workflow config is unavailable. */
+const FALLBACK_PHASE_MODELS: Readonly<Record<string, string>> = {
+  explorer: "anthropic/claude-haiku-4-5",
+  developer: "anthropic/claude-sonnet-4-6",
+  qa: "anthropic/claude-sonnet-4-6",
+  reviewer: "anthropic/claude-sonnet-4-6",
+  finalize: "anthropic/claude-haiku-4-5",
+};
+
 export const PI_PHASE_CONFIGS: Readonly<Record<string, PiPhaseConfig>> = {
   explorer: {
-    model: "claude-haiku-4-5-20251001",
     allowedTools: ["Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch"],
     maxTurns: 30,
     maxTokens: 100_000,
   },
   developer: {
-    model: "claude-sonnet-4-6",
     allowedTools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "LS"],
     maxTurns: 80,
     maxTokens: 500_000,
   },
   qa: {
-    model: "claude-sonnet-4-6",
     allowedTools: ["Read", "Grep", "Glob", "LS", "Bash"],
     maxTurns: 30,
     maxTokens: 200_000,
   },
   reviewer: {
-    model: "claude-sonnet-4-6",
     allowedTools: ["Read", "Grep", "Glob", "LS"],
     maxTurns: 20,
     maxTokens: 150_000,
+  },
+  finalize: {
+    allowedTools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "LS"],
+    maxTurns: 20,
+    maxTokens: 200_000,
   },
 } as const;
 
@@ -220,10 +235,21 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
 
     // Determine phase from env vars that agent-worker sets, or fall back to "developer"
     const phase = config.env.FOREMAN_PHASE ?? "developer";
-    const phaseConfig = PI_PHASE_CONFIGS[phase] ?? PI_PHASE_CONFIGS.developer;
+    const phaseConfig = PI_PHASE_CONFIGS[phase] ?? PI_PHASE_CONFIGS["developer"]!;
 
     // Resolve project path using same pattern as agent-worker.ts
     const projectPath = config.projectPath ?? join(config.worktreePath, "..", "..");
+
+    // Resolve phase model from workflow config; fall back to per-phase defaults.
+    let phaseModel: string = FALLBACK_PHASE_MODELS[phase] ?? FALLBACK_PHASE_MODELS["developer"]!;
+    try {
+      const workflowName = resolveWorkflowName(config.seedType ?? "feature", config.seedLabels);
+      const workflowConfig = loadWorkflowConfig(workflowName, projectPath);
+      const workflowPhase = getWorkflowPhase(workflowConfig, phase);
+      phaseModel = resolveWorkflowModel(workflowPhase?.model) ?? phaseModel;
+    } catch {
+      // Workflow config unavailable — use fallback model
+    }
 
     // Prepare log directory
     const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
@@ -266,7 +292,7 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
     }
 
     // Build pi args: always use Anthropic provider with the phase model
-    const piArgs = ["--mode", "rpc", "--provider", "anthropic", "--model", phaseConfig.model];
+    const piArgs = ["--mode", "rpc", "--provider", "anthropic", "--model", phaseModel];
 
     log(`Spawning pi --mode rpc for ${config.seedId} phase=${phase} in ${config.worktreePath}`);
 
@@ -288,7 +314,7 @@ export class PiRpcSpawnStrategy implements SpawnStrategy {
     if (child.stdin) {
       const setContext: PiSetContextMessage = {
         type: "set_context",
-        systemPrompt: buildSystemPrompt(config, phase, phaseConfig),
+        systemPrompt: buildSystemPrompt(config, phase, phaseConfig, phaseModel),
         contextFiles: [
           {
             path: "/virtual/TASK.md",
@@ -449,6 +475,7 @@ function buildSystemPrompt(
   config: WorkerConfig,
   phase: string,
   phaseConfig: PiPhaseConfig,
+  phaseModel: string,
 ): string {
   const allowedTools = phaseConfig.allowedTools.join(", ");
   return [
@@ -460,7 +487,7 @@ function buildSystemPrompt(
     `Working directory: ${config.worktreePath}`,
     ``,
     `Phase: ${phase}`,
-    `Model: ${phaseConfig.model}`,
+    `Model: ${phaseModel}`,
     `Max turns: ${phaseConfig.maxTurns}`,
     `Max tokens: ${phaseConfig.maxTokens}`,
     `Allowed tools: ${allowedTools}`,

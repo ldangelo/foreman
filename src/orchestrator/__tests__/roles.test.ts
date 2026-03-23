@@ -23,11 +23,11 @@ describe("ROLE_CONFIGS", () => {
   });
 
   it("explorer uses haiku for cost efficiency", () => {
-    expect(ROLE_CONFIGS.explorer.model).toBe("claude-haiku-4-5-20251001");
+    expect(ROLE_CONFIGS.explorer.model).toBe("anthropic/claude-haiku-4-5");
   });
 
   it("developer uses sonnet by default", () => {
-    expect(ROLE_CONFIGS.developer.model).toBe("claude-sonnet-4-6");
+    expect(ROLE_CONFIGS.developer.model).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("explorer produces EXPLORER_REPORT.md", () => {
@@ -210,55 +210,55 @@ describe("buildRoleConfigs — environment variable overrides", () => {
 
   it("uses hard-coded defaults when no env vars are set", () => {
     const configs = buildRoleConfigs();
-    expect(configs.explorer.model).toBe("claude-haiku-4-5-20251001");
-    expect(configs.developer.model).toBe("claude-sonnet-4-6");
-    expect(configs.qa.model).toBe("claude-sonnet-4-6");
-    expect(configs.reviewer.model).toBe("claude-sonnet-4-6");
+    expect(configs.explorer.model).toBe("anthropic/claude-haiku-4-5");
+    expect(configs.developer.model).toBe("anthropic/claude-sonnet-4-6");
+    expect(configs.qa.model).toBe("anthropic/claude-sonnet-4-6");
+    expect(configs.reviewer.model).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("overrides explorer model via FOREMAN_EXPLORER_MODEL", () => {
-    process.env["FOREMAN_EXPLORER_MODEL"] = "claude-sonnet-4-6";
+    process.env["FOREMAN_EXPLORER_MODEL"] = "anthropic/claude-sonnet-4-6";
     const configs = buildRoleConfigs();
-    expect(configs.explorer.model).toBe("claude-sonnet-4-6");
+    expect(configs.explorer.model).toBe("anthropic/claude-sonnet-4-6");
     // Other phases should still use their defaults
-    expect(configs.developer.model).toBe("claude-sonnet-4-6");
+    expect(configs.developer.model).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("overrides developer model via FOREMAN_DEVELOPER_MODEL", () => {
-    process.env["FOREMAN_DEVELOPER_MODEL"] = "claude-opus-4-6";
+    process.env["FOREMAN_DEVELOPER_MODEL"] = "anthropic/claude-opus-4-6";
     const configs = buildRoleConfigs();
-    expect(configs.developer.model).toBe("claude-opus-4-6");
-    expect(configs.explorer.model).toBe("claude-haiku-4-5-20251001");
+    expect(configs.developer.model).toBe("anthropic/claude-opus-4-6");
+    expect(configs.explorer.model).toBe("anthropic/claude-haiku-4-5");
   });
 
   it("overrides qa model via FOREMAN_QA_MODEL", () => {
-    process.env["FOREMAN_QA_MODEL"] = "claude-haiku-4-5-20251001";
+    process.env["FOREMAN_QA_MODEL"] = "anthropic/claude-haiku-4-5";
     const configs = buildRoleConfigs();
-    expect(configs.qa.model).toBe("claude-haiku-4-5-20251001");
+    expect(configs.qa.model).toBe("anthropic/claude-haiku-4-5");
   });
 
   it("overrides reviewer model via FOREMAN_REVIEWER_MODEL", () => {
-    process.env["FOREMAN_REVIEWER_MODEL"] = "claude-haiku-4-5-20251001";
+    process.env["FOREMAN_REVIEWER_MODEL"] = "anthropic/claude-haiku-4-5";
     const configs = buildRoleConfigs();
-    expect(configs.reviewer.model).toBe("claude-haiku-4-5-20251001");
+    expect(configs.reviewer.model).toBe("anthropic/claude-haiku-4-5");
   });
 
   it("allows all four phases to be overridden simultaneously", () => {
-    process.env["FOREMAN_EXPLORER_MODEL"] = "claude-opus-4-6";
-    process.env["FOREMAN_DEVELOPER_MODEL"] = "claude-haiku-4-5-20251001";
-    process.env["FOREMAN_QA_MODEL"] = "claude-haiku-4-5-20251001";
-    process.env["FOREMAN_REVIEWER_MODEL"] = "claude-haiku-4-5-20251001";
+    process.env["FOREMAN_EXPLORER_MODEL"] = "anthropic/claude-opus-4-6";
+    process.env["FOREMAN_DEVELOPER_MODEL"] = "anthropic/claude-haiku-4-5";
+    process.env["FOREMAN_QA_MODEL"] = "anthropic/claude-haiku-4-5";
+    process.env["FOREMAN_REVIEWER_MODEL"] = "anthropic/claude-haiku-4-5";
     const configs = buildRoleConfigs();
-    expect(configs.explorer.model).toBe("claude-opus-4-6");
-    expect(configs.developer.model).toBe("claude-haiku-4-5-20251001");
-    expect(configs.qa.model).toBe("claude-haiku-4-5-20251001");
-    expect(configs.reviewer.model).toBe("claude-haiku-4-5-20251001");
+    expect(configs.explorer.model).toBe("anthropic/claude-opus-4-6");
+    expect(configs.developer.model).toBe("anthropic/claude-haiku-4-5");
+    expect(configs.qa.model).toBe("anthropic/claude-haiku-4-5");
+    expect(configs.reviewer.model).toBe("anthropic/claude-haiku-4-5");
   });
 
   it("ignores empty string env var and falls back to default", () => {
     process.env["FOREMAN_EXPLORER_MODEL"] = "";
     const configs = buildRoleConfigs();
-    expect(configs.explorer.model).toBe("claude-haiku-4-5-20251001");
+    expect(configs.explorer.model).toBe("anthropic/claude-haiku-4-5");
   });
 
   it("throws for an invalid model value in an env var", () => {
@@ -272,7 +272,7 @@ describe("buildRoleConfigs — environment variable overrides", () => {
   });
 
   it("budget values are not affected by model env var overrides", () => {
-    process.env["FOREMAN_DEVELOPER_MODEL"] = "claude-haiku-4-5-20251001";
+    process.env["FOREMAN_DEVELOPER_MODEL"] = "anthropic/claude-haiku-4-5";
     const configs = buildRoleConfigs();
     expect(configs.developer.maxBudgetUsd).toBe(5.00);
   });
@@ -290,7 +290,7 @@ describe("buildRoleConfigs — environment variable overrides", () => {
   });
 
   it("report files are not affected by model env var overrides", () => {
-    process.env["FOREMAN_EXPLORER_MODEL"] = "claude-sonnet-4-6";
+    process.env["FOREMAN_EXPLORER_MODEL"] = "anthropic/claude-sonnet-4-6";
     const configs = buildRoleConfigs();
     expect(configs.explorer.reportFile).toBe("EXPLORER_REPORT.md");
   });
@@ -518,7 +518,7 @@ describe("getDisallowedTools", () => {
   it("returns empty array for a hypothetical all-tools config", () => {
     const allToolsConfig: RoleConfig = {
       role: "developer",
-      model: "claude-sonnet-4-6",
+      model: "anthropic/claude-sonnet-4-6",
       maxBudgetUsd: 5.00,
       permissionMode: "acceptEdits",
       reportFile: "DEVELOPER_REPORT.md",
@@ -530,7 +530,7 @@ describe("getDisallowedTools", () => {
   it("returns all tools for empty allowedTools", () => {
     const noToolsConfig: RoleConfig = {
       role: "reviewer",
-      model: "claude-sonnet-4-6",
+      model: "anthropic/claude-sonnet-4-6",
       maxBudgetUsd: 2.00,
       permissionMode: "acceptEdits",
       reportFile: "REVIEW.md",

@@ -70,7 +70,7 @@ export interface PlanStepConfig {
 }
 
 export const PLAN_STEP_CONFIG: PlanStepConfig = {
-  model: "claude-sonnet-4-6",
+  model: "anthropic/claude-sonnet-4-6",
   maxBudgetUsd: getPlanStepBudget(),
   // Sufficient for typical PRD/TRD generation runs; raise if plan steps hit the turn limit
   maxTurns: 50,
@@ -126,9 +126,9 @@ export function getDisallowedTools(config: RoleConfig): string[] {
  * environment variable.
  */
 const VALID_MODELS: readonly ModelSelection[] = [
-  "claude-opus-4-6",
-  "claude-sonnet-4-6",
-  "claude-haiku-4-5-20251001",
+  "anthropic/claude-opus-4-6",
+  "anthropic/claude-sonnet-4-6",
+  "anthropic/claude-haiku-4-5",
 ];
 
 /**
@@ -158,11 +158,11 @@ function resolveModel(envVar: string, defaultModel: ModelSelection): ModelSelect
  * module-level initialisation catches an env-var validation error.
  */
 const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker" | "sentinel">, ModelSelection>> = {
-  explorer: "claude-haiku-4-5-20251001",
-  developer: "claude-sonnet-4-6",
-  qa: "claude-sonnet-4-6",
-  reviewer: "claude-sonnet-4-6",
-  finalize: "claude-haiku-4-5-20251001",
+  explorer: "anthropic/claude-haiku-4-5",
+  developer: "anthropic/claude-sonnet-4-6",
+  qa: "anthropic/claude-sonnet-4-6",
+  reviewer: "anthropic/claude-sonnet-4-6",
+  finalize: "anthropic/claude-haiku-4-5",
 };
 
 /**
@@ -294,7 +294,7 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
 /** Standalone role config for the sentinel (not part of the pipeline). */
 export const SENTINEL_ROLE_CONFIG: RoleConfig = {
   role: "sentinel",
-  model: "claude-sonnet-4-6",
+  model: "anthropic/claude-sonnet-4-6",
   maxBudgetUsd: getSentinelBudget(),
   permissionMode: "acceptEdits",
   reportFile: "SENTINEL_REPORT.md",

@@ -143,7 +143,7 @@ describe("ConflictResolver - Tier 4 Pi Reimagination", () => {
       await resolver.attemptTier4Resolution("src/file.ts", "feature/test", "main");
 
       expect(mockRunWithPi).toHaveBeenCalledOnce();
-      expect(mockRunWithPi.mock.calls[0][0].model).toBe("claude-opus-4-6");
+      expect(mockRunWithPi.mock.calls[0][0].model).toBe("anthropic/claude-opus-4-6");
     });
 
     it("prompt tells Pi to read git context and write the file", async () => {
@@ -253,7 +253,7 @@ describe("ConflictResolver - Tier 4 Pi Reimagination", () => {
       expect(result.success).toBe(true);
       expect(result.cost).toBeDefined();
       expect(result.cost!.actualCostUsd).toBeCloseTo(0.05, 6);
-      expect(result.cost!.model).toBe("claude-opus-4-6");
+      expect(result.cost!.model).toBe("anthropic/claude-opus-4-6");
     });
 
     it("checks budget before invoking Pi", async () => {

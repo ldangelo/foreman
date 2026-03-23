@@ -184,7 +184,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<{
 export const runCommand = new Command("run")
   .description("Dispatch ready tasks to agents")
   .option("--max-agents <n>", "Maximum concurrent agents", "5")
-  .option("--model <model>", "Force a specific model (claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5-20251001)")
+  .option("--model <model>", "Force a specific model (anthropic/claude-opus-4-6, anthropic/claude-sonnet-4-6, anthropic/claude-haiku-4-5)")
   .option("--dry-run", "Show what would be dispatched without doing it")
   .option("--no-watch", "Exit immediately after dispatching (don't monitor agents)")
   .option("--telemetry", "Enable OpenTelemetry tracing on spawned agents (requires OTEL_* env vars)")

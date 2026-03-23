@@ -53,7 +53,7 @@ function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
     seedId: "seed-xyz",
     seedTitle: "Test task",
     seedDescription: "Do the thing",
-    model: "claude-sonnet-4-6",
+    model: "anthropic/claude-sonnet-4-6",
     worktreePath: "/tmp/worktree/seed-xyz",
     projectPath: "/tmp/project",
     prompt: "Read TASK.md and implement.",
@@ -139,11 +139,11 @@ describe("PI_PHASE_CONFIGS", () => {
     expect(PI_PHASE_CONFIGS).toHaveProperty("reviewer");
   });
 
-  it("uses haiku for explorer and sonnet for other phases", () => {
-    expect(PI_PHASE_CONFIGS.explorer.model).toBe("claude-haiku-4-5-20251001");
-    expect(PI_PHASE_CONFIGS.developer.model).toBe("claude-sonnet-4-6");
-    expect(PI_PHASE_CONFIGS.qa.model).toBe("claude-sonnet-4-6");
-    expect(PI_PHASE_CONFIGS.reviewer.model).toBe("claude-sonnet-4-6");
+  it("does not have hardcoded models — models come from workflow config", () => {
+    expect(PI_PHASE_CONFIGS.explorer).not.toHaveProperty("model");
+    expect(PI_PHASE_CONFIGS.developer).not.toHaveProperty("model");
+    expect(PI_PHASE_CONFIGS.qa).not.toHaveProperty("model");
+    expect(PI_PHASE_CONFIGS.reviewer).not.toHaveProperty("model");
   });
 
   it("has correct maxTurns for each phase", () => {

@@ -102,7 +102,7 @@ describe("ConflictResolver - Tier 3 Pi Resolution", () => {
       expect(result.success).toBe(true);
       expect(result.resolvedContent).toBe(RESOLVED_TS_CONTENT);
       expect(result.cost).toBeDefined();
-      expect(result.cost!.model).toBe("claude-sonnet-4-6");
+      expect(result.cost!.model).toBe("anthropic/claude-sonnet-4-6");
     });
 
     it("passes the file path and cwd to runWithPi", async () => {
@@ -114,7 +114,7 @@ describe("ConflictResolver - Tier 3 Pi Resolution", () => {
       expect(mockRunWithPi).toHaveBeenCalledOnce();
       const callOpts = mockRunWithPi.mock.calls[0][0];
       expect(callOpts.cwd).toBe(tmpDir);
-      expect(callOpts.model).toBe("claude-sonnet-4-6");
+      expect(callOpts.model).toBe("anthropic/claude-sonnet-4-6");
       expect(callOpts.prompt).toContain("src/shared.ts");
     });
 
@@ -259,7 +259,7 @@ describe("ConflictResolver - Tier 3 Pi Resolution", () => {
       expect(result.cost).toBeDefined();
       const cost = result.cost!;
       expect(cost.actualCostUsd).toBeCloseTo(0.006, 6);
-      expect(cost.model).toBe("claude-sonnet-4-6");
+      expect(cost.model).toBe("anthropic/claude-sonnet-4-6");
     });
 
     it("provides pre-call cost estimate using 4 chars/token heuristic", async () => {
