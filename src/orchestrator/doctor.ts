@@ -822,7 +822,8 @@ export class Doctor {
     }
   }
 
-  async checkFailedStuckRuns(): Promise<CheckResult[]> {
+  async checkFailedStuckRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
+    const { fix = false, dryRun = false } = opts;
     const project = this.store.getProjectByPath(this.projectPath);
     if (!project) return [];
 
@@ -891,23 +892,102 @@ export class Doctor {
       });
     }
 
-    if (unresolvedFailed.length > 0) {
+    // ── Distinguish actionable vs. noise failures ─────────────────────────────
+    // A failed run is "noise" (historical retry) if the same seed has a later
+    // successful run (completed or merged).  These are not actionable.
+    const { actionable: actionableFailed, historical: historicalFailed } =
+      this.partitionByHistoricalRetry(unresolvedFailed);
+
+    // ── Age-based cleanup of historical-retry runs ────────────────────────────
+    // Historical retries that are older than the retention threshold can be
+    // cleaned up automatically with --fix.
+    const retentionMs = PIPELINE_TIMEOUTS.failedRunRetentionDays * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const agedHistoricalFailed = historicalFailed.filter((r) => {
+      const age = now - new Date(r.created_at).getTime();
+      return age > retentionMs;
+    });
+    const recentHistoricalFailed = historicalFailed.filter((r) => {
+      const age = now - new Date(r.created_at).getTime();
+      return age <= retentionMs;
+    });
+
+    // Also age-partition unresolved stuck runs (no historical-retry check for stuck)
+    const agedStuck = unresolvedStuck.filter((r) => {
+      const age = now - new Date(r.created_at).getTime();
+      return age > retentionMs;
+    });
+    const recentStuck = unresolvedStuck.filter((r) => {
+      const age = now - new Date(r.created_at).getTime();
+      return age <= retentionMs;
+    });
+
+    // Total runs eligible for age-based cleanup
+    const agedTotal = agedHistoricalFailed.length + agedStuck.length;
+
+    if (agedTotal > 0) {
+      if (dryRun) {
+        results.push({
+          name: `failed/stuck runs (aged, dry-run)`,
+          status: "warn",
+          message: `${agedTotal} failed/stuck run(s) older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s) are eligible for cleanup. Would mark as completed (dry-run). Re-run with --fix to apply.`,
+        });
+      } else if (fix) {
+        const allAged = [...agedHistoricalFailed, ...agedStuck];
+        for (const run of allAged) {
+          this.store.updateRun(run.id, { status: "completed" });
+        }
+        results.push({
+          name: `failed/stuck runs (aged, cleaned up)`,
+          status: "fixed",
+          message: `Cleaned up ${agedTotal} aged failed/stuck run(s) older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s)`,
+          fixApplied: `Marked ${agedTotal} aged run(s) as completed`,
+        });
+      } else {
+        results.push({
+          name: `failed/stuck runs (aged)`,
+          status: "warn",
+          message: `${agedTotal} failed/stuck run(s) are older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s). Use --fix to clean up.`,
+        });
+      }
+    }
+
+    // Report historical retries that are within the retention window (informational)
+    if (recentHistoricalFailed.length > 0) {
+      results.push({
+        name: `failed runs (historical retries)`,
+        status: "warn",
+        message: `${recentHistoricalFailed.length} failed run(s) are historical retries (seed later completed): ${recentHistoricalFailed.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentHistoricalFailed.length > 5 ? "..." : ""}. These will be auto-cleaned after ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s).`,
+      });
+    }
+
+    // Actionable failures: seeds with ONLY failed runs — need attention
+    if (actionableFailed.length > 0) {
       results.push({
         name: `failed runs`,
         status: "warn",
-        message: `${unresolvedFailed.length} failed run(s): ${unresolvedFailed.slice(0, 5).map((r) => r.seed_id).join(", ")}${unresolvedFailed.length > 5 ? "..." : ""}. Use 'foreman reset' to retry.`,
+        message: `${actionableFailed.length} failed run(s): ${actionableFailed.slice(0, 5).map((r) => r.seed_id).join(", ")}${actionableFailed.length > 5 ? "..." : ""}. Use 'foreman reset' to retry.`,
       });
     }
 
-    if (unresolvedStuck.length > 0) {
+    // Stuck runs that are recent (actionable)
+    if (recentStuck.length > 0) {
       results.push({
         name: `stuck runs`,
         status: "warn",
-        message: `${unresolvedStuck.length} stuck run(s): ${unresolvedStuck.slice(0, 5).map((r) => r.seed_id).join(", ")}${unresolvedStuck.length > 5 ? "..." : ""}. Use 'foreman reset' to retry or 'foreman run --resume' to continue.`,
+        message: `${recentStuck.length} stuck run(s): ${recentStuck.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentStuck.length > 5 ? "..." : ""}. Use 'foreman reset' to retry or 'foreman run --resume' to continue.`,
       });
     }
 
-    if (unresolvedFailed.length === 0 && unresolvedStuck.length === 0 && totalResolved === 0) {
+    const hasAnyIssue =
+      totalResolved > 0 ||
+      agedTotal > 0 ||
+      recentHistoricalFailed.length > 0 ||
+      actionableFailed.length > 0 ||
+      recentStuck.length > 0;
+
+    if (!hasAnyIssue) {
       results.push({
         name: "failed/stuck runs",
         status: "pass",
@@ -916,6 +996,33 @@ export class Doctor {
     }
 
     return results;
+  }
+
+  /**
+   * Partition unresolved failed runs into "actionable" (seed has only failed runs)
+   * and "historical" (seed has a later completed or merged run — noise from retries).
+   */
+  private partitionByHistoricalRetry(
+    runs: import("../lib/store.js").Run[],
+  ): { actionable: import("../lib/store.js").Run[]; historical: import("../lib/store.js").Run[] } {
+    const actionable: import("../lib/store.js").Run[] = [];
+    const historical: import("../lib/store.js").Run[] = [];
+
+    for (const run of runs) {
+      const allSeedRuns = this.store.getRunsForSeed(run.seed_id);
+      const hasLaterSuccess = allSeedRuns.some(
+        (r) =>
+          ["completed", "merged"].includes(r.status) &&
+          new Date(r.created_at).getTime() > new Date(run.created_at).getTime(),
+      );
+      if (hasLaterSuccess) {
+        historical.push(run);
+      } else {
+        actionable.push(run);
+      }
+    }
+
+    return { actionable, historical };
   }
 
   async checkRunStateConsistency(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
@@ -1380,7 +1487,7 @@ export class Doctor {
         this.checkOrphanedWorktrees(opts),
         this.checkZombieRuns(opts),
         this.checkStalePendingRuns(opts),
-        this.checkFailedStuckRuns(),
+        this.checkFailedStuckRuns(opts),
         this.checkRunStateConsistency(opts),
         this.checkBlockedSeeds(),
         this.checkBrRecoveryArtifacts(opts),
