@@ -98,4 +98,11 @@ export interface ITaskClient {
    * Close an issue, optionally recording a reason.
    */
   close(id: string, reason?: string): Promise<void>;
+
+  /**
+   * Fetch comments for an issue as a formatted markdown string.
+   * Returns null if there are no comments.
+   * Optional — implementations that do not support comments may omit this method.
+   */
+  comments?(id: string): Promise<string | null>;
 }

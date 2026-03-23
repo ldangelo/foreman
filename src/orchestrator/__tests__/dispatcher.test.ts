@@ -809,6 +809,133 @@ describe("Dispatcher.dispatch — fetches seed details via show()", () => {
   });
 });
 
+describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
+  function makeIssue(): Issue {
+    return {
+      id: "bd-001",
+      title: "Fix bug",
+      status: "open",
+      priority: "P2",
+      type: "task",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  it("calls comments() for each dispatched seed", async () => {
+    const issue = makeIssue();
+    const showResult = { ...issue, description: "Detail", notes: null, labels: [], estimate_minutes: null, dependencies: [], children: [] };
+
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue(showResult),
+      comments: vi.fn().mockResolvedValue("**alice** (2026-01-01T00:00:00Z):\nPlease add rate limiting"),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    await dispatcher.dispatch({ dryRun: true });
+
+    expect(seedsClient.comments).toHaveBeenCalledWith("bd-001");
+  });
+
+  it("includes bead comments in agent instructions via seedInfo.comments", async () => {
+    const dispatcher = makeDispatcher();
+    const seedInfo: SeedInfo = {
+      id: "bd-001",
+      title: "Fix bug",
+      priority: "P2",
+      type: "task",
+      description: "Detailed description",
+      comments: "**alice** (2026-01-01T00:00:00Z):\nPlease add rate limiting",
+    };
+    const instructions = dispatcher.generateAgentInstructions(seedInfo, "/tmp/wt");
+    expect(instructions).toContain("Additional Context");
+    expect(instructions).toContain("alice");
+    expect(instructions).toContain("Please add rate limiting");
+  });
+
+  it("combines notes from show() and comments() into one Additional Context block", async () => {
+    const dispatcher = makeDispatcher();
+    const seedInfo: SeedInfo = {
+      id: "bd-001",
+      title: "Fix bug",
+      priority: "P2",
+      type: "task",
+      description: "Detailed description",
+      comments: "Design note from notes\n\n---\n\n**Comments:**\n\n**alice** (2026-01-01T00:00:00Z):\nReviewer feedback",
+    };
+    const instructions = dispatcher.generateAgentInstructions(seedInfo, "/tmp/wt");
+    expect(instructions).toContain("Design note from notes");
+    expect(instructions).toContain("Reviewer feedback");
+  });
+
+  it("proceeds without error when comments() throws (non-fatal)", async () => {
+    const issue = makeIssue();
+    const showResult = { ...issue, description: null, notes: null, labels: [], estimate_minutes: null, dependencies: [], children: [] };
+
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue(showResult),
+      comments: vi.fn().mockRejectedValue(new Error("comments fetch failed")),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+    } as unknown as ForemanStore;
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    // Should still dispatch despite comments() failure
+    expect(result.dispatched).toHaveLength(1);
+    consoleSpy.mockRestore();
+  });
+
+  it("skips comments() call when ITaskClient does not implement comments", async () => {
+    const issue = makeIssue();
+    const showResult = { ...issue, description: null, notes: null, labels: [], estimate_minutes: null, dependencies: [], children: [] };
+
+    // Client without comments() method (backward compat)
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue(showResult),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    // Should dispatch normally without calling comments
+    expect(result.dispatched).toHaveLength(1);
+    expect(seedsClient.comments).toBeUndefined();
+  });
+});
+
 describe("PLAN_STEP_CONFIG", () => {
   it("has a valid model", () => {
     expect(PLAN_STEP_CONFIG.model).toBe("anthropic/claude-sonnet-4-6");
