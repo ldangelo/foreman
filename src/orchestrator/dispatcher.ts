@@ -14,7 +14,7 @@ import { BeadsRustClient } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
-import { PiRpcSpawnStrategy, isPiAvailable } from "./pi-rpc-spawn-strategy.js";
+import { isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
 import type {
@@ -938,19 +938,13 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
 }
 
 /**
- * Spawn agent-worker using the best available strategy.
+ * Spawn agent-worker using DetachedSpawnStrategy.
  *
- * Strategy selection:
- * 1. If `pi` binary is available, use PiRpcSpawnStrategy (always preferred)
- * 2. Fallback: DetachedSpawnStrategy (runs agent-worker.js as a detached child)
+ * DetachedSpawnStrategy spawns agent-worker.ts, which runs the full pipeline
+ * (explorer → developer → QA → reviewer → finalize) and calls runWithPi()
+ * per phase with the correct phase prompt and Pi extension env vars.
  */
 export async function spawnWorkerProcess(config: WorkerConfig): Promise<SpawnResult> {
-  if (isPiAvailable()) {
-    log(`[foreman] pi binary found — using PiRpcSpawnStrategy for ${config.seedId}`);
-    return new PiRpcSpawnStrategy().spawn(config);
-  }
-
-  // Pi not available — fall back to detached child process
   return new DetachedSpawnStrategy().spawn(config);
 }
 

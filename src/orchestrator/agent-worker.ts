@@ -38,6 +38,7 @@ import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
+import { PI_PHASE_CONFIGS } from "./pi-rpc-spawn-strategy.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -456,6 +457,19 @@ async function runPhase(
   const piEnv: Record<string, string> = {};
   for (const [k, v] of Object.entries(config.env)) {
     if (k !== "CLAUDECODE" && v !== undefined) piEnv[k] = v;
+  }
+
+  // Inject Pi extension env vars so foreman-tool-gate, foreman-budget, and
+  // foreman-audit extensions can enforce phase-specific constraints.
+  piEnv.PI_EXTENSIONS = "foreman-tool-gate,foreman-budget,foreman-audit";
+  piEnv.FOREMAN_PHASE = role;
+  piEnv.FOREMAN_ALLOWED_TOOLS = roleConfig.allowedTools.join(",");
+  piEnv.FOREMAN_RUN_ID = config.runId;
+  piEnv.FOREMAN_SEED_ID = config.seedId;
+  const phaseConfig = PI_PHASE_CONFIGS[role];
+  if (phaseConfig) {
+    piEnv.FOREMAN_MAX_TURNS = String(phaseConfig.maxTurns);
+    piEnv.FOREMAN_MAX_TOKENS = String(phaseConfig.maxTokens);
   }
 
   try {

@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 /**
  * Tests for spawnWorkerProcess() strategy selection.
  *
- * Since tmux was removed, the only strategies are:
- * - PiRpcSpawnStrategy (when Pi binary is available)
- * - DetachedSpawnStrategy (fallback)
+ * spawnWorkerProcess() always uses DetachedSpawnStrategy, which spawns
+ * agent-worker.ts as a detached process. agent-worker.ts runs runWithPi()
+ * per phase with the correct phase prompt and Pi extension env vars.
  */
 
 // Mock child_process.spawn to prevent real process spawning
@@ -79,17 +79,18 @@ describe("spawnWorkerProcess strategy selection", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("uses PiRpcSpawnStrategy when Pi is available", async () => {
-    mockIsPiAvailable.mockReturnValue(true);
-    mockPiSpawn.mockResolvedValue({});
+  it("always uses DetachedSpawnStrategy regardless of Pi availability", async () => {
+    mockIsPiAvailable.mockReturnValue(true); // Pi available — but we still use Detached
 
     await spawnWorkerProcess(baseConfig);
 
-    expect(mockPiSpawn).toHaveBeenCalledTimes(1);
-    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(mockPiSpawn).not.toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    const opts = (mockSpawn.mock.calls[0] as unknown[])[2] as Record<string, unknown> | undefined;
+    expect(opts?.detached).toBe(true);
   });
 
-  it("falls back to DetachedSpawnStrategy when Pi is unavailable", async () => {
+  it("uses DetachedSpawnStrategy when Pi is unavailable", async () => {
     mockIsPiAvailable.mockReturnValue(false);
 
     await spawnWorkerProcess(baseConfig);
@@ -100,8 +101,7 @@ describe("spawnWorkerProcess strategy selection", () => {
     expect(opts?.detached).toBe(true);
   });
 
-  it("smoke seeds dispatch through DetachedSpawnStrategy when Pi unavailable", async () => {
-    mockIsPiAvailable.mockReturnValue(false);
+  it("smoke seeds dispatch through DetachedSpawnStrategy", async () => {
     const smokeConfig: WorkerConfig = { ...baseConfig, seedType: "smoke" };
 
     await spawnWorkerProcess(smokeConfig);
@@ -112,21 +112,6 @@ describe("spawnWorkerProcess strategy selection", () => {
     const opts = (mockSpawn.mock.calls[0] as unknown[])[2] as { env?: Record<string, string> } | undefined;
     // FOREMAN_SMOKE_TEST must NOT be injected (bypass was removed)
     expect(opts?.env?.FOREMAN_SMOKE_TEST).toBeUndefined();
-  });
-
-  it("smoke seeds use Pi when available", async () => {
-    mockIsPiAvailable.mockReturnValue(true);
-    mockPiSpawn.mockResolvedValue({});
-    const smokeConfig: WorkerConfig = { ...baseConfig, seedType: "smoke" };
-
-    await spawnWorkerProcess(smokeConfig);
-
-    expect(mockPiSpawn).toHaveBeenCalledTimes(1);
-    // Config is passed through unmodified — no FOREMAN_SMOKE_TEST injection
-    const calledConfig = mockPiSpawn.mock.calls[0]?.[0] as WorkerConfig | undefined;
-    expect(calledConfig?.seedType).toBe("smoke");
-    expect(calledConfig?.env?.FOREMAN_SMOKE_TEST).toBeUndefined();
-    expect(mockSpawn).not.toHaveBeenCalled();
   });
 });
 
