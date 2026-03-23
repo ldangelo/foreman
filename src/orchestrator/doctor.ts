@@ -15,6 +15,7 @@ import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue
 import type { ITaskClient } from "../lib/task-client.js";
 import { findMissingPrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
 import { findMissingWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
+import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1072,6 +1073,124 @@ export class Doctor {
     return results;
   }
 
+  /**
+   * Check for bead status drift between SQLite and the br backend.
+   *
+   * Calls syncBeadStatusOnStartup() to detect (and optionally fix) mismatches
+   * between the run status recorded in SQLite and the corresponding seed status
+   * in br.  Drift occurs when foreman was interrupted before a br update could
+   * complete (e.g. after a crash, token exhaustion, or manual reset).
+   *
+   * Modes:
+   *   - No flags / warn-only: detects mismatches but does not fix them.
+   *   - fix=true, dryRun=false: detects and applies fixes via br update.
+   *   - dryRun=true: detects mismatches but never applies fixes (dryRun wins over fix).
+   *
+   * Returns:
+   *   pass  — no mismatches detected
+   *   warn  — mismatches detected but not fixed (no --fix or dryRun mode)
+   *   fixed — mismatches were detected and fixed
+   *   fail  — the sync operation itself threw an unexpected error
+   *   skip  — no project registered or no task client configured
+   */
+  async checkBeadStatusSync(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+    const projectPath = opts.projectPath ?? this.projectPath;
+
+    if (!this.taskClient) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "skip",
+        message: "No task client configured — skipping bead status reconciliation",
+      };
+    }
+
+    const project = this.store.getProjectByPath(this.projectPath);
+    if (!project) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "skip",
+        message: "No project registered — skipping bead status reconciliation",
+      };
+    }
+
+    let result: Awaited<ReturnType<typeof syncBeadStatusOnStartup>>;
+    try {
+      // First pass: always run in dry-run mode to detect mismatches without side effects
+      result = await syncBeadStatusOnStartup(this.store, this.taskClient, project.id, {
+        dryRun: true,
+        projectPath,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "fail",
+        message: `Bead status sync failed: ${msg}`,
+      };
+    }
+
+    if (result.mismatches.length === 0) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "pass",
+        message: "SQLite and br bead statuses are in sync",
+      };
+    }
+
+    const mismatchList = result.mismatches
+      .slice(0, 5)
+      .map((m) => `${m.seedId}: br=${m.actualSeedStatus} → expected=${m.expectedSeedStatus}`)
+      .join("; ");
+    const truncated = result.mismatches.length > 5 ? ` … +${result.mismatches.length - 5} more` : "";
+
+    if (dryRun) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "warn",
+        message: `${result.mismatches.length} bead status mismatch(es) detected. Would fix (dry-run): ${mismatchList}${truncated}`,
+        details: mismatchList + truncated,
+      };
+    }
+
+    if (fix) {
+      // Second pass: apply fixes
+      let fixResult: Awaited<ReturnType<typeof syncBeadStatusOnStartup>>;
+      try {
+        fixResult = await syncBeadStatusOnStartup(this.store, this.taskClient, project.id, {
+          dryRun: false,
+          projectPath,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          name: "bead status sync (SQLite ↔ br)",
+          status: "fail",
+          message: `Bead status sync (fix pass) failed: ${msg}`,
+          details: mismatchList + truncated,
+        };
+      }
+
+      const errSuffix = fixResult.errors.length > 0
+        ? ` (${fixResult.errors.length} error(s): ${fixResult.errors[0]})`
+        : "";
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "fixed",
+        message: `${fixResult.mismatches.length} bead status mismatch(es) detected`,
+        fixApplied: `Fixed ${fixResult.synced} seed status(es) in br${errSuffix}`,
+        details: mismatchList + truncated,
+      };
+    }
+
+    return {
+      name: "bead status sync (SQLite ↔ br)",
+      status: "warn",
+      message: `${result.mismatches.length} bead status mismatch(es) detected between SQLite and br. Use --fix to repair: ${mismatchList}${truncated}`,
+      details: mismatchList + truncated,
+    };
+  }
+
   async checkBrRecoveryArtifacts(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
@@ -1742,7 +1861,7 @@ export class Doctor {
   async checkDataIntegrity(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
 
-    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult, globalStoreResult] =
+    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult, beadSyncResult] =
       await Promise.all([
         this.checkOrphanedWorktrees(opts),
         this.checkZombieRuns(opts),
@@ -1751,10 +1870,10 @@ export class Doctor {
         this.checkRunStateConsistency(opts),
         this.checkBlockedSeeds(),
         this.checkBrRecoveryArtifacts(opts),
-        this.checkOrphanedGlobalStoreRuns(opts),
+        this.checkBeadStatusSync(opts),
       ]);
 
-    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult, recoveryResult, globalStoreResult);
+    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult, recoveryResult, beadSyncResult);
 
     // Merge queue checks (only when merge queue is configured)
     if (this.mergeQueue) {
