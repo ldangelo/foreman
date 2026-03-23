@@ -604,6 +604,260 @@ describe("Doctor", () => {
         await rm(tmpDir, { recursive: true });
       }
     });
+
+    // ── Historical-retry and age-based fix tests ───────────────────────────────
+
+    it("classifies a failed run as historical when seed has a later completed run", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        // Branch not merged, seed not closed
+        const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
+        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+
+        const failedRun = makeRun({
+          id: "run-failed-old",
+          seed_id: "bd-retry",
+          status: "failed",
+          created_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(), // 2 days ago
+        });
+        const laterSuccess = makeRun({
+          id: "run-completed",
+          seed_id: "bd-retry",
+          status: "completed",
+          created_at: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(), // 1 day ago
+        });
+
+        store.getRunsByStatus
+          .mockReturnValueOnce([failedRun]) // failed runs
+          .mockReturnValueOnce([]);         // stuck runs
+
+        // getRunsForSeed returns both the failed run and the later completed run
+        store.getRunsForSeed.mockReturnValue([failedRun, laterSuccess]);
+
+        const results = await doctor.checkFailedStuckRuns();
+
+        // Should be classified as historical retry, not actionable
+        const historicalResult = results.find((r) => r.name === "failed runs (historical retries)");
+        expect(historicalResult).toBeDefined();
+        expect(historicalResult!.status).toBe("warn");
+        expect(historicalResult!.message).toContain("bd-retry");
+
+        // Should NOT appear as an actionable failure
+        expect(results.find((r) => r.name === "failed runs")).toBeUndefined();
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("classifies a failed run as actionable when seed has no later successful run", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
+        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+
+        const failedRun = makeRun({
+          id: "run-actionable",
+          seed_id: "bd-needs-retry",
+          status: "failed",
+          created_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+
+        store.getRunsByStatus
+          .mockReturnValueOnce([failedRun])
+          .mockReturnValueOnce([]);
+
+        // Only the failed run exists — no later success
+        store.getRunsForSeed.mockReturnValue([failedRun]);
+
+        const results = await doctor.checkFailedStuckRuns();
+
+        // Should appear as actionable
+        const actionableResult = results.find((r) => r.name === "failed runs");
+        expect(actionableResult).toBeDefined();
+        expect(actionableResult!.status).toBe("warn");
+        expect(actionableResult!.message).toContain("bd-needs-retry");
+
+        // Should NOT appear as historical
+        expect(results.find((r) => r.name === "failed runs (historical retries)")).toBeUndefined();
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("dry-run reports aged historical runs without modifying DB", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
+        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+
+        // A failed run that is 10 days old (> 7-day retention)
+        const agedFailedRun = makeRun({
+          id: "run-aged",
+          seed_id: "bd-aged",
+          status: "failed",
+          created_at: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+        const laterSuccess = makeRun({
+          id: "run-success",
+          seed_id: "bd-aged",
+          status: "completed",
+          created_at: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+
+        store.getRunsByStatus
+          .mockReturnValueOnce([agedFailedRun])
+          .mockReturnValueOnce([]);
+        store.getRunsForSeed.mockReturnValue([agedFailedRun, laterSuccess]);
+
+        const results = await doctor.checkFailedStuckRuns({ dryRun: true });
+
+        // Should report aged runs as eligible without modifying DB
+        const dryRunResult = results.find((r) => r.name === "failed/stuck runs (aged, dry-run)");
+        expect(dryRunResult).toBeDefined();
+        expect(dryRunResult!.status).toBe("warn");
+        expect(dryRunResult!.message).toContain("dry-run");
+        expect(dryRunResult!.message).toContain("1");
+
+        // DB should NOT have been touched (beyond auto-resolve which didn't apply)
+        expect(store.updateRun).not.toHaveBeenCalled();
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("--fix marks aged historical runs as completed", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
+        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+
+        const agedFailedRun = makeRun({
+          id: "run-fix-aged",
+          seed_id: "bd-fix-aged",
+          status: "failed",
+          created_at: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+        const laterSuccess = makeRun({
+          id: "run-fix-success",
+          seed_id: "bd-fix-aged",
+          status: "completed",
+          created_at: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+
+        store.getRunsByStatus
+          .mockReturnValueOnce([agedFailedRun])
+          .mockReturnValueOnce([]);
+        store.getRunsForSeed.mockReturnValue([agedFailedRun, laterSuccess]);
+
+        const results = await doctor.checkFailedStuckRuns({ fix: true });
+
+        // Should return "fixed" status
+        const fixedResult = results.find((r) => r.name === "failed/stuck runs (aged, cleaned up)");
+        expect(fixedResult).toBeDefined();
+        expect(fixedResult!.status).toBe("fixed");
+        expect(fixedResult!.message).toContain("1");
+
+        // DB should be updated
+        expect(store.updateRun).toHaveBeenCalledWith("run-fix-aged", { status: "completed" });
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("does not clean up recent aged runs (within retention window)", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
+        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+
+        // Only 3 days old — within 7-day retention
+        const recentFailedRun = makeRun({
+          id: "run-recent",
+          seed_id: "bd-recent",
+          status: "failed",
+          created_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+        const laterSuccess = makeRun({
+          id: "run-recent-success",
+          seed_id: "bd-recent",
+          status: "completed",
+          created_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+
+        store.getRunsByStatus
+          .mockReturnValueOnce([recentFailedRun])
+          .mockReturnValueOnce([]);
+        store.getRunsForSeed.mockReturnValue([recentFailedRun, laterSuccess]);
+
+        const results = await doctor.checkFailedStuckRuns({ fix: true });
+
+        // Should NOT have cleaned up the recent historical run
+        expect(results.find((r) => r.name === "failed/stuck runs (aged, cleaned up)")).toBeUndefined();
+        expect(store.updateRun).not.toHaveBeenCalled();
+
+        // Should report it as historical retry (informational)
+        const historicalResult = results.find((r) => r.name === "failed runs (historical retries)");
+        expect(historicalResult).toBeDefined();
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("--fix cleans up aged stuck runs", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
+        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+
+        const agedStuckRun = makeRun({
+          id: "run-aged-stuck",
+          seed_id: "bd-aged-stuck",
+          status: "stuck",
+          created_at: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+
+        store.getRunsByStatus
+          .mockReturnValueOnce([])           // no failed runs
+          .mockReturnValueOnce([agedStuckRun]); // one aged stuck run
+        store.getRunsForSeed.mockReturnValue([agedStuckRun]);
+
+        const results = await doctor.checkFailedStuckRuns({ fix: true });
+
+        const fixedResult = results.find((r) => r.name === "failed/stuck runs (aged, cleaned up)");
+        expect(fixedResult).toBeDefined();
+        expect(fixedResult!.status).toBe("fixed");
+        expect(store.updateRun).toHaveBeenCalledWith("run-aged-stuck", { status: "completed" });
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("passes opts through checkDataIntegrity to checkFailedStuckRuns", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      store.getRunsByStatus.mockReturnValue([]);
+      store.getRunsForSeed.mockReturnValue([]);
+
+      // No errors expected — just verifying opts propagation by a clean run
+      const results = await doctor.checkDataIntegrity({ fix: false, dryRun: false });
+
+      // Should include a pass result for failed/stuck runs
+      const passResult = results.find((r) => r.name === "failed/stuck runs");
+      expect(passResult).toBeDefined();
+      expect(passResult!.status).toBe("pass");
+    });
   });
 
   describe("checkCompletedRunsNotQueued", () => {

@@ -1,25 +1,31 @@
-# Session Log: reviewer agent for bd-vrst
+# Session Log: reviewer agent for bd-ksbk
 
 ## Metadata
 - Start: 2026-03-23T00:00:00Z
 - Role: reviewer
-- Seed: bd-vrst
+- Seed: bd-ksbk
 - Status: completed
 
 ## Key Activities
-- Read TASK.md: confirmed bug description — `checkOrphanedWorktrees()` lacked the `isSDKBasedRun()` guard, causing false zombie positives for SDK pipeline runs
-- Read EXPLORER_REPORT.md: confirmed the fix was already present at doctor.ts:510–517, and identified the specific test gap in the `checkOrphanedWorktrees` describe block
-- Read QA_REPORT.md: confirmed 2045 tests pass, QA added 2 new test cases covering the SDK-based run path
-- Reviewed `src/orchestrator/doctor.ts` lines 29–40 (helper functions) and 490–540 (checkOrphanedWorktrees SDK guard)
-- Reviewed `src/orchestrator/doctor.ts` lines 650–720 (checkZombieRuns for consistency comparison)
-- Reviewed `src/orchestrator/__tests__/doctor.test.ts` lines 790–984 (full checkOrphanedWorktrees test suite including the two new QA-added test cases)
-- Verified null safety of `isSDKBasedRun(null)` via optional chaining pattern
-- Verified guard message matches QA expectation: `"SDK-based worker"` substring
+- Read TASK.md: requirement to add `--fix` path to `checkFailedStuckRuns()`, distinguish actionable vs. historical failures, implement age-based cleanup
+- Read EXPLORER_REPORT.md: detailed architecture analysis, existing auto-resolve logic, recommended approach
+- Read QA_REPORT.md: 2052 tests passing, 7 new tests added, no type errors
+- Reviewed `src/lib/config.ts`: `failedRunRetentionDays` constant added correctly
+- Reviewed `src/orchestrator/doctor.ts` lines 825–1027: full implementation of `checkFailedStuckRuns()` with opts, `partitionByHistoricalRetry()` private method, age-based filtering
+- Reviewed `checkDataIntegrity()` at line 1482: confirms opts propagation
+- Reviewed `src/orchestrator/__tests__/doctor.test.ts` lines 404–860: 7 new test cases and all existing tests
+
+## Key Findings
+- Implementation is complete and correct
+- All three required changes implemented: config constant, doctor method, tests
+- Auto-resolve (merged/closed) still runs unconditionally in dry-run mode — pre-existing behaviour, noted but not blocking
+- O(N) getRunsForSeed queries in partitionByHistoricalRetry — acceptable for doctor use case
+- Opts propagation test coverage slightly weak but functional tests cover the gap
 
 ## Artifacts Created
-- REVIEW.md — verdict: PASS, no actionable issues found
-- SESSION_LOG.md — this file
+- REVIEW.md — verdict PASS with 3 NOTEs
+- SESSION_LOG.md (this file)
 
 ## End
 - Completion time: 2026-03-23T00:10:00Z
-- Next phase: finalize
+- Next phase: Finalize
