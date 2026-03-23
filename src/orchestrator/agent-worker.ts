@@ -417,6 +417,8 @@ interface PhaseResult {
   success: boolean;
   costUsd: number;
   turns: number;
+  tokensIn: number;
+  tokensOut: number;
   error?: string;
 }
 
@@ -484,6 +486,8 @@ async function runPhase(
     });
 
     progress.costUsd += phaseResult.costUsd;
+    progress.tokensIn += phaseResult.tokensIn;
+    progress.tokensOut += phaseResult.tokensOut;
 
     // Record per-phase cost breakdown
     progress.costByPhase ??= {};
@@ -496,19 +500,19 @@ async function runPhase(
     if (phaseResult.success) {
       log(`[${role.toUpperCase()}] Completed (${phaseResult.turns} turns, $${phaseResult.costUsd.toFixed(4)})`);
       await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] COMPLETED ($${phaseResult.costUsd.toFixed(4)})\n`);
-      return { success: true, costUsd: phaseResult.costUsd, turns: phaseResult.turns };
+      return { success: true, costUsd: phaseResult.costUsd, turns: phaseResult.turns, tokensIn: phaseResult.tokensIn, tokensOut: phaseResult.tokensOut };
     } else {
       const reason = phaseResult.errorMessage ?? "Pi agent ended without success";
       log(`[${role.toUpperCase()}] Failed: ${reason.slice(0, 200)}`);
       await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] FAILED: ${reason}\n`);
-      return { success: false, costUsd: phaseResult.costUsd, turns: phaseResult.turns, error: reason };
+      return { success: false, costUsd: phaseResult.costUsd, turns: phaseResult.turns, tokensIn: phaseResult.tokensIn, tokensOut: phaseResult.tokensOut, error: reason };
     }
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
     const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
     log(`[${role.toUpperCase()}] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason.slice(0, 200)}`);
     await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] ERROR: ${reason}\n`);
-    return { success: false, costUsd: 0, turns: 0, error: reason };
+    return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: reason };
   }
 }
 

@@ -108,18 +108,12 @@ describe("smoke workflow: structural invariants", () => {
     expect(content.toLowerCase()).toContain("do not run");
   });
 
-  it("smoke/finalize.md instructs Pi to send phase-complete mail with smoke flag", () => {
-    const content = readFileSync(join(SMOKE_PROMPTS_DIR, "finalize.md"), "utf-8");
-    expect(content).toContain("phase-complete");
-    expect(content).toContain('"smoke":true');
-  });
-
-  it("smoke prompts all include phase-started and phase-complete mail instructions", () => {
+  it("smoke prompts include error reporting instructions (lifecycle mail handled by executor)", () => {
     const phases = ["explorer", "developer", "qa", "reviewer", "finalize"];
     for (const phase of phases) {
       const content = readFileSync(join(SMOKE_PROMPTS_DIR, `${phase}.md`), "utf-8");
-      expect(content, `smoke/${phase}.md should send phase-started mail`).toContain("phase-started");
-      expect(content, `smoke/${phase}.md should send phase-complete mail`).toContain("phase-complete");
+      expect(content, `smoke/${phase}.md should reference agent-error`).toContain("agent-error");
+      expect(content, `smoke/${phase}.md should reference send_mail tool`).toContain("send_mail");
     }
   });
 

@@ -43,6 +43,8 @@ export interface PhaseResult {
   success: boolean;
   costUsd: number;
   turns: number;
+  tokensIn: number;
+  tokensOut: number;
   error?: string;
 }
 
@@ -232,6 +234,8 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
     });
 
     progress.costUsd += result.costUsd;
+    progress.tokensIn += result.tokensIn;
+    progress.tokensOut += result.tokensOut;
     progress.costByPhase ??= {};
     progress.costByPhase[phaseName] = (progress.costByPhase[phaseName] ?? 0) + result.costUsd;
     store.updateRunProgress(runId, progress);

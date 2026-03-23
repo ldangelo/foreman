@@ -1,20 +1,15 @@
 # Smoke Test: Finalize Phase (Noop)
 
-This is a smoke/integration test run. Your only job is to send mail notifications and write a report — do NOT run git push or npm ci.
+This is a smoke/integration test run. Your only job is to commit files and write a report — do NOT run git push or npm ci.
 
-**1. Send phase-started mail:**
-```bash
-foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject phase-started --body '{"phase":"finalize","smoke":true}'
-```
-
-**2. Run git add and git commit:**
+**1. Run git add and git commit:**
 ```
 git add -A
 git commit -m "{{seedTitle}} ({{seedId}})"
 ```
 If git reports "nothing to commit", that is fine — continue anyway (do not send an error).
 
-**3. Write `FINALIZE_REPORT.md`** in the current directory with exactly this content:
+**2. Write `FINALIZE_REPORT.md`** in the current directory with exactly this content:
 
 ```
 # Finalize Report
@@ -24,9 +19,9 @@ If git reports "nothing to commit", that is fine — continue anyway (do not sen
 Smoke test noop — git push skipped in smoke mode.
 ```
 
-**4. Send phase-complete mail:**
-```bash
-foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to foreman --subject phase-complete --body '{"phase":"finalize","smoke":true,"status":"complete","commitHash":"smoke-noop"}'
-```
+**3. If you encounter an error**, use the `send_mail` tool to report it:
+- to: `foreman`
+- subject: `agent-error`
+- body: `{"phase":"finalize","error":"<description>"}`
 
 Do not run `git push`, `npm ci`, or `npx tsc`. Do not modify any source files.

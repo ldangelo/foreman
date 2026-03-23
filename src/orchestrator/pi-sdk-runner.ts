@@ -40,6 +40,8 @@ export interface PiRunResult {
   turns: number;
   toolCalls: number;
   toolBreakdown: Record<string, number>;
+  tokensIn: number;
+  tokensOut: number;
   errorMessage?: string;
   /** Captured assistant text output (concatenated from all text deltas). */
   outputText?: string;
@@ -205,15 +207,17 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
     // Send the prompt and await completion
     await session.prompt(opts.prompt);
 
-    // Extract cost from session stats
+    // Extract cost and token usage from session stats
     const stats = session.getSessionStats();
     const costUsd = stats.cost ?? 0;
+    const tokensIn = stats.tokens?.input ?? 0;
+    const tokensOut = stats.tokens?.output ?? 0;
 
     // Clean up
     session.dispose();
 
     writeLog(
-      `[pi-sdk-runner] success=${success} turns=${totalTurns} tools=${totalToolCalls} cost=$${costUsd.toFixed(4)}`,
+      `[pi-sdk-runner] success=${success} turns=${totalTurns} tools=${totalToolCalls} cost=$${costUsd.toFixed(4)} tokensIn=${tokensIn} tokensOut=${tokensOut}`,
     );
 
     return {
@@ -222,6 +226,8 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       turns: totalTurns,
       toolCalls: totalToolCalls,
       toolBreakdown,
+      tokensIn,
+      tokensOut,
       errorMessage: success ? undefined : errorMessage,
       outputText: textChunks.length > 0 ? textChunks.join("") : undefined,
     };
@@ -234,6 +240,8 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       turns: totalTurns,
       toolCalls: totalToolCalls,
       toolBreakdown,
+      tokensIn: 0,
+      tokensOut: 0,
       errorMessage: reason,
     };
   }

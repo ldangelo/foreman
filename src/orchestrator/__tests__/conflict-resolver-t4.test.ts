@@ -33,6 +33,8 @@ function makeSuccessPiResult(costUsd = 0.05) {
     turns: 3,
     toolCalls: 5,
     toolBreakdown: { Bash: 3, Write: 2 },
+    tokensIn: 2000,
+    tokensOut: 1000,
   };
 }
 
@@ -43,6 +45,8 @@ function makeFailPiResult(errorMessage = "Pi session failed") {
     turns: 1,
     toolCalls: 0,
     toolBreakdown: {},
+    tokensIn: 0,
+    tokensOut: 0,
     errorMessage,
   };
 }
