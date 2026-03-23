@@ -6,7 +6,7 @@
  * - autoMerge() reconciles and drains queue when project exists but queue is empty
  * - autoMerge() counts merged / conflict / failed results correctly
  * - autoMerge() catches per-entry refinery errors and increments failedCount without throwing
- * - The dispatch loop processes the merge queue after each watchRunsInk unless --no-auto-merge
+ * - The dispatch loop always processes the merge queue after each watchRunsInk (always-on via daemon)
  * - autoMerge errors are non-fatal — the dispatch loop continues
  * - autoMerge() immediately syncs bead status in br after each merge outcome (bd-k8tx)
  */
@@ -38,7 +38,9 @@ const {
   MockMergeQueue,
   mockRefineryMergeCompleted,
   MockRefinery,
+  mockAddNotesToBead,
 } = vi.hoisted(() => {
+  const mockAddNotesToBead = vi.fn();
   const mockExecFileSync = vi.fn().mockReturnValue(Buffer.from(""));
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
   const MockBeadsRustClient = vi.fn(function (this: Record<string, unknown>) {
@@ -109,6 +111,7 @@ const {
     MockMergeQueue,
     mockRefineryMergeCompleted,
     MockRefinery,
+    mockAddNotesToBead,
   };
 });
 
@@ -136,6 +139,7 @@ vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }
 vi.mock("../watch-ui.js", () => ({ watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args) }));
 vi.mock("../../orchestrator/merge-queue.js", () => ({ MergeQueue: MockMergeQueue }));
 vi.mock("../../orchestrator/refinery.js", () => ({ Refinery: MockRefinery }));
+vi.mock("../../orchestrator/task-backend-ops.js", () => ({ addNotesToBead: mockAddNotesToBead }));
 vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
   isPiAvailable: vi.fn().mockReturnValue(false),
   PiRpcSpawnStrategy: vi.fn(),
@@ -419,25 +423,6 @@ describe("dispatch loop: auto-merge after each batch", () => {
 
     // MergeQueue.reconcile is called twice: once in the startup drain, once in the final drain.
     expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
-  });
-
-  it("does NOT process merge queue when --no-auto-merge is set", async () => {
-    mockDispatch.mockResolvedValueOnce({
-      dispatched: [
-        {
-          seedId: "s-2", runId: "run-222", title: "Task 2",
-          model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
-          branchName: "foreman/s-2", runtime: "claude-code",
-        },
-      ],
-      skipped: [],
-      activeAgents: 1,
-    });
-
-    await invokeRun(["--no-auto-merge", "--no-watch"]);
-
-    expect(mockMergeQueueReconcile).not.toHaveBeenCalled();
-    expect(MockMergeQueue).not.toHaveBeenCalled();
   });
 
   it("continues dispatch loop even when autoMerge internals throw (non-fatal)", async () => {
@@ -792,22 +777,6 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
     expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
   });
 
-  it("final drain is skipped when --no-auto-merge is set", async () => {
-    mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
-
-    mockDispatch.mockResolvedValueOnce({
-      dispatched: [{ seedId: "s-nm", runId: "run-nm", title: "No Merge", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-nm", runtime: "claude-code" }],
-      skipped: [],
-      activeAgents: 1,
-    });
-
-    await invokeRun(["--no-auto-merge", "--no-watch"]);
-
-    // No merge queue operations at all
-    expect(mockMergeQueueReconcile).not.toHaveBeenCalled();
-    expect(MockMergeQueue).not.toHaveBeenCalled();
-  });
-
   it("final drain is skipped in --dry-run mode", async () => {
     mockDispatch.mockResolvedValue({ dispatched: [], skipped: [], activeAgents: 0 });
 
@@ -936,7 +905,7 @@ describe("autoMerge() — immediate bead status sync", () => {
     );
   });
 
-  it("calls taskClient.update() with status 'open' when run status is 'conflict'", async () => {
+  it("calls taskClient.update() with status 'blocked' when run status is 'conflict'", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
@@ -966,10 +935,10 @@ describe("autoMerge() — immediate bead status sync", () => {
       projectPath: "/mock/project",
     });
 
-    expect(mockUpdate).toHaveBeenCalledWith("s2", { status: "open" });
+    expect(mockUpdate).toHaveBeenCalledWith("s2", { status: "blocked" });
   });
 
-  it("calls taskClient.update() with status 'open' when run status is 'test-failed'", async () => {
+  it("calls taskClient.update() with status 'blocked' when run status is 'test-failed'", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
@@ -998,10 +967,10 @@ describe("autoMerge() — immediate bead status sync", () => {
       projectPath: "/mock/project",
     });
 
-    expect(mockUpdate).toHaveBeenCalledWith("s3", { status: "open" });
+    expect(mockUpdate).toHaveBeenCalledWith("s3", { status: "blocked" });
   });
 
-  it("calls taskClient.update() with status 'open' when refinery throws (exception path)", async () => {
+  it("calls taskClient.update() with status 'failed' when refinery throws (exception path)", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
@@ -1028,7 +997,7 @@ describe("autoMerge() — immediate bead status sync", () => {
     });
 
     expect(result.failed).toBe(1);
-    expect(mockUpdate).toHaveBeenCalledWith("s4", { status: "open" });
+    expect(mockUpdate).toHaveBeenCalledWith("s4", { status: "failed" });
   });
 
   it("skips bead update when getRun returns null (no run found)", async () => {
