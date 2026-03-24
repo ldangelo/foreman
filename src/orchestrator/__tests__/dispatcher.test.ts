@@ -244,6 +244,40 @@ describe("Dispatcher — BvClient ordering", () => {
     consoleSpy.mockRestore();
   });
 
+  it("logs 'bv unavailable' warning only once across multiple dispatch calls", async () => {
+    const issues: Issue[] = [makeIssue("bd-001", "P2")];
+    const bvClient = makeBvClient(null);
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue(issues),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+    } as any;
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
+
+    // Dispatch three times on the same instance
+    await dispatcher.dispatch({ dryRun: true });
+    await dispatcher.dispatch({ dryRun: true });
+    await dispatcher.dispatch({ dryRun: true });
+
+    const warnCalls = consoleSpy.mock.calls
+      .map((args) => args.join(" "))
+      .filter((msg) => msg.includes("bv unavailable, using priority-sort fallback"));
+
+    // Warning should appear exactly once, not once per dispatch call
+    expect(warnCalls).toHaveLength(1);
+    consoleSpy.mockRestore();
+  });
+
   it("tasks not in bv recommendations are sorted by priority and appended after ranked tasks", async () => {
     const issues: Issue[] = [
       makeIssue("bd-001", "P3"),
