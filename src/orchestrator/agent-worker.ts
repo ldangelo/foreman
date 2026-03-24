@@ -25,7 +25,7 @@ import {
   getDisallowedTools,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { resetSeedToOpen, markBeadFailed, addLabelsToBead, addNotesToBead } from "./task-backend-ops.js";
+import { enqueueResetSeedToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
@@ -386,7 +386,7 @@ async function main(): Promise<void> {
       }, runId);
       log(`FAILED: ${reason.slice(0, 300)}`);
       // Permanent failure — mark bead as 'failed' so it is NOT auto-retried.
-      await markBeadFailed(seedId, storeProjectPath);
+      enqueueMarkBeadFailed(store, seedId, "agent-worker");
     }
   } catch (err: unknown) {
     clearInterval(progressTimer);
@@ -413,9 +413,9 @@ async function main(): Promise<void> {
     await appendFile(logFile, `\n[foreman-worker] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason}\n`);
     // Transient (rate limit) → reset to 'open' for retry; permanent → mark 'failed'.
     if (isRateLimit) {
-      await resetSeedToOpen(seedId, storeProjectPath);
+      enqueueResetSeedToOpen(store, seedId, "agent-worker");
     } else {
-      await markBeadFailed(seedId, storeProjectPath);
+      enqueueMarkBeadFailed(store, seedId, "agent-worker");
     }
   }
 
@@ -661,7 +661,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           seedId, phase: "finalize", error: "Push failed", retryable: finalizeRetryable,
         });
         if (finalizeRetryable) {
-          await resetSeedToOpen(seedId, config.projectPath);
+          enqueueResetSeedToOpen(store, seedId, "agent-worker-finalize");
         } else {
           log(`[PIPELINE] Deterministic push failure for ${seedId} — seed left stuck (no reset to open)`);
         }
@@ -725,13 +725,14 @@ async function markStuck(
   // the ready queue for automatic retry.
   // For permanent failures, mark as 'failed' so the task is NOT auto-retried —
   // the operator must investigate and re-open it manually.
-  // Pass projectPath (repo root) so br finds .beads/ — the worktree has none.
+  // Enqueue via the bead write queue instead of calling br directly — the
+  // dispatcher drains the queue sequentially, preventing SQLite contention.
   if (isRateLimit) {
-    await resetSeedToOpen(seedId, projectPath);
-    log(`Reset seed ${seedId} back to open (rate limited — will retry)`);
+    enqueueResetSeedToOpen(store, seedId, "agent-worker-markStuck");
+    log(`Enqueued reset-seed for ${seedId} (rate limited — will retry on next dispatch)`);
   } else {
-    await markBeadFailed(seedId, projectPath);
-    log(`Marked seed ${seedId} as failed (permanent failure — manual intervention required)`);
+    enqueueMarkBeadFailed(store, seedId, "agent-worker-markStuck");
+    log(`Enqueued mark-failed for ${seedId} (permanent failure — manual intervention required)`);
   }
 
   // Add failure reason as a note on the bead for visibility.
@@ -739,8 +740,8 @@ async function markStuck(
   // having to dig into log files or SQLite.
   const notePrefix = isRateLimit ? "[RATE_LIMITED]" : "[FAILED]";
   const failureNote = `${notePrefix} [${phase.toUpperCase()}] ${reason}`;
-  addNotesToBead(seedId, failureNote, projectPath);
-  log(`Added failure note to seed ${seedId}`);
+  enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");
+  log(`Enqueued add-notes for seed ${seedId}`);
   // Note: do NOT close store here — the caller (main()) owns the store lifecycle.
 }
 

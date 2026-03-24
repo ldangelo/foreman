@@ -16,7 +16,7 @@ import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader
 import { resolvePhaseModel } from "../lib/workflow-loader.js";
 import { ROLE_CONFIGS } from "./roles.js";
 import { buildPhasePrompt, parseVerdict, extractIssues } from "./roles.js";
-import { addLabelsToBead } from "./task-backend-ops.js";
+import { enqueueAddLabelsToBead } from "./task-backend-ops.js";
 import { rotateReport } from "./agent-worker-finalize.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
@@ -272,7 +272,7 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       });
     }
     store.logEvent(projectId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, runId);
-    addLabelsToBead(seedId, [`phase:${phaseName}`], config.projectPath);
+    enqueueAddLabelsToBead(store, seedId, [`phase:${phaseName}`], "pipeline-executor");
 
     // Forward artifact to another agent's inbox
     if (phase.mail?.forwardArtifactTo && phase.artifact) {

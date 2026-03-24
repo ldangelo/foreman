@@ -22,7 +22,7 @@ import { MergeQueue, RETRY_CONFIG } from "./merge-queue.js";
 import { Refinery } from "./refinery.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
-import { addNotesToBead, markBeadFailed } from "./task-backend-ops.js";
+import { enqueueAddNotesToBead, enqueueMarkBeadFailed } from "./task-backend-ops.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -97,7 +97,7 @@ export async function syncBeadStatusAfterMerge(
   // Done after the status update so that the status change is always attempted
   // even if the note fails. addNotesToBead() is itself non-fatal.
   if (failureReason) {
-    addNotesToBead(seedId, failureReason, projectPath);
+    enqueueAddNotesToBead(store, seedId, failureReason, "auto-merge");
   }
 }
 
@@ -241,7 +241,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         if (totalTestFailCount >= RETRY_CONFIG.maxRetries) {
           // Retry limit exhausted — permanently mark the bead as failed to prevent
           // infinite re-dispatch. The operator must manually re-open if appropriate.
-          await markBeadFailed(currentEntry.seed_id, projectPath);
+          enqueueMarkBeadFailed(store, currentEntry.seed_id, "auto-merge");
           mergeFailureReason = [
             `Post-merge tests failed ${totalTestFailCount} time(s) — retry limit (${RETRY_CONFIG.maxRetries}) exhausted.`,
             `Pre-existing failures on the dev branch may be causing false positives.`,

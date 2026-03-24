@@ -2,12 +2,12 @@ import { writeFile, mkdir, open, readdir, unlink } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
-import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs } from "../lib/config.js";
+import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { createWorktree, gitBranchExists, getCurrentBranch, detectDefaultBranch } from "../lib/git.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel } from "../lib/branch-label.js";
@@ -60,6 +60,20 @@ export class Dispatcher {
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = opts?.projectId ?? this.resolveProjectId();
+
+    // Drain the bead write queue before dispatching new tasks.
+    // This ensures any pending br operations from completed agent-workers are
+    // processed by the single-writer dispatcher before we query br for ready seeds.
+    try {
+      const drained = await this.drainBeadWriterInbox();
+      if (drained > 0) {
+        console.error(`[bead-writer] Drained ${drained} pending bead write operations`);
+      }
+    } catch (drainErr: unknown) {
+      // Non-fatal: log and continue — drain failures must not block dispatch
+      const msg = drainErr instanceof Error ? drainErr.message : String(drainErr);
+      console.error(`[bead-writer] Warning: drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
+    }
 
     // Determine how many agent slots are available
     const activeRuns = this.store.getActiveRuns(projectId);
@@ -851,6 +865,111 @@ export class Dispatcher {
     }
 
     return { inBackoff: false };
+  }
+
+  /**
+   * Drain the bead_write_queue and execute all pending br operations sequentially.
+   *
+   * This is the single writer for all br CLI operations — called by the dispatcher
+   * process only. Agent-workers, refinery, pipeline-executor, and auto-merge enqueue
+   * operations via ForemanStore.enqueueBeadWrite() instead of calling br directly,
+   * eliminating concurrent SQLite lock contention on .beads/beads.jsonl.
+   *
+   * Each entry is processed in insertion order. If an individual operation fails,
+   * the error is logged but draining continues (non-fatal per-entry). A single
+   * `br sync --flush-only` is called at the end to persist all changes atomically.
+   *
+   * @returns Number of entries successfully processed.
+   */
+  async drainBeadWriterInbox(): Promise<number> {
+    const pending = this.store.getPendingBeadWrites();
+    if (pending.length === 0) return 0;
+
+    const bin = join(homedir(), ".local", "bin", "br");
+    const execOpts = {
+      stdio: "pipe" as const,
+      timeout: PIPELINE_TIMEOUTS.beadClosureMs,
+      cwd: this.projectPath,
+    };
+
+    let processed = 0;
+
+    for (const entry of pending) {
+      try {
+        let payload: Record<string, unknown>;
+        try {
+          payload = JSON.parse(entry.payload) as Record<string, unknown>;
+        } catch {
+          console.error(`[bead-writer] Invalid JSON payload for entry ${entry.id} (${entry.operation}) — skipping`);
+          this.store.markBeadWriteProcessed(entry.id);
+          continue;
+        }
+
+        const seedId = payload.seedId as string;
+
+        switch (entry.operation) {
+          case "close-seed":
+            execFileSync(bin, ["close", seedId, "--reason", "Completed via pipeline"], execOpts);
+            console.error(`[bead-writer] Closed seed ${seedId} (from ${entry.sender})`);
+            break;
+
+          case "reset-seed":
+            execFileSync(bin, ["update", seedId, "--status", "open"], execOpts);
+            console.error(`[bead-writer] Reset seed ${seedId} to open (from ${entry.sender})`);
+            break;
+
+          case "mark-failed":
+            execFileSync(bin, ["update", seedId, "--status", "failed"], execOpts);
+            console.error(`[bead-writer] Marked seed ${seedId} as failed (from ${entry.sender})`);
+            break;
+
+          case "add-notes": {
+            const notes = payload.notes as string;
+            if (notes) {
+              execFileSync(bin, ["update", seedId, "--notes", notes], execOpts);
+              console.error(`[bead-writer] Added notes to seed ${seedId} (from ${entry.sender})`);
+            }
+            break;
+          }
+
+          case "add-labels": {
+            const labels = payload.labels as string[];
+            if (labels && labels.length > 0) {
+              const args = ["update", seedId, ...labels.flatMap((l) => ["--add-label", l])];
+              execFileSync(bin, args, execOpts);
+              console.error(`[bead-writer] Added labels [${labels.join(", ")}] to seed ${seedId} (from ${entry.sender})`);
+            }
+            break;
+          }
+
+          default:
+            console.error(`[bead-writer] Unknown operation "${entry.operation}" for entry ${entry.id} — skipping`);
+        }
+
+        this.store.markBeadWriteProcessed(entry.id);
+        processed++;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[bead-writer] Error processing entry ${entry.id} (${entry.operation}): ${msg.slice(0, 200)}`);
+        // Mark as processed even on error to avoid infinite retry loops.
+        // The operator can check the log for details and fix manually.
+        this.store.markBeadWriteProcessed(entry.id);
+      }
+    }
+
+    // Flush all changes to .beads/beads.jsonl in a single sync call.
+    // This is more efficient than syncing after each individual operation.
+    if (processed > 0) {
+      try {
+        execFileSync(bin, ["sync", "--flush-only"], execOpts);
+        console.error(`[bead-writer] Flushed JSONL after processing ${processed}/${pending.length} entries`);
+      } catch (flushErr: unknown) {
+        const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
+        console.error(`[bead-writer] Warning: br sync --flush-only failed: ${msg.slice(0, 200)}`);
+      }
+    }
+
+    return processed;
   }
 
   private resolveProjectId(): string {
