@@ -32,6 +32,8 @@ import type {
 // ── Dispatcher ──────────────────────────────────────────────────────────
 
 export class Dispatcher {
+  private bvFallbackWarned = false;
+
   constructor(
     private seeds: ITaskClient,
     private store: ForemanStore,
@@ -90,7 +92,10 @@ export class Dispatcher {
           });
           log(`bv triage scored ${readySeeds.length} ready seeds`);
         } else {
-          log("bv unavailable, using priority-sort fallback");
+          if (!this.bvFallbackWarned) {
+            log("bv unavailable, using priority-sort fallback");
+            this.bvFallbackWarned = true;
+          }
           readySeeds = [...readySeeds].sort(
             (a, b) => normalizePriority(a.priority) - normalizePriority(b.priority),
           );
