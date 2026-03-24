@@ -58,9 +58,8 @@ describe("package.json build scripts", () => {
     expect(scripts["clean"]).toContain("rm -rf dist");
   });
 
-  it('build script still runs tsc and copy-assets', () => {
-    expect(scripts["build"]).toContain("tsc");
-    expect(scripts["build"]).toContain("copy-assets.js");
+  it('build script delegates to build-atomic.js (zero-downtime atomic swap)', () => {
+    expect(scripts["build"]).toContain("build-atomic.js");
   });
 });
 
