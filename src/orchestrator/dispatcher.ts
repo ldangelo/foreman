@@ -882,7 +882,7 @@ function resolveWorkerPaths(): { tsxBin: string; workerScript: string; logDir: s
   const projectRoot = join(__dirname, "..", "..");
   return {
     tsxBin: join(projectRoot, "node_modules", ".bin", "tsx"),
-    workerScript: join(__dirname, "agent-worker.ts"),
+    workerScript: join(__dirname, "agent-worker.js"),
     logDir: join(process.env.HOME ?? "/tmp", ".foreman", "logs"),
   };
 }
