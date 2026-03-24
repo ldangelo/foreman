@@ -287,6 +287,20 @@ export class Dispatcher {
       }
 
       try {
+        // Pre-flight guard: re-check the DB just before creating the run.
+        // The activeSeedIds snapshot above is stale by the time we reach this
+        // point — a concurrent dispatch cycle may have already created a pending
+        // run for this seed between our getActiveRuns() call and now.  This
+        // just-in-time check prevents duplicate runs in that race window.
+        if (this.store.hasActiveOrPendingRun(seed.id, projectId)) {
+          skipped.push({
+            seedId: seed.id,
+            title: seed.title,
+            reason: "Another run was created concurrently (race guard)",
+          });
+          continue;
+        }
+
         // 1. Resolve base branch (may stack on a dependency branch)
         const baseBranch = await resolveBaseBranch(seed.id, this.projectPath, this.store);
         if (baseBranch) {

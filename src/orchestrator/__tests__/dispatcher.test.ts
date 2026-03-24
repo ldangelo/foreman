@@ -827,6 +827,129 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
   });
 });
 
+describe("Dispatcher.dispatch — concurrent dispatch race guard", () => {
+  function makeIssue(id = "bd-001"): Issue {
+    return {
+      id,
+      title: `Task ${id}`,
+      status: "open",
+      priority: "P2",
+      type: "task",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  it("skips a seed when hasActiveOrPendingRun returns true (race window)", async () => {
+    const issue = makeIssue();
+    const showResult = {
+      ...issue,
+      description: null,
+      notes: null,
+      labels: [],
+      estimate_minutes: null,
+      dependencies: [],
+      children: [],
+    };
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue(showResult),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    // getActiveRuns returns empty (simulates stale snapshot from start of dispatch)
+    // but hasActiveOrPendingRun returns true (simulates a concurrent run that was
+    // created after the snapshot was taken)
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasActiveOrPendingRun: vi.fn().mockReturnValue(true),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: false });
+
+    expect(result.dispatched).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].seedId).toBe("bd-001");
+    expect(result.skipped[0].reason).toMatch(/concurrently/i);
+    expect(store.hasActiveOrPendingRun).toHaveBeenCalledWith("bd-001", "proj-1");
+  });
+
+  it("dispatches a seed when hasActiveOrPendingRun returns false", async () => {
+    const issue = makeIssue("bd-002");
+    const showResult = {
+      ...issue,
+      description: null,
+      notes: null,
+      labels: [],
+      estimate_minutes: null,
+      dependencies: [],
+      children: [],
+    };
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue(showResult),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    // Use dryRun: true so we don't try to actually create worktrees
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.dispatched[0].seedId).toBe("bd-002");
+    // hasActiveOrPendingRun should NOT be called on dryRun (guard is before createRun, after dryRun continue)
+    // Actually dryRun skips the try block entirely, so hasActiveOrPendingRun won't be called
+  });
+
+  it("calls hasActiveOrPendingRun with both seedId and projectId", async () => {
+    const issue = makeIssue("bd-003");
+    const showResult = {
+      ...issue,
+      description: null,
+      notes: null,
+      labels: [],
+      estimate_minutes: null,
+      dependencies: [],
+      children: [],
+    };
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue(showResult),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "my-project" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasActiveOrPendingRun: vi.fn().mockReturnValue(true),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    await dispatcher.dispatch({ dryRun: false });
+
+    expect(store.hasActiveOrPendingRun).toHaveBeenCalledWith("bd-003", "my-project");
+  });
+});
+
 describe("PLAN_STEP_CONFIG", () => {
   it("has a valid model", () => {
     expect(PLAN_STEP_CONFIG.model).toBe("anthropic/claude-sonnet-4-6");
