@@ -198,43 +198,86 @@ export function findNativeAddon(target: SupportedTarget): string | null {
  * The better_sqlite3.node file is placed as a side-car in the output dir;
  * the runtime detects it via resolveBundledNativeBinding().
  */
-function compilePkg(
+async function compilePkg(
   bundlePath: string,
   binaryPath: string,
   target: SupportedTarget,
   dryRun: boolean
-): void {
+): Promise<void> {
   const pkgTarget = PKG_TARGET_MAP[target];
 
-  // Build the pkg command
-  // --path is used to allow reading the .node file from disk at runtime
-  const cmd = [
-    "npx",
+  // Write a temporary pkg config that includes package.json as an asset.
+  // The pi-coding-agent bundled into the CJS bundle walks up from __dirname
+  // (which is `dist/` in the snapshot) looking for a package.json to read
+  // version/config info. Without it, the binary crashes with ENOENT.
+  //
+  // Strategy: Create a stub dist/package.json with pi-coding-agent metadata
+  // so the snapshot resolver can find it at the bundle directory path.
+  const distPkgJsonPath = path.join(REPO_ROOT, "dist", "package.json");
+  const piPkgJsonPath = path.join(
+    REPO_ROOT, "node_modules", "@mariozechner", "pi-coding-agent", "package.json"
+  );
+
+  if (!dryRun) {
+    const { mkdirSync: mkdir2, writeFileSync: write2, readFileSync: read2 } = await import("node:fs");
+
+    // Read pi-coding-agent's package.json to get its piConfig/version metadata
+    let piPkg: Record<string, unknown> = {};
+    try {
+      piPkg = JSON.parse(read2(piPkgJsonPath, "utf-8")) as Record<string, unknown>;
+    } catch {
+      // If not found, use defaults that match pi-coding-agent's built-in defaults
+    }
+
+    // Write a stub dist/package.json for the snapshot to find
+    const distPkg = {
+      name: "foreman",
+      version: (piPkg.version as string | undefined) ?? "0.0.0",
+      piConfig: piPkg.piConfig ?? { name: "pi", configDir: ".pi" },
+    };
+    mkdir2(path.dirname(distPkgJsonPath), { recursive: true });
+    write2(distPkgJsonPath, JSON.stringify(distPkg, null, 2));
+  }
+
+  // No separate config file needed — the root package.json contains:
+  // { "pkg": { "assets": ["dist/package.json"] } }
+  // This tells @yao-pkg/pkg to include dist/package.json in the snapshot.
+  // The dist/package.json stub is created above in the "create stub dist/package.json" step.
+
+  // Build the pkg command using spawnSync to avoid shell glob expansion.
+  // Use @yao-pkg/pkg (v6+) which supports node20+ targets.
+  // The original pkg@5.x is limited to node18 and below.
+  // NOTE: --path is not a valid pkg flag; native addons are handled as side-cars.
+  // --public-packages "*" must not be shell-expanded, hence array form.
+  const cmdArgs = [
     "--yes",
-    "pkg",
+    "@yao-pkg/pkg",
     bundlePath,
     "--target",
     pkgTarget,
     "--output",
     binaryPath,
-    // Allow reading files relative to the binary's directory at runtime
-    "--path",
-    path.dirname(binaryPath),
     // Use node20 for maximum compatibility
     "--no-bytecode",
     "--public",
     "--public-packages",
-    "*",
-  ].join(" ");
+    "*",  // passed as a literal string via array (no shell expansion)
+  ];
 
-  console.log(`  [pkg] Running: ${cmd}`);
+  console.log(`  [pkg] Running: npx ${cmdArgs.join(" ")}`);
 
   if (!dryRun) {
-    execSync(cmd, {
+    const { spawnSync } = await import("node:child_process");
+    const result = spawnSync("npx", cmdArgs, {
       cwd: REPO_ROOT,
       stdio: "inherit",
       env: { ...process.env },
     });
+    if (result.status !== 0) {
+      throw new Error(
+        `pkg compilation failed for ${target} (exit code ${result.status ?? "unknown"})`
+      );
+    }
   }
 }
 
@@ -305,7 +348,10 @@ export async function compileTarget(options: CompileOptions): Promise<CompileRes
   const { target, backend, outputDir, noNative, dryRun } = options;
   const startTime = Date.now();
 
-  const bundlePath = path.join(REPO_ROOT, "dist", "foreman-bundle.js");
+  // pkg requires a CJS bundle (ESM bundles are incompatible with pkg's bootstrap).
+  // bun compile works with ESM bundles.
+  const bundleFile = backend === "pkg" ? "foreman-bundle.cjs" : "foreman-bundle.js";
+  const bundlePath = path.join(REPO_ROOT, "dist", bundleFile);
   const targetDir = path.join(outputDir, target);
   const binaryName = getBinaryName(target);
   const binaryPath = path.join(targetDir, binaryName);
@@ -314,9 +360,10 @@ export async function compileTarget(options: CompileOptions): Promise<CompileRes
 
   // ── Validate bundle exists ────────────────────────────────────────────────
   if (!existsSync(bundlePath)) {
+    const bundleCmd = backend === "pkg" ? "npm run bundle:cjs" : "npm run bundle";
     throw new Error(
       `Bundle not found: ${bundlePath}\n` +
-        "Run 'npm run bundle' first to generate dist/foreman-bundle.js"
+        `Run '${bundleCmd}' first to generate dist/${bundleFile}`
     );
   }
 
@@ -329,7 +376,7 @@ export async function compileTarget(options: CompileOptions): Promise<CompileRes
 
   // ── Compile ───────────────────────────────────────────────────────────────
   if (backend === "pkg") {
-    compilePkg(bundlePath, binaryPath, target, dryRun);
+    await compilePkg(bundlePath, binaryPath, target, dryRun);
   } else if (backend === "bun") {
     compileBun(bundlePath, binaryPath, target, dryRun);
   } else {

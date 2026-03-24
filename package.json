@@ -30,7 +30,8 @@
     "test:watch": "vitest",
     "prebuilds:download": "tsx scripts/download-prebuilds.ts",
     "prebuilds:download:force": "tsx scripts/download-prebuilds.ts --force",
-    "prebuilds:status": "tsx scripts/download-prebuilds.ts --status"
+    "prebuilds:status": "tsx scripts/download-prebuilds.ts --status",
+    "bundle:cjs": "tsx scripts/bundle-cjs.ts"
   },
   "keywords": [
     "ai",
@@ -69,5 +70,10 @@
   },
   "workspaces": [
     "packages/*"
-  ]
+  ],
+  "pkg": {
+    "assets": [
+      "dist/package.json"
+    ]
+  }
 }
