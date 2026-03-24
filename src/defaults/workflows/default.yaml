@@ -76,7 +76,12 @@ phases:
     prompt: finalize.md
     models:
       default: haiku
-    maxTurns: 20
+    maxTurns: 30
+    artifact: FINALIZE_VALIDATION.md
+    verdict: true
+    retryWith: developer
+    retryOnFail: 1
     mail:
       onStart: true
       onComplete: true
+      onFail: developer

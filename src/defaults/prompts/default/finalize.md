@@ -78,7 +78,48 @@ git rebase origin/{{baseBranch}}
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"rebase_conflict","retryable":false}'
 ```
 
-### Step 7: Push to origin
+### Step 7: Run tests after rebase (pre-push validation)
+After the rebase succeeds, run the full test suite to catch any merge-induced failures before pushing.
+
+Run:
+```
+npm test 2>&1
+```
+
+Capture the full output and exit code.
+
+Then write `FINALIZE_VALIDATION.md` in the worktree root:
+
+```markdown
+# Finalize Validation: {{seedTitle}}
+
+## Seed: {{seedId}}
+## Run: {{runId}}
+## Timestamp: <ISO timestamp>
+
+## Rebase
+- Status: SUCCESS
+- Target: origin/{{baseBranch}}
+
+## Test Validation
+- Status: PASS | FAIL
+- Output:
+<include first 3000 characters of test output here>
+
+## Verdict: PASS | FAIL
+```
+
+**If tests PASS (exit code 0):**
+- Write `## Verdict: PASS` in `FINALIZE_VALIDATION.md`
+- Continue to Step 8 (push)
+
+**If tests FAIL (non-zero exit code):**
+- Write `## Verdict: FAIL` in `FINALIZE_VALIDATION.md`
+- Include test failure details in the `## Test Validation` section
+- **STOP HERE — do not push.** The pipeline will detect the FAIL verdict and route back to the developer with the test output as feedback.
+- Do NOT send an error mail — this is an expected retry condition, not an unrecoverable error.
+
+### Step 8: Push to origin
 Run:
 ```
 git push -u origin foreman/{{seedId}}
@@ -89,7 +130,7 @@ git push -u origin foreman/{{seedId}}
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"push_failed","retryable":true}'
 ```
 
-### Step 8: Write FINALIZE_REPORT.md
+### Step 9: Write FINALIZE_REPORT.md
 Write a `FINALIZE_REPORT.md` file in the worktree root summarizing:
 - Whether `npm ci` succeeded or failed (include any error details)
 - Whether `npx tsc --noEmit` passed or failed (include any error details)
@@ -122,7 +163,8 @@ Use this format:
 ```
 
 ## Rules
-- **DO NOT modify any source code files** — only write FINALIZE_REPORT.md and run git commands
+- **DO NOT modify any source code files** — only write FINALIZE_VALIDATION.md, FINALIZE_REPORT.md and run git commands
 - Run steps in order — do not skip any step unless explicitly told to stop
 - All failures except "nothing to commit" are logged and continue (non-fatal) unless they prevent git push
 - Do NOT commit SESSION_LOG.md or RUN_LOG.md — they are excluded from commits to prevent merge conflicts
+- **If tests fail in Step 7, stop after writing FINALIZE_VALIDATION.md — do NOT run Steps 8 or 9**
