@@ -16,7 +16,9 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc && node scripts/copy-assets.js && npm run build --workspace=packages/foreman-pi-extensions",
+    "prepare": "npm run build",
+    "clean": "rm -rf dist/",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/copy-assets.js && npm run build --workspace=packages/foreman-pi-extensions",
     "dev": "tsx watch src/cli/index.ts",
     "start": "node dist/cli/index.js",
     "test": "vitest run",
