@@ -74,7 +74,7 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 - `src/lib/workflow-loader.ts` — YAML workflow config parser
 - `src/orchestrator/roles.ts` — prompt generation (`buildPhasePrompt()` + per-phase functions)
 
-**Workflow YAML-driven pipeline** (defined in `src/defaults/workflows/`):
+**Workflow YAML-driven pipeline** (see [Workflow YAML Reference](docs/workflow-yaml-reference.md)):
 - Phase sequence, models, retries, mail hooks, artifacts all defined in YAML
 - No hardcoded phase names in the executor — new phases need only YAML + prompt file
 - Per-phase model selection with priority-based overrides (P0→opus, default→sonnet, etc.)

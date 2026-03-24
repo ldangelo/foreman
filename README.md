@@ -385,6 +385,41 @@ Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (back
 
 ## Configuration
 
+### Workflow YAML
+
+Foreman pipelines are configured via workflow YAML files. See the **[Workflow YAML Reference](docs/workflow-yaml-reference.md)** for complete documentation with examples for Node.js, .NET, Go, Python, and Rust.
+
+Workflows define:
+- **Setup steps** — dependency installation, build commands (stack-agnostic)
+- **Setup cache** — symlink dependency directories from a shared cache
+- **Phase sequence** — which agents run in what order
+- **Model selection** — per-phase models with priority-based overrides
+- **Retry loops** — QA/Reviewer failure → Developer retry with feedback
+- **Mail hooks** — lifecycle notifications and artifact forwarding
+
+```yaml
+# .foreman/workflows/default.yaml (project-local override)
+name: default
+setup:
+  - command: npm install --prefer-offline --no-audit
+    failFatal: true
+setupCache:
+  key: package-lock.json
+  path: node_modules
+phases:
+  - name: developer
+    prompt: developer.md
+    models:
+      default: sonnet
+      P0: opus
+    maxTurns: 80
+  - name: qa
+    prompt: qa.md
+    verdict: true
+    retryWith: developer
+    retryOnFail: 2
+```
+
 ### Environment variables
 
 ```bash
