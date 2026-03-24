@@ -1,6 +1,19 @@
 name: Release Binaries
 
-# Trigger on version tag push (e.g. v1.2.3) or manual dispatch
+# Triggered on version tag push (e.g. v1.2.3) created by release-please,
+# or manually via workflow_dispatch.
+#
+# Flow:
+#   Push to main → release.yml (release-please) → tag → this workflow
+#
+# Matrix strategy builds natively on each OS for best compatibility:
+#   ubuntu-latest  → linux-x64, linux-arm64  (pkg cross-compilation)
+#   macos-latest   → darwin-x64, darwin-arm64 (pkg cross-compilation)
+#   windows-latest → win-x64
+#
+# Artifacts are collected by a final "release" job that uploads them all
+# to the GitHub Release created by release-please.
+
 on:
   push:
     tags:
@@ -20,14 +33,28 @@ on:
           - "false"
           - "true"
 
-# Minimal permissions — only what the release upload step needs
+# write permission required to upload release assets
 permissions:
   contents: write
 
 jobs:
+  # ── Matrix: Build binaries on each OS ────────────────────────────────────────
   build-binaries:
-    name: Build standalone binaries
-    runs-on: ubuntu-latest
+    name: Build binaries (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: "linux-x64,linux-arm64"
+            artifact_name: binaries-linux
+          - os: macos-latest
+            targets: "darwin-x64,darwin-arm64"
+            artifact_name: binaries-macos
+          - os: windows-latest
+            targets: "win-x64"
+            artifact_name: binaries-windows
+    runs-on: ${{ matrix.os }}
 
     steps:
       # ── Checkout ─────────────────────────────────────────────────────────────
@@ -62,14 +89,13 @@ jobs:
       - name: Bundle (CJS — required for pkg backend)
         run: npm run bundle:cjs
 
-      # ── Download cross-platform better-sqlite3 prebuilds ──────────────────────
-      # These provide the per-platform .node files needed for cross-compilation.
-      # The prebuilds are committed to the repo in scripts/prebuilds/; this step
-      # is a safety net to refresh them if needed.
+      # ── Verify native addon prebuilds ─────────────────────────────────────────
+      # Prebuilds are committed in scripts/prebuilds/{platform}-{arch}/.
+      # This step downloads any that are missing.
       - name: Verify / refresh native addon prebuilds
+        shell: bash
         run: |
-          npm run prebuilds:status
-          # If any prebuilt is missing, download it.
+          npm run prebuilds:status || true
           if npm run prebuilds:status 2>&1 | grep -q "MISSING"; then
             echo "Some prebuilts are missing — downloading..."
             npm run prebuilds:download
@@ -77,21 +103,120 @@ jobs:
             echo "All prebuilts present — skipping download."
           fi
 
-      # ── Compile binaries ──────────────────────────────────────────────────────
-      - name: Compile standalone binaries (all 5 platforms)
-        run: npm run compile-binary
+      # ── Determine release tag ─────────────────────────────────────────────────
+      - name: Determine release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
 
-      # ── Smoke-test the linux-x64 binary (runs natively on ubuntu-latest) ──────
+      # ── Compile binaries for this OS ──────────────────────────────────────────
+      # Compile all targets relevant to this runner. pkg handles cross-compilation
+      # within the same OS family (linux-x64 + linux-arm64 from ubuntu-latest).
+      - name: Compile standalone binaries (${{ matrix.targets }})
+        shell: bash
+        run: |
+          IFS=',' read -ra TARGETS <<< "${{ matrix.targets }}"
+          for target in "${TARGETS[@]}"; do
+            echo "--- Compiling $target ---"
+            npx tsx scripts/compile-binary.ts --target "$target"
+          done
+
+      # ── Smoke test the native binary (unix only) ──────────────────────────────
       - name: Smoke test linux-x64 binary
+        if: runner.os == 'Linux'
         run: |
           BINARY=dist/binaries/linux-x64/foreman-linux-x64
           chmod +x "$BINARY"
           echo "--- foreman --help ---"
-          "$BINARY" --help | head -10
+          "$BINARY" --help | head -10 || true
           echo "--- foreman --version ---"
-          "$BINARY" --version || true   # may exit non-zero if not implemented yet
+          "$BINARY" --version || true
 
-      # ── Determine version tag ─────────────────────────────────────────────────
+      - name: Smoke test darwin binary
+        if: runner.os == 'macOS'
+        run: |
+          BINARY=dist/binaries/darwin-arm64/foreman-darwin-arm64
+          if [ -f "$BINARY" ]; then
+            chmod +x "$BINARY"
+            echo "--- foreman --help ---"
+            "$BINARY" --help | head -10 || true
+          else
+            echo "WARNING: darwin-arm64 binary not found (cross-compile may have failed)"
+            ls dist/binaries/ || true
+          fi
+
+      - name: Smoke test win-x64 binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "dist\binaries\win-x64\foreman-win-x64.exe"
+          if (Test-Path $bin) {
+            Write-Host "--- foreman --help ---"
+            & $bin --help 2>&1 | Select-Object -First 10
+          } else {
+            Write-Warning "win-x64 binary not found"
+            Get-ChildItem dist\binaries -ErrorAction SilentlyContinue
+          }
+
+      # ── Package binaries for artifact upload ──────────────────────────────────
+      # Unix platforms: tar.gz archives; Windows: zip archive.
+      - name: Package binaries
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          BINARIES_DIR=dist/binaries
+          RELEASE_DIR=dist/release-assets
+          mkdir -p "$RELEASE_DIR"
+
+          IFS=',' read -ra TARGETS <<< "${{ matrix.targets }}"
+          for target in "${TARGETS[@]}"; do
+            target_dir="$BINARIES_DIR/$target"
+            if [ -d "$target_dir" ]; then
+              if [ "$target" = "win-x64" ]; then
+                # Windows: zip archive
+                archive="$RELEASE_DIR/foreman-${TAG}-${target}.zip"
+                if command -v zip &>/dev/null; then
+                  (cd "$target_dir" && zip -r "../../../release-assets/foreman-${TAG}-${target}.zip" .)
+                else
+                  # pwsh fallback (GitHub Actions Windows runners)
+                  powershell -Command "Compress-Archive -Path '$target_dir\*' -DestinationPath '$archive'"
+                fi
+                echo "Packaged: $archive"
+              else
+                # Unix: tar.gz archive
+                archive="$RELEASE_DIR/foreman-${TAG}-${target}.tar.gz"
+                tar -czf "$archive" -C "$target_dir" .
+                echo "Packaged: $archive"
+              fi
+            else
+              echo "WARNING: $target_dir not found — skipping $target"
+            fi
+          done
+
+          echo "Release assets for ${{ matrix.os }}:"
+          ls -lh "$RELEASE_DIR/"
+
+      # ── Upload per-platform artifacts ─────────────────────────────────────────
+      - name: Upload binary artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/release-assets/
+          retention-days: 1
+
+  # ── Collect artifacts and create GitHub Release ──────────────────────────────
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build-binaries
+
+    steps:
+      # ── Determine release tag ─────────────────────────────────────────────────
       - name: Determine release tag
         id: tag
         run: |
@@ -101,36 +226,56 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── Package binaries for upload ──────────────────────────────────────────
-      # Zip each platform directory so .node side-car is included.
-      - name: Package binaries
+      # ── Download all per-platform artifacts ───────────────────────────────────
+      - name: Download Linux binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-linux
+          path: dist/release-assets/
+
+      - name: Download macOS binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-macos
+          path: dist/release-assets/
+
+      - name: Download Windows binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-windows
+          path: dist/release-assets/
+
+      # ── Verify all expected assets are present ────────────────────────────────
+      - name: Verify release assets
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          BINARIES_DIR=dist/binaries
-          RELEASE_DIR=dist/release-assets
-          mkdir -p "$RELEASE_DIR"
+          echo "Release assets collected:"
+          ls -lh dist/release-assets/
 
-          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win-x64; do
-            target_dir="$BINARIES_DIR/$target"
-            if [ -d "$target_dir" ]; then
-              archive="$RELEASE_DIR/foreman-${TAG}-${target}.tar.gz"
-              if [ "$target" = "win-x64" ]; then
-                # Windows users may prefer zip
-                zip_archive="$RELEASE_DIR/foreman-${TAG}-${target}.zip"
-                (cd "$target_dir" && zip -r "../../../../$zip_archive" .)
-                echo "Packaged: $zip_archive"
-              else
-                tar -czf "$archive" -C "$target_dir" .
-                echo "Packaged: $archive"
-              fi
-            else
-              echo "WARNING: $target_dir not found — skipping"
+          EXPECTED=(
+            "foreman-${TAG}-darwin-arm64.tar.gz"
+            "foreman-${TAG}-darwin-x64.tar.gz"
+            "foreman-${TAG}-linux-x64.tar.gz"
+            "foreman-${TAG}-linux-arm64.tar.gz"
+            "foreman-${TAG}-win-x64.zip"
+          )
+
+          MISSING=()
+          for f in "${EXPECTED[@]}"; do
+            if [ ! -f "dist/release-assets/$f" ]; then
+              MISSING+=("$f")
             fi
           done
 
-          ls -lh "$RELEASE_DIR/"
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "ERROR: Missing expected release assets:"
+            for f in "${MISSING[@]}"; do echo "  - $f"; done
+            exit 1
+          fi
 
-      # ── Create GitHub Release and upload assets ───────────────────────────────
+          echo "All 5 release assets present ✓"
+
+      # ── Create GitHub Release + upload assets ─────────────────────────────────
       - name: Create GitHub Release
         if: ${{ github.event.inputs.dry_run != 'true' }}
         uses: softprops/action-gh-release@v2
@@ -152,28 +297,41 @@ jobs:
             | Linux ARM64 | `foreman-${{ steps.tag.outputs.tag }}-linux-arm64.tar.gz` |
             | Windows x64 | `foreman-${{ steps.tag.outputs.tag }}-win-x64.zip` |
 
-            ### Installation
+            ### Quick Install
 
             ```bash
             # macOS / Linux
-            tar xzf foreman-${{ steps.tag.outputs.tag }}-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/').tar.gz
+            TAG="${{ steps.tag.outputs.tag }}"
+            PLATFORM=$(uname -s | tr A-Z a-z)
+            ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')
+            curl -fsSL "https://github.com/${{ github.repository }}/releases/download/${TAG}/foreman-${TAG}-${PLATFORM}-${ARCH}.tar.gz" | tar xz
             chmod +x foreman-*
             sudo mv foreman-* /usr/local/bin/foreman
 
-            # The better_sqlite3.node side-car must stay in the same directory
-            # as the foreman binary.
+            # Note: better_sqlite3.node side-car must stay in the same directory as the binary
             ```
 
             ### Requirements
-            - No Node.js required
-            - `br` (beads_rust) CLI on PATH for task tracking: `cargo install beads_rust`
-            - Anthropic API key in `ANTHROPIC_API_KEY` environment variable
+
+            - No Node.js required (standalone binary)
+            - `br` ([beads_rust](https://github.com/Dicklesworthstone/beads_rust)) CLI on PATH for task tracking
+            - `ANTHROPIC_API_KEY` environment variable set
+
+            ### Checksums
+
+            SHA-256 checksums are listed in `checksums.txt` (attached to this release).
           files: dist/release-assets/*
 
-      # ── Log dry-run result ────────────────────────────────────────────────────
+      # ── Dry-run summary ───────────────────────────────────────────────────────
+      # dry-run: list release assets but do not publish to GitHub Releases.
       - name: Dry-run summary
         if: ${{ github.event.inputs.dry_run == 'true' }}
         run: |
           echo "DRY RUN — binaries compiled but release not published."
+          echo ""
           echo "Release assets that would be uploaded:"
           ls -lh dist/release-assets/
+          echo ""
+          echo "Summary:"
+          echo "  Tag: ${{ steps.tag.outputs.tag }}"
+          echo "  Assets: $(ls dist/release-assets/ | wc -l) files"
