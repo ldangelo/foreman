@@ -1,0 +1,58 @@
+name: Release Please
+
+# Triggered on every push to main. release-please inspects commits since the
+# last release tag and, if there are releasable changes (feat/fix/breaking),
+# opens or updates a "Release PR". When that PR is merged, release-please
+# creates the GitHub Release + tag, which triggers release-binaries.yml.
+
+on:
+  push:
+    branches:
+      - main
+
+# Permissions required by release-please to create PRs and push tags.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: Create or update Release PR
+    runs-on: ubuntu-latest
+
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          # Uses release-please-config.json + .release-please-manifest.json
+          # from the root of the repo — no inline config needed.
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Optional: after a release is created (PR merged → tag pushed), print a
+  # summary so the run is easy to identify in the Actions UI.
+  summarize:
+    name: Release summary
+    runs-on: ubuntu-latest
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+
+    steps:
+      - name: Print release info
+        run: |
+          echo "### 🎉 New release created!" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tag | \`${{ needs.release-please.outputs.tag_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`${{ needs.release-please.outputs.version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ needs.release-please.outputs.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "The \`release-binaries\` workflow will now build standalone binaries for this tag." >> "$GITHUB_STEP_SUMMARY"
