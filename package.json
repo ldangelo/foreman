@@ -27,7 +27,10 @@
     "compile-binary": "tsx scripts/compile-binary.ts --all",
     "compile-binary:dry-run": "tsx scripts/compile-binary.ts --all --dry-run",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prebuilds:download": "tsx scripts/download-prebuilds.ts",
+    "prebuilds:download:force": "tsx scripts/download-prebuilds.ts --force",
+    "prebuilds:status": "tsx scripts/download-prebuilds.ts --status"
   },
   "keywords": [
     "ai",

@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+let _nativeUtilsTestCounter = 0;
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
@@ -64,7 +65,7 @@ describe("getBetterSqlite3NodePath", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = path.join(tmpdir(), `foreman-test-${Date.now()}`);
+    tmpDir = path.join(tmpdir(), `foreman-test-${Date.now()}-${++_nativeUtilsTestCounter}`);
     mkdirSync(tmpDir, { recursive: true });
   });
 
@@ -157,7 +158,7 @@ describe("copyNativeAddon", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = path.join(tmpdir(), `foreman-test-${Date.now()}`);
+    tmpDir = path.join(tmpdir(), `foreman-test-${Date.now()}-${++_nativeUtilsTestCounter}`);
     mkdirSync(tmpDir, { recursive: true });
   });
 
