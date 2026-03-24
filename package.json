@@ -23,6 +23,7 @@
     "build:atomic": "node scripts/build-atomic.js",
     "dev": "tsx watch src/cli/index.ts",
     "start": "node dist/cli/index.js",
+    "bundle": "tsx scripts/bundle.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -53,6 +54,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.4.0",
     "@types/react": "^19.2.14",
+    "esbuild": "^0.27.4",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
