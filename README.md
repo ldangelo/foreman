@@ -11,9 +11,9 @@ You already have AI coding agents. What you don't have is a way to run several o
 - **Work decomposition** — PRD → TRD → beads (structured, dependency-aware tasks)
 - **Git isolation** — each agent gets its own worktree (zero conflicts during development)
 - **Pipeline phases** — Explorer → Developer ↔ QA → Reviewer → Finalize
-- **Pi runtime** — agents run via `pi --mode rpc` (JSONL over stdin/stdout); falls back to Claude SDK if Pi is not installed
-- **Agent Mail** — inter-agent messaging, phase-to-phase coordination, file reservations
-- **Auto-merge** — completed branches rebase onto main and merge automatically
+- **Pi SDK runtime** — agents run in-process via `@mariozechner/pi-coding-agent` SDK (`createAgentSession`)
+- **Built-in messaging** — SQLite-backed inter-agent messaging with native `send_mail` tool, phase lifecycle notifications, and file reservations
+- **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
 - **Progress tracking** — every task, agent, and phase tracked in SQLite + beads_rust
 
 ## Architecture
@@ -21,20 +21,23 @@ You already have AI coding agents. What you don't have is a way to run several o
 ```
 Foreman CLI / Dispatcher
   │
-  ├─ per task: spawn  pi --mode rpc  ──► Pi process (or Claude SDK fallback)
-  │               JSONL stdin/stdout         │
-  │                                    Extensions:
-  │                                    ├─ foreman-tool-gate   (enforce allowed tools per phase)
-  │                                    ├─ foreman-budget      (turn + token hard limits)
-  │                                    └─ foreman-audit       (stream events → Agent Mail)
+  ├─ per task: agent-worker.ts (detached process)
+  │    └─ Pi SDK (in-process)
+  │       createAgentSession() → session.prompt()
+  │       Tools: read, write, edit, bash, grep, find, ls, send_mail
   │
-  ├─ Agent Mail (SQLite, .foreman/mail.db — no external server)
-  │    Mailboxes: foreman, merge-agent, phase agents
-  │    Phase transitions: explorer→developer→qa→reviewer→merge
+  ├─ Pipeline Executor (workflow YAML-driven)
+  │    Phases defined in .foreman/workflows/*.yaml
+  │    Model selection, retries, mail hooks, artifacts — all YAML config
+  │
+  ├─ Messaging (SQLite, .foreman/foreman.db — no external server)
+  │    send_mail tool: agents call directly as a native Pi SDK tool
+  │    Lifecycle: phase-started, phase-complete, agent-error
+  │    Coordination: branch-ready, merge-complete, bead-closed
   │    File reservations: prevent concurrent worktree conflicts
   │
-  └─ Merge Agent (auto-merge daemon)
-       Receives "branch-ready" messages from Agent Mail
+  └─ Refinery + autoMerge
+       Triggers immediately after finalize phase
        T1/T2: TypeScript auto-merge (fast path, no LLM)
        T3/T4: AI conflict resolution via Pi session
 ```
@@ -185,15 +188,8 @@ flowchart TD
   cargo install beads_rust
   # or: download binary to ~/.local/bin/br
   ```
-- **[Pi](https://github.com/badlogic/pi-mono)** _(optional but recommended)_ — agent runtime
-  ```bash
-  # macOS with Homebrew:
-  brew install pi
-  # or follow Pi's install instructions for your platform
-  ```
-- **Agent Mail** — inter-agent messaging is now **built-in** via SQLite (`SqliteMailClient`). No external server required. State stored in `.foreman/mail.db`.
-- **Claude Code** — `npm install -g @anthropic-ai/claude-code`
-- **Anthropic API key** — `export ANTHROPIC_API_KEY=sk-ant-...`
+- **[Pi](https://pi.dev)** _(installed as npm dependency)_ — agent runtime via `@mariozechner/pi-coding-agent` SDK. No separate binary needed.
+- **Anthropic API key** — `export ANTHROPIC_API_KEY=sk-ant-...` or log in via Pi: `pi /login`
 
 ## Quick Start
 
@@ -221,47 +217,99 @@ foreman status
 foreman merge
 ```
 
-## Agent Mail
+## Messaging
 
-Agent Mail provides inter-agent messaging, phase-to-phase coordination, and file reservation leases. As of the SQLite migration, it is **fully embedded** — no external server or Python dependency required. State is stored in `.foreman/mail.db`.
+Foreman includes a built-in messaging system for inter-agent communication and pipeline coordination. Messages are stored in SQLite (`.foreman/foreman.db`) — no external server, no HTTP, no additional dependencies.
 
-### What Foreman uses Agent Mail for
+### How agents send messages
 
-| Message Subject | From → To | When |
+Agents use the native **`send_mail`** tool, registered as a Pi SDK ToolDefinition. This is a structured tool call — agents don't run bash commands or invoke skills to send messages.
+
+```
+Tool: send_mail
+Parameters:
+  to: "foreman"
+  subject: "agent-error"
+  body: '{"phase":"developer","error":"type check failed"}'
+```
+
+The pipeline executor also sends lifecycle messages automatically (phase-started, phase-complete) based on the [workflow YAML mail hooks](docs/workflow-yaml-reference.md).
+
+### Message types
+
+| Subject | From → To | When |
 |---|---|---|
-| `phase-complete` | phase agent → foreman | Pi agent_end success=true |
-| `agent-error` | phase agent → foreman | Pi agent_end success=false |
-| `branch-ready` | foreman → merge-agent | Phase pipeline complete |
-| `merge-complete` | merge-agent → foreman | Branch merged to main |
-| `audit-event` | foreman-audit extension → foreman | Every tool call / turn |
+| `worktree-created` | foreman → foreman | Worktree initialized for a bead |
+| `bead-claimed` | foreman → foreman | Bead dispatched to an agent |
+| `phase-started` | executor → foreman | Phase begins (YAML: `mail.onStart`) |
+| `phase-complete` | executor → foreman | Phase succeeds (YAML: `mail.onComplete`) |
+| `agent-error` | agent → foreman | Agent encounters an error |
+| `branch-ready` | foreman → refinery | Finalize complete, ready to merge |
+| `merge-complete` | refinery → foreman | Branch merged to target |
+| `merge-failed` | refinery → foreman | Merge failed (conflicts, tests) |
+| `bead-closed` | refinery → foreman | Bead closed after successful merge |
 
-## Running with Pi
-
-When `pi` is on PATH, Foreman automatically uses `PiRpcSpawnStrategy` instead of the Claude SDK. Each agent becomes:
-
-```bash
-pi --mode rpc --provider anthropic --model claude-sonnet-4-6
-```
-
-Pi extensions loaded via `PI_EXTENSIONS` env var:
-- `foreman-tool-gate` — blocks disallowed tools per phase (Explorer = read-only enforced)
-- `foreman-budget` — enforces turn and token limits
-- `foreman-audit` — streams all events to Agent Mail
-
-### Verifying Pi is detected
+### Viewing messages
 
 ```bash
-foreman doctor     # Shows "Pi binary: found" or "Pi binary: not found (using Claude SDK)"
+foreman inbox                     # Latest run's messages
+foreman inbox --bead bd-abc1      # Messages for a specific bead
+foreman inbox --all --watch       # Live stream across all runs
+foreman debug <bead-id>           # AI analysis including full mail timeline
 ```
 
-### Pi phase configs
+### File reservations
 
-| Phase | Model | Max Turns | Max Tokens | Allowed Tools |
-|---|---|---|---|---|
-| Explorer | claude-haiku-4-5-20251001 | 30 | 100K | Read, Grep, Glob, LS, WebFetch, WebSearch |
-| Developer | claude-sonnet-4-6 | 80 | 500K | Read, Write, Edit, Bash, Grep, Glob, LS |
-| QA | claude-sonnet-4-6 | 30 | 200K | Read, Grep, Glob, LS, Bash |
-| Reviewer | claude-sonnet-4-6 | 20 | 150K | Read, Grep, Glob, LS |
+Phases that modify files can reserve the worktree directory to prevent concurrent access:
+
+```yaml
+# In workflow YAML
+files:
+  reserve: true
+  leaseSecs: 600
+```
+
+## Pi SDK Integration
+
+Foreman uses the [Pi SDK](https://pi.dev) (`@mariozechner/pi-coding-agent`) to run AI agents in-process. Each pipeline phase creates a fresh `AgentSession` with phase-specific tools and model configuration.
+
+### How agents run
+
+```typescript
+const { session } = await createAgentSession({
+  cwd: worktreePath,
+  model: getModel("anthropic", "claude-sonnet-4-6"),
+  tools: [createReadTool(cwd), createBashTool(cwd), ...],
+  customTools: [createSendMailTool(mailClient, agentRole)],
+  sessionManager: SessionManager.inMemory(),
+});
+await session.prompt(phasePrompt);
+```
+
+### Custom tools
+
+The `send_mail` tool is registered as a custom `ToolDefinition` on every agent session:
+
+| Tool | Description |
+|------|-------------|
+| `send_mail` | Send messages to other agents or foreman. Used for error reporting. |
+
+Standard Pi tools are also available per phase (configured in [workflow YAML](docs/workflow-yaml-reference.md)):
+- `read`, `write`, `edit` — file operations
+- `bash` — shell command execution
+- `grep`, `find`, `ls` — search and navigation
+
+### Phase model configuration
+
+Models are configured per-phase in the workflow YAML with priority-based overrides. See [Workflow YAML Reference](docs/workflow-yaml-reference.md) for full details.
+
+| Phase | Default Model | P0 Override | Max Turns |
+|---|---|---|---|
+| Explorer | haiku | sonnet | 30 |
+| Developer | sonnet | opus | 80 |
+| QA | sonnet | opus | 30 |
+| Reviewer | sonnet | opus | 20 |
+| Finalize | haiku | — | 20 |
 
 ## Commands
 
@@ -427,9 +475,7 @@ phases:
 ### Environment variables
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...          # Required
-export FOREMAN_AGENT_MAIL_URL=http://localhost:8766  # Agent Mail (default)
-export FOREMAN_PI_BIN=/path/to/pi            # Override Pi binary path
+export ANTHROPIC_API_KEY=sk-ant-...          # Required (or use `pi /login` for OAuth)
 export FOREMAN_MAX_AGENTS=5                  # Max concurrent agents (default: 5)
 ```
 
