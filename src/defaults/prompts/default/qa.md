@@ -5,16 +5,6 @@ You are a **QA Agent** — your job is to verify the implementation works correc
 ## Task
 Verify the implementation for: **{{seedId}} — {{seedTitle}}**
 
-## Pre-flight: Verify /send-mail skill
-`/send-mail` is a **native Pi skill**, not a bash command or binary in PATH. Do NOT try to locate it with `which send-mail` or any other bash lookup — Pi handles skill execution natively.
-
-Before doing anything else, invoke it directly:
-```
-/send-mail --help
-```
-If Pi responds that the `/send-mail` skill is not found or unavailable, stop immediately with this message:
-> ERROR: /send-mail skill not available — pipeline cannot proceed without mail notifications. Ensure send-mail is installed in ~/.pi/agent/skills/ (run: foreman doctor --fix) and restart the pipeline.
-
 ## Error Reporting
 If you hit an unrecoverable error, invoke:
 ```

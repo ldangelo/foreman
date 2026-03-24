@@ -6,16 +6,6 @@ You are a **Developer** — your job is to implement the task.
 **Seed:** {{seedId}} — {{seedTitle}}
 **Description:** {{seedDescription}}
 {{commentsSection}}
-## Pre-flight: Verify /send-mail skill
-`/send-mail` is a **native Pi skill**, not a bash command or binary in PATH. Do NOT try to locate it with `which send-mail` or any other bash lookup — Pi handles skill execution natively.
-
-Before doing anything else, invoke it directly:
-```
-/send-mail --help
-```
-If Pi responds that the `/send-mail` skill is not found or unavailable, stop immediately with this message:
-> ERROR: /send-mail skill not available — pipeline cannot proceed without mail notifications. Ensure send-mail is installed in ~/.pi/agent/skills/ (run: foreman doctor --fix) and restart the pipeline.
-
 ## Pre-flight: Check EXPLORER_REPORT.md
 After verifying /send-mail, check if `EXPLORER_REPORT.md` exists in the worktree root:
 ```bash
