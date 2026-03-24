@@ -1,0 +1,179 @@
+name: Release Binaries
+
+# Trigger on version tag push (e.g. v1.2.3) or manual dispatch
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name to create release for (e.g. v1.2.3)"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run — build but do not publish release"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+# Minimal permissions — only what the release upload step needs
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    name: Build standalone binaries
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ─────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Node.js setup ────────────────────────────────────────────────────────
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ── Dependency cache ──────────────────────────────────────────────────────
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: npm-${{ runner.os }}-20-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-20-
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      # ── TypeScript build ───────────────────────────────────────────────────────
+      - name: TypeScript compile
+        run: npm run build
+
+      # ── Bundle CJS for pkg ────────────────────────────────────────────────────
+      - name: Bundle (CJS — required for pkg backend)
+        run: npm run bundle:cjs
+
+      # ── Download cross-platform better-sqlite3 prebuilds ──────────────────────
+      # These provide the per-platform .node files needed for cross-compilation.
+      # The prebuilds are committed to the repo in scripts/prebuilds/; this step
+      # is a safety net to refresh them if needed.
+      - name: Verify / refresh native addon prebuilds
+        run: |
+          npm run prebuilds:status
+          # If any prebuilt is missing, download it.
+          if npm run prebuilds:status 2>&1 | grep -q "MISSING"; then
+            echo "Some prebuilts are missing — downloading..."
+            npm run prebuilds:download
+          else
+            echo "All prebuilts present — skipping download."
+          fi
+
+      # ── Compile binaries ──────────────────────────────────────────────────────
+      - name: Compile standalone binaries (all 5 platforms)
+        run: npm run compile-binary
+
+      # ── Smoke-test the linux-x64 binary (runs natively on ubuntu-latest) ──────
+      - name: Smoke test linux-x64 binary
+        run: |
+          BINARY=dist/binaries/linux-x64/foreman-linux-x64
+          chmod +x "$BINARY"
+          echo "--- foreman --help ---"
+          "$BINARY" --help | head -10
+          echo "--- foreman --version ---"
+          "$BINARY" --version || true   # may exit non-zero if not implemented yet
+
+      # ── Determine version tag ─────────────────────────────────────────────────
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Package binaries for upload ──────────────────────────────────────────
+      # Zip each platform directory so .node side-car is included.
+      - name: Package binaries
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          BINARIES_DIR=dist/binaries
+          RELEASE_DIR=dist/release-assets
+          mkdir -p "$RELEASE_DIR"
+
+          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win-x64; do
+            target_dir="$BINARIES_DIR/$target"
+            if [ -d "$target_dir" ]; then
+              archive="$RELEASE_DIR/foreman-${TAG}-${target}.tar.gz"
+              if [ "$target" = "win-x64" ]; then
+                # Windows users may prefer zip
+                zip_archive="$RELEASE_DIR/foreman-${TAG}-${target}.zip"
+                (cd "$target_dir" && zip -r "../../../../$zip_archive" .)
+                echo "Packaged: $zip_archive"
+              else
+                tar -czf "$archive" -C "$target_dir" .
+                echo "Packaged: $archive"
+              fi
+            else
+              echo "WARNING: $target_dir not found — skipping"
+            fi
+          done
+
+          ls -lh "$RELEASE_DIR/"
+
+      # ── Create GitHub Release and upload assets ───────────────────────────────
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Foreman ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
+          body: |
+            ## Standalone Binaries — ${{ steps.tag.outputs.tag }}
+
+            Download the binary for your platform, extract, and run:
+
+            | Platform | Archive |
+            |----------|---------|
+            | macOS (Apple Silicon) | `foreman-${{ steps.tag.outputs.tag }}-darwin-arm64.tar.gz` |
+            | macOS (Intel) | `foreman-${{ steps.tag.outputs.tag }}-darwin-x64.tar.gz` |
+            | Linux x64 | `foreman-${{ steps.tag.outputs.tag }}-linux-x64.tar.gz` |
+            | Linux ARM64 | `foreman-${{ steps.tag.outputs.tag }}-linux-arm64.tar.gz` |
+            | Windows x64 | `foreman-${{ steps.tag.outputs.tag }}-win-x64.zip` |
+
+            ### Installation
+
+            ```bash
+            # macOS / Linux
+            tar xzf foreman-${{ steps.tag.outputs.tag }}-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/').tar.gz
+            chmod +x foreman-*
+            sudo mv foreman-* /usr/local/bin/foreman
+
+            # The better_sqlite3.node side-car must stay in the same directory
+            # as the foreman binary.
+            ```
+
+            ### Requirements
+            - No Node.js required
+            - `br` (beads_rust) CLI on PATH for task tracking: `cargo install beads_rust`
+            - Anthropic API key in `ANTHROPIC_API_KEY` environment variable
+          files: dist/release-assets/*
+
+      # ── Log dry-run result ────────────────────────────────────────────────────
+      - name: Dry-run summary
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          echo "DRY RUN — binaries compiled but release not published."
+          echo "Release assets that would be uploaded:"
+          ls -lh dist/release-assets/

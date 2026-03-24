@@ -26,6 +26,8 @@
     "bundle": "tsx scripts/bundle.ts",
     "compile-binary": "tsx scripts/compile-binary.ts --all",
     "compile-binary:dry-run": "tsx scripts/compile-binary.ts --all --dry-run",
+    "build:binaries": "npm run build && npm run bundle:cjs && npm run compile-binary",
+    "build:binaries:dry-run": "npm run build && npm run bundle:cjs && npm run compile-binary:dry-run",
     "test": "vitest run",
     "test:watch": "vitest",
     "prebuilds:download": "tsx scripts/download-prebuilds.ts",
