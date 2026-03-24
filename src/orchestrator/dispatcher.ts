@@ -3,6 +3,7 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { isProcessAlive } from "./dispatcher-lock.js";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
@@ -387,7 +388,7 @@ export class Dispatcher {
         }
 
         // 7. Spawn the coding agent
-        const { sessionKey } = await this.spawnAgent(
+        const { sessionKey, workerPid } = await this.spawnAgent(
           model,
           worktreePath,
           seedInfo,
@@ -401,11 +402,12 @@ export class Dispatcher {
           opts?.notifyUrl,
         );
 
-        // Update run with session key
+        // Update run with session key and worker PID
         this.store.updateRun(run.id, {
           session_key: sessionKey,
           status: "running",
           started_at: new Date().toISOString(),
+          worker_pid: workerPid ?? null,
         });
 
         dispatched.push({
@@ -529,7 +531,7 @@ export class Dispatcher {
       await this.seeds.update(run.seed_id, { status: "in_progress" });
 
       // Spawn the resumed agent
-      const { sessionKey } = await this.resumeAgent(
+      const { sessionKey, workerPid } = await this.resumeAgent(
         model,
         run.worktree_path,
         { id: run.seed_id, title: run.seed_id },
@@ -543,6 +545,7 @@ export class Dispatcher {
         session_key: sessionKey,
         status: "running",
         started_at: new Date().toISOString(),
+        worker_pid: workerPid ?? null,
       });
 
       resumed.push({
@@ -561,6 +564,45 @@ export class Dispatcher {
       resumed,
       activeAgents: activeRuns.length + resumed.length,
     };
+  }
+
+  /**
+   * Scan active runs in the DB and reconcile their worker PIDs.
+   *
+   * Called on dispatcher startup to adopt or evict workers from a previous
+   * dispatcher session:
+   * - If a run has a worker_pid and the process is alive → keep it (adopted)
+   * - If a run has a worker_pid and the process is dead → mark as stuck
+   * - If a run has no worker_pid → assume orphaned, mark as stuck
+   *
+   * Returns a summary of what was found.
+   */
+  async adoptOrphanedWorkers(): Promise<{ adopted: number; markedStuck: number }> {
+    const activeRuns = this.store.getActiveRuns();
+    let adopted = 0;
+    let markedStuck = 0;
+
+    for (const run of activeRuns) {
+      const pid = run.worker_pid;
+      if (pid !== null && pid !== undefined && isProcessAlive(pid)) {
+        // Worker still alive — update progress timestamp so the watch UI knows it's tracked
+        adopted++;
+        log(`[orphan-check] Adopted worker pid=${pid} for run=${run.id} seed=${run.seed_id}`);
+      } else {
+        // Dead or no PID — mark as stuck so it can be retried
+        const reason = pid
+          ? `Worker pid=${pid} is no longer alive (orphaned after dispatcher restart)`
+          : `No worker PID recorded — run orphaned after dispatcher restart`;
+        log(`[orphan-check] Marking run=${run.id} seed=${run.seed_id} as stuck: ${reason}`);
+        this.store.updateRun(run.id, {
+          status: "stuck",
+          completed_at: new Date().toISOString(),
+        });
+        markedStuck++;
+      }
+    }
+
+    return { adopted, markedStuck };
   }
 
   /**
@@ -724,7 +766,7 @@ export class Dispatcher {
       skipReview?: boolean;
     },
     notifyUrl?: string,
-  ): Promise<{ sessionKey: string }> {
+  ): Promise<{ sessionKey: string; workerPid?: number }> {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
@@ -735,7 +777,7 @@ export class Dispatcher {
 
     const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
 
-    await spawnWorkerProcess({
+    const spawnResult = await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
       seedId: seed.id,
@@ -756,7 +798,7 @@ export class Dispatcher {
       seedPriority: seed.priority,
     });
 
-    return { sessionKey };
+    return { sessionKey, workerPid: spawnResult.workerPid };
   }
 
   // ── Session Resume ───────────────────────────────────────────────────
@@ -773,7 +815,7 @@ export class Dispatcher {
     sdkSessionId: string,
     telemetry?: boolean,
     notifyUrl?: string,
-  ): Promise<{ sessionKey: string }> {
+  ): Promise<{ sessionKey: string; workerPid?: number }> {
     const resumePrompt = this.buildResumePrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
@@ -781,7 +823,7 @@ export class Dispatcher {
 
     log(`Resuming worker for ${seed.id} [${model}] session=${sdkSessionId}`);
 
-    await spawnWorkerProcess({
+    const spawnResult = await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
       seedId: seed.id,
@@ -794,7 +836,7 @@ export class Dispatcher {
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
     });
 
-    return { sessionKey };
+    return { sessionKey, workerPid: spawnResult.workerPid };
   }
 
   // ── Private helpers ───────────────────────────────────────────────────
@@ -950,6 +992,8 @@ export interface WorkerConfig {
 
 /** Result returned by a SpawnStrategy */
 export interface SpawnResult {
+  /** PID of the spawned worker process (undefined if not available) */
+  workerPid?: number;
 }
 
 /** Strategy interface for spawning worker processes */
@@ -1014,7 +1058,7 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     await errFd.close();
 
     log(`  Worker pid=${child.pid} for ${config.seedId}`);
-    return {};
+    return { workerPid: child.pid };
   }
 }
 

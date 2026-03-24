@@ -3,6 +3,11 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
+import {
+  acquireLock,
+  releaseLock,
+  DispatcherAlreadyRunningError,
+} from "../../orchestrator/dispatcher-lock.js";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
@@ -169,6 +174,7 @@ export const runCommand = new Command("run")
   .option("--skip-review", "Skip the reviewer phase in the pipeline")
   .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
+  .option("--force", "Kill any existing dispatcher and take over (use with caution)")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -182,6 +188,7 @@ export const runCommand = new Command("run")
     const skipReview = opts.skipReview as boolean | undefined;
     const beadFilter = opts.bead as string | undefined;
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
+    const force = opts.force as boolean | undefined;
 
     // Start notification server so workers can POST status updates immediately
     // instead of waiting for the next poll cycle. Stopped in the finally block.
@@ -200,8 +207,41 @@ export const runCommand = new Command("run")
       notifyUrl = undefined;
     }
 
+    // projectPath is resolved inside the try block below; declare here so
+    // signal handlers can reference it during cleanup.
+    let _projectPath: string | undefined;
+
     try {
       const projectPath = await getRepoRoot(process.cwd());
+      _projectPath = projectPath;
+
+      // ── Dispatcher PID lock ──────────────────────────────────────────────────
+      // Prevent duplicate dispatchers from running concurrently.
+      // On clean exit (normal, SIGINT, SIGTERM) we remove the lock file.
+      // Stale lock files (process dead) are silently cleaned up.
+      if (!dryRun) {
+        try {
+          await acquireLock(projectPath, { force });
+        } catch (lockErr: unknown) {
+          if (lockErr instanceof DispatcherAlreadyRunningError) {
+            console.error(chalk.red(lockErr.message));
+            console.error(chalk.dim("  Use --force to kill the existing dispatcher and take over."));
+            process.exit(1);
+          }
+          throw lockErr;
+        }
+
+        // Register signal handlers to release the lock on clean exit.
+        // Increase the max listeners limit to suppress warnings when tests
+        // run foreman run many times in the same process.
+        const currentMax = process.getMaxListeners();
+        process.setMaxListeners(currentMax + 2);
+        const cleanup = (): void => {
+          releaseLock(projectPath);
+        };
+        process.once("SIGINT", () => { cleanup(); process.exit(0); });
+        process.once("SIGTERM", () => { cleanup(); process.exit(0); });
+      }
 
       // ── Pi Extensions check ──────────────────────────────────────────────────
       // If Pi is available, the extensions package must be built before dispatch.
@@ -230,6 +270,25 @@ export const runCommand = new Command("run")
       const store = ForemanStore.forProject(projectPath);
       const project = store.getProjectByPath(projectPath);
       const dispatcher = new Dispatcher(taskClient, store, projectPath, bvClient);
+
+      // ── Orphaned worker adoption ────────────────────────────────────────────
+      // On startup, scan for running/pending runs whose worker processes are no
+      // longer alive. Adopt live workers, mark dead ones as stuck so they can be
+      // retried. Non-fatal — any failure here is logged and ignored.
+      if (!dryRun) {
+        try {
+          const { adopted, markedStuck } = await dispatcher.adoptOrphanedWorkers();
+          if (adopted > 0) {
+            console.log(chalk.dim(`[startup] Adopted ${adopted} active worker(s) from previous session.`));
+          }
+          if (markedStuck > 0) {
+            console.log(chalk.yellow(`[startup] Marked ${markedStuck} orphaned run(s) as stuck — use 'foreman resume' to retry.`));
+          }
+        } catch (adoptErr: unknown) {
+          const msg = adoptErr instanceof Error ? adoptErr.message : String(adoptErr);
+          console.warn(chalk.yellow(`[startup] Orphan detection failed (non-fatal): ${msg}`));
+        }
+      }
 
       // ── Sentinel Auto-Start ──────────────────────────────────────────────
       // If sentinel.enabled=1 in the DB config, start the sentinel agent
@@ -654,9 +713,17 @@ export const runCommand = new Command("run")
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Error: ${message}`));
+      // Release lock on error path before exiting
+      if (_projectPath && !dryRun) {
+        releaseLock(_projectPath);
+      }
       process.exit(1);
     } finally {
       // Stop the notification server regardless of how the command exits
       await notifyServer.stop().catch(() => { /* ignore cleanup errors */ });
+      // Release PID lock on normal exit
+      if (_projectPath && !dryRun) {
+        releaseLock(_projectPath);
+      }
     }
   });

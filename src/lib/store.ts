@@ -31,6 +31,8 @@ export interface Run {
   tmux_session?: string | null;
   /** Branch that this seed's worktree was branched from (null = default branch). Used for branch stacking. */
   base_branch?: string | null;
+  /** PID of the detached worker process. Null until worker is spawned. */
+  worker_pid?: number | null;
 }
 
 export interface Cost {
@@ -318,6 +320,8 @@ const MIGRATIONS = [
     updated_at TEXT NOT NULL
   )`,
   `ALTER TABLE runs ADD COLUMN base_branch TEXT DEFAULT NULL`,
+  `ALTER TABLE runs ADD COLUMN worker_pid INTEGER DEFAULT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_runs_worker_pid ON runs (worker_pid, status)`,
 ];
 
 // One-time destructive migrations that cannot be made idempotent via failure
@@ -480,6 +484,7 @@ export class ForemanStore {
       progress: null,
       tmux_session: null,
       base_branch: opts?.baseBranch ?? null,
+      worker_pid: null,
     };
     this.db
       .prepare(
@@ -492,7 +497,7 @@ export class ForemanStore {
 
   updateRun(
     id: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch">>
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch" | "worker_pid">>
   ): void {
     const fields: string[] = [];
     const values: Record<string, unknown> = { id };

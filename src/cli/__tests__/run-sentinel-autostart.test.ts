@@ -42,6 +42,7 @@ const {
   const MockDispatcher = vi.fn(function (this: Record<string, unknown>) {
     this.dispatch = mockDispatch;
     this.resumeRuns = vi.fn().mockResolvedValue({ resumed: [], skipped: [], activeAgents: 0 });
+    this.adoptOrphanedWorkers = vi.fn().mockResolvedValue({ adopted: 0, markedStuck: 0 });
   });
 
   const mockGetActiveRuns = vi.fn().mockReturnValue([]);
@@ -94,6 +95,15 @@ vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
+// Mock dispatcher-lock so tests don't create real PID files or fail on mock paths
+vi.mock("../../orchestrator/dispatcher-lock.js", () => ({
+  acquireLock: vi.fn().mockResolvedValue(undefined),
+  releaseLock: vi.fn(),
+  DispatcherAlreadyRunningError: class DispatcherAlreadyRunningError extends Error {
+    pid: number;
+    constructor(pid: number) { super(`foreman run already active (pid ${pid})`); this.pid = pid; }
+  },
+}));
 vi.mock("../../lib/git.js", () => ({
   getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
   detectDefaultBranch: vi.fn().mockResolvedValue("main"),
@@ -163,6 +173,7 @@ describe("sentinel auto-start in foreman run", () => {
     MockDispatcher.mockImplementation(function (this: Record<string, unknown>) {
       this.dispatch = mockDispatch;
       this.resumeRuns = vi.fn().mockResolvedValue({ resumed: [], skipped: [], activeAgents: 0 });
+      this.adoptOrphanedWorkers = vi.fn().mockResolvedValue({ adopted: 0, markedStuck: 0 });
     });
     MockForemanStore.mockImplementation(function (this: Record<string, unknown>) {
       this.close = vi.fn();

@@ -39,6 +39,7 @@ const {
       resumed: [],
       activeAgents: 0,
     });
+    this.adoptOrphanedWorkers = vi.fn().mockResolvedValue({ adopted: 0, markedStuck: 0 });
   });
   const MockForemanStore = vi.fn(function MockForemanStoreImpl(this: Record<string, unknown>) {
     this.close = vi.fn();
@@ -72,6 +73,15 @@ vi.mock("../../orchestrator/dispatcher.js", () => ({
 
 vi.mock("../../lib/store.js", () => ({
   ForemanStore: MockForemanStore,
+}));
+
+vi.mock("../../orchestrator/dispatcher-lock.js", () => ({
+  acquireLock: vi.fn().mockResolvedValue(undefined),
+  releaseLock: vi.fn(),
+  DispatcherAlreadyRunningError: class DispatcherAlreadyRunningError extends Error {
+    pid: number;
+    constructor(pid: number) { super(`foreman run already active (pid ${pid})`); this.pid = pid; }
+  },
 }));
 
 vi.mock("../../lib/git.js", () => ({
@@ -118,6 +128,7 @@ describe("TRD-007: run.ts backend selection via FOREMAN_TASK_BACKEND", () => {
         resumed: [],
         activeAgents: 0,
       });
+      this.adoptOrphanedWorkers = vi.fn().mockResolvedValue({ adopted: 0, markedStuck: 0 });
     });
     MockForemanStore.mockImplementation(function MockForemanStoreImpl(this: Record<string, unknown>) {
       this.close = vi.fn();

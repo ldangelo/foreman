@@ -32,6 +32,7 @@ const {
   const MockDispatcher = vi.fn(function (this: Record<string, unknown>) {
     this.dispatch = mockDispatch;
     this.resumeRuns = vi.fn().mockResolvedValue({ resumed: [], skipped: [], activeAgents: 0 });
+    this.adoptOrphanedWorkers = vi.fn().mockResolvedValue({ adopted: 0, markedStuck: 0 });
   });
 
   const mockGetActiveRuns = vi.fn().mockReturnValue([]);
@@ -62,6 +63,14 @@ vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
+vi.mock("../../orchestrator/dispatcher-lock.js", () => ({
+  acquireLock: vi.fn().mockResolvedValue(undefined),
+  releaseLock: vi.fn(),
+  DispatcherAlreadyRunningError: class DispatcherAlreadyRunningError extends Error {
+    pid: number;
+    constructor(pid: number) { super(`foreman run already active (pid ${pid})`); this.pid = pid; }
+  },
+}));
 vi.mock("../../lib/git.js", () => ({ getRepoRoot: vi.fn().mockResolvedValue("/mock/project") }));
 vi.mock("../../orchestrator/notification-server.js", () => ({
   NotificationServer: vi.fn(function (this: Record<string, unknown>) {
