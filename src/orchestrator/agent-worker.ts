@@ -594,6 +594,21 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           finalizeRetryable = body["retryable"] !== false;
           const errorDetail = typeof body["error"] === "string" ? body["error"] : "unknown finalize error";
           log(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
+
+          // Special case: "nothing to commit" is success for verification/test beads.
+          // The finalize agent should already handle this in its prompt, but as a
+          // safety net we also check here so verification beads aren't stuck in a
+          // reset-to-open loop when the LLM misses the conditional logic.
+          if (errorDetail === "nothing_to_commit") {
+            const beadType = config.seedType ?? "";
+            const beadTitle = config.seedTitle ?? "";
+            const isVerificationBead = beadType === "test" ||
+              /verify|validate|test/i.test(beadTitle);
+            if (isVerificationBead) {
+              finalizeSucceeded = true;
+              log(`[FINALIZE] nothing_to_commit on verification bead (type="${beadType}", title="${beadTitle}") — treating as success`);
+            }
+          }
         } else {
           // No finalize-specific mail — assume success if all phases completed
           finalizeSucceeded = true;
