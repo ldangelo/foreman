@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, lstatSync } from "node:fs";
 import fs from "node:fs/promises";
-import type { WorkflowSetupStep } from "./workflow-loader.js";
+import type { WorkflowSetupStep, WorkflowSetupCache } from "./workflow-loader.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -93,6 +94,103 @@ export async function runSetupSteps(
         console.error(`[setup] Warning: step failed (non-fatal) — ${label}: ${combined}`);
       }
     }
+  }
+}
+
+// ── Setup Cache (stack-agnostic) ─────────────────────────────────────────
+
+/**
+ * Compute a cache key by hashing the contents of the key file(s).
+ * Returns a short hex hash suitable for use as a directory name.
+ */
+function computeCacheHash(worktreePath: string, keyFile: string): string | null {
+  const keyPath = join(worktreePath, keyFile);
+  if (!existsSync(keyPath)) return null;
+  const content = readFileSync(keyPath);
+  return createHash("sha256").update(content).digest("hex").slice(0, 16);
+}
+
+/**
+ * Try to restore a cached dependency directory via symlink.
+ * Returns true if cache hit (symlink created), false if cache miss.
+ */
+async function tryRestoreFromCache(
+  worktreePath: string,
+  projectRoot: string,
+  cache: WorkflowSetupCache,
+): Promise<boolean> {
+  const hash = computeCacheHash(worktreePath, cache.key);
+  if (!hash) return false;
+
+  const cacheDir = join(projectRoot, ".foreman", "setup-cache", hash);
+  const cachedPath = join(cacheDir, cache.path);
+  const targetPath = join(worktreePath, cache.path);
+
+  if (!existsSync(join(cacheDir, ".complete"))) return false;
+  if (!existsSync(cachedPath)) return false;
+
+  // Remove any existing target (e.g. empty dir from git worktree)
+  try { await fs.rm(targetPath, { recursive: true, force: true }); } catch { /* ok */ }
+
+  await fs.symlink(cachedPath, targetPath);
+  console.error(`[setup-cache] Cache hit (${hash.slice(0, 8)}) — symlinked ${cache.path}`);
+  return true;
+}
+
+/**
+ * After running setup steps, populate the cache for future worktrees.
+ */
+async function populateCache(
+  worktreePath: string,
+  projectRoot: string,
+  cache: WorkflowSetupCache,
+): Promise<void> {
+  const hash = computeCacheHash(worktreePath, cache.key);
+  if (!hash) return;
+
+  const cacheDir = join(projectRoot, ".foreman", "setup-cache", hash);
+  const sourcePath = join(worktreePath, cache.path);
+  const cachedPath = join(cacheDir, cache.path);
+
+  if (!existsSync(sourcePath)) return;
+  if (existsSync(join(cacheDir, ".complete"))) return; // already cached
+
+  await fs.mkdir(cacheDir, { recursive: true });
+
+  // Move the installed deps to the cache, then symlink back
+  try { await fs.rm(cachedPath, { recursive: true, force: true }); } catch { /* ok */ }
+  await fs.rename(sourcePath, cachedPath);
+  await fs.symlink(cachedPath, sourcePath);
+  await fs.writeFile(join(cacheDir, ".complete"), new Date().toISOString());
+  console.error(`[setup-cache] Cached ${cache.path} (${hash.slice(0, 8)})`);
+}
+
+/**
+ * Run setup steps with optional caching.
+ *
+ * If `cache` is configured in the workflow YAML:
+ *   1. Try to restore from cache (symlink). If hit → skip setup steps.
+ *   2. If miss → run setup steps → populate cache for next time.
+ *
+ * If no `cache` → just run setup steps normally.
+ */
+export async function runSetupWithCache(
+  worktreePath: string,
+  projectRoot: string,
+  steps: WorkflowSetupStep[],
+  cache?: WorkflowSetupCache,
+): Promise<void> {
+  if (cache) {
+    const restored = await tryRestoreFromCache(worktreePath, projectRoot, cache);
+    if (restored) return; // cache hit — skip setup steps
+  }
+
+  // Cache miss or no cache configured — run steps
+  await runSetupSteps(worktreePath, steps);
+
+  // Populate cache for future worktrees
+  if (cache) {
+    await populateCache(worktreePath, projectRoot, cache);
   }
 }
 
@@ -238,6 +336,7 @@ export async function createWorktree(
   seedId: string,
   baseBranch?: string,
   setupSteps?: WorkflowSetupStep[],
+  setupCache?: WorkflowSetupCache,
 ): Promise<{ worktreePath: string; branchName: string }> {
   const base = baseBranch ?? await getCurrentBranch(repoPath);
   const branchName = `foreman/${seedId}`;
@@ -280,9 +379,8 @@ export async function createWorktree(
     }
     // Reinstall in case dependencies changed after rebase
     if (setupSteps && setupSteps.length > 0) {
-      await runSetupSteps(worktreePath, setupSteps);
+      await runSetupWithCache(worktreePath, repoPath, setupSteps, setupCache);
     } else {
-      // Fallback: Node.js projects get npm/yarn/pnpm install for backward compat
       await installDependencies(worktreePath);
     }
     return { worktreePath, branchName };
@@ -304,11 +402,10 @@ export async function createWorktree(
     }
   }
 
-  // Run setup steps (or fallback to Node.js dependency install)
+  // Run setup steps with caching (or fallback to Node.js dependency install)
   if (setupSteps && setupSteps.length > 0) {
-    await runSetupSteps(worktreePath, setupSteps);
+    await runSetupWithCache(worktreePath, repoPath, setupSteps, setupCache);
   } else {
-    // Fallback: Node.js projects get npm/yarn/pnpm install for backward compat
     await installDependencies(worktreePath);
   }
 

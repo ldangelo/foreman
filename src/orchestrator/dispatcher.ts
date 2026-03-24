@@ -228,12 +228,14 @@ export class Dispatcher {
           log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
         }
 
-        // 1a. Load workflow config to get setup steps for worktree initialization
+        // 1a. Load workflow config to get setup steps + cache config for worktree initialization
         const resolvedWorkflow = resolveWorkflowName(seedInfo.type ?? "feature", seedInfo.labels);
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
+        let setupCache: import("../lib/workflow-loader.js").WorkflowSetupCache | undefined;
         try {
           const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
           setupSteps = wfConfig.setup;
+          setupCache = wfConfig.setupCache;
         } catch {
           // Non-fatal: fall back to default installDependencies behavior
           log(`[foreman] Could not load workflow config '${resolvedWorkflow}' for setup steps — using default dependency install`);
@@ -245,6 +247,7 @@ export class Dispatcher {
           seed.id,
           baseBranch,
           setupSteps,
+          setupCache,
         );
 
         // 3. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)

@@ -9,6 +9,9 @@ setup:
   - command: npm install --prefer-offline --no-audit
     description: Install Node.js dependencies
     failFatal: true
+setupCache:
+  key: package-lock.json
+  path: node_modules
 phases:
   - name: explorer
     prompt: explorer.md
