@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "foreman": "dist/cli/index.js"
+    "foreman": "bin/foreman"
   },
   "files": [
     "dist/",
