@@ -123,22 +123,21 @@ describe("agent-worker.ts", () => {
      */
     const WORKER_SRC_PATH = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
 
-    it("catch block (main error path) calls resetSeedToOpen", () => {
+    it("catch block (main error path) enqueues resetSeedToOpen via bead write queue", () => {
       const source = readFileSync(WORKER_SRC_PATH, "utf-8");
-      // The main catch block must call resetSeedToOpen after the error log
-      // Pattern: "ERROR": ... then resetSeedToOpen
-      expect(source).toContain("await resetSeedToOpen(seedId, storeProjectPath)");
+      // The main catch block must enqueue a reset-seed operation
+      expect(source).toContain("enqueueResetSeedToOpen(store, seedId, ");
     });
 
-    it("resetSeedToOpen is imported from task-backend-ops", () => {
+    it("enqueueResetSeedToOpen is imported from task-backend-ops", () => {
       const source = readFileSync(WORKER_SRC_PATH, "utf-8");
-      expect(source).toMatch(/import.*resetSeedToOpen.*from.*task-backend-ops/);
+      expect(source).toMatch(/import.*enqueueResetSeedToOpen.*from.*task-backend-ops/);
     });
 
-    it("resetSeedToOpen is called at least once after a failed result", () => {
+    it("enqueueResetSeedToOpen is called at least twice (catch block + finalize path)", () => {
       const source = readFileSync(WORKER_SRC_PATH, "utf-8");
-      // Count occurrences — there should be at least 2 (catch block + failed result block)
-      const matches = source.match(/await resetSeedToOpen\(/g) ?? [];
+      // Count occurrences — there should be at least 2 (catch block + markStuck)
+      const matches = source.match(/enqueueResetSeedToOpen\(/g) ?? [];
       expect(matches.length).toBeGreaterThanOrEqual(2);
     });
   });

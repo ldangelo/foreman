@@ -139,7 +139,7 @@ vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }
 vi.mock("../watch-ui.js", () => ({ watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args) }));
 vi.mock("../../orchestrator/merge-queue.js", () => ({ MergeQueue: MockMergeQueue }));
 vi.mock("../../orchestrator/refinery.js", () => ({ Refinery: MockRefinery }));
-vi.mock("../../orchestrator/task-backend-ops.js", () => ({ addNotesToBead: mockAddNotesToBead }));
+vi.mock("../../orchestrator/task-backend-ops.js", () => ({ enqueueAddNotesToBead: mockAddNotesToBead, enqueueMarkBeadFailed: vi.fn() }));
 vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
   isPiAvailable: vi.fn().mockReturnValue(false),
   PiRpcSpawnStrategy: vi.fn(),

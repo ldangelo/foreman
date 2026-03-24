@@ -22,8 +22,8 @@ vi.mock("../../lib/git.js", () => ({
 }));
 
 vi.mock("../task-backend-ops.js", () => ({
-  resetSeedToOpen: vi.fn().mockResolvedValue(undefined),
-  closeSeed: vi.fn().mockResolvedValue(undefined),
+  enqueueResetSeedToOpen: vi.fn(),
+  enqueueCloseSeed: vi.fn(),
 }));
 
 // Imports after mocks

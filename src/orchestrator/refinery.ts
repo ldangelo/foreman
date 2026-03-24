@@ -13,7 +13,7 @@ import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedP
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
-import { closeSeed, resetSeedToOpen } from "./task-backend-ops.js";
+import { enqueueCloseSeed, enqueueResetSeedToOpen } from "./task-backend-ops.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -488,7 +488,7 @@ export class Refinery {
         {
           const markedFiles = await this.scanForConflictMarkers(branchName, targetBranch);
           if (markedFiles.length > 0) {
-            await resetSeedToOpen(run.seed_id, this.projectPath);
+            enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
             this.sendMail(run.id, "merge-failed", {
               seedId: run.seed_id,
               branchName,
@@ -574,7 +574,7 @@ export class Refinery {
               `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — branch reset to open for retry. Rebase conflicts detected.`,
             );
             // Rebase failed — reset seed to open so it can be retried, then create a PR for manual conflict resolution
-            await resetSeedToOpen(run.seed_id, this.projectPath);
+            enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
             this.sendMail(run.id, "merge-failed", {
               seedId: run.seed_id,
               branchName,
@@ -621,7 +621,7 @@ export class Refinery {
             );
 
             // Reset seed to open so it can be retried after manual conflict resolution
-            await resetSeedToOpen(run.seed_id, this.projectPath);
+            enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
             this.sendMail(run.id, "merge-failed", {
               seedId: run.seed_id,
               branchName,
@@ -665,7 +665,7 @@ export class Refinery {
             );
 
             // Reset seed to open so it can be retried
-            await resetSeedToOpen(run.seed_id, this.projectPath);
+            enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
 
             this.store.updateRun(run.id, { status: "test-failed" });
             this.store.logEvent(
@@ -724,7 +724,7 @@ export class Refinery {
 
         // Close the bead NOW — after the code has actually landed in main.
         // projectPath (repo root) is where .beads/ lives; not the worktree dir.
-        await closeSeed(run.seed_id, this.projectPath);
+        enqueueCloseSeed(this.store, run.seed_id, "refinery");
 
         // Send bead-closed mail so inbox shows bead lifecycle completion
         this.sendMail(run.id, "bead-closed", {
@@ -821,7 +821,7 @@ export class Refinery {
         // merge --abort may fail if there is nothing to abort
       }
       // Reset seed to open so it can be retried
-      await resetSeedToOpen(run.seed_id, this.projectPath);
+      enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
       const message = err instanceof Error ? err.message : String(err);
       this.store.updateRun(run.id, {
         status: "failed",
@@ -846,7 +846,7 @@ export class Refinery {
         await git(["reset", "--hard", "HEAD~1"], this.projectPath);
 
         // Reset seed to open so it can be retried
-        await resetSeedToOpen(run.seed_id, this.projectPath);
+        enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
 
         this.store.updateRun(run.id, {
           status: "test-failed",
@@ -888,7 +888,7 @@ export class Refinery {
     );
 
     // Close the bead after successful conflict-resolution merge.
-    await closeSeed(run.seed_id, this.projectPath);
+    enqueueCloseSeed(this.store, run.seed_id, "refinery");
 
     return true;
   }

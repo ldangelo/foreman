@@ -28,6 +28,108 @@ import type { ITaskClient } from "../lib/task-client.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
 import type { StateMismatch } from "../lib/run-status.js";
 
+// ── Bead Write Queue Operations ───────────────────────────────────────────────
+//
+// These functions enqueue br write operations via the ForemanStore bead_write_queue
+// table instead of calling the br CLI directly. The dispatcher (single process)
+// drains the queue sequentially, eliminating SQLite lock contention.
+//
+// Usage: call these from agent-worker, refinery, pipeline-executor, and auto-merge
+// instead of the corresponding direct functions (closeSeed, resetSeedToOpen, etc.).
+
+/**
+ * Enqueue a "close seed" operation for deferred sequential execution by the dispatcher.
+ *
+ * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param seedId - The bead/seed ID to close.
+ * @param sender - Human-readable source label (e.g. "refinery", "agent-worker").
+ */
+export function enqueueCloseSeed(store: ForemanStore, seedId: string, sender: string): void {
+  try {
+    store.enqueueBeadWrite(sender, "close-seed", { seedId });
+    console.error(`[task-backend-ops] Enqueued close-seed for ${seedId} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to enqueue close-seed for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Enqueue a "reset seed to open" operation for deferred sequential execution by the dispatcher.
+ *
+ * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param seedId - The bead/seed ID to reset.
+ * @param sender - Human-readable source label.
+ */
+export function enqueueResetSeedToOpen(store: ForemanStore, seedId: string, sender: string): void {
+  try {
+    store.enqueueBeadWrite(sender, "reset-seed", { seedId });
+    console.error(`[task-backend-ops] Enqueued reset-seed for ${seedId} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to enqueue reset-seed for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Enqueue a "mark bead failed" operation for deferred sequential execution by the dispatcher.
+ *
+ * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param seedId - The bead/seed ID to mark as failed.
+ * @param sender - Human-readable source label.
+ */
+export function enqueueMarkBeadFailed(store: ForemanStore, seedId: string, sender: string): void {
+  try {
+    store.enqueueBeadWrite(sender, "mark-failed", { seedId });
+    console.error(`[task-backend-ops] Enqueued mark-failed for ${seedId} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to enqueue mark-failed for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Enqueue an "add notes to bead" operation for deferred sequential execution by the dispatcher.
+ * Does nothing when notes is empty (consistent with addNotesToBead).
+ *
+ * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param seedId - The bead/seed ID.
+ * @param notes - Note text to add.
+ * @param sender - Human-readable source label.
+ */
+export function enqueueAddNotesToBead(store: ForemanStore, seedId: string, notes: string, sender: string): void {
+  if (!notes) return;
+  // Truncate to avoid excessive note lengths in the queue
+  const truncated = notes.length > 2000 ? notes.slice(0, 2000) + "…" : notes;
+  try {
+    store.enqueueBeadWrite(sender, "add-notes", { seedId, notes: truncated });
+    console.error(`[task-backend-ops] Enqueued add-notes for ${seedId} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to enqueue add-notes for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Enqueue an "add labels to bead" operation for deferred sequential execution by the dispatcher.
+ * Does nothing when labels array is empty (consistent with addLabelsToBead).
+ *
+ * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param seedId - The bead/seed ID.
+ * @param labels - Array of label strings to add.
+ * @param sender - Human-readable source label.
+ */
+export function enqueueAddLabelsToBead(store: ForemanStore, seedId: string, labels: string[], sender: string): void {
+  if (labels.length === 0) return;
+  try {
+    store.enqueueBeadWrite(sender, "add-labels", { seedId, labels });
+    console.error(`[task-backend-ops] Enqueued add-labels [${labels.join(", ")}] for ${seedId} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to enqueue add-labels for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
 // ── Path constants ────────────────────────────────────────────────────────────
 
 function brPath(): string {
