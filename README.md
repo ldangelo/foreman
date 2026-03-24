@@ -524,6 +524,86 @@ foreman/
     └── PRD/                        # Product Requirements Documents
 ```
 
+## Standalone Binaries
+
+Foreman can be distributed as a standalone executable for all 5 platforms — no Node.js required. Binaries are compiled via [pkg](https://github.com/yao-pkg/pkg) which embeds the CJS bundle + Node.js runtime.
+
+> **Note:** `better_sqlite3.node` (native addon) is a _side-car_ file that must stay in the same directory as the binary. It cannot be embedded inside the executable.
+
+### Quick Build
+
+```bash
+# Full pipeline: tsc → CJS bundle → compile all 5 platforms
+npm run build:binaries
+
+# Dry-run (prints commands, does not compile)
+npm run build:binaries:dry-run
+
+# Single target (e.g. darwin-arm64)
+npm run build && npm run bundle:cjs
+tsx scripts/compile-binary.ts --target darwin-arm64
+```
+
+### Output Structure
+
+```
+dist/binaries/
+  darwin-arm64/
+    foreman-darwin-arm64      # macOS Apple Silicon
+    better_sqlite3.node       # side-car native addon
+  darwin-x64/
+    foreman-darwin-x64        # macOS Intel
+    better_sqlite3.node
+  linux-x64/
+    foreman-linux-x64         # Linux x86-64
+    better_sqlite3.node
+  linux-arm64/
+    foreman-linux-arm64       # Linux ARM64 (e.g. AWS Graviton)
+    better_sqlite3.node
+  win-x64/
+    foreman-win-x64.exe       # Windows x64
+    better_sqlite3.node
+```
+
+### Cross-Platform Compilation
+
+`better_sqlite3.node` differs per platform. The prebuilt binaries for all 5 targets are committed to `scripts/prebuilds/`. To refresh them from the better-sqlite3 GitHub Releases:
+
+```bash
+npm run prebuilds:download          # Download for all targets
+npm run prebuilds:download:force    # Re-download even if present
+npm run prebuilds:status            # Check what's available
+```
+
+### CI / Automated Releases
+
+The `.github/workflows/release-binaries.yml` workflow:
+- Triggers on `v*.*.*` tag push (e.g. `git tag v1.0.0 && git push --tags`)
+- Compiles all 5 platform binaries on Ubuntu (cross-compilation via prebuilds)
+- Smoke-tests the linux-x64 binary
+- Packages each platform as `.tar.gz` (zip for Windows)
+- Creates a GitHub Release with all assets attached
+
+To trigger a release:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Or trigger manually from the Actions tab with optional dry-run mode.
+
+### Installation from Binary Release
+
+```bash
+# macOS / Linux
+tar xzf foreman-v1.0.0-linux-x64.tar.gz
+chmod +x foreman-linux-x64
+# Keep better_sqlite3.node in the same directory as the binary
+sudo cp better_sqlite3.node /usr/local/bin/
+sudo mv foreman-linux-x64 /usr/local/bin/foreman
+```
+
 ## Development
 
 ```bash
