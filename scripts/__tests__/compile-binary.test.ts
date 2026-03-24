@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 // ── validateTarget ────────────────────────────────────────────────────────────
 
@@ -59,7 +60,7 @@ describe("findNativeAddon", () => {
   let originalPrebuildsDir: string;
 
   beforeEach(() => {
-    tmpDir = path.join(tmpdir(), `foreman-test-${Date.now()}`);
+    tmpDir = path.join(tmpdir(), `foreman-test-${randomUUID()}`);
     mkdirSync(tmpDir, { recursive: true });
   });
 
@@ -151,7 +152,7 @@ describe("compileTarget (dry-run)", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = path.join(tmpdir(), `foreman-compile-test-${Date.now()}`);
+    tmpDir = path.join(tmpdir(), `foreman-compile-test-${randomUUID()}`);
     mkdirSync(tmpDir, { recursive: true });
   });
 
@@ -162,6 +163,9 @@ describe("compileTarget (dry-run)", () => {
   it("throws when bundle file is missing", async () => {
     const { compileTarget } = await import("../compile-binary.js");
 
+    // Use an explicit non-existent bundle path so the test is hermetic
+    const missingBundle = path.join(tmpDir, "nonexistent-bundle.js");
+
     // In dry-run mode the bundle existence check is still enforced
     await expect(
       compileTarget({
@@ -170,6 +174,7 @@ describe("compileTarget (dry-run)", () => {
         outputDir: tmpDir,
         noNative: true,
         dryRun: false, // not dry-run so the check runs
+        bundlePath: missingBundle,
       })
     ).rejects.toThrow(/Bundle not found/);
   });
@@ -177,6 +182,9 @@ describe("compileTarget (dry-run)", () => {
   it("runs in dry-run mode without throwing even if bundle is missing (dry-run skips exec but not existence check)", async () => {
     // dry-run still validates bundle existence to give early feedback
     const { compileTarget } = await import("../compile-binary.js");
+
+    // Use an explicit non-existent bundle path so the test is hermetic
+    const missingBundle = path.join(tmpDir, "nonexistent-bundle.js");
 
     // Even in dry-run, bundle must exist to ensure the command would work
     await expect(
@@ -186,6 +194,7 @@ describe("compileTarget (dry-run)", () => {
         outputDir: tmpDir,
         noNative: true,
         dryRun: true,
+        bundlePath: missingBundle,
       })
     ).rejects.toThrow(/Bundle not found/);
   });

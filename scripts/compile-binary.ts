@@ -127,6 +127,8 @@ export interface CompileOptions {
   noNative: boolean;
   /** Print commands without running them */
   dryRun: boolean;
+  /** Override the bundle path (useful for testing; defaults to dist/foreman-bundle.js) */
+  bundlePath?: string;
 }
 
 export interface CompileResult {
@@ -305,7 +307,7 @@ export async function compileTarget(options: CompileOptions): Promise<CompileRes
   const { target, backend, outputDir, noNative, dryRun } = options;
   const startTime = Date.now();
 
-  const bundlePath = path.join(REPO_ROOT, "dist", "foreman-bundle.js");
+  const bundlePath = options.bundlePath ?? path.join(REPO_ROOT, "dist", "foreman-bundle.js");
   const targetDir = path.join(outputDir, target);
   const binaryName = getBinaryName(target);
   const binaryPath = path.join(targetDir, binaryName);
