@@ -24,6 +24,8 @@
     "dev": "tsx watch src/cli/index.ts",
     "start": "node dist/cli/index.js",
     "bundle": "tsx scripts/bundle.ts",
+    "compile-binary": "tsx scripts/compile-binary.ts --all",
+    "compile-binary:dry-run": "tsx scripts/compile-binary.ts --all --dry-run",
     "test": "vitest run",
     "test:watch": "vitest"
   },
