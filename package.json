@@ -18,7 +18,7 @@
   "scripts": {
     "prepare": "npm run build",
     "clean": "rm -rf dist/",
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.js && npm run build --workspace=packages/foreman-pi-extensions",
+    "build": "node scripts/build-atomic.js",
     "rebuild": "npm run clean && npm run build",
     "build:atomic": "node scripts/build-atomic.js",
     "dev": "tsx watch src/cli/index.ts",
