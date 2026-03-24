@@ -957,15 +957,17 @@ export class Dispatcher {
       }
     }
 
-    // Flush all changes to .beads/beads.jsonl in a single sync call.
-    // This is more efficient than syncing after each individual operation.
+    // Flush changes to JSONL, then force-rebuild the blocked cache so
+    // br ready reflects newly-unblocked beads immediately. Without the
+    // --force sync, closed blockers don't unblock dependents (bd-tj96).
     if (processed > 0) {
       try {
         execFileSync(bin, ["sync", "--flush-only"], execOpts);
-        console.error(`[bead-writer] Flushed JSONL after processing ${processed}/${pending.length} entries`);
+        execFileSync(bin, ["sync", "--force"], execOpts);
+        console.error(`[bead-writer] Flushed + rebuilt cache after processing ${processed}/${pending.length} entries`);
       } catch (flushErr: unknown) {
         const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-        console.error(`[bead-writer] Warning: br sync --flush-only failed: ${msg.slice(0, 200)}`);
+        console.error(`[bead-writer] Warning: br sync failed: ${msg.slice(0, 200)}`);
       }
     }
 
