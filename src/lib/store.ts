@@ -1,8 +1,36 @@
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+
+/**
+ * Resolve the path to the better-sqlite3 native addon when running from a
+ * bundled context (i.e. `dist/foreman-bundle.js`).
+ *
+ * During development / `npm run build`, the addon is resolved by the bindings
+ * module via node_modules, so no special handling is needed. But when the CLI
+ * is run as a standalone bundle (esbuild output), node_modules may not exist,
+ * so we look for `better_sqlite3.node` placed alongside the bundle by the
+ * postbundle copy step in scripts/bundle.ts.
+ *
+ * @returns Absolute path to better_sqlite3.node, or undefined (use default loader).
+ */
+function resolveBundledNativeBinding(): string | undefined {
+  try {
+    // import.meta.url is available in ESM. In a bundled context this resolves
+    // to the bundle file's path (e.g. /path/to/dist/foreman-bundle.js).
+    const selfDir = dirname(fileURLToPath(import.meta.url));
+    const candidate = join(selfDir, "better_sqlite3.node");
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  } catch {
+    // Swallow — fileURLToPath / import.meta.url unavailable in some edge cases
+  }
+  return undefined;
+}
 
 // ── Interfaces ──────────────────────────────────────────────────────────
 
@@ -355,7 +383,12 @@ export class ForemanStore {
     const resolvedPath = dbPath ?? join(homedir(), ".foreman", "foreman.db");
     mkdirSync(join(resolvedPath, ".."), { recursive: true });
 
-    this.db = new Database(resolvedPath);
+    // When running from a bundle (dist/foreman-bundle.js), use the native
+    // addon copied by the postbundle step rather than relying on node_modules.
+    const nativeBinding = resolveBundledNativeBinding();
+    this.db = nativeBinding
+      ? new Database(resolvedPath, { nativeBinding })
+      : new Database(resolvedPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("busy_timeout = 30000");
