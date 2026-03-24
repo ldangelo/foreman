@@ -9,7 +9,8 @@ import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
-import { createWorktree, gitBranchExists } from "../lib/git.js";
+import { createWorktree, gitBranchExists, getCurrentBranch, detectDefaultBranch } from "../lib/git.js";
+import { extractBranchLabel, isDefaultBranch, applyBranchLabel } from "../lib/branch-label.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
@@ -134,6 +135,17 @@ export class Dispatcher {
     const dispatched: DispatchedTask[] = [];
     const skipped: SkippedTask[] = [];
 
+    // Detect current branch for auto-labeling (branch:<name> label).
+    // Done once per dispatch() call to avoid repeated git invocations.
+    let currentBranch: string | undefined;
+    let defaultBranch: string | undefined;
+    try {
+      currentBranch = await getCurrentBranch(this.projectPath);
+      defaultBranch = await detectDefaultBranch(this.projectPath);
+    } catch {
+      // Non-fatal: branch detection failure must not block dispatch
+    }
+
     // Skip seeds that already have an active run
     const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
 
@@ -197,6 +209,59 @@ export class Dispatcher {
         } catch {
           // Non-fatal: proceed without comments if fetch fails
           log(`Warning: failed to fetch comments for seed ${seed.id}`);
+        }
+      }
+
+      // ── Branch label auto-labeling ─────────────────────────────────────────
+      // If the current branch is not the default (main/master/dev), automatically
+      // add a `branch:<currentBranch>` label to the bead so that refinery merges
+      // the work into the correct branch instead of always targeting main/dev.
+      //
+      // Inheritance: if the seed has a parent bead with a branch: label, the child
+      // inherits that label (even when the current branch is the default).
+      //
+      // Only applied when the bead doesn't already have a branch: label.
+      if (currentBranch && defaultBranch) {
+        const existingLabels: string[] = seedDetail?.labels ?? seed.labels ?? [];
+        const existingBranchLabel = extractBranchLabel(existingLabels);
+
+        if (!existingBranchLabel) {
+          // Determine the branch to label with: prefer current non-default branch,
+          // then check parent for inheritance.
+          let labelBranch: string | undefined;
+
+          if (!isDefaultBranch(currentBranch, defaultBranch)) {
+            labelBranch = currentBranch;
+          } else if (seed.parent) {
+            // Check parent's branch: label for inheritance
+            try {
+              const parentDetail = await this.seeds.show(seed.parent) as unknown as { labels?: string[] };
+              const parentBranchLabel = extractBranchLabel(parentDetail.labels);
+              if (parentBranchLabel && !isDefaultBranch(parentBranchLabel, defaultBranch)) {
+                labelBranch = parentBranchLabel;
+              }
+            } catch {
+              // Non-fatal: parent label lookup failure must not block dispatch
+            }
+          }
+
+          if (labelBranch) {
+            const updatedLabels = applyBranchLabel(existingLabels, labelBranch);
+            try {
+              await this.seeds.update(seed.id, { labels: updatedLabels });
+              log(`[foreman] Auto-labeled ${seed.id} with branch:${labelBranch}`);
+              // Update seedDetail.labels so seedToInfo() sees the updated labels
+              if (seedDetail) {
+                seedDetail = { ...seedDetail, labels: updatedLabels };
+              } else {
+                seedDetail = { labels: updatedLabels };
+              }
+            } catch (labelErr: unknown) {
+              // Non-fatal: label failure must not block dispatch
+              const msg = labelErr instanceof Error ? labelErr.message : String(labelErr);
+              log(`Warning: failed to add branch label to ${seed.id}: ${msg}`);
+            }
+          }
         }
       }
 
