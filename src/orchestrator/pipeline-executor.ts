@@ -217,6 +217,7 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       seedTitle,
       seedDescription: description,
       seedComments: comments,
+      seedType: config.seedType,
       runId,
       hasExplorerReport,
       feedbackContext,

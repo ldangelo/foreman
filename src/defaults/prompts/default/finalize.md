@@ -51,7 +51,19 @@ Run:
 git commit -m "{{seedTitle}} ({{seedId}})"
 ```
 
-If git reports "nothing to commit", send this mail and stop immediately:
+If git reports "nothing to commit", check whether this is a verification/test bead:
+- Bead type is `{{seedType}}`
+- Bead title is `{{seedTitle}}`
+
+**If the bead type is `test` OR the title contains "verify", "validate", or "test" (case-insensitive):**
+No changes is the correct and expected outcome for a verification bead. Treat this as success — send phase-complete mail and continue to Step 5:
+```
+/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"finalize","seedId":"{{seedId}}","status":"complete","note":"nothing_to_commit_verification_bead"}'
+```
+Then proceed to Step 5 (Verify branch).
+
+**Otherwise (non-verification bead):**
+Send this mail and stop immediately:
 ```
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"nothing_to_commit"}'
 ```
@@ -165,6 +177,6 @@ Use this format:
 ## Rules
 - **DO NOT modify any source code files** — only write FINALIZE_VALIDATION.md, FINALIZE_REPORT.md and run git commands
 - Run steps in order — do not skip any step unless explicitly told to stop
-- All failures except "nothing to commit" are logged and continue (non-fatal) unless they prevent git push
+- All failures except "nothing to commit" (for non-verification beads) are logged and continue (non-fatal) unless they prevent git push
 - Do NOT commit SESSION_LOG.md or RUN_LOG.md — they are excluded from commits to prevent merge conflicts
 - **If tests fail in Step 7, stop after writing FINALIZE_VALIDATION.md — do NOT run Steps 8 or 9**
