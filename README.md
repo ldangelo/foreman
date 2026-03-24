@@ -265,6 +265,10 @@ foreman doctor     # Shows "Pi binary: found" or "Pi binary: not found (using Cl
 
 ## Commands
 
+For the complete CLI reference with all options and examples, see **[CLI Reference](docs/cli-reference.md)**.
+
+For common problems and solutions, see **[Troubleshooting Guide](docs/troubleshooting.md)**.
+
 ### `foreman init`
 Initialize Foreman in a project directory. Runs `br init` and registers the project.
 
