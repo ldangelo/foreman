@@ -1,11 +1,19 @@
 {
-  "name": "foreman",
+  "name": "@oftheangels/foreman",
   "version": "0.1.0",
-  "description": "Multi-agent coding orchestrator built on OpenClaw + Beads",
+  "description": "Multi-agent AI coding orchestrator with task decomposition, git worktree management, and beads_rust integration",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "foreman": "bin/foreman"
+    "foreman": "dist/cli/index.js"
+  },
+  "files": [
+    "dist/",
+    "bin/",
+    "src/defaults/"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc && node scripts/copy-assets.js && npm run build --workspace=packages/foreman-pi-extensions",
@@ -46,7 +54,7 @@
     "vitest": "^4.0.18"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20"
   },
   "workspaces": [
     "packages/*"
