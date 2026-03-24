@@ -620,6 +620,42 @@ export class ForemanStore {
   }
 
   /**
+   * Check whether a seed already has a non-terminal run in the database.
+   *
+   * "Non-terminal" means the run is still active or has produced a result that
+   * should block a new dispatch (pending, running, completed, stuck, pr-created).
+   * Terminal/retryable states (failed, merged, conflict, test-failed, reset) are
+   * excluded so that genuinely failed seeds can be retried.
+   *
+   * Used by the dispatcher as a just-in-time guard immediately before calling
+   * createRun(), preventing duplicate dispatches when two dispatch cycles race
+   * and both observe an empty activeRuns snapshot.
+   *
+   * @returns true if the seed should be skipped (a non-terminal run exists),
+   *          false if it is safe to dispatch.
+   */
+  hasActiveOrPendingRun(seedId: string, projectId?: string): boolean {
+    // Statuses that represent "work is in flight or done and not reset"
+    const blockingStatuses = ["pending", "running", "completed", "stuck", "pr-created"];
+    const placeholders = blockingStatuses.map(() => "?").join(", ");
+    let row: unknown;
+    if (projectId) {
+      row = this.db
+        .prepare(
+          `SELECT 1 FROM runs WHERE project_id = ? AND seed_id = ? AND status IN (${placeholders}) LIMIT 1`
+        )
+        .get(projectId, seedId, ...blockingStatuses);
+    } else {
+      row = this.db
+        .prepare(
+          `SELECT 1 FROM runs WHERE seed_id = ? AND status IN (${placeholders}) LIMIT 1`
+        )
+        .get(seedId, ...blockingStatuses);
+    }
+    return row !== undefined && row !== null;
+  }
+
+  /**
    * Find all runs that were branched from the given base branch (i.e. stacked on it).
    * Used by rebaseStackedBranches() to find dependent seeds after a merge.
    */
