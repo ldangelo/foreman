@@ -250,6 +250,42 @@ export async function downloadPrebuilt(
 /**
  * Check status of all prebuilts and print a formatted summary table.
  */
+/**
+ * Write (or update) a version.json manifest to the prebuilds directory.
+ *
+ * This file records which better-sqlite3 version and Node ABI the prebuilts
+ * were built for. Useful for CI cache invalidation and debugging.
+ */
+export function writeVersionManifest(
+  outputDir: string,
+  version: string,
+  nodeAbi: number,
+  targets: readonly PrebuildTarget[]
+): void {
+  const manifest = {
+    "better-sqlite3": version,
+    nodeAbi,
+    nodeMajor: Object.entries(NODE_ABI_VERSIONS).find(
+      ([, abi]) => abi === nodeAbi
+    )?.[0]
+      ? parseInt(
+          Object.entries(NODE_ABI_VERSIONS).find(
+            ([, abi]) => abi === nodeAbi
+          )![0],
+          10
+        )
+      : undefined,
+    targets: [...targets],
+    downloadedAt: new Date().toISOString(),
+    source: "https://github.com/WiseLibs/better-sqlite3/releases",
+  };
+  writeFileSync(
+    path.join(outputDir, "version.json"),
+    JSON.stringify(manifest, null, 2) + "\n",
+    "utf8"
+  );
+}
+
 export function checkPrebuildsStatus(
   outputDir: string,
   version: string,
@@ -476,6 +512,19 @@ async function main(): Promise<void> {
       console.log(`  ${f.target}: ${f.error}`);
     }
     process.exit(1);
+  }
+
+  // Write version manifest after successful downloads
+  if (!dryRun && results.length > 0) {
+    // Determine which targets were actually downloaded (all successful targets)
+    const successTargets = results.map((r) => r.target);
+    // Write manifest covering all targets currently present in output dir
+    const allPresent = PREBUILD_TARGETS.filter((t) =>
+      existsSync(getPrebuiltOutputPath(outputDir, t))
+    );
+    writeVersionManifest(outputDir, version, nodeAbi, allPresent);
+    console.log(`\n📄 Version manifest written: ${path.join(outputDir, "version.json")}`);
+    void successTargets; // used above
   }
 
   console.log(

@@ -1,0 +1,14 @@
+{
+  "better-sqlite3": "12.8.0",
+  "nodeAbi": 115,
+  "nodeMajor": 20,
+  "targets": [
+    "darwin-arm64",
+    "darwin-x64",
+    "linux-x64",
+    "linux-arm64",
+    "win-x64"
+  ],
+  "downloadedAt": "2026-03-24T00:00:00.000Z",
+  "source": "https://github.com/WiseLibs/better-sqlite3/releases"
+}

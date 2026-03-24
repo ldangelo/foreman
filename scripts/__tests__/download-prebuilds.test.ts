@@ -218,6 +218,74 @@ describe("getPrebuiltOutputPath", () => {
   });
 });
 
+// ── Version Manifest ──────────────────────────────────────────────────────────
+
+describe("writeVersionManifest", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    _testCounter++;
+    tmpDir = path.join(tmpdir(), `prebuild-version-test-${_testCounter}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("writes version.json with correct fields", async () => {
+    const { writeVersionManifest } = await import("../download-prebuilds.js");
+    const { readFileSync } = await import("node:fs");
+
+    writeVersionManifest(tmpDir, "12.8.0", 115, ["darwin-arm64", "linux-x64"]);
+
+    const manifestPath = path.join(tmpDir, "version.json");
+    expect(existsSync(manifestPath)).toBe(true);
+
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      "better-sqlite3": string;
+      nodeAbi: number;
+      nodeMajor: number;
+      targets: string[];
+      downloadedAt: string;
+      source: string;
+    };
+
+    expect(manifest["better-sqlite3"]).toBe("12.8.0");
+    expect(manifest.nodeAbi).toBe(115);
+    expect(manifest.nodeMajor).toBe(20);
+    expect(manifest.targets).toEqual(["darwin-arm64", "linux-x64"]);
+    expect(manifest.downloadedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(manifest.source).toContain("better-sqlite3");
+  });
+
+  it("resolves nodeMajor from NODE_ABI_VERSIONS", async () => {
+    const { writeVersionManifest } = await import("../download-prebuilds.js");
+    const { readFileSync } = await import("node:fs");
+
+    // ABI 127 = Node 22
+    writeVersionManifest(tmpDir, "12.8.0", 127, ["darwin-arm64"]);
+
+    const manifest = JSON.parse(
+      readFileSync(path.join(tmpDir, "version.json"), "utf8")
+    ) as { nodeMajor: number };
+    expect(manifest.nodeMajor).toBe(22);
+  });
+
+  it("overwrites existing version.json on re-download", async () => {
+    const { writeVersionManifest } = await import("../download-prebuilds.js");
+    const { readFileSync } = await import("node:fs");
+
+    writeVersionManifest(tmpDir, "12.6.2", 115, ["darwin-arm64"]);
+    writeVersionManifest(tmpDir, "12.8.0", 115, ["darwin-arm64"]);
+
+    const manifest = JSON.parse(
+      readFileSync(path.join(tmpDir, "version.json"), "utf8")
+    ) as { "better-sqlite3": string };
+    expect(manifest["better-sqlite3"]).toBe("12.8.0");
+  });
+});
+
 // ── Actual Prebuilts Verification (Integration) ────────────────────────────────
 
 describe("scripts/prebuilds — integration", () => {
@@ -225,6 +293,28 @@ describe("scripts/prebuilds — integration", () => {
 
   it("prebuilds directory exists", () => {
     expect(existsSync(prebuildsDir)).toBe(true);
+  });
+
+  it("version.json exists and contains valid metadata", () => {
+    const { readFileSync } = require("node:fs");
+    const manifestPath = path.join(prebuildsDir, "version.json");
+    expect(existsSync(manifestPath)).toBe(true);
+
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      "better-sqlite3": string;
+      nodeAbi: number;
+      targets: string[];
+    };
+
+    // Version should be a semver string
+    expect(manifest["better-sqlite3"]).toMatch(/^\d+\.\d+\.\d+$/);
+    // ABI should be a valid number
+    expect(typeof manifest.nodeAbi).toBe("number");
+    expect(manifest.nodeAbi).toBeGreaterThan(0);
+    // Should list all 5 targets
+    expect(manifest.targets).toHaveLength(5);
+    expect(manifest.targets).toContain("darwin-arm64");
+    expect(manifest.targets).toContain("win-x64");
   });
 
   it.each(["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win-x64"])(

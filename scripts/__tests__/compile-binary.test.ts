@@ -162,14 +162,15 @@ describe("compileTarget (dry-run)", () => {
   it("throws when bundle file is missing", async () => {
     const { compileTarget } = await import("../compile-binary.js");
 
-    // In dry-run mode the bundle existence check is still enforced
+    // Use bundlePath override to point to a non-existent file (isolated from real dist/)
     await expect(
       compileTarget({
         target: "linux-x64",
         backend: "pkg",
         outputDir: tmpDir,
         noNative: true,
-        dryRun: false, // not dry-run so the check runs
+        dryRun: false,
+        bundlePath: path.join(tmpDir, "nonexistent-bundle.js"),
       })
     ).rejects.toThrow(/Bundle not found/);
   });
@@ -179,6 +180,7 @@ describe("compileTarget (dry-run)", () => {
     const { compileTarget } = await import("../compile-binary.js");
 
     // Even in dry-run, bundle must exist to ensure the command would work
+    // Use bundlePath override to point to a non-existent file (isolated from real dist/)
     await expect(
       compileTarget({
         target: "darwin-arm64",
@@ -186,6 +188,7 @@ describe("compileTarget (dry-run)", () => {
         outputDir: tmpDir,
         noNative: true,
         dryRun: true,
+        bundlePath: path.join(tmpDir, "nonexistent-bundle.js"),
       })
     ).rejects.toThrow(/Bundle not found/);
   });
