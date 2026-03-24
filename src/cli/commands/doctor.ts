@@ -5,6 +5,7 @@ import { ForemanStore } from "../../lib/store.js";
 import { Doctor } from "../../orchestrator/doctor.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { purgeLogsAction } from "./purge-logs.js";
 import type { CheckResult, CheckStatus } from "../../orchestrator/types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -59,10 +60,18 @@ export const doctorCommand = new Command("doctor")
   .option("--fix", "Auto-fix issues where possible")
   .option("--dry-run", "Show what --fix would do without making changes")
   .option("--json", "Output results as JSON")
+  .option("--clean-logs", "Remove old agent log files after health checks (default: keep last 7 days)")
+  .option("--log-days <n>", "Retention window for --clean-logs in days (default: 7)", (v) => {
+    const n = parseInt(v, 10);
+    if (isNaN(n) || n < 0) throw new Error("--log-days must be a non-negative integer");
+    return n;
+  })
   .action(async (opts) => {
     const fix = (opts.fix as boolean | undefined) ?? false;
     const dryRun = (opts.dryRun as boolean | undefined) ?? false;
     const jsonOutput = (opts.json as boolean | undefined) ?? false;
+    const cleanLogs = (opts.cleanLogs as boolean | undefined) ?? false;
+    const logDays = (opts.logDays as number | undefined) ?? 7;
 
     if (!jsonOutput) {
       console.log(chalk.bold("\nforeman doctor\n"));
@@ -133,6 +142,21 @@ export const doctorCommand = new Command("doctor")
       }
 
       store.close();
+      store = null;
+
+      // Run log cleanup if --clean-logs was requested
+      if (cleanLogs) {
+        if (!jsonOutput) {
+          console.log();
+          console.log(chalk.bold("Log cleanup:"));
+        }
+        const purgeStore = ForemanStore.forProject(projectPath);
+        try {
+          await purgeLogsAction({ days: logDays, dryRun }, purgeStore);
+        } finally {
+          purgeStore.close();
+        }
+      }
 
       if (report.summary.fail > 0) {
         process.exit(1);
