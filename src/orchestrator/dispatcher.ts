@@ -909,7 +909,9 @@ export class Dispatcher {
 
         switch (entry.operation) {
           case "close-seed":
-            execFileSync(bin, ["close", seedId, "--reason", "Completed via pipeline"], execOpts);
+            // Use "update --status closed" instead of "close --force" because
+            // br close --force doesn't persist to JSONL export (beads_rust#204).
+            execFileSync(bin, ["update", seedId, "--status", "closed"], execOpts);
             console.error(`[bead-writer] Closed seed ${seedId} (from ${entry.sender})`);
             break;
 

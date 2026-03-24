@@ -39,7 +39,7 @@ describe("closeSeed — br backend", () => {
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("calls br close with seedId and --reason flag", async () => {
+  it("calls br update --status closed with seedId and --reason flag", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await closeSeed("bd-abc-001");
@@ -47,7 +47,7 @@ describe("closeSeed — br backend", () => {
     // First call is close, second is sync --flush-only
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toContain("br");
-    expect(args).toEqual(["close", "bd-abc-001", "--reason", "Completed via pipeline"]);
+    expect(args).toEqual(["update", "bd-abc-001", "--status", "closed"]);
   });
 
   it("uses ~/.local/bin/br path for br backend", async () => {
@@ -76,15 +76,15 @@ describe("closeSeed — br backend", () => {
     await expect(closeSeed("bd-fail-002")).resolves.toBeUndefined();
   });
 
-  it("passes the correct --reason text", async () => {
+  it("passes --status closed flag", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await closeSeed("bd-reason-test");
 
     const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    const reasonIdx = args.indexOf("--reason");
-    expect(reasonIdx).toBeGreaterThanOrEqual(0);
-    expect(args[reasonIdx + 1]).toBe("Completed via pipeline");
+    const statusIdx = args.indexOf("--status");
+    expect(statusIdx).toBeGreaterThanOrEqual(0);
+    expect(args[statusIdx + 1]).toBe("closed");
   });
 
   it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", async () => {
@@ -93,7 +93,7 @@ describe("closeSeed — br backend", () => {
     await closeSeed("task-xyz-999");
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toContain("br");
-    expect(args[0]).toBe("close");
+    expect(args[0]).toBe("update");
   });
 
   it("calls br sync --flush-only after closing seed", async () => {

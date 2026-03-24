@@ -151,21 +151,14 @@ function execOpts(projectPath?: string): { stdio: "pipe"; timeout: number; cwd?:
 /**
  * Close (complete) a bead in the br backend.
  *
- * br close <seedId> --reason "Completed via pipeline"
- * br sync --flush-only  (persists the change to .beads/beads.jsonl)
- *
- * TRD-024: sd backend removed. Always uses br.
- * Errors are caught and logged to stderr; the function never throws.
- * The flush step is non-fatal: if it fails the close is still in br's memory
- * and may be recovered by syncBeadStatusOnStartup on the next restart.
+ * Uses "br update --status closed" instead of "br close" because
+ * br close --force doesn't persist to JSONL export (beads_rust#204).
  *
  * @param projectPath - The project root directory that contains .beads/.
- *   Must be provided so br auto-discovers the correct database when called
- *   from a worktree that has no .beads/ of its own.
  */
 export async function closeSeed(seedId: string, projectPath?: string): Promise<void> {
   const bin = brPath();
-  const args = ["close", seedId, "--reason", "Completed via pipeline"];
+  const args = ["update", seedId, "--status", "closed"];
 
   try {
     execFileSync(bin, args, execOpts(projectPath));

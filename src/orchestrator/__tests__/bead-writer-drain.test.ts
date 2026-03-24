@@ -105,18 +105,18 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 
-  it("executes br close for close-seed operation", async () => {
+  it("executes br update --status closed for close-seed operation", async () => {
     store.enqueueBeadWrite("refinery", "close-seed", { seedId: "bd-abc" });
 
     const result = await dispatcher.drainBeadWriterInbox();
     expect(result).toBe(1);
 
     const calls = getCalls();
-    const closeCall = calls.find(([, args]) => args[0] === "close");
+    const closeCall = calls.find(([, args]) => args[0] === "update" && args.includes("closed"));
     expect(closeCall).toBeTruthy();
     const [cmd, args] = closeCall!;
     expect(cmd).toBe(BR_PATH);
-    expect(args).toEqual(["close", "bd-abc", "--reason", "Completed via pipeline"]);
+    expect(args).toEqual(["update", "bd-abc", "--status", "closed"]);
   });
 
   it("executes br update --status open for reset-seed operation", async () => {
@@ -203,9 +203,9 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
 
     await dispatcher.drainBeadWriterInbox();
 
-    // First br operation should be close (not update --status open)
+    // First br operation should be update --status closed (not update --status open)
     const firstOp = getCalls()[0];
-    expect(firstOp[1][0]).toBe("close");
+    expect(firstOp[1][0]).toBe("update");
   });
 
   it("continues draining when one entry fails", async () => {
