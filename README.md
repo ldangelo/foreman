@@ -575,16 +575,53 @@ npm run prebuilds:download:force    # Re-download even if present
 npm run prebuilds:status            # Check what's available
 ```
 
+### Semantic Versioning & Conventional Commits
+
+Foreman uses **[release-please](https://github.com/googleapis/release-please)** for automated semantic versioning driven by [Conventional Commits](https://www.conventionalcommits.org/).
+
+#### How it works
+
+1. Merge a PR to `main` whose commits (or PR title) follow the conventional-commit format.
+2. The `.github/workflows/release.yml` workflow runs `release-please`, which:
+   - Inspects commits since the last release tag.
+   - Opens (or updates) a **Release PR** with a bumped `package.json` version and an updated `CHANGELOG.md`.
+3. Merge the Release PR → release-please creates the GitHub Release + tag.
+4. The `release-binaries.yml` workflow fires on the new tag and publishes platform binaries.
+
+#### Commit prefix → version bump
+
+| Prefix | Bump |
+|--------|------|
+| `fix:` | patch (0.1.0 → 0.1.1) |
+| `feat:` | minor (0.1.0 → 0.2.0) |
+| `feat!:` or `BREAKING CHANGE:` footer | major (0.1.0 → 1.0.0) |
+
+#### Examples
+
+```
+feat: add --dry-run flag to foreman run
+fix: handle missing EXPLORER_REPORT.md gracefully
+feat!: rename foreman monitor to foreman sentinel
+
+BREAKING CHANGE: The monitor subcommand has been renamed to sentinel.
+```
+
+#### Configuration files
+
+- `release-please-config.json` — release-please package config
+- `.release-please-manifest.json` — current version manifest (updated by release-please)
+- `CHANGELOG.md` — auto-generated; do not edit manually
+
 ### CI / Automated Releases
 
 The `.github/workflows/release-binaries.yml` workflow:
-- Triggers on `v*.*.*` tag push (e.g. `git tag v1.0.0 && git push --tags`)
+- Triggers on `v*.*.*` tag push (created automatically by release-please)
 - Compiles all 5 platform binaries on Ubuntu (cross-compilation via prebuilds)
 - Smoke-tests the linux-x64 binary
 - Packages each platform as `.tar.gz` (zip for Windows)
 - Creates a GitHub Release with all assets attached
 
-To trigger a release:
+To trigger a release manually (bypassing release-please):
 
 ```bash
 git tag v1.0.0
