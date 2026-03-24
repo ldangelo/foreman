@@ -1020,14 +1020,17 @@ export class ForemanStore {
    * Get all messages across all runs (for global watch mode).
    */
   getAllMessagesGlobal(limit = 200): Message[] {
-    return this.db
+    // Fetch the most recent messages (DESC), then reverse to display chronologically.
+    // Without this, --all shows the oldest messages from the beginning of time.
+    const rows = this.db
       .prepare(
         `SELECT * FROM messages
          WHERE deleted_at IS NULL
-         ORDER BY created_at ASC, rowid ASC
+         ORDER BY created_at DESC, rowid DESC
          LIMIT ?`
       )
       .all(limit) as Message[];
+    return rows.reverse();
   }
 
   /**
