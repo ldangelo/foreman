@@ -351,6 +351,9 @@ export function buildPhasePrompt(
     seedTitle: string;
     seedDescription: string;
     seedComments?: string;
+    /** Bead type (e.g. "test", "task", "bug"). Used by finalize to handle
+     *  "nothing to commit" as success for verification beads. */
+    seedType?: string;
     runId?: string;
     hasExplorerReport?: boolean;
     feedbackContext?: string;
@@ -380,6 +383,7 @@ export function buildPhasePrompt(
     agentRole: phaseName,
     baseBranch: context.baseBranch ?? "main",
     worktreePath: context.worktreePath ?? "",
+    seedType: context.seedType ?? "",
   };
 
   // Map phase names to legacy template filenames for bundled fallback.
