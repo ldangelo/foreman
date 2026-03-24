@@ -325,6 +325,14 @@ export async function getCurrentBranch(repoPath: string): Promise<string> {
 }
 
 /**
+ * Checkout a branch by name.
+ * Throws if the branch does not exist or the checkout fails.
+ */
+export async function checkoutBranch(repoPath: string, branchName: string): Promise<void> {
+  await git(["checkout", branchName], repoPath);
+}
+
+/**
  * Create a worktree for a seed.
  *
  * - Branch: foreman/<seedId>

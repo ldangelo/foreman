@@ -406,6 +406,56 @@ describe("Refinery.mergeCompleted()", () => {
     );
   });
 
+  it("uses branch: label from bead as target branch instead of default", async () => {
+    const { store, seeds, refinery } = makeMocks();
+    const run = makeRun();
+    store.getRunsByStatus.mockReturnValue([run]);
+    (mergeWorktree as any).mockResolvedValue({ success: true });
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    // Mock seeds.show to return a bead with a branch: label
+    seeds.show.mockResolvedValue({
+      title: "Test bead",
+      description: null,
+      status: "completed",
+      labels: ["workflow:smoke", "branch:installer"],
+    } as unknown as null);
+
+    await refinery.mergeCompleted({ runTests: false });
+
+    // mergeWorktree should be called with "installer" as targetBranch, not "main"
+    expect(mergeWorktree).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      "installer",
+    );
+  });
+
+  it("falls back to default branch when bead has no branch: label", async () => {
+    const { store, seeds, refinery } = makeMocks();
+    const run = makeRun();
+    store.getRunsByStatus.mockReturnValue([run]);
+    (mergeWorktree as any).mockResolvedValue({ success: true });
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    // Mock seeds.show to return a bead with no branch: label
+    seeds.show.mockResolvedValue({
+      title: "Test bead",
+      description: null,
+      status: "completed",
+      labels: ["workflow:smoke"],
+    } as unknown as null);
+
+    await refinery.mergeCompleted({ runTests: false });
+
+    // mergeWorktree should fall back to "main" (from detectDefaultBranch mock)
+    expect(mergeWorktree).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      "main",
+    );
+  });
+
   it("marks run as conflict when merge has conflicts", async () => {
     const { store, refinery } = makeMocks();
     const run = makeRun();

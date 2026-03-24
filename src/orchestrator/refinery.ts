@@ -7,6 +7,7 @@ import type { ForemanStore } from "../lib/store.js";
 import type { BeadGraph } from "../lib/beads.js";
 import type { UpdateOptions } from "../lib/task-client.js";
 import { mergeWorktree, removeWorktree, detectDefaultBranch, gitBranchExists } from "../lib/git.js";
+import { extractBranchLabel } from "../lib/branch-label.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -63,7 +64,7 @@ async function runTestCommand(command: string, cwd: string): Promise<{ ok: boole
  * orderByDependencies will fall back to insertion order in that case.
  */
 export interface IRefineryTaskClient {
-  show(id: string): Promise<{ title?: string; description?: string | null; status: string }>;
+  show(id: string): Promise<{ title?: string; description?: string | null; status: string; labels?: string[] }>;
   getGraph?(): Promise<BeadGraph>;
   update?(id: string, opts: UpdateOptions): Promise<void>;
 }
@@ -434,7 +435,7 @@ export class Refinery {
     projectId?: string;
     seedId?: string;
   }): Promise<MergeReport> {
-    const targetBranch = opts?.targetBranch ?? await detectDefaultBranch(this.projectPath);
+    const defaultTargetBranch = opts?.targetBranch ?? await detectDefaultBranch(this.projectPath);
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
 
@@ -448,6 +449,19 @@ export class Refinery {
 
     for (const run of completedRuns) {
       const branchName = `foreman/${run.seed_id}`;
+
+      // Resolve per-seed target branch: prefer branch: label on the bead,
+      // fall back to the caller-supplied or auto-detected default.
+      let targetBranch = defaultTargetBranch;
+      try {
+        const seedDetail = await this.seeds.show(run.seed_id);
+        const branchLabel = extractBranchLabel(seedDetail.labels);
+        if (branchLabel) {
+          targetBranch = branchLabel;
+        }
+      } catch {
+        // Non-fatal — if label lookup fails, use default target
+      }
 
       try {
         // Early guard: if the branch has no unique commits vs target, the agent committed
