@@ -49,7 +49,7 @@ export const mergeCommand = new Command("merge")
   .option("--target-branch <branch>", "Branch to merge into (default: auto-detected)")
   .option("--no-tests", "Skip running tests after merge")
   .option("--test-command <cmd>", "Test command to run", "npm test")
-  .option("--seed <id>", "Merge a single bead by ID")
+  .option("--bead <id>", "Merge a single bead by ID")
   .option("--list", "List beads ready to merge (no merge performed)")
   .option("--dry-run", "Preview merge results without modifying git state")
   .option("--resolve <runId>", "Resolve a conflicting run by ID")
@@ -202,7 +202,7 @@ export const mergeCommand = new Command("merge")
           projectPath,
           targetBranch,
           branches,
-          opts.seed as string | undefined,
+          opts.bead as string | undefined,
         );
 
         for (const entry of dryRunResults) {
@@ -297,8 +297,8 @@ export const mergeCommand = new Command("merge")
 
       // When retrying a specific seed, reset its failed/conflict entry back to
       // pending so the dequeue loop can pick it up again.
-      if (opts.seed) {
-        mq.resetForRetry(opts.seed);
+      if (opts.bead) {
+        mq.resetForRetry(opts.bead);
       }
 
       // Step 2: Process queue via dequeue loop
@@ -311,7 +311,7 @@ export const mergeCommand = new Command("merge")
       let entry = mq.dequeue();
       while (entry) {
         // If --seed filter is active, skip non-matching entries
-        if (opts.seed && entry.seed_id !== opts.seed) {
+        if (opts.bead && entry.seed_id !== opts.bead) {
           skippedIds.push(entry.id);
           entry = mq.dequeue();
           continue;
@@ -375,7 +375,7 @@ export const mergeCommand = new Command("merge")
         }
 
         // If --seed filter, stop after processing the target
-        if (opts.seed) {
+        if (opts.bead) {
           break;
         }
 
@@ -401,7 +401,7 @@ export const mergeCommand = new Command("merge")
       }
 
       // ── Auto-retry loop ──────────────────────────────────────────────────
-      if (opts.autoRetry && !opts.seed) {
+      if (opts.autoRetry && !opts.bead) {
         const retryable = mq.getRetryableEntries();
         if (retryable.length > 0) {
           console.log(chalk.dim(`\n  Retrying ${retryable.length} failed/conflict entry(ies)...\n`));
@@ -521,8 +521,8 @@ export const mergeCommand = new Command("merge")
       }
 
       if (merged.length === 0 && conflicts.length === 0 && testFailures.length === 0 && prsCreated.length === 0) {
-        if (opts.seed) {
-          console.log(chalk.yellow(`No completed run found for bead ${opts.seed}.`));
+        if (opts.bead) {
+          console.log(chalk.yellow(`No completed run found for bead ${opts.bead}.`));
           console.log(chalk.dim("Use 'foreman merge --list' to see beads ready to merge."));
         } else {
           console.log(chalk.yellow("No completed tasks to merge."));

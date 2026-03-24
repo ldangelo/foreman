@@ -103,7 +103,7 @@ foreman attach <id>
 ### 2.3 User Journey (Target State)
 
 ```
-1. Developer dispatches: foreman run --seed foreman-abc1
+1. Developer dispatches: foreman run --bead foreman-abc1
    - Dispatcher creates tmux session "foreman-abc1"
    - Worker process runs inside tmux session
    - TTY detected: auto-attaches to tmux session interactively
@@ -229,9 +229,9 @@ foreman attach <id>
 **Description:** When dispatching a single agent from an interactive terminal, automatically attach to its tmux session interactively for immediate observation and control.
 
 **Acceptance Criteria:**
-1. `foreman run --seed <id>` auto-attaches to the tmux session when: (a) stdout is a TTY, (b) only one agent is being dispatched, and (c) `--no-attach` flag is not set.
-2. `foreman run --seed <id> --no-attach` skips auto-attach (dispatch and exit).
-3. `foreman run --seed <id> --attach` forces auto-attach even when dispatching multiple agents (attaches to the first).
+1. `foreman run --bead <id>` auto-attaches to the tmux session when: (a) stdout is a TTY, (b) only one agent is being dispatched, and (c) `--no-attach` flag is not set.
+2. `foreman run --bead <id> --no-attach` skips auto-attach (dispatch and exit).
+3. `foreman run --bead <id> --attach` forces auto-attach even when dispatching multiple agents (attaches to the first).
 4. `foreman run` (multi-agent, no `--seed`) never auto-attaches; enters watch mode as today.
 5. Auto-attach uses interactive mode by default (full tmux attach-session). The user detaches with Ctrl+B, D to let the agent continue in the background.
 

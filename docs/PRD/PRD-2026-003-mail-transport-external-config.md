@@ -598,13 +598,13 @@ npm test -- prompt-loader workflow-config-loader phase-config-loader
 npm test
 
 # Part 1: Integration smoke test (requires Agent Mail server)
-foreman run --seed <seed-id>
+foreman run --bead <seed-id>
 # Watch logs for:
 #   [agent-mail] Fetched "QA Feedback - Retry 1" from inbox "developer-{seedId}"
 #   [agent-mail] Fetched "Review Findings" from inbox "developer-{seedId}"
 
 # Part 1: Backward compat test (stop Agent Mail server)
-foreman run --seed <seed-id>
+foreman run --bead <seed-id>
 # Pipeline completes normally using disk fallback -- no errors
 
 # Part 2: Seed defaults
@@ -615,7 +615,7 @@ foreman init
 # Edit ~/.foreman/prompts/explorer.md, re-run, verify custom text in session log
 
 # Part 2: Bug workflow test
-foreman run --seed <bug-seed-id>
+foreman run --bead <bug-seed-id>
 # Verify: logs show ["reproducer", "developer", "qa", "finalize"]
 
 # Part 2: Validation test

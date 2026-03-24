@@ -17,7 +17,7 @@ npx vitest run <file>  # run a single test file
 # CLI (after build or via tsx)
 foreman init           # Initialize project + beads
 foreman run            # Dispatch ready tasks to agents
-foreman run --seed X   # Dispatch specific task
+foreman run --bead X   # Dispatch specific task
 foreman status         # Show tasks + active agents
 foreman dashboard      # Live dashboard UI
 foreman monitor        # Check agent health
@@ -74,7 +74,7 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 - `src/lib/workflow-loader.ts` — YAML workflow config parser
 - `src/orchestrator/roles.ts` — prompt generation (`buildPhasePrompt()` + per-phase functions)
 
-**Workflow YAML-driven pipeline** (defined in `src/defaults/workflows/`):
+**Workflow YAML-driven pipeline** (see [Workflow YAML Reference](docs/workflow-yaml-reference.md)):
 - Phase sequence, models, retries, mail hooks, artifacts all defined in YAML
 - No hardcoded phase names in the executor — new phases need only YAML + prompt file
 - Per-phase model selection with priority-based overrides (P0→opus, default→sonnet, etc.)
@@ -172,7 +172,7 @@ foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 foreman doctor         # Check br binary, Pi binary, DB integrity
 foreman status         # See all active/failed agents
 foreman reset          # Reset all failed/stuck runs to open
-foreman reset --seed X # Reset a specific run
+foreman reset --bead X # Reset a specific run
 foreman retry <seed>   # Re-run a specific pipeline phase
 
 # Agent logs (streamed during run)
@@ -181,7 +181,7 @@ cat ~/.foreman/logs/<runId>.log
 
 # Mail inspection
 foreman inbox --all --watch  # Live stream all mail across all runs
-foreman inbox --seed X       # Mail for a specific bead
+foreman inbox --bead X       # Mail for a specific bead
 
 # Worktree cleanup
 foreman worktree list   # See all active worktrees
@@ -194,7 +194,7 @@ npx tsc --noEmit       # Type-check without building
 ```
 
 **Common failure modes:**
-- Agent stuck in Developer phase → `foreman retry <seed>` or `foreman reset --seed <seed>`
+- Agent stuck in Developer phase → `foreman retry <seed>` or `foreman reset --bead <bead>`
 - Branch not merged after completion → `foreman merge` to trigger manually
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)

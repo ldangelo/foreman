@@ -355,12 +355,12 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T058 | Implement `foreman merge --dry-run`: for each queued/completed branch, show branch name, seed ID, `git diff --stat` output, conflict detection via `git merge-tree`. Support `--seed <id>` filter. No git state modification | 4h | MQ-T008 | `src/cli/commands/merge.ts`, `src/orchestrator/merge-queue.ts` | [x] |
+| MQ-T058 | Implement `foreman merge --dry-run`: for each queued/completed branch, show branch name, seed ID, `git diff --stat` output, conflict detection via `git merge-tree`. Support `--bead <id>` filter. No git state modification | 4h | MQ-T008 | `src/cli/commands/merge.ts`, `src/orchestrator/merge-queue.ts` | [x] |
 | MQ-T058b | **Resolved: keep `gh pr create`**. Investigation (MQ-T058d) found `git town propose` opens a browser window and does not return PR URLs via stdout, making it unsuitable for non-interactive automation. Both normal-flow and conflict PRs continue using `gh pr create`. Decision documented in code comments on `Refinery.createPRs()` and `ConflictResolver.handleFallback()` | 1h | MQ-T058d | `src/orchestrator/refinery.ts`, `src/orchestrator/conflict-resolver.ts` | [x] |
 | MQ-T058c | **Resolved: no dual strategy needed**. Since MQ-T058d found `git town propose` unsuitable, there is no dual PR strategy to test. Existing `createPRs()` tests in `refinery.test.ts` cover `gh pr create`. Added `refinery-git-town.test.ts` documenting the investigation decision and verifying both PR paths use `gh pr create` | 1h | MQ-T058b | `src/orchestrator/__tests__/refinery-git-town.test.ts` | [x] |
 | MQ-T058d | **Completed**. `git town propose` (v22.6.0) opens browser via `open https://github.com/...` compare URL, does not create PR via API, does not return PR URL in stdout. Also runs side-effect commands (`git fetch`, `git stash`, `git push`). Unsuitable for non-interactive automation. Decision: keep `gh pr create` for all PR paths. Findings documented in `Refinery.createPRs()` JSDoc | 1h | -- | `src/orchestrator/refinery.ts` | [x] |
 | MQ-T059 | Add estimated resolution tier column when FR-7 conflict_patterns data is available. Gracefully omit column when no pattern data exists (no errors, no empty columns) | 2h | MQ-T058 | `src/cli/commands/merge.ts` | [x] |
-| MQ-T060 | Write tests for dry-run -- no git state modified, conflict detection accurate, `--seed` filter works, graceful degradation without FR-7 data | 3h | MQ-T058, MQ-T059 | `src/cli/__tests__/merge-dryrun.test.ts` | [x] |
+| MQ-T060 | Write tests for dry-run -- no git state modified, conflict detection accurate, `--bead` filter works, graceful degradation without FR-7 data | 3h | MQ-T058, MQ-T059 | `src/cli/__tests__/merge-dryrun.test.ts` | [x] |
 
 #### Story 6.3: Seeds Preservation
 
@@ -599,7 +599,7 @@ Sprint 8 (Polish) -- depends on Sprint 2
 
 - [ ] AC-8.1: `--dry-run` shows branch, files, conflict status without modifying tree
 - [ ] AC-8.2: Conflict detection accurate
-- [ ] AC-8.3: Works with `--seed <id>` filter
+- [ ] AC-8.3: Works with `--bead <id>` filter
 - [ ] AC-8.4: No git state modified during dry-run
 - [ ] AC-8.5: Shows estimated tier when FR-7 data available
 - [ ] AC-8.6: Gracefully degrades when FR-7 unavailable

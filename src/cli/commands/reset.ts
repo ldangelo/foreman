@@ -243,7 +243,7 @@ export async function resetSeedToOpen(
 
 export const resetCommand = new Command("reset")
   .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
-  .option("--seed <id>", "Reset a specific bead by ID (clears all runs for that bead, including stale pending ones)")
+  .option("--bead <id>", "Reset a specific bead by ID (clears all runs for that bead, including stale pending ones)")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
   .option("--detect-stuck", "Run stuck detection first, adding newly-detected stuck runs to the reset list")
   .option(
@@ -256,7 +256,7 @@ export const resetCommand = new Command("reset")
     const dryRun = opts.dryRun as boolean | undefined;
     const all = opts.all as boolean | undefined;
     const detectStuck = opts.detectStuck as boolean | undefined;
-    const seedFilter = opts.seed as string | undefined;
+    const beadFilter = opts.bead as string | undefined;
     const timeoutMinutes = parseInt(opts.timeout as string, 10);
 
     if (isNaN(timeoutMinutes)) {
@@ -318,13 +318,13 @@ export const resetCommand = new Command("reset")
       // Find runs to reset
       let runs: Run[];
 
-      if (seedFilter) {
+      if (beadFilter) {
         // --seed: get ALL runs for this seed regardless of status, so stale pending/running are included
-        runs = store.getRunsForSeed(seedFilter, project.id);
+        runs = store.getRunsForSeed(beadFilter, project.id);
         if (runs.length === 0) {
-          console.log(chalk.yellow(`No runs found for bead ${seedFilter}.\n`));
+          console.log(chalk.yellow(`No runs found for bead ${beadFilter}.\n`));
         } else {
-          console.log(chalk.bold(`Resetting all ${runs.length} run(s) for bead ${seedFilter}:\n`));
+          console.log(chalk.bold(`Resetting all ${runs.length} run(s) for bead ${beadFilter}:\n`));
         }
       } else {
         const statuses = all
@@ -337,9 +337,9 @@ export const resetCommand = new Command("reset")
         console.log(chalk.yellow("(dry run — no changes will be made)\n"));
       }
 
-      if (!seedFilter && runs.length === 0) {
+      if (!beadFilter && runs.length === 0) {
         console.log(chalk.yellow("No active runs to reset.\n"));
-      } else if (!seedFilter) {
+      } else if (!beadFilter) {
         console.log(chalk.bold(`Resetting ${runs.length} run(s):\n`));
       }
 
@@ -471,7 +471,7 @@ export const resetCommand = new Command("reset")
 
       // 5. Reset seeds to open (force-reopen if --seed was explicitly provided)
       for (const seedId of seedIds) {
-        const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!seedFilter });
+        const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!beadFilter });
         switch (result.action) {
           case "skipped-closed":
             // This case is no longer reachable — resetSeedToOpen now always reopens

@@ -16,7 +16,7 @@
 The attach-session system introduces tmux-based agent wrapping and interactive session attachment across six modified commands and one new utility module. The architecture preserves the existing TypeScript-orchestrated pipeline and Claude Agent SDK `query()` loop while wrapping each worker process inside a named tmux session for persistent, detachable terminal access.
 
 ```
-foreman run --seed <id> (CLI)
+foreman run --bead <id> (CLI)
   |
   v
 Dispatcher.spawnWorkerProcess()
@@ -487,7 +487,7 @@ Sprint 6 (Polish) -- depends on Sprint 2 + Sprint 3 + Sprint 5
 
 ### 5.5 FR-5: TTY-Aware Auto-Attach
 
-- [ ] AC-5.1: `foreman run --seed <id>` auto-attaches interactively when stdout is TTY + single agent + no `--no-attach`
+- [ ] AC-5.1: `foreman run --bead <id>` auto-attaches interactively when stdout is TTY + single agent + no `--no-attach`
 - [ ] AC-5.2: `--no-attach` skips auto-attach
 - [ ] AC-5.3: `--attach` forces auto-attach even with multi-agent dispatch (first agent)
 - [ ] AC-5.4: Multi-agent dispatch without `--seed` never auto-attaches

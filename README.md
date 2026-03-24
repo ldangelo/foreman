@@ -265,6 +265,10 @@ foreman doctor     # Shows "Pi binary: found" or "Pi binary: not found (using Cl
 
 ## Commands
 
+For the complete CLI reference with all options and examples, see **[CLI Reference](docs/cli-reference.md)**.
+
+For common problems and solutions, see **[Troubleshooting Guide](docs/troubleshooting.md)**.
+
 ### `foreman init`
 Initialize Foreman in a project directory. Runs `br init` and registers the project.
 
@@ -277,7 +281,7 @@ Dispatch AI coding agents to ready tasks. Enters a watch loop that auto-merges c
 
 ```bash
 foreman run                              # Dispatch to all ready tasks
-foreman run --seed bd-abc               # Dispatch one specific task
+foreman run --bead bd-abc               # Dispatch one specific task
 foreman run --max-agents 3               # Limit concurrent agents
 foreman run --model claude-opus-4-6      # Override model for all agents
 foreman run --no-tests                   # Skip test suite in merge step
@@ -384,6 +388,41 @@ br sync --flush-only               # Export DB to JSONL before committing
 Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (backlog).
 
 ## Configuration
+
+### Workflow YAML
+
+Foreman pipelines are configured via workflow YAML files. See the **[Workflow YAML Reference](docs/workflow-yaml-reference.md)** for complete documentation with examples for Node.js, .NET, Go, Python, and Rust.
+
+Workflows define:
+- **Setup steps** — dependency installation, build commands (stack-agnostic)
+- **Setup cache** — symlink dependency directories from a shared cache
+- **Phase sequence** — which agents run in what order
+- **Model selection** — per-phase models with priority-based overrides
+- **Retry loops** — QA/Reviewer failure → Developer retry with feedback
+- **Mail hooks** — lifecycle notifications and artifact forwarding
+
+```yaml
+# .foreman/workflows/default.yaml (project-local override)
+name: default
+setup:
+  - command: npm install --prefer-offline --no-audit
+    failFatal: true
+setupCache:
+  key: package-lock.json
+  path: node_modules
+phases:
+  - name: developer
+    prompt: developer.md
+    models:
+      default: sonnet
+      P0: opus
+    maxTurns: 80
+  - name: qa
+    prompt: qa.md
+    verdict: true
+    retryWith: developer
+    retryOnFail: 2
+```
 
 ### Environment variables
 

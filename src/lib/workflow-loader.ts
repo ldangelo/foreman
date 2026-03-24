@@ -61,6 +61,30 @@ export interface WorkflowSetupStep {
   description?: string;
 }
 
+/**
+ * Stack-agnostic dependency cache configuration.
+ *
+ * When present in the workflow YAML `setup` block, the executor hashes the
+ * `key` file(s) and symlinks `path` from a shared cache instead of running
+ * the setup steps on every worktree init. Cache miss → run steps → populate cache.
+ *
+ * @example
+ * ```yaml
+ * setup:
+ *   cache:
+ *     key: package-lock.json     # file to hash for cache key
+ *     path: node_modules         # directory to cache
+ *   steps:
+ *     - command: npm install --prefer-offline --no-audit
+ * ```
+ */
+export interface WorkflowSetupCache {
+  /** File path (relative to worktree root) or glob to hash for cache key. */
+  key: string;
+  /** Directory (relative to worktree root) to cache and symlink. */
+  path: string;
+}
+
 /** Mail hooks configuration for a workflow phase. */
 export interface WorkflowPhaseMail {
   /** Send phase-started mail to foreman before the phase runs. Default: true. */
@@ -147,6 +171,13 @@ export interface WorkflowConfig {
    * When present, these replace the Node.js-specific installDependencies() fallback.
    */
   setup?: WorkflowSetupStep[];
+  /**
+   * Optional dependency cache config. When present, the executor hashes
+   * `cache.key` and symlinks `cache.path` from a shared cache directory
+   * (.foreman/setup-cache/<hash>/). On cache miss, setup steps run first
+   * and the result is cached. Stack-agnostic — works for any ecosystem.
+   */
+  setupCache?: WorkflowSetupCache;
   /** Ordered list of phases to execute. */
   phases: WorkflowPhaseConfig[];
 }
@@ -221,6 +252,19 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       if (typeof s["description"] === "string") step.description = s["description"];
       setup.push(step);
     }
+  }
+
+  // ── Parse optional setupCache block ──────────────────────────────────────────
+  let setupCache: WorkflowSetupCache | undefined;
+  if (isRecord(raw["setupCache"])) {
+    const c = raw["setupCache"];
+    if (typeof c["key"] !== "string" || !c["key"]) {
+      throw new WorkflowConfigError(workflowName, "setupCache.key must be a non-empty string");
+    }
+    if (typeof c["path"] !== "string" || !c["path"]) {
+      throw new WorkflowConfigError(workflowName, "setupCache.path must be a non-empty string");
+    }
+    setupCache = { key: c["key"], path: c["path"] };
   }
 
   if (!Array.isArray(raw["phases"])) {
@@ -302,6 +346,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
 
   const config: WorkflowConfig = { name, phases };
   if (setup !== undefined) config.setup = setup;
+  if (setupCache !== undefined) config.setupCache = setupCache;
   return config;
 }
 

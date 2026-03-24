@@ -84,8 +84,8 @@ export const inboxCommand = new Command("inbox")
   .description("View the SQLite message inbox for agents in a pipeline run")
   .option("--agent <name>", "Filter to a specific agent/role (default: show all)")
   .option("--run <id>", "Filter to a specific run ID (default: latest run)")
-  .option("--seed <id>", "Resolve run by seed/bead ID (uses most recent run for that seed)")
-  .option("--all", "Watch messages across all runs (ignores --run and --seed)")
+  .option("--bead <id>", "Resolve run by bead ID (uses most recent run for that bead)")
+  .option("--all", "Watch messages across all runs (ignores --run and --bead)")
   .option("--watch", "Poll every 2s for new messages (shows only new ones)")
   .option("--unread", "Show only unread messages")
   .option("--limit <n>", "Max messages to show", "50")
@@ -93,7 +93,7 @@ export const inboxCommand = new Command("inbox")
   .action(async (options: {
     agent?: string;
     run?: string;
-    seed?: string;
+    bead?: string;
     all?: boolean;
     watch?: boolean;
     unread?: boolean;
@@ -177,7 +177,7 @@ export const inboxCommand = new Command("inbox")
       }
 
       const runId = options.run
-        ?? (options.seed ? resolveRunIdBySeed(store, options.seed) : null)
+        ?? (options.bead ? resolveRunIdBySeed(store, options.bead) : null)
         ?? resolveLatestRunId(store);
       if (!runId) {
         console.error("No runs found. Start a pipeline first with `foreman run`.");
