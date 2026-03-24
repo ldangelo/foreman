@@ -85,6 +85,20 @@ vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
   parsePiEvent: vi.fn().mockReturnValue(null),
 }));
 
+// ── Config mock — use a reduced emptyPollCycles so Scenario 7 runs in < 10 iterations ──
+// emptyPollCycles=5 is high enough that Scenarios 2 (1 empty) and 2b (3 empty) are
+// unaffected, but small enough that tests don't need 20 fake-timer ticks.
+vi.mock("../../lib/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/config.js")>();
+  return {
+    ...actual,
+    PIPELINE_LIMITS: {
+      ...actual.PIPELINE_LIMITS,
+      emptyPollCycles: 5,
+    },
+  };
+});
+
 // ── Module under test ─────────────────────────────────────────────────────────
 import { runCommand } from "../commands/run.js";
 
@@ -307,6 +321,91 @@ describe("dispatch loop: watch-and-continue when nothing dispatched but agents a
     expect(mockWatchRunsInk).toHaveBeenCalledTimes(1);
     // dispatch called only once — we don't re-check after detach
     expect(mockDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Scenario 7: exits after N consecutive empty poll cycles ─────────────────
+  // With emptyPollCycles=5 (mocked above), the loop should exit after 5 consecutive
+  // empty dispatches with no active agents, rather than polling indefinitely.
+
+  it("exits gracefully after N consecutive empty poll cycles in watch mode", async () => {
+    vi.useFakeTimers();
+
+    // Return 5 consecutive empty dispatches (matches the mocked emptyPollCycles=5).
+    // The loop should break after the 5th empty cycle without user intervention.
+    mockDispatch
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 });
+
+    mockGetActiveRuns.mockReturnValue([]);
+
+    const runPromise = invokeRun([]);
+    await vi.runAllTimersAsync();
+    await runPromise;
+
+    // dispatch called exactly 5 times (one per empty poll cycle before limit is hit)
+    expect(mockDispatch).toHaveBeenCalledTimes(5);
+
+    // watchRunsInk must NOT have been called — no agents, no tasks dispatched
+    expect(mockWatchRunsInk).not.toHaveBeenCalled();
+
+    // The exit message should appear in console output
+    const consoleMock = vi.mocked(console.log);
+    const exitMessages = consoleMock.mock.calls.filter(
+      (args) => typeof args[0] === "string" && String(args[0]).includes("poll cycle")
+    );
+    expect(exitMessages.length).toBeGreaterThanOrEqual(1);
+
+    vi.useRealTimers();
+  });
+
+  // ── Scenario 2c: empty-poll counter resets after a successful dispatch ────────
+  // Ensures the counter doesn't accumulate across separate "dry spells", so a long
+  // run that repeatedly dispatches tasks between dry periods doesn't exit prematurely.
+
+  it("resets empty-poll counter after a successful dispatch", async () => {
+    vi.useFakeTimers();
+
+    // Pattern: 3 empty → 1 task dispatched → 3 more empty → exit on 5th empty (limit=5)
+    // Because the counter resets after the dispatch, the second dry spell restarts
+    // from 1, meaning the loop exits after 3+1+5 = 9 total dispatch calls.
+    mockDispatch
+      // First dry spell: 3 empty cycles (counter = 1, 2, 3; limit is 5 → not yet)
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
+      // Task becomes ready → dispatch it (counter resets to 0)
+      .mockResolvedValueOnce({
+        dispatched: [
+          { seedId: "s-reset", runId: "run-reset", title: "Reset Task", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-reset", runtime: "claude-code" },
+        ],
+        skipped: [],
+        activeAgents: 1,
+      })
+      // Second dry spell: 5 empty cycles → loop exits after 5th (counter reaches limit)
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
+      .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 });
+
+    mockGetActiveRuns.mockReturnValue([]);
+    // After dispatching the task, watchRunsInk returns detached=false so loop continues
+    mockWatchRunsInk.mockResolvedValue({ detached: false });
+
+    const runPromise = invokeRun([]);
+    await vi.runAllTimersAsync();
+    await runPromise;
+
+    // 3 empty + 1 task + 5 empty = 9 total dispatch calls
+    expect(mockDispatch).toHaveBeenCalledTimes(9);
+
+    // watchRunsInk was called exactly once (for the dispatched task)
+    expect(mockWatchRunsInk).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
   });
 
   // ── Scenario 6: normal dispatch + watch loop remains unchanged ───────────────
