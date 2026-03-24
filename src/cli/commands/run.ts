@@ -17,7 +17,7 @@ import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
 import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
-import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
+import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS } from "../../lib/config.js";
 import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
 import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
 import { autoMerge } from "../../orchestrator/auto-merge.js";
@@ -441,6 +441,9 @@ export const runCommand = new Command("run")
       let userDetached = false;
       // Suppress repeated "No ready beads" log messages — only print once per wait period.
       let waitingForTasksLogged = false;
+      // Count consecutive poll cycles with nothing dispatched and no active agents.
+      // When this reaches PIPELINE_LIMITS.emptyPollCycles the loop exits gracefully.
+      let emptyPollCount = 0;
       while (true) {
         iteration++;
         if (iteration > 1) {
@@ -534,6 +537,30 @@ export const runCommand = new Command("run")
           }
           // Watch mode with no active agents: poll for new tasks to become ready
           if (watch) {
+            emptyPollCount++;
+            // Check cycle limit (0 = disabled / legacy infinite-poll behaviour)
+            if (
+              PIPELINE_LIMITS.emptyPollCycles > 0 &&
+              emptyPollCount >= PIPELINE_LIMITS.emptyPollCycles
+            ) {
+              const elapsedSec = Math.round(
+                (emptyPollCount * PIPELINE_TIMEOUTS.monitorPollMs) / 1000
+              );
+              console.log(
+                chalk.yellow(
+                  `\nNo ready beads after ${emptyPollCount} poll cycle(s) (~${elapsedSec}s). Exiting dispatch loop.`
+                )
+              );
+              console.log(
+                chalk.dim(
+                  "  • Re-run 'foreman run' once tasks become unblocked\n" +
+                  "  • Use 'br ready' to see which tasks are ready\n" +
+                  "  • Use 'foreman status' to check for stuck agents\n" +
+                  "  • Set FOREMAN_EMPTY_POLL_CYCLES=0 to disable this limit"
+                )
+              );
+              break;
+            }
             if (!waitingForTasksLogged) {
               console.log(
                 chalk.dim(
@@ -551,9 +578,10 @@ export const runCommand = new Command("run")
           break;
         }
 
-        // Tasks were dispatched — reset flag so the "waiting" message reappears
-        // if we later enter another no-tasks polling period.
+        // Tasks were dispatched — reset counters so the "waiting" message and
+        // the empty-poll limit restart from zero when we next enter a dry spell.
         waitingForTasksLogged = false;
+        emptyPollCount = 0;
 
         // Watch mode: wait for this batch to finish, then loop to check for more
         if (watch) {
