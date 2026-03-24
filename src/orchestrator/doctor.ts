@@ -1,4 +1,4 @@
-import { access, stat, rm, readFile } from "node:fs/promises";
+import { access, stat, rm, readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -205,14 +205,98 @@ export class Doctor {
 
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.
-    const [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch] = await Promise.all([
+    const [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch, oldLogsResult] = await Promise.all([
       this.checkBrBinary(),
       this.checkBvBinary(),
       this.checkGitBinary(),
       this.checkGitTownInstalled(),
       this.checkGitTownMainBranch(),
+      this.checkOldLogs(),
     ]);
-    return [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch];
+    return [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch, oldLogsResult];
+  }
+
+  /**
+   * Check for stale agent log files in ~/.foreman/logs/.
+   * Warns when there are many log groups older than 7 days,
+   * encouraging the user to run `foreman purge-logs` or `foreman doctor --clean-logs`.
+   */
+  async checkOldLogs(thresholdDays = 7, warnThreshold = 10): Promise<CheckResult> {
+    const logsDir = join(homedir(), ".foreman", "logs");
+    const uuidPattern =
+      /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.[a-z]+$/i;
+
+    let entries: { name: string; mtimeMs: number }[];
+    try {
+      const dirents = await readdir(logsDir, { withFileTypes: true });
+      const statResults = await Promise.allSettled(
+        dirents
+          .filter((d) => d.isFile())
+          .map(async (d) => {
+            const s = await stat(join(logsDir, d.name));
+            return { name: d.name, mtimeMs: s.mtimeMs };
+          }),
+      );
+      entries = statResults
+        .filter((r): r is PromiseFulfilledResult<{ name: string; mtimeMs: number }> =>
+          r.status === "fulfilled",
+        )
+        .map((r) => r.value);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return {
+          name: "old agent log files",
+          status: "pass",
+          message: "No logs directory — nothing to clean up",
+        };
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        name: "old agent log files",
+        status: "warn",
+        message: `Could not scan logs directory: ${msg}`,
+      };
+    }
+
+    const cutoffMs = Date.now() - thresholdDays * 24 * 60 * 60 * 1000;
+    const oldRunIds = new Set<string>();
+
+    for (const entry of entries) {
+      const match = uuidPattern.exec(entry.name);
+      if (!match) continue;
+      if (entry.mtimeMs < cutoffMs) {
+        oldRunIds.add(match[1]);
+      }
+    }
+
+    const totalRunIds = new Set<string>(
+      entries
+        .map((e) => uuidPattern.exec(e.name)?.[1])
+        .filter((id): id is string => id !== undefined),
+    );
+
+    if (oldRunIds.size === 0) {
+      return {
+        name: "old agent log files",
+        status: "pass",
+        message: `${totalRunIds.size} log group(s) found, none older than ${thresholdDays} days`,
+      };
+    }
+
+    if (oldRunIds.size < warnThreshold) {
+      return {
+        name: "old agent log files",
+        status: "pass",
+        message: `${oldRunIds.size} log group(s) older than ${thresholdDays} days (${totalRunIds.size} total) — run 'foreman purge-logs' to clean up`,
+      };
+    }
+
+    return {
+      name: "old agent log files",
+      status: "warn",
+      message: `${oldRunIds.size} log group(s) older than ${thresholdDays} days (${totalRunIds.size} total)`,
+      details: "Run 'foreman purge-logs' or 'foreman doctor --clean-logs' to reclaim disk space",
+    };
   }
 
   // ── Repository checks ──────────────────────────────────────────────
