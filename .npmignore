@@ -3,8 +3,16 @@ src/
 __tests__/
 *.test.ts
 
+# Compiled test files (dist/__tests__/ should not be published)
+dist/**/__tests__/
+dist/**/*.test.js
+dist/**/*.test.js.map
+dist/**/*.test.d.ts
+dist/**/*.test.d.ts.map
+
 # TypeScript & test configuration (development-only)
 tsconfig.json
+tsconfig.build.json
 vitest.config.ts
 
 # Development/runtime state directories

@@ -18,7 +18,7 @@ const legacyDest = join(root, 'dist', 'templates');
 if (existsSync(legacySrc)) {
   mkdirSync(legacyDest, { recursive: true });
   cpSync(legacySrc, legacyDest, { recursive: true, filter });
-  console.log('✓ Copied src/templates → dist/templates');
+  console.error('✓ Copied src/templates → dist/templates');
 }
 
 // Copy src/defaults → dist/defaults (prompt templates + skills)
@@ -27,7 +27,7 @@ const defaultsDest = join(root, 'dist', 'defaults');
 if (existsSync(defaultsSrc)) {
   mkdirSync(defaultsDest, { recursive: true });
   cpSync(defaultsSrc, defaultsDest, { recursive: true, filter });
-  console.log('✓ Copied src/defaults → dist/defaults');
+  console.error('✓ Copied src/defaults → dist/defaults');
 } else {
-  console.warn('⚠ src/defaults not found, skipping asset copy');
+  console.error('⚠ src/defaults not found, skipping asset copy');
 }
