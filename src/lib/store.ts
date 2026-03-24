@@ -358,7 +358,7 @@ export class ForemanStore {
     this.db = new Database(resolvedPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
-    this.db.pragma("busy_timeout = 5000");
+    this.db.pragma("busy_timeout = 30000");
     this.db.exec(SCHEMA);
 
     // Run idempotent migrations (errors are silently ignored — they indicate
