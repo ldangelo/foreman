@@ -42,3 +42,4 @@ RUN_LOG.md
 # Claude Code local config and worktrees
 .claude/settings.local.json
 .claude/worktrees/
+var/
