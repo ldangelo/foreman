@@ -7,10 +7,15 @@
  * - Target: node20, ESM format
  * - External: better-sqlite3 (native addon, must be loaded at runtime)
  * - Sourcemaps enabled for debugging
+ *
+ * Postbundle step:
+ * - Copies better_sqlite3.node alongside the bundle so it is available
+ *   without a node_modules tree in bundled/standalone deployments.
  */
 import * as esbuild from "esbuild";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { copyNativeAddon } from "./native-addon-utils.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -70,6 +75,12 @@ const require = __createRequire(import.meta.url);`,
   }
 
   console.log("Bundle complete.");
+
+  // ── Postbundle: copy native addon ──────────────────────────────────────────
+  // Copies better_sqlite3.node into dist/ so the bundled CLI can load the
+  // native addon without requiring a full node_modules tree.
+  const outDir = path.dirname(outfile);
+  copyNativeAddon(repoRoot, outDir);
 }
 
 bundle().catch((err: unknown) => {
