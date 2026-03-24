@@ -1,8 +1,27 @@
-#!/usr/bin/env bash
-# Foreman — Multi-agent coding orchestrator
-# Wrapper that runs the TypeScript CLI via tsx
+#!/usr/bin/env node
+// Foreman — Multi-agent AI coding orchestrator
+// Node.js shim for npm global installation
+// Loads dist/cli/index.js (compiled from src/cli/index.ts)
 
-FOREMAN_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)"
-export PATH="/opt/homebrew/bin:$PATH"
+import { fileURLToPath } from 'url';
+import { dirname, resolve } from 'path';
+import { createRequire } from 'module';
 
-exec "$FOREMAN_DIR/node_modules/.bin/tsx" "$FOREMAN_DIR/src/cli/index.ts" "$@"
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Resolve dist/cli/index.js relative to this shim (bin/ → ../dist/cli/index.js)
+const entryPoint = resolve(__dirname, '..', 'dist', 'cli', 'index.js');
+
+try {
+  await import(entryPoint);
+} catch (err) {
+  if (err && typeof err === 'object' && 'code' in err && err.code === 'ERR_MODULE_NOT_FOUND') {
+    console.error(
+      'Error: foreman is not built. Run `npm run build` first.\n' +
+      `Tried to load: ${entryPoint}`
+    );
+    process.exit(1);
+  }
+  throw err;
+}
