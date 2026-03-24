@@ -227,6 +227,11 @@ async function main(): Promise<void> {
 
   const { runId, projectId, seedId, seedTitle, model, worktreePath, projectPath: configProjectPath, prompt, resume, pipeline } = config;
 
+  // Change process cwd to the worktree so agent file operations (read, write,
+  // edit, bash) target the correct directory. The spawn cwd is the project root
+  // (for tsx module resolution), but the agent must work in the worktree.
+  try { process.chdir(worktreePath); } catch { /* worktree may not exist yet */ }
+
   // Resolve the project-local store path from the config, falling back to the
   // parent of the worktree directory if projectPath is not provided.
   const storeProjectPath = configProjectPath ?? join(worktreePath, "..", "..");
