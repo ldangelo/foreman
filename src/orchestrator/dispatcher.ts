@@ -1,15 +1,17 @@
 import { writeFile, mkdir, open, readdir, unlink } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
-import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs } from "../lib/config.js";
+import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
-import { createWorktree, gitBranchExists } from "../lib/git.js";
+import { createWorktree, gitBranchExists, getCurrentBranch, detectDefaultBranch } from "../lib/git.js";
+import { extractBranchLabel, isDefaultBranch, applyBranchLabel } from "../lib/branch-label.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
@@ -31,6 +33,8 @@ import type {
 // ── Dispatcher ──────────────────────────────────────────────────────────
 
 export class Dispatcher {
+  private bvFallbackWarned = false;
+
   constructor(
     private seeds: ITaskClient,
     private store: ForemanStore,
@@ -57,6 +61,20 @@ export class Dispatcher {
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = opts?.projectId ?? this.resolveProjectId();
+
+    // Drain the bead write queue before dispatching new tasks.
+    // This ensures any pending br operations from completed agent-workers are
+    // processed by the single-writer dispatcher before we query br for ready seeds.
+    try {
+      const drained = await this.drainBeadWriterInbox();
+      if (drained > 0) {
+        console.error(`[bead-writer] Drained ${drained} pending bead write operations`);
+      }
+    } catch (drainErr: unknown) {
+      // Non-fatal: log and continue — drain failures must not block dispatch
+      const msg = drainErr instanceof Error ? drainErr.message : String(drainErr);
+      console.error(`[bead-writer] Warning: drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
+    }
 
     // Determine how many agent slots are available
     const activeRuns = this.store.getActiveRuns(projectId);
@@ -89,7 +107,10 @@ export class Dispatcher {
           });
           log(`bv triage scored ${readySeeds.length} ready seeds`);
         } else {
-          log("bv unavailable, using priority-sort fallback");
+          if (!this.bvFallbackWarned) {
+            log("bv unavailable, using priority-sort fallback");
+            this.bvFallbackWarned = true;
+          }
           readySeeds = [...readySeeds].sort(
             (a, b) => normalizePriority(a.priority) - normalizePriority(b.priority),
           );
@@ -104,9 +125,20 @@ export class Dispatcher {
 
     // Filter to a specific seed if requested
     if (opts?.seedId) {
-      const target = readySeeds.find((b) => b.id === opts.seedId);
+      let target = readySeeds.find((b) => b.id === opts.seedId);
+      // If not in br ready (possibly due to stale blocked cache — beads_rust#204),
+      // fetch directly and force-dispatch if it's open/in_progress.
       if (!target) {
-        let reason = "Not found in ready beads";
+        try {
+          const bead = await this.seeds.show(opts.seedId);
+          if (bead && bead.status !== "closed" && bead.status !== "completed") {
+            log(`[dispatch] ${opts.seedId} not in br ready (stale cache?) — force-dispatching`);
+            target = bead as unknown as Issue;
+          }
+        } catch { /* bead not found */ }
+      }
+      if (!target) {
+        let reason = "Not found and not dispatchable";
         try {
           const bead = await this.seeds.show(opts.seedId);
           if (!bead) {
@@ -133,6 +165,17 @@ export class Dispatcher {
 
     const dispatched: DispatchedTask[] = [];
     const skipped: SkippedTask[] = [];
+
+    // Detect current branch for auto-labeling (branch:<name> label).
+    // Done once per dispatch() call to avoid repeated git invocations.
+    let currentBranch: string | undefined;
+    let defaultBranch: string | undefined;
+    try {
+      currentBranch = await getCurrentBranch(this.projectPath);
+      defaultBranch = await detectDefaultBranch(this.projectPath);
+    } catch {
+      // Non-fatal: branch detection failure must not block dispatch
+    }
 
     // Skip seeds that already have an active run
     const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
@@ -200,6 +243,59 @@ export class Dispatcher {
         }
       }
 
+      // ── Branch label auto-labeling ─────────────────────────────────────────
+      // If the current branch is not the default (main/master/dev), automatically
+      // add a `branch:<currentBranch>` label to the bead so that refinery merges
+      // the work into the correct branch instead of always targeting main/dev.
+      //
+      // Inheritance: if the seed has a parent bead with a branch: label, the child
+      // inherits that label (even when the current branch is the default).
+      //
+      // Only applied when the bead doesn't already have a branch: label.
+      if (currentBranch && defaultBranch) {
+        const existingLabels: string[] = seedDetail?.labels ?? seed.labels ?? [];
+        const existingBranchLabel = extractBranchLabel(existingLabels);
+
+        if (!existingBranchLabel) {
+          // Determine the branch to label with: prefer current non-default branch,
+          // then check parent for inheritance.
+          let labelBranch: string | undefined;
+
+          if (!isDefaultBranch(currentBranch, defaultBranch)) {
+            labelBranch = currentBranch;
+          } else if (seed.parent) {
+            // Check parent's branch: label for inheritance
+            try {
+              const parentDetail = await this.seeds.show(seed.parent) as unknown as { labels?: string[] };
+              const parentBranchLabel = extractBranchLabel(parentDetail.labels);
+              if (parentBranchLabel && !isDefaultBranch(parentBranchLabel, defaultBranch)) {
+                labelBranch = parentBranchLabel;
+              }
+            } catch {
+              // Non-fatal: parent label lookup failure must not block dispatch
+            }
+          }
+
+          if (labelBranch) {
+            const updatedLabels = applyBranchLabel(existingLabels, labelBranch);
+            try {
+              await this.seeds.update(seed.id, { labels: updatedLabels });
+              log(`[foreman] Auto-labeled ${seed.id} with branch:${labelBranch}`);
+              // Update seedDetail.labels so seedToInfo() sees the updated labels
+              if (seedDetail) {
+                seedDetail = { ...seedDetail, labels: updatedLabels };
+              } else {
+                seedDetail = { labels: updatedLabels };
+              }
+            } catch (labelErr: unknown) {
+              // Non-fatal: label failure must not block dispatch
+              const msg = labelErr instanceof Error ? labelErr.message : String(labelErr);
+              log(`Warning: failed to add branch label to ${seed.id}: ${msg}`);
+            }
+          }
+        }
+      }
+
       const seedInfo = seedToInfo(seed, seedDetail, beadComments);
       const runtime: RuntimeSelection = "claude-code";
       // Pipeline model is now resolved per-phase from the workflow YAML + bead priority.
@@ -222,6 +318,20 @@ export class Dispatcher {
       }
 
       try {
+        // Pre-flight guard: re-check the DB just before creating the run.
+        // The activeSeedIds snapshot above is stale by the time we reach this
+        // point — a concurrent dispatch cycle may have already created a pending
+        // run for this seed between our getActiveRuns() call and now.  This
+        // just-in-time check prevents duplicate runs in that race window.
+        if (this.store.hasActiveOrPendingRun(seed.id, projectId)) {
+          skipped.push({
+            seedId: seed.id,
+            title: seed.title,
+            reason: "Another run was created concurrently (race guard)",
+          });
+          continue;
+        }
+
         // 1. Resolve base branch (may stack on a dependency branch)
         const baseBranch = await resolveBaseBranch(seed.id, this.projectPath, this.store);
         if (baseBranch) {
@@ -286,8 +396,15 @@ export class Dispatcher {
           // Non-fatal — mail is optional infrastructure
         }
 
-        // 6. Mark seed as in_progress before spawning agent
-        await this.seeds.update(seed.id, { status: "in_progress" });
+        // 6. Mark seed as in_progress before spawning agent.
+        // Non-fatal: br may reject the claim due to stale blocked cache (beads_rust#204).
+        // The agent can still run — the status update is cosmetic.
+        try {
+          await this.seeds.update(seed.id, { status: "in_progress" });
+        } catch (claimErr: unknown) {
+          const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
+          console.error(`[dispatch] Warning: br claim failed for ${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+        }
 
         // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
         try {
@@ -769,6 +886,136 @@ export class Dispatcher {
     return { inBackoff: false };
   }
 
+  /**
+   * Drain the bead_write_queue and execute all pending br operations sequentially.
+   *
+   * This is the single writer for all br CLI operations — called by the dispatcher
+   * process only. Agent-workers, refinery, pipeline-executor, and auto-merge enqueue
+   * operations via ForemanStore.enqueueBeadWrite() instead of calling br directly,
+   * eliminating concurrent SQLite lock contention on .beads/beads.jsonl.
+   *
+   * Each entry is processed in insertion order. If an individual operation fails,
+   * the error is logged but draining continues (non-fatal per-entry). A single
+   * `br sync --flush-only` is called at the end to persist all changes atomically.
+   *
+   * @returns Number of entries successfully processed.
+   */
+  async drainBeadWriterInbox(): Promise<number> {
+    const pending = this.store.getPendingBeadWrites();
+    if (pending.length === 0) return 0;
+
+    const bin = join(homedir(), ".local", "bin", "br");
+    const execOpts = {
+      stdio: "pipe" as const,
+      timeout: PIPELINE_TIMEOUTS.beadClosureMs,
+      cwd: this.projectPath,
+    };
+
+    let processed = 0;
+
+    for (const entry of pending) {
+      try {
+        let payload: Record<string, unknown>;
+        try {
+          payload = JSON.parse(entry.payload) as Record<string, unknown>;
+        } catch {
+          console.error(`[bead-writer] Invalid JSON payload for entry ${entry.id} (${entry.operation}) — skipping`);
+          this.store.markBeadWriteProcessed(entry.id);
+          continue;
+        }
+
+        const seedId = payload.seedId as string;
+
+        switch (entry.operation) {
+          case "close-seed":
+            // Use --no-db to write directly to JSONL, bypassing broken DB cache (beads_rust#204).
+            execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline"], execOpts);
+            console.error(`[bead-writer] Closed seed ${seedId} via --no-db (from ${entry.sender})`);
+            break;
+
+          case "reset-seed":
+            execFileSync(bin, ["update", seedId, "--status", "open"], execOpts);
+            console.error(`[bead-writer] Reset seed ${seedId} to open (from ${entry.sender})`);
+            break;
+
+          case "mark-failed":
+            execFileSync(bin, ["update", seedId, "--status", "failed"], execOpts);
+            console.error(`[bead-writer] Marked seed ${seedId} as failed (from ${entry.sender})`);
+            break;
+
+          case "set-status": {
+            const targetStatus = payload.status as string;
+            execFileSync(bin, ["update", seedId, "--status", targetStatus], execOpts);
+            console.error(`[bead-writer] Set seed ${seedId} to ${targetStatus} (from ${entry.sender})`);
+            break;
+          }
+
+          case "add-notes": {
+            const notes = payload.notes as string;
+            if (notes) {
+              execFileSync(bin, ["update", seedId, "--notes", notes], execOpts);
+              console.error(`[bead-writer] Added notes to seed ${seedId} (from ${entry.sender})`);
+            }
+            break;
+          }
+
+          case "add-labels": {
+            const labels = payload.labels as string[];
+            if (labels && labels.length > 0) {
+              const args = ["update", seedId, ...labels.flatMap((l) => ["--add-label", l])];
+              execFileSync(bin, args, execOpts);
+              console.error(`[bead-writer] Added labels [${labels.join(", ")}] to seed ${seedId} (from ${entry.sender})`);
+            }
+            break;
+          }
+
+          default:
+            console.error(`[bead-writer] Unknown operation "${entry.operation}" for entry ${entry.id} — skipping`);
+        }
+
+        this.store.markBeadWriteProcessed(entry.id);
+        processed++;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[bead-writer] Error processing entry ${entry.id} (${entry.operation}): ${msg.slice(0, 200)}`);
+        // Mark as processed even on error to avoid infinite retry loops.
+        // The operator can check the log for details and fix manually.
+        this.store.markBeadWriteProcessed(entry.id);
+      }
+    }
+
+    // Close operations used --no-db (write directly to JSONL). Delete the br DB
+    // so the next br command reimports from the corrected JSONL with a fresh
+    // blocked cache. This ensures br ready reflects newly-unblocked beads.
+    if (processed > 0) {
+      try {
+        // Flush any non-close operations (reset, labels, notes) that used the DB
+        execFileSync(bin, ["sync", "--flush-only"], execOpts);
+        // Clear the blocked_issues_cache so br ready reflects newly-unblocked beads.
+        // Using sqlite3 CLI is safer and faster than deleting the entire DB.
+        try {
+          execFileSync("sqlite3", [
+            join(this.projectPath, ".beads", "beads.db"),
+            "DELETE FROM blocked_issues_cache;",
+          ], execOpts);
+          console.error(`[bead-writer] Cleared blocked_issues_cache after processing ${processed}/${pending.length} entries`);
+        } catch {
+          // Fallback: delete DB files if sqlite3 not available
+          const beadsDir = join(this.projectPath, ".beads");
+          for (const dbFile of ["beads.db", "beads.db-wal", "beads.db-shm"]) {
+            try { unlinkSync(join(beadsDir, dbFile)); } catch { /* may not exist */ }
+          }
+          console.error(`[bead-writer] Deleted DB (fallback) after processing ${processed}/${pending.length} entries`);
+        }
+      } catch (flushErr: unknown) {
+        const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
+        console.error(`[bead-writer] Warning: post-drain cleanup failed: ${msg.slice(0, 200)}`);
+      }
+    }
+
+    return processed;
+  }
+
   private resolveProjectId(): string {
     const project = this.store.getProjectByPath(this.projectPath);
     if (!project) {
@@ -882,7 +1129,7 @@ function resolveWorkerPaths(): { tsxBin: string; workerScript: string; logDir: s
   const projectRoot = join(__dirname, "..", "..");
   return {
     tsxBin: join(projectRoot, "node_modules", ".bin", "tsx"),
-    workerScript: join(__dirname, "agent-worker.ts"),
+    workerScript: join(__dirname, "agent-worker.js"),
     logDir: join(process.env.HOME ?? "/tmp", ".foreman", "logs"),
   };
 }
@@ -910,10 +1157,16 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     const spawnEnv: Record<string, string | undefined> = { ...config.env };
     delete spawnEnv.CLAUDECODE;
 
+    // Spawn from the project root (where dist/ and node_modules/ live),
+    // not the worktree. The worktree path is passed in config and used by
+    // the agent for git operations. tsx resolves imports relative to the
+    // script's location, but ESM resolution still checks cwd for some paths.
+    const __filename = fileURLToPath(import.meta.url);
+    const projectRoot = join(dirname(__filename), "..", "..");
     const child = spawn(tsxBin, [workerScript, configPath], {
       detached: true,
       stdio: ["ignore", outFd.fd, errFd.fd],
-      cwd: config.worktreePath,
+      cwd: projectRoot,
       env: spawnEnv,
     });
 

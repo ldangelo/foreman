@@ -13,10 +13,11 @@ import { tmpdir } from "node:os";
 // vi.hoisted() ensures mock variables are initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
 
-const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile } = vi.hoisted(() => ({
+const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile, mockEnqueueBeadWrite } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
   mockEnqueueToMergeQueue: vi.fn().mockReturnValue({ success: true }),
   mockAppendFile: vi.fn().mockResolvedValue(undefined),
+  mockEnqueueBeadWrite: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({
@@ -41,6 +42,7 @@ vi.mock("../../lib/store.js", () => ({
     forProject: vi.fn(() => ({
       getDb: vi.fn(() => ({})),
       close: vi.fn(),
+      enqueueBeadWrite: mockEnqueueBeadWrite,
     })),
   },
 }));
@@ -135,18 +137,19 @@ describe("finalize() — push succeeds", () => {
   });
 
   it("sets bead to 'review' status after successful push (not closing it)", async () => {
-    // The bead lifecycle fix: after push succeeds, set bead to 'review' so it's
-    // visible as "pipeline done, awaiting merge" — distinct from in_progress tasks.
+    // The bead lifecycle fix: after push succeeds, enqueue a set-status 'review'
+    // write so the bead is visible as "pipeline done, awaiting merge".
+    // enqueueSetBeadStatus() uses store.enqueueBeadWrite() — NOT a direct execFileSync call.
     await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-test-001" }), logFile);
-    const reviewCall = mockExecFileSync.mock.calls.find(
+    // Verify enqueueBeadWrite was called with "set-status" and the correct seedId/status
+    const reviewCall = mockEnqueueBeadWrite.mock.calls.find(
       (call) =>
-        Array.isArray(call[1]) &&
-        call[1][0] === "update" &&
-        call[1].includes("--status") &&
-        call[1].includes("review"),
+        Array.isArray(call) &&
+        call[1] === "set-status" &&
+        call[2]?.status === "review" &&
+        call[2]?.seedId === "bd-test-001",
     );
     expect(reviewCall).toBeDefined();
-    expect(reviewCall![1]).toContain("bd-test-001");
   });
 
   it("does NOT call br close after push succeeds (bead lifecycle fix)", async () => {
@@ -196,13 +199,19 @@ describe("finalize() — push FAILS", () => {
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
-    // git push fails; all other commands succeed
+    // git push fails; all other commands succeed.
+    // The mock must handle all git commands that finalize() calls:
+    // rev-parse --abbrev-ref HEAD (branch check), rev-parse --short HEAD (commit hash),
+    // checkout (branch fix), fetch, rebase, push (fails), add, commit, diff, etc.
     mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
       if (Array.isArray(args) && args[0] === "push") {
         throw new Error("remote: Permission to repo denied.");
       }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
+      if (args[0] === "rev-parse" && args.includes("--abbrev-ref")) return Buffer.from("foreman/bd-test-001\n");
       if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      if (args[0] === "checkout") return Buffer.from("");
+      if (args[0] === "fetch") return Buffer.from("");
+      if (args[0] === "rebase") return Buffer.from("");
       return Buffer.from("");
     });
   });

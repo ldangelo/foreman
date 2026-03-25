@@ -1,0 +1,52 @@
+# Source TypeScript (compiled to dist/ which IS published)
+src/
+__tests__/
+*.test.ts
+
+# Compiled test files (dist/__tests__/ should not be published)
+dist/**/__tests__/
+dist/**/*.test.js
+dist/**/*.test.js.map
+dist/**/*.test.d.ts
+dist/**/*.test.d.ts.map
+
+# TypeScript & test configuration (development-only)
+tsconfig.json
+tsconfig.build.json
+vitest.config.ts
+
+# Development/runtime state directories
+.foreman/
+.foreman-worktrees/
+.beads/
+.claude/
+
+# CI/CD workflows (not needed in published package)
+.github/
+
+# Documentation (available in GitHub repository)
+docs/
+
+# Scripts (build-time only)
+scripts/
+
+# SQLite state files
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Misc development files
+.env.example
+CLAUDE.md
+TASK.md
+SESSION_LOG.md
+SESSION_LOG_EXPLORER.md
+EXPLORER_SESSION_LOG.md
+SessionLogs/
+skills/
+
+# Homebrew tap (separate repo — not part of npm package)
+homebrew-tap/
+
+# ESLint configuration (dev only)
+eslint.config.js

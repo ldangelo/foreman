@@ -39,15 +39,17 @@ describe("closeSeed — br backend", () => {
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("calls br close with seedId and --reason flag", async () => {
+  it("calls br close --no-db --force with seedId (beads_rust#204 workaround)", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await closeSeed("bd-abc-001");
 
-    // First call is close, second is sync --flush-only
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toContain("br");
-    expect(args).toEqual(["close", "bd-abc-001", "--reason", "Completed via pipeline"]);
+    expect(args[0]).toBe("close");
+    expect(args).toContain("--no-db");
+    expect(args).toContain("--force");
+    expect(args).toContain("bd-abc-001");
   });
 
   it("uses ~/.local/bin/br path for br backend", async () => {
@@ -76,15 +78,15 @@ describe("closeSeed — br backend", () => {
     await expect(closeSeed("bd-fail-002")).resolves.toBeUndefined();
   });
 
-  it("passes the correct --reason text", async () => {
+  it("passes --no-db --force flags for JSONL-direct close (beads_rust#204)", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await closeSeed("bd-reason-test");
 
     const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    const reasonIdx = args.indexOf("--reason");
-    expect(reasonIdx).toBeGreaterThanOrEqual(0);
-    expect(args[reasonIdx + 1]).toBe("Completed via pipeline");
+    expect(args[0]).toBe("close");
+    expect(args).toContain("--no-db");
+    expect(args).toContain("--force");
   });
 
   it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", async () => {
@@ -96,36 +98,30 @@ describe("closeSeed — br backend", () => {
     expect(args[0]).toBe("close");
   });
 
-  it("calls br sync --flush-only after closing seed", async () => {
+  it("calls execFileSync twice for close (br close + sqlite3 cache clear)", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await closeSeed("bd-flush-test", "/my/project");
 
-    // execFileSync called twice: first for close, then for sync --flush-only
+    // Two execFileSync calls:
+    // 1. br close --no-db --force (write to JSONL)
+    // 2. sqlite3 ... DELETE FROM blocked_issues_cache; (clear cache)
     expect(mockExecFileSync).toHaveBeenCalledTimes(2);
-    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
-    expect(syncArgs).toEqual(["sync", "--flush-only"]);
-    expect(syncOpts).toMatchObject({ cwd: "/my/project" });
+    const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    expect(args[0]).toBe("close");
+    expect(args).toContain("--no-db");
+
+    // Second call should be sqlite3 to clear blocked_issues_cache
+    const [sqlite3Cmd, sqlite3Args] = mockExecFileSync.mock.calls[1] as [string, string[], unknown];
+    expect(sqlite3Cmd).toBe("sqlite3");
+    expect((sqlite3Args as string[]).some((a: string) => a.includes("blocked_issues_cache"))).toBe(true);
   });
 
-  it("calls br sync --flush-only with undefined projectPath when not provided", async () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(""));
-
-    await closeSeed("bd-flush-no-path");
-
-    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
-    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
-    expect(syncArgs).toEqual(["sync", "--flush-only"]);
-    expect(syncOpts).not.toHaveProperty("cwd");
-  });
-
-  it("does not throw when br sync --flush-only fails (flush is non-fatal)", async () => {
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "sync") throw new Error("sync failed");
-      return Buffer.from("");
+  it("does not throw when close --no-db fails (error suppressed)", async () => {
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error("close failed");
     });
 
-    // Must not reject even if flush fails
     await expect(closeSeed("bd-fail-sync", "/my/project")).resolves.toBeUndefined();
   });
 

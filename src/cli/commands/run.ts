@@ -1,13 +1,15 @@
 import { Command } from "commander";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import chalk from "chalk";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { getRepoRoot, getCurrentBranch, checkoutBranch } from "../../lib/git.js";
+import { extractBranchLabel } from "../../lib/branch-label.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk, type WatchResult } from "../watch-ui.js";
@@ -15,7 +17,7 @@ import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
 import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
-import { PIPELINE_TIMEOUTS } from "../../lib/config.js";
+import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS } from "../../lib/config.js";
 import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
 import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
 import { autoMerge } from "../../orchestrator/auto-merge.js";
@@ -47,6 +49,108 @@ export async function createTaskClients(projectPath: string): Promise<TaskClient
   await brClient.ensureBrInstalled();
   const bvClient = new BvClient(projectPath);
   return { taskClient: brClient, bvClient };
+}
+
+// ── Branch Mismatch Detection ────────────────────────────────────────────────
+
+/**
+ * Prompt the user for a yes/no answer via stdin.
+ * Returns true for yes (empty input defaults to yes), false for no.
+ */
+async function promptYesNo(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise<boolean>((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      const normalised = answer.trim().toLowerCase();
+      resolve(normalised === "" || normalised === "y" || normalised === "yes");
+    });
+  });
+}
+
+/**
+ * Check whether any in-progress beads have a `branch:` label that differs
+ * from the current git branch.
+ *
+ * Edge cases handled:
+ * - No in-progress beads: no prompt, return false (continue normally)
+ * - Label matches current branch: no prompt, return false (continue normally)
+ * - No branch: label on bead: no prompt, return false (backward compat)
+ * - Label differs: show prompt, switch branch (return false) or exit (return true)
+ *
+ * Returns true if the caller should abort (user declined to switch).
+ */
+export async function checkBranchMismatch(
+  taskClient: ITaskClient,
+  projectPath: string,
+): Promise<boolean> {
+  let currentBranch: string;
+  try {
+    currentBranch = await getCurrentBranch(projectPath);
+  } catch {
+    // Cannot determine current branch — skip mismatch check
+    return false;
+  }
+
+  let inProgressBeads: import("../../lib/task-client.js").Issue[];
+  try {
+    inProgressBeads = await taskClient.list({ status: "in_progress" });
+  } catch {
+    // Cannot list in-progress beads — skip mismatch check
+    return false;
+  }
+
+  if (inProgressBeads.length === 0) return false;
+
+  // Group mismatched beads by target branch
+  const mismatchByBranch = new Map<string, string[]>();
+  for (const bead of inProgressBeads) {
+    try {
+      const detail = await taskClient.show(bead.id) as unknown as { labels?: string[] };
+      const targetBranch = extractBranchLabel(detail.labels);
+      if (targetBranch && targetBranch !== currentBranch) {
+        const ids = mismatchByBranch.get(targetBranch) ?? [];
+        ids.push(bead.id);
+        mismatchByBranch.set(targetBranch, ids);
+      }
+    } catch {
+      // Non-fatal: skip this bead if detail fetch fails
+    }
+  }
+
+  if (mismatchByBranch.size === 0) return false;
+
+  // For each unique target branch, prompt the user to switch
+  for (const [targetBranch, beadIds] of mismatchByBranch) {
+    const beadList = beadIds.join(", ");
+    const question = chalk.yellow(
+      `\nBeads ${chalk.cyan(beadList)} target branch ${chalk.green(targetBranch)} ` +
+      `but you are on ${chalk.red(currentBranch)}.\n` +
+      `Switch to ${chalk.green(targetBranch)} to continue? [Y/n] `,
+    );
+
+    const shouldSwitch = await promptYesNo(question);
+    if (shouldSwitch) {
+      try {
+        await checkoutBranch(projectPath, targetBranch);
+        console.log(chalk.green(`Switched to branch ${targetBranch}.`));
+        currentBranch = targetBranch;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(chalk.red(`Failed to switch to branch ${targetBranch}: ${msg}`));
+        console.error(chalk.dim(`Run 'git checkout ${targetBranch}' manually and re-run foreman.`));
+        return true; // abort
+      }
+    } else {
+      console.log(
+        chalk.yellow(`Skipping beads ${beadList} — they target ${targetBranch}.`) +
+        chalk.dim(` Run 'git checkout ${targetBranch}' and re-run foreman to continue those beads.`),
+      );
+      return true; // abort — user said no
+    }
+  }
+
+  return false;
 }
 
 // ── Run Command ──────────────────────────────────────────────────────
@@ -219,6 +323,20 @@ export const runCommand = new Command("run")
         }
       }
 
+      // ── Branch mismatch check ───────────────────────────────────────────────
+      // Before dispatching, check if any in-progress beads target a different
+      // branch than the current one. If so, prompt the user to switch branches.
+      // Skip in dry-run mode since no actual dispatch happens.
+      if (!dryRun && !resume && !resumeFailed) {
+        const shouldAbort = await checkBranchMismatch(taskClient, projectPath);
+        if (shouldAbort) {
+          stopSentinel();
+          store.close();
+          await notifyServer.stop().catch(() => { /* ignore */ });
+          process.exit(1);
+        }
+      }
+
       /**
        * Build the auto-dispatch callback passed to watchRunsInk.
        * Called when an agent completes mid-watch and capacity may be available.
@@ -323,6 +441,9 @@ export const runCommand = new Command("run")
       let userDetached = false;
       // Suppress repeated "No ready beads" log messages — only print once per wait period.
       let waitingForTasksLogged = false;
+      // Count consecutive poll cycles with nothing dispatched and no active agents.
+      // When this reaches PIPELINE_LIMITS.emptyPollCycles the loop exits gracefully.
+      let emptyPollCount = 0;
       while (true) {
         iteration++;
         if (iteration > 1) {
@@ -416,6 +537,30 @@ export const runCommand = new Command("run")
           }
           // Watch mode with no active agents: poll for new tasks to become ready
           if (watch) {
+            emptyPollCount++;
+            // Check cycle limit (0 = disabled / legacy infinite-poll behaviour)
+            if (
+              PIPELINE_LIMITS.emptyPollCycles > 0 &&
+              emptyPollCount >= PIPELINE_LIMITS.emptyPollCycles
+            ) {
+              const elapsedSec = Math.round(
+                (emptyPollCount * PIPELINE_TIMEOUTS.monitorPollMs) / 1000
+              );
+              console.log(
+                chalk.yellow(
+                  `\nNo ready beads after ${emptyPollCount} poll cycle(s) (~${elapsedSec}s). Exiting dispatch loop.`
+                )
+              );
+              console.log(
+                chalk.dim(
+                  "  • Re-run 'foreman run' once tasks become unblocked\n" +
+                  "  • Use 'br ready' to see which tasks are ready\n" +
+                  "  • Use 'foreman status' to check for stuck agents\n" +
+                  "  • Set FOREMAN_EMPTY_POLL_CYCLES=0 to disable this limit"
+                )
+              );
+              break;
+            }
             if (!waitingForTasksLogged) {
               console.log(
                 chalk.dim(
@@ -433,9 +578,10 @@ export const runCommand = new Command("run")
           break;
         }
 
-        // Tasks were dispatched — reset flag so the "waiting" message reappears
-        // if we later enter another no-tasks polling period.
+        // Tasks were dispatched — reset counters so the "waiting" message and
+        // the empty-poll limit restart from zero when we next enter a dry spell.
         waitingForTasksLogged = false;
+        emptyPollCount = 0;
 
         // Watch mode: wait for this batch to finish, then loop to check for more
         if (watch) {

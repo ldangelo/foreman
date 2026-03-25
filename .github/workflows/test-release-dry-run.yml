@@ -1,0 +1,272 @@
+name: Test Release Dry-Run
+
+# Manual trigger for testing the release workflow on ANY branch (not just main).
+# This allows you to verify the full release pipeline locally before pushing to main.
+#
+# What this workflow does (dry-run — no real release created):
+#   1. Builds TypeScript
+#   2. Bundles CJS (for pkg compatibility)
+#   3. Verifies native addon prebuilds exist for all 5 targets
+#   4. Runs the binary build matrix (compile-binary --dry-run) for all 5 targets
+#   5. Runs npm pack --dry-run to verify package contents
+#
+# All steps are non-destructive — no release is published, no npm package uploaded.
+#
+# Usage:
+#   GitHub Actions UI → Actions tab → "Test Release Dry-Run" → Run workflow
+#   (works on any branch, not just main)
+#
+# Local alternative (no CI needed):
+#   npm run build:binaries:dry-run   # Compile all 5 targets locally (dry-run)
+#   npm pack --dry-run               # Preview npm package contents
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or commit ref to test (default: current branch)"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  # ── Validate package contents ─────────────────────────────────────────────────
+  validate-npm-pack:
+    name: Validate npm pack contents
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: npm-${{ runner.os }}-20-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-20-
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: TypeScript compile
+        run: npm run build
+
+      - name: Verify npm pack contents (dry-run)
+        run: |
+          echo "=== npm pack --dry-run ==="
+          npm pack --dry-run 2>&1 | tee pack-output.txt
+
+          echo ""
+          echo "=== Validating expected files are present ==="
+
+          # Must include compiled output
+          grep -q "dist/" pack-output.txt && echo "✓ dist/ present" || (echo "✗ dist/ MISSING" && exit 1)
+
+          # Must include CLI entry point
+          grep -q "bin/foreman" pack-output.txt && echo "✓ bin/foreman present" || (echo "✗ bin/foreman MISSING" && exit 1)
+
+          # Must include bundled defaults (YAML configs + prompts)
+          grep -q "src/defaults/" pack-output.txt && echo "✓ src/defaults/ present" || (echo "✗ src/defaults/ MISSING" && exit 1)
+
+          echo ""
+          echo "=== Validating excluded files are NOT present ==="
+
+          # Must NOT include node_modules
+          grep -q "node_modules/" pack-output.txt && (echo "✗ node_modules/ SHOULD NOT be in package!" && exit 1) || echo "✓ node_modules/ excluded"
+
+          # Must NOT include native addon prebuilds (too large, cross-platform only)
+          grep -q "scripts/prebuilds/" pack-output.txt && (echo "✗ scripts/prebuilds/ SHOULD NOT be in package!" && exit 1) || echo "✓ scripts/prebuilds/ excluded"
+
+          # Must NOT include test files
+          grep -q "__tests__/" pack-output.txt && (echo "✗ __tests__/ SHOULD NOT be in package!" && exit 1) || echo "✓ __tests__/ excluded"
+
+          echo ""
+          echo "All validation checks passed ✓"
+
+  # ── Version detection ─────────────────────────────────────────────────────────
+  validate-version-detection:
+    name: Validate version detection configuration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify release-please config
+        run: |
+          echo "=== release-please-config.json ==="
+          cat release-please-config.json
+
+          echo ""
+          echo "=== .release-please-manifest.json ==="
+          cat .release-please-manifest.json
+
+          echo ""
+          echo "=== Checking version consistency ==="
+          MANIFEST_VERSION=$(node -e "const m = require('./.release-please-manifest.json'); console.log(m['.'])")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+
+          echo "package.json version:           $PKG_VERSION"
+          echo ".release-please-manifest.json:  $MANIFEST_VERSION"
+
+          if [ "$MANIFEST_VERSION" != "$PKG_VERSION" ]; then
+            echo "ERROR: Version mismatch!"
+            echo "  package.json says:          $PKG_VERSION"
+            echo "  release-please manifest:    $MANIFEST_VERSION"
+            exit 1
+          fi
+
+          echo "Version check passed: $PKG_VERSION ✓"
+
+      - name: Verify release-please changelog config
+        run: |
+          echo "=== Changelog sections configuration ==="
+          node -e "
+            const cfg = require('./release-please-config.json');
+            const sections = cfg['changelog-sections'];
+            console.log('Changelog sections:');
+            for (const s of sections) {
+              const hidden = s.hidden ? ' (hidden)' : '';
+              console.log(\`  \${s.type.padEnd(12)} → \${s.section}\${hidden}\`);
+            }
+
+            // Validate required sections exist
+            const types = sections.map(s => s.type);
+            if (!types.includes('feat')) { console.error('Missing feat section!'); process.exit(1); }
+            if (!types.includes('fix')) { console.error('Missing fix section!'); process.exit(1); }
+            if (!types.includes('perf')) { console.error('Missing perf section!'); process.exit(1); }
+
+            console.log('');
+            console.log('Bump rules (per commit type):');
+            console.log('  feat           → minor bump (0.x.0 → 0.x+1.0)');
+            console.log('  fix            → patch bump (0.x.y → 0.x.y+1)');
+            console.log('  BREAKING CHANGE → major bump (0.x.y → 1.0.0)');
+            console.log('');
+            console.log('Changelog config valid ✓');
+          "
+
+  # ── Binary build matrix dry-run ───────────────────────────────────────────────
+  validate-binary-build-matrix:
+    name: Validate binary build matrix (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: "linux-x64,linux-arm64"
+          - os: macos-latest
+            targets: "darwin-x64,darwin-arm64"
+          - os: windows-latest
+            targets: "win-x64"
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: npm-${{ runner.os }}-20-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-20-
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: TypeScript compile
+        run: npm run build
+
+      - name: Bundle CJS (for pkg backend)
+        run: npm run bundle:cjs
+
+      - name: Verify native addon prebuilds
+        shell: bash
+        run: |
+          npm run prebuilds:status || true
+          if npm run prebuilds:status 2>&1 | grep -q "MISSING"; then
+            echo "Some prebuilts are missing — downloading..."
+            npm run prebuilds:download
+          else
+            echo "All prebuilts present ✓"
+          fi
+
+      - name: Compile binaries (dry-run — skips actual pkg execution)
+        shell: bash
+        run: |
+          IFS=',' read -ra TARGETS <<< "${{ matrix.targets }}"
+          for target in "${TARGETS[@]}"; do
+            echo "--- Dry-run compile: $target ---"
+            npx tsx scripts/compile-binary.ts --target "$target" --dry-run
+          done
+
+      - name: Verify all expected targets compiled (dry-run produces no binary files)
+        shell: bash
+        run: |
+          echo "Dry-run validation complete for targets: ${{ matrix.targets }}"
+          echo "In a real build, binaries would be in:"
+          IFS=',' read -ra TARGETS <<< "${{ matrix.targets }}"
+          for target in "${TARGETS[@]}"; do
+            if [ "$target" = "win-x64" ]; then
+              echo "  dist/binaries/${target}/foreman-${target}.exe"
+            else
+              echo "  dist/binaries/${target}/foreman-${target}"
+            fi
+          done
+
+  # ── Summary ───────────────────────────────────────────────────────────────────
+  dry-run-summary:
+    name: Dry-run Summary
+    runs-on: ubuntu-latest
+    needs: [validate-npm-pack, validate-version-detection, validate-binary-build-matrix]
+
+    steps:
+      - name: Print summary
+        run: |
+          echo "╔══════════════════════════════════════════════════════╗"
+          echo "║          Release Dry-Run Summary                     ║"
+          echo "╚══════════════════════════════════════════════════════╝"
+          echo ""
+          echo "All validation checks passed on branch: ${{ github.ref_name }}"
+          echo ""
+          echo "The following would be produced in a real release:"
+          echo "  📦 npm package:  @oftheangels/foreman (via publish-npm.yml)"
+          echo "  🐧 linux-x64:    foreman-{TAG}-linux-x64.tar.gz"
+          echo "  🐧 linux-arm64:  foreman-{TAG}-linux-arm64.tar.gz"
+          echo "  🍎 darwin-x64:   foreman-{TAG}-darwin-x64.tar.gz"
+          echo "  🍎 darwin-arm64: foreman-{TAG}-darwin-arm64.tar.gz"
+          echo "  🪟 win-x64:      foreman-{TAG}-win-x64.zip"
+          echo ""
+          echo "To create a real release:"
+          echo "  1. Merge your changes to main"
+          echo "  2. release-please will open a Release PR"
+          echo "  3. Merge the Release PR → tag is pushed"
+          echo "  4. release-binaries.yml and publish-npm.yml trigger automatically"

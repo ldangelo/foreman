@@ -101,7 +101,7 @@ export const PIPELINE_TIMEOUTS = {
   /** Timeout for git add/commit/push during pipeline finalization */
   gitOperationMs: envInt("FOREMAN_GIT_OPERATION_TIMEOUT_MS", 30_000),
   /** Timeout for resetting a bead back to open after stuck/failed */
-  beadClosureMs: envInt("FOREMAN_BEAD_CLOSURE_TIMEOUT_MS", 10_000),
+  beadClosureMs: envInt("FOREMAN_BEAD_CLOSURE_TIMEOUT_MS", 30_000),
   /** Timeout for running the test suite after a merge */
   testExecutionMs: envInt("FOREMAN_TEST_EXECUTION_TIMEOUT_MS", 5 * 60 * 1000),
   /** Timeout for running tests in the sentinel (default: 10 minutes) */
@@ -125,6 +125,16 @@ export const PIPELINE_LIMITS = {
   maxRecoveryRetries: envNonNegativeInt("FOREMAN_MAX_RECOVERY_RETRIES", 3),
   /** Minutes of inactivity before a running agent is considered stuck */
   stuckDetectionMinutes: envInt("FOREMAN_STUCK_DETECTION_MINUTES", 15),
+  /**
+   * Number of consecutive empty poll cycles (no tasks dispatched, no active agents)
+   * before the dispatch loop exits gracefully in watch mode.
+   *
+   * At the default polling interval of 3s, 20 cycles = 60 seconds total.
+   * Set to 0 to disable the limit (poll indefinitely — legacy behaviour).
+   *
+   * Override via: FOREMAN_EMPTY_POLL_CYCLES=<n>
+   */
+  emptyPollCycles: envNonNegativeInt("FOREMAN_EMPTY_POLL_CYCLES", 20),
 } as const;
 
 /**

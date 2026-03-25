@@ -1,5 +1,7 @@
 # Foreman 👷
 
+[![CI](https://github.com/ldangelo/foreman/actions/workflows/ci.yml/badge.svg)](https://github.com/ldangelo/foreman/actions/workflows/ci.yml)
+
 > The foreman doesn't write the code — they manage the crew that does.
 
 Multi-agent coding orchestrator. Decomposes development work into parallelizable tasks, dispatches them to AI coding agents in isolated git worktrees, and automatically merges results back — all driven by a real-time pipeline and inter-agent messaging.
@@ -521,6 +523,166 @@ foreman/
     ├── TRD/                        # Technical Requirements Documents
     └── PRD/                        # Product Requirements Documents
 ```
+
+## Standalone Binaries
+
+Foreman can be distributed as a standalone executable for all 5 platforms — no Node.js required. Binaries are compiled via [pkg](https://github.com/yao-pkg/pkg) which embeds the CJS bundle + Node.js runtime.
+
+> **Note:** `better_sqlite3.node` (native addon) is a _side-car_ file that must stay in the same directory as the binary. It cannot be embedded inside the executable.
+
+### Quick Build
+
+```bash
+# Full pipeline: tsc → CJS bundle → compile all 5 platforms
+npm run build:binaries
+
+# Dry-run (prints commands, does not compile)
+npm run build:binaries:dry-run
+
+# Single target (e.g. darwin-arm64)
+npm run build && npm run bundle:cjs
+tsx scripts/compile-binary.ts --target darwin-arm64
+```
+
+### Output Structure
+
+```
+dist/binaries/
+  darwin-arm64/
+    foreman-darwin-arm64      # macOS Apple Silicon
+    better_sqlite3.node       # side-car native addon
+  darwin-x64/
+    foreman-darwin-x64        # macOS Intel
+    better_sqlite3.node
+  linux-x64/
+    foreman-linux-x64         # Linux x86-64
+    better_sqlite3.node
+  linux-arm64/
+    foreman-linux-arm64       # Linux ARM64 (e.g. AWS Graviton)
+    better_sqlite3.node
+  win-x64/
+    foreman-win-x64.exe       # Windows x64
+    better_sqlite3.node
+```
+
+### Cross-Platform Compilation
+
+`better_sqlite3.node` differs per platform. The prebuilt binaries for all 5 targets are committed to `scripts/prebuilds/`. To refresh them from the better-sqlite3 GitHub Releases:
+
+```bash
+npm run prebuilds:download          # Download for all targets
+npm run prebuilds:download:force    # Re-download even if present
+npm run prebuilds:status            # Check what's available
+```
+
+### Semantic Versioning & Conventional Commits
+
+Foreman uses **[release-please](https://github.com/googleapis/release-please)** for automated semantic versioning driven by [Conventional Commits](https://www.conventionalcommits.org/).
+
+#### How it works
+
+1. Merge a PR to `main` whose commits (or PR title) follow the conventional-commit format.
+2. The `.github/workflows/release.yml` workflow runs `release-please`, which:
+   - Inspects commits since the last release tag.
+   - Opens (or updates) a **Release PR** with a bumped `package.json` version and an updated `CHANGELOG.md`.
+3. Merge the Release PR → release-please creates the GitHub Release + tag.
+4. The `release-binaries.yml` workflow fires on the new tag and publishes platform binaries.
+
+#### Commit prefix → version bump
+
+| Prefix | Bump |
+|--------|------|
+| `fix:` | patch (0.1.0 → 0.1.1) |
+| `feat:` | minor (0.1.0 → 0.2.0) |
+| `feat!:` or `BREAKING CHANGE:` footer | major (0.1.0 → 1.0.0) |
+
+#### Examples
+
+```
+feat: add --dry-run flag to foreman run
+fix: handle missing EXPLORER_REPORT.md gracefully
+feat!: rename foreman monitor to foreman sentinel
+
+BREAKING CHANGE: The monitor subcommand has been renamed to sentinel.
+```
+
+#### Configuration files
+
+- `release-please-config.json` — release-please package config
+- `.release-please-manifest.json` — current version manifest (updated by release-please)
+- `CHANGELOG.md` — auto-generated; do not edit manually
+
+### CI / Automated Releases
+
+The `.github/workflows/release-binaries.yml` workflow:
+- Triggers on `v*.*.*` tag push (created automatically by release-please)
+- Compiles all 5 platform binaries on Ubuntu (cross-compilation via prebuilds)
+- Smoke-tests the linux-x64 binary
+- Packages each platform as `.tar.gz` (zip for Windows)
+- Creates a GitHub Release with all assets attached
+
+To trigger a release manually (bypassing release-please):
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Or trigger manually from the Actions tab with optional dry-run mode.
+
+### Installation from Binary Release
+
+#### Homebrew (macOS / Linux — recommended)
+
+```bash
+brew tap oftheangels/tap
+brew install foreman
+```
+
+After installation, run `brew info foreman` to see post-install setup instructions, or run `foreman doctor` to verify your configuration.
+
+#### Quick install script (macOS / Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
+```
+
+The installer automatically:
+- Detects your OS (macOS/Linux) and architecture (arm64/x86_64)
+- Downloads the correct binary from the [latest GitHub Release](https://github.com/ldangelo/foreman/releases/latest)
+- Installs to `/usr/local/bin/foreman` (with sudo) or `~/.local/bin/foreman` (without)
+- Places `better_sqlite3.node` alongside the binary (required side-car)
+- Verifies the install with `foreman --version`
+
+**Options:**
+
+```bash
+# Install a specific version
+FOREMAN_VERSION=v1.2.3 curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
+
+# Install to a custom directory
+FOREMAN_INSTALL=/opt/bin curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
+
+# Avoid GitHub API rate limiting (60 req/hr unauthenticated)
+GITHUB_TOKEN=ghp_yourtoken curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
+```
+
+**Manual installation:**
+
+```bash
+# macOS / Linux — download the archive for your platform
+TAG=v1.0.0
+PLATFORM=$(uname -s | tr A-Z a-z)              # darwin or linux
+ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')  # x64 or arm64
+curl -fsSL "https://github.com/ldangelo/foreman/releases/download/${TAG}/foreman-${TAG}-${PLATFORM}-${ARCH}.tar.gz" | tar xz
+
+# Both the binary and better_sqlite3.node must reside in the same directory
+chmod +x foreman-${PLATFORM}-${ARCH}
+sudo cp better_sqlite3.node /usr/local/bin/
+sudo mv foreman-${PLATFORM}-${ARCH} /usr/local/bin/foreman
+```
+
+> **Windows:** Use `install.ps1` (see [bd-8ovc](https://github.com/ldangelo/foreman/issues)).
 
 ## Development
 

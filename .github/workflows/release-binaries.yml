@@ -1,0 +1,382 @@
+name: Release Binaries
+
+# Triggered on version tag push (e.g. v1.2.3) created by release-please,
+# or manually via workflow_dispatch.
+#
+# Flow:
+#   Push to main → release.yml (release-please) → tag → this workflow
+#
+# Matrix strategy builds natively on each OS for best compatibility:
+#   ubuntu-latest  → linux-x64, linux-arm64  (pkg cross-compilation)
+#   macos-latest   → darwin-x64, darwin-arm64 (pkg cross-compilation)
+#   windows-latest → win-x64
+#
+# Artifacts are collected by a final "release" job that uploads them all
+# to the GitHub Release created by release-please.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name to create release for (e.g. v1.2.3)"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run — build but do not publish release"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+# write permission required to upload release assets
+permissions:
+  contents: write
+
+jobs:
+  # ── Matrix: Build binaries on each OS ────────────────────────────────────────
+  build-binaries:
+    name: Build binaries (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: "linux-x64,linux-arm64"
+            artifact_name: binaries-linux
+          - os: macos-latest
+            targets: "darwin-x64,darwin-arm64"
+            artifact_name: binaries-macos
+          - os: windows-latest
+            targets: "win-x64"
+            artifact_name: binaries-windows
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # ── Checkout ─────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Node.js setup ────────────────────────────────────────────────────────
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ── Dependency cache ──────────────────────────────────────────────────────
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: npm-${{ runner.os }}-20-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-20-
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      # ── TypeScript build ───────────────────────────────────────────────────────
+      - name: TypeScript compile
+        run: npm run build
+
+      # ── Bundle CJS for pkg ────────────────────────────────────────────────────
+      - name: Bundle (CJS — required for pkg backend)
+        run: npm run bundle:cjs
+
+      # ── Verify native addon prebuilds ─────────────────────────────────────────
+      # Prebuilds are committed in scripts/prebuilds/{platform}-{arch}/.
+      # This step downloads any that are missing.
+      - name: Verify / refresh native addon prebuilds
+        shell: bash
+        run: |
+          npm run prebuilds:status || true
+          if npm run prebuilds:status 2>&1 | grep -q "MISSING"; then
+            echo "Some prebuilts are missing — downloading..."
+            npm run prebuilds:download
+          else
+            echo "All prebuilts present — skipping download."
+          fi
+
+      # ── Determine release tag ─────────────────────────────────────────────────
+      - name: Determine release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Compile binaries for this OS ──────────────────────────────────────────
+      # Compile all targets relevant to this runner. pkg handles cross-compilation
+      # within the same OS family (linux-x64 + linux-arm64 from ubuntu-latest).
+      - name: Compile standalone binaries (${{ matrix.targets }})
+        shell: bash
+        run: |
+          IFS=',' read -ra TARGETS <<< "${{ matrix.targets }}"
+          for target in "${TARGETS[@]}"; do
+            echo "--- Compiling $target ---"
+            npx tsx scripts/compile-binary.ts --target "$target"
+          done
+
+      # ── Smoke test the native binary (unix only) ──────────────────────────────
+      - name: Smoke test linux-x64 binary
+        if: runner.os == 'Linux'
+        run: |
+          BINARY=dist/binaries/linux-x64/foreman-linux-x64
+          chmod +x "$BINARY"
+          echo "--- foreman --help ---"
+          "$BINARY" --help | head -10 || true
+          echo "--- foreman --version ---"
+          "$BINARY" --version || true
+
+      - name: Smoke test darwin binary
+        if: runner.os == 'macOS'
+        run: |
+          BINARY=dist/binaries/darwin-arm64/foreman-darwin-arm64
+          if [ -f "$BINARY" ]; then
+            chmod +x "$BINARY"
+            echo "--- foreman --help ---"
+            "$BINARY" --help | head -10 || true
+          else
+            echo "WARNING: darwin-arm64 binary not found (cross-compile may have failed)"
+            ls dist/binaries/ || true
+          fi
+
+      - name: Smoke test win-x64 binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "dist\binaries\win-x64\foreman-win-x64.exe"
+          if (Test-Path $bin) {
+            Write-Host "--- foreman --help ---"
+            & $bin --help 2>&1 | Select-Object -First 10
+          } else {
+            Write-Warning "win-x64 binary not found"
+            Get-ChildItem dist\binaries -ErrorAction SilentlyContinue
+          }
+
+      # ── Package binaries for artifact upload ──────────────────────────────────
+      # Unix platforms: tar.gz archives; Windows: zip archive.
+      - name: Package binaries
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          BINARIES_DIR=dist/binaries
+          RELEASE_DIR=dist/release-assets
+          mkdir -p "$RELEASE_DIR"
+
+          IFS=',' read -ra TARGETS <<< "${{ matrix.targets }}"
+          for target in "${TARGETS[@]}"; do
+            target_dir="$BINARIES_DIR/$target"
+            if [ -d "$target_dir" ]; then
+              if [ "$target" = "win-x64" ]; then
+                # Windows: zip archive
+                archive="$RELEASE_DIR/foreman-${TAG}-${target}.zip"
+                if command -v zip &>/dev/null; then
+                  (cd "$target_dir" && zip -r "../../../release-assets/foreman-${TAG}-${target}.zip" .)
+                else
+                  # pwsh fallback (GitHub Actions Windows runners)
+                  powershell -Command "Compress-Archive -Path '$target_dir\*' -DestinationPath '$archive'"
+                fi
+                echo "Packaged: $archive"
+              else
+                # Unix: tar.gz archive
+                archive="$RELEASE_DIR/foreman-${TAG}-${target}.tar.gz"
+                tar -czf "$archive" -C "$target_dir" .
+                echo "Packaged: $archive"
+              fi
+            else
+              echo "WARNING: $target_dir not found — skipping $target"
+            fi
+          done
+
+          echo "Release assets for ${{ matrix.os }}:"
+          ls -lh "$RELEASE_DIR/"
+
+      # ── Upload per-platform artifacts ─────────────────────────────────────────
+      - name: Upload binary artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/release-assets/
+          retention-days: 1
+
+  # ── Collect artifacts and create GitHub Release ──────────────────────────────
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build-binaries
+
+    steps:
+      # ── Determine release tag ─────────────────────────────────────────────────
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Download all per-platform artifacts ───────────────────────────────────
+      - name: Download Linux binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-linux
+          path: dist/release-assets/
+
+      - name: Download macOS binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-macos
+          path: dist/release-assets/
+
+      - name: Download Windows binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-windows
+          path: dist/release-assets/
+
+      # ── Verify all expected assets are present ────────────────────────────────
+      - name: Verify release assets
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          echo "Release assets collected:"
+          ls -lh dist/release-assets/
+
+          EXPECTED=(
+            "foreman-${TAG}-darwin-arm64.tar.gz"
+            "foreman-${TAG}-darwin-x64.tar.gz"
+            "foreman-${TAG}-linux-x64.tar.gz"
+            "foreman-${TAG}-linux-arm64.tar.gz"
+            "foreman-${TAG}-win-x64.zip"
+          )
+
+          MISSING=()
+          for f in "${EXPECTED[@]}"; do
+            if [ ! -f "dist/release-assets/$f" ]; then
+              MISSING+=("$f")
+            fi
+          done
+
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "ERROR: Missing expected release assets:"
+            for f in "${MISSING[@]}"; do echo "  - $f"; done
+            exit 1
+          fi
+
+          echo "All 5 release assets present ✓"
+
+      # ── Generate SHA256 checksums file ────────────────────────────────────────
+      # checksums.txt is used by the update-homebrew-tap workflow and by users
+      # who want to verify their downloads manually.
+      - name: Generate checksums.txt
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          cd dist/release-assets
+          sha256sum \
+            "foreman-${TAG}-darwin-arm64.tar.gz" \
+            "foreman-${TAG}-darwin-x64.tar.gz" \
+            "foreman-${TAG}-linux-x64.tar.gz" \
+            "foreman-${TAG}-linux-arm64.tar.gz" \
+            "foreman-${TAG}-win-x64.zip" \
+            > checksums.txt
+          echo "checksums.txt:"
+          cat checksums.txt
+
+      # ── Create GitHub Release + upload assets ─────────────────────────────────
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Foreman ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
+          body: |
+            ## Standalone Binaries — ${{ steps.tag.outputs.tag }}
+
+            Download the binary for your platform, extract, and run:
+
+            | Platform | Archive |
+            |----------|---------|
+            | macOS (Apple Silicon) | `foreman-${{ steps.tag.outputs.tag }}-darwin-arm64.tar.gz` |
+            | macOS (Intel) | `foreman-${{ steps.tag.outputs.tag }}-darwin-x64.tar.gz` |
+            | Linux x64 | `foreman-${{ steps.tag.outputs.tag }}-linux-x64.tar.gz` |
+            | Linux ARM64 | `foreman-${{ steps.tag.outputs.tag }}-linux-arm64.tar.gz` |
+            | Windows x64 | `foreman-${{ steps.tag.outputs.tag }}-win-x64.zip` |
+
+            ### Quick Install
+
+            **Homebrew (macOS / Linux — recommended):**
+            ```bash
+            brew tap oftheangels/tap
+            brew install foreman
+            ```
+
+            **Script (macOS / Linux):**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh
+            ```
+
+            **Manual download:**
+            ```bash
+            TAG="${{ steps.tag.outputs.tag }}"
+            PLATFORM=$(uname -s | tr A-Z a-z)
+            ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')
+            curl -fsSL "https://github.com/${{ github.repository }}/releases/download/${TAG}/foreman-${TAG}-${PLATFORM}-${ARCH}.tar.gz" | tar xz
+            chmod +x foreman-*
+            sudo mv foreman-* /usr/local/bin/foreman
+
+            # Note: better_sqlite3.node side-car must stay in the same directory as the binary
+            ```
+
+            ### Requirements
+
+            - No Node.js required (standalone binary)
+            - `br` ([beads_rust](https://github.com/Dicklesworthstone/beads_rust)) CLI on PATH for task tracking
+            - `ANTHROPIC_API_KEY` environment variable set
+
+            ### Checksums
+
+            SHA-256 checksums are listed in `checksums.txt` (attached to this release).
+          files: dist/release-assets/*
+
+      # ── Dry-run summary ───────────────────────────────────────────────────────
+      # dry-run: list release assets but do not publish to GitHub Releases.
+      - name: Dry-run summary
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          echo "DRY RUN — binaries compiled but release not published."
+          echo ""
+          echo "Release assets that would be uploaded:"
+          ls -lh dist/release-assets/
+          echo ""
+          echo "Summary:"
+          echo "  Tag: ${{ steps.tag.outputs.tag }}"
+          echo "  Assets: $(ls dist/release-assets/ | wc -l) files"
+
+      # ── Trigger Homebrew tap update ───────────────────────────────────────────
+      # After a successful release, dispatch a repository_dispatch event to
+      # oftheangels/homebrew-tap so it can update the formula with new URLs
+      # and SHA256 checksums.
+      # Skipped during dry run (no real release was created).
+      - name: Trigger Homebrew tap update
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: oftheangels/homebrew-tap
+          event-type: foreman-release
+          client-payload: |
+            {
+              "version": "${{ steps.tag.outputs.tag }}"
+            }

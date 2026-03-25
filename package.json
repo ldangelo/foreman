@@ -1,18 +1,41 @@
 {
-  "name": "foreman",
+  "name": "@oftheangels/foreman",
   "version": "0.1.0",
-  "description": "Multi-agent coding orchestrator built on OpenClaw + Beads",
+  "description": "Multi-agent AI coding orchestrator with task decomposition, git worktree management, and beads_rust integration",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "foreman": "bin/foreman"
   },
+  "files": [
+    "dist/",
+    "bin/",
+    "src/defaults/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsc && node scripts/copy-assets.js && npm run build --workspace=packages/foreman-pi-extensions",
+    "prepare": "npm run build",
+    "clean": "rm -rf dist/",
+    "build": "node scripts/build-atomic.js",
+    "rebuild": "npm run clean && npm run build",
+    "build:atomic": "node scripts/build-atomic.js",
     "dev": "tsx watch src/cli/index.ts",
     "start": "node dist/cli/index.js",
+    "bundle": "tsx scripts/bundle.ts",
+    "compile-binary": "tsx scripts/compile-binary.ts --all",
+    "compile-binary:dry-run": "tsx scripts/compile-binary.ts --all --dry-run",
+    "build:binaries": "npm run build && npm run bundle:cjs && npm run compile-binary",
+    "build:binaries:dry-run": "npm run build && npm run bundle:cjs && npm run compile-binary:dry-run",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prebuilds:download": "tsx scripts/download-prebuilds.ts",
+    "prebuilds:download:force": "tsx scripts/download-prebuilds.ts --force",
+    "prebuilds:status": "tsx scripts/download-prebuilds.ts --status",
+    "bundle:cjs": "tsx scripts/bundle-cjs.ts",
+    "lint": "eslint src/ scripts/ --ext .ts",
+    "lint:fix": "eslint src/ scripts/ --ext .ts --fix"
   },
   "keywords": [
     "ai",
@@ -38,17 +61,26 @@
     "yaml": "^2.8.3"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.4.0",
     "@types/react": "^19.2.14",
+    "esbuild": "^0.27.4",
+    "eslint": "^10.1.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.57.2",
     "vitest": "^4.0.18"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20"
   },
   "workspaces": [
     "packages/*"
-  ]
+  ],
+  "pkg": {
+    "assets": [
+      "dist/package.json"
+    ]
+  }
 }

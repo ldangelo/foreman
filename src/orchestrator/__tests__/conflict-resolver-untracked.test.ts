@@ -9,7 +9,7 @@ import type { UntrackedCheckResult } from "../conflict-resolver.js";
 
 function createTestRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "conflict-resolver-untracked-"));
-  execFileSync("git", ["init", dir]);
+  execFileSync("git", ["init", "--initial-branch", "main", dir]);
   execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
   execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
   // Create initial commit on main

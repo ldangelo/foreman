@@ -109,8 +109,8 @@ vi.mock("../../lib/git.js", () => ({
   detectDefaultBranch: mockDetectDefaultBranch,
 }));
 vi.mock("../task-backend-ops.js", () => ({
-  addNotesToBead: mockAddNotesToBead,
-  markBeadFailed: mockMarkBeadFailed,
+  enqueueAddNotesToBead: mockAddNotesToBead,
+  enqueueMarkBeadFailed: mockMarkBeadFailed,
 }));
 
 import { autoMerge, syncBeadStatusAfterMerge, type AutoMergeOpts } from "../auto-merge.js";
@@ -477,9 +477,10 @@ describe("syncBeadStatusAfterMerge()", () => {
     );
 
     expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(),
       "bd-test-001",
       "Merge conflict detected in branch foreman/bd-test-001.\nConflicting files:\n  - src/foo.ts",
-      "/proj",
+      "auto-merge",
     );
   });
 
@@ -553,7 +554,7 @@ describe("syncBeadStatusAfterMerge()", () => {
     );
 
     // Should not throw, and notes should still be attempted
-    expect(mockAddNotesToBead).toHaveBeenCalledWith("bd-x", "Merge conflict in foo.ts", "/proj");
+    expect(mockAddNotesToBead).toHaveBeenCalledWith(expect.anything(), "bd-x", "Merge conflict in foo.ts", "auto-merge");
   });
 });
 
@@ -584,9 +585,10 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
     }));
 
     expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(),
       "bd-test-001",
       expect.stringContaining("src/foo.ts"),
-      "/mock/project",
+      "auto-merge",
     );
   });
 
@@ -604,9 +606,10 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
     }));
 
     expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(),
       "bd-test-001",
       expect.stringContaining("https://github.com/x/y/pull/42"),
-      "/mock/project",
+      "auto-merge",
     );
   });
 
@@ -624,9 +627,10 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
     }));
 
     expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(),
       "bd-test-001",
       expect.stringContaining("FAIL src/foo.test.ts"),
-      "/mock/project",
+      "auto-merge",
     );
   });
 
@@ -642,9 +646,10 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
     }));
 
     expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(),
       "bd-err-001",
       expect.stringContaining("git rebase failed: conflict in HEAD"),
-      "/mock/project",
+      "auto-merge",
     );
   });
 
@@ -724,7 +729,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
     }));
 
     // Should permanently fail the bead to break the infinite loop
-    expect(mockMarkBeadFailed).toHaveBeenCalledWith("bd-test-001", "/mock/project");
+    expect(mockMarkBeadFailed).toHaveBeenCalledWith(expect.anything(), "bd-test-001", "auto-merge");
   });
 
   it("calls markBeadFailed when test-failed count exceeds RETRY_CONFIG.maxRetries", async () => {
@@ -751,7 +756,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
       }) as never,
     }));
 
-    expect(mockMarkBeadFailed).toHaveBeenCalledWith("bd-test-001", "/mock/project");
+    expect(mockMarkBeadFailed).toHaveBeenCalledWith(expect.anything(), "bd-test-001", "auto-merge");
   });
 
   it("only counts test-failed runs for the specific seed — not other seeds", async () => {
@@ -803,9 +808,10 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
 
     // The failure note should mention exhaustion and manual intervention
     expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(),
       "bd-test-001",
       expect.stringContaining("exhausted"),
-      "/mock/project",
+      "auto-merge",
     );
   });
 
@@ -830,9 +836,10 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
 
     // The failure note should mention the attempt number
     expect(mockAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(),
       "bd-test-001",
       expect.stringContaining("attempt"),
-      "/mock/project",
+      "auto-merge",
     );
   });
 

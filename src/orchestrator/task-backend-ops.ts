@@ -20,6 +20,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -27,6 +28,123 @@ import type { ForemanStore } from "../lib/store.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
 import type { StateMismatch } from "../lib/run-status.js";
+
+// ── Bead Write Queue Operations ───────────────────────────────────────────────
+//
+// These functions enqueue br write operations via the ForemanStore bead_write_queue
+// table instead of calling the br CLI directly. The dispatcher (single process)
+// drains the queue sequentially, eliminating SQLite lock contention.
+//
+// Usage: call these from agent-worker, refinery, pipeline-executor, and auto-merge
+// instead of the corresponding direct functions (closeSeed, resetSeedToOpen, etc.).
+
+/**
+ * Enqueue a "close seed" operation for deferred sequential execution by the dispatcher.
+ *
+ * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param seedId - The bead/seed ID to close.
+ * @param sender - Human-readable source label (e.g. "refinery", "agent-worker").
+ */
+export function enqueueCloseSeed(store: ForemanStore, seedId: string, sender: string): void {
+  try {
+    store.enqueueBeadWrite(sender, "close-seed", { seedId });
+    console.error(`[task-backend-ops] Enqueued close-seed for ${seedId} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to enqueue close-seed for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Enqueue a "reset seed to open" operation for deferred sequential execution by the dispatcher.
+ *
+ * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param seedId - The bead/seed ID to reset.
+ * @param sender - Human-readable source label.
+ */
+export function enqueueResetSeedToOpen(store: ForemanStore, seedId: string, sender: string): void {
+  try {
+    store.enqueueBeadWrite(sender, "reset-seed", { seedId });
+    console.error(`[task-backend-ops] Enqueued reset-seed for ${seedId} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to enqueue reset-seed for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Enqueue a "mark bead failed" operation for deferred sequential execution by the dispatcher.
+ *
+ * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param seedId - The bead/seed ID to mark as failed.
+ * @param sender - Human-readable source label.
+ */
+export function enqueueMarkBeadFailed(store: ForemanStore, seedId: string, sender: string): void {
+  try {
+    store.enqueueBeadWrite(sender, "mark-failed", { seedId });
+    console.error(`[task-backend-ops] Enqueued mark-failed for ${seedId} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to enqueue mark-failed for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Enqueue an "add notes to bead" operation for deferred sequential execution by the dispatcher.
+ * Does nothing when notes is empty (consistent with addNotesToBead).
+ *
+ * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param seedId - The bead/seed ID.
+ * @param notes - Note text to add.
+ * @param sender - Human-readable source label.
+ */
+export function enqueueAddNotesToBead(store: ForemanStore, seedId: string, notes: string, sender: string): void {
+  if (!notes) return;
+  // Truncate to avoid excessive note lengths in the queue
+  const truncated = notes.length > 2000 ? notes.slice(0, 2000) + "…" : notes;
+  try {
+    store.enqueueBeadWrite(sender, "add-notes", { seedId, notes: truncated });
+    console.error(`[task-backend-ops] Enqueued add-notes for ${seedId} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to enqueue add-notes for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Enqueue an "add labels to bead" operation for deferred sequential execution by the dispatcher.
+ * Does nothing when labels array is empty (consistent with addLabelsToBead).
+ *
+ * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param seedId - The bead/seed ID.
+ * @param labels - Array of label strings to add.
+ * @param sender - Human-readable source label.
+ */
+export function enqueueAddLabelsToBead(store: ForemanStore, seedId: string, labels: string[], sender: string): void {
+  if (labels.length === 0) return;
+  try {
+    store.enqueueBeadWrite(sender, "add-labels", { seedId, labels });
+    console.error(`[task-backend-ops] Enqueued add-labels [${labels.join(", ")}] for ${seedId} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to enqueue add-labels for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Enqueue a generic "set status" operation for deferred execution.
+ * Used for status transitions that don't have a dedicated enqueue function
+ * (e.g. setting bead to "review" after finalize push).
+ */
+export function enqueueSetBeadStatus(store: ForemanStore, seedId: string, status: string, sender: string): void {
+  try {
+    store.enqueueBeadWrite(sender, "set-status", { seedId, status });
+    console.error(`[task-backend-ops] Enqueued set-status ${status} for ${seedId} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to enqueue set-status for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
 
 // ── Path constants ────────────────────────────────────────────────────────────
 
@@ -49,34 +167,33 @@ function execOpts(projectPath?: string): { stdio: "pipe"; timeout: number; cwd?:
 /**
  * Close (complete) a bead in the br backend.
  *
- * br close <seedId> --reason "Completed via pipeline"
- * br sync --flush-only  (persists the change to .beads/beads.jsonl)
- *
- * TRD-024: sd backend removed. Always uses br.
- * Errors are caught and logged to stderr; the function never throws.
- * The flush step is non-fatal: if it fails the close is still in br's memory
- * and may be recovered by syncBeadStatusOnStartup on the next restart.
+ * Uses `br close --no-db --force` to write directly to JSONL, bypassing
+ * the broken SQLite blocked cache (beads_rust#204). After the JSONL write,
+ * deletes the br DB files so the next br command reimports from the
+ * corrected JSONL with a fresh cache.
  *
  * @param projectPath - The project root directory that contains .beads/.
- *   Must be provided so br auto-discovers the correct database when called
- *   from a worktree that has no .beads/ of its own.
  */
 export async function closeSeed(seedId: string, projectPath?: string): Promise<void> {
   const bin = brPath();
-  const args = ["close", seedId, "--reason", "Completed via pipeline"];
+  const beadsDir = join(projectPath ?? process.cwd(), ".beads");
 
   try {
-    execFileSync(bin, args, execOpts(projectPath));
-    console.error(`[task-backend-ops] Closed seed ${seedId} via br`);
+    // Write close directly to JSONL (bypass broken DB cache)
+    execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline"], execOpts(projectPath));
+    console.error(`[task-backend-ops] Closed seed ${seedId} via br --no-db`);
 
-    // Flush changes to .beads/beads.jsonl so the close survives a process restart.
-    // Uses execFileSync (not execBr) to avoid the auto-appended --json flag.
+    // Clear the blocked_issues_cache so br ready reflects the close immediately.
+    // Faster than deleting the entire DB (avoids full JSONL reimport).
     try {
-      execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
-      console.error(`[task-backend-ops] Flushed JSONL for seed ${seedId}`);
-    } catch (flushErr: unknown) {
-      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
+      execFileSync("sqlite3", [join(beadsDir, "beads.db"), "DELETE FROM blocked_issues_cache;"], execOpts(projectPath));
+      console.error(`[task-backend-ops] Cleared blocked_issues_cache for ${seedId}`);
+    } catch {
+      // Fallback: delete DB
+      for (const dbFile of ["beads.db", "beads.db-wal", "beads.db-shm"]) {
+        try { unlinkSync(join(beadsDir, dbFile)); } catch { /* may not exist */ }
+      }
+      console.error(`[task-backend-ops] Deleted br DB (fallback) for ${seedId}`);
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

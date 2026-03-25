@@ -244,6 +244,40 @@ describe("Dispatcher — BvClient ordering", () => {
     consoleSpy.mockRestore();
   });
 
+  it("logs 'bv unavailable' warning only once across multiple dispatch calls", async () => {
+    const issues: Issue[] = [makeIssue("bd-001", "P2")];
+    const bvClient = makeBvClient(null);
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue(issues),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+    } as any;
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
+
+    // Dispatch three times on the same instance
+    await dispatcher.dispatch({ dryRun: true });
+    await dispatcher.dispatch({ dryRun: true });
+    await dispatcher.dispatch({ dryRun: true });
+
+    const warnCalls = consoleSpy.mock.calls
+      .map((args) => args.join(" "))
+      .filter((msg) => msg.includes("bv unavailable, using priority-sort fallback"));
+
+    // Warning should appear exactly once, not once per dispatch call
+    expect(warnCalls).toHaveLength(1);
+    consoleSpy.mockRestore();
+  });
+
   it("tasks not in bv recommendations are sorted by priority and appended after ranked tasks", async () => {
     const issues: Issue[] = [
       makeIssue("bd-001", "P3"),
@@ -824,6 +858,129 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
     // Should dispatch normally without calling comments
     expect(result.dispatched).toHaveLength(1);
     expect(seedsClient.comments).toBeUndefined();
+  });
+});
+
+describe("Dispatcher.dispatch — concurrent dispatch race guard", () => {
+  function makeIssue(id = "bd-001"): Issue {
+    return {
+      id,
+      title: `Task ${id}`,
+      status: "open",
+      priority: "P2",
+      type: "task",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  it("skips a seed when hasActiveOrPendingRun returns true (race window)", async () => {
+    const issue = makeIssue();
+    const showResult = {
+      ...issue,
+      description: null,
+      notes: null,
+      labels: [],
+      estimate_minutes: null,
+      dependencies: [],
+      children: [],
+    };
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue(showResult),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    // getActiveRuns returns empty (simulates stale snapshot from start of dispatch)
+    // but hasActiveOrPendingRun returns true (simulates a concurrent run that was
+    // created after the snapshot was taken)
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasActiveOrPendingRun: vi.fn().mockReturnValue(true),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: false });
+
+    expect(result.dispatched).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].seedId).toBe("bd-001");
+    expect(result.skipped[0].reason).toMatch(/concurrently/i);
+    expect(store.hasActiveOrPendingRun).toHaveBeenCalledWith("bd-001", "proj-1");
+  });
+
+  it("dispatches a seed when hasActiveOrPendingRun returns false", async () => {
+    const issue = makeIssue("bd-002");
+    const showResult = {
+      ...issue,
+      description: null,
+      notes: null,
+      labels: [],
+      estimate_minutes: null,
+      dependencies: [],
+      children: [],
+    };
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue(showResult),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    // Use dryRun: true so we don't try to actually create worktrees
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.dispatched[0].seedId).toBe("bd-002");
+    // hasActiveOrPendingRun should NOT be called on dryRun (guard is before createRun, after dryRun continue)
+    // Actually dryRun skips the try block entirely, so hasActiveOrPendingRun won't be called
+  });
+
+  it("calls hasActiveOrPendingRun with both seedId and projectId", async () => {
+    const issue = makeIssue("bd-003");
+    const showResult = {
+      ...issue,
+      description: null,
+      notes: null,
+      labels: [],
+      estimate_minutes: null,
+      dependencies: [],
+      children: [],
+    };
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue(showResult),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "my-project" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasActiveOrPendingRun: vi.fn().mockReturnValue(true),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    await dispatcher.dispatch({ dryRun: false });
+
+    expect(store.hasActiveOrPendingRun).toHaveBeenCalledWith("bd-003", "my-project");
   });
 });
 

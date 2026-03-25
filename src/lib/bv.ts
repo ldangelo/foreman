@@ -8,8 +8,8 @@ const HOME = process.env.HOME ?? "~";
 const BV_PATH = join(HOME, ".local", "bin", "bv");
 const BR_PATH = join(HOME, ".local", "bin", "br");
 
-// TRD-NF-003: bv timeout at 3s for projects up to 500 issues
-const DEFAULT_TIMEOUT_MS = 3_000;
+// bv timeout: 10s to handle large projects (400+ issues) and concurrent DB access
+const DEFAULT_TIMEOUT_MS = 10_000;
 
 // ── Interfaces ──────────────────────────────────────────────────────────────
 
@@ -52,6 +52,7 @@ export interface BvClientOptions {
 export class BvClient {
   private readonly projectPath: string;
   private readonly timeoutMs: number;
+  private errorLogged = false;
 
   constructor(projectPath: string, opts?: BvClientOptions) {
     this.projectPath = projectPath;
@@ -150,7 +151,13 @@ export class BvClient {
         maxBuffer: 10 * 1024 * 1024,
       });
       return stdout.trim() || null;
-    } catch {
+    } catch (err: unknown) {
+      if (!this.errorLogged) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isTimeout = msg.includes("ETIMEDOUT") || msg.includes("killed");
+        console.error(`[bv] ${robotFlag} failed${isTimeout ? " (timeout)" : ""}: ${msg.slice(0, 200)}`);
+        this.errorLogged = true;
+      }
       return null;
     }
   }

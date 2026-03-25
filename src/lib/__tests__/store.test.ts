@@ -184,6 +184,104 @@ describe("ForemanStore", () => {
     });
   });
 
+  // ── hasActiveOrPendingRun ──────────────────────────────────────────
+
+  describe("hasActiveOrPendingRun", () => {
+    it("returns false when no runs exist for seed", () => {
+      const project = store.registerProject("p", "/p");
+      expect(store.hasActiveOrPendingRun("bd-absent", project.id)).toBe(false);
+    });
+
+    it("returns true when a pending run exists", () => {
+      const project = store.registerProject("p", "/p");
+      store.createRun(project.id, "bd-x", "claude-code"); // status = pending
+      expect(store.hasActiveOrPendingRun("bd-x", project.id)).toBe(true);
+    });
+
+    it("returns true when a running run exists", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "bd-x", "claude-code");
+      store.updateRun(run.id, { status: "running" });
+      expect(store.hasActiveOrPendingRun("bd-x", project.id)).toBe(true);
+    });
+
+    it("returns true when a completed run exists (awaiting merge)", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "bd-x", "claude-code");
+      store.updateRun(run.id, { status: "completed" });
+      expect(store.hasActiveOrPendingRun("bd-x", project.id)).toBe(true);
+    });
+
+    it("returns true when a stuck run exists", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "bd-x", "claude-code");
+      store.updateRun(run.id, { status: "stuck" });
+      expect(store.hasActiveOrPendingRun("bd-x", project.id)).toBe(true);
+    });
+
+    it("returns false when the only run is failed (retry allowed)", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "bd-x", "claude-code");
+      store.updateRun(run.id, { status: "failed" });
+      expect(store.hasActiveOrPendingRun("bd-x", project.id)).toBe(false);
+    });
+
+    it("returns false when the only run is merged (work done)", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "bd-x", "claude-code");
+      store.updateRun(run.id, { status: "merged" });
+      expect(store.hasActiveOrPendingRun("bd-x", project.id)).toBe(false);
+    });
+
+    it("returns false when the only run is reset (retry allowed)", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "bd-x", "claude-code");
+      store.updateRun(run.id, { status: "reset" });
+      expect(store.hasActiveOrPendingRun("bd-x", project.id)).toBe(false);
+    });
+
+    it("returns false when the only run is conflict", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "bd-x", "claude-code");
+      store.updateRun(run.id, { status: "conflict" });
+      expect(store.hasActiveOrPendingRun("bd-x", project.id)).toBe(false);
+    });
+
+    it("returns false when the only run is test-failed", () => {
+      const project = store.registerProject("p", "/p");
+      const run = store.createRun(project.id, "bd-x", "claude-code");
+      store.updateRun(run.id, { status: "test-failed" });
+      expect(store.hasActiveOrPendingRun("bd-x", project.id)).toBe(false);
+    });
+
+    it("returns true if any blocking run exists alongside terminal runs", () => {
+      const project = store.registerProject("p", "/p");
+      const r1 = store.createRun(project.id, "bd-x", "claude-code");
+      store.updateRun(r1.id, { status: "failed" });
+      // Second attempt is now running
+      const r2 = store.createRun(project.id, "bd-x", "claude-code");
+      store.updateRun(r2.id, { status: "running" });
+      expect(store.hasActiveOrPendingRun("bd-x", project.id)).toBe(true);
+    });
+
+    it("scopes correctly to projectId — different project does not block", () => {
+      const p1 = store.registerProject("p1", "/p1");
+      const p2 = store.registerProject("p2", "/p2");
+      const run = store.createRun(p1.id, "bd-x", "claude-code"); // pending in p1
+      void run;
+      // p2 has no runs — should not be blocked
+      expect(store.hasActiveOrPendingRun("bd-x", p2.id)).toBe(false);
+      // p1 has a pending run — should be blocked
+      expect(store.hasActiveOrPendingRun("bd-x", p1.id)).toBe(true);
+    });
+
+    it("checks across all projects when no projectId given", () => {
+      const p1 = store.registerProject("p1", "/p1");
+      store.createRun(p1.id, "bd-global", "claude-code"); // pending
+      expect(store.hasActiveOrPendingRun("bd-global")).toBe(true);
+    });
+  });
+
   // ── Costs ─────────────────────────────────────────────────────────
 
   describe("costs", () => {

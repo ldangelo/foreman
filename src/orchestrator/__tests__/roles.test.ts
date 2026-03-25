@@ -193,6 +193,43 @@ describe("buildPhasePrompt — worktreePath propagation", () => {
   });
 });
 
+describe("buildPhasePrompt — seedType propagation", () => {
+  it("injects seedType into finalize prompt when provided", () => {
+    const prompt = buildPhasePrompt("finalize", {
+      seedId: "bd-abc",
+      seedTitle: "My task",
+      seedDescription: "desc",
+      runId: "run-1",
+      seedType: "test",
+    });
+    // The finalize prompt uses {{seedType}} — it should be interpolated
+    expect(prompt).not.toContain("{{seedType}}");
+    expect(prompt).toContain("test");
+  });
+
+  it("produces empty string for seedType when omitted", () => {
+    const prompt = buildPhasePrompt("finalize", {
+      seedId: "bd-abc",
+      seedTitle: "My task",
+      seedDescription: "desc",
+    });
+    expect(prompt).not.toContain("{{seedType}}");
+  });
+
+  it("finalize prompt contains nothing-to-commit logic for verification beads", () => {
+    const prompt = buildPhasePrompt("finalize", {
+      seedId: "bd-abc",
+      seedTitle: "Verify auth flow",
+      seedDescription: "desc",
+      runId: "run-1",
+      seedType: "test",
+    });
+    // The updated finalize.md should instruct the agent to check seedType
+    expect(prompt).toContain("verification");
+    expect(prompt).toContain("nothing to commit");
+  });
+});
+
 describe("parseVerdict", () => {
   it("parses PASS verdict", () => {
     expect(parseVerdict("## Verdict: PASS\nAll good")).toBe("pass");

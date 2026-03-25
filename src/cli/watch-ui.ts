@@ -1,4 +1,6 @@
 import chalk from "chalk";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import type { ForemanStore, Run, RunProgress } from "../lib/store.js";
 import type { NotificationBus } from "../orchestrator/notification-bus.js";
@@ -54,6 +56,25 @@ function statusColor(status: string, text: string): string {
 
 const RULE = chalk.dim("━".repeat(60));
 
+// ── Error log helper ─────────────────────────────────────────────────────
+
+/**
+ * Read the last N lines from an agent's .err log file.
+ * Returns an empty array if the file doesn't exist or can't be read.
+ */
+export function readLastErrorLines(runId: string, n = 5): string[] {
+  try {
+    const logPath = join(process.env.HOME ?? "/tmp", ".foreman", "logs", `${runId}.err`);
+    const content = readFileSync(logPath, "utf-8");
+    return content
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .slice(-n);
+  } catch {
+    return [];
+  }
+}
+
 // ── Display functions ─────────────────────────────────────────────────────
 
 /**
@@ -103,7 +124,7 @@ export function renderAgentCardSummary(run: Run, progress: RunProgress | null, i
  * @param attemptNumber - If > 1, indicates this is a retry (e.g. attempt 2 of 3).
  * @param previousStatus - Status of the previous run (e.g. "failed", "stuck").
  */
-export function renderAgentCard(run: Run, progress: RunProgress | null, isExpanded = true, index?: number, attemptNumber?: number, previousStatus?: string): string {
+export function renderAgentCard(run: Run, progress: RunProgress | null, isExpanded = true, index?: number, attemptNumber?: number, previousStatus?: string, showErrorLogs = false): string {
   if (!isExpanded) {
     return renderAgentCardSummary(run, progress, index, attemptNumber, previousStatus);
   }
@@ -207,6 +228,19 @@ export function renderAgentCard(run: Run, progress: RunProgress | null, isExpand
     lines.push(`  ${chalk.dim(`Logs      ~/.foreman/logs/${run.id}.log`)}`);
   }
 
+  // Error log section (toggled with 'e' key)
+  if (showErrorLogs) {
+    const errorLines = readLastErrorLines(run.id);
+    if (errorLines.length > 0) {
+      lines.push(`  ${chalk.dim("──── Last error log lines ────")}`);
+      for (const errLine of errorLines) {
+        lines.push(`  ${chalk.red(errLine)}`);
+      }
+    } else {
+      lines.push(`  ${chalk.dim("──── No error log entries ────")}`);
+    }
+  }
+
   return lines.join("\n");
 }
 
@@ -268,7 +302,7 @@ export function poll(store: ForemanStore, runIds: string[]): WatchState {
  *   shown.  When omitted (undefined), all runs are rendered expanded and no
  *   key-binding hints are shown — safe for non-interactive output.
  */
-export function renderWatchDisplay(state: WatchState, showDetachHint = true, expandedRunIds?: Set<string>, notification?: string): string {
+export function renderWatchDisplay(state: WatchState, showDetachHint = true, expandedRunIds?: Set<string>, notification?: string, showErrorLogs = false): string {
   if (state.runs.length === 0) {
     return chalk.dim("No runs found.");
   }
@@ -283,6 +317,7 @@ export function renderWatchDisplay(state: WatchState, showDetachHint = true, exp
     // (i.e. expandedRunIds is provided).
     if (expandedRunIds !== undefined) {
       hintParts.push(chalk.dim("'a' toggle all"));
+      hintParts.push(chalk.dim("'e' toggle errors"));
       // Only show numeric-index hint when there are multiple agents to index.
       if (state.runs.length > 1) {
         hintParts.push(chalk.dim("1-9 toggle agent"));
@@ -307,7 +342,7 @@ export function renderWatchDisplay(state: WatchState, showDetachHint = true, exp
     const isExpanded = expandedRunIds ? expandedRunIds.has(run.id) : true;
     // Show numeric index prefix only when there are multiple agents.
     const index = state.runs.length > 1 ? i : undefined;
-    lines.push(renderAgentCard(run, progress, isExpanded, index));
+    lines.push(renderAgentCard(run, progress, isExpanded, index, undefined, undefined, showErrorLogs));
     lines.push("");
   }
 
@@ -362,6 +397,7 @@ export async function watchRunsInk(
   let detached = false;
   // All runs start collapsed; users press 'a' or a digit to expand.
   const expandedRunIds = new Set<string>();
+  let showErrorLogs = false; // Toggle with 'e' key
   let lastState: WatchState | null = null;
   // Resolved to interrupt the poll sleep early (e.g. on key press or detach).
   let sleepResolve: (() => void) | null = null;
@@ -369,7 +405,7 @@ export async function watchRunsInk(
   /** Re-render the current state immediately without waiting for next poll. */
   const renderNow = () => {
     if (lastState) {
-      const display = renderWatchDisplay(lastState, true, expandedRunIds);
+      const display = renderWatchDisplay(lastState, true, expandedRunIds, undefined, showErrorLogs);
       process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
     }
   };
@@ -429,6 +465,10 @@ export async function watchRunsInk(
           expandedRunIds.add(run.id);
         }
       }
+      stateChanged = true;
+    } else if (key === "e" || key === "E") {
+      // Toggle error log display
+      showErrorLogs = !showErrorLogs;
       stateChanged = true;
     } else if (/^[1-9]$/.test(key) && lastState) {
       const idx = parseInt(key, 10) - 1;
@@ -502,7 +542,7 @@ export async function watchRunsInk(
       lastState = state;
 
       // Clear screen and render current state (single write to avoid flicker)
-      const display = renderWatchDisplay(state, true, expandedRunIds, autoDispatchNotification ?? undefined);
+      const display = renderWatchDisplay(state, true, expandedRunIds, autoDispatchNotification ?? undefined, showErrorLogs);
       process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
       autoDispatchNotification = null;
 

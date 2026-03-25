@@ -21,6 +21,7 @@ import { homedir } from "node:os";
 import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
+import { enqueueSetBeadStatus } from "./task-backend-ops.js";
 import { detectDefaultBranch as _detectDefaultBranch } from "../lib/git.js"; // reserved for future use
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -322,20 +323,18 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
   // Closing happens only after the branch successfully merges (via refinery.ts).
   // On push failure the bead stays in_progress (caller resets to open via resetSeedToOpen).
   if (pushSucceeded) {
-    const brBin = join(homedir(), ".local", "bin", "br");
-    const brOpts = {
-      stdio: "pipe" as const,
-      timeout: PIPELINE_TIMEOUTS.beadClosureMs,
-      ...(storeProjectPath ? { cwd: storeProjectPath } : {}),
-    };
+    // Queue the status update instead of calling br directly — prevents
+    // SQLite contention with concurrent agent-workers (all br writes go
+    // through the dispatcher's sequential drain).
     try {
-      execFileSync(brBin, ["update", seedId, "--status", "review"], brOpts);
-      log(`[FINALIZE] Seed ${seedId} set to review — bead will be closed by refinery after merge`);
+      const statusStore = ForemanStore.forProject(storeProjectPath);
+      enqueueSetBeadStatus(statusStore, seedId, "review", "agent-worker-finalize");
+      statusStore.close();
+      log(`[FINALIZE] Enqueued seed ${seedId} → review — bead will be closed by refinery after merge`);
       report.push(`## Seed Status`, `- Status: AWAITING_MERGE (review)`, `- Note: bead closed by refinery after successful merge`, "");
     } catch (brErr: unknown) {
       const brMsg = brErr instanceof Error ? brErr.message : String(brErr);
-      log(`[FINALIZE] Warning: br update --status review failed for ${seedId}: ${brMsg.slice(0, 200)}`);
-      await appendFile(logFile, `[FINALIZE] br update review error: ${brMsg}\n`);
+      log(`[FINALIZE] Warning: enqueue set-status review failed for ${seedId}: ${brMsg.slice(0, 200)}`);
       report.push(`## Seed Status`, `- Status: AWAITING_MERGE`, `- Note: bead status update to review failed (non-fatal)`, "");
     }
   } else {

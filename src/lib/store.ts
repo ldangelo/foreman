@@ -1,8 +1,36 @@
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+
+/**
+ * Resolve the path to the better-sqlite3 native addon when running from a
+ * bundled context (i.e. `dist/foreman-bundle.js`).
+ *
+ * During development / `npm run build`, the addon is resolved by the bindings
+ * module via node_modules, so no special handling is needed. But when the CLI
+ * is run as a standalone bundle (esbuild output), node_modules may not exist,
+ * so we look for `better_sqlite3.node` placed alongside the bundle by the
+ * postbundle copy step in scripts/bundle.ts.
+ *
+ * @returns Absolute path to better_sqlite3.node, or undefined (use default loader).
+ */
+function resolveBundledNativeBinding(): string | undefined {
+  try {
+    // import.meta.url is available in ESM. In a bundled context this resolves
+    // to the bundle file's path (e.g. /path/to/dist/foreman-bundle.js).
+    const selfDir = dirname(fileURLToPath(import.meta.url));
+    const candidate = join(selfDir, "better_sqlite3.node");
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  } catch {
+    // Swallow — fileURLToPath / import.meta.url unavailable in some edge cases
+  }
+  return undefined;
+}
 
 // ── Interfaces ──────────────────────────────────────────────────────────
 
@@ -108,6 +136,28 @@ export interface Message {
   read: number; // 0 = unread, 1 = read (SQLite boolean)
   created_at: string;
   deleted_at: string | null;
+}
+
+/**
+ * Represents a pending bead write operation in the serialized write queue.
+ *
+ * Operations are inserted by agent-workers, refinery, pipeline-executor, and
+ * auto-merge, then drained and executed sequentially by the dispatcher.
+ * This eliminates concurrent br CLI invocations that cause SQLite contention.
+ */
+export interface BeadWriteEntry {
+  /** Unique entry ID (UUID). */
+  id: string;
+  /** Source of the write (e.g. "agent-worker", "refinery", "pipeline-executor"). */
+  sender: string;
+  /** Operation type: "close-seed" | "reset-seed" | "mark-failed" | "add-notes" | "add-labels". */
+  operation: string;
+  /** JSON-encoded payload specific to the operation. */
+  payload: string;
+  /** ISO timestamp when the entry was inserted. */
+  created_at: string;
+  /** ISO timestamp when the entry was processed (null = pending). */
+  processed_at: string | null;
 }
 
 // ── Merge Agent interfaces ───────────────────────────────────────────────
@@ -250,6 +300,24 @@ CREATE INDEX IF NOT EXISTS idx_merge_costs_date ON merge_costs (recorded_at);
 
 `;
 
+// Bead write queue DDL — project-scoped serialized write queue for br operations.
+// Agent-workers, refinery, pipeline-executor, and auto-merge enqueue writes here.
+// The dispatcher drains this table sequentially, executing br CLI commands one at a
+// time, eliminating concurrent SQLite lock contention on .beads/beads.jsonl.
+const BEAD_WRITE_QUEUE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS bead_write_queue (
+  id TEXT PRIMARY KEY,
+  sender TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  processed_at TEXT DEFAULT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bead_write_queue_pending
+  ON bead_write_queue (processed_at, created_at);
+`;
+
 // Messages table DDL — kept separate so it can be applied after pre-flight migrations
 // that drop any incompatible legacy messages table.
 const MESSAGES_SCHEMA = `
@@ -355,10 +423,15 @@ export class ForemanStore {
     const resolvedPath = dbPath ?? join(homedir(), ".foreman", "foreman.db");
     mkdirSync(join(resolvedPath, ".."), { recursive: true });
 
-    this.db = new Database(resolvedPath);
+    // When running from a bundle (dist/foreman-bundle.js), use the native
+    // addon copied by the postbundle step rather than relying on node_modules.
+    const nativeBinding = resolveBundledNativeBinding();
+    this.db = nativeBinding
+      ? new Database(resolvedPath, { nativeBinding })
+      : new Database(resolvedPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
-    this.db.pragma("busy_timeout = 5000");
+    this.db.pragma("busy_timeout = 30000");
     this.db.exec(SCHEMA);
 
     // Run idempotent migrations (errors are silently ignored — they indicate
@@ -383,6 +456,10 @@ export class ForemanStore {
     // Apply messaging schema after migrations so any legacy messages table has
     // been dropped first, allowing a clean re-creation.
     this.db.exec(MESSAGES_SCHEMA);
+
+    // Apply bead write queue schema. Uses CREATE TABLE IF NOT EXISTS so it is
+    // safe to apply on every startup for both new and existing databases.
+    this.db.exec(BEAD_WRITE_QUEUE_SCHEMA);
   }
 
   /** Expose the underlying database for modules that need direct access (e.g. MergeQueue). */
@@ -617,6 +694,42 @@ export class ForemanStore {
     return this.db
       .prepare("SELECT * FROM runs WHERE seed_id = ? ORDER BY created_at DESC, rowid DESC")
       .all(seedId) as Run[];
+  }
+
+  /**
+   * Check whether a seed already has a non-terminal run in the database.
+   *
+   * "Non-terminal" means the run is still active or has produced a result that
+   * should block a new dispatch (pending, running, completed, stuck, pr-created).
+   * Terminal/retryable states (failed, merged, conflict, test-failed, reset) are
+   * excluded so that genuinely failed seeds can be retried.
+   *
+   * Used by the dispatcher as a just-in-time guard immediately before calling
+   * createRun(), preventing duplicate dispatches when two dispatch cycles race
+   * and both observe an empty activeRuns snapshot.
+   *
+   * @returns true if the seed should be skipped (a non-terminal run exists),
+   *          false if it is safe to dispatch.
+   */
+  hasActiveOrPendingRun(seedId: string, projectId?: string): boolean {
+    // Statuses that represent "work is in flight or done and not reset"
+    const blockingStatuses = ["pending", "running", "completed", "stuck", "pr-created"];
+    const placeholders = blockingStatuses.map(() => "?").join(", ");
+    let row: unknown;
+    if (projectId) {
+      row = this.db
+        .prepare(
+          `SELECT 1 FROM runs WHERE project_id = ? AND seed_id = ? AND status IN (${placeholders}) LIMIT 1`
+        )
+        .get(projectId, seedId, ...blockingStatuses);
+    } else {
+      row = this.db
+        .prepare(
+          `SELECT 1 FROM runs WHERE seed_id = ? AND status IN (${placeholders}) LIMIT 1`
+        )
+        .get(seedId, ...blockingStatuses);
+    }
+    return row !== undefined && row !== null;
   }
 
   /**
@@ -907,14 +1020,17 @@ export class ForemanStore {
    * Get all messages across all runs (for global watch mode).
    */
   getAllMessagesGlobal(limit = 200): Message[] {
-    return this.db
+    // Fetch the most recent messages (DESC), then reverse to display chronologically.
+    // Without this, --all shows the oldest messages from the beginning of time.
+    const rows = this.db
       .prepare(
         `SELECT * FROM messages
          WHERE deleted_at IS NULL
-         ORDER BY created_at ASC, rowid ASC
+         ORDER BY created_at DESC, rowid DESC
          LIMIT ?`
       )
       .all(limit) as Message[];
+    return rows.reverse();
   }
 
   /**
@@ -962,6 +1078,61 @@ export class ForemanStore {
       (this.db.prepare("SELECT * FROM messages WHERE id = ?").get(messageId) as Message | undefined) ??
       null
     );
+  }
+
+  // ── Bead Write Queue ─────────────────────────────────────────────────
+
+  /**
+   * Enqueue a bead write operation for sequential processing by the dispatcher.
+   *
+   * Called by agent-workers, refinery, pipeline-executor, and auto-merge
+   * instead of invoking the br CLI directly. The dispatcher drains this queue
+   * and executes br commands one at a time, eliminating SQLite lock contention.
+   *
+   * @param sender - Human-readable source identifier (e.g. "agent-worker", "refinery")
+   * @param operation - Operation type: "close-seed" | "reset-seed" | "mark-failed" | "add-notes" | "add-labels"
+   * @param payload - Operation-specific data (will be JSON-stringified)
+   */
+  enqueueBeadWrite(sender: string, operation: string, payload: unknown): void {
+    const entry: BeadWriteEntry = {
+      id: randomUUID(),
+      sender,
+      operation,
+      payload: JSON.stringify(payload),
+      created_at: new Date().toISOString(),
+      processed_at: null,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO bead_write_queue (id, sender, operation, payload, created_at, processed_at)
+         VALUES (@id, @sender, @operation, @payload, @created_at, @processed_at)`
+      )
+      .run(entry);
+  }
+
+  /**
+   * Retrieve all pending (unprocessed) bead write entries in insertion order.
+   * Returns entries where processed_at IS NULL, ordered by created_at ASC.
+   */
+  getPendingBeadWrites(): BeadWriteEntry[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM bead_write_queue
+         WHERE processed_at IS NULL
+         ORDER BY created_at ASC, rowid ASC`
+      )
+      .all() as BeadWriteEntry[];
+  }
+
+  /**
+   * Mark a bead write entry as processed by setting its processed_at timestamp.
+   * @returns true if the entry was found and updated, false otherwise.
+   */
+  markBeadWriteProcessed(id: string): boolean {
+    const result = this.db
+      .prepare("UPDATE bead_write_queue SET processed_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), id);
+    return result.changes > 0;
   }
 
   // ── Sentinel ─────────────────────────────────────────────────────────

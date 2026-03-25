@@ -16,14 +16,14 @@ vi.mock("../../lib/git.js", () => ({
 
 // Mock task-backend-ops so closeSeed() / resetSeedToOpen() don't try to execute the real `br` binary.
 vi.mock("../task-backend-ops.js", () => ({
-  resetSeedToOpen: vi.fn().mockResolvedValue(undefined),
-  closeSeed: vi.fn().mockResolvedValue(undefined),
+  enqueueCloseSeed: vi.fn(),
+  enqueueResetSeedToOpen: vi.fn(),
 }));
 
 // Import mocked modules AFTER vi.mock declarations
 import { execFile } from "node:child_process";
 import { mergeWorktree, removeWorktree } from "../../lib/git.js";
-import { closeSeed, resetSeedToOpen } from "../task-backend-ops.js";
+import { enqueueCloseSeed, enqueueResetSeedToOpen } from "../task-backend-ops.js";
 import { Refinery } from "../refinery.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ describe("Refinery.resolveConflict()", () => {
     );
 
     // resetSeedToOpen must be called so the seed reappears in the ready queue
-    expect(resetSeedToOpen).toHaveBeenCalledWith(run.seed_id, "/tmp/project");
+    expect(enqueueResetSeedToOpen).toHaveBeenCalledWith(expect.anything(), run.seed_id, "refinery");
   });
 
   it("theirs strategy uses provided targetBranch in git checkout", async () => {
@@ -270,7 +270,7 @@ describe("Refinery.resolveConflict()", () => {
     );
 
     // resetSeedToOpen must be called so the seed reappears in the ready queue
-    expect(resetSeedToOpen).toHaveBeenCalledWith(run.seed_id, "/tmp/project");
+    expect(enqueueResetSeedToOpen).toHaveBeenCalledWith(expect.anything(), run.seed_id, "refinery");
   });
 
   it("theirs strategy marks run as merged when tests pass after merge", async () => {
@@ -406,6 +406,56 @@ describe("Refinery.mergeCompleted()", () => {
     );
   });
 
+  it("uses branch: label from bead as target branch instead of default", async () => {
+    const { store, seeds, refinery } = makeMocks();
+    const run = makeRun();
+    store.getRunsByStatus.mockReturnValue([run]);
+    (mergeWorktree as any).mockResolvedValue({ success: true });
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    // Mock seeds.show to return a bead with a branch: label
+    seeds.show.mockResolvedValue({
+      title: "Test bead",
+      description: null,
+      status: "completed",
+      labels: ["workflow:smoke", "branch:installer"],
+    } as unknown as null);
+
+    await refinery.mergeCompleted({ runTests: false });
+
+    // mergeWorktree should be called with "installer" as targetBranch, not "main"
+    expect(mergeWorktree).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      "installer",
+    );
+  });
+
+  it("falls back to default branch when bead has no branch: label", async () => {
+    const { store, seeds, refinery } = makeMocks();
+    const run = makeRun();
+    store.getRunsByStatus.mockReturnValue([run]);
+    (mergeWorktree as any).mockResolvedValue({ success: true });
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    // Mock seeds.show to return a bead with no branch: label
+    seeds.show.mockResolvedValue({
+      title: "Test bead",
+      description: null,
+      status: "completed",
+      labels: ["workflow:smoke"],
+    } as unknown as null);
+
+    await refinery.mergeCompleted({ runTests: false });
+
+    // mergeWorktree should fall back to "main" (from detectDefaultBranch mock)
+    expect(mergeWorktree).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      "main",
+    );
+  });
+
   it("marks run as conflict when merge has conflicts", async () => {
     const { store, refinery } = makeMocks();
     const run = makeRun();
@@ -440,7 +490,7 @@ describe("Refinery.mergeCompleted()", () => {
       expect.objectContaining({ status: "conflict" }),
     );
     // resetSeedToOpen must be called so the seed reappears in the ready queue
-    expect(resetSeedToOpen).toHaveBeenCalledWith(run.seed_id, "/tmp/project");
+    expect(enqueueResetSeedToOpen).toHaveBeenCalledWith(expect.anything(), run.seed_id, "refinery");
   });
 
   it("adds failure note when code-conflict PR creation fails", async () => {
@@ -707,7 +757,7 @@ describe("Refinery.mergeCompleted()", () => {
 
     await refinery.mergeCompleted({ runTests: false });
 
-    expect(closeSeed).toHaveBeenCalledWith("seed-closeme", "/tmp/project");
+    expect(enqueueCloseSeed).toHaveBeenCalledWith(expect.anything(), "seed-closeme", "refinery");
   });
 
   it("does NOT call closeSeed when merge has code conflicts", async () => {
@@ -734,7 +784,7 @@ describe("Refinery.mergeCompleted()", () => {
     const report = await refinery.mergeCompleted({ runTests: false });
 
     expect(report.conflicts).toHaveLength(1);
-    expect(closeSeed).not.toHaveBeenCalled();
+    expect(enqueueCloseSeed).not.toHaveBeenCalled();
   });
 
   it("does NOT call closeSeed when tests fail after merge in mergeCompleted()", async () => {
@@ -762,7 +812,7 @@ describe("Refinery.mergeCompleted()", () => {
     const report = await refinery.mergeCompleted({ runTests: true, testCommand: "npm test" });
 
     expect(report.testFailures).toHaveLength(1);
-    expect(closeSeed).not.toHaveBeenCalled();
+    expect(enqueueCloseSeed).not.toHaveBeenCalled();
   });
 });
 
@@ -788,7 +838,7 @@ describe("Refinery.resolveConflict() — bead close after merge", () => {
     const result = await refinery.resolveConflict("run-1", "theirs", { runTests: false });
 
     expect(result).toBe(true);
-    expect(closeSeed).toHaveBeenCalledWith("seed-resolve", "/tmp/project");
+    expect(enqueueCloseSeed).toHaveBeenCalledWith(expect.anything(), "seed-resolve", "refinery");
   });
 
   it("does NOT call closeSeed when resolveConflict uses abort strategy", async () => {
@@ -799,7 +849,7 @@ describe("Refinery.resolveConflict() — bead close after merge", () => {
     const result = await refinery.resolveConflict("run-1", "abort");
 
     expect(result).toBe(false);
-    expect(closeSeed).not.toHaveBeenCalled();
+    expect(enqueueCloseSeed).not.toHaveBeenCalled();
   });
 
   it("does NOT call closeSeed when resolveConflict git merge fails", async () => {
@@ -823,7 +873,7 @@ describe("Refinery.resolveConflict() — bead close after merge", () => {
     const result = await refinery.resolveConflict("run-1", "theirs");
 
     expect(result).toBe(false);
-    expect(closeSeed).not.toHaveBeenCalled();
+    expect(enqueueCloseSeed).not.toHaveBeenCalled();
   });
 
   it("does NOT call closeSeed when tests fail after resolveConflict merge", async () => {
@@ -851,7 +901,7 @@ describe("Refinery.resolveConflict() — bead close after merge", () => {
     });
 
     expect(result).toBe(false);
-    expect(closeSeed).not.toHaveBeenCalled();
+    expect(enqueueCloseSeed).not.toHaveBeenCalled();
   });
 });
 
