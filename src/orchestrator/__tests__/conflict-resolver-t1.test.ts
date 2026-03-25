@@ -8,7 +8,7 @@ import { DEFAULT_MERGE_CONFIG } from "../merge-config.js";
 
 function createTestRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "conflict-resolver-t1-"));
-  execFileSync("git", ["init", dir]);
+  execFileSync("git", ["init", "--initial-branch", "main", dir]);
   execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
   execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
   // Create initial commit on main

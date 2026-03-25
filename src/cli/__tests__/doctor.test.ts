@@ -44,7 +44,7 @@ describe("doctor command", () => {
   }
 
   async function makeGitRepo(dir: string): Promise<void> {
-    await execFileAsync("git", ["init", dir]);
+    await execFileAsync("git", ["init", "--initial-branch", "main", dir]);
     await execFileAsync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
     await execFileAsync("git", ["config", "user.name", "Test"], { cwd: dir });
     // Create an initial commit so the repo is valid
