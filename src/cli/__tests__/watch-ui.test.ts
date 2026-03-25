@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Run, RunProgress } from "../../lib/store.js";
 import {
   elapsed,
@@ -8,6 +8,7 @@ import {
   renderAgentCardSummary,
   renderWatchDisplay,
   poll,
+  watchRunsInk,
   type WatchState,
 } from "../watch-ui.js";
 
@@ -715,5 +716,61 @@ describe("renderWatchDisplay with expandedRunIds", () => {
     const output = renderWatchDisplay(state, true, new Set());
     // Single agent should not have a numeric prefix
     expect(output).not.toMatch(/^\s*1\./m);
+  });
+});
+
+// ── watchRunsInk SIGINT behaviour ─────────────────────────────────────────────
+
+describe("watchRunsInk — SIGINT (Ctrl+C) detach behaviour", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns { detached: true } when SIGINT is emitted during watch", async () => {
+    // Create a minimal mock store that returns one perpetually-running run
+    const run = makeRun({ id: "r-sig-1", status: "running" });
+    const store = {
+      getRun: vi.fn().mockReturnValue(run),
+      getRunProgress: vi.fn().mockReturnValue(null),
+    };
+
+    // Suppress terminal output during the test
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+    // Emit SIGINT shortly after watchRunsInk starts polling
+    const sigtimer = setTimeout(() => process.emit("SIGINT" as NodeJS.Signals), 30);
+
+    const result = await watchRunsInk(
+      store as unknown as Parameters<typeof watchRunsInk>[0],
+      ["r-sig-1"],
+    );
+
+    clearTimeout(sigtimer);
+    expect(result.detached).toBe(true);
+  });
+
+  it("destroys stdin on SIGINT when stdin is not a TTY (non-interactive env)", async () => {
+    // In a non-TTY environment (CI, piped input), process.stdin.isTTY is falsy.
+    // The handler should still destroy stdin to release any event-loop reference.
+    const run = makeRun({ id: "r-sig-2", status: "running" });
+    const store = {
+      getRun: vi.fn().mockReturnValue(run),
+      getRunProgress: vi.fn().mockReturnValue(null),
+    };
+
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+    // Spy on stdin.destroy to verify it's called
+    const destroySpy = vi.spyOn(process.stdin, "destroy").mockImplementation(() => process.stdin);
+
+    const sigtimer = setTimeout(() => process.emit("SIGINT" as NodeJS.Signals), 30);
+
+    await watchRunsInk(
+      store as unknown as Parameters<typeof watchRunsInk>[0],
+      ["r-sig-2"],
+    );
+
+    clearTimeout(sigtimer);
+    expect(destroySpy).toHaveBeenCalledOnce();
   });
 });

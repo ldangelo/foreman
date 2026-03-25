@@ -122,4 +122,31 @@ describe("NotificationServer", () => {
     const fresh = new NotificationServer(new NotificationBus());
     await expect(fresh.stop()).resolves.toBeUndefined();
   });
+
+  it("stop() resolves quickly even when a keep-alive connection is held open", async () => {
+    // Simulate a keep-alive HTTP/1.1 connection by opening a persistent fetch
+    // and not closing it. stop() should still resolve in < 500ms because it
+    // calls closeAllConnections() before server.close().
+    const abortCtrl = new AbortController();
+    // Open a persistent connection (fetch with keepalive=true) — do not await it
+    const pendingFetch = fetch(`${server.url}/health`, {
+      keepalive: true,
+      signal: abortCtrl.signal,
+    }).catch(() => { /* expected to be aborted */ });
+
+    // Give the connection a moment to be established
+    await new Promise<void>((r) => setTimeout(r, 20));
+
+    const start = Date.now();
+    await server.stop();
+    const elapsed = Date.now() - start;
+
+    // Cleanup the dangling fetch
+    abortCtrl.abort();
+    await pendingFetch;
+
+    // Should complete well within 500ms (not blocked waiting for keep-alive to drain)
+    expect(elapsed).toBeLessThan(500);
+    expect(() => server.url).toThrow(); // server is stopped
+  });
 });

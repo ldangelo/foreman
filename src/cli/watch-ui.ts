@@ -377,10 +377,29 @@ export async function watchRunsInk(
   const onSigint = () => {
     if (detached) return; // Prevent double-fire
     detached = true;
+
+    // Print detach message BEFORE closing streams
     process.stdout.write("\n");
-    console.log("  Detached — agents continue in background (detached workers).");
-    console.log("  Check status:  foreman monitor");
-    console.log("  Attach to run: foreman attach <run-id>\n");
+    process.stdout.write("  Detached — agents continue in background (detached workers).\n");
+    process.stdout.write("  Check status:  foreman monitor\n");
+    process.stdout.write("  Attach to run: foreman attach <run-id>\n\n");
+
+    // Release raw mode BEFORE destroying stdin to avoid errors on cleanup
+    if (stdinRawMode && process.stdin.isTTY) {
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        // ignore — may already be reset
+      }
+    }
+
+    // Close stdin so it no longer holds a reference in the event loop.
+    // Combined with the notification server closing keep-alive connections
+    // immediately on stop(), the process exits promptly after cleanup,
+    // returning the shell prompt. Agents survive because they were spawned
+    // with detached:true + child.unref().
+    try { process.stdin.destroy(); } catch { /* ignore */ }
+
     // Wake up the sleep immediately so the loop exits
     if (sleepResolve) sleepResolve();
   };
@@ -524,7 +543,7 @@ export async function watchRunsInk(
         opts.notificationBus.offRunNotification(runId, onNotification);
       }
     }
-    if (stdinRawMode && process.stdin.isTTY) {
+    if (stdinRawMode && process.stdin.isTTY && !process.stdin.destroyed) {
       try {
         process.stdin.removeListener("data", handleKeyInput);
         process.stdin.setRawMode(false);

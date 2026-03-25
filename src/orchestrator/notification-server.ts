@@ -63,6 +63,15 @@ export class NotificationServer {
         resolve();
         return;
       }
+      // Force-close all keep-alive connections immediately so server.close()
+      // does not block waiting for them to drain on their own.  This matters
+      // when detached agent workers hold open HTTP/1.1 keep-alive sockets to
+      // the notification endpoint — without this, the process would hang for
+      // several seconds (the keep-alive idle timeout) after Ctrl+C.
+      // closeAllConnections() was added in Node 18.2.0.
+      if (typeof (this.server as Server & { closeAllConnections?: () => void }).closeAllConnections === "function") {
+        (this.server as Server & { closeAllConnections: () => void }).closeAllConnections();
+      }
       this.server.close(() => {
         this.server = null;
         this._port = null;
