@@ -632,14 +632,48 @@ Or trigger manually from the Actions tab with optional dry-run mode.
 
 ### Installation from Binary Release
 
+**Quick install (macOS / Linux):**
+
 ```bash
-# macOS / Linux
-tar xzf foreman-v1.0.0-linux-x64.tar.gz
-chmod +x foreman-linux-x64
-# Keep better_sqlite3.node in the same directory as the binary
-sudo cp better_sqlite3.node /usr/local/bin/
-sudo mv foreman-linux-x64 /usr/local/bin/foreman
+curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
 ```
+
+The installer automatically:
+- Detects your OS (macOS/Linux) and architecture (arm64/x86_64)
+- Downloads the correct binary from the [latest GitHub Release](https://github.com/ldangelo/foreman/releases/latest)
+- Installs to `/usr/local/bin/foreman` (with sudo) or `~/.local/bin/foreman` (without)
+- Places `better_sqlite3.node` alongside the binary (required side-car)
+- Verifies the install with `foreman --version`
+
+**Options:**
+
+```bash
+# Install a specific version
+FOREMAN_VERSION=v1.2.3 curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
+
+# Install to a custom directory
+FOREMAN_INSTALL=/opt/bin curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
+
+# Avoid GitHub API rate limiting (60 req/hr unauthenticated)
+GITHUB_TOKEN=ghp_yourtoken curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
+```
+
+**Manual installation:**
+
+```bash
+# macOS / Linux — download the archive for your platform
+TAG=v1.0.0
+PLATFORM=$(uname -s | tr A-Z a-z)              # darwin or linux
+ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')  # x64 or arm64
+curl -fsSL "https://github.com/ldangelo/foreman/releases/download/${TAG}/foreman-${TAG}-${PLATFORM}-${ARCH}.tar.gz" | tar xz
+
+# Both the binary and better_sqlite3.node must reside in the same directory
+chmod +x foreman-${PLATFORM}-${ARCH}
+sudo cp better_sqlite3.node /usr/local/bin/
+sudo mv foreman-${PLATFORM}-${ARCH} /usr/local/bin/foreman
+```
+
+> **Windows:** Use `install.ps1` (see [bd-8ovc](https://github.com/ldangelo/foreman/issues)).
 
 ## Development
 
