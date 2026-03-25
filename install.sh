@@ -17,8 +17,8 @@ set -eu
 # ── Constants ──────────────────────────────────────────────────────────────────
 REPO="ldangelo/foreman"
 BINARY_NAME="foreman"
-GITHUB_API="https://api.github.com"
-GITHUB_RELEASES="https://github.com/${REPO}/releases/download"
+GITHUB_API="${FOREMAN_API_BASE:-https://api.github.com}"
+GITHUB_RELEASES="${FOREMAN_RELEASES_BASE:-https://github.com/${REPO}/releases/download}"
 
 # ── Terminal colors (safe for sh) ─────────────────────────────────────────────
 if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
@@ -38,9 +38,12 @@ else
 fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-info()    { printf '%s==>%s %s\n'    "${BLUE}${BOLD}" "${RESET}" "$*"; }
-success() { printf '%s✓%s %s\n'     "${GREEN}${BOLD}" "${RESET}" "$*"; }
-warn()    { printf '%s⚠️  %s%s\n'   "${YELLOW}" "$*" "${RESET}"; }
+# All status output goes to stderr so that functions used in command
+# substitution (e.g. version="$(fetch_latest_version)") only capture their
+# actual return value on stdout.
+info()    { printf '%s==>%s %s\n'    "${BLUE}${BOLD}" "${RESET}" "$*" >&2; }
+success() { printf '%s✓%s %s\n'     "${GREEN}${BOLD}" "${RESET}" "$*" >&2; }
+warn()    { printf '%s⚠️  %s%s\n'   "${YELLOW}" "$*" "${RESET}" >&2; }
 error()   { printf '%s✗ Error:%s %s\n' "${RED}${BOLD}" "${RESET}" "$*" >&2; }
 die()     { error "$@"; exit 1; }
 
@@ -207,17 +210,18 @@ main() {
   info "Downloading ${asset_name}..."
 
   # ── Create temp directory ──────────────────────────────────────────────────
-  local tmp_dir
-  tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t foreman_install)"
+  # Note: _FOREMAN_TMP_DIR must be a global (not local) so the cleanup trap
+  # can access it after main() returns. POSIX sh traps fire at global scope.
+  _FOREMAN_TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t foreman_install)"
 
   # Cleanup on exit
   cleanup() {
-    rm -rf "$tmp_dir"
+    rm -rf "${_FOREMAN_TMP_DIR:-}"
   }
   trap cleanup EXIT INT TERM
 
   # ── Download archive ───────────────────────────────────────────────────────
-  local archive_path="${tmp_dir}/${asset_name}"
+  local archive_path="${_FOREMAN_TMP_DIR}/${asset_name}"
 
   if ! curl -fsSL --progress-bar -o "$archive_path" "$download_url"; then
     die "Download failed.
@@ -238,7 +242,7 @@ main() {
   info "Verifying checksum..."
 
   local checksums_url="${GITHUB_RELEASES}/${version}/checksums.txt"
-  local checksums_path="${tmp_dir}/checksums.txt"
+  local checksums_path="${_FOREMAN_TMP_DIR}/checksums.txt"
 
   # Determine sha256 command (Linux: sha256sum, macOS: shasum -a 256)
   local sha256_cmd=""
@@ -256,7 +260,7 @@ main() {
 
       if [ -n "$expected_hash" ]; then
         local actual_hash
-        actual_hash="$(cd "${tmp_dir}" && $sha256_cmd "${asset_name}" | awk '{print $1}')"
+        actual_hash="$(cd "${_FOREMAN_TMP_DIR}" && $sha256_cmd "${asset_name}" | awk '{print $1}')"
 
         if [ "$actual_hash" = "$expected_hash" ]; then
           success "Checksum verified ✓"
@@ -277,7 +281,7 @@ main() {
   fi
 
   # ── Extract archive ────────────────────────────────────────────────────────
-  local extract_dir="${tmp_dir}/extracted"
+  local extract_dir="${_FOREMAN_TMP_DIR}/extracted"
   mkdir -p "$extract_dir"
 
   info "Extracting archive..."
