@@ -1,0 +1,153 @@
+name: Update Formula
+
+# Triggered when a new release is published on ldangelo/foreman.
+# Updates the foreman.rb formula with the new version, URLs, and SHA-256 checksums.
+#
+# This workflow runs in the oftheangels/homebrew-tap repository.
+# It is triggered via a repository_dispatch event from the foreman release workflow.
+
+on:
+  repository_dispatch:
+    types: [foreman-release]
+  # Also allow manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to update to (e.g. v1.2.3)"
+        required: true
+        type: string
+
+jobs:
+  update-formula:
+    name: Update foreman.rb formula
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # ── Determine version ─────────────────────────────────────────────────────
+      - name: Determine target version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${{ github.event.client_payload.version }}"
+          fi
+
+          # Validate version format
+          if ! echo "$VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "ERROR: Invalid version format: $VERSION (expected v1.2.3)"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_no_v=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          echo "Updating to: $VERSION"
+
+      # ── Checkout homebrew-tap ─────────────────────────────────────────────────
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      # ── Download checksums ────────────────────────────────────────────────────
+      - name: Download checksums.txt from GitHub Release
+        id: checksums
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CHECKSUMS_URL="https://github.com/ldangelo/foreman/releases/download/${VERSION}/checksums.txt"
+
+          echo "Fetching checksums from: $CHECKSUMS_URL"
+          curl -fsSL "$CHECKSUMS_URL" -o checksums.txt
+
+          echo "=== checksums.txt ==="
+          cat checksums.txt
+
+          # Extract SHA256 for each platform
+          DARWIN_ARM64=$(grep "darwin-arm64.tar.gz" checksums.txt | awk '{print $1}')
+          DARWIN_X64=$(grep "darwin-x64.tar.gz" checksums.txt | awk '{print $1}')
+          LINUX_X64=$(grep "linux-x64.tar.gz" checksums.txt | awk '{print $1}')
+          LINUX_ARM64=$(grep "linux-arm64.tar.gz" checksums.txt | awk '{print $1}')
+
+          if [ -z "$DARWIN_ARM64" ] || [ -z "$DARWIN_X64" ] || [ -z "$LINUX_X64" ] || [ -z "$LINUX_ARM64" ]; then
+            echo "ERROR: Could not extract all required checksums from checksums.txt"
+            echo "  darwin-arm64: $DARWIN_ARM64"
+            echo "  darwin-x64:   $DARWIN_X64"
+            echo "  linux-x64:    $LINUX_X64"
+            echo "  linux-arm64:  $LINUX_ARM64"
+            exit 1
+          fi
+
+          echo "darwin_arm64_sha=$DARWIN_ARM64" >> "$GITHUB_OUTPUT"
+          echo "darwin_x64_sha=$DARWIN_X64" >> "$GITHUB_OUTPUT"
+          echo "linux_x64_sha=$LINUX_X64" >> "$GITHUB_OUTPUT"
+          echo "linux_arm64_sha=$LINUX_ARM64" >> "$GITHUB_OUTPUT"
+
+          echo "All checksums extracted ✓"
+
+      # ── Update formula ────────────────────────────────────────────────────────
+      - name: Update Formula/foreman.rb
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_NO_V="${{ steps.version.outputs.version_no_v }}"
+          DARWIN_ARM64_SHA="${{ steps.checksums.outputs.darwin_arm64_sha }}"
+          DARWIN_X64_SHA="${{ steps.checksums.outputs.darwin_x64_sha }}"
+          LINUX_X64_SHA="${{ steps.checksums.outputs.linux_x64_sha }}"
+          LINUX_ARM64_SHA="${{ steps.checksums.outputs.linux_arm64_sha }}"
+
+          FORMULA="Formula/foreman.rb"
+
+          echo "Updating $FORMULA to $VERSION..."
+
+          # Update version field
+          sed -i "s|version \".*\"|version \"${VERSION_NO_V}\"|g" "$FORMULA"
+
+          # Update darwin-arm64 URL and SHA
+          sed -i "s|releases/download/v[^/]*/foreman-v[^-]*-darwin-arm64|releases/download/${VERSION}/foreman-${VERSION}-darwin-arm64|g" "$FORMULA"
+          sed -i "s|PLACEHOLDER_DARWIN_ARM64_SHA256\|sha256 \"[a-f0-9]\{64\}\"  # darwin-arm64|sha256 \"${DARWIN_ARM64_SHA}\"|g" "$FORMULA"
+
+          # Update darwin-x64 URL and SHA
+          sed -i "s|releases/download/v[^/]*/foreman-v[^-]*-darwin-x64|releases/download/${VERSION}/foreman-${VERSION}-darwin-x64|g" "$FORMULA"
+          sed -i "s|PLACEHOLDER_DARWIN_X64_SHA256\|sha256 \"[a-f0-9]\{64\}\"  # darwin-x64|sha256 \"${DARWIN_X64_SHA}\"|g" "$FORMULA"
+
+          # Update linux-x64 URL and SHA
+          sed -i "s|releases/download/v[^/]*/foreman-v[^-]*-linux-x64|releases/download/${VERSION}/foreman-${VERSION}-linux-x64|g" "$FORMULA"
+          sed -i "s|PLACEHOLDER_LINUX_X64_SHA256\|sha256 \"[a-f0-9]\{64\}\"  # linux-x64|sha256 \"${LINUX_X64_SHA}\"|g" "$FORMULA"
+
+          # Update linux-arm64 URL and SHA
+          sed -i "s|releases/download/v[^/]*/foreman-v[^-]*-linux-arm64|releases/download/${VERSION}/foreman-${VERSION}-linux-arm64|g" "$FORMULA"
+          sed -i "s|PLACEHOLDER_LINUX_ARM64_SHA256\|sha256 \"[a-f0-9]\{64\}\"  # linux-arm64|sha256 \"${LINUX_ARM64_SHA}\"|g" "$FORMULA"
+
+          echo "=== Updated formula ==="
+          head -50 "$FORMULA"
+
+      # ── Validate formula ──────────────────────────────────────────────────────
+      - name: Validate formula syntax
+        if: runner.os == 'macOS'
+        run: |
+          brew style Formula/foreman.rb || true
+          brew audit --new Formula/foreman.rb || true
+
+      # ── Commit and push ───────────────────────────────────────────────────────
+      - name: Commit updated formula
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add Formula/foreman.rb
+          git diff --staged --stat
+
+          if git diff --staged --quiet; then
+            echo "No changes to formula — already up to date"
+          else
+            git commit -m "chore: update foreman to ${VERSION}
+
+Auto-updated by release workflow from ldangelo/foreman@${VERSION}."
+            git push
+            echo "Formula updated and pushed ✓"
+          fi
