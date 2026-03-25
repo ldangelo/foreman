@@ -117,47 +117,96 @@ jobs:
 
           FORMULA="homebrew-tap/Formula/foreman.rb"
 
+          # Validate checksums are non-empty before proceeding
+          for var in DARWIN_ARM64 DARWIN_X64 LINUX_X64 LINUX_ARM64; do
+            val="${!var}"
+            if [ -z "$val" ]; then
+              echo "ERROR: Checksum for ${var} is empty — aborting formula update"
+              exit 1
+            fi
+            if ! echo "$val" | grep -qE '^[a-f0-9]{64}$'; then
+              echo "ERROR: Checksum for ${var} is not a valid SHA256: ${val}"
+              exit 1
+            fi
+          done
+
           # Update version
           sed -i "s/version \".*\"/version \"${VERSION}\"/" "$FORMULA"
+
+          # Verify version was updated
+          if ! grep -q "version \"${VERSION}\"" "$FORMULA"; then
+            echo "ERROR: Failed to update version in formula"
+            exit 1
+          fi
 
           # Update SHA256 checksums (replace placeholder or previous value)
           # Each platform's sha256 is on the line immediately following its url line.
           # We use python for reliable multi-line substitution.
-          python3 - <<PYEOF
+          python3 - <<'PYEOF'
           import re
+          import sys
+          import os
 
-          with open("${FORMULA}", "r") as f:
+          formula = os.environ["FORMULA"]
+          darwin_arm64 = os.environ["DARWIN_ARM64"]
+          darwin_x64   = os.environ["DARWIN_X64"]
+          linux_x64    = os.environ["LINUX_X64"]
+          linux_arm64  = os.environ["LINUX_ARM64"]
+
+          with open(formula, "r") as f:
               content = f.read()
 
-          # Replace darwin-arm64 sha256
-          content = re.sub(
-              r'(darwin-arm64\.tar\.gz")\n\s+sha256 "[^"]*"',
-              r'\1\n      sha256 "${DARWIN_ARM64}"',
-              content
-          )
-          # Replace darwin-x64 sha256
-          content = re.sub(
-              r'(darwin-x64\.tar\.gz")\n\s+sha256 "[^"]*"',
-              r'\1\n      sha256 "${DARWIN_X64}"',
-              content
-          )
-          # Replace linux-x64 sha256
-          content = re.sub(
-              r'(linux-x64\.tar\.gz")\n\s+sha256 "[^"]*"',
-              r'\1\n      sha256 "${LINUX_X64}"',
-              content
-          )
-          # Replace linux-arm64 sha256
-          content = re.sub(
-              r'(linux-arm64\.tar\.gz")\n\s+sha256 "[^"]*"',
-              r'\1\n      sha256 "${LINUX_ARM64}"',
-              content
-          )
+          original = content
+          updates = {}
 
-          with open("${FORMULA}", "w") as f:
+          # Replace darwin-arm64 sha256
+          new_content, count = re.subn(
+              r'(darwin-arm64\.tar\.gz")\n(\s+)sha256 "[^"]*"',
+              lambda m: f'{m.group(1)}\n{m.group(2)}sha256 "{darwin_arm64}"',
+              content
+          )
+          updates["darwin-arm64"] = count
+          content = new_content
+
+          # Replace darwin-x64 sha256
+          new_content, count = re.subn(
+              r'(darwin-x64\.tar\.gz")\n(\s+)sha256 "[^"]*"',
+              lambda m: f'{m.group(1)}\n{m.group(2)}sha256 "{darwin_x64}"',
+              content
+          )
+          updates["darwin-x64"] = count
+          content = new_content
+
+          # Replace linux-x64 sha256
+          new_content, count = re.subn(
+              r'(linux-x64\.tar\.gz")\n(\s+)sha256 "[^"]*"',
+              lambda m: f'{m.group(1)}\n{m.group(2)}sha256 "{linux_x64}"',
+              content
+          )
+          updates["linux-x64"] = count
+          content = new_content
+
+          # Replace linux-arm64 sha256
+          new_content, count = re.subn(
+              r'(linux-arm64\.tar\.gz")\n(\s+)sha256 "[^"]*"',
+              lambda m: f'{m.group(1)}\n{m.group(2)}sha256 "{linux_arm64}"',
+              content
+          )
+          updates["linux-arm64"] = count
+          content = new_content
+
+          # Verify all 4 platforms were updated
+          failed = [k for k, v in updates.items() if v == 0]
+          if failed:
+              print(f"ERROR: Failed to update SHA256 for platforms: {failed}", file=sys.stderr)
+              print("Current formula content:", file=sys.stderr)
+              print(original, file=sys.stderr)
+              sys.exit(1)
+
+          with open(formula, "w") as f:
               f.write(content)
 
-          print("Formula updated successfully.")
+          print(f"Formula updated successfully. Platforms updated: {list(updates.keys())}")
           PYEOF
 
           echo "Updated formula:"

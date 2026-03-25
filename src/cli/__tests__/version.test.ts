@@ -127,3 +127,126 @@ describe("release-please config files", () => {
     ).toBe(true);
   });
 });
+
+describe("homebrew auto-update workflow", () => {
+  const root = path.resolve(__dirname, "../../../");
+
+  it(".github/workflows/update-homebrew-tap.yml exists", () => {
+    expect(
+      existsSync(
+        path.join(root, ".github/workflows/update-homebrew-tap.yml")
+      )
+    ).toBe(true);
+  });
+
+  it(".github/workflows/release-binaries.yml exists", () => {
+    expect(
+      existsSync(
+        path.join(root, ".github/workflows/release-binaries.yml")
+      )
+    ).toBe(true);
+  });
+
+  it("update-homebrew-tap.yml triggers on release-binaries completion", () => {
+    const raw = readFileSync(
+      path.join(root, ".github/workflows/update-homebrew-tap.yml"),
+      "utf8"
+    );
+    // Must reference the Release Binaries workflow
+    expect(raw).toContain("Release Binaries");
+    // Must only run on success
+    expect(raw).toContain("success");
+  });
+
+  it("update-homebrew-tap.yml has manual workflow_dispatch trigger", () => {
+    const raw = readFileSync(
+      path.join(root, ".github/workflows/update-homebrew-tap.yml"),
+      "utf8"
+    );
+    expect(raw).toContain("workflow_dispatch");
+  });
+
+  it("update-homebrew-tap.yml handles all 4 unix platforms", () => {
+    const raw = readFileSync(
+      path.join(root, ".github/workflows/update-homebrew-tap.yml"),
+      "utf8"
+    );
+    expect(raw).toContain("darwin-arm64");
+    expect(raw).toContain("darwin-x64");
+    expect(raw).toContain("linux-x64");
+    expect(raw).toContain("linux-arm64");
+  });
+
+  it("homebrew-tap/Formula/foreman.rb exists", () => {
+    expect(
+      existsSync(path.join(root, "homebrew-tap/Formula/foreman.rb"))
+    ).toBe(true);
+  });
+
+  it("foreman.rb has version field", () => {
+    const raw = readFileSync(
+      path.join(root, "homebrew-tap/Formula/foreman.rb"),
+      "utf8"
+    );
+    expect(raw).toMatch(/version "\d+\.\d+\.\d+"/);
+  });
+
+  it("foreman.rb has placeholder sha256 values for all platforms", () => {
+    const raw = readFileSync(
+      path.join(root, "homebrew-tap/Formula/foreman.rb"),
+      "utf8"
+    );
+    // Should have sha256 entries for 4 platforms
+    const sha256Matches = raw.match(/sha256 "[^"]+"/g) ?? [];
+    expect(sha256Matches.length).toBe(4);
+  });
+
+  it("foreman.rb uses on_macos/on_linux DSL for platform detection", () => {
+    const raw = readFileSync(
+      path.join(root, "homebrew-tap/Formula/foreman.rb"),
+      "utf8"
+    );
+    expect(raw).toContain("on_macos");
+    expect(raw).toContain("on_linux");
+    expect(raw).toContain("on_arm");
+    expect(raw).toContain("on_intel");
+  });
+
+  it("foreman.rb has smoke test block", () => {
+    const raw = readFileSync(
+      path.join(root, "homebrew-tap/Formula/foreman.rb"),
+      "utf8"
+    );
+    expect(raw).toContain("test do");
+    expect(raw).toContain("foreman --version");
+  });
+
+  it("foreman.rb install uses libexec for binary co-location", () => {
+    const raw = readFileSync(
+      path.join(root, "homebrew-tap/Formula/foreman.rb"),
+      "utf8"
+    );
+    // Binary and side-car must be co-located in libexec
+    expect(raw).toContain("libexec");
+    expect(raw).toContain("better_sqlite3.node");
+  });
+
+  it("update-homebrew-tap.yml uses SSH deploy key (not PAT)", () => {
+    const raw = readFileSync(
+      path.join(root, ".github/workflows/update-homebrew-tap.yml"),
+      "utf8"
+    );
+    // Should use TAP_DEPLOY_KEY SSH secret
+    expect(raw).toContain("TAP_DEPLOY_KEY");
+    // Should use ssh-key parameter for checkout
+    expect(raw).toContain("ssh-key");
+  });
+
+  it("update-homebrew-tap.yml pushes to the correct tap repo", () => {
+    const raw = readFileSync(
+      path.join(root, ".github/workflows/update-homebrew-tap.yml"),
+      "utf8"
+    );
+    expect(raw).toContain("oftheangels/homebrew-tap");
+  });
+});
