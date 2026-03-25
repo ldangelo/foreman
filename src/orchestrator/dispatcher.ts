@@ -124,9 +124,20 @@ export class Dispatcher {
 
     // Filter to a specific seed if requested
     if (opts?.seedId) {
-      const target = readySeeds.find((b) => b.id === opts.seedId);
+      let target = readySeeds.find((b) => b.id === opts.seedId);
+      // If not in br ready (possibly due to stale blocked cache — beads_rust#204),
+      // fetch directly and force-dispatch if it's open/in_progress.
       if (!target) {
-        let reason = "Not found in ready beads";
+        try {
+          const bead = await this.seeds.show(opts.seedId);
+          if (bead && bead.status !== "closed" && bead.status !== "completed") {
+            log(`[dispatch] ${opts.seedId} not in br ready (stale cache?) — force-dispatching`);
+            target = bead as unknown as Issue;
+          }
+        } catch { /* bead not found */ }
+      }
+      if (!target) {
+        let reason = "Not found and not dispatchable";
         try {
           const bead = await this.seeds.show(opts.seedId);
           if (!bead) {
