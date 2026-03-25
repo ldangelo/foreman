@@ -20,6 +20,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -151,28 +152,27 @@ function execOpts(projectPath?: string): { stdio: "pipe"; timeout: number; cwd?:
 /**
  * Close (complete) a bead in the br backend.
  *
- * Uses "br update --status closed" instead of "br close" because
- * br close --force doesn't persist to JSONL export (beads_rust#204).
+ * Uses `br close --no-db --force` to write directly to JSONL, bypassing
+ * the broken SQLite blocked cache (beads_rust#204). After the JSONL write,
+ * deletes the br DB files so the next br command reimports from the
+ * corrected JSONL with a fresh cache.
  *
  * @param projectPath - The project root directory that contains .beads/.
  */
 export async function closeSeed(seedId: string, projectPath?: string): Promise<void> {
   const bin = brPath();
-  const args = ["update", seedId, "--status", "closed"];
+  const beadsDir = join(projectPath ?? process.cwd(), ".beads");
 
   try {
-    execFileSync(bin, args, execOpts(projectPath));
-    console.error(`[task-backend-ops] Closed seed ${seedId} via br`);
+    // Write close directly to JSONL (bypass broken DB cache)
+    execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline"], execOpts(projectPath));
+    console.error(`[task-backend-ops] Closed seed ${seedId} via br --no-db`);
 
-    // Flush changes to .beads/beads.jsonl so the close survives a process restart.
-    // Uses execFileSync (not execBr) to avoid the auto-appended --json flag.
-    try {
-      execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
-      console.error(`[task-backend-ops] Flushed JSONL for seed ${seedId}`);
-    } catch (flushErr: unknown) {
-      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
+    // Delete the DB so next br command reimports from corrected JSONL with fresh cache
+    for (const dbFile of ["beads.db", "beads.db-wal", "beads.db-shm"]) {
+      try { unlinkSync(join(beadsDir, dbFile)); } catch { /* may not exist */ }
     }
+    console.error(`[task-backend-ops] Deleted br DB — will reimport from JSONL on next access`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[task-backend-ops] Warning: br close failed for ${seedId}: ${msg.slice(0, 200)}`);

@@ -112,11 +112,11 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     expect(result).toBe(1);
 
     const calls = getCalls();
-    const closeCall = calls.find(([, args]) => args[0] === "update" && args.includes("closed"));
+    const closeCall = calls.find(([, args]) => args[0] === "close" && args.includes("--no-db"));
     expect(closeCall).toBeTruthy();
     const [cmd, args] = closeCall!;
     expect(cmd).toBe(BR_PATH);
-    expect(args).toEqual(["update", "bd-abc", "--status", "closed"]);
+    expect(args).toEqual(["close", "bd-abc", "--no-db", "--force", "--reason", "Completed via pipeline"]);
   });
 
   it("executes br update --status open for reset-seed operation", async () => {
@@ -203,9 +203,9 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
 
     await dispatcher.drainBeadWriterInbox();
 
-    // First br operation should be update --status closed (not update --status open)
+    // First br operation should be close --no-db (not update --status open)
     const firstOp = getCalls()[0];
-    expect(firstOp[1][0]).toBe("update");
+    expect(firstOp[1][0]).toBe("close");
   });
 
   it("continues draining when one entry fails", async () => {

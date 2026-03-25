@@ -39,15 +39,17 @@ describe("closeSeed — br backend", () => {
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("calls br update --status closed with seedId and --reason flag", async () => {
+  it("calls br close --no-db --force with seedId (beads_rust#204 workaround)", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await closeSeed("bd-abc-001");
 
-    // First call is close, second is sync --flush-only
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toContain("br");
-    expect(args).toEqual(["update", "bd-abc-001", "--status", "closed"]);
+    expect(args[0]).toBe("close");
+    expect(args).toContain("--no-db");
+    expect(args).toContain("--force");
+    expect(args).toContain("bd-abc-001");
   });
 
   it("uses ~/.local/bin/br path for br backend", async () => {
@@ -76,15 +78,15 @@ describe("closeSeed — br backend", () => {
     await expect(closeSeed("bd-fail-002")).resolves.toBeUndefined();
   });
 
-  it("passes --status closed flag", async () => {
+  it("passes --no-db --force flags for JSONL-direct close (beads_rust#204)", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await closeSeed("bd-reason-test");
 
     const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
-    const statusIdx = args.indexOf("--status");
-    expect(statusIdx).toBeGreaterThanOrEqual(0);
-    expect(args[statusIdx + 1]).toBe("closed");
+    expect(args[0]).toBe("close");
+    expect(args).toContain("--no-db");
+    expect(args).toContain("--force");
   });
 
   it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", async () => {
@@ -93,39 +95,26 @@ describe("closeSeed — br backend", () => {
     await closeSeed("task-xyz-999");
     const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(cmd).toContain("br");
-    expect(args[0]).toBe("update");
+    expect(args[0]).toBe("close");
   });
 
-  it("calls br sync --flush-only after closing seed", async () => {
+  it("calls execFileSync once for close (no sync — DB deleted instead)", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await closeSeed("bd-flush-test", "/my/project");
 
-    // execFileSync called twice: first for close, then for sync --flush-only
-    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
-    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
-    expect(syncArgs).toEqual(["sync", "--flush-only"]);
-    expect(syncOpts).toMatchObject({ cwd: "/my/project" });
+    // Only one execFileSync call (close --no-db). DB deletion uses unlinkSync.
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
+    expect(args[0]).toBe("close");
+    expect(args).toContain("--no-db");
   });
 
-  it("calls br sync --flush-only with undefined projectPath when not provided", async () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(""));
-
-    await closeSeed("bd-flush-no-path");
-
-    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
-    const [, syncArgs, syncOpts] = mockExecFileSync.mock.calls[1] as [string, string[], Record<string, unknown>];
-    expect(syncArgs).toEqual(["sync", "--flush-only"]);
-    expect(syncOpts).not.toHaveProperty("cwd");
-  });
-
-  it("does not throw when br sync --flush-only fails (flush is non-fatal)", async () => {
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "sync") throw new Error("sync failed");
-      return Buffer.from("");
+  it("does not throw when close --no-db fails (error suppressed)", async () => {
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error("close failed");
     });
 
-    // Must not reject even if flush fails
     await expect(closeSeed("bd-fail-sync", "/my/project")).resolves.toBeUndefined();
   });
 

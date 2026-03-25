@@ -1,4 +1,5 @@
 import { writeFile, mkdir, open, readdir, unlink } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -927,10 +928,9 @@ export class Dispatcher {
 
         switch (entry.operation) {
           case "close-seed":
-            // Use "update --status closed" instead of "close --force" because
-            // br close --force doesn't persist to JSONL export (beads_rust#204).
-            execFileSync(bin, ["update", seedId, "--status", "closed"], execOpts);
-            console.error(`[bead-writer] Closed seed ${seedId} (from ${entry.sender})`);
+            // Use --no-db to write directly to JSONL, bypassing broken DB cache (beads_rust#204).
+            execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline"], execOpts);
+            console.error(`[bead-writer] Closed seed ${seedId} via --no-db (from ${entry.sender})`);
             break;
 
           case "reset-seed":
@@ -977,17 +977,22 @@ export class Dispatcher {
       }
     }
 
-    // Flush changes to JSONL, then force-rebuild the blocked cache so
-    // br ready reflects newly-unblocked beads immediately. Without the
-    // --force sync, closed blockers don't unblock dependents (bd-tj96).
+    // Close operations used --no-db (write directly to JSONL). Delete the br DB
+    // so the next br command reimports from the corrected JSONL with a fresh
+    // blocked cache. This ensures br ready reflects newly-unblocked beads.
     if (processed > 0) {
       try {
+        // Flush any non-close operations (reset, labels, notes) that used the DB
         execFileSync(bin, ["sync", "--flush-only"], execOpts);
-        execFileSync(bin, ["sync", "--force"], execOpts);
-        console.error(`[bead-writer] Flushed + rebuilt cache after processing ${processed}/${pending.length} entries`);
+        // Delete DB to force reimport from JSONL (fresh blocked cache)
+        const beadsDir = join(this.projectPath, ".beads");
+        for (const dbFile of ["beads.db", "beads.db-wal", "beads.db-shm"]) {
+          try { unlinkSync(join(beadsDir, dbFile)); } catch { /* may not exist */ }
+        }
+        console.error(`[bead-writer] Processed ${processed}/${pending.length} entries — DB reset for fresh cache`);
       } catch (flushErr: unknown) {
         const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-        console.error(`[bead-writer] Warning: br sync failed: ${msg.slice(0, 200)}`);
+        console.error(`[bead-writer] Warning: post-drain cleanup failed: ${msg.slice(0, 200)}`);
       }
     }
 
