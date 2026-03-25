@@ -193,29 +193,61 @@ flowchart TD
 - **[Pi](https://pi.dev)** _(installed as npm dependency)_ — agent runtime via `@mariozechner/pi-coding-agent` SDK. No separate binary needed.
 - **Anthropic API key** — `export ANTHROPIC_API_KEY=sk-ant-...` or log in via Pi: `pi /login`
 
+## Installation
+
+### Homebrew (macOS / Linux — recommended)
+
+```bash
+brew tap oftheangels/tap
+brew install foreman
+```
+
+### npm
+
+```bash
+npm install -g @oftheangels/foreman
+```
+
+### curl (macOS / Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
+```
+
+### PowerShell (Windows)
+
+```powershell
+irm https://raw.githubusercontent.com/ldangelo/foreman/main/install.ps1 | iex
+```
+
+### Verify installation
+
+```bash
+foreman --version
+foreman doctor              # Check dependencies (br, API key, etc.)
+```
+
+> **Also required:** [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for task tracking:
+> `cargo install beads_rust` or download the binary to `~/.local/bin/br`
+
 ## Quick Start
 
 ```bash
-# 1. Install Foreman
-git clone https://github.com/ldangelo/foreman
-cd foreman
-npm install && npm run build
-
-# 2. Initialize in your project
+# 1. Initialize in your project
 cd ~/your-project
 foreman init --name my-project
 
-# 3. Create tasks (beads)
+# 2. Create tasks (beads)
 br create --title "Add user auth" --description "Implement JWT-based auth" --type feature --priority 1
 br create --title "Write auth tests" --type task --priority 2
 
-# 4. Dispatch agents to ready tasks
+# 3. Dispatch agents to ready tasks
 foreman run
 
-# 5. Monitor progress
+# 4. Monitor progress
 foreman status
 
-# 6. Merge completed branches (runs automatically in foreman run loop)
+# 5. Merge completed branches (runs automatically in foreman run loop)
 foreman merge
 ```
 
@@ -630,67 +662,29 @@ git push origin v1.0.0
 
 Or trigger manually from the Actions tab with optional dry-run mode.
 
-### Installation from Binary Release
+### Advanced Installation Options
 
-#### Homebrew (macOS / Linux — recommended)
-
-```bash
-brew tap oftheangels/tap
-brew install foreman
-```
-
-After installation, run `brew info foreman` to see post-install setup instructions, or run `foreman doctor` to verify your configuration.
-
-#### Quick install script (macOS / Linux)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
-```
-
-The installer automatically:
-- Detects your OS (macOS/Linux) and architecture (arm64/x86_64)
-- Downloads the correct binary from the [latest GitHub Release](https://github.com/ldangelo/foreman/releases/latest)
-- Installs to `/usr/local/bin/foreman` (with sudo) or `~/.local/bin/foreman` (without)
-- Places `better_sqlite3.node` alongside the binary (required side-car)
-- Verifies the install with `foreman --version`
-
-**Options:**
-
-```bash
-# Install a specific version
-FOREMAN_VERSION=v1.2.3 curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
-
-# Install to a custom directory
-FOREMAN_INSTALL=/opt/bin curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
-
-# Avoid GitHub API rate limiting (60 req/hr unauthenticated)
-GITHUB_TOKEN=ghp_yourtoken curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
-```
-
-**Manual installation:**
-
-```bash
-# macOS / Linux — download the archive for your platform
-TAG=v1.0.0
-PLATFORM=$(uname -s | tr A-Z a-z)              # darwin or linux
-ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')  # x64 or arm64
-curl -fsSL "https://github.com/ldangelo/foreman/releases/download/${TAG}/foreman-${TAG}-${PLATFORM}-${ARCH}.tar.gz" | tar xz
-
-# Both the binary and better_sqlite3.node must reside in the same directory
-chmod +x foreman-${PLATFORM}-${ARCH}
-sudo cp better_sqlite3.node /usr/local/bin/
-sudo mv foreman-${PLATFORM}-${ARCH} /usr/local/bin/foreman
-```
-
-> **Windows:** Use `install.ps1` (see [bd-8ovc](https://github.com/ldangelo/foreman/issues)).
+For additional install options (specific versions, custom directories, manual binary download), see the [CLI Reference](docs/cli-reference.md) and [Troubleshooting Guide](docs/troubleshooting.md).
 
 ## Development
 
+If you want to contribute or build from source:
+
 ```bash
-npm run build          # TypeScript compile
-npm test               # vitest run (128 test files)
+# Clone and build
+git clone https://github.com/ldangelo/foreman
+cd foreman
+npm install && npm run build
+
+# Link for local development
+npm link
+
+# Development commands
+npm run build          # TypeScript compile (atomic — safe while foreman is running)
+npm test               # vitest run (159 test files, ~2800 tests)
 npm run dev            # tsx watch mode
 npx tsc --noEmit       # Type check only
+npm run bundle         # esbuild single-file bundle
 ```
 
 **Rules:**
