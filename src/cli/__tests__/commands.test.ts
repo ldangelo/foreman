@@ -109,6 +109,8 @@ describe("CLI smoke tests", () => {
 
     // Initialize a git repo so getRepoRoot() succeeds
     execFileSync("git", ["init", "--initial-branch", "main"], { cwd: tmp });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: tmp });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: tmp });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: tmp });
 
     // Register the temp dir as a project so plan can proceed past the init check

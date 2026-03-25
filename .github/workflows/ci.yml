@@ -21,6 +21,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@foreman.dev"
+          git config --global user.name "Foreman CI"
+          git config --global init.defaultBranch main
+
       - name: Set up Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
