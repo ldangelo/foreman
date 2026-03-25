@@ -7,9 +7,18 @@ import {
   renderAgentCard,
   renderAgentCardSummary,
   renderWatchDisplay,
+  readLastErrorLines,
   poll,
   type WatchState,
 } from "../watch-ui.js";
+
+// ── Mock node:fs for error log tests ──────────────────────────────────────
+
+vi.mock("node:fs", () => ({
+  readFileSync: vi.fn(),
+}));
+
+import { readFileSync } from "node:fs";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -715,5 +724,165 @@ describe("renderWatchDisplay with expandedRunIds", () => {
     const output = renderWatchDisplay(state, true, new Set());
     // Single agent should not have a numeric prefix
     expect(output).not.toMatch(/^\s*1\./m);
+  });
+});
+
+// ── readLastErrorLines() ──────────────────────────────────────────────────
+
+describe("readLastErrorLines", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns empty array when file does not exist", () => {
+    vi.mocked(readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    const result = readLastErrorLines("run-001");
+    expect(result).toEqual([]);
+  });
+
+  it("returns last 5 lines from the error log", () => {
+    const lines = ["line1", "line2", "line3", "line4", "line5", "line6", "line7"];
+    vi.mocked(readFileSync).mockReturnValue(lines.join("\n") as any);
+    const result = readLastErrorLines("run-001");
+    expect(result).toEqual(["line3", "line4", "line5", "line6", "line7"]);
+  });
+
+  it("filters out blank lines", () => {
+    vi.mocked(readFileSync).mockReturnValue("line1\n\nline2\n   \nline3\n" as any);
+    const result = readLastErrorLines("run-001");
+    expect(result).toEqual(["line1", "line2", "line3"]);
+  });
+
+  it("returns all lines when fewer than 5 non-empty lines exist", () => {
+    vi.mocked(readFileSync).mockReturnValue("err1\nerr2\n" as any);
+    const result = readLastErrorLines("run-001");
+    expect(result).toEqual(["err1", "err2"]);
+  });
+
+  it("respects custom n parameter", () => {
+    const lines = ["a", "b", "c", "d", "e", "f"];
+    vi.mocked(readFileSync).mockReturnValue(lines.join("\n") as any);
+    const result = readLastErrorLines("run-001", 3);
+    expect(result).toEqual(["d", "e", "f"]);
+  });
+
+  it("reads from correct log path (HOME-based)", () => {
+    vi.mocked(readFileSync).mockReturnValue("" as any);
+    readLastErrorLines("my-run-id");
+    expect(vi.mocked(readFileSync)).toHaveBeenCalledWith(
+      expect.stringContaining("my-run-id.err"),
+      "utf-8",
+    );
+  });
+});
+
+// ── renderAgentCard() with showErrorLogs ─────────────────────────────────
+
+describe("renderAgentCard with showErrorLogs", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("does NOT show error log section when showErrorLogs=false (default)", () => {
+    vi.mocked(readFileSync).mockReturnValue("some error\n" as any);
+    const run = makeRun({ id: "run-err", status: "running" });
+    const progress = makeProgress();
+    const output = renderAgentCard(run, progress, true, undefined, undefined, undefined, false);
+    expect(output).not.toContain("error log");
+    expect(readFileSync).not.toHaveBeenCalled();
+  });
+
+  it("shows error log section when showErrorLogs=true and file has content", () => {
+    vi.mocked(readFileSync).mockReturnValue("Error: something failed\nStack trace here\n" as any);
+    const run = makeRun({ id: "run-err", status: "running" });
+    const progress = makeProgress();
+    const output = renderAgentCard(run, progress, true, undefined, undefined, undefined, true);
+    expect(output).toContain("Last error log lines");
+    expect(output).toContain("Error: something failed");
+    expect(output).toContain("Stack trace here");
+  });
+
+  it("shows 'No error log entries' when .err file is empty or missing", () => {
+    vi.mocked(readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+    const run = makeRun({ id: "run-noerr", status: "running" });
+    const progress = makeProgress();
+    const output = renderAgentCard(run, progress, true, undefined, undefined, undefined, true);
+    expect(output).toContain("No error log entries");
+  });
+
+  it("does NOT show error log section when card is collapsed (isExpanded=false)", () => {
+    vi.mocked(readFileSync).mockReturnValue("some error\n" as any);
+    const run = makeRun({ id: "run-err", status: "running" });
+    const progress = makeProgress();
+    // When collapsed, renderAgentCard delegates to renderAgentCardSummary which
+    // doesn't call readLastErrorLines — readFileSync should not be called.
+    const output = renderAgentCard(run, progress, false, undefined, undefined, undefined, true);
+    expect(output).not.toContain("error log");
+    expect(readFileSync).not.toHaveBeenCalled();
+  });
+});
+
+// ── renderWatchDisplay() with showErrorLogs ───────────────────────────────
+
+describe("renderWatchDisplay with showErrorLogs", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function makeState(overrides?: Partial<WatchState>): WatchState {
+    const run = makeRun({ id: "r1", status: "running" });
+    return {
+      runs: [{ run, progress: makeProgress() }],
+      allDone: false,
+      totalCost: 0,
+      totalTools: 0,
+      totalFiles: 0,
+      completedCount: 0,
+      failedCount: 0,
+      stuckCount: 0,
+      ...overrides,
+    };
+  }
+
+  it("shows 'e' toggle errors hint when expandedRunIds is provided and not done", () => {
+    const state = makeState();
+    const output = renderWatchDisplay(state, true, new Set<string>());
+    expect(output).toContain("'e' toggle errors");
+  });
+
+  it("does NOT show 'e' toggle hint when expandedRunIds is undefined (non-interactive)", () => {
+    const state = makeState();
+    const output = renderWatchDisplay(state, true, undefined);
+    expect(output).not.toContain("'e' toggle errors");
+  });
+
+  it("does NOT show 'e' toggle hint when allDone=true", () => {
+    const run = makeRun({ id: "r1", status: "completed" });
+    const state = makeState({ runs: [{ run, progress: null }], allDone: true, completedCount: 1 });
+    const output = renderWatchDisplay(state, true, new Set());
+    expect(output).not.toContain("'e' toggle errors");
+  });
+
+  it("propagates showErrorLogs=true to agent cards (reads error file)", () => {
+    vi.mocked(readFileSync).mockReturnValue("Error: crash\n" as any);
+    const run = makeRun({ id: "r1", status: "running" });
+    const state = makeState({ runs: [{ run, progress: makeProgress() }] });
+    const expandedRunIds = new Set<string>(["r1"]); // expanded so error log is shown
+    const output = renderWatchDisplay(state, true, expandedRunIds, undefined, true);
+    expect(output).toContain("Last error log lines");
+    expect(output).toContain("Error: crash");
+  });
+
+  it("does NOT show error log section when showErrorLogs=false (default)", () => {
+    vi.mocked(readFileSync).mockReturnValue("Error: crash\n" as any);
+    const run = makeRun({ id: "r1", status: "running" });
+    const state = makeState({ runs: [{ run, progress: makeProgress() }] });
+    const expandedRunIds = new Set<string>(["r1"]);
+    const output = renderWatchDisplay(state, true, expandedRunIds, undefined, false);
+    expect(output).not.toContain("Last error log lines");
   });
 });
