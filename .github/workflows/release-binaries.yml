@@ -275,6 +275,24 @@ jobs:
 
           echo "All 5 release assets present ✓"
 
+      # ── Generate SHA-256 checksums ────────────────────────────────────────────
+      # Checksums allow end-users to verify the integrity of downloaded binaries.
+      # The checksums.txt file is attached to the GitHub Release alongside the archives.
+      - name: Generate SHA-256 checksums
+        run: |
+          cd dist/release-assets/
+          echo "Generating SHA-256 checksums..."
+
+          # Use sha256sum on Linux (GitHub Actions ubuntu-latest runner)
+          sha256sum *.tar.gz *.zip > checksums.txt
+
+          echo ""
+          echo "checksums.txt:"
+          cat checksums.txt
+
+          echo ""
+          echo "Checksum file generated ✓"
+
       # ── Create GitHub Release + upload assets ─────────────────────────────────
       - name: Create GitHub Release
         if: ${{ github.event.inputs.dry_run != 'true' }}
@@ -320,7 +338,32 @@ jobs:
             ### Checksums
 
             SHA-256 checksums are listed in `checksums.txt` (attached to this release).
+
+            Verify your download:
+            ```bash
+            # Linux/macOS
+            sha256sum -c checksums.txt
+            # or: shasum -a 256 -c checksums.txt (macOS)
+            ```
           files: dist/release-assets/*
+
+      # ── Trigger Homebrew tap update ───────────────────────────────────────────
+      # After a successful release, dispatch an event to the homebrew-tap repo
+      # so the formula can be auto-updated with the new version and checksums.
+      # Requires HOMEBREW_TAP_TOKEN secret (PAT with repo write access to
+      # oftheangels/homebrew-tap).
+      - name: Trigger Homebrew tap update
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: oftheangels/homebrew-tap
+          event-type: foreman-release
+          client-payload: |
+            {
+              "version": "${{ steps.tag.outputs.tag }}",
+              "repository": "${{ github.repository }}"
+            }
 
       # ── Dry-run summary ───────────────────────────────────────────────────────
       # dry-run: list release assets but do not publish to GitHub Releases.

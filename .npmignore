@@ -44,3 +44,9 @@ SESSION_LOG_EXPLORER.md
 EXPLORER_SESSION_LOG.md
 SessionLogs/
 skills/
+
+# Homebrew tap (separate repo — not part of npm package)
+homebrew-tap/
+
+# ESLint configuration (dev only)
+eslint.config.js

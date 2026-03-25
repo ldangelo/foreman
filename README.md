@@ -632,7 +632,30 @@ Or trigger manually from the Actions tab with optional dry-run mode.
 
 ### Installation from Binary Release
 
-**Quick install (macOS / Linux):**
+There are four ways to install Foreman without building from source:
+
+#### Option 1: Homebrew (macOS / Linux — recommended)
+
+```bash
+brew tap oftheangels/tap
+brew install foreman
+```
+
+Or as a one-liner:
+
+```bash
+brew install oftheangels/tap/foreman
+```
+
+Homebrew handles installation and future upgrades (`brew upgrade foreman`).
+
+#### Option 2: npm (Node.js 20+ required)
+
+```bash
+npm install -g @oftheangels/foreman
+```
+
+#### Option 3: curl one-liner (macOS / Linux — no Node.js required)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
@@ -658,7 +681,7 @@ FOREMAN_INSTALL=/opt/bin curl -fsSL https://raw.githubusercontent.com/ldangelo/f
 GITHUB_TOKEN=ghp_yourtoken curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
 ```
 
-**Manual installation:**
+#### Option 4: Manual download
 
 ```bash
 # macOS / Linux — download the archive for your platform
@@ -673,7 +696,18 @@ sudo cp better_sqlite3.node /usr/local/bin/
 sudo mv foreman-${PLATFORM}-${ARCH} /usr/local/bin/foreman
 ```
 
-> **Windows:** Use `install.ps1` (see [bd-8ovc](https://github.com/ldangelo/foreman/issues)).
+**Verify checksums:**
+
+```bash
+# Download checksums.txt alongside the archive
+curl -fsSL "https://github.com/ldangelo/foreman/releases/download/${TAG}/checksums.txt" -o checksums.txt
+sha256sum -c checksums.txt          # Linux
+# or: shasum -a 256 -c checksums.txt  # macOS
+```
+
+> **Windows:** Use `install.ps1` — see [Windows installation guide](docs/windows-install.md).
+
+> **macOS Gatekeeper:** If macOS blocks the binary, run: `xattr -d com.apple.quarantine /usr/local/bin/foreman`
 
 ## Development
 
