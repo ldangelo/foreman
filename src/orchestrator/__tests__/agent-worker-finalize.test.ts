@@ -199,13 +199,19 @@ describe("finalize() — push FAILS", () => {
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
-    // git push fails; all other commands succeed
+    // git push fails; all other commands succeed.
+    // The mock must handle all git commands that finalize() calls:
+    // rev-parse --abbrev-ref HEAD (branch check), rev-parse --short HEAD (commit hash),
+    // checkout (branch fix), fetch, rebase, push (fails), add, commit, diff, etc.
     mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
       if (Array.isArray(args) && args[0] === "push") {
         throw new Error("remote: Permission to repo denied.");
       }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
+      if (args[0] === "rev-parse" && args.includes("--abbrev-ref")) return Buffer.from("foreman/bd-test-001\n");
       if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
+      if (args[0] === "checkout") return Buffer.from("");
+      if (args[0] === "fetch") return Buffer.from("");
+      if (args[0] === "rebase") return Buffer.from("");
       return Buffer.from("");
     });
   });
