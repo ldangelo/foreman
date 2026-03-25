@@ -275,6 +275,23 @@ jobs:
 
           echo "All 5 release assets present ✓"
 
+      # ── Generate SHA256 checksums file ────────────────────────────────────────
+      # checksums.txt is used by the update-homebrew-tap workflow and by users
+      # who want to verify their downloads manually.
+      - name: Generate checksums.txt
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          cd dist/release-assets
+          sha256sum \
+            "foreman-${TAG}-darwin-arm64.tar.gz" \
+            "foreman-${TAG}-darwin-x64.tar.gz" \
+            "foreman-${TAG}-linux-x64.tar.gz" \
+            "foreman-${TAG}-linux-arm64.tar.gz" \
+            "foreman-${TAG}-win-x64.zip" \
+            > checksums.txt
+          echo "checksums.txt:"
+          cat checksums.txt
+
       # ── Create GitHub Release + upload assets ─────────────────────────────────
       - name: Create GitHub Release
         if: ${{ github.event.inputs.dry_run != 'true' }}
@@ -299,8 +316,19 @@ jobs:
 
             ### Quick Install
 
+            **Homebrew (macOS / Linux — recommended):**
             ```bash
-            # macOS / Linux
+            brew tap oftheangels/tap
+            brew install foreman
+            ```
+
+            **Script (macOS / Linux):**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh
+            ```
+
+            **Manual download:**
+            ```bash
             TAG="${{ steps.tag.outputs.tag }}"
             PLATFORM=$(uname -s | tr A-Z a-z)
             ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')

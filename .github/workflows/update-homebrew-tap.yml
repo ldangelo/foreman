@@ -1,0 +1,181 @@
+name: Update Homebrew Tap
+
+# Triggered after a successful release-binaries run so the Homebrew formula
+# is always in sync with the latest GitHub Release.
+#
+# Flow:
+#   release-binaries.yml (build + upload assets)
+#     → this workflow (compute SHA256 sums, update foreman.rb, commit + push)
+#
+# Requirements:
+#   TAP_DEPLOY_KEY — an SSH deploy key with write access to oftheangels/homebrew-tap
+#   Set it in:  Settings → Secrets and variables → Actions → Repository secrets
+
+on:
+  # Trigger when the release-binaries workflow completes successfully
+  workflow_run:
+    workflows: ["Release Binaries"]
+    types: [completed]
+
+  # Also allow manual trigger (e.g. after fixing a bad formula)
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to use (e.g. v1.2.3). Defaults to latest release."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  update-tap:
+    name: Update oftheangels/homebrew-tap
+    runs-on: ubuntu-latest
+
+    # Only run when the triggering workflow succeeded (or manual trigger)
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      # ── Determine release tag ─────────────────────────────────────────────
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            # Fetch the latest release tag from the GitHub API
+            TAG=$(curl -fsSL \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/latest" \
+              | jq -r '.tag_name')
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: ${TAG}"
+
+      # ── Download release assets ───────────────────────────────────────────
+      - name: Download release assets
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${{ steps.tag.outputs.version }}"
+          mkdir -p assets
+
+          PLATFORMS=(darwin-arm64 darwin-x64 linux-x64 linux-arm64)
+          for platform in "${PLATFORMS[@]}"; do
+            echo "Downloading foreman-${TAG}-${platform}.tar.gz ..."
+            curl -fsSL \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -L "https://github.com/${{ github.repository }}/releases/download/${TAG}/foreman-${TAG}-${platform}.tar.gz" \
+              -o "assets/foreman-${TAG}-${platform}.tar.gz"
+          done
+
+          echo "Downloaded assets:"
+          ls -lh assets/
+
+      # ── Compute SHA256 checksums ──────────────────────────────────────────
+      - name: Compute SHA256 checksums
+        id: checksums
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+
+          DARWIN_ARM64=$(sha256sum "assets/foreman-${TAG}-darwin-arm64.tar.gz" | awk '{print $1}')
+          DARWIN_X64=$(sha256sum "assets/foreman-${TAG}-darwin-x64.tar.gz" | awk '{print $1}')
+          LINUX_X64=$(sha256sum "assets/foreman-${TAG}-linux-x64.tar.gz" | awk '{print $1}')
+          LINUX_ARM64=$(sha256sum "assets/foreman-${TAG}-linux-arm64.tar.gz" | awk '{print $1}')
+
+          echo "darwin_arm64=${DARWIN_ARM64}" >> "$GITHUB_OUTPUT"
+          echo "darwin_x64=${DARWIN_X64}"     >> "$GITHUB_OUTPUT"
+          echo "linux_x64=${LINUX_X64}"       >> "$GITHUB_OUTPUT"
+          echo "linux_arm64=${LINUX_ARM64}"   >> "$GITHUB_OUTPUT"
+
+          echo "Checksums:"
+          echo "  darwin-arm64: ${DARWIN_ARM64}"
+          echo "  darwin-x64:   ${DARWIN_X64}"
+          echo "  linux-x64:    ${LINUX_X64}"
+          echo "  linux-arm64:  ${LINUX_ARM64}"
+
+      # ── Checkout the homebrew-tap repo ────────────────────────────────────
+      - name: Checkout oftheangels/homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: oftheangels/homebrew-tap
+          ssh-key: ${{ secrets.TAP_DEPLOY_KEY }}
+          path: homebrew-tap
+
+      # ── Update the formula ────────────────────────────────────────────────
+      - name: Update Formula/foreman.rb
+        run: |
+          VERSION="${{ steps.tag.outputs.version }}"
+          DARWIN_ARM64="${{ steps.checksums.outputs.darwin_arm64 }}"
+          DARWIN_X64="${{ steps.checksums.outputs.darwin_x64 }}"
+          LINUX_X64="${{ steps.checksums.outputs.linux_x64 }}"
+          LINUX_ARM64="${{ steps.checksums.outputs.linux_arm64 }}"
+
+          FORMULA="homebrew-tap/Formula/foreman.rb"
+
+          # Update version
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" "$FORMULA"
+
+          # Update SHA256 checksums (replace placeholder or previous value)
+          # Each platform's sha256 is on the line immediately following its url line.
+          # We use python for reliable multi-line substitution.
+          python3 - <<PYEOF
+          import re
+
+          with open("${FORMULA}", "r") as f:
+              content = f.read()
+
+          # Replace darwin-arm64 sha256
+          content = re.sub(
+              r'(darwin-arm64\.tar\.gz")\n\s+sha256 "[^"]*"',
+              r'\1\n      sha256 "${DARWIN_ARM64}"',
+              content
+          )
+          # Replace darwin-x64 sha256
+          content = re.sub(
+              r'(darwin-x64\.tar\.gz")\n\s+sha256 "[^"]*"',
+              r'\1\n      sha256 "${DARWIN_X64}"',
+              content
+          )
+          # Replace linux-x64 sha256
+          content = re.sub(
+              r'(linux-x64\.tar\.gz")\n\s+sha256 "[^"]*"',
+              r'\1\n      sha256 "${LINUX_X64}"',
+              content
+          )
+          # Replace linux-arm64 sha256
+          content = re.sub(
+              r'(linux-arm64\.tar\.gz")\n\s+sha256 "[^"]*"',
+              r'\1\n      sha256 "${LINUX_ARM64}"',
+              content
+          )
+
+          with open("${FORMULA}", "w") as f:
+              f.write(content)
+
+          print("Formula updated successfully.")
+          PYEOF
+
+          echo "Updated formula:"
+          grep -A 2 "sha256\|version" "$FORMULA" | head -30
+
+      # ── Commit and push ───────────────────────────────────────────────────
+      - name: Commit and push updated formula
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          cd homebrew-tap
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add Formula/foreman.rb
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+
+          git commit -m "chore: update foreman formula to ${TAG}"
+          git push origin main
+
+          echo "✅ Homebrew tap updated to ${TAG}"
