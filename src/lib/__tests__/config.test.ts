@@ -147,8 +147,9 @@ describe("PIPELINE_TIMEOUTS defaults", () => {
     expect(PIPELINE_TIMEOUTS.gitOperationMs).toBe(30_000);
   });
 
-  it("beadClosureMs defaults to 10000", () => {
-    expect(PIPELINE_TIMEOUTS.beadClosureMs).toBe(10_000);
+  it("beadClosureMs defaults to 30000", () => {
+    // Increased from 10s to 30s (commit 5c9f686: fix: increase bead-writer timeout from 10s to 30s)
+    expect(PIPELINE_TIMEOUTS.beadClosureMs).toBe(30_000);
   });
 
   it("testExecutionMs defaults to 300000", () => {
