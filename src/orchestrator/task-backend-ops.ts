@@ -168,11 +168,18 @@ export async function closeSeed(seedId: string, projectPath?: string): Promise<v
     execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline"], execOpts(projectPath));
     console.error(`[task-backend-ops] Closed seed ${seedId} via br --no-db`);
 
-    // Delete the DB so next br command reimports from corrected JSONL with fresh cache
-    for (const dbFile of ["beads.db", "beads.db-wal", "beads.db-shm"]) {
-      try { unlinkSync(join(beadsDir, dbFile)); } catch { /* may not exist */ }
+    // Clear the blocked_issues_cache so br ready reflects the close immediately.
+    // Faster than deleting the entire DB (avoids full JSONL reimport).
+    try {
+      execFileSync("sqlite3", [join(beadsDir, "beads.db"), "DELETE FROM blocked_issues_cache;"], execOpts(projectPath));
+      console.error(`[task-backend-ops] Cleared blocked_issues_cache for ${seedId}`);
+    } catch {
+      // Fallback: delete DB
+      for (const dbFile of ["beads.db", "beads.db-wal", "beads.db-shm"]) {
+        try { unlinkSync(join(beadsDir, dbFile)); } catch { /* may not exist */ }
+      }
+      console.error(`[task-backend-ops] Deleted br DB (fallback) for ${seedId}`);
     }
-    console.error(`[task-backend-ops] Deleted br DB — will reimport from JSONL on next access`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[task-backend-ops] Warning: br close failed for ${seedId}: ${msg.slice(0, 200)}`);

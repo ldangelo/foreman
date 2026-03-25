@@ -984,12 +984,22 @@ export class Dispatcher {
       try {
         // Flush any non-close operations (reset, labels, notes) that used the DB
         execFileSync(bin, ["sync", "--flush-only"], execOpts);
-        // Delete DB to force reimport from JSONL (fresh blocked cache)
-        const beadsDir = join(this.projectPath, ".beads");
-        for (const dbFile of ["beads.db", "beads.db-wal", "beads.db-shm"]) {
-          try { unlinkSync(join(beadsDir, dbFile)); } catch { /* may not exist */ }
+        // Clear the blocked_issues_cache so br ready reflects newly-unblocked beads.
+        // Using sqlite3 CLI is safer and faster than deleting the entire DB.
+        try {
+          execFileSync("sqlite3", [
+            join(this.projectPath, ".beads", "beads.db"),
+            "DELETE FROM blocked_issues_cache;",
+          ], execOpts);
+          console.error(`[bead-writer] Cleared blocked_issues_cache after processing ${processed}/${pending.length} entries`);
+        } catch {
+          // Fallback: delete DB files if sqlite3 not available
+          const beadsDir = join(this.projectPath, ".beads");
+          for (const dbFile of ["beads.db", "beads.db-wal", "beads.db-shm"]) {
+            try { unlinkSync(join(beadsDir, dbFile)); } catch { /* may not exist */ }
+          }
+          console.error(`[bead-writer] Deleted DB (fallback) after processing ${processed}/${pending.length} entries`);
         }
-        console.error(`[bead-writer] Processed ${processed}/${pending.length} entries — DB reset for fresh cache`);
       } catch (flushErr: unknown) {
         const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
         console.error(`[bead-writer] Warning: post-drain cleanup failed: ${msg.slice(0, 200)}`);
