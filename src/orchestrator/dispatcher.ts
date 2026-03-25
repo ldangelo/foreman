@@ -943,6 +943,13 @@ export class Dispatcher {
             console.error(`[bead-writer] Marked seed ${seedId} as failed (from ${entry.sender})`);
             break;
 
+          case "set-status": {
+            const targetStatus = payload.status as string;
+            execFileSync(bin, ["update", seedId, "--status", targetStatus], execOpts);
+            console.error(`[bead-writer] Set seed ${seedId} to ${targetStatus} (from ${entry.sender})`);
+            break;
+          }
+
           case "add-notes": {
             const notes = payload.notes as string;
             if (notes) {

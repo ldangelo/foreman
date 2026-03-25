@@ -131,6 +131,21 @@ export function enqueueAddLabelsToBead(store: ForemanStore, seedId: string, labe
   }
 }
 
+/**
+ * Enqueue a generic "set status" operation for deferred execution.
+ * Used for status transitions that don't have a dedicated enqueue function
+ * (e.g. setting bead to "review" after finalize push).
+ */
+export function enqueueSetBeadStatus(store: ForemanStore, seedId: string, status: string, sender: string): void {
+  try {
+    store.enqueueBeadWrite(sender, "set-status", { seedId, status });
+    console.error(`[task-backend-ops] Enqueued set-status ${status} for ${seedId} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to enqueue set-status for ${seedId}: ${msg.slice(0, 200)}`);
+  }
+}
+
 // ── Path constants ────────────────────────────────────────────────────────────
 
 function brPath(): string {
