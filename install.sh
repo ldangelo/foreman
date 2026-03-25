@@ -234,6 +234,48 @@ main() {
     die "Downloaded archive is empty: ${archive_path}"
   fi
 
+  # ── Verify checksum (SHA256) ───────────────────────────────────────────────
+  info "Verifying checksum..."
+
+  local checksums_url="${GITHUB_RELEASES}/${version}/checksums.txt"
+  local checksums_path="${tmp_dir}/checksums.txt"
+
+  # Determine sha256 command (Linux: sha256sum, macOS: shasum -a 256)
+  local sha256_cmd=""
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256_cmd="sha256sum"
+  elif command -v shasum >/dev/null 2>&1; then
+    sha256_cmd="shasum -a 256"
+  fi
+
+  if [ -n "$sha256_cmd" ]; then
+    if curl -fsSL -o "$checksums_path" "$checksums_url" 2>/dev/null; then
+      # Extract expected hash for this asset from checksums.txt
+      local expected_hash
+      expected_hash="$(grep " ${asset_name}$" "$checksums_path" 2>/dev/null | awk '{print $1}' || true)"
+
+      if [ -n "$expected_hash" ]; then
+        local actual_hash
+        actual_hash="$(cd "${tmp_dir}" && $sha256_cmd "${asset_name}" | awk '{print $1}')"
+
+        if [ "$actual_hash" = "$expected_hash" ]; then
+          success "Checksum verified ✓"
+        else
+          die "Checksum mismatch for ${asset_name}!
+  Expected: ${expected_hash}
+  Got:      ${actual_hash}
+  The downloaded file may be corrupt or tampered with. Please try again."
+        fi
+      else
+        warn "Could not find checksum for ${asset_name} in checksums.txt — skipping verification."
+      fi
+    else
+      warn "Could not download checksums.txt — skipping checksum verification."
+    fi
+  else
+    warn "No sha256 tool found (sha256sum or shasum) — skipping checksum verification."
+  fi
+
   # ── Extract archive ────────────────────────────────────────────────────────
   local extract_dir="${tmp_dir}/extracted"
   mkdir -p "$extract_dir"
