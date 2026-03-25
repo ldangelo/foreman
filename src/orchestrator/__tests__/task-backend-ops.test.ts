@@ -98,16 +98,23 @@ describe("closeSeed — br backend", () => {
     expect(args[0]).toBe("close");
   });
 
-  it("calls execFileSync once for close (no sync — DB deleted instead)", async () => {
+  it("calls execFileSync twice for close (br close + sqlite3 cache clear)", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await closeSeed("bd-flush-test", "/my/project");
 
-    // Only one execFileSync call (close --no-db). DB deletion uses unlinkSync.
-    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    // Two execFileSync calls:
+    // 1. br close --no-db --force (write to JSONL)
+    // 2. sqlite3 ... DELETE FROM blocked_issues_cache; (clear cache)
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
     const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(args[0]).toBe("close");
     expect(args).toContain("--no-db");
+
+    // Second call should be sqlite3 to clear blocked_issues_cache
+    const [sqlite3Cmd, sqlite3Args] = mockExecFileSync.mock.calls[1] as [string, string[], unknown];
+    expect(sqlite3Cmd).toBe("sqlite3");
+    expect((sqlite3Args as string[]).some((a: string) => a.includes("blocked_issues_cache"))).toBe(true);
   });
 
   it("does not throw when close --no-db fails (error suppressed)", async () => {
