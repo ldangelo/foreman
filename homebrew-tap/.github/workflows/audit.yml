@@ -1,0 +1,52 @@
+name: Audit Formula
+
+# Run brew audit on every push and pull request to catch formula errors
+# before they reach users.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - "Formula/**"
+      - ".github/workflows/audit.yml"
+
+jobs:
+  audit:
+    name: brew audit foreman
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Tap this repo locally so Homebrew knows about the formula
+      - name: Tap this repo
+        run: |
+          brew tap oftheangels/tap "$(pwd)"
+
+      # brew audit checks formula style, URLs, and Ruby syntax
+      # --strict enables extra checks (naming conventions, etc.)
+      # --online checks that URLs are resolvable (skip on PRs to avoid flakiness)
+      - name: brew audit (offline)
+        run: |
+          brew audit --strict oftheangels/tap/foreman
+
+      # On pushes to main, also do online checks (URL reachability)
+      - name: brew audit (online)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          brew audit --strict --online oftheangels/tap/foreman || true
+
+      # Validate formula Ruby syntax with ruby -c
+      - name: Check Ruby syntax
+        run: |
+          ruby -c Formula/foreman.rb
+
+      # Ensure formula class name matches filename
+      - name: Validate formula structure
+        run: |
+          grep -q "^class Foreman < Formula" Formula/foreman.rb || \
+            (echo "ERROR: Formula class must be 'Foreman'" && exit 1)
+          echo "Formula structure OK ✓"
