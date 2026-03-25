@@ -395,8 +395,15 @@ export class Dispatcher {
           // Non-fatal — mail is optional infrastructure
         }
 
-        // 6. Mark seed as in_progress before spawning agent
-        await this.seeds.update(seed.id, { status: "in_progress" });
+        // 6. Mark seed as in_progress before spawning agent.
+        // Non-fatal: br may reject the claim due to stale blocked cache (beads_rust#204).
+        // The agent can still run — the status update is cosmetic.
+        try {
+          await this.seeds.update(seed.id, { status: "in_progress" });
+        } catch (claimErr: unknown) {
+          const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
+          console.error(`[dispatch] Warning: br claim failed for ${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+        }
 
         // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
         try {
