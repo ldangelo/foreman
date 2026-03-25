@@ -78,10 +78,8 @@ describe("npm pack --dry-run output", () => {
 
   beforeAll(() => {
     try {
-      // npm pack --dry-run --ignore-scripts lists files that would be included
-      // without creating an archive or running the prepare/build scripts.
-      // We use --ignore-scripts to avoid triggering a full TypeScript build during tests.
-      // npm notice output (file list) goes to stderr; we capture stderr for validation.
+      // npm pack --dry-run can take >10s on CI — use 30s timeout.
+      // Shell redirection needed to capture npm notice from stderr.
       const result = execSync("npm pack --dry-run --ignore-scripts 2>&1 1>/dev/null", {
         cwd: REPO_ROOT,
         encoding: "utf-8",
@@ -97,7 +95,7 @@ describe("npm pack --dry-run output", () => {
       packFailed = true;
       console.warn("npm pack --dry-run failed (dist may not exist):", packOutput.slice(0, 500));
     }
-  });
+  }, 30_000);
 
   it("includes package.json in the pack output", () => {
     if (packFailed) return; // Skip if pack failed (e.g., dist/ not built)
