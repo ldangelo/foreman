@@ -632,7 +632,16 @@ Or trigger manually from the Actions tab with optional dry-run mode.
 
 ### Installation from Binary Release
 
-**Quick install (macOS / Linux):**
+#### Homebrew (macOS / Linux — recommended)
+
+```bash
+brew tap oftheangels/tap
+brew install foreman
+```
+
+After installation, run `brew info foreman` to see post-install setup instructions, or run `foreman doctor` to verify your configuration.
+
+#### Quick install script (macOS / Linux)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
