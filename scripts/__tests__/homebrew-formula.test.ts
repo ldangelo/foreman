@@ -104,8 +104,12 @@ describe("Homebrew formula content", () => {
     expect(content).toContain("def install");
   });
 
-  it("installs binary to bin/", () => {
-    expect(content).toContain("bin.install");
+  it("installs binary to bin/ (via shell wrapper write)", () => {
+    // The formula uses (bin/"foreman").write to create a wrapper script in bin/
+    // that delegates to the real binary in libexec/foreman/.
+    // This pattern is used instead of bin.install because the wrapper must
+    // have the libexec path interpolated at install time.
+    expect(content).toContain('(bin/"foreman")');
   });
 
   it("has caveats method mentioning required dependencies", () => {

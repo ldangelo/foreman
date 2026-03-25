@@ -13,10 +13,11 @@ import { tmpdir } from "node:os";
 // vi.hoisted() ensures mock variables are initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
 
-const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile } = vi.hoisted(() => ({
+const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile, mockEnqueueBeadWrite } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
   mockEnqueueToMergeQueue: vi.fn().mockReturnValue({ success: true }),
   mockAppendFile: vi.fn().mockResolvedValue(undefined),
+  mockEnqueueBeadWrite: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({
@@ -41,6 +42,7 @@ vi.mock("../../lib/store.js", () => ({
     forProject: vi.fn(() => ({
       getDb: vi.fn(() => ({})),
       close: vi.fn(),
+      enqueueBeadWrite: mockEnqueueBeadWrite,
     })),
   },
 }));
@@ -135,18 +137,19 @@ describe("finalize() — push succeeds", () => {
   });
 
   it("sets bead to 'review' status after successful push (not closing it)", async () => {
-    // The bead lifecycle fix: after push succeeds, set bead to 'review' so it's
-    // visible as "pipeline done, awaiting merge" — distinct from in_progress tasks.
+    // The bead lifecycle fix: after push succeeds, enqueue a set-status 'review'
+    // write so the bead is visible as "pipeline done, awaiting merge".
+    // enqueueSetBeadStatus() uses store.enqueueBeadWrite() — NOT a direct execFileSync call.
     await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-test-001" }), logFile);
-    const reviewCall = mockExecFileSync.mock.calls.find(
+    // Verify enqueueBeadWrite was called with "set-status" and the correct seedId/status
+    const reviewCall = mockEnqueueBeadWrite.mock.calls.find(
       (call) =>
-        Array.isArray(call[1]) &&
-        call[1][0] === "update" &&
-        call[1].includes("--status") &&
-        call[1].includes("review"),
+        Array.isArray(call) &&
+        call[1] === "set-status" &&
+        call[2]?.status === "review" &&
+        call[2]?.seedId === "bd-test-001",
     );
     expect(reviewCall).toBeDefined();
-    expect(reviewCall![1]).toContain("bd-test-001");
   });
 
   it("does NOT call br close after push succeeds (bead lifecycle fix)", async () => {

@@ -363,3 +363,20 @@ jobs:
           echo "Summary:"
           echo "  Tag: ${{ steps.tag.outputs.tag }}"
           echo "  Assets: $(ls dist/release-assets/ | wc -l) files"
+
+      # ── Trigger Homebrew tap update ───────────────────────────────────────────
+      # After a successful release, dispatch a repository_dispatch event to
+      # oftheangels/homebrew-tap so it can update the formula with new URLs
+      # and SHA256 checksums.
+      # Skipped during dry run (no real release was created).
+      - name: Trigger Homebrew tap update
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: oftheangels/homebrew-tap
+          event-type: foreman-release
+          client-payload: |
+            {
+              "version": "${{ steps.tag.outputs.tag }}"
+            }

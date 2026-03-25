@@ -78,6 +78,8 @@ class Foreman < Formula
     # Create a thin wrapper in bin/ that delegates to the real binary.
     # Using a shell wrapper (not a symlink) ensures import.meta.url in the
     # compiled binary resolves to the libexec path, not the bin symlink.
+    # bin.install is not used here because the wrapper must be written with
+    # the resolved libexec path interpolated at install time.
     (bin/"foreman").write <<~EOS
       #!/usr/bin/env bash
       exec "#{libexec_dir}/foreman" "$@"
