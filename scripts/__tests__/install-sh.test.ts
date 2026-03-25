@@ -151,6 +151,26 @@ describe("install.sh content", () => {
   it("provides a macOS Gatekeeper note", () => {
     expect(content).toContain("quarantine");
   });
+
+  it("downloads and verifies checksums.txt for SHA256 validation", () => {
+    expect(content).toContain("checksums.txt");
+    expect(content).toContain("sha256sum");
+    expect(content).toContain("shasum");
+  });
+
+  it("detects sha256sum (Linux) or shasum (macOS) for checksum verification", () => {
+    expect(content).toContain("sha256sum");
+    expect(content).toContain("shasum -a 256");
+  });
+
+  it("warns but does not fail if checksums.txt is unavailable", () => {
+    // Checksum verification should be non-fatal (warn, not die)
+    expect(content).toContain("skipping checksum verification");
+  });
+
+  it("errors on checksum mismatch", () => {
+    expect(content).toContain("Checksum mismatch");
+  });
 });
 
 // ── Asset naming consistency with release workflow ─────────────────────────────
