@@ -605,3 +605,50 @@ describe("resolvePhaseModel", () => {
     expect(resolvePhaseModel(phase, "high", fallback)).toBe("anthropic/claude-sonnet-4-6");
   });
 });
+
+// ── validateWorkflowConfig — vcs block ────────────────────────────────────────
+
+describe("validateWorkflowConfig — vcs block", () => {
+  const minimalConfig = {
+    name: "test",
+    phases: [{ name: "developer", prompt: "developer.md" }],
+  };
+
+  it("parses vcs.backend='git'", () => {
+    const config = validateWorkflowConfig(
+      { ...minimalConfig, vcs: { backend: "git" } },
+      "test",
+    );
+    expect(config.vcs?.backend).toBe("git");
+  });
+
+  it("parses vcs.backend='jujutsu'", () => {
+    const config = validateWorkflowConfig(
+      { ...minimalConfig, vcs: { backend: "jujutsu" } },
+      "test",
+    );
+    expect(config.vcs?.backend).toBe("jujutsu");
+  });
+
+  it("parses vcs.backend='auto'", () => {
+    const config = validateWorkflowConfig(
+      { ...minimalConfig, vcs: { backend: "auto" } },
+      "test",
+    );
+    expect(config.vcs?.backend).toBe("auto");
+  });
+
+  it("leaves vcs undefined when not present", () => {
+    const config = validateWorkflowConfig(minimalConfig, "test");
+    expect(config.vcs).toBeUndefined();
+  });
+
+  it("throws WorkflowConfigError for invalid vcs.backend value", () => {
+    expect(() =>
+      validateWorkflowConfig(
+        { ...minimalConfig, vcs: { backend: "svn" } },
+        "test",
+      ),
+    ).toThrow(/vcs.backend must be/);
+  });
+});

@@ -180,6 +180,21 @@ export interface WorkflowConfig {
   setupCache?: WorkflowSetupCache;
   /** Ordered list of phases to execute. */
   phases: WorkflowPhaseConfig[];
+  /**
+   * Optional VCS backend configuration. When present, overrides project-level
+   * config and auto-detection. Use 'auto' to detect from repository contents
+   * (.jj/ → jujutsu, .git/ → git).
+   *
+   * @example
+   * ```yaml
+   * vcs:
+   *   backend: jujutsu
+   * ```
+   */
+  vcs?: {
+    /** VCS backend to use: 'git' | 'jujutsu' | 'auto'. Default: 'auto'. */
+    backend: 'git' | 'jujutsu' | 'auto';
+  };
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -347,6 +362,21 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   const config: WorkflowConfig = { name, phases };
   if (setup !== undefined) config.setup = setup;
   if (setupCache !== undefined) config.setupCache = setupCache;
+
+  // ── Parse optional vcs block ───────────────────────────────────────────────
+  if (isRecord(raw["vcs"])) {
+    const vcsRaw = raw["vcs"];
+    const backend = vcsRaw["backend"];
+    if (backend === "git" || backend === "jujutsu" || backend === "auto") {
+      config.vcs = { backend };
+    } else if (backend !== undefined) {
+      throw new WorkflowConfigError(
+        workflowName,
+        `vcs.backend must be 'git', 'jujutsu', or 'auto' (got: ${String(backend)})`,
+      );
+    }
+  }
+
   return config;
 }
 
