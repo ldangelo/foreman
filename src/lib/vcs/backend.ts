@@ -18,6 +18,7 @@ import type {
   FinalizeTemplateVars,
   FinalizeCommands,
 } from './types.js';
+import type { WorkflowSetupStep, WorkflowSetupCache } from '../workflow-loader.js';
 
 /**
  * Backend-agnostic interface for all VCS operations in Foreman.
@@ -121,15 +122,15 @@ export interface VcsBackend {
    * @param repoPath   - absolute path to the main repository root
    * @param seedId     - unique identifier for the task (used as the branch suffix)
    * @param baseBranch - the branch to branch from (defaults to default branch)
-   * @param setupSteps - optional list of setup commands to run after creation
-   * @param setupCache - optional cache descriptor for reproducible setup caching
+   * @param setupSteps - optional list of setup steps to run after creation
+   * @param setupCache - optional cache configuration for reproducible setup caching
    */
   createWorkspace(
     repoPath: string,
     seedId: string,
     baseBranch?: string,
-    setupSteps?: string[],
-    setupCache?: string,
+    setupSteps?: WorkflowSetupStep[],
+    setupCache?: WorkflowSetupCache,
   ): Promise<WorkspaceResult>;
 
   /**

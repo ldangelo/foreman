@@ -2,14 +2,18 @@
  * GitBackend — Git-specific VCS backend implementation.
  *
  * Phase A: Implements the VcsBackend interface. The 4 repository-introspection
- * methods are fully implemented; the remaining methods are Phase-B stubs that
- * throw descriptive errors. Full implementation follows in Phase B.
+ * methods are fully implemented.
+ *
+ * Phase B: All remaining methods implemented (TRD-005 through TRD-010).
  *
  * @module src/lib/vcs/git-backend
  */
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { existsSync } from "node:fs";
+import fs from "node:fs/promises";
+import { join } from "node:path";
 import type { VcsBackend } from "./backend.js";
 import type {
   Workspace,
@@ -22,6 +26,11 @@ import type {
   FinalizeTemplateVars,
   FinalizeCommands,
 } from "./types.js";
+import {
+  runSetupWithCache,
+  installDependencies,
+} from "../git.js";
+import type { WorkflowSetupStep, WorkflowSetupCache } from "../workflow-loader.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -156,146 +165,547 @@ export class GitBackend implements VcsBackend {
     return this.git(["rev-parse", "--abbrev-ref", "HEAD"], repoPath);
   }
 
-  // ── Branch / Bookmark Operations — Phase B stubs ────────────────────
+  // ── Branch / Bookmark Operations — TRD-005 ──────────────────────────
 
-  async checkoutBranch(_repoPath: string, _branchName: string): Promise<void> {
-    throw new Error("GitBackend.checkoutBranch: not yet implemented (Phase B)");
+  /**
+   * Checkout an existing branch. Throws if the branch does not exist.
+   */
+  async checkoutBranch(repoPath: string, branchName: string): Promise<void> {
+    await this.git(["checkout", branchName], repoPath);
   }
 
-  async branchExists(_repoPath: string, _branchName: string): Promise<boolean> {
-    throw new Error("GitBackend.branchExists: not yet implemented (Phase B)");
+  /**
+   * Check whether a local branch exists.
+   * Uses `git show-ref --verify --quiet refs/heads/<branchName>`.
+   */
+  async branchExists(repoPath: string, branchName: string): Promise<boolean> {
+    try {
+      await this.git(
+        ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
+        repoPath,
+      );
+      return true;
+    } catch {
+      return false;
+    }
   }
 
+  /**
+   * Check whether a branch exists on the origin remote.
+   * Uses `git rev-parse --verify origin/<branchName>` against local remote-tracking refs.
+   */
   async branchExistsOnRemote(
-    _repoPath: string,
-    _branchName: string,
+    repoPath: string,
+    branchName: string,
   ): Promise<boolean> {
-    throw new Error(
-      "GitBackend.branchExistsOnRemote: not yet implemented (Phase B)",
-    );
+    try {
+      await this.git(
+        ["rev-parse", "--verify", `origin/${branchName}`],
+        repoPath,
+      );
+      return true;
+    } catch {
+      return false;
+    }
   }
 
+  /**
+   * Delete a local branch with merge-safety checks.
+   *
+   * - If the branch is fully merged into targetBranch, uses `git branch -D` (safe delete after verify).
+   * - If NOT merged and `force: true`, uses `git branch -D` (force delete).
+   * - If NOT merged and `force: false` (default), skips deletion.
+   * - If the branch does not exist, returns `{ deleted: false, wasFullyMerged: true }`.
+   */
   async deleteBranch(
-    _repoPath: string,
-    _branchName: string,
-    _opts?: DeleteBranchOptions,
+    repoPath: string,
+    branchName: string,
+    opts?: DeleteBranchOptions,
   ): Promise<DeleteBranchResult> {
-    throw new Error("GitBackend.deleteBranch: not yet implemented (Phase B)");
+    const force = opts?.force ?? false;
+    const targetBranch =
+      opts?.targetBranch ?? (await this.detectDefaultBranch(repoPath));
+
+    // Check if branch exists
+    try {
+      await this.git(["rev-parse", "--verify", branchName], repoPath);
+    } catch {
+      // Branch not found — already gone
+      return { deleted: false, wasFullyMerged: true };
+    }
+
+    // Check merge status: is branchName an ancestor of targetBranch?
+    let isFullyMerged = false;
+    try {
+      await this.git(
+        ["merge-base", "--is-ancestor", branchName, targetBranch],
+        repoPath,
+      );
+      isFullyMerged = true;
+    } catch {
+      // merge-base --is-ancestor exits non-zero when branch is NOT an ancestor
+      isFullyMerged = false;
+    }
+
+    if (isFullyMerged) {
+      // We verified merge status via merge-base --is-ancestor against targetBranch.
+      // Use -D because git branch -d checks against HEAD, which may differ from targetBranch.
+      await this.git(["branch", "-D", branchName], repoPath);
+      return { deleted: true, wasFullyMerged: true };
+    }
+
+    if (force) {
+      // Force delete — caller explicitly asked for it
+      await this.git(["branch", "-D", branchName], repoPath);
+      return { deleted: true, wasFullyMerged: false };
+    }
+
+    // Not merged and not forced — skip deletion
+    return { deleted: false, wasFullyMerged: false };
   }
 
-  // ── Workspace Management — Phase B stubs ─────────────────────────────
+  // ── Workspace Management — TRD-006 ───────────────────────────────────
 
+  /**
+   * Create an isolated workspace (git worktree) for a task.
+   *
+   * - Branch: foreman/<seedId>
+   * - Location: <repoPath>/.foreman-worktrees/<seedId>
+   * - Base: baseBranch (or current branch if not specified)
+   *
+   * If the worktree already exists (retry case), rebases onto baseBranch
+   * with auto-cleanup of unstaged changes if needed.
+   */
   async createWorkspace(
-    _repoPath: string,
-    _seedId: string,
-    _baseBranch?: string,
-    _setupSteps?: string[],
-    _setupCache?: string,
+    repoPath: string,
+    seedId: string,
+    baseBranch?: string,
+    setupSteps?: WorkflowSetupStep[],
+    setupCache?: WorkflowSetupCache,
   ): Promise<WorkspaceResult> {
-    throw new Error(
-      "GitBackend.createWorkspace: not yet implemented (Phase B)",
-    );
+    const base = baseBranch ?? (await this.getCurrentBranch(repoPath));
+    const branchName = `foreman/${seedId}`;
+    const worktreePath = join(repoPath, ".foreman-worktrees", seedId);
+
+    // If worktree already exists (e.g. from a failed previous run), reuse it
+    if (existsSync(worktreePath)) {
+      // Update the branch to the latest base so it picks up new code.
+      // Rebase may fail when there are unstaged changes in the worktree —
+      // attempt a `git checkout -- .` to discard them before retrying.
+      try {
+        await this.git(["rebase", base], worktreePath);
+      } catch (rebaseErr) {
+        const rebaseMsg =
+          rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+        const hasUnstagedChanges =
+          rebaseMsg.includes("unstaged changes") ||
+          rebaseMsg.includes("uncommitted changes") ||
+          rebaseMsg.includes("please stash");
+
+        if (hasUnstagedChanges) {
+          console.error(
+            `[git] Rebase failed due to unstaged changes in ${worktreePath} — cleaning and retrying`,
+          );
+          try {
+            // Discard all unstaged changes and untracked files so rebase can proceed
+            await this.git(["checkout", "--", "."], worktreePath);
+            await this.git(["clean", "-fd"], worktreePath);
+            // Retry the rebase after cleaning
+            await this.git(["rebase", base], worktreePath);
+          } catch (retryErr) {
+            const retryMsg =
+              retryErr instanceof Error ? retryErr.message : String(retryErr);
+            // Abort any partial rebase to leave the worktree in a usable state
+            try {
+              await this.git(["rebase", "--abort"], worktreePath);
+            } catch {
+              /* already clean */
+            }
+            throw new Error(
+              `Rebase failed even after cleaning unstaged changes: ${retryMsg}`,
+            );
+          }
+        } else {
+          // Non-unstaged-changes rebase failure (e.g. real conflicts): throw so
+          // the dispatcher does not spawn an agent into a broken worktree.
+          try {
+            await this.git(["rebase", "--abort"], worktreePath);
+          } catch {
+            /* already clean */
+          }
+          throw new Error(
+            `Rebase failed in ${worktreePath}: ${rebaseMsg.slice(0, 300)}`,
+          );
+        }
+      }
+      // Reinstall in case dependencies changed after rebase
+      if (setupSteps && setupSteps.length > 0) {
+        await runSetupWithCache(worktreePath, repoPath, setupSteps, setupCache);
+      } else {
+        await installDependencies(worktreePath);
+      }
+      return { workspacePath: worktreePath, branchName };
+    }
+
+    // Branch may exist without a worktree (worktree was cleaned up but branch wasn't)
+    try {
+      await this.git(
+        ["worktree", "add", "-b", branchName, worktreePath, base],
+        repoPath,
+      );
+    } catch (err: unknown) {
+      const msg = (err as Error).message ?? "";
+      if (msg.includes("already exists")) {
+        // Branch exists — create worktree using existing branch
+        await this.git(["worktree", "add", worktreePath, branchName], repoPath);
+      } else {
+        throw err;
+      }
+    }
+
+    // Run setup steps with caching (or fallback to Node.js dependency install)
+    if (setupSteps && setupSteps.length > 0) {
+      await runSetupWithCache(worktreePath, repoPath, setupSteps, setupCache);
+    } else {
+      await installDependencies(worktreePath);
+    }
+
+    return { workspacePath: worktreePath, branchName };
   }
 
+  /**
+   * Remove an existing workspace (git worktree) and prune stale metadata.
+   *
+   * Tries `git worktree remove --force`, falls back to `fs.rm` for untracked
+   * files, then runs `git worktree prune` non-fatally.
+   */
   async removeWorkspace(
-    _repoPath: string,
-    _workspacePath: string,
+    repoPath: string,
+    workspacePath: string,
   ): Promise<void> {
-    throw new Error(
-      "GitBackend.removeWorkspace: not yet implemented (Phase B)",
+    // Try the standard git removal first.
+    try {
+      await this.git(
+        ["worktree", "remove", workspacePath, "--force"],
+        repoPath,
+      );
+    } catch (removeErr) {
+      const removeMsg =
+        removeErr instanceof Error ? removeErr.message : String(removeErr);
+      console.error(
+        `[git] Warning: git worktree remove --force failed for ${workspacePath}: ${removeMsg}`,
+      );
+      console.error(`[git] Falling back to fs.rm for ${workspacePath}`);
+      try {
+        await fs.rm(workspacePath, { recursive: true, force: true });
+      } catch (rmErr) {
+        const rmMsg = rmErr instanceof Error ? rmErr.message : String(rmErr);
+        console.error(
+          `[git] Warning: fs.rm fallback also failed for ${workspacePath}: ${rmMsg}`,
+        );
+      }
+    }
+
+    // Prune stale .git/worktrees/<seed> metadata so the next dispatch does not
+    // fail with "fatal: not a git repository: .git/worktrees/<seed>".
+    try {
+      await this.git(["worktree", "prune"], repoPath);
+    } catch (pruneErr) {
+      // Non-fatal: log a warning and continue.
+      const msg =
+        pruneErr instanceof Error ? pruneErr.message : String(pruneErr);
+      console.error(
+        `[git] Warning: worktree prune failed after removing ${workspacePath}: ${msg}`,
+      );
+    }
+  }
+
+  /**
+   * List all workspaces (worktrees) for the repo.
+   * Parses `git worktree list --porcelain` output into Workspace[].
+   */
+  async listWorkspaces(repoPath: string): Promise<Workspace[]> {
+    const raw = await this.git(
+      ["worktree", "list", "--porcelain"],
+      repoPath,
     );
+
+    if (!raw) return [];
+
+    const workspaces: Workspace[] = [];
+    let current: Partial<Workspace> = {};
+
+    for (const line of raw.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        if (current.path) workspaces.push(current as Workspace);
+        current = { path: line.slice("worktree ".length), bare: false };
+      } else if (line.startsWith("HEAD ")) {
+        current.head = line.slice("HEAD ".length);
+      } else if (line.startsWith("branch ")) {
+        // refs/heads/foreman/abc → foreman/abc
+        current.branch = line.slice("branch refs/heads/".length);
+      } else if (line === "bare") {
+        current.bare = true;
+      } else if (line === "detached") {
+        current.branch = "(detached)";
+      } else if (line === "" && current.path) {
+        workspaces.push(current as Workspace);
+        current = {};
+      }
+    }
+    if (current.path) workspaces.push(current as Workspace);
+
+    return workspaces;
   }
 
-  async listWorkspaces(_repoPath: string): Promise<Workspace[]> {
-    throw new Error(
-      "GitBackend.listWorkspaces: not yet implemented (Phase B)",
-    );
+  // ── Commit & Sync — TRD-007 ──────────────────────────────────────────
+
+  /**
+   * Stage all changes in the workspace.
+   */
+  async stageAll(workspacePath: string): Promise<void> {
+    await this.git(["add", "-A"], workspacePath);
   }
 
-  // ── Commit & Sync — Phase B stubs ────────────────────────────────────
-
-  async stageAll(_workspacePath: string): Promise<void> {
-    throw new Error("GitBackend.stageAll: not yet implemented (Phase B)");
+  /**
+   * Commit staged changes with the given message.
+   * Returns the short commit hash.
+   */
+  async commit(workspacePath: string, message: string): Promise<string> {
+    await this.git(["commit", "-m", message], workspacePath);
+    return this.git(["rev-parse", "--short", "HEAD"], workspacePath);
   }
 
-  async commit(_workspacePath: string, _message: string): Promise<string> {
-    throw new Error("GitBackend.commit: not yet implemented (Phase B)");
+  /**
+   * Get the current HEAD commit hash (short form).
+   */
+  async getHeadId(workspacePath: string): Promise<string> {
+    return this.git(["rev-parse", "--short", "HEAD"], workspacePath);
   }
 
-  async getHeadId(_workspacePath: string): Promise<string> {
-    throw new Error("GitBackend.getHeadId: not yet implemented (Phase B)");
-  }
-
+  /**
+   * Push the current branch to the remote.
+   * Uses `-u origin <branchName>` with optional force flag.
+   */
   async push(
-    _workspacePath: string,
-    _branchName: string,
-    _opts?: PushOptions,
+    workspacePath: string,
+    branchName: string,
+    opts?: PushOptions,
   ): Promise<void> {
-    throw new Error("GitBackend.push: not yet implemented (Phase B)");
+    const args = ["push", "-u", "origin", branchName];
+    if (opts?.force) args.push("--force");
+    await this.git(args, workspacePath);
   }
 
-  async pull(_workspacePath: string, _branchName: string): Promise<void> {
-    throw new Error("GitBackend.pull: not yet implemented (Phase B)");
+  /**
+   * Pull (fetch + merge) the latest changes for the given branch.
+   */
+  async pull(workspacePath: string, branchName: string): Promise<void> {
+    await this.git(["fetch", "origin"], workspacePath);
+    await this.git(["merge", `origin/${branchName}`], workspacePath);
   }
 
-  async fetch(_workspacePath: string): Promise<void> {
-    throw new Error("GitBackend.fetch: not yet implemented (Phase B)");
+  /**
+   * Fetch all refs from the remote without merging.
+   */
+  async fetch(workspacePath: string): Promise<void> {
+    await this.git(["fetch", "origin"], workspacePath);
   }
 
-  async rebase(_workspacePath: string, _onto: string): Promise<RebaseResult> {
-    throw new Error("GitBackend.rebase: not yet implemented (Phase B)");
+  /**
+   * Rebase the current workspace branch onto `onto` (after fetching).
+   * Returns a structured result; does NOT throw on conflict.
+   */
+  async rebase(workspacePath: string, onto: string): Promise<RebaseResult> {
+    try {
+      await this.git(["fetch", "origin"], workspacePath);
+    } catch {
+      // Fetch failure is non-fatal (e.g. no remote) — try rebase anyway
+    }
+
+    try {
+      await this.git(["rebase", `origin/${onto}`], workspacePath);
+      return { success: true, hasConflicts: false };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+
+      // Check if there are conflicting files
+      let conflictingFiles: string[] = [];
+      try {
+        const conflictOut = await this.git(
+          ["diff", "--name-only", "--diff-filter=U"],
+          workspacePath,
+        );
+        conflictingFiles = conflictOut
+          .split("\n")
+          .map((f) => f.trim())
+          .filter(Boolean);
+      } catch {
+        // Can't determine conflicting files — return empty list
+      }
+
+      if (conflictingFiles.length > 0 || msg.includes("CONFLICT") || msg.includes("conflict")) {
+        return {
+          success: false,
+          hasConflicts: true,
+          conflictingFiles,
+        };
+      }
+
+      // Unexpected error — re-throw
+      throw err;
+    }
   }
 
-  async abortRebase(_workspacePath: string): Promise<void> {
-    throw new Error("GitBackend.abortRebase: not yet implemented (Phase B)");
+  /**
+   * Abort an in-progress rebase and restore the workspace to its pre-rebase state.
+   */
+  async abortRebase(workspacePath: string): Promise<void> {
+    await this.git(["rebase", "--abort"], workspacePath);
   }
 
-  // ── Merge Operations — Phase B stubs ─────────────────────────────────
+  // ── Merge Operations — TRD-008 ────────────────────────────────────────
 
+  /**
+   * Merge a branch into targetBranch (or the current branch if omitted).
+   *
+   * Implements the stash-checkout-merge-restore pattern to handle dirty
+   * working trees.
+   *
+   * Returns a structured result with the list of conflicting files on failure.
+   * Does NOT throw on conflict — the caller must check `result.success`.
+   */
   async merge(
-    _repoPath: string,
-    _branchName: string,
-    _targetBranch?: string,
+    repoPath: string,
+    branchName: string,
+    targetBranch?: string,
   ): Promise<MergeResult> {
-    throw new Error("GitBackend.merge: not yet implemented (Phase B)");
+    const target = targetBranch ?? (await this.getCurrentBranch(repoPath));
+
+    // Stash any local changes so checkout doesn't fail on a dirty tree
+    let stashed = false;
+    try {
+      const stashOut = await this.git(
+        ["stash", "push", "-m", "foreman-merge-auto-stash"],
+        repoPath,
+      );
+      stashed = !stashOut.includes("No local changes");
+    } catch {
+      // stash may fail if there's nothing to stash — that's fine
+    }
+
+    try {
+      // Checkout target branch
+      await this.git(["checkout", target], repoPath);
+
+      try {
+        await this.git(["merge", branchName, "--no-ff"], repoPath);
+        return { success: true };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (
+          message.includes("CONFLICT") ||
+          message.includes("Merge conflict")
+        ) {
+          // Gather conflicting files
+          const statusOut = await this.git(
+            ["diff", "--name-only", "--diff-filter=U"],
+            repoPath,
+          );
+          const conflicts = statusOut
+            .split("\n")
+            .map((f) => f.trim())
+            .filter(Boolean);
+          return { success: false, conflicts };
+        }
+        // Re-throw for unexpected errors
+        throw err;
+      }
+    } finally {
+      // Restore stashed changes
+      if (stashed) {
+        try {
+          await this.git(["stash", "pop"], repoPath);
+        } catch {
+          // Pop may conflict — leave in stash, user can recover with `git stash pop`
+        }
+      }
+    }
   }
 
-  // ── Diff, Conflict & Status — Phase B stubs ──────────────────────────
+  // ── Diff, Conflict & Status — TRD-009 ────────────────────────────────
 
-  async getConflictingFiles(_workspacePath: string): Promise<string[]> {
-    throw new Error(
-      "GitBackend.getConflictingFiles: not yet implemented (Phase B)",
+  /**
+   * Return the list of files in conflict during an active rebase or merge.
+   */
+  async getConflictingFiles(workspacePath: string): Promise<string[]> {
+    const out = await this.git(
+      ["diff", "--name-only", "--diff-filter=U"],
+      workspacePath,
     );
+    return out
+      .split("\n")
+      .map((f) => f.trim())
+      .filter(Boolean);
   }
 
-  async diff(_repoPath: string, _from: string, _to: string): Promise<string> {
-    throw new Error("GitBackend.diff: not yet implemented (Phase B)");
+  /**
+   * Return the diff output between two refs.
+   */
+  async diff(repoPath: string, from: string, to: string): Promise<string> {
+    return this.git(["diff", `${from}..${to}`], repoPath);
   }
 
+  /**
+   * Return the list of files modified relative to `base`.
+   */
   async getModifiedFiles(
-    _workspacePath: string,
-    _base: string,
+    workspacePath: string,
+    base: string,
   ): Promise<string[]> {
-    throw new Error(
-      "GitBackend.getModifiedFiles: not yet implemented (Phase B)",
+    const out = await this.git(
+      ["diff", "--name-only", base],
+      workspacePath,
     );
+    return out
+      .split("\n")
+      .map((f) => f.trim())
+      .filter(Boolean);
   }
 
-  async cleanWorkingTree(_workspacePath: string): Promise<void> {
-    throw new Error(
-      "GitBackend.cleanWorkingTree: not yet implemented (Phase B)",
-    );
+  /**
+   * Discard all uncommitted changes and restore the workspace to HEAD.
+   */
+  async cleanWorkingTree(workspacePath: string): Promise<void> {
+    await this.git(["checkout", "--", "."], workspacePath);
+    await this.git(["clean", "-fd"], workspacePath);
   }
 
-  async status(_workspacePath: string): Promise<string> {
-    throw new Error("GitBackend.status: not yet implemented (Phase B)");
+  /**
+   * Return a human-readable status summary of the workspace.
+   */
+  async status(workspacePath: string): Promise<string> {
+    return this.git(["status", "--short"], workspacePath);
   }
 
-  // ── Finalize Command Generation — Phase B stub ────────────────────────
+  // ── Finalize Command Generation — TRD-010 ─────────────────────────────
 
-  getFinalizeCommands(_vars: FinalizeTemplateVars): FinalizeCommands {
-    throw new Error(
-      "GitBackend.getFinalizeCommands: not yet implemented (Phase B)",
-    );
+  /**
+   * Generate the git-specific shell commands for the Finalize phase.
+   *
+   * All 6 fields are required. Special characters in seedTitle are escaped
+   * to prevent shell injection when commands are interpolated into prompts.
+   */
+  getFinalizeCommands(vars: FinalizeTemplateVars): FinalizeCommands {
+    // Escape double quotes in seedTitle to prevent shell injection
+    const escapedTitle = vars.seedTitle.replace(/"/g, '\\"');
+    return {
+      stageCommand: "git add -A",
+      commitCommand: `git commit -m "${escapedTitle} (${vars.seedId})"`,
+      pushCommand: `git push -u origin foreman/${vars.seedId}`,
+      rebaseCommand: `git fetch origin && git rebase origin/${vars.baseBranch}`,
+      branchVerifyCommand: `git rev-parse --verify origin/foreman/${vars.seedId}`,
+      cleanCommand: "git worktree prune",
+    };
   }
 }

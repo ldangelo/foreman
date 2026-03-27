@@ -196,6 +196,10 @@ export async function runSetupWithCache(
 
 // ── Interfaces ──────────────────────────────────────────────────────────
 
+/**
+ * @deprecated Use `Workspace` from `src/lib/vcs/types.ts` instead.
+ * Kept for backward compatibility; structurally identical to Workspace.
+ */
 export interface Worktree {
   path: string;
   branch: string;
@@ -203,11 +207,19 @@ export interface Worktree {
   bare: boolean;
 }
 
+/**
+ * @deprecated Use `MergeResult` from `src/lib/vcs/types.ts` instead.
+ * Kept for backward compatibility; structurally identical to VCS MergeResult.
+ */
 export interface MergeResult {
   success: boolean;
   conflicts?: string[];
 }
 
+/**
+ * @deprecated Use `DeleteBranchResult` from `src/lib/vcs/types.ts` instead.
+ * Kept for backward compatibility; structurally identical to VCS DeleteBranchResult.
+ */
 export interface DeleteBranchResult {
   deleted: boolean;
   wasFullyMerged: boolean;
@@ -235,9 +247,17 @@ async function git(
 }
 
 // ── Public API ──────────────────────────────────────────────────────────
+//
+// NOTE (TRD-011): These functions are backward-compatibility shims.
+// They retain their original implementations to avoid a circular import
+// (git-backend.ts imports utilities from this module). A full refactor to
+// delegate to a GitBackend singleton would require moving the utility
+// functions (installDependencies, runSetupWithCache, etc.) to a separate
+// `src/lib/setup.ts` module — deferred to Phase C.
 
 /**
  * Find the root of the git repository containing `path`.
+ * @deprecated Use `GitBackend.getRepoRoot()` from `src/lib/vcs/git-backend.ts` instead.
  */
 export async function getRepoRoot(path: string): Promise<string> {
   return git(["rev-parse", "--show-toplevel"], path);
@@ -250,6 +270,7 @@ export async function getRepoRoot(path: string): Promise<string> {
  * which for a linked worktree is the worktree directory itself — not the
  * main project root.  This function resolves the common `.git` directory
  * and strips the trailing `/.git` to always return the main project root.
+ * @deprecated Use `GitBackend.getMainRepoRoot()` from `src/lib/vcs/git-backend.ts` instead.
  */
 export async function getMainRepoRoot(path: string): Promise<string> {
   const commonDir = await git(["rev-parse", "--git-common-dir"], path);
@@ -270,6 +291,7 @@ export async function getMainRepoRoot(path: string): Promise<string> {
  * 2. Check whether "main" exists as a local branch.
  * 3. Check whether "master" exists as a local branch.
  * 4. Fall back to the current branch.
+ * @deprecated Use `GitBackend.detectDefaultBranch()` from `src/lib/vcs/git-backend.ts` instead.
  */
 export async function detectDefaultBranch(repoPath: string): Promise<string> {
   // 1. Respect git-town.main-branch config (user's explicit development trunk)
@@ -319,6 +341,7 @@ export async function detectDefaultBranch(repoPath: string): Promise<string> {
 
 /**
  * Get the current branch name.
+ * @deprecated Use `GitBackend.getCurrentBranch()` from `src/lib/vcs/git-backend.ts` instead.
  */
 export async function getCurrentBranch(repoPath: string): Promise<string> {
   return git(["rev-parse", "--abbrev-ref", "HEAD"], repoPath);
@@ -327,6 +350,7 @@ export async function getCurrentBranch(repoPath: string): Promise<string> {
 /**
  * Checkout a branch by name.
  * Throws if the branch does not exist or the checkout fails.
+ * @deprecated Use `GitBackend.checkoutBranch()` from `src/lib/vcs/git-backend.ts` instead.
  */
 export async function checkoutBranch(repoPath: string, branchName: string): Promise<void> {
   await git(["checkout", branchName], repoPath);
@@ -338,6 +362,7 @@ export async function checkoutBranch(repoPath: string, branchName: string): Prom
  * - Branch: foreman/<seedId>
  * - Location: <repoPath>/.foreman-worktrees/<seedId>
  * - Base: current branch (auto-detected if not specified)
+ * @deprecated Use `GitBackend.createWorkspace()` from `src/lib/vcs/git-backend.ts` instead.
  */
 export async function createWorktree(
   repoPath: string,
@@ -426,6 +451,7 @@ export async function createWorktree(
  * After removing the worktree, runs `git worktree prune` to delete any stale
  * `.git/worktrees/<name>` metadata left behind. The prune step is non-fatal —
  * if it fails, a warning is logged but the function still resolves successfully.
+ * @deprecated Use `GitBackend.removeWorkspace()` from `src/lib/vcs/git-backend.ts` instead.
  */
 export async function removeWorktree(
   repoPath: string,
@@ -464,6 +490,7 @@ export async function removeWorktree(
 
 /**
  * List all worktrees for the repo.
+ * @deprecated Use `GitBackend.listWorkspaces()` from `src/lib/vcs/git-backend.ts` instead.
  */
 export async function listWorktrees(
   repoPath: string,
@@ -508,6 +535,7 @@ export async function listWorktrees(
  * - If NOT merged and `force: true`, uses `git branch -D` (force delete).
  * - If NOT merged and `force: false` (default), skips deletion and returns `{ deleted: false, wasFullyMerged: false }`.
  * - If the branch does not exist, returns `{ deleted: false, wasFullyMerged: true }` (already gone).
+ * @deprecated Use `GitBackend.deleteBranch()` from `src/lib/vcs/git-backend.ts` instead.
  */
 export async function deleteBranch(
   repoPath: string,
@@ -557,6 +585,7 @@ export async function deleteBranch(
  *
  * Uses `git show-ref --verify --quiet refs/heads/<branchName>`.
  * Returns `false` if the branch does not exist or any error occurs.
+ * @deprecated Use `GitBackend.branchExists()` from `src/lib/vcs/git-backend.ts` instead.
  */
 export async function gitBranchExists(
   repoPath: string,
@@ -576,6 +605,7 @@ export async function gitBranchExists(
  * Uses `git rev-parse origin/<branchName>` against local remote-tracking refs.
  * Returns `false` if there is no remote, the branch doesn't exist on origin,
  * or any other error occurs (fail-safe: unknown → don't delete).
+ * @deprecated Use `GitBackend.branchExistsOnRemote()` from `src/lib/vcs/git-backend.ts` instead.
  */
 export async function branchExistsOnOrigin(
   repoPath: string,
@@ -592,6 +622,7 @@ export async function branchExistsOnOrigin(
 /**
  * Merge a branch into the target branch.
  * Returns success status and any conflicting file paths.
+ * @deprecated Use `GitBackend.merge()` from `src/lib/vcs/git-backend.ts` instead.
  */
 export async function mergeWorktree(
   repoPath: string,

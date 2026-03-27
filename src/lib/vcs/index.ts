@@ -26,6 +26,7 @@ import type {
   FinalizeTemplateVars,
   FinalizeCommands,
 } from './types.js';
+import type { WorkflowSetupStep, WorkflowSetupCache } from '../workflow-loader.js';
 
 // Re-export the VcsBackend interface
 export type { VcsBackend } from './backend.js';
@@ -92,8 +93,8 @@ export class JujutsuBackend implements VcsBackend {
     _repoPath: string,
     _seedId: string,
     _baseBranch?: string,
-    _setupSteps?: string[],
-    _setupCache?: string,
+    _setupSteps?: WorkflowSetupStep[],
+    _setupCache?: WorkflowSetupCache,
   ): Promise<WorkspaceResult> {
     throw new Error('JujutsuBackend.createWorkspace: not yet implemented (Phase B)');
   }

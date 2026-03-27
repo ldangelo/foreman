@@ -221,14 +221,19 @@ describe('GitBackend satisfies VcsBackend interface', () => {
     expect(typeof backend.getFinalizeCommands).toBe('function');
   });
 
-  it('Phase-B stub methods throw descriptive errors', async () => {
+  it('Phase-B methods are fully implemented (no longer stub errors)', async () => {
+    // Phase B is complete — methods now throw real errors from git operations,
+    // not "Phase B" stub errors. Verify getFinalizeCommands returns a value.
     const backend = new GitBackend('/tmp');
-    await expect(backend.checkoutBranch('/tmp', 'main')).rejects.toThrow(/Phase B/);
-    await expect(backend.stageAll('/tmp')).rejects.toThrow(/Phase B/);
-    await expect(backend.merge('/tmp', 'feature')).rejects.toThrow(/Phase B/);
-    expect(() => backend.getFinalizeCommands({
+    // getFinalizeCommands is a pure function — should not throw
+    const cmds = backend.getFinalizeCommands({
       seedId: 'bd-x', seedTitle: 'X', baseBranch: 'dev', worktreePath: '/tmp',
-    })).toThrow(/Phase B/);
+    });
+    expect(cmds.stageCommand).toBe('git add -A');
+    expect(cmds.pushCommand).toContain('foreman/bd-x');
+    // Other methods that call git will throw real git errors (not Phase B stubs)
+    await expect(backend.checkoutBranch('/tmp', 'main')).rejects.toThrow(/git checkout failed/);
+    await expect(backend.stageAll('/tmp')).rejects.toThrow(/git add failed/);
   });
 });
 
