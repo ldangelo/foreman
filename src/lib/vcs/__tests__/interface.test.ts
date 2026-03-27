@@ -240,10 +240,63 @@ describe('JujutsuBackend satisfies VcsBackend interface', () => {
     expect(backend).toBeInstanceOf(JujutsuBackend);
   });
 
-  it('all methods throw "not yet implemented" for Phase A', async () => {
+  it('exposes all interface methods (Phase D full implementation)', () => {
     const backend = new JujutsuBackend('/tmp');
-    await expect(backend.getRepoRoot('/tmp')).rejects.toThrow(/Phase B/);
-    await expect(backend.getCurrentBranch('/tmp')).rejects.toThrow(/Phase B/);
-    await expect(backend.merge('/tmp', 'feature')).rejects.toThrow(/Phase B/);
+    // Introspection
+    expect(typeof backend.getRepoRoot).toBe('function');
+    expect(typeof backend.getMainRepoRoot).toBe('function');
+    expect(typeof backend.detectDefaultBranch).toBe('function');
+    expect(typeof backend.getCurrentBranch).toBe('function');
+    // Branches
+    expect(typeof backend.checkoutBranch).toBe('function');
+    expect(typeof backend.branchExists).toBe('function');
+    expect(typeof backend.branchExistsOnRemote).toBe('function');
+    expect(typeof backend.deleteBranch).toBe('function');
+    // Workspaces
+    expect(typeof backend.createWorkspace).toBe('function');
+    expect(typeof backend.removeWorkspace).toBe('function');
+    expect(typeof backend.listWorkspaces).toBe('function');
+    // Commit & Sync
+    expect(typeof backend.stageAll).toBe('function');
+    expect(typeof backend.commit).toBe('function');
+    expect(typeof backend.getHeadId).toBe('function');
+    expect(typeof backend.push).toBe('function');
+    expect(typeof backend.pull).toBe('function');
+    expect(typeof backend.fetch).toBe('function');
+    expect(typeof backend.rebase).toBe('function');
+    expect(typeof backend.abortRebase).toBe('function');
+    // Merge
+    expect(typeof backend.merge).toBe('function');
+    // Diff/Status
+    expect(typeof backend.getConflictingFiles).toBe('function');
+    expect(typeof backend.diff).toBe('function');
+    expect(typeof backend.getModifiedFiles).toBe('function');
+    expect(typeof backend.cleanWorkingTree).toBe('function');
+    expect(typeof backend.status).toBe('function');
+    // Finalize
+    expect(typeof backend.getFinalizeCommands).toBe('function');
+  });
+
+  it('getFinalizeCommands returns all 6 jj-specific command fields', () => {
+    const backend = new JujutsuBackend('/tmp');
+    const vars = {
+      seedId: 'bd-test',
+      seedTitle: 'Test task',
+      baseBranch: 'dev',
+      worktreePath: '/tmp/worktrees/bd-test',
+    };
+    const cmds = backend.getFinalizeCommands(vars);
+    expect(cmds).not.toBeInstanceOf(Promise);
+    expect(typeof cmds.stageCommand).toBe('string');
+    expect(typeof cmds.commitCommand).toBe('string');
+    expect(typeof cmds.pushCommand).toBe('string');
+    expect(typeof cmds.rebaseCommand).toBe('string');
+    expect(typeof cmds.branchVerifyCommand).toBe('string');
+    expect(typeof cmds.cleanCommand).toBe('string');
+    // jj-specific: no stage needed, has jj commands
+    expect(cmds.stageCommand).toBe('');
+    expect(cmds.commitCommand).toContain('jj describe');
+    expect(cmds.pushCommand).toContain('jj git push');
+    expect(cmds.rebaseCommand).toContain('jj git fetch');
   });
 });
