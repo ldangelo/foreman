@@ -1,12 +1,12 @@
 # PRD-2026-004: VCS Backend Abstraction -- Git and Jujutsu Support
 
 **Document ID:** PRD-2026-004
-**Version:** 1.0
+**Version:** 1.1
 **Status:** Draft
 **Date:** 2026-03-26
 **Author:** Product Management
 **Stakeholders:** Engineering (Foreman maintainers), Foreman operators, Teams using Jujutsu, DevOps
-**Requirements:** 22 (REQ-001 through REQ-022)
+**Requirements:** 23 (REQ-001 through REQ-023)
 
 ---
 
@@ -15,6 +15,7 @@
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-03-26 | Product Management | Initial draft covering VcsBackend interface, Git backend, Jujutsu backend, auto-detection, configuration, prompt awareness, refinery abstraction, and workspace isolation. 22 requirements, 66 acceptance criteria. |
+| 1.1 | 2026-03-27 | Product Management | Resolved OQ-1 through OQ-4 per stakeholder interview. Added REQ-023 (doctor jj validation). Added config schema example. Updated release gates. |
 
 ---
 
@@ -512,6 +513,18 @@ The `.foreman/config.yaml` file (if it exists) shall support a `vcs` key that se
 vcs: jujutsu
 ```
 
+**Full config schema example:**
+
+```yaml
+# .foreman/config.yaml
+vcs:
+  backend: auto          # 'git' | 'jujutsu' | 'auto'
+  git:
+    useTown: true        # use git-town for branch management
+  jujutsu:
+    minVersion: "0.25.0"
+```
+
 **Acceptance Criteria:**
 
 - **AC-015-1:** Given `.foreman/config.yaml` contains `vcs: jujutsu` and the workflow YAML has no `vcs` key, when the pipeline starts, then `JujutsuBackend` is used.
@@ -601,6 +614,19 @@ The `ConflictResolver` class shall operate through the `VcsBackend` interface fo
 - **AC-021-1:** Given a merge conflict during refinery, when `ConflictResolver.autoResolveRebaseConflicts()` runs, then it uses `VcsBackend.getConflictingFiles()` instead of parsing `git diff --name-only --diff-filter=U` directly.
 - **AC-021-2:** Given a rebase abort is needed, when `autoResolveRebaseConflicts()` decides to abort, then it calls `VcsBackend.abortRebase()`.
 - **AC-021-3:** Given jj's first-class conflict handling, when `JujutsuBackend` is active, then the conflict resolver recognizes that jj records conflicts in-tree (no rebase --continue loop needed) and adapts its strategy accordingly.
+
+### REQ-023: Foreman Doctor Jujutsu Validation
+
+**Priority:** P1 (high)
+**Type:** Integration
+
+`foreman doctor` shall validate jj installation and colocated mode when the VCS backend is configured to use Jujutsu.
+
+**Acceptance Criteria:**
+
+- **AC-023-1:** Given `backend=jujutsu`, when the `jj` binary is not found in PATH, then `foreman doctor` reports an ERROR with installation instructions.
+- **AC-023-2:** Given `backend=auto`, when the `jj` binary is not found in PATH, then `foreman doctor` reports a WARNING (not an error), since the system can fall back to git.
+- **AC-023-3:** Given `backend=jujutsu`, when the `.jj/repo/store/git` directory is missing (non-colocated repository), then `foreman doctor` reports an ERROR indicating that colocated mode is required.
 
 ---
 
@@ -695,7 +721,8 @@ The VCS abstraction layer shall not introduce measurable latency or reliability 
 | REQ-020 | Dispatcher VCS Backend Propagation | 3 | P1 |
 | REQ-021 | Conflict Resolver Backend Awareness | 3 | P1 |
 | REQ-022 | Performance and Reliability | 4 | P1 |
-| **Total** | **22 requirements** | **78 ACs** | |
+| REQ-023 | Foreman Doctor Jujutsu Validation | 3 | P1 |
+| **Total** | **23 requirements** | **81 ACs** | |
 
 ---
 
@@ -719,7 +746,7 @@ The VCS abstraction layer shall not introduce measurable latency or reliability 
 | v0.1-alpha | VcsBackend interface + GitBackend + migration shim. All existing tests pass. No user-facing changes. | All unit tests green. Full pipeline smoke test on git repo. |
 | v0.2-alpha | Refinery + finalize + conflict-resolver migrated to VcsBackend. `git.ts` shim deprecated. | All integration tests green. No direct git calls outside `git-backend.ts`. |
 | v0.3-alpha | JujutsuBackend implementation + configuration + auto-detection. | jj unit tests pass. Auto-detection tests pass. |
-| v0.4-beta | Finalize prompt templating. Full pipeline with jj backend. | End-to-end pipeline run on a colocated jj repo succeeds. |
+| v0.4-beta | Finalize prompt templating. Full pipeline with jj backend. | End-to-end pipeline run on a colocated jj repo succeeds. AI conflict resolver adapted for jj conflict syntax -- tested on 3+ conflict scenarios. |
 | v1.0 | Production release. `foreman doctor` checks jj version. Documentation. | All success metrics met. Manual testing on 3+ real repositories. |
 
 ---
@@ -728,9 +755,9 @@ The VCS abstraction layer shall not introduce measurable latency or reliability 
 
 | ID | Question | Status | Resolution |
 |----|----------|--------|------------|
-| OQ-1 | Should `foreman doctor` validate jj version and colocated mode? | Open | Likely yes -- add a `jj version` check and `.jj/repo/store/git` existence check. |
-| OQ-2 | How should jj's first-class conflict handling interact with the tiered conflict resolver? jj allows conflicts to be committed, unlike git. | Open | Options: (A) Skip tier 3/4 AI resolution for jj and rely on jj's conflict markers, (B) Adapt AI resolver to work on jj conflict syntax. |
-| OQ-3 | Should the `foreman merge` command use `jj` directly or go through `jj git push` + `gh pr merge`? | Open | For colocated repos, the PR-based flow (`gh pr create/merge`) works identically since the git remote is shared. Direct jj merge is an optimization. |
-| OQ-4 | Should agent prompts (not just finalize) be aware of the VCS backend? Explorer and developer prompts may reference git concepts (branches, commits). | Open | Likely low priority -- agents interact with files, not VCS. Only finalize and reviewer prompts contain VCS commands. |
+| OQ-1 | Should `foreman doctor` validate jj version and colocated mode? | Resolved | Yes -- validate both jj binary version and colocated mode (.jj/repo/store/git). Report as warning when backend='auto' and jj not found, error when backend='jujutsu'. |
+| OQ-2 | How should jj's first-class conflict handling interact with the tiered conflict resolver? jj allows conflicts to be committed, unlike git. | Resolved | Adapt AI resolver for jj -- modify the conflict resolver to understand jj's conflict syntax and use AI to resolve them. Provides same AI-assisted resolution experience as git. |
+| OQ-3 | Should the `foreman merge` command use `jj` directly or go through `jj git push` + `gh pr merge`? | Resolved | PR-based flow -- use jj git push + gh pr create/merge. Same flow as git backend, keeps GitHub as review/merge gateway. Works identically since colocated repos share the git remote. |
+| OQ-4 | Should agent prompts (not just finalize) be aware of the VCS backend? Explorer and developer prompts may reference git concepts (branches, commits). | Resolved | Finalize + reviewer only -- only finalize and reviewer prompts need VCS-aware templating. Explorer/developer/QA work with files, not VCS commands. |
 | OQ-5 | Does jj workspace support the setup-cache symlink optimization used for git worktrees? | Open | Needs investigation. jj workspaces share the store but have independent working copies; symlink caching of `node_modules` should work identically. |
 | OQ-6 | Should we support pure jj-native repos (non-git-backed) in a future version? | Open | Deferred to post-v1.0. Requires solving remote push (no git remote) and PR creation (no GitHub integration without git). |
