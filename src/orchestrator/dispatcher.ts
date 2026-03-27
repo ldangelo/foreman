@@ -342,10 +342,22 @@ export class Dispatcher {
         const resolvedWorkflow = resolveWorkflowName(seedInfo.type ?? "feature", seedInfo.labels);
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
         let setupCache: import("../lib/workflow-loader.js").WorkflowSetupCache | undefined;
+        let vcsBackendName: 'git' | 'jujutsu' = 'git'; // default to git
         try {
           const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
           setupSteps = wfConfig.setup;
           setupCache = wfConfig.setupCache;
+          // Resolve VCS backend from workflow config or auto-detect
+          if (wfConfig.vcs?.backend && wfConfig.vcs.backend !== 'auto') {
+            vcsBackendName = wfConfig.vcs.backend;
+          } else {
+            // Auto-detect: .jj/ → jujutsu, else git
+            const { existsSync } = await import("node:fs");
+            const { join: pathJoin } = await import("node:path");
+            if (existsSync(pathJoin(this.projectPath, '.jj'))) {
+              vcsBackendName = 'jujutsu';
+            }
+          }
         } catch {
           // Non-fatal: fall back to default installDependencies behavior
           log(`[foreman] Could not load workflow config '${resolvedWorkflow}' for setup steps — using default dependency install`);
@@ -432,6 +444,7 @@ export class Dispatcher {
             skipReview: opts?.skipReview,
           },
           opts?.notifyUrl,
+          vcsBackendName,
         );
 
         // Update run with session key
@@ -757,10 +770,11 @@ export class Dispatcher {
       skipReview?: boolean;
     },
     notifyUrl?: string,
+    vcsBackend?: string,
   ): Promise<{ sessionKey: string }> {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
-    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
+    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, vcsBackend);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
@@ -1202,6 +1216,7 @@ function buildWorkerEnv(
   runId: string,
   model: string,
   notifyUrl?: string,
+  vcsBackend?: string,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -1214,6 +1229,11 @@ function buildWorkerEnv(
 
   if (notifyUrl) {
     env.FOREMAN_NOTIFY_URL = notifyUrl;
+  }
+
+  // Pass VCS backend to workers so they can instantiate the correct backend
+  if (vcsBackend) {
+    env.FOREMAN_VCS_BACKEND = vcsBackend;
   }
 
   if (telemetry) {
