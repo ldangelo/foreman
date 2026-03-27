@@ -19,6 +19,7 @@ import { PLAN_STEP_CONFIG } from "./roles.js";
 import { isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
+import { loadProjectConfig, mergeVcsConfig } from "../lib/project-config-loader.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -768,6 +769,25 @@ export class Dispatcher {
 
     const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
 
+    // Resolve VCS backend: merge workflow YAML vcs key > project config vcs key > auto
+    let vcsBackend: 'git' | 'jujutsu' | 'auto' = 'auto';
+    try {
+      const resolvedWorkflow = resolveWorkflowName(seed.type ?? "feature", seed.labels);
+      let workflowVcs: import("../lib/vcs/types.js").VcsConfig | undefined;
+      try {
+        const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
+        workflowVcs = wfConfig.vcs;
+      } catch {
+        // Non-fatal: workflow may not exist or may not have vcs key
+      }
+      const projectConfig = loadProjectConfig(this.projectPath);
+      const merged = mergeVcsConfig(workflowVcs, projectConfig.vcs);
+      vcsBackend = merged.backend;
+    } catch {
+      // Non-fatal: fall back to auto-detection
+      log(`[foreman] Could not resolve VCS backend for ${seed.id} — using 'auto'`);
+    }
+
     await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
@@ -787,6 +807,7 @@ export class Dispatcher {
       seedType,
       seedLabels: seed.labels,
       seedPriority: seed.priority,
+      vcsBackend,
     });
 
     return { sessionKey };
@@ -1107,6 +1128,12 @@ export interface WorkerConfig {
    * Forwarded to the pipeline executor to resolve per-priority models from YAML.
    */
   seedPriority?: string;
+  /**
+   * Resolved VCS backend type ('git' | 'jujutsu' | 'auto').
+   * Determined by merging workflow YAML vcs key > project config vcs key > auto-detection default.
+   * Passed to the worker process so it can reconstruct the correct backend without re-detecting.
+   */
+  vcsBackend?: 'git' | 'jujutsu' | 'auto';
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

@@ -45,6 +45,7 @@ import {
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load as yamlLoad } from "js-yaml";
+import type { VcsConfig } from "./vcs/types.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -167,6 +168,18 @@ export interface WorkflowConfig {
   /** Workflow name (e.g. "default", "smoke"). */
   name: string;
   /**
+   * Optional VCS backend configuration.
+   * Overrides project-level .foreman/config.yaml vcs setting.
+   * When absent, the project config vcs setting is used; falls back to 'auto' detection.
+   *
+   * @example
+   * ```yaml
+   * vcs:
+   *   backend: git
+   * ```
+   */
+  vcs?: VcsConfig;
+  /**
    * Optional setup steps to run before pipeline phases begin.
    * When present, these replace the Node.js-specific installDependencies() fallback.
    */
@@ -267,6 +280,53 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     setupCache = { key: c["key"], path: c["path"] };
   }
 
+  // ── Parse optional vcs block ──────────────────────────────────────────────
+  let vcs: VcsConfig | undefined;
+  if (raw["vcs"] !== undefined) {
+    const rawVcs = raw["vcs"];
+    if (!isRecord(rawVcs)) {
+      throw new WorkflowConfigError(workflowName, "'vcs' must be an object");
+    }
+    const backend = rawVcs["backend"];
+    if (backend !== "git" && backend !== "jujutsu" && backend !== "auto") {
+      throw new WorkflowConfigError(
+        workflowName,
+        `vcs.backend must be 'git', 'jujutsu', or 'auto'; got '${String(backend)}'`,
+      );
+    }
+    vcs = { backend };
+
+    // Parse optional git sub-config
+    if (rawVcs["git"] !== undefined) {
+      if (!isRecord(rawVcs["git"])) {
+        throw new WorkflowConfigError(workflowName, "'vcs.git' must be an object");
+      }
+      const rawGit = rawVcs["git"];
+      vcs.git = {};
+      if (rawGit["useTown"] !== undefined) {
+        if (typeof rawGit["useTown"] !== "boolean") {
+          throw new WorkflowConfigError(workflowName, "'vcs.git.useTown' must be a boolean");
+        }
+        vcs.git.useTown = rawGit["useTown"];
+      }
+    }
+
+    // Parse optional jujutsu sub-config
+    if (rawVcs["jujutsu"] !== undefined) {
+      if (!isRecord(rawVcs["jujutsu"])) {
+        throw new WorkflowConfigError(workflowName, "'vcs.jujutsu' must be an object");
+      }
+      const rawJj = rawVcs["jujutsu"];
+      vcs.jujutsu = {};
+      if (rawJj["minVersion"] !== undefined) {
+        if (typeof rawJj["minVersion"] !== "string" || !rawJj["minVersion"]) {
+          throw new WorkflowConfigError(workflowName, "'vcs.jujutsu.minVersion' must be a non-empty string");
+        }
+        vcs.jujutsu.minVersion = rawJj["minVersion"];
+      }
+    }
+  }
+
   if (!Array.isArray(raw["phases"])) {
     throw new WorkflowConfigError(workflowName, "missing required 'phases' array");
   }
@@ -345,6 +405,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   }
 
   const config: WorkflowConfig = { name, phases };
+  if (vcs !== undefined) config.vcs = vcs;
   if (setup !== undefined) config.setup = setup;
   if (setupCache !== undefined) config.setupCache = setupCache;
   return config;

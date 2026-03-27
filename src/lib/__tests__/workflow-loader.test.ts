@@ -605,3 +605,126 @@ describe("resolvePhaseModel", () => {
     expect(resolvePhaseModel(phase, "high", fallback)).toBe("anthropic/claude-sonnet-4-6");
   });
 });
+
+// ── validateWorkflowConfig — vcs block ───────────────────────────────────────
+
+describe("validateWorkflowConfig — vcs block", () => {
+  const minimalPhases = [{ name: "finalize", builtin: true }];
+
+  it("parses vcs.backend = 'git'", () => {
+    const raw = { name: "w", vcs: { backend: "git" }, phases: minimalPhases };
+    const config = validateWorkflowConfig(raw, "w");
+    expect(config.vcs).toBeDefined();
+    expect(config.vcs!.backend).toBe("git");
+  });
+
+  it("parses vcs.backend = 'jujutsu'", () => {
+    const raw = { name: "w", vcs: { backend: "jujutsu" }, phases: minimalPhases };
+    const config = validateWorkflowConfig(raw, "w");
+    expect(config.vcs!.backend).toBe("jujutsu");
+  });
+
+  it("parses vcs.backend = 'auto'", () => {
+    const raw = { name: "w", vcs: { backend: "auto" }, phases: minimalPhases };
+    const config = validateWorkflowConfig(raw, "w");
+    expect(config.vcs!.backend).toBe("auto");
+  });
+
+  it("vcs is optional — no vcs key means config.vcs is undefined", () => {
+    const raw = { name: "w", phases: minimalPhases };
+    const config = validateWorkflowConfig(raw, "w");
+    expect(config.vcs).toBeUndefined();
+  });
+
+  it("parses vcs.git.useTown", () => {
+    const raw = {
+      name: "w",
+      vcs: { backend: "git", git: { useTown: true } },
+      phases: minimalPhases,
+    };
+    const config = validateWorkflowConfig(raw, "w");
+    expect(config.vcs!.git).toBeDefined();
+    expect(config.vcs!.git!.useTown).toBe(true);
+  });
+
+  it("parses vcs.jujutsu.minVersion", () => {
+    const raw = {
+      name: "w",
+      vcs: { backend: "jujutsu", jujutsu: { minVersion: "0.21.0" } },
+      phases: minimalPhases,
+    };
+    const config = validateWorkflowConfig(raw, "w");
+    expect(config.vcs!.jujutsu).toBeDefined();
+    expect(config.vcs!.jujutsu!.minVersion).toBe("0.21.0");
+  });
+
+  it("throws WorkflowConfigError when vcs.backend is invalid", () => {
+    const raw = { name: "w", vcs: { backend: "svn" }, phases: minimalPhases };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(/vcs.backend must be/);
+  });
+
+  it("throws WorkflowConfigError when vcs is not an object", () => {
+    const raw = { name: "w", vcs: "git", phases: minimalPhases };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+
+  it("throws WorkflowConfigError when vcs.git is not an object", () => {
+    const raw = { name: "w", vcs: { backend: "git", git: "yes" }, phases: minimalPhases };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+
+  it("throws WorkflowConfigError when vcs.git.useTown is not a boolean", () => {
+    const raw = {
+      name: "w",
+      vcs: { backend: "git", git: { useTown: "yes" } },
+      phases: minimalPhases,
+    };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+
+  it("throws WorkflowConfigError when vcs.jujutsu is not an object", () => {
+    const raw = { name: "w", vcs: { backend: "jujutsu", jujutsu: "v0.21" }, phases: minimalPhases };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+
+  it("throws WorkflowConfigError when vcs.jujutsu.minVersion is not a string", () => {
+    const raw = {
+      name: "w",
+      vcs: { backend: "jujutsu", jujutsu: { minVersion: 21 } },
+      phases: minimalPhases,
+    };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+
+  it("throws WorkflowConfigError when vcs.jujutsu.minVersion is empty string", () => {
+    const raw = {
+      name: "w",
+      vcs: { backend: "jujutsu", jujutsu: { minVersion: "" } },
+      phases: minimalPhases,
+    };
+    expect(() => validateWorkflowConfig(raw, "w")).toThrow(WorkflowConfigError);
+  });
+
+  it("vcs is present in YAML file and loaded correctly", () => {
+    const tmpDir = mkTmpDir();
+    try {
+      writeWorkflowFile(tmpDir, "custom", `
+name: custom
+vcs:
+  backend: git
+  git:
+    useTown: false
+phases:
+  - name: finalize
+    builtin: true
+`);
+      const config = loadWorkflowConfig("custom", tmpDir);
+      expect(config.vcs).toBeDefined();
+      expect(config.vcs!.backend).toBe("git");
+      expect(config.vcs!.git!.useTown).toBe(false);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

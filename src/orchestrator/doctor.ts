@@ -203,17 +203,120 @@ export class Doctor {
     };
   }
 
+  /**
+   * Check if the jj (Jujutsu) binary is available and meets the minimum version.
+   * Only warns — does not fail — if jj is absent, since it's not required for git-based projects.
+   *
+   * @param minVersion - Optional minimum version string (e.g. "0.21.0").
+   *                     When provided, the installed version is compared and
+   *                     a warning is emitted if it does not meet the requirement.
+   */
+  async checkJujutsuBinary(minVersion?: string): Promise<CheckResult> {
+    try {
+      const { stdout } = await execFileAsync("jj", ["--version"]);
+      const installedVersion = stdout.trim();
+
+      if (minVersion) {
+        // Simple semver comparison: split on dots and compare numeric parts
+        const parseVersion = (v: string): number[] =>
+          v
+            .replace(/^[^0-9]*/, "")  // strip leading non-numeric chars (e.g. "jj 0.21.0" -> "0.21.0")
+            .split(".")
+            .slice(0, 3)
+            .map((n) => parseInt(n, 10) || 0);
+
+        const installed = parseVersion(installedVersion);
+        const required = parseVersion(minVersion);
+
+        for (let i = 0; i < 3; i++) {
+          const inst = installed[i] ?? 0;
+          const req = required[i] ?? 0;
+          if (inst > req) break;
+          if (inst < req) {
+            return {
+              name: "jj (Jujutsu) binary",
+              status: "warn",
+              message: `jj version ${installedVersion} is below required minimum ${minVersion}`,
+              details: `Upgrade jj to at least ${minVersion}: https://github.com/martinvonz/jj`,
+            };
+          }
+        }
+      }
+
+      return {
+        name: "jj (Jujutsu) binary",
+        status: "pass",
+        message: `jj is available: ${installedVersion}`,
+      };
+    } catch {
+      return {
+        name: "jj (Jujutsu) binary",
+        status: "warn",
+        message: "jj not found in PATH — required for Jujutsu VCS backend",
+        details: "Install jj from: https://github.com/martinvonz/jj (cargo install --locked jujutsu)",
+      };
+    }
+  }
+
+  /**
+   * Check if the project is using the Jujutsu VCS backend and, if so, whether
+   * the repository is in colocated mode (both .jj/ and .git/ present).
+   * Colocated mode is required for Foreman's git-based worktree operations to work
+   * alongside jj.
+   *
+   * Returns 'skip' if not a jj project.
+   */
+  async checkJujutsuColocated(): Promise<CheckResult> {
+    const jjDir = join(this.projectPath, ".jj");
+    const gitDir = join(this.projectPath, ".git");
+
+    if (!existsSync(jjDir)) {
+      return {
+        name: "jj colocated mode",
+        status: "skip",
+        message: "No .jj/ directory — not a Jujutsu project",
+      };
+    }
+
+    if (!existsSync(gitDir)) {
+      return {
+        name: "jj colocated mode",
+        status: "fail",
+        message: "Jujutsu project detected (.jj/ found) but .git/ is missing — Foreman requires colocated mode",
+        details: "Reinitialize with colocated mode: jj git init --colocate",
+      };
+    }
+
+    return {
+      name: "jj colocated mode",
+      status: "pass",
+      message: "Jujutsu project is in colocated mode (.jj/ and .git/ both present)",
+    };
+  }
+
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.
-    const [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch, oldLogsResult] = await Promise.all([
+    const [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch, oldLogsResult, jjColocated] = await Promise.all([
       this.checkBrBinary(),
       this.checkBvBinary(),
       this.checkGitBinary(),
       this.checkGitTownInstalled(),
       this.checkGitTownMainBranch(),
       this.checkOldLogs(),
+      this.checkJujutsuColocated(),
     ]);
-    return [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch, oldLogsResult];
+
+    const results = [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch, oldLogsResult];
+
+    // Only include jj binary check if the project appears to use Jujutsu
+    // (colocated check is non-skip), or always include jj colocated check result
+    if (jjColocated.status !== "skip") {
+      results.push(jjColocated);
+      const jjBinaryResult = await this.checkJujutsuBinary();
+      results.push(jjBinaryResult);
+    }
+
+    return results;
   }
 
   /**
