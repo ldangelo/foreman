@@ -96,11 +96,110 @@ export class ConflictResolver {
   private validator?: MergeValidator;
   private patternLearning?: ConflictPatterns;
   private sessionCostUsd: number = 0;
+  /** Active VCS backend name — affects conflict marker parsing and AI prompts. */
+  private vcsBackendName: 'git' | 'jujutsu' = 'git';
 
   constructor(
     private projectPath: string,
     private config: MergeQueueConfig,
   ) {}
+
+  /**
+   * Set the VCS backend so that conflict marker parsing and AI prompts
+   * are backend-aware. Defaults to 'git' if never set.
+   *
+   * Call this after construction when using JujutsuBackend:
+   * ```
+   * resolver.setVcsBackend('jujutsu');
+   * ```
+   */
+  setVcsBackend(backend: 'git' | 'jujutsu'): void {
+    this.vcsBackendName = backend;
+  }
+
+  /** Get the current VCS backend name. */
+  getVcsBackend(): 'git' | 'jujutsu' {
+    return this.vcsBackendName;
+  }
+
+  /**
+   * Check whether the given content contains conflict markers for the
+   * active VCS backend.
+   *
+   * - Git markers: `<<<<<<<`, `=======`, `>>>>>>>`
+   * - Jujutsu markers: `<<<<<<<`, `%%%%%%%` (diff-style), `+++++++`, `-------`
+   *
+   * Both are detected together since jj colocated repos may produce git-style
+   * markers during git operations and jj-style markers during jj operations.
+   */
+  hasConflictMarkers(content: string): boolean {
+    // Git-style markers (always check these)
+    if (/^<{7}|^={7}|^>{7}/m.test(content)) return true;
+    // Jujutsu-specific markers
+    if (/^%{7}|^\+{7}|^-{7}/m.test(content)) return true;
+    return false;
+  }
+
+  /**
+   * Build the backend-specific conflict resolution instructions for
+   * the AI prompt in Tier 3 (Pi-based resolution).
+   *
+   * Returns instructions describing the conflict marker format so the
+   * AI agent knows what to look for and remove.
+   */
+  private buildConflictPrompt(filePath: string): string {
+    if (this.vcsBackendName === 'jujutsu') {
+      return [
+        `You are resolving a merge conflict in a Jujutsu (jj) repository.`,
+        `The file \`${filePath}\` contains conflict markers.`,
+        ``,
+        `Jujutsu uses TWO conflict marker formats:`,
+        ``,
+        `Format 1 — Standard (similar to git):`,
+        `  <<<<<<< Conflict 1 of N`,
+        `  >>>>>>> ... (no ======= separator; content between markers is the conflict region)`,
+        ``,
+        `Format 2 — Diff-style:`,
+        `  <<<<<<< Conflict 1 of N`,
+        `  %%%%% (separator for diff3-style base content)`,
+        `  -old content (removed from base)`,
+        `  +new content (added by branch)`,
+        `  +++++++ (separator for "theirs" content)`,
+        `  >>>>>>> (end marker)`,
+        ``,
+        `Git-style markers may also be present:`,
+        `  <<<<<<< HEAD`,
+        `  =======`,
+        `  >>>>>>> branch/name`,
+        ``,
+        `Instructions:`,
+        `1. Read the file \`${filePath}\``,
+        `2. Examine related files or history if you need context to understand each side's intent`,
+        `3. Resolve ALL conflicts — produce a correct, logical merged result`,
+        `4. Write the resolved content back to \`${filePath}\``,
+        ``,
+        `CRITICAL RULES:`,
+        `- The resolved file MUST contain ZERO conflict markers`,
+        `- Remove ALL of: <<<<<<<, >>>>>>>, =======, %%%%%%%, +++++++, -------`,
+        `- Write ONLY valid code — no explanations, no markdown fencing, no prose`,
+      ].join("\n");
+    }
+
+    // Default: git-style
+    return [
+      `You are resolving a git merge conflict. The file \`${filePath}\` contains conflict markers.`,
+      ``,
+      `Instructions:`,
+      `1. Read the file \`${filePath}\``,
+      `2. Examine git log or related files if you need context to understand each side's intent`,
+      `3. Resolve ALL conflicts — produce a correct, logical merged result`,
+      `4. Write the resolved content back to \`${filePath}\``,
+      ``,
+      `CRITICAL RULES:`,
+      `- The resolved file MUST contain ZERO conflict markers (no <<<<<<< HEAD, =======, or >>>>>>>)`,
+      `- Write ONLY valid code — no explanations, no markdown fencing, no prose`,
+    ].join("\n");
+  }
 
   /** Add to the running session cost total (for testing or external tracking). */
   addSessionCost(amount: number): void {
@@ -457,19 +556,7 @@ export class ConflictResolver {
     await fs.writeFile(fullPath, fileContent, "utf-8");
 
     // ── Run Pi conflict-resolution agent ──
-    const prompt = [
-      `You are resolving a git merge conflict. The file \`${filePath}\` contains conflict markers.`,
-      ``,
-      `Instructions:`,
-      `1. Read the file \`${filePath}\``,
-      `2. Examine git log or related files if you need context to understand each side's intent`,
-      `3. Resolve ALL conflicts — produce a correct, logical merged result`,
-      `4. Write the resolved content back to \`${filePath}\``,
-      ``,
-      `CRITICAL RULES:`,
-      `- The resolved file MUST contain ZERO conflict markers (no <<<<<<< HEAD, =======, or >>>>>>>)`,
-      `- Write ONLY valid code — no explanations, no markdown fencing, no prose`,
-    ].join("\n");
+    const prompt = this.buildConflictPrompt(filePath);
 
     const piResult = await runWithPiSdk({
       prompt,

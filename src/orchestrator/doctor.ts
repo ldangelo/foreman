@@ -203,6 +203,191 @@ export class Doctor {
     };
   }
 
+  // ── Jujutsu (jj) checks — TRD-028 ────────────────────────────────────
+
+  /**
+   * Check whether the `jj` CLI binary is available in PATH.
+   *
+   * Returns:
+   * - pass  — jj found and responds to `jj --version`
+   * - warn  — jj not found but VCS config is 'auto' (jj not required unless detected)
+   * - fail  — jj not found and VCS config explicitly requires jujutsu
+   *
+   * @param vcsBackend - Current VCS backend setting: 'git' | 'jujutsu' | 'auto' | undefined
+   */
+  async checkJjBinary(vcsBackend?: 'git' | 'jujutsu' | 'auto'): Promise<CheckResult> {
+    let version: string | null = null;
+    try {
+      const { stdout } = await execFileAsync("jj", ["--version"]);
+      version = stdout.trim();
+    } catch {
+      // jj not in PATH
+    }
+
+    if (version !== null) {
+      return {
+        name: "jj (Jujutsu) binary",
+        status: "pass",
+        message: `jj found: ${version}`,
+      };
+    }
+
+    // jj not found — severity depends on configured backend
+    if (vcsBackend === 'jujutsu') {
+      return {
+        name: "jj (Jujutsu) binary",
+        status: "fail",
+        message: "jj not found in PATH",
+        details: "Foreman is configured with vcs.backend=jujutsu but jj is not installed.\n" +
+          "Install jj: https://martinvonz.github.io/jj/latest/install-and-setup/\n" +
+          "  macOS:  brew install jj\n" +
+          "  cargo:  cargo install --locked jj-cli",
+      };
+    }
+
+    if (vcsBackend === 'auto') {
+      return {
+        name: "jj (Jujutsu) binary",
+        status: "warn",
+        message: "jj not found in PATH (vcs.backend=auto)",
+        details: "If your project uses Jujutsu, install jj: https://martinvonz.github.io/jj/latest/install-and-setup/\n" +
+          "  macOS: brew install jj\n" +
+          "Git-only projects are unaffected.",
+      };
+    }
+
+    // vcsBackend = 'git' or undefined — jj is not needed
+    return {
+      name: "jj (Jujutsu) binary",
+      status: "skip",
+      message: "jj not required (vcs.backend=git)",
+    };
+  }
+
+  /**
+   * Check that the project repository is a colocated Jujutsu+Git repo.
+   *
+   * Colocated repos have both `.jj/` and `.git/` directories and the
+   * `.jj/repo/store/git` symlink pointing at the git repo's objects.
+   *
+   * Returns:
+   * - pass  — colocated repo structure confirmed
+   * - warn  — .jj exists but .jj/repo/store/git missing (may not be colocated)
+   * - fail  — .jj exists but .git is missing (bare jj repo — Foreman unsupported)
+   * - skip  — .jj directory absent (not a jj repo)
+   */
+  async checkJjColocatedRepo(): Promise<CheckResult> {
+    const jjDir = join(this.projectPath, ".jj");
+    const gitDir = join(this.projectPath, ".git");
+    const storeGit = join(jjDir, "repo", "store", "git");
+
+    // Check if this is a jj repository at all
+    const jjExists = existsSync(jjDir);
+    if (!jjExists) {
+      return {
+        name: "jj colocated repository",
+        status: "skip",
+        message: "Not a Jujutsu repository (.jj not found)",
+      };
+    }
+
+    // jj repo found — check for .git (colocated requirement)
+    const gitExists = existsSync(gitDir);
+    if (!gitExists) {
+      return {
+        name: "jj colocated repository",
+        status: "fail",
+        message: "Non-colocated Jujutsu repository detected",
+        details: ".jj exists but .git is missing. Foreman requires a colocated Jujutsu+Git\n" +
+          "repository. Initialize with: jj git init --colocate",
+      };
+    }
+
+    // Check colocated structure — .jj/repo/store/git should exist
+    const storeGitExists = existsSync(storeGit);
+    if (!storeGitExists) {
+      return {
+        name: "jj colocated repository",
+        status: "warn",
+        message: "jj repository may not be in colocated mode",
+        details: `.jj/repo/store/git not found at ${storeGit}.\n` +
+          "Foreman requires colocated Jujutsu+Git mode. If this is a new repo,\n" +
+          "reinitialize with: jj git init --colocate",
+      };
+    }
+
+    return {
+      name: "jj colocated repository",
+      status: "pass",
+      message: "Colocated Jujutsu+Git repository confirmed",
+    };
+  }
+
+  /**
+   * Check the installed jj version against a minimum requirement.
+   *
+   * @param minVersion - Minimum required version string (e.g. "0.16.0").
+   *                     If not provided, any version is acceptable.
+   */
+  async checkJjVersion(minVersion?: string): Promise<CheckResult> {
+    let versionStr: string;
+    try {
+      const { stdout } = await execFileAsync("jj", ["--version"]);
+      versionStr = stdout.trim();
+    } catch {
+      return {
+        name: "jj version",
+        status: "skip",
+        message: "jj not found — skipping version check",
+      };
+    }
+
+    if (!minVersion) {
+      return {
+        name: "jj version",
+        status: "pass",
+        message: `jj version: ${versionStr} (no minimum required)`,
+      };
+    }
+
+    // Parse semver-like version from output (e.g. "jj 0.18.0" → "0.18.0")
+    const versionMatch = versionStr.match(/(\d+)\.(\d+)\.(\d+)/);
+    const minMatch = minVersion.match(/(\d+)\.(\d+)\.(\d+)/);
+
+    if (!versionMatch || !minMatch) {
+      return {
+        name: "jj version",
+        status: "warn",
+        message: `Could not parse jj version: ${versionStr}`,
+        details: `Expected format: x.y.z. Minimum required: ${minVersion}`,
+      };
+    }
+
+    const [, maj, min, patch] = versionMatch.map(Number);
+    const [, minMaj, minMin, minPatch] = minMatch.map(Number);
+
+    const isOk =
+      maj > minMaj ||
+      (maj === minMaj && min > minMin) ||
+      (maj === minMaj && min === minMin && patch >= minPatch);
+
+    if (isOk) {
+      return {
+        name: "jj version",
+        status: "pass",
+        message: `jj version ${maj}.${min}.${patch} meets minimum ${minVersion}`,
+      };
+    }
+
+    return {
+      name: "jj version",
+      status: "fail",
+      message: `jj version ${maj}.${min}.${patch} is below minimum ${minVersion}`,
+      details: `Upgrade jj: https://martinvonz.github.io/jj/latest/install-and-setup/\n` +
+        `  macOS: brew upgrade jj`,
+    };
+  }
+
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.
     const [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch, oldLogsResult] = await Promise.all([

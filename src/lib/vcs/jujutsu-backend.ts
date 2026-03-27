@@ -189,8 +189,9 @@ export class JujutsuBackend implements VcsBackend {
    */
   async branchExists(repoPath: string, branchName: string): Promise<boolean> {
     try {
+      // jj bookmark list accepts positional NAMES arguments (no --name= flag)
       const out = await this.jj(
-        ["bookmark", "list", `--name=${branchName}`],
+        ["bookmark", "list", branchName],
         repoPath,
       );
       return out.includes(branchName);
@@ -288,6 +289,9 @@ export class JujutsuBackend implements VcsBackend {
       return { workspacePath, branchName };
     }
 
+    // Ensure the parent directory exists (jj workspace add does not create it)
+    await fs.mkdir(join(repoPath, ".foreman-worktrees"), { recursive: true });
+
     // Create new workspace
     try {
       await this.jj(
@@ -301,17 +305,20 @@ export class JujutsuBackend implements VcsBackend {
       }
     }
 
-    // Create a bookmark for this workspace
+    // Create a bookmark for this workspace.
+    // In jj revset syntax, a workspace working copy is referenced as
+    // "<workspacename>@" (e.g. "foreman-bd-abc@"), NOT "@<workspacename>".
+    const workspaceRevset = `foreman-${seedId}@`;
     try {
       await this.jj(
-        ["bookmark", "create", branchName, "-r", `@${`foreman-${seedId}`}`],
+        ["bookmark", "create", branchName, "-r", workspaceRevset],
         repoPath,
       );
     } catch {
       // Bookmark may already exist — try to move it
       try {
         await this.jj(
-          ["bookmark", "move", branchName, "--to", `@${`foreman-${seedId}`}`],
+          ["bookmark", "move", branchName, "--to", workspaceRevset],
           repoPath,
         );
       } catch (moveErr) {

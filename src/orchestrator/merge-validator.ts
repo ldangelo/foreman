@@ -154,9 +154,20 @@ export class MergeValidator {
 
   /**
    * Returns true if content contains residual conflict markers.
+   *
+   * Detects both git-style and Jujutsu-style conflict markers:
+   * - Git: `<<<<<<<`, `=======`, `>>>>>>>`
+   * - Jujutsu: `<<<<<<<`, `%%%%%%%` (diff3 base), `+++++++` (ours), `-------` (theirs separator)
+   *
+   * Both marker types are checked regardless of the active VCS backend since
+   * colocated jj+git repos may produce either format depending on the operation.
    */
   conflictMarkerCheck(content: string): boolean {
-    return /^<{7}|^={7}|^>{7}/m.test(content);
+    // Git-style markers
+    if (/^<{7}|^={7}|^>{7}/m.test(content)) return true;
+    // Jujutsu-specific markers (diff3 style)
+    if (/^%{7}|^\+{7}|^-{7}/m.test(content)) return true;
+    return false;
   }
 
   /**
