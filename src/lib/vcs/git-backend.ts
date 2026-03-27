@@ -1,14 +1,27 @@
 /**
  * GitBackend — Git-specific VCS backend implementation.
  *
- * Provides repository introspection methods extracted from src/lib/git.ts
- * into a class-based, backend-agnostic design.
+ * Phase A: Implements the VcsBackend interface. The 4 repository-introspection
+ * methods are fully implemented; the remaining methods are Phase-B stubs that
+ * throw descriptive errors. Full implementation follows in Phase B.
  *
  * @module src/lib/vcs/git-backend
  */
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import type { VcsBackend } from "./backend.js";
+import type {
+  Workspace,
+  WorkspaceResult,
+  MergeResult,
+  RebaseResult,
+  DeleteBranchOptions,
+  DeleteBranchResult,
+  PushOptions,
+  FinalizeTemplateVars,
+  FinalizeCommands,
+} from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -18,7 +31,7 @@ const execFileAsync = promisify(execFile);
  * Constructor receives the project root path; all methods operate relative to it
  * unless given an explicit path argument (for worktree-aware operations).
  */
-export class GitBackend {
+export class GitBackend implements VcsBackend {
   readonly projectPath: string;
 
   constructor(projectPath: string) {
@@ -141,5 +154,148 @@ export class GitBackend {
    */
   async getCurrentBranch(repoPath: string): Promise<string> {
     return this.git(["rev-parse", "--abbrev-ref", "HEAD"], repoPath);
+  }
+
+  // ── Branch / Bookmark Operations — Phase B stubs ────────────────────
+
+  async checkoutBranch(_repoPath: string, _branchName: string): Promise<void> {
+    throw new Error("GitBackend.checkoutBranch: not yet implemented (Phase B)");
+  }
+
+  async branchExists(_repoPath: string, _branchName: string): Promise<boolean> {
+    throw new Error("GitBackend.branchExists: not yet implemented (Phase B)");
+  }
+
+  async branchExistsOnRemote(
+    _repoPath: string,
+    _branchName: string,
+  ): Promise<boolean> {
+    throw new Error(
+      "GitBackend.branchExistsOnRemote: not yet implemented (Phase B)",
+    );
+  }
+
+  async deleteBranch(
+    _repoPath: string,
+    _branchName: string,
+    _opts?: DeleteBranchOptions,
+  ): Promise<DeleteBranchResult> {
+    throw new Error("GitBackend.deleteBranch: not yet implemented (Phase B)");
+  }
+
+  // ── Workspace Management — Phase B stubs ─────────────────────────────
+
+  async createWorkspace(
+    _repoPath: string,
+    _seedId: string,
+    _baseBranch?: string,
+    _setupSteps?: string[],
+    _setupCache?: string,
+  ): Promise<WorkspaceResult> {
+    throw new Error(
+      "GitBackend.createWorkspace: not yet implemented (Phase B)",
+    );
+  }
+
+  async removeWorkspace(
+    _repoPath: string,
+    _workspacePath: string,
+  ): Promise<void> {
+    throw new Error(
+      "GitBackend.removeWorkspace: not yet implemented (Phase B)",
+    );
+  }
+
+  async listWorkspaces(_repoPath: string): Promise<Workspace[]> {
+    throw new Error(
+      "GitBackend.listWorkspaces: not yet implemented (Phase B)",
+    );
+  }
+
+  // ── Commit & Sync — Phase B stubs ────────────────────────────────────
+
+  async stageAll(_workspacePath: string): Promise<void> {
+    throw new Error("GitBackend.stageAll: not yet implemented (Phase B)");
+  }
+
+  async commit(_workspacePath: string, _message: string): Promise<string> {
+    throw new Error("GitBackend.commit: not yet implemented (Phase B)");
+  }
+
+  async getHeadId(_workspacePath: string): Promise<string> {
+    throw new Error("GitBackend.getHeadId: not yet implemented (Phase B)");
+  }
+
+  async push(
+    _workspacePath: string,
+    _branchName: string,
+    _opts?: PushOptions,
+  ): Promise<void> {
+    throw new Error("GitBackend.push: not yet implemented (Phase B)");
+  }
+
+  async pull(_workspacePath: string, _branchName: string): Promise<void> {
+    throw new Error("GitBackend.pull: not yet implemented (Phase B)");
+  }
+
+  async fetch(_workspacePath: string): Promise<void> {
+    throw new Error("GitBackend.fetch: not yet implemented (Phase B)");
+  }
+
+  async rebase(_workspacePath: string, _onto: string): Promise<RebaseResult> {
+    throw new Error("GitBackend.rebase: not yet implemented (Phase B)");
+  }
+
+  async abortRebase(_workspacePath: string): Promise<void> {
+    throw new Error("GitBackend.abortRebase: not yet implemented (Phase B)");
+  }
+
+  // ── Merge Operations — Phase B stubs ─────────────────────────────────
+
+  async merge(
+    _repoPath: string,
+    _branchName: string,
+    _targetBranch?: string,
+  ): Promise<MergeResult> {
+    throw new Error("GitBackend.merge: not yet implemented (Phase B)");
+  }
+
+  // ── Diff, Conflict & Status — Phase B stubs ──────────────────────────
+
+  async getConflictingFiles(_workspacePath: string): Promise<string[]> {
+    throw new Error(
+      "GitBackend.getConflictingFiles: not yet implemented (Phase B)",
+    );
+  }
+
+  async diff(_repoPath: string, _from: string, _to: string): Promise<string> {
+    throw new Error("GitBackend.diff: not yet implemented (Phase B)");
+  }
+
+  async getModifiedFiles(
+    _workspacePath: string,
+    _base: string,
+  ): Promise<string[]> {
+    throw new Error(
+      "GitBackend.getModifiedFiles: not yet implemented (Phase B)",
+    );
+  }
+
+  async cleanWorkingTree(_workspacePath: string): Promise<void> {
+    throw new Error(
+      "GitBackend.cleanWorkingTree: not yet implemented (Phase B)",
+    );
+  }
+
+  async status(_workspacePath: string): Promise<string> {
+    throw new Error("GitBackend.status: not yet implemented (Phase B)");
+  }
+
+  // ── Finalize Command Generation — Phase B stub ────────────────────────
+
+  getFinalizeCommands(_vars: FinalizeTemplateVars): FinalizeCommands {
+    throw new Error(
+      "GitBackend.getFinalizeCommands: not yet implemented (Phase B)",
+    );
   }
 }
