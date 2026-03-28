@@ -22,6 +22,7 @@ import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import type { ForemanStore, RunProgress } from "../lib/store.js";
+import type { VcsBackend } from "../lib/vcs/index.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -71,6 +72,13 @@ export interface PipelineRunConfig {
   env: Record<string, string | undefined>;
   /** Override target branch for finalize rebase/push and auto-merge. */
   targetBranch?: string;
+  /**
+   * VCS backend instance for computing backend-specific commands.
+   * When provided, finalize and reviewer prompts are rendered with
+   * backend-specific VCS command variables (TRD-026, TRD-027).
+   * Falls back to git defaults when absent.
+   */
+  vcsBackend?: VcsBackend;
 }
 
 export interface PipelineContext {
@@ -214,6 +222,42 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       rotateReport(worktreePath, phase.artifact);
     }
 
+    // Compute VCS-specific prompt variables for finalize and reviewer phases (TRD-026, TRD-027).
+    const vcsBackend = config.vcsBackend;
+    const baseBranch = config.targetBranch ?? "main";
+    let vcsPromptVars: {
+      vcsStageCommand?: string;
+      vcsCommitCommand?: string;
+      vcsPushCommand?: string;
+      vcsRebaseCommand?: string;
+      vcsBranchVerifyCommand?: string;
+      vcsCleanCommand?: string;
+      vcsBackendName?: string;
+      vcsBranchPrefix?: string;
+    } = {};
+
+    if (vcsBackend) {
+      // All phases get vcsBackendName and vcsBranchPrefix (TRD-027 for reviewer)
+      vcsPromptVars.vcsBackendName = vcsBackend.name;
+      vcsPromptVars.vcsBranchPrefix = "foreman/";
+
+      // Finalize phase gets all 6 VCS command variables (TRD-026)
+      if (phaseName === "finalize") {
+        const finalizeCommands = vcsBackend.getFinalizeCommands({
+          seedId,
+          seedTitle,
+          baseBranch,
+          worktreePath,
+        });
+        vcsPromptVars.vcsStageCommand = finalizeCommands.stageCommand;
+        vcsPromptVars.vcsCommitCommand = finalizeCommands.commitCommand;
+        vcsPromptVars.vcsPushCommand = finalizeCommands.pushCommand;
+        vcsPromptVars.vcsRebaseCommand = finalizeCommands.rebaseCommand;
+        vcsPromptVars.vcsBranchVerifyCommand = finalizeCommands.branchVerifyCommand;
+        vcsPromptVars.vcsCleanCommand = finalizeCommands.cleanCommand;
+      }
+    }
+
     const prompt = buildPhasePrompt(phaseName, {
       seedId,
       seedTitle,
@@ -225,6 +269,7 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       feedbackContext,
       worktreePath,
       baseBranch: config.targetBranch,
+      ...vcsPromptVars,
     }, ctx.promptOpts);
 
     // Resolve the model for this phase from the workflow YAML + bead priority.

@@ -38,9 +38,12 @@ Run `npm ci` to perform a clean, deterministic dependency install. If it fails, 
 Run `npx tsc --noEmit` to check for type errors. If it fails, log the error in FINALIZE_REPORT.md and continue — do not stop.
 
 ### Step 3: Stage all files (excluding diagnostic artifacts)
-Run:
+Run the stage command (skip if empty — some backends auto-stage):
 ```
-git add -A
+{{vcsStageCommand}}
+```
+Then exclude diagnostic artifacts that cause merge conflicts:
+```
 git reset HEAD SESSION_LOG.md RUN_LOG.md 2>/dev/null || true
 ```
 SESSION_LOG.md and RUN_LOG.md are diagnostic artifacts that cause merge conflicts when multiple pipelines run concurrently. They remain in the worktree for debugging but are excluded from the commit.
@@ -48,7 +51,7 @@ SESSION_LOG.md and RUN_LOG.md are diagnostic artifacts that cause merge conflict
 ### Step 4: Commit
 Run:
 ```
-git commit -m "{{seedTitle}} ({{seedId}})"
+{{vcsCommitCommand}}
 ```
 
 If git reports "nothing to commit", check whether this is a verification/test bead:
@@ -71,7 +74,7 @@ Send this mail and stop immediately:
 ### Step 5: Verify branch
 Check the current branch:
 ```
-git rev-parse --abbrev-ref HEAD
+{{vcsBranchVerifyCommand}}
 ```
 If the output is NOT `foreman/{{seedId}}`, check it out:
 ```
@@ -81,8 +84,7 @@ git checkout foreman/{{seedId}}
 ### Step 6: Rebase onto target branch
 Always rebase before pushing so the branch is up-to-date with the target branch. This ensures the refinery can fast-forward merge without conflicts.
 ```
-git fetch origin
-git rebase origin/{{baseBranch}}
+{{vcsRebaseCommand}}
 ```
 
 **If the rebase has conflicts**, run `git rebase --abort` to clean up, then send an error and stop:
@@ -134,7 +136,7 @@ Then write `FINALIZE_VALIDATION.md` in the worktree root:
 ### Step 8: Push to origin
 Run:
 ```
-git push -u origin foreman/{{seedId}}
+{{vcsPushCommand}}
 ```
 
 **If the push fails for any reason**, send an error and stop:
