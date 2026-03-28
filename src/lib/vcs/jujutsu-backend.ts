@@ -603,7 +603,7 @@ export class JujutsuBackend implements VcsBackend {
       stageCommand: "", // jj auto-stages
       commitCommand: `jj describe -m "${seedTitle} (${seedId})" && jj new`,
       pushCommand: `jj git push --bookmark foreman/${seedId} --allow-new`,
-      rebaseCommand: `jj git fetch --remote origin && jj rebase -d ${baseBranch}`,
+      rebaseCommand: `jj git fetch && jj rebase -d ${baseBranch}@origin`,
       branchVerifyCommand: `jj bookmark list --name foreman/${seedId}`,
       cleanCommand: `jj workspace forget foreman-${seedId}`,
     };
