@@ -986,26 +986,30 @@ export class Dispatcher {
 
         const seedId = payload.seedId as string;
 
+        // All br commands get --lock-timeout so they wait for concurrent agent
+        // reads to release the SQLite lock instead of failing with SQLITE_BUSY.
+        const lockArgs = ["--lock-timeout", "10000"];
+
         switch (entry.operation) {
           case "close-seed":
             // Use --no-db to write directly to JSONL, bypassing broken DB cache (beads_rust#204).
-            execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline"], execOpts);
+            execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
             console.error(`[bead-writer] Closed seed ${seedId} via --no-db (from ${entry.sender})`);
             break;
 
           case "reset-seed":
-            execFileSync(bin, ["update", seedId, "--status", "open"], execOpts);
+            execFileSync(bin, ["update", seedId, "--status", "open", ...lockArgs], execOpts);
             console.error(`[bead-writer] Reset seed ${seedId} to open (from ${entry.sender})`);
             break;
 
           case "mark-failed":
-            execFileSync(bin, ["update", seedId, "--status", "failed"], execOpts);
+            execFileSync(bin, ["update", seedId, "--status", "failed", ...lockArgs], execOpts);
             console.error(`[bead-writer] Marked seed ${seedId} as failed (from ${entry.sender})`);
             break;
 
           case "set-status": {
             const targetStatus = payload.status as string;
-            execFileSync(bin, ["update", seedId, "--status", targetStatus], execOpts);
+            execFileSync(bin, ["update", seedId, "--status", targetStatus, ...lockArgs], execOpts);
             console.error(`[bead-writer] Set seed ${seedId} to ${targetStatus} (from ${entry.sender})`);
             break;
           }
@@ -1013,7 +1017,7 @@ export class Dispatcher {
           case "add-notes": {
             const notes = payload.notes as string;
             if (notes) {
-              execFileSync(bin, ["update", seedId, "--notes", notes], execOpts);
+              execFileSync(bin, ["update", seedId, "--notes", notes, ...lockArgs], execOpts);
               console.error(`[bead-writer] Added notes to seed ${seedId} (from ${entry.sender})`);
             }
             break;
@@ -1022,7 +1026,7 @@ export class Dispatcher {
           case "add-labels": {
             const labels = payload.labels as string[];
             if (labels && labels.length > 0) {
-              const args = ["update", seedId, ...labels.flatMap((l) => ["--add-label", l])];
+              const args = ["update", seedId, ...labels.flatMap((l) => ["--add-label", l]), ...lockArgs];
               execFileSync(bin, args, execOpts);
               console.error(`[bead-writer] Added labels [${labels.join(", ")}] to seed ${seedId} (from ${entry.sender})`);
             }
