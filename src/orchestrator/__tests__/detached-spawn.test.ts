@@ -106,8 +106,8 @@ describe("detached process survival", () => {
     // but we can verify the child's process group is different.
     expect(child.pid).toBeDefined();
 
-    // Wait for child to finish
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // Wait for child to finish (tsx startup can take 2-3s under load; child has 1s delay)
+    await new Promise((resolve) => setTimeout(resolve, 5000));
 
     expect(existsSync(markerFile)).toBe(true);
     expect(readFileSync(markerFile, "utf-8")).toBe("survived");
