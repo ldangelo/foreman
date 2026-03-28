@@ -296,6 +296,44 @@ describe("GitBackend.getFinalizeCommands", () => {
   });
 });
 
+// ── GitBackend.checkoutBranch ─────────────────────────────────────────────────
+
+describe("GitBackend.checkoutBranch", () => {
+  it("successfully checks out an existing branch", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    execFileSync("git", ["checkout", "-b", "feature/test-checkout"], { cwd: repo });
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    const backend = new GitBackend(repo);
+
+    await expect(backend.checkoutBranch(repo, "feature/test-checkout")).resolves.toBeUndefined();
+
+    const current = await backend.getCurrentBranch(repo);
+    expect(current).toBe("feature/test-checkout");
+  });
+
+  it("throws when checking out a non-existent branch", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    await expect(backend.checkoutBranch(repo, "branch-does-not-exist")).rejects.toThrow();
+  });
+
+  it("handles branch names with slashes", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    execFileSync("git", ["checkout", "-b", "feature/nested/branch"], { cwd: repo });
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    const backend = new GitBackend(repo);
+
+    await expect(backend.checkoutBranch(repo, "feature/nested/branch")).resolves.toBeUndefined();
+
+    const current = await backend.getCurrentBranch(repo);
+    expect(current).toBe("feature/nested/branch");
+  });
+});
+
 // ── GitBackend.branchExists ────────────────────────────────────────────────────
 
 describe("GitBackend.branchExists", () => {
@@ -315,6 +353,125 @@ describe("GitBackend.branchExists", () => {
 
     const exists = await backend.branchExists(repo, "nonexistent-branch");
     expect(exists).toBe(false);
+  });
+
+  it("returns true for a branch after it is created", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Branch doesn't exist yet
+    expect(await backend.branchExists(repo, "new-branch")).toBe(false);
+
+    // Create the branch
+    execFileSync("git", ["checkout", "-b", "new-branch"], { cwd: repo });
+
+    // Now it should exist
+    expect(await backend.branchExists(repo, "new-branch")).toBe(true);
+  });
+});
+
+// ── GitBackend.branchExistsOnRemote ──────────────────────────────────────────
+
+describe("GitBackend.branchExistsOnRemote", () => {
+  it("returns true when a branch exists on origin", async () => {
+    // Create a 'remote' repo (origin)
+    const remoteDir = realpathSync(
+      mkdtempSync(join(tmpdir(), "foreman-git-remote-")),
+    );
+    tempDirs.push(remoteDir);
+    execFileSync("git", ["init", "--initial-branch=main"], { cwd: remoteDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: remoteDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: remoteDir });
+    writeFileSync(join(remoteDir, "README.md"), "# remote\n");
+    execFileSync("git", ["add", "."], { cwd: remoteDir });
+    execFileSync("git", ["commit", "-m", "initial commit"], { cwd: remoteDir });
+
+    // Clone so origin is configured
+    const cloneDir = realpathSync(
+      mkdtempSync(join(tmpdir(), "foreman-git-clone-")),
+    );
+    tempDirs.push(cloneDir);
+    execFileSync("git", ["clone", remoteDir, cloneDir]);
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: cloneDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: cloneDir });
+
+    const backend = new GitBackend(cloneDir);
+    const exists = await backend.branchExistsOnRemote(cloneDir, "main");
+    expect(exists).toBe(true);
+  });
+
+  it("returns false for a branch that does not exist on origin", async () => {
+    // Create a 'remote' repo
+    const remoteDir = realpathSync(
+      mkdtempSync(join(tmpdir(), "foreman-git-remote2-")),
+    );
+    tempDirs.push(remoteDir);
+    execFileSync("git", ["init", "--initial-branch=main"], { cwd: remoteDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: remoteDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: remoteDir });
+    writeFileSync(join(remoteDir, "README.md"), "# remote\n");
+    execFileSync("git", ["add", "."], { cwd: remoteDir });
+    execFileSync("git", ["commit", "-m", "initial commit"], { cwd: remoteDir });
+
+    // Clone so origin is configured
+    const cloneDir = realpathSync(
+      mkdtempSync(join(tmpdir(), "foreman-git-clone2-")),
+    );
+    tempDirs.push(cloneDir);
+    execFileSync("git", ["clone", remoteDir, cloneDir]);
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: cloneDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: cloneDir });
+
+    const backend = new GitBackend(cloneDir);
+    const exists = await backend.branchExistsOnRemote(cloneDir, "branch-not-on-remote");
+    expect(exists).toBe(false);
+  });
+
+  it("returns false when there is no remote configured", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // No remote is configured — should return false, not throw
+    const exists = await backend.branchExistsOnRemote(repo, "main");
+    expect(exists).toBe(false);
+  });
+
+  it("returns true for a remote branch pushed after cloning", async () => {
+    // Create a 'remote' repo
+    const remoteDir = realpathSync(
+      mkdtempSync(join(tmpdir(), "foreman-git-remote3-")),
+    );
+    tempDirs.push(remoteDir);
+    execFileSync("git", ["init", "--initial-branch=main"], { cwd: remoteDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: remoteDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: remoteDir });
+    writeFileSync(join(remoteDir, "README.md"), "# remote\n");
+    execFileSync("git", ["add", "."], { cwd: remoteDir });
+    execFileSync("git", ["commit", "-m", "initial commit"], { cwd: remoteDir });
+
+    // Clone
+    const cloneDir = realpathSync(
+      mkdtempSync(join(tmpdir(), "foreman-git-clone3-")),
+    );
+    tempDirs.push(cloneDir);
+    execFileSync("git", ["clone", remoteDir, cloneDir]);
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: cloneDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: cloneDir });
+
+    // Create and push a new branch from the remote directly
+    execFileSync("git", ["checkout", "-b", "feature/pushed"], { cwd: remoteDir });
+    writeFileSync(join(remoteDir, "newfile.txt"), "pushed\n");
+    execFileSync("git", ["add", "."], { cwd: remoteDir });
+    execFileSync("git", ["commit", "-m", "add newfile"], { cwd: remoteDir });
+
+    // Fetch in the clone to pick up the new remote branch
+    execFileSync("git", ["fetch", "origin"], { cwd: cloneDir });
+
+    const backend = new GitBackend(cloneDir);
+    const exists = await backend.branchExistsOnRemote(cloneDir, "feature/pushed");
+    expect(exists).toBe(true);
   });
 });
 
