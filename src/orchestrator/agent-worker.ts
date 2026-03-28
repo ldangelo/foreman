@@ -25,6 +25,7 @@ import {
   getDisallowedTools,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
+import { detectDefaultBranch } from "../lib/git.js";
 import { enqueueResetSeedToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
@@ -210,6 +211,11 @@ interface WorkerConfig {
    * Forwarded to the pipeline executor to resolve per-priority models from YAML.
    */
   seedPriority?: string;
+  /**
+   * Override target branch for auto-merge after finalize.
+   * When set, merges into this branch instead of detectDefaultBranch().
+   */
+  targetBranch?: string;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -554,6 +560,16 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     throw err;
   }
 
+  // Ensure targetBranch is set so finalize rebases onto the correct branch.
+  // If not provided by the dispatcher, detect the default branch (e.g. dev).
+  if (!config.targetBranch) {
+    try {
+      config.targetBranch = await detectDefaultBranch(pipelineProjectPath);
+    } catch {
+      // Non-fatal: falls back to "main" in buildPhasePrompt
+    }
+  }
+
   // Delegate to the generic workflow-driven executor.
   await executePipeline({
     config,
@@ -650,11 +666,12 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
             try {
               const mergeStore = ForemanStore.forProject(pipelineProjectPath);
               const mergeTaskClient = new BeadsRustClient(pipelineProjectPath);
-              log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}`);
+              log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}${config.targetBranch ? ` → ${config.targetBranch}` : ""}`);
               const mergeResult = await autoMerge({
                 store: mergeStore,
                 taskClient: mergeTaskClient,
                 projectPath: pipelineProjectPath,
+                targetBranch: config.targetBranch,
               });
               mergeStore.close();
               log(`[FINALIZE] autoMerge result: merged=${mergeResult.merged} conflicts=${mergeResult.conflicts} failed=${mergeResult.failed}`);
