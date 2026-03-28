@@ -543,6 +543,120 @@ describe("GitBackend.getConflictingFiles", () => {
   });
 });
 
+// ── GitBackend.getModifiedFiles ───────────────────────────────────────────────
+
+describe("GitBackend.getModifiedFiles", () => {
+  it("returns empty array for a clean repo", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    const modified = await backend.getModifiedFiles(repo);
+    expect(modified).toEqual([]);
+  });
+
+  it("returns modified tracked files", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    // Modify README.md (tracked file, not yet staged)
+    writeFileSync(join(repo, "README.md"), "# changed\n");
+    const backend = new GitBackend(repo);
+
+    const modified = await backend.getModifiedFiles(repo);
+    expect(modified).toContain("README.md");
+  });
+
+  it("includes staged files", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    writeFileSync(join(repo, "staged.txt"), "content\n");
+    execFileSync("git", ["add", "staged.txt"], { cwd: repo });
+    const backend = new GitBackend(repo);
+
+    const modified = await backend.getModifiedFiles(repo);
+    expect(modified).toContain("staged.txt");
+  });
+});
+
+// ── GitBackend.cleanWorkingTree ───────────────────────────────────────────────
+
+describe("GitBackend.cleanWorkingTree", () => {
+  it("removes untracked files", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    writeFileSync(join(repo, "untracked.txt"), "untracked\n");
+    const backend = new GitBackend(repo);
+
+    await backend.cleanWorkingTree(repo);
+
+    const statusOut = await backend.status(repo);
+    expect(statusOut).toBe("");
+  });
+
+  it("discards unstaged changes to tracked files", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    // Modify tracked README.md without staging
+    writeFileSync(join(repo, "README.md"), "# modified\n");
+    const backend = new GitBackend(repo);
+
+    await backend.cleanWorkingTree(repo);
+
+    const statusOut = await backend.status(repo);
+    expect(statusOut).toBe("");
+  });
+
+  it("leaves repo in clean state (AC-T-009-2: cleanWorkingTree → status yields clean tree)", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    // Create multiple dirty files
+    writeFileSync(join(repo, "README.md"), "# dirty\n");
+    writeFileSync(join(repo, "new1.txt"), "a\n");
+    writeFileSync(join(repo, "new2.txt"), "b\n");
+    const backend = new GitBackend(repo);
+
+    await backend.cleanWorkingTree(repo);
+
+    const modified = await backend.getModifiedFiles(repo);
+    expect(modified).toEqual([]);
+    const statusOut = await backend.status(repo);
+    expect(statusOut).toBe("");
+  });
+});
+
+// ── GitBackend.diff ───────────────────────────────────────────────────────────
+
+describe("GitBackend.diff", () => {
+  it("returns empty string when refs are identical", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    const diffOut = await backend.diff(repo, "HEAD", "HEAD");
+    expect(diffOut).toBe("");
+  });
+
+  it("returns unified diff between two commits", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const firstCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo })
+      .toString()
+      .trim();
+
+    writeFileSync(join(repo, "README.md"), "# updated\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "update readme"], { cwd: repo });
+    const secondCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo })
+      .toString()
+      .trim();
+
+    const backend = new GitBackend(repo);
+    const diffOut = await backend.diff(repo, firstCommit, secondCommit);
+    expect(diffOut).toContain("README.md");
+    expect(diffOut).toContain("# updated");
+  });
+});
+
 // ── GitBackend.listWorkspaces ─────────────────────────────────────────────────
 
 describe("GitBackend.listWorkspaces", () => {
