@@ -10,7 +10,8 @@ import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
-import { createWorktree, gitBranchExists, getCurrentBranch, detectDefaultBranch } from "../lib/git.js";
+import { installDependencies, runSetupWithCache } from "../lib/git.js";
+import { GitBackend } from "../lib/vcs/git-backend.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel } from "../lib/branch-label.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
@@ -172,12 +173,13 @@ export class Dispatcher {
     const skipped: SkippedTask[] = [];
 
     // Detect current branch for auto-labeling (branch:<name> label).
-    // Done once per dispatch() call to avoid repeated git invocations.
+    // Done once per dispatch() call using VcsBackend (TRD-015: migrate from git.js shims).
     let currentBranch: string | undefined;
     let defaultBranch: string | undefined;
     try {
-      currentBranch = await getCurrentBranch(this.projectPath);
-      defaultBranch = await detectDefaultBranch(this.projectPath);
+      const branchBackend = new GitBackend(this.projectPath);
+      currentBranch = await branchBackend.getCurrentBranch(this.projectPath);
+      defaultBranch = await branchBackend.detectDefaultBranch(this.projectPath);
     } catch {
       // Non-fatal: branch detection failure must not block dispatch
     }
@@ -395,14 +397,23 @@ export class Dispatcher {
           log(`[foreman] VcsBackend creation failed: ${vcsMsg} — continuing without VcsBackend instance`);
         }
 
-        // 2. Create git worktree (optionally branched from a dependency branch)
-        const { worktreePath, branchName } = await createWorktree(
+        // 2. Create workspace via VcsBackend (TRD-015: replaces createWorktree shim)
+        // Falls back to GitBackend if vcsBackend creation failed (non-fatal).
+        const workspaceBackend = vcsBackend ?? new GitBackend(this.projectPath);
+        const workspaceResult = await workspaceBackend.createWorkspace(
           this.projectPath,
           seed.id,
           baseBranch,
-          setupSteps,
-          setupCache,
         );
+        const worktreePath = workspaceResult.workspacePath;
+        const branchName = workspaceResult.branchName;
+
+        // Run setup steps / install dependencies (not part of VcsBackend interface)
+        if (setupSteps && setupSteps.length > 0) {
+          await runSetupWithCache(worktreePath, this.projectPath, setupSteps, setupCache);
+        } else {
+          await installDependencies(worktreePath);
+        }
 
         // 3. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
         const taskMd = workerAgentMd(seedInfo, worktreePath, model);
@@ -1111,8 +1122,9 @@ export async function resolveBaseBranch(
     // detail.dependencies is string[] of dep IDs that this seed depends on
     for (const depId of detail.dependencies ?? []) {
       const depBranch = `foreman/${depId}`;
-      // Check if this branch exists locally
-      const branchExists = await gitBranchExists(projectPath, depBranch);
+      // Check if this branch exists locally via VcsBackend (TRD-015: migrate from gitBranchExists shim)
+      const depBackend = new GitBackend(projectPath);
+      const branchExists = await depBackend.branchExists(projectPath, depBranch);
       if (!branchExists) continue;
       // Check if the dep's most recent run is "completed" (done but not yet merged)
       const depRuns = store.getRunsForSeed(depId);

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { ForemanStore } from "../lib/store.js";
 import type { BeadGraph } from "../lib/beads.js";
 import type { UpdateOptions } from "../lib/task-client.js";
-import { removeWorktree } from "../lib/git.js";
+// Note: removeWorktree shim removed in TRD-012; workspace removal now goes through this.vcsBackend.removeWorkspace()
 import { extractBranchLabel } from "../lib/branch-label.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
@@ -722,7 +722,7 @@ export class Refinery {
             // Archive is best-effort — don't block worktree removal
           }
           try {
-            await removeWorktree(this.projectPath, run.worktree_path);
+            await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
           } catch {
             // Non-fatal — worktree may already be gone
           }
@@ -895,7 +895,7 @@ export class Refinery {
         // Archive is best-effort — don't block worktree removal
       }
       try {
-        await removeWorktree(this.projectPath, run.worktree_path);
+        await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
       } catch {
         // Non-fatal
       }

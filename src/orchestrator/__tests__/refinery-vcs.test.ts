@@ -468,3 +468,40 @@ describe("AC-T-012-3: refinery.ts no longer imports or calls mergeWorktree", () 
     expect(vcs.merge).toHaveBeenCalled();
   });
 });
+
+// ── AC-T-012-4: removeWorktree replaced by vcs.removeWorkspace() ─────────────
+
+describe("AC-T-012-4: Refinery uses vcs.removeWorkspace() instead of removeWorktree shim", () => {
+  it("refinery.ts does not import removeWorktree from git.js (TRD-012)", () => {
+    const refineryPath = join(
+      import.meta.dirname ?? __dirname,
+      "..",
+      "..",
+      "..",
+      "src",
+      "orchestrator",
+      "refinery.ts",
+    );
+    const source = readFileSync(refineryPath, "utf8");
+
+    // TRD-012: removeWorktree shim must not be imported — replaced by vcs.removeWorkspace()
+    expect(source).not.toMatch(/import.*removeWorktree.*from/);
+    expect(source).not.toMatch(/await removeWorktree\(/);
+  });
+
+  it("refinery.ts calls vcs.removeWorkspace() when removing worktree on successful merge", async () => {
+    const { store, refinery, vcs } = makeMocks();
+    const run = makeRun({ seed_id: "seed-remove-test", worktree_path: "/tmp/worktrees/seed-remove-test" });
+    store.getRunsByStatus.mockReturnValue([run]);
+    // Default: merge succeeds
+    (vcs.merge as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true });
+
+    await refinery.mergeCompleted({ runTests: false });
+
+    // AC-T-012-4: vcs.removeWorkspace() should be called after successful merge
+    expect(vcs.removeWorkspace).toHaveBeenCalledWith(
+      "/tmp/project",
+      "/tmp/worktrees/seed-remove-test",
+    );
+  });
+});

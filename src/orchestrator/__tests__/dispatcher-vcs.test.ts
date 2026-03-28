@@ -38,13 +38,23 @@ vi.mock("../../lib/workflow-config-loader.js", () => ({
 }));
 
 vi.mock("../../lib/git.js", () => ({
-  createWorktree: vi.fn().mockResolvedValue({
-    worktreePath: "/tmp/worktrees/test-seed",
-    branchName: "foreman/test-seed",
-  }),
-  gitBranchExists: vi.fn().mockResolvedValue(false),
-  getCurrentBranch: vi.fn().mockResolvedValue("main"),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+  // TRD-015: createWorktree and gitBranchExists replaced by VcsBackend methods
+  // getCurrentBranch and detectDefaultBranch replaced by GitBackend methods
+  installDependencies: vi.fn().mockResolvedValue(undefined),
+  runSetupWithCache: vi.fn().mockResolvedValue(undefined),
+}));
+
+// Mock GitBackend so dispatcher's branch detection and fallback createWorkspace work in tests
+vi.mock("../../lib/vcs/git-backend.js", () => ({
+  GitBackend: class {
+    constructor(_path: string) {}
+    async getCurrentBranch(_path: string): Promise<string> { return "main"; }
+    async detectDefaultBranch(_path: string): Promise<string> { return "main"; }
+    async branchExists(_path: string, _branch: string): Promise<boolean> { return false; }
+    async createWorkspace(_repoPath: string, seedId: string): Promise<{ workspacePath: string; branchName: string }> {
+      return { workspacePath: `/tmp/worktrees/${seedId}`, branchName: `foreman/${seedId}` };
+    }
+  },
 }));
 
 vi.mock("../../lib/beads-rust.js", () => ({
@@ -73,12 +83,26 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 function makeGitBackend(): VcsBackend {
   return {
     name: "git",
+    createWorkspace: vi.fn().mockResolvedValue({
+      workspacePath: "/tmp/worktrees/test-seed",
+      branchName: "foreman/test-seed",
+    }),
+    getCurrentBranch: vi.fn().mockResolvedValue("main"),
+    detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+    branchExists: vi.fn().mockResolvedValue(false),
   } as unknown as VcsBackend;
 }
 
 function makeJujutsuBackend(): VcsBackend {
   return {
     name: "jujutsu",
+    createWorkspace: vi.fn().mockResolvedValue({
+      workspacePath: "/tmp/worktrees/test-seed",
+      branchName: "foreman/test-seed",
+    }),
+    getCurrentBranch: vi.fn().mockResolvedValue("main"),
+    detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+    branchExists: vi.fn().mockResolvedValue(false),
   } as unknown as VcsBackend;
 }
 
@@ -379,5 +403,39 @@ describe("buildWorkerEnv — FOREMAN_VCS_BACKEND propagation via VcsBackend.name
     const vcsBackendArg = spawnAgentSpy.mock.calls[0][7];
     expect(typeof vcsBackendArg).not.toBe("string");
     expect(vcsBackendArg).toEqual(expect.objectContaining({ name: "git" }));
+  });
+});
+
+// ── Tests: VcsBackend.createWorkspace() used instead of createWorktree shim (TRD-015) ──
+
+describe("Dispatcher — uses VcsBackend.createWorkspace() instead of createWorktree shim", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls vcsBackend.createWorkspace() when dispatching a seed (TRD-015)", async () => {
+    const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
+    vi.mocked(loadWorkflowConfig).mockReturnValue({
+      name: "default",
+      phases: [],
+      vcs: { backend: "git" },
+    } as unknown as ReturnType<typeof loadWorkflowConfig>);
+
+    const gitBackend = makeGitBackend();
+    vi.mocked(VcsBackendFactory.create).mockResolvedValue(gitBackend);
+
+    const store = makeStore();
+    const seeds = makeSeeds();
+    const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
+    vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
+
+    await dispatcher.dispatch({ dryRun: false });
+
+    // VcsBackend.createWorkspace() should be called instead of the old createWorktree shim
+    expect(gitBackend.createWorkspace).toHaveBeenCalledWith(
+      "/tmp/project",
+      "test-seed",
+      undefined, // baseBranch
+    );
   });
 });
