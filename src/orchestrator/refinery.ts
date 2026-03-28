@@ -13,7 +13,7 @@ import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedP
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
-import { enqueueCloseSeed, enqueueResetSeedToOpen } from "./task-backend-ops.js";
+import { enqueueCloseSeed, enqueueResetSeedToOpen, enqueueAddNotesToBead } from "./task-backend-ops.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
 
@@ -224,13 +224,14 @@ export class Refinery {
    * Non-fatal — a failure to annotate the bead must not mask the original error.
    */
   private async addFailureNote(seedId: string, note: string): Promise<void> {
-    if (!this.seeds.update) return;
+    // Enqueue instead of calling br directly — multiple agent workers run
+    // refinery concurrently, and direct calls cause SQLITE_BUSY on beads DB.
     try {
-      await this.seeds.update(seedId, { notes: note.slice(0, 500) });
+      enqueueAddNotesToBead(this.store, seedId, note.slice(0, 500), "refinery");
     } catch (err: unknown) {
       // Non-fatal: best-effort annotation
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[Refinery] Failed to add failure note to bead ${seedId}: ${message}`);
+      console.warn(`[Refinery] Failed to enqueue failure note for bead ${seedId}: ${message}`);
     }
   }
 

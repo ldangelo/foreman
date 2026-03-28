@@ -22,7 +22,7 @@ import { MergeQueue, RETRY_CONFIG } from "./merge-queue.js";
 import { Refinery } from "./refinery.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
-import { enqueueAddNotesToBead, enqueueMarkBeadFailed } from "./task-backend-ops.js";
+import { enqueueAddNotesToBead, enqueueMarkBeadFailed, enqueueSetBeadStatus } from "./task-backend-ops.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -81,17 +81,11 @@ export async function syncBeadStatusAfterMerge(
   if (!run) return;
 
   const expectedStatus = mapRunStatusToSeedStatus(run.status);
-  try {
-    await taskClient.update(seedId, { status: expectedStatus });
-    execFileSync(brPath(), ["sync", "--flush-only"], {
-      stdio: "pipe",
-      timeout: PIPELINE_TIMEOUTS.beadClosureMs,
-      cwd: projectPath,
-    });
-  } catch (syncErr: unknown) {
-    const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
-    console.warn(`[merge] Warning: Failed to sync bead status for ${seedId}: ${msg}`);
-  }
+  // Enqueue the status update instead of calling br directly.
+  // Multiple agent workers can trigger autoMerge concurrently after finalize,
+  // and direct br calls contend on the beads SQLite database (SQLITE_BUSY).
+  // The dispatcher's bead writer queue serializes all br operations.
+  enqueueSetBeadStatus(store, seedId, expectedStatus, "auto-merge");
 
   // Add explanatory notes to the bead when there's a failure reason.
   // Done after the status update so that the status change is always attempted
