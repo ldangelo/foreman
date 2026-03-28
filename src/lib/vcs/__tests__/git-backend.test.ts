@@ -451,6 +451,7 @@ describe("GitBackend.createWorkspace", () => {
 });
 
 describe("GitBackend.removeWorkspace", () => {
+  // AC-T-006-3: directory no longer exists AND listWorkspaces() does not include it
   it("removes the worktree directory", async () => {
     const repo = makeTempRepo("main");
     tempDirs.push(repo);
@@ -461,6 +462,11 @@ describe("GitBackend.removeWorkspace", () => {
 
     const { existsSync } = await import("node:fs");
     expect(existsSync(workspacePath)).toBe(false);
+
+    // AC-T-006-3 second clause: listWorkspaces() must not include the removed worktree
+    const workspacesAfter = await backend.listWorkspaces(repo);
+    const paths = workspacesAfter.map((w) => w.path);
+    expect(paths).not.toContain(workspacePath);
   });
 });
 
