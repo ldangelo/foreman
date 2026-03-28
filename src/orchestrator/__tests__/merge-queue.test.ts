@@ -2,10 +2,41 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { MergeQueue } from "../merge-queue.js";
 import type { MergeQueueEntry, MergeQueueStatus } from "../merge-queue.js";
+import type { GitBackend } from "../../lib/vcs/git-backend.js";
 
 vi.mock("../../lib/git.js", () => ({
   detectDefaultBranch: vi.fn().mockResolvedValue("main"),
 }));
+
+/**
+ * Create a GitBackend mock for reconcile() tests.
+ * All methods are vi.fn() instances for assertion tracking.
+ */
+function makeBackend(opts?: {
+  branchExists?: boolean | ((branch: string) => boolean);
+  branchExistsOnRemote?: boolean | ((branch: string) => boolean);
+  files?: string[] | ((from: string, to: string) => string[]);
+  timestamp?: number | null | ((ref: string) => number | null);
+}): GitBackend {
+  const { branchExists: be = true, branchExistsOnRemote: beor = false, files = [], timestamp = null } = opts ?? {};
+  const backend = {
+    branchExists: vi.fn().mockImplementation((_repo: string, branch: string) =>
+      Promise.resolve(typeof be === "function" ? be(branch) : be)
+    ),
+    branchExistsOnRemote: vi.fn().mockImplementation((_repo: string, branch: string) =>
+      Promise.resolve(typeof beor === "function" ? beor(branch) : beor)
+    ),
+    getChangedFiles: vi.fn().mockImplementation((_repo: string, from: string, to: string) =>
+      Promise.resolve(
+        typeof files === "function" ? files(from, to) : files
+      )
+    ),
+    getRefCommitTimestamp: vi.fn().mockImplementation((_repo: string, ref: string) =>
+      Promise.resolve(typeof timestamp === "function" ? timestamp(ref) : timestamp)
+    ),
+  };
+  return backend as unknown as GitBackend;
+}
 
 // Minimal schema needed for tests (merge_queue + runs for FK)
 const TEST_SCHEMA = `
@@ -493,20 +524,12 @@ describe("MergeQueue.reconcile", () => {
     insertRun(db, "run-1", "seed-1", "completed");
     insertRun(db, "run-2", "seed-2", "completed");
 
-    // Mock git commands via injected execFile
-    const mockExecFileAsync = vi.fn();
-    // rev-parse succeeds for both branches
-    mockExecFileAsync.mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === "rev-parse") {
-        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
-      }
-      if (args[0] === "diff") {
-        return Promise.resolve({ stdout: "src/foo.ts\nsrc/bar.ts\n", stderr: "" });
-      }
-      return Promise.resolve({ stdout: "", stderr: "" });
+    const backend = makeBackend({
+      branchExists: true,
+      files: ["src/foo.ts", "src/bar.ts"],
     });
 
-    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+    const result = await queue.reconcile(db, "/tmp/repo", backend);
 
     expect(result.enqueued).toBe(2);
     expect(result.skipped).toBe(0);
@@ -522,28 +545,22 @@ describe("MergeQueue.reconcile", () => {
     // Pre-enqueue run-1
     queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
 
-    const mockExecFileAsync = vi.fn();
-    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+    const backend = makeBackend();
+    const result = await queue.reconcile(db, "/tmp/repo", backend);
 
     expect(result.enqueued).toBe(0);
     expect(result.skipped).toBe(1);
     expect(result.invalidBranch).toBe(0);
-    // git should not have been called since the run was already queued
-    expect(mockExecFileAsync).not.toHaveBeenCalled();
+    // branchExists should not have been called since the run was already queued
+    expect(backend.branchExists).not.toHaveBeenCalled();
   });
 
   it("counts invalid branches when rev-parse fails", async () => {
     insertRun(db, "run-1", "seed-1", "completed");
 
-    const mockExecFileAsync = vi.fn();
-    mockExecFileAsync.mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === "rev-parse") {
-        return Promise.reject(new Error("fatal: not a valid ref"));
-      }
-      return Promise.resolve({ stdout: "", stderr: "" });
-    });
+    const backend = makeBackend({ branchExists: false });
 
-    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+    const result = await queue.reconcile(db, "/tmp/repo", backend);
 
     expect(result.enqueued).toBe(0);
     expect(result.skipped).toBe(0);
@@ -553,18 +570,9 @@ describe("MergeQueue.reconcile", () => {
   it("handles empty diff output for files_modified", async () => {
     insertRun(db, "run-1", "seed-1", "completed");
 
-    const mockExecFileAsync = vi.fn();
-    mockExecFileAsync.mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === "rev-parse") {
-        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
-      }
-      if (args[0] === "diff") {
-        return Promise.resolve({ stdout: "", stderr: "" });
-      }
-      return Promise.resolve({ stdout: "", stderr: "" });
-    });
+    const backend = makeBackend({ branchExists: true, files: [] });
 
-    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+    const result = await queue.reconcile(db, "/tmp/repo", backend);
 
     expect(result.enqueued).toBe(1);
     const entries = queue.list();
@@ -575,27 +583,17 @@ describe("MergeQueue.reconcile", () => {
     insertRun(db, "run-1", "seed-1", "running");
     insertRun(db, "run-2", "seed-2", "failed");
 
-    // Secondary pass will check for remote branches; reject all to simulate no push
-    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === "rev-parse") {
-        return Promise.reject(new Error("fatal: not a valid ref"));
-      }
-      return Promise.resolve({ stdout: "", stderr: "" });
-    });
-    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+    // Secondary pass checks remote branches; return false to simulate no push
+    const backend = makeBackend({ branchExistsOnRemote: false });
+    const result = await queue.reconcile(db, "/tmp/repo", backend);
 
     expect(result.enqueued).toBe(0);
     expect(result.skipped).toBe(0);
     expect(result.invalidBranch).toBe(0);
     // Secondary pass checks the remote branch only for "running" runs — not "failed".
-    // Assert on the specific args (not just call count) so that adding a preliminary
-    // step (e.g. a git fetch) before rev-parse does not break this test.
-    expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
-    expect(mockExecFileAsync).toHaveBeenCalledWith(
-      "git",
-      ["rev-parse", "--verify", "refs/remotes/origin/foreman/seed-1"],
-      { cwd: "/tmp/repo" }
-    );
+    // branchExistsOnRemote should have been called once (for seed-1 only).
+    expect(backend.branchExistsOnRemote).toHaveBeenCalledTimes(1);
+    expect(backend.branchExistsOnRemote).toHaveBeenCalledWith("/tmp/repo", "foreman/seed-1");
   });
 
   it("recovers a running run whose branch was pushed before process crashed", async () => {
@@ -607,25 +605,15 @@ describe("MergeQueue.reconcile", () => {
     ).run();
 
     // Commit epoch: 2026-01-02 (after the run was created) — should trigger recovery.
-    // 2026-01-02T00:00:00Z in Unix seconds:
     const commitEpoch = Math.floor(new Date("2026-01-02T00:00:00.000Z").getTime() / 1000);
 
-    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[2] === "refs/remotes/origin/foreman/seed-1") {
-        // Remote branch exists — push succeeded before crash
-        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
-      }
-      if (args[0] === "log" && args.includes("--format=%ct")) {
-        // Remote branch commit time is after run creation → not a stale ref → recover
-        return Promise.resolve({ stdout: `${commitEpoch}\n`, stderr: "" });
-      }
-      if (args[0] === "diff") {
-        return Promise.resolve({ stdout: "src/foo.ts\nsrc/bar.ts\n", stderr: "" });
-      }
-      return Promise.reject(new Error("unexpected git call"));
+    const backend = makeBackend({
+      branchExistsOnRemote: true,
+      timestamp: commitEpoch,
+      files: ["src/foo.ts", "src/bar.ts"],
     });
 
-    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+    const result = await queue.reconcile(db, "/tmp/repo", backend);
 
     expect(result.enqueued).toBe(1);
     expect(result.skipped).toBe(0);
@@ -651,20 +639,13 @@ describe("MergeQueue.reconcile", () => {
     // Commit 24 hours after run creation — definitely a legitimate recovery
     const commitEpoch = Math.floor(new Date("2026-01-02T00:00:00.000Z").getTime() / 1000);
 
-    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[2] === "refs/remotes/origin/foreman/seed-1") {
-        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
-      }
-      if (args[0] === "log" && args.includes("--format=%ct")) {
-        return Promise.resolve({ stdout: `${commitEpoch}\n`, stderr: "" });
-      }
-      if (args[0] === "diff") {
-        return Promise.resolve({ stdout: "src/changed.ts\n", stderr: "" });
-      }
-      return Promise.reject(new Error("unexpected git call"));
+    const backend = makeBackend({
+      branchExistsOnRemote: true,
+      timestamp: commitEpoch,
+      files: ["src/changed.ts"],
     });
 
-    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+    const result = await queue.reconcile(db, "/tmp/repo", backend);
 
     expect(result.enqueued).toBe(1);
     const entries = queue.list("pending");
@@ -690,19 +671,12 @@ describe("MergeQueue.reconcile", () => {
     // Remote branch was last committed on 2026-01-01 — BEFORE this run was created
     const staleCommitEpoch = Math.floor(new Date("2026-01-01T00:00:00.000Z").getTime() / 1000);
 
-    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[2] === "refs/remotes/origin/foreman/seed-1") {
-        // Stale remote ref still exists after foreman reset
-        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
-      }
-      if (args[0] === "log" && args.includes("--format=%ct")) {
-        // Remote branch was last committed before this run was created — stale!
-        return Promise.resolve({ stdout: `${staleCommitEpoch}\n`, stderr: "" });
-      }
-      return Promise.reject(new Error("unexpected git call"));
+    const backend = makeBackend({
+      branchExistsOnRemote: true,
+      timestamp: staleCommitEpoch, // Stale: before run was created
     });
 
-    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+    const result = await queue.reconcile(db, "/tmp/repo", backend);
 
     // Should NOT be enqueued — stale remote ref from previous run
     expect(result.enqueued).toBe(0);
@@ -717,14 +691,9 @@ describe("MergeQueue.reconcile", () => {
     insertRun(db, "run-1", "seed-1", "running");
     queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
 
-    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === "rev-parse") {
-        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
-      }
-      return Promise.resolve({ stdout: "", stderr: "" });
-    });
+    const backend = makeBackend({ branchExistsOnRemote: true });
 
-    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+    const result = await queue.reconcile(db, "/tmp/repo", backend);
 
     // Already in queue — skipped in secondary pass
     expect(result.enqueued).toBe(0);
@@ -746,22 +715,14 @@ describe("MergeQueue.reconcile", () => {
     // Commit epoch after both runs were created — recovery should proceed for seed-2
     const commitEpoch = Math.floor(new Date("2026-01-02T00:00:00.000Z").getTime() / 1000);
 
-    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === "rev-parse") {
-        // Both local (completed first-pass) and remote (secondary pass) branches exist
-        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
-      }
-      if (args[0] === "log" && args.includes("--format=%ct")) {
-        // Commit after run creation — not a stale ref → recover
-        return Promise.resolve({ stdout: `${commitEpoch}\n`, stderr: "" });
-      }
-      if (args[0] === "diff") {
-        return Promise.resolve({ stdout: "src/foo.ts\n", stderr: "" });
-      }
-      return Promise.reject(new Error("unexpected git call"));
+    const backend = makeBackend({
+      branchExists: true,
+      branchExistsOnRemote: true,
+      timestamp: commitEpoch,
+      files: ["src/foo.ts"],
     });
 
-    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+    const result = await queue.reconcile(db, "/tmp/repo", backend);
 
     expect(result.enqueued).toBe(2);
     expect(queue.list("pending")).toHaveLength(2);
@@ -792,22 +753,13 @@ describe("MergeQueue.reconcile", () => {
     // run-new is never tested because seenSeedIds deduplication skips it.
     const commitEpoch = Math.floor(new Date("2026-01-01T12:00:00.000Z").getTime() / 1000);
 
-    const mockExecFileAsync = vi.fn().mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[2] === "refs/remotes/origin/foreman/seed-1") {
-        // Remote branch exists — pushed by run-old before it crashed
-        return Promise.resolve({ stdout: "abc123\n", stderr: "" });
-      }
-      if (args[0] === "log" && args.includes("--format=%ct")) {
-        // Commit at Jan 1 noon — after run-old was created → run-old is recovered
-        return Promise.resolve({ stdout: `${commitEpoch}\n`, stderr: "" });
-      }
-      if (args[0] === "diff") {
-        return Promise.resolve({ stdout: "src/foo.ts\n", stderr: "" });
-      }
-      return Promise.reject(new Error("unexpected git call"));
+    const backend = makeBackend({
+      branchExistsOnRemote: true,
+      timestamp: commitEpoch,
+      files: ["src/foo.ts"],
     });
 
-    const result = await queue.reconcile(db, "/tmp/repo", mockExecFileAsync);
+    const result = await queue.reconcile(db, "/tmp/repo", backend);
 
     // Only one entry should be enqueued (deduplicated by seed_id)
     expect(result.enqueued).toBe(1);
