@@ -53,7 +53,7 @@ describe("agent-worker.ts — nothing_to_commit for verification beads (bd-w8sj)
     // Find the nothing_to_commit block and verify finalizeSucceeded is set to true
     const idx = source.indexOf('errorDetail === "nothing_to_commit"');
     expect(idx).toBeGreaterThan(-1);
-    const block = source.slice(idx, idx + 1200);
+    const block = source.slice(idx, idx + 2500);
     expect(block).toContain("finalizeSucceeded = true");
   });
 
@@ -65,7 +65,7 @@ describe("agent-worker.ts — nothing_to_commit for verification beads (bd-w8sj)
 
   it("treats nothing_to_commit as success when branch has prior commits (reused worktree)", () => {
     const idx = source.indexOf('errorDetail === "nothing_to_commit"');
-    const block = source.slice(idx, idx + 1200);
+    const block = source.slice(idx, idx + 2500);
     // hasCommitsAhead check must exist and trigger success
     expect(block).toContain("hasCommitsAhead");
     expect(block).toContain("reused worktree");

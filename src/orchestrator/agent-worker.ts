@@ -636,18 +636,29 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
             const isVerificationBead = beadType === "test" ||
               /verify|validate|test/i.test(beadTitle);
 
-            // Check if branch has commits ahead of target (reused worktree scenario)
+            // Check if branch has commits ahead of target (reused worktree scenario).
+            // Try multiple refs: the remote target branch may not exist if it hasn't
+            // been pushed yet. Fall back to the local branch, then origin/dev.
             let hasCommitsAhead = false;
-            try {
-              const targetRef = config.targetBranch ? `origin/${config.targetBranch}` : "origin/dev";
-              const logOutput = execFileSync("git", ["log", `${targetRef}..HEAD`, "--oneline"], {
-                cwd: worktreePath,
-                stdio: "pipe",
-                timeout: 10_000,
-              }).toString().trim();
-              hasCommitsAhead = logOutput.length > 0;
-            } catch {
-              // Non-fatal: if git log fails, fall through to existing logic
+            {
+              const candidates: string[] = [];
+              if (config.targetBranch) {
+                candidates.push(`origin/${config.targetBranch}`, config.targetBranch);
+              }
+              candidates.push("origin/dev", "origin/main");
+              for (const ref of candidates) {
+                try {
+                  const logOutput = execFileSync("git", ["log", `${ref}..HEAD`, "--oneline"], {
+                    cwd: worktreePath,
+                    stdio: "pipe",
+                    timeout: 10_000,
+                  }).toString().trim();
+                  hasCommitsAhead = logOutput.length > 0;
+                  break; // First valid ref wins
+                } catch {
+                  // Ref doesn't exist or git failed — try next
+                }
+              }
             }
 
             if (hasCommitsAhead) {
