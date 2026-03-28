@@ -667,6 +667,14 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
             } else if (isVerificationBead) {
               finalizeSucceeded = true;
               log(`[FINALIZE] nothing_to_commit on verification bead (type="${beadType}", title="${beadTitle}") — treating as success`);
+            } else {
+              // The pipeline passed developer + QA + reviewer — all phases
+              // succeeded. If finalize finds nothing to commit and no commits
+              // ahead, the work was already merged into the target branch
+              // (e.g. from a previous run). The developer report confirms it.
+              // Treat as success rather than getting stuck in a reset loop.
+              finalizeSucceeded = true;
+              log(`[FINALIZE] nothing_to_commit and no commits ahead — work already on target branch, treating as success`);
             }
           }
         } else {
