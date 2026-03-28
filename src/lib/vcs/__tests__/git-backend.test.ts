@@ -1396,3 +1396,227 @@ describe("GitBackend integration: stageAll → commit → push", () => {
     expect(headId).toMatch(/^[0-9a-f]{40}$/);
   });
 });
+
+// ── GitBackend.merge ──────────────────────────────────────────────────────────
+
+describe("GitBackend.merge", () => {
+  // AC-005-1: Clean merge returns { success: true }
+  it("returns success=true when merging a non-conflicting branch (AC-005-1)", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Create feature branch with a new file
+    execFileSync("git", ["checkout", "-b", "feature/clean-merge"], { cwd: repo });
+    writeFileSync(join(repo, "feature.txt"), "feature content\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "add feature.txt"], { cwd: repo });
+
+    // Merge feature branch into main
+    const result = await backend.merge(repo, "feature/clean-merge", "main");
+
+    expect(result.success).toBe(true);
+    expect(result.conflicts).toBeUndefined();
+
+    // Verify we're on main and the file is present
+    const currentBranch = await backend.getCurrentBranch(repo);
+    expect(currentBranch).toBe("main");
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(repo, "feature.txt"))).toBe(true);
+  });
+
+  // AC-005-1: Clean merge using defaulted targetBranch (current branch)
+  it("merges into current branch when targetBranch is omitted (AC-005-1)", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Create feature branch with a new file
+    execFileSync("git", ["checkout", "-b", "feature/default-target"], { cwd: repo });
+    writeFileSync(join(repo, "feature2.txt"), "another feature\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "add feature2.txt"], { cwd: repo });
+
+    // Go back to main so getCurrentBranch returns "main"
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+
+    // Merge without specifying targetBranch — should default to "main"
+    const result = await backend.merge(repo, "feature/default-target");
+
+    expect(result.success).toBe(true);
+
+    const currentBranch = await backend.getCurrentBranch(repo);
+    expect(currentBranch).toBe("main");
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(repo, "feature2.txt"))).toBe(true);
+  });
+
+  // AC-005-2: Conflicting merge returns { success: false, conflicts: [...] }
+  it("returns success=false with conflict list when branches conflict (AC-005-2)", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Create competing changes on feature branch
+    execFileSync("git", ["checkout", "-b", "feature/conflict-branch"], { cwd: repo });
+    writeFileSync(join(repo, "README.md"), "feature version\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "feature: edit README"], { cwd: repo });
+
+    // Also advance main with a conflicting change
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    writeFileSync(join(repo, "README.md"), "main version\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "main: edit README"], { cwd: repo });
+
+    // Attempt merge — should fail with conflict on README.md
+    const result = await backend.merge(repo, "feature/conflict-branch", "main");
+
+    expect(result.success).toBe(false);
+    expect(Array.isArray(result.conflicts)).toBe(true);
+    expect(result.conflicts!.length).toBeGreaterThan(0);
+    expect(result.conflicts).toContain("README.md");
+
+    // Clean up conflict state to allow tempDir cleanup
+    execFileSync("git", ["merge", "--abort"], { cwd: repo });
+  });
+
+  // AC-005-3: Dirty working tree is stashed before merge and restored after
+  it("stashes uncommitted changes and restores them after a clean merge (AC-005-3)", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Create feature branch with a new file
+    execFileSync("git", ["checkout", "-b", "feature/with-dirty"], { cwd: repo });
+    writeFileSync(join(repo, "feature3.txt"), "feature content\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "add feature3.txt"], { cwd: repo });
+
+    // Go back to main and create uncommitted changes (dirty tree)
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    writeFileSync(join(repo, "dirty.txt"), "uncommitted change\n");
+    execFileSync("git", ["add", "dirty.txt"], { cwd: repo });
+    // Note: dirty.txt is staged but not committed — will be auto-stashed
+
+    // Merge feature branch — dirty tree should be stashed and restored
+    const result = await backend.merge(repo, "feature/with-dirty", "main");
+
+    expect(result.success).toBe(true);
+
+    // After merge, staged dirty.txt changes should be restored
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(repo, "dirty.txt"))).toBe(true);
+    expect(existsSync(join(repo, "feature3.txt"))).toBe(true);
+  });
+
+  // AC-005-3: Stash when tree has unstaged (tracked modified) changes
+  it("handles unstaged modifications in dirty tree (AC-005-3)", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Create feature branch
+    execFileSync("git", ["checkout", "-b", "feature/unstaged"], { cwd: repo });
+    writeFileSync(join(repo, "feature4.txt"), "feature4 content\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "add feature4.txt"], { cwd: repo });
+
+    // Back to main — make an unstaged modification to a tracked file
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    writeFileSync(join(repo, "README.md"), "modified but not staged\n");
+    // Not staging the change — it's an unstaged modification
+
+    // Merge should stash the unstaged change, merge, then restore
+    const result = await backend.merge(repo, "feature/unstaged", "main");
+
+    expect(result.success).toBe(true);
+
+    // README.md should still have the unstaged changes after restore
+    const { readFileSync } = await import("node:fs");
+    const content = readFileSync(join(repo, "README.md"), "utf8");
+    expect(content).toBe("modified but not staged\n");
+  });
+
+  // AC-007-1: Verify the merge uses --no-ff (creates a merge commit)
+  it("creates a merge commit (--no-ff) on clean merge (AC-007-1)", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Record initial HEAD
+    const initialHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo }).toString().trim();
+
+    // Create feature branch
+    execFileSync("git", ["checkout", "-b", "feature/no-ff"], { cwd: repo });
+    writeFileSync(join(repo, "noff.txt"), "content\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "feature: add noff.txt"], { cwd: repo });
+    const featureHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo }).toString().trim();
+
+    // Back to main and merge
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    const result = await backend.merge(repo, "feature/no-ff", "main");
+    expect(result.success).toBe(true);
+
+    // A merge commit should have 2 parents
+    const parents = execFileSync(
+      "git",
+      ["log", "--pretty=%P", "-1"],
+      { cwd: repo },
+    ).toString().trim().split(" ").filter(Boolean);
+
+    expect(parents.length).toBe(2);
+    // One parent is the initial HEAD, the other is the feature tip
+    expect(parents).toContain(initialHead);
+    expect(parents).toContain(featureHead);
+  });
+
+  // Edge case: merge leaves repo on the target branch even if no-ff merge commits
+  it("leaves the repo checked out on targetBranch after merge", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    execFileSync("git", ["checkout", "-b", "feature/checkout-test"], { cwd: repo });
+    writeFileSync(join(repo, "checkout.txt"), "content\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "checkout test"], { cwd: repo });
+
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    const result = await backend.merge(repo, "feature/checkout-test", "main");
+
+    expect(result.success).toBe(true);
+
+    const branch = await backend.getCurrentBranch(repo);
+    expect(branch).toBe("main");
+  });
+
+  // Edge case: merge into a non-current branch switches to targetBranch first
+  it("checks out targetBranch even when currently on a different branch", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Create target branch
+    execFileSync("git", ["checkout", "-b", "target-branch"], { cwd: repo });
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+
+    // Create source branch from main
+    execFileSync("git", ["checkout", "-b", "source-branch"], { cwd: repo });
+    writeFileSync(join(repo, "source.txt"), "source content\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "source commit"], { cwd: repo });
+
+    // Stay on source-branch — merge source into target-branch
+    const result = await backend.merge(repo, "source-branch", "target-branch");
+
+    expect(result.success).toBe(true);
+
+    // Should be on target-branch now
+    const currentBranch = await backend.getCurrentBranch(repo);
+    expect(currentBranch).toBe("target-branch");
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(repo, "source.txt"))).toBe(true);
+  });
+});
