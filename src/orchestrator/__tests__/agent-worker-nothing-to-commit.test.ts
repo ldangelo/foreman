@@ -53,7 +53,7 @@ describe("agent-worker.ts — nothing_to_commit for verification beads (bd-w8sj)
     // Find the nothing_to_commit block and verify finalizeSucceeded is set to true
     const idx = source.indexOf('errorDetail === "nothing_to_commit"');
     expect(idx).toBeGreaterThan(-1);
-    const block = source.slice(idx, idx + 600);
+    const block = source.slice(idx, idx + 1200);
     expect(block).toContain("finalizeSucceeded = true");
   });
 
@@ -63,15 +63,26 @@ describe("agent-worker.ts — nothing_to_commit for verification beads (bd-w8sj)
     );
   });
 
-  it("does NOT override nothing_to_commit as success for non-verification beads", () => {
-    // The isVerificationBead guard must be present before setting finalizeSucceeded=true
+  it("treats nothing_to_commit as success when branch has prior commits (reused worktree)", () => {
     const idx = source.indexOf('errorDetail === "nothing_to_commit"');
-    const block = source.slice(idx, idx + 800);
+    const block = source.slice(idx, idx + 1200);
+    // hasCommitsAhead check must exist and trigger success
+    expect(block).toContain("hasCommitsAhead");
+    expect(block).toContain("reused worktree");
+  });
+
+  it("only treats nothing_to_commit as success for verification beads when no prior commits", () => {
+    const idx = source.indexOf('errorDetail === "nothing_to_commit"');
+    const block = source.slice(idx, idx + 1800);
+    // Both hasCommitsAhead and isVerificationBead paths must exist
+    expect(block).toContain("hasCommitsAhead");
     expect(block).toContain("isVerificationBead");
-    // The success path must be inside the isVerificationBead conditional
-    const isVerifIdx = block.indexOf("isVerificationBead");
-    const successIdx = block.indexOf("finalizeSucceeded = true");
-    expect(isVerifIdx).toBeLessThan(successIdx);
+    // hasCommitsAhead success path runs first (before verification bead fallback)
+    const hasCommitsSuccessIdx = block.indexOf("reused worktree");
+    const verifSuccessIdx = block.indexOf("verification bead");
+    expect(hasCommitsSuccessIdx).toBeGreaterThan(-1);
+    expect(verifSuccessIdx).toBeGreaterThan(-1);
+    expect(hasCommitsSuccessIdx).toBeLessThan(verifSuccessIdx);
   });
 });
 

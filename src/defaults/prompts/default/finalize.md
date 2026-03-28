@@ -54,7 +54,14 @@ Run:
 {{vcsCommitCommand}}
 ```
 
-If git reports "nothing to commit", check whether this is a verification/test bead:
+If git reports "nothing to commit", first check if the branch already has commits ahead of the target:
+```
+git log origin/{{baseBranch}}..HEAD --oneline
+```
+
+**If there ARE commits ahead** (output is non-empty), the work was already committed in a previous run. This is normal for reused worktrees. Proceed to Step 5 (Verify branch) — no mail needed.
+
+**If there are NO commits ahead** (output is empty), check whether this is a verification/test bead:
 - Bead type is `{{seedType}}`
 - Bead title is `{{seedTitle}}`
 
@@ -65,7 +72,7 @@ No changes is the correct and expected outcome for a verification bead. Treat th
 ```
 Then proceed to Step 5 (Verify branch).
 
-**Otherwise (non-verification bead):**
+**Otherwise (non-verification bead with no commits at all):**
 Send this mail and stop immediately:
 ```
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"nothing_to_commit"}'

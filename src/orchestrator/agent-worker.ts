@@ -626,16 +626,34 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           const errorDetail = typeof body["error"] === "string" ? body["error"] : "unknown finalize error";
           log(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
 
-          // Special case: "nothing to commit" is success for verification/test beads.
-          // The finalize agent should already handle this in its prompt, but as a
-          // safety net we also check here so verification beads aren't stuck in a
-          // reset-to-open loop when the LLM misses the conditional logic.
+          // Special case: "nothing to commit" may be normal when a worktree is
+          // reused from a previous run (commits already exist). Check if the
+          // branch has commits ahead of the target — if so, the work is done.
+          // Also handle verification/test beads which genuinely have no changes.
           if (errorDetail === "nothing_to_commit") {
             const beadType = config.seedType ?? "";
             const beadTitle = config.seedTitle ?? "";
             const isVerificationBead = beadType === "test" ||
               /verify|validate|test/i.test(beadTitle);
-            if (isVerificationBead) {
+
+            // Check if branch has commits ahead of target (reused worktree scenario)
+            let hasCommitsAhead = false;
+            try {
+              const targetRef = config.targetBranch ? `origin/${config.targetBranch}` : "origin/dev";
+              const logOutput = execFileSync("git", ["log", `${targetRef}..HEAD`, "--oneline"], {
+                cwd: worktreePath,
+                stdio: "pipe",
+                timeout: 10_000,
+              }).toString().trim();
+              hasCommitsAhead = logOutput.length > 0;
+            } catch {
+              // Non-fatal: if git log fails, fall through to existing logic
+            }
+
+            if (hasCommitsAhead) {
+              finalizeSucceeded = true;
+              log(`[FINALIZE] nothing_to_commit but branch has prior commits — treating as success (reused worktree)`);
+            } else if (isVerificationBead) {
               finalizeSucceeded = true;
               log(`[FINALIZE] nothing_to_commit on verification bead (type="${beadType}", title="${beadTitle}") — treating as success`);
             }
