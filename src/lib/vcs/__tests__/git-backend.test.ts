@@ -463,3 +463,178 @@ describe("GitBackend.removeWorkspace", () => {
     expect(existsSync(workspacePath)).toBe(false);
   });
 });
+
+// ── GitBackend.checkoutBranch ─────────────────────────────────────────────────
+
+describe("GitBackend.checkoutBranch", () => {
+  it("checks out a branch and updates the current branch", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Create a feature branch
+    execFileSync("git", ["checkout", "-b", "feature/checkout-test"], { cwd: repo });
+
+    // Now checkout back to main via backend
+    await backend.checkoutBranch(repo, "main");
+
+    const current = await backend.getCurrentBranch(repo);
+    expect(current).toBe("main");
+  });
+
+  it("throws when checking out a non-existent branch", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    await expect(
+      backend.checkoutBranch(repo, "branch-does-not-exist"),
+    ).rejects.toThrow();
+  });
+});
+
+// ── GitBackend.branchExistsOnRemote ──────────────────────────────────────────
+
+describe("GitBackend.branchExistsOnRemote", () => {
+  it("returns true for a branch that exists on the remote", async () => {
+    // Create a 'remote' repo
+    const remoteDir = realpathSync(
+      mkdtempSync(join(tmpdir(), "foreman-git-backend-remote-bxr-")),
+    );
+    tempDirs.push(remoteDir);
+    execFileSync("git", ["init", "--initial-branch=main"], { cwd: remoteDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: remoteDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: remoteDir });
+    writeFileSync(join(remoteDir, "README.md"), "# remote\n");
+    execFileSync("git", ["add", "."], { cwd: remoteDir });
+    execFileSync("git", ["commit", "-m", "initial commit"], { cwd: remoteDir });
+
+    // Create and push a feature branch in the remote
+    execFileSync("git", ["checkout", "-b", "feature/remote-branch"], { cwd: remoteDir });
+    writeFileSync(join(remoteDir, "feature.txt"), "feature\n");
+    execFileSync("git", ["add", "."], { cwd: remoteDir });
+    execFileSync("git", ["commit", "-m", "feature commit"], { cwd: remoteDir });
+    execFileSync("git", ["checkout", "main"], { cwd: remoteDir });
+
+    // Clone the remote
+    const cloneDir = realpathSync(
+      mkdtempSync(join(tmpdir(), "foreman-git-backend-clone-bxr-")),
+    );
+    tempDirs.push(cloneDir);
+    execFileSync("git", ["clone", remoteDir, cloneDir]);
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: cloneDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: cloneDir });
+
+    const backend = new GitBackend(cloneDir);
+    const exists = await backend.branchExistsOnRemote(cloneDir, "feature/remote-branch");
+    expect(exists).toBe(true);
+  });
+
+  it("returns false for a branch that only exists locally", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    execFileSync("git", ["checkout", "-b", "local-only-branch"], { cwd: repo });
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    const backend = new GitBackend(repo);
+
+    // No remote is configured, so local-only-branch cannot exist on origin
+    const exists = await backend.branchExistsOnRemote(repo, "local-only-branch");
+    expect(exists).toBe(false);
+  });
+
+  it("returns false when no remote is configured", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    const exists = await backend.branchExistsOnRemote(repo, "main");
+    expect(exists).toBe(false);
+  });
+});
+
+// ── GitBackend.deleteBranch ───────────────────────────────────────────────────
+
+describe("GitBackend.deleteBranch", () => {
+  it("deletes a merged branch and returns wasFullyMerged=true (AC-T-005-3)", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Create feature branch with a commit
+    execFileSync("git", ["checkout", "-b", "feature/merged"], { cwd: repo });
+    writeFileSync(join(repo, "feature.txt"), "feature content\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "feature commit"], { cwd: repo });
+
+    // Merge feature into main
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    execFileSync("git", ["merge", "feature/merged", "--no-ff", "-m", "merge feature"], { cwd: repo });
+
+    const result = await backend.deleteBranch(repo, "feature/merged", { targetBranch: "main" });
+
+    expect(result.deleted).toBe(true);
+    expect(result.wasFullyMerged).toBe(true);
+    // Verify the branch is gone
+    const exists = await backend.branchExists(repo, "feature/merged");
+    expect(exists).toBe(false);
+  });
+
+  it("skips deletion of an unmerged branch when force=false", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Create a feature branch with a commit (not merged)
+    execFileSync("git", ["checkout", "-b", "feature/unmerged"], { cwd: repo });
+    writeFileSync(join(repo, "unmerged.txt"), "unmerged content\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "unmerged commit"], { cwd: repo });
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+
+    const result = await backend.deleteBranch(repo, "feature/unmerged", {
+      targetBranch: "main",
+      force: false,
+    });
+
+    expect(result.deleted).toBe(false);
+    expect(result.wasFullyMerged).toBe(false);
+    // Branch should still exist
+    const exists = await backend.branchExists(repo, "feature/unmerged");
+    expect(exists).toBe(true);
+  });
+
+  it("force-deletes an unmerged branch when force=true", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Create a feature branch with a commit (not merged)
+    execFileSync("git", ["checkout", "-b", "feature/force-delete"], { cwd: repo });
+    writeFileSync(join(repo, "force.txt"), "force content\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "force commit"], { cwd: repo });
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+
+    const result = await backend.deleteBranch(repo, "feature/force-delete", {
+      targetBranch: "main",
+      force: true,
+    });
+
+    expect(result.deleted).toBe(true);
+    expect(result.wasFullyMerged).toBe(false);
+    // Branch should be gone
+    const exists = await backend.branchExists(repo, "feature/force-delete");
+    expect(exists).toBe(false);
+  });
+
+  it("returns { deleted: false, wasFullyMerged: true } when branch does not exist", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    const result = await backend.deleteBranch(repo, "branch-that-never-existed");
+
+    expect(result.deleted).toBe(false);
+    expect(result.wasFullyMerged).toBe(true);
+  });
+});
