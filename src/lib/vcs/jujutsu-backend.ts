@@ -132,16 +132,16 @@ export class JujutsuBackend implements VcsBackend {
   async detectDefaultBranch(repoPath: string): Promise<string> {
     // 1. Check for 'main' bookmark
     try {
-      await this.jj(["bookmark", "list", "--name=main"], repoPath);
-      return "main";
+      const out = await this.jj(["bookmark", "list", "main"], repoPath);
+      if (out.includes("main")) return "main";
     } catch {
       // not found
     }
 
     // 2. Check for 'master' bookmark
     try {
-      await this.jj(["bookmark", "list", "--name=master"], repoPath);
-      return "master";
+      const out = await this.jj(["bookmark", "list", "master"], repoPath);
+      if (out.includes("master")) return "master";
     } catch {
       // not found
     }
@@ -190,7 +190,7 @@ export class JujutsuBackend implements VcsBackend {
   async branchExists(repoPath: string, branchName: string): Promise<boolean> {
     try {
       const out = await this.jj(
-        ["bookmark", "list", `--name=${branchName}`],
+        ["bookmark", "list", branchName],
         repoPath,
       );
       return out.includes(branchName);
@@ -208,7 +208,7 @@ export class JujutsuBackend implements VcsBackend {
   ): Promise<boolean> {
     try {
       const out = await this.jj(
-        ["bookmark", "list", `--name=${branchName}`, "--remote=origin"],
+        ["bookmark", "list", "--remote", "origin", branchName],
         repoPath,
       );
       return out.includes(branchName);
@@ -288,6 +288,10 @@ export class JujutsuBackend implements VcsBackend {
       return { workspacePath, branchName };
     }
 
+    // Ensure the parent directory exists (jj workspace add requires it)
+    const worktreesDir = join(repoPath, ".foreman-worktrees");
+    await fs.mkdir(worktreesDir, { recursive: true });
+
     // Create new workspace
     try {
       await this.jj(
@@ -302,16 +306,18 @@ export class JujutsuBackend implements VcsBackend {
     }
 
     // Create a bookmark for this workspace
+    // Use "foreman-<seedId>@" syntax to reference the workspace's working copy
+    const workspaceRef = `foreman-${seedId}@`;
     try {
       await this.jj(
-        ["bookmark", "create", branchName, "-r", `@${`foreman-${seedId}`}`],
+        ["bookmark", "create", branchName, "-r", workspaceRef],
         repoPath,
       );
     } catch {
       // Bookmark may already exist — try to move it
       try {
         await this.jj(
-          ["bookmark", "move", branchName, "--to", `@${`foreman-${seedId}`}`],
+          ["bookmark", "move", branchName, "--to", workspaceRef],
           repoPath,
         );
       } catch (moveErr) {
