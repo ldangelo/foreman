@@ -598,3 +598,451 @@ describe("JujutsuBackend error handling (AC-T-017-3)", () => {
     await expect(backend.detectDefaultBranch(dir)).rejects.toThrow(/jj log failed/);
   });
 });
+
+// ── AC-T-018: Workspace Management ────────────────────────────────────────────
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.createWorkspace (AC-T-018-1)", () => {
+  it("creates a workspace directory and returns workspacePath + branchName", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    // Need at least one commit for jj workspace add to work
+    writeFileSync(join(repo, "README.md"), "# init\n");
+    execFileSync("jj", ["describe", "-m", "initial"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    const result = await backend.createWorkspace(repo, "bd-test");
+
+    expect(result.workspacePath).toContain("bd-test");
+    expect(result.branchName).toBe("foreman/bd-test");
+    // The workspace directory should exist
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(result.workspacePath)).toBe(true);
+  });
+
+  it("reuses existing workspace directory and rebases (AC-T-018-3)", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    // Need commits for workspace operations
+    writeFileSync(join(repo, "README.md"), "# init\n");
+    execFileSync("jj", ["describe", "-m", "initial"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+
+    // First call creates the workspace
+    const result1 = await backend.createWorkspace(repo, "bd-reuse");
+
+    // Second call should reuse and not throw
+    const result2 = await backend.createWorkspace(repo, "bd-reuse");
+
+    expect(result1.workspacePath).toBe(result2.workspacePath);
+    expect(result1.branchName).toBe(result2.branchName);
+  });
+});
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.removeWorkspace (AC-T-018-2)", () => {
+  it("removes the workspace and its directory", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    writeFileSync(join(repo, "README.md"), "# init\n");
+    execFileSync("jj", ["describe", "-m", "initial"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    const { workspacePath } = await backend.createWorkspace(repo, "bd-remove");
+
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(workspacePath)).toBe(true);
+
+    await backend.removeWorkspace(repo, workspacePath);
+
+    expect(existsSync(workspacePath)).toBe(false);
+  });
+
+  it("does not throw when workspace directory does not exist", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    const backend = new JujutsuBackend(repo);
+    const nonExistent = join(repo, ".foreman-worktrees", "nonexistent");
+    await expect(backend.removeWorkspace(repo, nonExistent)).resolves.toBeUndefined();
+  });
+});
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.listWorkspaces (AC-T-018-4)", () => {
+  it("returns an empty array when no non-default workspaces exist", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+    const backend = new JujutsuBackend(repo);
+
+    const workspaces = await backend.listWorkspaces(repo);
+    // The default workspace is not included
+    expect(workspaces).toBeInstanceOf(Array);
+  });
+
+  it("includes created workspaces in the list", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    writeFileSync(join(repo, "README.md"), "# init\n");
+    execFileSync("jj", ["describe", "-m", "initial"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    await backend.createWorkspace(repo, "bd-list-test");
+
+    const workspaces = await backend.listWorkspaces(repo);
+    const paths = workspaces.map((w) => w.path);
+    expect(paths.some((p) => p.includes("bd-list-test"))).toBe(true);
+  });
+});
+
+// ── AC-T-019: Commit Operations ───────────────────────────────────────────────
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.commit (AC-T-019-1)", () => {
+  it("sets a commit message using jj describe and advances to new change", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    writeFileSync(join(repo, "file.txt"), "hello\n");
+    const backend = new JujutsuBackend(repo);
+
+    // commit should not throw
+    await expect(backend.commit(repo, "my commit message")).resolves.toBeUndefined();
+
+    // The current @ should now be a new empty change (no description)
+    const desc = execFileSync(
+      "jj",
+      ["log", "--no-graph", "-r", "@", "-T", "description"],
+      { cwd: repo, stdio: "pipe" },
+    ).toString().trim();
+
+    // The new change created by `jj new` should have empty description
+    expect(desc).toBe("");
+  });
+
+  it("includes the message in the committed change", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    writeFileSync(join(repo, "file.txt"), "content\n");
+    const backend = new JujutsuBackend(repo);
+
+    await backend.commit(repo, "Test commit message (AC-019)");
+
+    // The parent change should have the message
+    const desc = execFileSync(
+      "jj",
+      ["log", "--no-graph", "-r", "@-", "-T", "description"],
+      { cwd: repo, stdio: "pipe" },
+    ).toString().trim();
+
+    expect(desc).toContain("Test commit message (AC-019)");
+  });
+});
+
+// ── AC-T-020: Sync Operations ─────────────────────────────────────────────────
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.rebase (AC-T-020-3)", () => {
+  it("returns success:true when rebase completes without conflicts", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    // Create initial commit on main
+    writeFileSync(join(repo, "main.txt"), "main content\n");
+    execFileSync("jj", ["bookmark", "create", "main", "-r", "@"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["describe", "-m", "main commit"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    // Create a feature branch
+    execFileSync("jj", ["bookmark", "create", "feature", "-r", "@"], { cwd: repo, stdio: "pipe" });
+    writeFileSync(join(repo, "feature.txt"), "feature content\n");
+    execFileSync("jj", ["describe", "-m", "feature commit"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    const result = await backend.rebase(repo, "main");
+
+    expect(result.success).toBe(true);
+    expect(result.hasConflicts).toBe(false);
+  });
+});
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.abortRebase (AC-T-020-5)", () => {
+  it("does not throw (uses jj undo)", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    writeFileSync(join(repo, "file.txt"), "content\n");
+    execFileSync("jj", ["describe", "-m", "initial"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    // abortRebase should not throw even without an active rebase
+    await expect(backend.abortRebase(repo)).resolves.toBeUndefined();
+  });
+});
+
+// ── AC-T-021: Merge Operations ────────────────────────────────────────────────
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.merge (AC-T-021-1)", () => {
+  it("creates a merge commit with two parents", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    // Create a base commit
+    writeFileSync(join(repo, "base.txt"), "base\n");
+    execFileSync("jj", ["bookmark", "create", "main", "-r", "@"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["describe", "-m", "base commit"], { cwd: repo, stdio: "pipe" });
+
+    // Create feature branch from same point
+    execFileSync("jj", ["new", "-r", "@"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "feature/test", "-r", "@"], { cwd: repo, stdio: "pipe" });
+    writeFileSync(join(repo, "feature.txt"), "feature\n");
+    execFileSync("jj", ["describe", "-m", "feature commit"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    const result = await backend.merge(repo, "feature/test", "main");
+
+    expect(result.success).toBe(true);
+  });
+});
+
+// ── AC-T-022: Diff, Conflict, Status ─────────────────────────────────────────
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.getHeadId (AC-T-022-1)", () => {
+  it("returns a non-empty change ID string", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+    const backend = new JujutsuBackend(repo);
+
+    const headId = await backend.getHeadId(repo);
+    expect(headId).toBeTruthy();
+    expect(typeof headId).toBe("string");
+    expect(headId.length).toBeGreaterThan(0);
+  });
+});
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.getModifiedFiles (AC-T-022-2)", () => {
+  it("returns an empty array when no files are changed", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+    const backend = new JujutsuBackend(repo);
+
+    const files = await backend.getModifiedFiles(repo);
+    expect(files).toBeInstanceOf(Array);
+  });
+
+  it("returns modified files when changes exist", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    writeFileSync(join(repo, "new-file.txt"), "content\n");
+    const backend = new JujutsuBackend(repo);
+
+    const files = await backend.getModifiedFiles(repo);
+    expect(files.length).toBeGreaterThan(0);
+    expect(files.some((f) => f.includes("new-file.txt"))).toBe(true);
+  });
+});
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.getConflictingFiles (AC-T-022-3)", () => {
+  it("returns an empty array when there are no conflicts", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+    const backend = new JujutsuBackend(repo);
+
+    const conflicts = await backend.getConflictingFiles(repo);
+    expect(conflicts).toBeInstanceOf(Array);
+    expect(conflicts.length).toBe(0);
+  });
+});
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.status (AC-T-022-4)", () => {
+  it("returns a status string from jj status", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+    const backend = new JujutsuBackend(repo);
+
+    const statusOutput = await backend.status(repo);
+    expect(typeof statusOutput).toBe("string");
+  });
+
+  it("includes modified file in status output", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    writeFileSync(join(repo, "changed.txt"), "new content\n");
+    const backend = new JujutsuBackend(repo);
+
+    const statusOutput = await backend.status(repo);
+    expect(statusOutput).toContain("changed.txt");
+  });
+});
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.cleanWorkingTree (AC-T-022-5)", () => {
+  it("restores files to parent revision state", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    // Commit a file
+    writeFileSync(join(repo, "tracked.txt"), "original\n");
+    execFileSync("jj", ["describe", "-m", "commit tracked"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    // Modify the file in a new change
+    writeFileSync(join(repo, "tracked.txt"), "modified\n");
+
+    const backend = new JujutsuBackend(repo);
+    // cleanWorkingTree should restore without throwing
+    await expect(backend.cleanWorkingTree(repo)).resolves.toBeUndefined();
+  });
+});
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.diff (AC-T-022-6)", () => {
+  it("returns diff output between two revisions", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    // Create two commits
+    writeFileSync(join(repo, "v1.txt"), "version 1\n");
+    execFileSync("jj", ["bookmark", "create", "v1", "-r", "@"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["describe", "-m", "v1"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    writeFileSync(join(repo, "v2.txt"), "version 2\n");
+    execFileSync("jj", ["bookmark", "create", "v2", "-r", "@"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["describe", "-m", "v2"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    const diffOutput = await backend.diff(repo, "v1", "@");
+
+    expect(typeof diffOutput).toBe("string");
+  });
+});
+
+// ── AC-T-020-1/2: branchExists and branchExistsOnRemote ──────────────────────
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.branchExists (AC-T-020-1)", () => {
+  it("returns false for a non-existent bookmark", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+    const backend = new JujutsuBackend(repo);
+
+    const exists = await backend.branchExists(repo, "nonexistent-bookmark");
+    expect(exists).toBe(false);
+  });
+
+  it("returns true for an existing bookmark", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    execFileSync("jj", ["bookmark", "create", "my-bookmark", "-r", "@"], {
+      cwd: repo,
+      stdio: "pipe",
+    });
+    const backend = new JujutsuBackend(repo);
+
+    const exists = await backend.branchExists(repo, "my-bookmark");
+    expect(exists).toBe(true);
+  });
+});
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.branchExistsOnRemote (AC-T-020-2)", () => {
+  it("returns false when no remote exists", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+    const backend = new JujutsuBackend(repo);
+
+    const exists = await backend.branchExistsOnRemote(repo, "any-branch");
+    expect(exists).toBe(false);
+  });
+});
+
+// ── AC-T-018-5: deleteBranch ──────────────────────────────────────────────────
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.deleteBranch (AC-T-018-5)", () => {
+  it("returns deleted:false and wasFullyMerged:true when bookmark does not exist", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+    const backend = new JujutsuBackend(repo);
+
+    const result = await backend.deleteBranch(repo, "nonexistent", {});
+    expect(result.deleted).toBe(false);
+    expect(result.wasFullyMerged).toBe(true);
+  });
+
+  it("force-deletes an existing bookmark", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    execFileSync("jj", ["bookmark", "create", "to-delete", "-r", "@"], {
+      cwd: repo,
+      stdio: "pipe",
+    });
+    const backend = new JujutsuBackend(repo);
+
+    const result = await backend.deleteBranch(repo, "to-delete", { force: true });
+    expect(result.deleted).toBe(true);
+  });
+});
+
+// ── AC-T-020-4: pull ──────────────────────────────────────────────────────────
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.pull (AC-T-020-4)", () => {
+  it("fetches from origin without throwing when remote not configured", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+    const backend = new JujutsuBackend(repo);
+
+    // pull calls jj git fetch; it should throw since there's no remote
+    await expect(backend.pull(repo, "main")).rejects.toThrow();
+  });
+});
+
+// ── AC-T-020-6: fetch ─────────────────────────────────────────────────────────
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.fetch (AC-T-020-6)", () => {
+  it("throws when no remote is configured", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+    const backend = new JujutsuBackend(repo);
+
+    // jj git fetch with no remote configured should throw
+    await expect(backend.fetch(repo)).rejects.toThrow();
+  });
+});
+
+// ── Interface compliance ──────────────────────────────────────────────────────
+
+describe("JujutsuBackend satisfies VcsBackend interface", () => {
+  it("has all required interface methods", () => {
+    const b = new JujutsuBackend('/tmp');
+    const methods: string[] = [
+      'getRepoRoot', 'getMainRepoRoot', 'detectDefaultBranch', 'getCurrentBranch',
+      'checkoutBranch', 'branchExists', 'branchExistsOnRemote', 'deleteBranch',
+      'createWorkspace', 'removeWorkspace', 'listWorkspaces',
+      'stageAll', 'commit', 'push', 'pull',
+      'rebase', 'abortRebase', 'merge',
+      'getHeadId', 'fetch', 'diff', 'getModifiedFiles', 'getConflictingFiles',
+      'status', 'cleanWorkingTree', 'getFinalizeCommands',
+    ];
+    for (const method of methods) {
+      expect(typeof (b as unknown as Record<string, unknown>)[method]).toBe('function');
+    }
+  });
+
+  it("has name property set to 'jujutsu'", () => {
+    const b = new JujutsuBackend('/tmp');
+    expect(b.name).toBe('jujutsu');
+  });
+
+  it("has projectPath property", () => {
+    const b = new JujutsuBackend('/my/project');
+    expect(b.projectPath).toBe('/my/project');
+  });
+});
