@@ -16,6 +16,7 @@ import type { ITaskClient } from "../lib/task-client.js";
 import { findMissingPrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
 import { findMissingWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
+import { loadProjectConfig } from "../lib/project-config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -123,6 +124,121 @@ export class Doctor {
     }
   }
 
+  /**
+   * TRD-028: Check whether the jj (Jujutsu) binary is available.
+   *
+   * Severity depends on the configured VCS backend:
+   *   - backend='jujutsu': jj is required → fail with ERROR + install URL
+   *   - backend='auto':    jj is optional → warn with WARNING
+   *   - backend='git':     jj is not needed → skip
+   *
+   * AC-028-1: jj missing + backend=jujutsu → status=fail, message contains ERROR and GitHub URL
+   * AC-028-2: jj missing + backend=auto    → status=warn, message contains WARNING
+   */
+  async checkJujutsuBinary(): Promise<CheckResult> {
+    const JJ_INSTALL_URL = "https://github.com/jj-vcs/jj";
+    const checkName = "jj (Jujutsu) binary";
+
+    // Determine configured backend
+    let backend: "git" | "jujutsu" | "auto" = "auto";
+    try {
+      const config = loadProjectConfig(this.projectPath);
+      if (config?.vcs?.backend) {
+        backend = config.vcs.backend;
+      }
+    } catch {
+      // Config parse error — treat as auto
+    }
+
+    // If explicitly using git, jj is not needed
+    if (backend === "git") {
+      return {
+        name: checkName,
+        status: "skip",
+        message: "VCS backend is 'git' — jj not required",
+      };
+    }
+
+    // Try running jj --version
+    try {
+      const { stdout } = await execFileAsync("jj", ["--version"]);
+      const version = stdout.trim();
+      return {
+        name: checkName,
+        status: "pass",
+        message: `jj is available: ${version}`,
+      };
+    } catch {
+      // jj not found — severity depends on backend
+      if (backend === "jujutsu") {
+        return {
+          name: checkName,
+          status: "fail",
+          message: `ERROR: jj binary not found in PATH. Install from: ${JJ_INSTALL_URL}`,
+          details: `VCS backend is configured as 'jujutsu' — jj is required. Install from ${JJ_INSTALL_URL}`,
+        };
+      }
+      // backend === 'auto'
+      return {
+        name: checkName,
+        status: "warn",
+        message: `WARNING: jj binary not found in PATH. Jujutsu auto-detection will fall back to git. Install from: ${JJ_INSTALL_URL}`,
+      };
+    }
+  }
+
+  /**
+   * TRD-028: Check that the Jujutsu repository is in colocated mode.
+   *
+   * Colocated mode requires `.jj/repo/store/git` to exist, which means the jj
+   * repo was initialized with `--colocate` so it shares a `.git/` directory
+   * with an underlying git repo.  Non-colocated jj repos cannot be merged via
+   * the standard `git merge` workflow that Foreman relies on.
+   *
+   * Only relevant when backend='jujutsu'.  Returns skip for other backends.
+   *
+   * AC-028-3: backend=jujutsu + .jj/repo/store/git missing → status=fail, message contains "colocated"
+   */
+  async checkJujutsuColocated(): Promise<CheckResult> {
+    const checkName = "jj colocated mode";
+
+    // Only check when backend is explicitly jujutsu
+    let backend: "git" | "jujutsu" | "auto" = "auto";
+    try {
+      const config = loadProjectConfig(this.projectPath);
+      if (config?.vcs?.backend) {
+        backend = config.vcs.backend;
+      }
+    } catch {
+      // Config parse error — skip
+    }
+
+    if (backend !== "jujutsu") {
+      return {
+        name: checkName,
+        status: "skip",
+        message: `VCS backend is '${backend}' — colocated mode check only applies to jujutsu`,
+      };
+    }
+
+    const colocatedPath = join(this.projectPath, ".jj", "repo", "store", "git");
+    try {
+      await stat(colocatedPath);
+      return {
+        name: checkName,
+        status: "pass",
+        message: "Jujutsu repository is in colocated mode (.jj/repo/store/git exists)",
+      };
+    } catch {
+      return {
+        name: checkName,
+        status: "fail",
+        message: "Jujutsu repository is not in colocated mode: .jj/repo/store/git not found. Foreman requires a colocated jj repository (initialized with 'jj git init --colocate').",
+        details: "Re-initialize with: jj git init --colocate",
+      };
+    }
+  }
+
   async checkGitTownInstalled(): Promise<CheckResult> {
     try {
       await execFileAsync("git", ["town", "--version"]);
@@ -205,15 +321,18 @@ export class Doctor {
 
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.
-    const [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch, oldLogsResult] = await Promise.all([
+    // TRD-028: Add Jujutsu binary and colocated mode checks.
+    const [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult] = await Promise.all([
       this.checkBrBinary(),
       this.checkBvBinary(),
       this.checkGitBinary(),
+      this.checkJujutsuBinary(),
+      this.checkJujutsuColocated(),
       this.checkGitTownInstalled(),
       this.checkGitTownMainBranch(),
       this.checkOldLogs(),
     ]);
-    return [brResult, bvResult, gitResult, gitTownInstalled, gitTownMainBranch, oldLogsResult];
+    return [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult];
   }
 
   /**
