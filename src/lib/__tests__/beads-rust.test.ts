@@ -344,7 +344,7 @@ describe("BeadsRustClient.update", () => {
     expect(updateArgs).toContain("AC-1: works");
   });
 
-  it("passes --labels flag when labels provided in update()", async () => {
+  it("passes --set-labels flag when labels provided in update()", async () => {
     mockExecFile.mockImplementation(makeExecFileResponder());
     const client = new BeadsRustClient("/tmp/mock-project");
     await client.update("bd-001", { labels: ["phase:explorer", "phase:developer"] });
@@ -353,11 +353,11 @@ describe("BeadsRustClient.update", () => {
       (call: unknown[]) => (call[1] as string[])?.[0] === "update",
     );
     const updateArgs = (updateCall as unknown[])[1] as string[];
-    expect(updateArgs).toContain("--labels");
+    expect(updateArgs).toContain("--set-labels");
     expect(updateArgs).toContain("phase:explorer,phase:developer");
   });
 
-  it("does not pass --labels flag when labels not provided in update()", async () => {
+  it("does not pass --set-labels flag when labels not provided in update()", async () => {
     mockExecFile.mockImplementation(makeExecFileResponder());
     const client = new BeadsRustClient("/tmp/mock-project");
     await client.update("bd-001", { status: "in_progress" });
@@ -366,7 +366,7 @@ describe("BeadsRustClient.update", () => {
       (call: unknown[]) => (call[1] as string[])?.[0] === "update",
     );
     const updateArgs = (updateCall as unknown[])[1] as string[];
-    expect(updateArgs).not.toContain("--labels");
+    expect(updateArgs).not.toContain("--set-labels");
   });
 });
 
