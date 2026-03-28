@@ -31,6 +31,9 @@ import { tmpdir } from "node:os";
 // ── Type imports from git.ts (old API) ──────────────────────────────────────
 import type { Worktree, MergeResult, DeleteBranchResult } from "../git.js";
 
+// ── GitBackend import for prototype spying ────────────────────────────────────
+import { GitBackend } from "../vcs/git-backend.js";
+
 // ── Type imports from vcs/types.ts (new API) ─────────────────────────────────
 import type { Workspace } from "../vcs/types.js";
 import type { MergeResult as VcsMergeResult } from "../vcs/types.js";
@@ -487,16 +490,126 @@ describe("AC-T-011-2: GitBackend delegation (mock-based, requires TRD-011 shim)"
    * After TRD-011: remove the .skip and update mock paths as needed.
    */
 
-  it.todo("createWorktree() delegates to GitBackend.createWorkspace() and maps workspacePath → worktreePath");
-  it.todo("removeWorktree() delegates to GitBackend.removeWorkspace()");
-  it.todo("listWorktrees() delegates to GitBackend.listWorkspaces() and returns Worktree[]");
-  it.todo("mergeWorktree() delegates to GitBackend.merge()");
-  it.todo("gitBranchExists() delegates to GitBackend.branchExists()");
-  it.todo("branchExistsOnOrigin() delegates to GitBackend.branchExistsOnRemote()");
-  it.todo("deleteBranch() delegates to GitBackend.deleteBranch()");
-  it.todo("getRepoRoot() delegates to GitBackend.getRepoRoot()");
-  it.todo("getMainRepoRoot() delegates to GitBackend.getMainRepoRoot()");
-  it.todo("detectDefaultBranch() delegates to GitBackend.detectDefaultBranch()");
-  it.todo("getCurrentBranch() delegates to GitBackend.getCurrentBranch()");
-  it.todo("checkoutBranch() delegates to GitBackend.checkoutBranch()");
+  it("createWorktree() delegates to GitBackend.createWorkspace() and maps workspacePath → worktreePath", async () => {
+    const mockResult = { workspacePath: "/fake/.foreman-worktrees/seed-x", branchName: "foreman/seed-x" };
+    const spy = vi.spyOn(GitBackend.prototype, "createWorkspace").mockResolvedValue(mockResult);
+
+    const result = await createWorktree("/fake/repo", "seed-x");
+
+    expect(spy).toHaveBeenCalledWith("/fake/repo", "seed-x", undefined);
+    // Shim must rename workspacePath → worktreePath
+    expect(result.worktreePath).toBe(mockResult.workspacePath);
+    expect(result.branchName).toBe(mockResult.branchName);
+    expect(result).not.toHaveProperty("workspacePath");
+  });
+
+  it("removeWorktree() delegates to GitBackend.removeWorkspace()", async () => {
+    const spy = vi.spyOn(GitBackend.prototype, "removeWorkspace").mockResolvedValue(undefined);
+
+    await removeWorktree("/fake/repo", "/fake/repo/.foreman-worktrees/seed-y");
+
+    expect(spy).toHaveBeenCalledWith("/fake/repo", "/fake/repo/.foreman-worktrees/seed-y");
+  });
+
+  it("listWorktrees() delegates to GitBackend.listWorkspaces() and returns Worktree[]", async () => {
+    const mockWorkspaces: Workspace[] = [
+      { path: "/fake/repo", branch: "main", head: "abc123", bare: false },
+      { path: "/fake/repo/.foreman-worktrees/seed-z", branch: "foreman/seed-z", head: "def456", bare: false },
+    ];
+    const spy = vi.spyOn(GitBackend.prototype, "listWorkspaces").mockResolvedValue(mockWorkspaces);
+
+    const result: Worktree[] = await listWorktrees("/fake/repo");
+
+    expect(spy).toHaveBeenCalledWith("/fake/repo");
+    expect(result).toEqual(mockWorkspaces);
+    // Each element must satisfy Worktree shape
+    for (const wt of result) {
+      expect(wt).toHaveProperty("path");
+      expect(wt).toHaveProperty("branch");
+      expect(wt).toHaveProperty("head");
+      expect(wt).toHaveProperty("bare");
+    }
+  });
+
+  it("mergeWorktree() delegates to GitBackend.merge()", async () => {
+    const mockResult: MergeResult = { success: true };
+    const spy = vi.spyOn(GitBackend.prototype, "merge").mockResolvedValue(mockResult);
+
+    const result = await mergeWorktree("/fake/repo", "foreman/seed-m", "main");
+
+    expect(spy).toHaveBeenCalledWith("/fake/repo", "foreman/seed-m", "main");
+    expect(result).toEqual(mockResult);
+  });
+
+  it("gitBranchExists() delegates to GitBackend.branchExists()", async () => {
+    const spy = vi.spyOn(GitBackend.prototype, "branchExists").mockResolvedValue(true);
+
+    const result = await gitBranchExists("/fake/repo", "foreman/seed-b");
+
+    expect(spy).toHaveBeenCalledWith("/fake/repo", "foreman/seed-b");
+    expect(result).toBe(true);
+  });
+
+  it("branchExistsOnOrigin() delegates to GitBackend.branchExistsOnRemote()", async () => {
+    const spy = vi.spyOn(GitBackend.prototype, "branchExistsOnRemote").mockResolvedValue(false);
+
+    const result = await branchExistsOnOrigin("/fake/repo", "main");
+
+    expect(spy).toHaveBeenCalledWith("/fake/repo", "main");
+    expect(result).toBe(false);
+  });
+
+  it("deleteBranch() delegates to GitBackend.deleteBranch()", async () => {
+    const mockResult: DeleteBranchResult = { deleted: true, wasFullyMerged: true };
+    const spy = vi.spyOn(GitBackend.prototype, "deleteBranch").mockResolvedValue(mockResult);
+
+    const result = await deleteBranch("/fake/repo", "old-branch", { force: false });
+
+    expect(spy).toHaveBeenCalledWith("/fake/repo", "old-branch", { force: false });
+    expect(result).toEqual(mockResult);
+  });
+
+  it("getRepoRoot() delegates to GitBackend.getRepoRoot()", async () => {
+    const spy = vi.spyOn(GitBackend.prototype, "getRepoRoot").mockResolvedValue("/fake/root");
+
+    const result = await getRepoRoot("/fake/root/subdir");
+
+    expect(spy).toHaveBeenCalledWith("/fake/root/subdir");
+    expect(result).toBe("/fake/root");
+  });
+
+  it("getMainRepoRoot() delegates to GitBackend.getMainRepoRoot()", async () => {
+    const spy = vi.spyOn(GitBackend.prototype, "getMainRepoRoot").mockResolvedValue("/fake/main-root");
+
+    const result = await getMainRepoRoot("/fake/worktree");
+
+    expect(spy).toHaveBeenCalledWith("/fake/worktree");
+    expect(result).toBe("/fake/main-root");
+  });
+
+  it("detectDefaultBranch() delegates to GitBackend.detectDefaultBranch()", async () => {
+    const spy = vi.spyOn(GitBackend.prototype, "detectDefaultBranch").mockResolvedValue("dev");
+
+    const result = await detectDefaultBranch("/fake/repo");
+
+    expect(spy).toHaveBeenCalledWith("/fake/repo");
+    expect(result).toBe("dev");
+  });
+
+  it("getCurrentBranch() delegates to GitBackend.getCurrentBranch()", async () => {
+    const spy = vi.spyOn(GitBackend.prototype, "getCurrentBranch").mockResolvedValue("feature/abc");
+
+    const result = await getCurrentBranch("/fake/repo");
+
+    expect(spy).toHaveBeenCalledWith("/fake/repo");
+    expect(result).toBe("feature/abc");
+  });
+
+  it("checkoutBranch() delegates to GitBackend.checkoutBranch()", async () => {
+    const spy = vi.spyOn(GitBackend.prototype, "checkoutBranch").mockResolvedValue(undefined);
+
+    await checkoutBranch("/fake/repo", "feature/xyz");
+
+    expect(spy).toHaveBeenCalledWith("/fake/repo", "feature/xyz");
+  });
 });
