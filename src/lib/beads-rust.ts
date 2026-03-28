@@ -192,7 +192,7 @@ export class BeadsRustClient implements ITaskClient {
     if (opts.notes) args.push("--notes", opts.notes);
     if (opts.acceptance) args.push("--acceptance", opts.acceptance);
     if (opts.claim) args.push("--claim");
-    if (opts.labels && opts.labels.length > 0) args.push("--labels", opts.labels.join(","));
+    if (opts.labels && opts.labels.length > 0) args.push("--set-labels", opts.labels.join(","));
     await execBr(args, this.projectPath);
   }
 

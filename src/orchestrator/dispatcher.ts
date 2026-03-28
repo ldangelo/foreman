@@ -1012,7 +1012,12 @@ export class Dispatcher {
         // Regular --flush-only only exports "dirty" entries, but dirty flags
         // can get out of sync (e.g. after --no-db writes or interrupted sessions),
         // causing bv to see stale data. --force re-exports everything.
-        execFileSync(bin, ["sync", "--flush-only", "--force"], execOpts);
+        // Use a longer timeout than individual bead operations since full export
+        // scales with total issue count.
+        execFileSync(bin, ["sync", "--flush-only", "--force"], {
+          ...execOpts,
+          timeout: Math.max(execOpts.timeout, 60_000),
+        });
         // Clear the blocked_issues_cache so br ready reflects newly-unblocked beads.
         // Using sqlite3 CLI is safer and faster than deleting the entire DB.
         try {
