@@ -5,10 +5,8 @@ import { tmpdir } from "node:os";
 
 // ── Mock setup ─────────────────────────────────────────────────────────────
 //
-// We mock node:child_process so no real subprocess is spawned.
-// closeSeed is no longer imported by agent-worker-finalize (it was removed
-// as part of the bead lifecycle fix — closing now happens in refinery.ts
-// after merge, not here after push).
+// We mock node:child_process for the non-git execFileSync (tsc) call.
+// VcsBackend is mocked via a vi.fn() stub passed directly to finalize().
 //
 // vi.hoisted() ensures mock variables are initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
@@ -49,6 +47,61 @@ vi.mock("../../lib/store.js", () => ({
 
 import { finalize, rotateReport } from "../agent-worker-finalize.js";
 import type { FinalizeConfig, FinalizeResult } from "../agent-worker-finalize.js";
+import type { VcsBackend } from "../../lib/vcs/index.js";
+
+// ── VcsBackend Mock Factory ───────────────────────────────────────────────────
+
+/**
+ * Creates a fully mocked VcsBackend for testing.
+ * Default implementations succeed with sensible defaults.
+ * Tests can override individual methods using mockImplementation / mockRejectedValue.
+ */
+function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<typeof vi.fn>>> = {}): VcsBackend {
+  return {
+    name: "git",
+    // Repository introspection
+    getRepoRoot: vi.fn().mockResolvedValue("/repo"),
+    getMainRepoRoot: vi.fn().mockResolvedValue("/repo"),
+    detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+    getCurrentBranch: vi.fn().mockResolvedValue("foreman/bd-test-001"),
+    // Branch operations
+    checkoutBranch: vi.fn().mockResolvedValue(undefined),
+    branchExists: vi.fn().mockResolvedValue(true),
+    branchExistsOnRemote: vi.fn().mockResolvedValue(true),
+    deleteBranch: vi.fn().mockResolvedValue({ deleted: true }),
+    // Workspace operations
+    createWorkspace: vi.fn().mockResolvedValue({ workspacePath: "/workspace", branchName: "foreman/bd-test-001" }),
+    removeWorkspace: vi.fn().mockResolvedValue(undefined),
+    listWorkspaces: vi.fn().mockResolvedValue([]),
+    // Staging and commit
+    stageAll: vi.fn().mockResolvedValue(undefined),
+    commit: vi.fn().mockResolvedValue(undefined),
+    push: vi.fn().mockResolvedValue(undefined),
+    pull: vi.fn().mockResolvedValue(undefined),
+    // Rebase and merge
+    rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    abortRebase: vi.fn().mockResolvedValue(undefined),
+    merge: vi.fn().mockResolvedValue({ success: true, conflictingFiles: [] }),
+    // Diff, status, conflict detection
+    getHeadId: vi.fn().mockResolvedValue("abc1234"),
+    fetch: vi.fn().mockResolvedValue(undefined),
+    diff: vi.fn().mockResolvedValue(""),
+    getModifiedFiles: vi.fn().mockResolvedValue([]),
+    getConflictingFiles: vi.fn().mockResolvedValue([]),
+    status: vi.fn().mockResolvedValue(""),
+    cleanWorkingTree: vi.fn().mockResolvedValue(undefined),
+    // Finalize support
+    getFinalizeCommands: vi.fn().mockReturnValue({
+      stageCommand: "git add -A",
+      commitCommand: "git commit -m",
+      pushCommand: "git push -u origin",
+      rebaseCommand: "git pull --rebase origin",
+      branchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
+      cleanCommand: "git clean -fd",
+    }),
+    ...overrides,
+  } as VcsBackend;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -102,45 +155,36 @@ describe("rotateReport", () => {
 describe("finalize() — push succeeds", () => {
   let logFile: string;
   let tmpDir: string;
+  let mockVcs: VcsBackend;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-test-"));
     logFile = join(tmpDir, "test.log");
     writeFileSync(logFile, "");
 
-    // Default: all git commands succeed
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
-    });
+    // tsc succeeds by default (mockExecFileSync does nothing)
+    mockVcs = makeMockVcs();
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns success=true when git push succeeds", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+  it("returns success=true when push succeeds", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     expect(result.success).toBe(true);
   });
 
   it("finalize returns true when push succeeds (bead closed by refinery, not here)", async () => {
-    // closeSeed is no longer called from finalize() — the bead lifecycle fix
-    // moves closing to refinery.ts after the branch lands on main.
-    // We simply verify finalize returns success=true when push succeeds.
-    const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/my/project" }), logFile);
+    const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/my/project" }), logFile, mockVcs);
     expect(result.success).toBe(true);
   });
 
   it("sets bead to 'review' status after successful push (not closing it)", async () => {
-    // The bead lifecycle fix: after push succeeds, enqueue a set-status 'review'
-    // write so the bead is visible as "pipeline done, awaiting merge".
-    // enqueueSetBeadStatus() uses store.enqueueBeadWrite() — NOT a direct execFileSync call.
-    await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-test-001" }), logFile);
+    await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-test-001" }), logFile, mockVcs);
     // Verify enqueueBeadWrite was called with "set-status" and the correct seedId/status
     const reviewCall = mockEnqueueBeadWrite.mock.calls.find(
       (call) =>
@@ -153,25 +197,22 @@ describe("finalize() — push succeeds", () => {
   });
 
   it("does NOT call br close after push succeeds (bead lifecycle fix)", async () => {
-    // Before the fix, closeSeed() was called here. Now it must NOT be called.
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    const closeCall = mockExecFileSync.mock.calls.find(
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
+    // execFileSync should only be called for tsc (not for git commands)
+    const gitClose = mockExecFileSync.mock.calls.find(
       (call) => Array.isArray(call[1]) && call[1][0] === "close",
     );
-    expect(closeCall).toBeUndefined();
+    expect(gitClose).toBeUndefined();
   });
 
-  it("calls git push with correct branch name", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-xyz-999" }), logFile);
-    const pushCall = mockExecFileSync.mock.calls.find(
-      (call) => Array.isArray(call[1]) && call[1][0] === "push",
-    );
-    expect(pushCall).toBeDefined();
-    expect(pushCall![1]).toContain("foreman/bd-xyz-999");
+  it("calls vcs.push with correct branch name", async () => {
+    const vcs = makeMockVcs();
+    await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-xyz-999" }), logFile, vcs);
+    expect(vcs.push).toHaveBeenCalledWith(tmpDir, "foreman/bd-xyz-999");
   });
 
   it("writes FINALIZE_REPORT.md with AWAITING_MERGE (review) status after successful push", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
     expect(existsSync(reportPath)).toBe(true);
     const content = readFileSync(reportPath, "utf-8");
@@ -180,8 +221,38 @@ describe("finalize() — push succeeds", () => {
   });
 
   it("enqueues to merge queue when push succeeds", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     expect(mockEnqueueToMergeQueue).toHaveBeenCalledOnce();
+  });
+
+  it("uses vcs.stageAll and vcs.commit for the commit step", async () => {
+    const vcs = makeMockVcs();
+    await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-test-001", seedTitle: "My fix" }), logFile, vcs);
+    expect(vcs.stageAll).toHaveBeenCalledWith(tmpDir);
+    expect(vcs.commit).toHaveBeenCalledWith(tmpDir, "My fix (bd-test-001)");
+  });
+
+  it("uses vcs.getHeadId after commit to get the commit hash", async () => {
+    const vcs = makeMockVcs();
+    (vcs.getHeadId as ReturnType<typeof vi.fn>).mockResolvedValue("deadbeef");
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
+    expect(content).toContain("Hash: deadbeef");
+  });
+
+  it("uses vcs.getCurrentBranch for branch verification", async () => {
+    const vcs = makeMockVcs();
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(vcs.getCurrentBranch).toHaveBeenCalledWith(tmpDir);
+  });
+
+  it("zero direct execFileSync git calls in finalize() — only npx/tsc allowed", async () => {
+    const vcs = makeMockVcs();
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    // Any execFileSync call must be for 'npx', never 'git'
+    for (const call of mockExecFileSync.mock.calls) {
+      expect(call[0]).not.toBe("git");
+    }
   });
 });
 
@@ -190,6 +261,7 @@ describe("finalize() — push succeeds", () => {
 describe("finalize() — push FAILS", () => {
   let logFile: string;
   let tmpDir: string;
+  let mockVcs: VcsBackend;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-pushfail-test-"));
@@ -198,21 +270,10 @@ describe("finalize() — push FAILS", () => {
 
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+    mockEnqueueBeadWrite.mockReset();
 
-    // git push fails; all other commands succeed.
-    // The mock must handle all git commands that finalize() calls:
-    // rev-parse --abbrev-ref HEAD (branch check), rev-parse --short HEAD (commit hash),
-    // checkout (branch fix), fetch, rebase, push (fails), add, commit, diff, etc.
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (Array.isArray(args) && args[0] === "push") {
-        throw new Error("remote: Permission to repo denied.");
-      }
-      if (args[0] === "rev-parse" && args.includes("--abbrev-ref")) return Buffer.from("foreman/bd-test-001\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      if (args[0] === "checkout") return Buffer.from("");
-      if (args[0] === "fetch") return Buffer.from("");
-      if (args[0] === "rebase") return Buffer.from("");
-      return Buffer.from("");
+    mockVcs = makeMockVcs({
+      push: vi.fn().mockRejectedValue(new Error("remote: Permission to repo denied.")),
     });
   });
 
@@ -220,30 +281,23 @@ describe("finalize() — push FAILS", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns success=false when git push fails", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+  it("returns success=false when push fails", async () => {
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     expect(result.success).toBe(false);
   });
 
   it("returns retryable=true for transient push failures (e.g. permissions)", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     expect(result.retryable).toBe(true);
   });
 
-  it("returns success=false when push fails", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    expect(result.success).toBe(false);
-  });
-
   it("enqueues to merge queue BEFORE push, even when push fails (source-of-truth write)", async () => {
-    // The fix for bd-neph: enqueue happens BEFORE push, so even if push fails
-    // the merge queue entry exists and the branch won't be silently orphaned.
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     expect(mockEnqueueToMergeQueue).toHaveBeenCalledOnce();
   });
 
   it("writes FINALIZE_REPORT.md with FAILED push and PUSH_FAILED seed status", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
     expect(existsSync(reportPath)).toBe(true);
     const content = readFileSync(reportPath, "utf-8");
@@ -254,40 +308,27 @@ describe("finalize() — push FAILS", () => {
   });
 
   it("does not throw even when push fails", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     expect(result.success).toBe(false);
   });
 
   it("does NOT set bead to review when push fails (bead stays in_progress for caller to reset)", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    const reviewCall = mockExecFileSync.mock.calls.find(
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
+    const reviewCall = mockEnqueueBeadWrite.mock.calls.find(
       (call) =>
-        Array.isArray(call[1]) &&
-        call[1][0] === "update" &&
-        call[1].includes("--status") &&
-        call[1].includes("review"),
+        Array.isArray(call) &&
+        call[1] === "set-status" &&
+        call[2]?.status === "review",
     );
     expect(reviewCall).toBeUndefined();
   });
 });
 
 // ── finalize — enqueue-before-push ordering (bd-neph fix) ────────────────────
-//
-// The core fix for bd-neph: the merge queue entry MUST be written BEFORE the
-// git push.  This closes the crash window where push succeeded but the agent
-// died before enqueue() ran, leaving the pushed branch orphaned in git with
-// no corresponding merge_queue entry.
-//
-// With the new order:
-//   1. Branch verified
-//   2. enqueueToMergeQueue() — entry written with status='pending'
-//   3. git push
-//   4. (even if agent crashes here, entry already exists)
 
 describe("finalize() — enqueue-before-push ordering (bd-neph)", () => {
   let logFile: string;
   let tmpDir: string;
-  // Track the call order so we can assert enqueue happened before push
   const callOrder: string[] = [];
 
   beforeEach(() => {
@@ -295,21 +336,12 @@ describe("finalize() — enqueue-before-push ordering (bd-neph)", () => {
     logFile = join(tmpDir, "test.log");
     writeFileSync(logFile, "");
 
-    callOrder.length = 0; // reset
+    callOrder.length = 0;
 
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockImplementation(() => {
       callOrder.push("enqueue");
       return { success: true };
-    });
-
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (Array.isArray(args) && args[0] === "push") {
-        callOrder.push("push");
-      }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
     });
   });
 
@@ -317,8 +349,13 @@ describe("finalize() — enqueue-before-push ordering (bd-neph)", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("calls enqueueToMergeQueue BEFORE git push", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+  it("calls enqueueToMergeQueue BEFORE vcs.push", async () => {
+    const vcs = makeMockVcs({
+      push: vi.fn().mockImplementation(async () => {
+        callOrder.push("push");
+      }),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const enqueueIdx = callOrder.indexOf("enqueue");
     const pushIdx = callOrder.indexOf("push");
     expect(enqueueIdx).toBeGreaterThanOrEqual(0);
@@ -327,46 +364,33 @@ describe("finalize() — enqueue-before-push ordering (bd-neph)", () => {
   });
 
   it("enqueue is called even when push subsequently fails", async () => {
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (Array.isArray(args) && args[0] === "push") {
+    const vcs = makeMockVcs({
+      push: vi.fn().mockImplementation(async () => {
         callOrder.push("push");
         throw new Error("remote: Permission to repo denied.");
-      }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
+      }),
     });
-
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-
-    // Enqueue must have been called even though push failed
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     expect(mockEnqueueToMergeQueue).toHaveBeenCalledOnce();
-    // And enqueue must have happened before push
     const enqueueIdx = callOrder.indexOf("enqueue");
     const pushIdx = callOrder.indexOf("push");
     expect(enqueueIdx).toBeLessThan(pushIdx);
   });
 
   it("does NOT enqueue when branch verification fails (branchVerified=false)", async () => {
-    // When we can't verify the branch, we skip both enqueue and push
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") throw new Error("not a git repository");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
+    const vcs = makeMockVcs({
+      getCurrentBranch: vi.fn().mockRejectedValue(new Error("not a git repository")),
     });
-
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     expect(mockEnqueueToMergeQueue).not.toHaveBeenCalled();
   });
 
   it("writes FINALIZE_REPORT.md with Merge Queue section BEFORE Push section", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const vcs = makeMockVcs();
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
-
     const mergeQueueIdx = content.indexOf("## Merge Queue");
     const pushIdx = content.indexOf("## Push");
-
     expect(mergeQueueIdx).toBeGreaterThanOrEqual(0);
     expect(pushIdx).toBeGreaterThanOrEqual(0);
     expect(mergeQueueIdx).toBeLessThan(pushIdx);
@@ -387,13 +411,11 @@ describe("finalize() — type check failure is non-fatal", () => {
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
-    // tsc fails, git push succeeds
+    // tsc fails
     mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
       if (_bin === "npx" && Array.isArray(args) && args[0] === "tsc") {
         throw new Error("Type error: cannot find module");
       }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
       return Buffer.from("");
     });
   });
@@ -403,17 +425,14 @@ describe("finalize() — type check failure is non-fatal", () => {
   });
 
   it("returns success=true (push succeeded) even when type check fails", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    expect(result.success).toBe(true);
-  });
-
-  it("returns success=true when type check fails but push succeeds (bead closed by refinery after merge)", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const vcs = makeMockVcs();
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     expect(result.success).toBe(true);
   });
 
   it("reports type check failure in FINALIZE_REPORT.md", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const vcs = makeMockVcs();
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
     const content = readFileSync(reportPath, "utf-8");
     expect(content).toContain("## Build / Type Check");
@@ -434,15 +453,6 @@ describe("finalize() — nothing to commit", () => {
 
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
-
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (Array.isArray(args) && args[0] === "commit") {
-        throw new Error("nothing to commit, working tree clean");
-      }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
-    });
   });
 
   afterEach(() => {
@@ -450,12 +460,18 @@ describe("finalize() — nothing to commit", () => {
   });
 
   it("returns success=true and still pushes when nothing to commit", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const vcs = makeMockVcs({
+      commit: vi.fn().mockRejectedValue(new Error("nothing to commit, working tree clean")),
+    });
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     expect(result.success).toBe(true);
   });
 
   it("reports commit as SKIPPED (nothing to commit) in the report", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const vcs = makeMockVcs({
+      commit: vi.fn().mockRejectedValue(new Error("nothing to commit, working tree clean")),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
     const content = readFileSync(reportPath, "utf-8");
     expect(content).toContain("Status: SKIPPED (nothing to commit)");
@@ -463,10 +479,6 @@ describe("finalize() — nothing to commit", () => {
 });
 
 // ── finalize — merge queue uses correct projectPath ───────────────────────────
-//
-// After the bead lifecycle fix, closeSeed is no longer called from finalize().
-// The projectPath is still used for the SQLite store (merge queue). These tests
-// verify that finalize() succeeds regardless of projectPath configuration.
 
 describe("finalize() — projectPath used for merge queue store", () => {
   let logFile: string;
@@ -479,12 +491,6 @@ describe("finalize() — projectPath used for merge queue store", () => {
 
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
-
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
-    });
   });
 
   afterEach(() => {
@@ -492,27 +498,19 @@ describe("finalize() — projectPath used for merge queue store", () => {
   });
 
   it("finalize succeeds when projectPath is provided", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/explicit/project" }), logFile);
+    const vcs = makeMockVcs();
+    const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/explicit/project" }), logFile, vcs);
     expect(result.success).toBe(true);
   });
 
   it("finalize succeeds when projectPath is not provided (falls back to worktree parent)", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: undefined }), logFile);
+    const vcs = makeMockVcs();
+    const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: undefined }), logFile, vcs);
     expect(result.success).toBe(true);
   });
 });
 
 // ── finalize — non-fast-forward push failure (bd-zwtr regression) ─────────────
-//
-// When git push fails with "non-fast-forward", finalize() should:
-//  1. Detect the error
-//  2. Attempt git pull --rebase
-//  3a. If rebase succeeds → retry push; return { success: true, retryable: true }
-//      (retryable is irrelevant when success=true, but the flag stays true)
-//  3b. If rebase fails   → abort rebase; return { success: false, retryable: false }
-//      (retryable=false prevents resetSeedToOpen() from causing an infinite loop)
-//  3c. If rebase succeeds but retry push fails (transient) →
-//      return { success: false, retryable: true } (allow a subsequent retry)
 
 describe("finalize() — non-fast-forward push: rebase succeeds → push succeeds", () => {
   let logFile: string;
@@ -525,26 +523,6 @@ describe("finalize() — non-fast-forward push: rebase succeeds → push succeed
 
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
-
-    // First push throws non-fast-forward; pull --rebase and second push succeed.
-    let pushCallCount = 0;
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (Array.isArray(args) && args[0] === "push") {
-        pushCallCount++;
-        if (pushCallCount === 1) {
-          throw Object.assign(
-            new Error(
-              "To origin\n ! [rejected] foreman/bd-test-001 -> foreman/bd-test-001 (non-fast-forward)\nerror: failed to push some refs",
-            ),
-            { stderr: Buffer.from("") },
-          );
-        }
-        return Buffer.from(""); // second push succeeds
-      }
-      if (Array.isArray(args) && args[0] === "pull") return Buffer.from(""); // rebase succeeds
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
-    });
   });
 
   afterEach(() => {
@@ -552,25 +530,64 @@ describe("finalize() — non-fast-forward push: rebase succeeds → push succeed
   });
 
   it("returns success=true after successful rebase + retry push", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    let pushCallCount = 0;
+    const vcs = makeMockVcs({
+      push: vi.fn().mockImplementation(async () => {
+        pushCallCount++;
+        if (pushCallCount === 1) {
+          throw new Error("To origin\n ! [rejected] foreman/bd-test-001 -> foreman/bd-test-001 (non-fast-forward)\nerror: failed to push some refs");
+        }
+        // second push succeeds
+      }),
+      rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    });
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     expect(result.success).toBe(true);
   });
 
   it("returns retryable=true after successful rebase + retry push", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    let pushCallCount = 0;
+    const vcs = makeMockVcs({
+      push: vi.fn().mockImplementation(async () => {
+        pushCallCount++;
+        if (pushCallCount === 1) {
+          throw new Error("To origin\n ! [rejected] (non-fast-forward)");
+        }
+      }),
+      rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    });
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     expect(result.retryable).toBe(true);
   });
 
-  it("attempts git pull --rebase when push is rejected as non-fast-forward", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    const rebaseCall = mockExecFileSync.mock.calls.find(
-      (call) => Array.isArray(call[1]) && call[1][0] === "pull" && call[1].includes("--rebase"),
-    );
-    expect(rebaseCall).toBeDefined();
+  it("calls vcs.fetch and vcs.rebase when push is rejected as non-fast-forward", async () => {
+    let pushCallCount = 0;
+    const vcs = makeMockVcs({
+      push: vi.fn().mockImplementation(async () => {
+        pushCallCount++;
+        if (pushCallCount === 1) {
+          throw new Error("rejected: non-fast-forward");
+        }
+      }),
+      rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(vcs.fetch).toHaveBeenCalledWith(tmpDir);
+    expect(vcs.rebase).toHaveBeenCalledWith(tmpDir, "origin/foreman/bd-test-001");
   });
 
   it("writes FINALIZE_REPORT.md with rebase success and push success", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    let pushCallCount = 0;
+    const vcs = makeMockVcs({
+      push: vi.fn().mockImplementation(async () => {
+        pushCallCount++;
+        if (pushCallCount === 1) {
+          throw new Error("rejected: non-fast-forward");
+        }
+      }),
+      rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
     expect(content).toContain("## Rebase");
     expect(content).toContain("Status: SUCCESS");
@@ -589,51 +606,55 @@ describe("finalize() — non-fast-forward push: rebase FAILS → deterministic f
 
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
-
-    // push throws non-fast-forward; pull --rebase also throws (conflict).
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (Array.isArray(args) && args[0] === "push") {
-        throw Object.assign(
-          new Error(
-            "To origin\n ! [rejected] foreman/bd-test-001 -> foreman/bd-test-001 (non-fast-forward)\nerror: failed to push some refs",
-          ),
-          { stderr: Buffer.from("") },
-        );
-      }
-      if (Array.isArray(args) && args[0] === "pull") {
-        throw new Error("CONFLICT (content): Merge conflict in src/foo.ts\nerror: could not apply abc1234");
-      }
-      // git rebase --abort succeeds silently
-      if (Array.isArray(args) && args[0] === "rebase" && args[1] === "--abort") return Buffer.from("");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
-    });
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns success=false when rebase fails", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+  it("returns success=false when rebase fails (returns success=false)", async () => {
+    const vcs = makeMockVcs({
+      push: vi.fn().mockRejectedValue(new Error("rejected: non-fast-forward")),
+      rebase: vi.fn().mockResolvedValue({ success: false, hasConflicts: true, conflictingFiles: ["src/foo.ts"] }),
+    });
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     expect(result.success).toBe(false);
   });
 
   it("returns retryable=false (prevents infinite loop) when rebase fails", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const vcs = makeMockVcs({
+      push: vi.fn().mockRejectedValue(new Error("rejected: non-fast-forward")),
+      rebase: vi.fn().mockResolvedValue({ success: false, hasConflicts: true, conflictingFiles: ["src/foo.ts"] }),
+    });
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     expect(result.retryable).toBe(false);
   });
 
-  it("calls git rebase --abort to clean up partial rebase", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    const abortCall = mockExecFileSync.mock.calls.find(
-      (call) => Array.isArray(call[1]) && call[1][0] === "rebase" && call[1][1] === "--abort",
-    );
-    expect(abortCall).toBeDefined();
+  it("calls vcs.abortRebase to clean up partial rebase when rebase returns success=false", async () => {
+    const vcs = makeMockVcs({
+      push: vi.fn().mockRejectedValue(new Error("rejected: non-fast-forward")),
+      rebase: vi.fn().mockResolvedValue({ success: false, hasConflicts: true, conflictingFiles: [] }),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(vcs.abortRebase).toHaveBeenCalledWith(tmpDir);
+  });
+
+  it("calls vcs.abortRebase to clean up when rebase throws an exception", async () => {
+    const vcs = makeMockVcs({
+      push: vi.fn().mockRejectedValue(new Error("rejected: non-fast-forward")),
+      rebase: vi.fn().mockRejectedValue(new Error("CONFLICT: Merge conflict in src/foo.ts")),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(vcs.abortRebase).toHaveBeenCalledWith(tmpDir);
+    expect((await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs)).retryable).toBe(false);
   });
 
   it("writes FINALIZE_REPORT.md with rebase FAILED and push FAILED entries", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    const vcs = makeMockVcs({
+      push: vi.fn().mockRejectedValue(new Error("rejected: non-fast-forward")),
+      rebase: vi.fn().mockResolvedValue({ success: false, hasConflicts: true, conflictingFiles: ["src/foo.ts"] }),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
     expect(content).toContain("## Rebase");
     expect(content).toContain("Status: FAILED");
@@ -641,18 +662,18 @@ describe("finalize() — non-fast-forward push: rebase FAILS → deterministic f
   });
 
   it("does not throw even when rebase fails", async () => {
-    await expect(finalize(makeConfig({ worktreePath: tmpDir }), logFile)).resolves.toMatchObject({
+    const vcs = makeMockVcs({
+      push: vi.fn().mockRejectedValue(new Error("rejected: non-fast-forward")),
+      rebase: vi.fn().mockResolvedValue({ success: false, hasConflicts: true, conflictingFiles: [] }),
+    });
+    await expect(finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs)).resolves.toMatchObject({
       success: false,
       retryable: false,
     });
   });
 });
 
-// ── finalize — non-fast-forward push: rebase OK but retry push fails (transient)
-//
-// After a successful rebase, the retry push may fail transiently (e.g. a network
-// blip). This must NOT be treated as a deterministic failure — retryable must be
-// true so the seed is reset to open for a subsequent dispatch attempt.
+// ── finalize — rebase succeeds but retry push fails (transient) ───────────────
 
 describe("finalize() — non-fast-forward push: rebase succeeds but retry push fails (transient)", () => {
   let logFile: string;
@@ -665,27 +686,6 @@ describe("finalize() — non-fast-forward push: rebase succeeds but retry push f
 
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
-
-    // All push calls throw (first non-fast-forward, second transient network).
-    let pushCallCount = 0;
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (Array.isArray(args) && args[0] === "push") {
-        pushCallCount++;
-        if (pushCallCount === 1) {
-          throw Object.assign(
-            new Error(
-              "To origin\n ! [rejected] foreman/bd-test-001 -> foreman/bd-test-001 (non-fast-forward)\nerror: failed to push some refs",
-            ),
-            { stderr: Buffer.from("") },
-          );
-        }
-        // Retry push: transient network error (not a deterministic failure)
-        throw new Error("fatal: unable to connect to origin\nerror: failed to push some refs");
-      }
-      if (Array.isArray(args) && args[0] === "pull") return Buffer.from(""); // rebase succeeds
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
-    });
   });
 
   afterEach(() => {
@@ -693,37 +693,66 @@ describe("finalize() — non-fast-forward push: rebase succeeds but retry push f
   });
 
   it("returns success=false when retry push fails after rebase", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    let pushCallCount = 0;
+    const vcs = makeMockVcs({
+      push: vi.fn().mockImplementation(async () => {
+        pushCallCount++;
+        if (pushCallCount === 1) throw new Error("rejected: non-fast-forward");
+        throw new Error("fatal: unable to connect to origin");
+      }),
+      rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    });
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     expect(result.success).toBe(false);
   });
 
   it("returns retryable=true for transient retry push failure (not a rebase conflict)", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    let pushCallCount = 0;
+    const vcs = makeMockVcs({
+      push: vi.fn().mockImplementation(async () => {
+        pushCallCount++;
+        if (pushCallCount === 1) throw new Error("rejected: non-fast-forward");
+        throw new Error("fatal: unable to connect to origin");
+      }),
+      rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    });
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     expect(result.retryable).toBe(true);
   });
 
   it("writes FINALIZE_REPORT.md noting push failed after rebase", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    let pushCallCount = 0;
+    const vcs = makeMockVcs({
+      push: vi.fn().mockImplementation(async () => {
+        pushCallCount++;
+        if (pushCallCount === 1) throw new Error("rejected: non-fast-forward");
+        throw new Error("fatal: network error");
+      }),
+      rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
     expect(content).toContain("## Rebase");
     expect(content).toContain("Status: SUCCESS");
     expect(content).toContain("FAILED (after rebase)");
   });
 
-  it("does not call git rebase --abort when rebase itself succeeded", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    const abortCall = mockExecFileSync.mock.calls.find(
-      (call) => Array.isArray(call[1]) && call[1][0] === "rebase" && call[1][1] === "--abort",
-    );
-    expect(abortCall).toBeUndefined();
+  it("does not call vcs.abortRebase when rebase itself succeeded", async () => {
+    let pushCallCount = 0;
+    const vcs = makeMockVcs({
+      push: vi.fn().mockImplementation(async () => {
+        pushCallCount++;
+        if (pushCallCount === 1) throw new Error("rejected: non-fast-forward");
+        throw new Error("fatal: network error");
+      }),
+      rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(vcs.abortRebase).not.toHaveBeenCalled();
   });
 });
 
 // ── finalize — "fetch first" push rejection (alternate NFF phrasing) ─────────
-//
-// Some git versions or configurations emit "fetch first" instead of
-// "non-fast-forward" when the push is rejected due to a diverged remote.
-// finalize() must treat this the same way.
 
 describe("finalize() — push rejected with 'fetch first' phrasing → rebase + retry", () => {
   let logFile: string;
@@ -736,25 +765,6 @@ describe("finalize() — push rejected with 'fetch first' phrasing → rebase + 
 
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
-
-    let pushCallCount = 0;
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (Array.isArray(args) && args[0] === "push") {
-        pushCallCount++;
-        if (pushCallCount === 1) {
-          throw Object.assign(
-            new Error(
-              "To origin\n ! [rejected] foreman/bd-test-001 -> foreman/bd-test-001 (fetch first)\nerror: failed to push some refs",
-            ),
-            { stderr: Buffer.from("") },
-          );
-        }
-        return Buffer.from(""); // second push succeeds
-      }
-      if (Array.isArray(args) && args[0] === "pull") return Buffer.from(""); // rebase succeeds
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
-    });
   });
 
   afterEach(() => {
@@ -762,15 +772,33 @@ describe("finalize() — push rejected with 'fetch first' phrasing → rebase + 
   });
 
   it("triggers rebase when push is rejected with 'fetch first' phrasing", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-    const rebaseCall = mockExecFileSync.mock.calls.find(
-      (call) => Array.isArray(call[1]) && call[1][0] === "pull" && call[1].includes("--rebase"),
-    );
-    expect(rebaseCall).toBeDefined();
+    let pushCallCount = 0;
+    const vcs = makeMockVcs({
+      push: vi.fn().mockImplementation(async () => {
+        pushCallCount++;
+        if (pushCallCount === 1) {
+          throw new Error("rejected: (fetch first)\nerror: failed to push some refs");
+        }
+      }),
+      rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(vcs.fetch).toHaveBeenCalledWith(tmpDir);
+    expect(vcs.rebase).toHaveBeenCalled();
   });
 
   it("returns success=true after 'fetch first' rejection + rebase + retry push", async () => {
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
+    let pushCallCount = 0;
+    const vcs = makeMockVcs({
+      push: vi.fn().mockImplementation(async () => {
+        pushCallCount++;
+        if (pushCallCount === 1) {
+          throw new Error("rejected: (fetch first)");
+        }
+      }),
+      rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    });
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     expect(result.success).toBe(true);
   });
 });
@@ -794,143 +822,145 @@ describe("finalize() — branch verification", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("does NOT call checkout when already on the correct branch", async () => {
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
+  it("does NOT call checkoutBranch when already on the correct branch", async () => {
+    const vcs = makeMockVcs({
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman/bd-test-001"),
     });
-
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-
-    const checkoutCall = mockExecFileSync.mock.calls.find(
-      (call) => Array.isArray(call[1]) && call[1][0] === "checkout",
-    );
-    expect(checkoutCall).toBeUndefined();
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(vcs.checkoutBranch).not.toHaveBeenCalled();
   });
 
   it("reports Branch Verification OK when already on the correct branch", async () => {
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("foreman/bd-test-001\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
+    const vcs = makeMockVcs({
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman/bd-test-001"),
     });
-
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
     expect(content).toContain("## Branch Verification");
     expect(content).toContain("Status: OK");
   });
 
-  it("attempts checkout when on a different branch and push succeeds after recovery", async () => {
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("main\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
+  it("attempts checkoutBranch when on a different branch and push succeeds after recovery", async () => {
+    const vcs = makeMockVcs({
+      getCurrentBranch: vi.fn().mockResolvedValue("main"),
     });
-
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-
-    const checkoutCall = mockExecFileSync.mock.calls.find(
-      (call) => Array.isArray(call[1]) && call[1][0] === "checkout" && call[1][1] === "foreman/bd-test-001",
-    );
-    expect(checkoutCall).toBeDefined();
-
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(vcs.checkoutBranch).toHaveBeenCalledWith(tmpDir, "foreman/bd-test-001");
     expect(result.success).toBe(true);
   });
 
   it("reports RECOVERED status in branch verification section after mismatch checkout", async () => {
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("main\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
+    const vcs = makeMockVcs({
+      getCurrentBranch: vi.fn().mockResolvedValue("main"),
     });
-
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
     expect(content).toContain("## Branch Verification");
     expect(content).toContain("Status: RECOVERED (checkout succeeded)");
     expect(content).toContain("Was: main");
   });
 
-  it("attempts checkout when in detached HEAD state and push succeeds after recovery", async () => {
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("HEAD\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
+  it("attempts checkoutBranch when in detached HEAD state and push succeeds after recovery", async () => {
+    const vcs = makeMockVcs({
+      getCurrentBranch: vi.fn().mockResolvedValue("HEAD"),
     });
-
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-
-    const checkoutCall = mockExecFileSync.mock.calls.find(
-      (call) => Array.isArray(call[1]) && call[1][0] === "checkout",
-    );
-    expect(checkoutCall).toBeDefined();
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(vcs.checkoutBranch).toHaveBeenCalled();
     expect(result.success).toBe(true);
   });
 
-  it("skips push and returns false when checkout fails after branch mismatch", async () => {
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("main\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      if (args[0] === "checkout") throw new Error("error: pathspec 'foreman/bd-test-001' did not match any file(s) known to git");
-      return Buffer.from("");
+  it("skips push and returns false when checkoutBranch fails after branch mismatch", async () => {
+    const vcs = makeMockVcs({
+      getCurrentBranch: vi.fn().mockResolvedValue("main"),
+      checkoutBranch: vi.fn().mockRejectedValue(new Error("error: pathspec 'foreman/bd-test-001' did not match any file(s)")),
     });
-
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-
-    const pushCall = mockExecFileSync.mock.calls.find(
-      (call) => Array.isArray(call[1]) && call[1][0] === "push",
-    );
-    expect(pushCall).toBeUndefined();
-
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(vcs.push).not.toHaveBeenCalled();
     expect(result.success).toBe(false);
     expect(mockEnqueueToMergeQueue).not.toHaveBeenCalled();
   });
 
   it("reports Branch Verification FAILED and Push SKIPPED when checkout fails", async () => {
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return Buffer.from("other-branch\n");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      if (args[0] === "checkout") throw new Error("checkout failed");
-      return Buffer.from("");
+    const vcs = makeMockVcs({
+      getCurrentBranch: vi.fn().mockResolvedValue("other-branch"),
+      checkoutBranch: vi.fn().mockRejectedValue(new Error("checkout failed")),
     });
-
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
     expect(content).toContain("## Branch Verification");
     expect(content).toContain("Status: FAILED");
     expect(content).toContain("## Push");
     expect(content).toContain("Status: SKIPPED (branch verification failed)");
     expect(content).toContain("## Seed Status");
-    // When push fails (or is skipped due to branch verification failure),
-    // the Seed Status reflects PUSH_FAILED (branch not pushed).
     expect(content).toContain("Status: PUSH_FAILED");
   });
 
-  it("skips push and returns false when rev-parse itself fails", async () => {
-    mockExecFileSync.mockImplementation((_bin: string, args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") throw new Error("not a git repository");
-      if (args[0] === "rev-parse") return Buffer.from("abc1234\n");
-      return Buffer.from("");
+  it("skips push and returns false when getCurrentBranch itself fails", async () => {
+    const vcs = makeMockVcs({
+      getCurrentBranch: vi.fn().mockRejectedValue(new Error("not a git repository")),
     });
-
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile);
-
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     expect(result.success).toBe(false);
   });
 });
 
+// ── finalize — modified files for merge queue uses vcs.diff ──────────────────
+
+describe("finalize() — modified files computed via vcs.diff", () => {
+  let logFile: string;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-diff-test-"));
+    logFile = join(tmpDir, "test.log");
+    writeFileSync(logFile, "");
+
+    mockExecFileSync.mockReset();
+    mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("calls vcs.diff to compute modified files for merge queue", async () => {
+    const vcs = makeMockVcs({
+      diff: vi.fn().mockResolvedValue(
+        "diff --git a/src/foo.ts b/src/foo.ts\nindex abc..def 100644\n--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1 +1 @@\n-old\n+new\n"
+      ),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(vcs.diff).toHaveBeenCalledWith(tmpDir, "main", "HEAD");
+  });
+
+  it("passes parsed file list to enqueueToMergeQueue", async () => {
+    const vcs = makeMockVcs({
+      diff: vi.fn().mockResolvedValue(
+        "diff --git a/src/foo.ts b/src/foo.ts\nindex abc..def 100644\n" +
+        "diff --git a/src/bar.ts b/src/bar.ts\nindex 123..456 100644\n"
+      ),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    const enqueueCall = mockEnqueueToMergeQueue.mock.calls[0];
+    expect(enqueueCall).toBeDefined();
+    const filesModified: string[] = enqueueCall[0].getFilesModified();
+    expect(filesModified).toContain("src/foo.ts");
+    expect(filesModified).toContain("src/bar.ts");
+  });
+
+  it("passes empty file list when vcs.diff fails (non-fatal)", async () => {
+    const vcs = makeMockVcs({
+      diff: vi.fn().mockRejectedValue(new Error("git diff failed")),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    const enqueueCall = mockEnqueueToMergeQueue.mock.calls[0];
+    expect(enqueueCall).toBeDefined();
+    const filesModified: string[] = enqueueCall[0].getFilesModified();
+    expect(filesModified).toEqual([]);
+  });
+});
+
 // ── npm-ci + type-check logic (simulated — no real subprocess) ────────────────
-//
-// The tests below verify the observable behaviour of a conditional
-// install-then-type-check flow using pure-TypeScript simulators. These are
-// aspirational / documentation-level tests: the simulators do NOT call any
-// production code. They document intended behaviour for a potential future
-// npm ci step before tsc (not yet implemented in finalize()).
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -948,10 +978,6 @@ interface TypeCheckResult {
 
 // ── Helpers (simulate the finalize() logic) ────────────────────────────────
 
-/**
- * Simulates the npm ci step from finalize().
- * Returns the same report entries and log messages the real code produces.
- */
 function simulateInstall(npmCiThrows: boolean, errorDetail = "npm ERR! lock file mismatch"): InstallResult {
   if (!npmCiThrows) {
     return {
@@ -969,11 +995,6 @@ function simulateInstall(npmCiThrows: boolean, errorDetail = "npm ERR! lock file
   };
 }
 
-/**
- * Simulates the type-check step from finalize().
- * When installSucceeded is false, returns SKIPPED.
- * When tscThrows is true, returns FAILED; otherwise SUCCESS.
- */
 function simulateTypeCheck(
   installSucceeded: boolean,
   tscThrows: boolean,
@@ -1003,12 +1024,9 @@ function simulateTypeCheck(
   };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────
-
 describe("finalize() — dependency install step", () => {
   it("reports SUCCESS and sets installSucceeded when npm ci exits cleanly", () => {
     const result = simulateInstall(false);
-
     expect(result.succeeded).toBe(true);
     expect(result.reportEntry).toContain("## Dependency Install");
     expect(result.reportEntry).toContain("- Status: SUCCESS");
@@ -1017,7 +1035,6 @@ describe("finalize() — dependency install step", () => {
 
   it("reports FAILED and clears installSucceeded when npm ci throws", () => {
     const result = simulateInstall(true, "npm ERR! lock file mismatch");
-
     expect(result.succeeded).toBe(false);
     expect(result.reportEntry).toContain("## Dependency Install");
     expect(result.reportEntry).toContain("- Status: FAILED");
@@ -1027,19 +1044,15 @@ describe("finalize() — dependency install step", () => {
   it("includes error detail in the report when npm ci fails", () => {
     const detail = "npm ERR! package-lock.json out of sync";
     const result = simulateInstall(true, detail);
-
     const reportText = result.reportEntry.join("\n");
     expect(reportText).toContain(detail);
-    // Error is wrapped in a fenced code block
     expect(result.reportEntry).toContain("```");
   });
 
   it("truncates error detail to 500 characters in the report", () => {
     const longError = "x".repeat(600);
     const result = simulateInstall(true, longError);
-
     const reportText = result.reportEntry.join("\n");
-    // The 500-char slice must appear; beyond 500 chars must not
     expect(reportText).toContain("x".repeat(500));
     expect(reportText).not.toContain("x".repeat(501));
   });
@@ -1047,8 +1060,6 @@ describe("finalize() — dependency install step", () => {
   it("truncates log message error to 200 characters", () => {
     const longError = "y".repeat(600);
     const result = simulateInstall(true, longError);
-
-    // logMessage slice is 200 chars from detail
     expect(result.logMessage).toContain("y".repeat(200));
     expect(result.logMessage).not.toContain("y".repeat(201));
   });
@@ -1057,7 +1068,6 @@ describe("finalize() — dependency install step", () => {
 describe("finalize() — type-check step (conditional on installSucceeded)", () => {
   it("runs type check when installSucceeded is true and reports SUCCESS", () => {
     const result = simulateTypeCheck(true, false);
-
     expect(result.status).toBe("SUCCESS");
     expect(result.reportEntry).toContain("## Build / Type Check");
     expect(result.reportEntry).toContain("- Status: SUCCESS");
@@ -1066,7 +1076,6 @@ describe("finalize() — type-check step (conditional on installSucceeded)", () 
 
   it("skips type check when installSucceeded is false", () => {
     const result = simulateTypeCheck(false, false);
-
     expect(result.status).toBe("SKIPPED");
     expect(result.reportEntry).toContain("## Build / Type Check");
     expect(result.reportEntry).toContain("- Status: SKIPPED (dependency install failed)");
@@ -1076,7 +1085,6 @@ describe("finalize() — type-check step (conditional on installSucceeded)", () 
   it("reports FAILED with error detail when tsc throws after successful install", () => {
     const tsError = "src/bar.ts(3,5): error TS2322: Type 'string' is not assignable to type 'number'.";
     const result = simulateTypeCheck(true, true, tsError);
-
     expect(result.status).toBe("FAILED");
     expect(result.reportEntry).toContain("## Build / Type Check");
     expect(result.reportEntry).toContain("- Status: FAILED");
@@ -1086,11 +1094,8 @@ describe("finalize() — type-check step (conditional on installSucceeded)", () 
   });
 
   it("does NOT run type check when npm ci failed — guards against false module errors", () => {
-    // This is the critical regression guard: without node_modules, tsc would fail
-    // with "Cannot find Module" even if the TypeScript code itself is correct.
     const install = simulateInstall(true);
     const typeCheck = simulateTypeCheck(install.succeeded, false);
-
     expect(install.succeeded).toBe(false);
     expect(typeCheck.status).toBe("SKIPPED");
   });
@@ -1098,24 +1103,17 @@ describe("finalize() — type-check step (conditional on installSucceeded)", () 
   it("correctly sequences install then type-check in the happy path", () => {
     const install = simulateInstall(false);
     const typeCheck = simulateTypeCheck(install.succeeded, false);
-
     expect(install.succeeded).toBe(true);
     expect(typeCheck.status).toBe("SUCCESS");
-
-    // Both sections must appear in the report (in order)
     const report = [...install.reportEntry, ...typeCheck.reportEntry];
     const depIdx = report.indexOf("## Dependency Install");
     const tscIdx = report.indexOf("## Build / Type Check");
-
     expect(depIdx).toBeGreaterThanOrEqual(0);
     expect(tscIdx).toBeGreaterThan(depIdx);
   });
 
   it("skips type check even when tsc would have passed — error message is clear", () => {
-    // Simulate an environment where tsc would pass but npm ci failed.
-    // The skip message must make the root cause obvious (install, not tsc).
     const result = simulateTypeCheck(false, false);
-
     expect(result.reportEntry.join("\n")).toContain("dependency install failed");
     expect(result.logMessage).toContain("dependency install failed");
   });
@@ -1123,14 +1121,11 @@ describe("finalize() — type-check step (conditional on installSucceeded)", () 
 
 describe("finalize() — report structure with npm ci section", () => {
   it("report includes a Dependency Install section before Build / Type Check", () => {
-    // Simulate full happy-path report content
     const install = simulateInstall(false);
     const typeCheck = simulateTypeCheck(true, false);
     const combined = [...install.reportEntry, ...typeCheck.reportEntry].join("\n");
-
     expect(combined).toContain("## Dependency Install");
     expect(combined).toContain("## Build / Type Check");
-
     const installPos = combined.indexOf("## Dependency Install");
     const tscPos = combined.indexOf("## Build / Type Check");
     expect(installPos).toBeLessThan(tscPos);
@@ -1138,22 +1133,16 @@ describe("finalize() — report structure with npm ci section", () => {
 
   it("report omits tsc section when install fails — only Dependency Install FAILED appears", () => {
     const install = simulateInstall(true);
-    const typeCheck = simulateTypeCheck(false, false); // installSucceeded=false
+    const typeCheck = simulateTypeCheck(false, false);
     const combined = [...install.reportEntry, ...typeCheck.reportEntry].join("\n");
-
     expect(combined).toContain("## Dependency Install");
     expect(combined).toContain("- Status: FAILED");
-    // Type check is SKIPPED, not absent — but the status is explicit
     expect(combined).toContain("- Status: SKIPPED (dependency install failed)");
   });
 
   it("install uses 120_000 ms timeout (not the 60_000 ms type-check timeout)", () => {
-    // Verify the documented timeout values in the code comments match the intent.
-    // This is a documentation-level assertion — the simulator captures the timeout
-    // intent via constant values used in the real code.
     const INSTALL_TIMEOUT_MS = 120_000;
     const TYPECHECK_TIMEOUT_MS = 60_000;
-
     expect(INSTALL_TIMEOUT_MS).toBeGreaterThan(TYPECHECK_TIMEOUT_MS);
     expect(INSTALL_TIMEOUT_MS).toBe(120_000);
     expect(TYPECHECK_TIMEOUT_MS).toBe(60_000);
