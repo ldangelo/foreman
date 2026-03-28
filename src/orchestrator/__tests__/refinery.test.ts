@@ -19,12 +19,13 @@ vi.mock("../../lib/git.js", () => ({
 vi.mock("../task-backend-ops.js", () => ({
   enqueueCloseSeed: vi.fn(),
   enqueueResetSeedToOpen: vi.fn(),
+  enqueueAddNotesToBead: vi.fn(),
 }));
 
 // Import mocked modules AFTER vi.mock declarations
 import { execFile } from "node:child_process";
 import { removeWorktree } from "../../lib/git.js";
-import { enqueueCloseSeed, enqueueResetSeedToOpen } from "../task-backend-ops.js";
+import { enqueueCloseSeed, enqueueResetSeedToOpen, enqueueAddNotesToBead } from "../task-backend-ops.js";
 import { Refinery } from "../refinery.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -164,9 +165,8 @@ describe("Refinery.resolveConflict()", () => {
       expect.objectContaining({ reason: expect.stringContaining("abort") }),
       run.id,
     );
-    expect(seeds.update).toHaveBeenCalledWith(
-      run.seed_id,
-      expect.objectContaining({ notes: expect.stringContaining("aborted") }),
+    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(), run.seed_id, expect.stringContaining("aborted"), "refinery",
     );
   });
 
@@ -230,9 +230,8 @@ describe("Refinery.resolveConflict()", () => {
     const calls: string[][] = (execFile as any).mock.calls.map((c: any[]) => c[1]);
     const abortCall = calls.find((args) => Array.isArray(args) && args.includes("--abort"));
     expect(abortCall).toBeDefined();
-    expect(seeds.update).toHaveBeenCalledWith(
-      run.seed_id,
-      expect.objectContaining({ notes: expect.stringContaining("Merge failed") }),
+    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(), run.seed_id, expect.stringContaining("Merge failed"), "refinery",
     );
 
     // resetSeedToOpen must be called so the seed reappears in the ready queue
@@ -311,9 +310,8 @@ describe("Refinery.resolveConflict()", () => {
       (args) => Array.isArray(args) && args.includes("reset") && args.includes("--hard"),
     );
     expect(resetCall).toBeDefined();
-    expect(seeds.update).toHaveBeenCalledWith(
-      run.seed_id,
-      expect.objectContaining({ notes: expect.stringContaining("tests failed") }),
+    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(), run.seed_id, expect.stringContaining("tests failed"), "refinery",
     );
 
     // resetSeedToOpen must be called so the seed reappears in the ready queue
@@ -568,11 +566,8 @@ describe("Refinery.mergeCompleted()", () => {
 
     expect(report.conflicts).toHaveLength(1);
     // Must add a note explaining what happened before the reset
-    expect(seeds.update).toHaveBeenCalledWith(
-      run.seed_id,
-      expect.objectContaining({
-        notes: expect.stringContaining("branch reset to open for retry"),
-      }),
+    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(), run.seed_id, expect.stringContaining("branch reset to open for retry"), "refinery",
     );
   });
 
@@ -617,11 +612,8 @@ describe("Refinery.mergeCompleted()", () => {
 
     expect(report.conflicts).toHaveLength(1);
     // Must add a note explaining what happened before the reset
-    expect(seeds.update).toHaveBeenCalledWith(
-      run.seed_id,
-      expect.objectContaining({
-        notes: expect.stringContaining("branch reset to open for retry"),
-      }),
+    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(), run.seed_id, expect.stringContaining("branch reset to open for retry"), "refinery",
     );
   });
 
@@ -661,9 +653,8 @@ describe("Refinery.mergeCompleted()", () => {
       run.id,
       expect.objectContaining({ status: "test-failed" }),
     );
-    expect(seeds.update).toHaveBeenCalledWith(
-      run.seed_id,
-      expect.objectContaining({ notes: expect.stringContaining("tests failed") }),
+    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(), run.seed_id, expect.stringContaining("tests failed"), "refinery",
     );
   });
 
@@ -712,9 +703,8 @@ describe("Refinery.mergeCompleted()", () => {
 
     expect(report.testFailures).toHaveLength(1);
     expect(report.testFailures[0].error).toContain("Unexpected git failure");
-    expect(seeds.update).toHaveBeenCalledWith(
-      run.seed_id,
-      expect.objectContaining({ notes: expect.stringContaining("Merge failed") }),
+    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(), run.seed_id, expect.stringContaining("Merge failed"), "refinery",
     );
   });
 

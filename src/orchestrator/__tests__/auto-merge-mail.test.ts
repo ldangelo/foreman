@@ -95,6 +95,7 @@ vi.mock("../../lib/store.js", () => ({
 vi.mock("../task-backend-ops.js", () => ({
   enqueueAddNotesToBead: vi.fn(),
   enqueueMarkBeadFailed: vi.fn(),
+  enqueueSetBeadStatus: vi.fn(),
 }));
 
 vi.mock("../merge-queue.js", () => ({
