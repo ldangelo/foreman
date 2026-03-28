@@ -73,7 +73,7 @@ describe("agent-worker.ts — nothing_to_commit for verification beads (bd-w8sj)
 
   it("only treats nothing_to_commit as success for verification beads when no prior commits", () => {
     const idx = source.indexOf('errorDetail === "nothing_to_commit"');
-    const block = source.slice(idx, idx + 1800);
+    const block = source.slice(idx, idx + 2200);
     // Both hasCommitsAhead and isVerificationBead paths must exist
     expect(block).toContain("hasCommitsAhead");
     expect(block).toContain("isVerificationBead");
