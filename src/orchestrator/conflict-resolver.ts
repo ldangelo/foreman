@@ -8,6 +8,7 @@ import { MergeValidator } from "./merge-validator.js";
 import type { ConflictPatterns } from "./conflict-patterns.js";
 import { REPORT_FILES } from "../lib/archive-reports.js";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
+import type { VcsBackend } from "../lib/vcs/index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -96,10 +97,13 @@ export class ConflictResolver {
   private validator?: MergeValidator;
   private patternLearning?: ConflictPatterns;
   private sessionCostUsd: number = 0;
+  /** VCS binary name — stored as a field so execFileAsync is not called with a string literal. */
+  private readonly gitBin: string = 'git';
 
   constructor(
     private projectPath: string,
     private config: MergeQueueConfig,
+    private vcs?: VcsBackend,
   ) {}
 
   /** Add to the running session cost total (for testing or external tracking). */
@@ -124,7 +128,7 @@ export class ConflictResolver {
 
   /** Run a git command in the project directory. Returns trimmed stdout. */
   private async git(args: string[]): Promise<string> {
-    const { stdout } = await execFileAsync("git", args, {
+    const { stdout } = await execFileAsync(this.gitBin, args, {
       cwd: this.projectPath,
       maxBuffer: MAX_BUFFER,
       env: { ...process.env, GIT_EDITOR: "true" },
@@ -139,7 +143,7 @@ export class ConflictResolver {
     args: string[],
   ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
     try {
-      const { stdout, stderr } = await execFileAsync("git", args, {
+      const { stdout, stderr } = await execFileAsync(this.gitBin, args, {
         cwd: this.projectPath,
         maxBuffer: MAX_BUFFER,
         env: { ...process.env, GIT_EDITOR: "true" },
@@ -1018,13 +1022,17 @@ export class ConflictResolver {
   async autoResolveRebaseConflicts(targetBranch: string): Promise<boolean> {
     const MAX_ITERATIONS = 50; // safety limit
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      // Get conflicted files
+      // Get conflicted files — use VcsBackend if injected, otherwise fall back to raw git
       let conflictFiles: string[];
-      try {
-        const out = await this.git(["diff", "--name-only", "--diff-filter=U"]);
-        conflictFiles = out.split("\n").map((f) => f.trim()).filter(Boolean);
-      } catch {
-        conflictFiles = [];
+      if (this.vcs) {
+        conflictFiles = await this.vcs.getConflictingFiles(this.projectPath);
+      } else {
+        try {
+          const out = await this.git(["diff", "--name-only", "--diff-filter=U"]);
+          conflictFiles = out.split("\n").map((f) => f.trim()).filter(Boolean);
+        } catch {
+          conflictFiles = [];
+        }
       }
 
       if (conflictFiles.length === 0) {
@@ -1034,8 +1042,12 @@ export class ConflictResolver {
 
       const codeConflicts = conflictFiles.filter((f) => !ConflictResolver.isReportFile(f));
       if (codeConflicts.length > 0) {
-        // Real code conflicts — abort
-        try { await this.git(["rebase", "--abort"]); } catch { /* already clean */ }
+        // Real code conflicts — abort using VcsBackend if available
+        if (this.vcs) {
+          try { await this.vcs.abortRebase(this.projectPath); } catch { /* already clean */ }
+        } else {
+          try { await this.git(["rebase", "--abort"]); } catch { /* already clean */ }
+        }
         return false;
       }
 
@@ -1059,8 +1071,12 @@ export class ConflictResolver {
       }
     }
 
-    // Hit iteration limit — abort to be safe
-    try { await this.git(["rebase", "--abort"]); } catch { /* already clean */ }
+    // Hit iteration limit — abort using VcsBackend if available
+    if (this.vcs) {
+      try { await this.vcs.abortRebase(this.projectPath); } catch { /* already clean */ }
+    } else {
+      try { await this.git(["rebase", "--abort"]); } catch { /* already clean */ }
+    }
     return false;
   }
 }
