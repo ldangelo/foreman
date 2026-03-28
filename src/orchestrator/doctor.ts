@@ -1581,11 +1581,9 @@ export class Doctor {
 
     if (fix && opts.projectPath) {
       try {
-        const execFn: ExecFileAsyncFn = opts.execFileFn ?? (execFileAsync as ExecFileAsyncFn);
         const result = await this.mergeQueue.reconcile(
           this.store.getDb(),
           opts.projectPath,
-          execFn,
         );
         return {
           name: "completed runs queued",

@@ -12,7 +12,6 @@
 import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join, basename } from "node:path";
-import { execFileSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 import { createSendMailTool } from "./pi-sdk-tools.js";
@@ -33,6 +32,7 @@ import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "..
 import { autoMerge } from "./auto-merge.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
+import { GitBackend } from "../lib/vcs/git-backend.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -646,14 +646,14 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
                 candidates.push(`origin/${config.targetBranch}`, config.targetBranch);
               }
               candidates.push("origin/dev", "origin/main");
+              const aheadBackend = new GitBackend(worktreePath);
               for (const ref of candidates) {
                 try {
-                  const logOutput = execFileSync("git", ["log", `${ref}..HEAD`, "--oneline"], {
-                    cwd: worktreePath,
-                    stdio: "pipe",
-                    timeout: 10_000,
-                  }).toString().trim();
-                  hasCommitsAhead = logOutput.length > 0;
+                  // Use VcsBackend.getChangedFiles() as a proxy for checking if
+                  // HEAD has any commits ahead of the given ref. Three-dot
+                  // semantics are used for consistency with the rest of the VCS layer.
+                  const changedFiles = await aheadBackend.getChangedFiles(worktreePath, ref, "HEAD");
+                  hasCommitsAhead = changedFiles.length > 0;
                   break; // First valid ref wins
                 } catch {
                   // Ref doesn't exist or git failed — try next
@@ -687,16 +687,22 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
         try {
           const enqueueStore = ForemanStore.forProject(pipelineProjectPath);
-          const enqueueOpts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
+          // Pre-compute modified files via VcsBackend (async) before calling
+          // enqueueToMergeQueue which expects a synchronous getFilesModified callback.
+          let enqueueFiles: string[] = [];
+          try {
+            const enqueueBackend = new GitBackend(worktreePath);
+            const enqueueDefaultBranch = await detectDefaultBranch(worktreePath);
+            enqueueFiles = await enqueueBackend.getChangedFiles(worktreePath, enqueueDefaultBranch, "HEAD");
+          } catch {
+            // Non-fatal — proceed with empty file list
+          }
           const enqueueResult = enqueueToMergeQueue({
             db: enqueueStore.getDb(),
             seedId,
             runId,
             worktreePath,
-            getFilesModified: () => {
-              const output = execFileSync("git", ["diff", "--name-only", "main...HEAD"], enqueueOpts).toString().trim();
-              return output ? output.split("\n") : [];
-            },
+            getFilesModified: () => enqueueFiles,
           });
           enqueueStore.close();
           if (enqueueResult.success) {

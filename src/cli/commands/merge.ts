@@ -179,7 +179,7 @@ export const mergeCommand = new Command("merge")
       // --dry-run: preview merge without modifying git state (MQ-T058)
       if (opts.dryRun) {
         // Reconcile first to get current queue state
-        const reconcileResult = await mq.reconcile(store.getDb(), projectPath, execFileAsync);
+        const reconcileResult = await mq.reconcile(store.getDb(), projectPath);
         if (reconcileResult.enqueued > 0) {
           console.log(chalk.dim(`  (reconciled ${reconcileResult.enqueued} new entry/entries into queue)\n`));
         }
@@ -234,7 +234,7 @@ export const mergeCommand = new Command("merge")
       // --list: show queue entries and exit (MQ-T019)
       if (opts.list) {
         // Reconcile first to ensure queue is up to date
-        const reconcileResult = await mq.reconcile(store.getDb(), projectPath, execFileAsync);
+        const reconcileResult = await mq.reconcile(store.getDb(), projectPath);
 
         const entries = mq.list();
 
@@ -283,7 +283,7 @@ export const mergeCommand = new Command("merge")
       console.log(chalk.bold("Running refinery on completed work...\n"));
 
       // Step 1: Reconcile — ensure all completed runs are in the queue
-      const reconcileResult = await mq.reconcile(store.getDb(), projectPath, execFileAsync);
+      const reconcileResult = await mq.reconcile(store.getDb(), projectPath);
       if (reconcileResult.enqueued > 0) {
         console.log(chalk.dim(`  Reconciled ${reconcileResult.enqueued} completed run(s) into merge queue.\n`));
       }
@@ -383,7 +383,7 @@ export const mergeCommand = new Command("merge")
         // This handles the race condition where an agent finishes after the initial
         // reconcile snapshot but before the dequeue loop exhausts the queue.
         try {
-          const midLoopResult = await mq.reconcile(store.getDb(), projectPath, execFileAsync);
+          const midLoopResult = await mq.reconcile(store.getDb(), projectPath);
           if (midLoopResult.enqueued > 0) {
             console.log(chalk.dim(`  Reconciled ${midLoopResult.enqueued} additional completed run(s) into merge queue.\n`));
           }

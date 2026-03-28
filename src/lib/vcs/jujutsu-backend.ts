@@ -601,6 +601,24 @@ export class JujutsuBackend implements VcsBackend {
   }
 
   /**
+   * Get the commit timestamp for a given ref (bookmark).
+   * Returns a Unix timestamp in seconds, or null if not found.
+   */
+  async getRefCommitTimestamp(repoPath: string, ref: string): Promise<number | null> {
+    try {
+      const out = await this.jj(
+        ["log", "-r", ref, "--no-graph", "-T", "author.timestamp().utc().unix()"],
+        repoPath,
+      );
+      const ts = parseInt(out.trim(), 10);
+      if (isNaN(ts)) return null;
+      return ts;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * List modified files in the current revision.
    */
   async getModifiedFiles(workspacePath: string): Promise<string[]> {
