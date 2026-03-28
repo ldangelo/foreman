@@ -19,6 +19,7 @@ import { PLAN_STEP_CONFIG } from "./roles.js";
 import { isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
+import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import type {
@@ -351,9 +352,22 @@ export class Dispatcher {
           const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
           setupSteps = wfConfig.setup;
           setupCache = wfConfig.setupCache;
-          // Resolve VCS backend from workflow config or auto-detect
-          if (wfConfig.vcs?.backend && wfConfig.vcs.backend !== 'auto') {
-            vcsBackendName = wfConfig.vcs.backend;
+
+          // Load project-level config (optional — returns null if .foreman/config.yaml absent)
+          let projectVcs: import("../lib/project-config.js").ProjectConfig["vcs"] | undefined;
+          try {
+            const projectCfg = loadProjectConfig(this.projectPath);
+            projectVcs = projectCfg?.vcs;
+          } catch (projErr: unknown) {
+            // Non-fatal: log and continue without project config
+            const projMsg = projErr instanceof Error ? projErr.message : String(projErr);
+            log(`[foreman] Could not load project config — ${projMsg}`);
+          }
+
+          // Resolve VCS backend: workflow > project > auto-detect
+          const resolvedVcs = resolveVcsConfig(wfConfig.vcs, projectVcs);
+          if (resolvedVcs.backend !== 'auto') {
+            vcsBackendName = resolvedVcs.backend;
           } else {
             // Auto-detect: .jj/ → jujutsu, else git
             const { existsSync } = await import("node:fs");
@@ -361,6 +375,7 @@ export class Dispatcher {
             if (existsSync(pathJoin(this.projectPath, '.jj'))) {
               vcsBackendName = 'jujutsu';
             }
+            // else: stay with 'git' default
           }
         } catch {
           // Non-fatal: fall back to default installDependencies behavior
