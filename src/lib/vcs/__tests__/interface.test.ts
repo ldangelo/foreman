@@ -122,10 +122,11 @@ describe("VcsBackendFactory.resolveBackend", () => {
     expect(resolved).toBe('jujutsu');
   });
 
-  it("detects 'git' when 'auto' and no .jj directory", () => {
+  it("detects 'git' when 'auto' and .git directory exists (no .jj)", () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-vcs-factory-")));
     tempDirs.push(dir);
-    // No .jj directory — should resolve to git
+    // Create .git directory — should resolve to git (no .jj present)
+    mkdirSync(join(dir, '.git'));
     const resolved = VcsBackendFactory.resolveBackend({ backend: 'auto' }, dir);
     expect(resolved).toBe('git');
   });
