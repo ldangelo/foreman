@@ -4,7 +4,7 @@ import chalk from "chalk";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
-import { getRepoRoot, getCurrentBranch } from "../../lib/git.js";
+import { getRepoRoot, getCurrentBranch, checkoutBranch } from "../../lib/git.js";
 import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
 import { existsSync, readdirSync } from "node:fs";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
@@ -273,6 +273,11 @@ export const resetCommand = new Command("reset")
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
+      // Save current branch so we can restore it after worktree/branch cleanup,
+      // which can change HEAD as a side effect of git worktree remove / branch -D.
+      let originalBranch: string | undefined;
+      try { originalBranch = await getCurrentBranch(projectPath); } catch { /* ignore */ }
+
       const seeds: IShowUpdateClient = new BeadsRustClient(projectPath);
       const store = ForemanStore.forProject(projectPath);
       const project = store.getProjectByPath(projectPath);
@@ -633,6 +638,20 @@ export const resetCommand = new Command("reset")
         console.log(chalk.red(`\n  Errors (${allErrors.length}):`));
         for (const err of allErrors) {
           console.log(chalk.red(`    ${err}`));
+        }
+      }
+
+      // Restore the original branch — worktree removal and branch deletion can
+      // change HEAD as a side effect.
+      if (originalBranch) {
+        try {
+          const currentBranch = await getCurrentBranch(projectPath);
+          if (currentBranch !== originalBranch) {
+            await checkoutBranch(projectPath, originalBranch);
+            console.log(chalk.dim(`Restored branch: ${originalBranch}`));
+          }
+        } catch {
+          console.warn(chalk.yellow(`Warning: could not restore branch '${originalBranch}'. Run: git checkout ${originalBranch}`));
         }
       }
 
