@@ -5,6 +5,14 @@
 #
 # Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
 # Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
+#
+# Optional: specify VCS backend for this workflow.
+# Overrides project-level .foreman/config.yaml if set.
+# Values: 'auto' (detect from repo), 'git', 'jujutsu'.
+# When absent, project config or auto-detection is used.
+#
+# vcs:
+#   backend: auto
 name: default
 setup:
   - command: npm install --prefer-offline --no-audit
