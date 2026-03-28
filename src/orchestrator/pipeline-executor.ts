@@ -69,6 +69,8 @@ export interface PipelineRunConfig {
   skipExplore?: boolean;
   skipReview?: boolean;
   env: Record<string, string | undefined>;
+  /** Override target branch for finalize rebase/push and auto-merge. */
+  targetBranch?: string;
 }
 
 export interface PipelineContext {
@@ -222,6 +224,7 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       hasExplorerReport,
       feedbackContext,
       worktreePath,
+      baseBranch: config.targetBranch,
     }, ctx.promptOpts);
 
     // Resolve the model for this phase from the workflow YAML + bead priority.

@@ -58,6 +58,8 @@ export class Dispatcher {
     seedId?: string;
     /** URL of the notification server (e.g. "http://127.0.0.1:PORT") */
     notifyUrl?: string;
+    /** Override target branch for merges (when working on a feature branch instead of default). */
+    targetBranch?: string;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = opts?.projectId ?? this.resolveProjectId();
@@ -445,6 +447,7 @@ export class Dispatcher {
           },
           opts?.notifyUrl,
           vcsBackendName,
+          opts?.targetBranch,
         );
 
         // Update run with session key
@@ -771,6 +774,7 @@ export class Dispatcher {
     },
     notifyUrl?: string,
     vcsBackend?: string,
+    targetBranch?: string,
   ): Promise<{ sessionKey: string }> {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
@@ -801,6 +805,7 @@ export class Dispatcher {
       seedType,
       seedLabels: seed.labels,
       seedPriority: seed.priority,
+      targetBranch,
     });
 
     return { sessionKey };
@@ -1003,8 +1008,11 @@ export class Dispatcher {
     // blocked cache. This ensures br ready reflects newly-unblocked beads.
     if (processed > 0) {
       try {
-        // Flush any non-close operations (reset, labels, notes) that used the DB
-        execFileSync(bin, ["sync", "--flush-only"], execOpts);
+        // Force full re-export so JSONL stays in sync with the DB.
+        // Regular --flush-only only exports "dirty" entries, but dirty flags
+        // can get out of sync (e.g. after --no-db writes or interrupted sessions),
+        // causing bv to see stale data. --force re-exports everything.
+        execFileSync(bin, ["sync", "--flush-only", "--force"], execOpts);
         // Clear the blocked_issues_cache so br ready reflects newly-unblocked beads.
         // Using sqlite3 CLI is safer and faster than deleting the entire DB.
         try {
@@ -1121,6 +1129,11 @@ export interface WorkerConfig {
    * Forwarded to the pipeline executor to resolve per-priority models from YAML.
    */
   seedPriority?: string;
+  /**
+   * Override target branch for auto-merge after finalize.
+   * When set, the agent worker merges into this branch instead of detectDefaultBranch().
+   */
+  targetBranch?: string;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────
