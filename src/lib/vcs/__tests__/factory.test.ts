@@ -144,6 +144,49 @@ describe("VcsBackendFactory.create", () => {
   });
 });
 
+// ── createSync ────────────────────────────────────────────────────────────────
+
+describe("VcsBackendFactory.createSync", () => {
+  it("creates GitBackend for backend='git'", () => {
+    const b = VcsBackendFactory.createSync({ backend: 'git' }, '/tmp');
+    expect(b).toBeInstanceOf(GitBackend);
+    expect(b.name).toBe('git');
+  });
+
+  it("creates JujutsuBackend for backend='jujutsu'", () => {
+    const b = VcsBackendFactory.createSync({ backend: 'jujutsu' }, '/tmp');
+    expect(b).toBeInstanceOf(JujutsuBackend);
+    expect(b.name).toBe('jujutsu');
+  });
+
+  it("auto-detects GitBackend when .git directory exists", () => {
+    const dir = makeTempDir("foreman-factory-sync-git-");
+    mkdirSync(join(dir, '.git'));
+    const b = VcsBackendFactory.createSync({ backend: 'auto' }, dir);
+    expect(b).toBeInstanceOf(GitBackend);
+  });
+
+  it("auto-detects JujutsuBackend when .jj directory exists (takes precedence)", () => {
+    const dir = makeTempDir("foreman-factory-sync-jj-");
+    mkdirSync(join(dir, '.jj'));
+    mkdirSync(join(dir, '.git'));
+    const b = VcsBackendFactory.createSync({ backend: 'auto' }, dir);
+    expect(b).toBeInstanceOf(JujutsuBackend);
+  });
+
+  it("throws when auto-detection finds neither .git nor .jj", () => {
+    const dir = makeTempDir("foreman-factory-sync-neither-");
+    expect(() =>
+      VcsBackendFactory.createSync({ backend: 'auto' }, dir)
+    ).toThrow(/auto-detection failed/);
+  });
+
+  it("sets projectPath correctly on the created backend", () => {
+    const b = VcsBackendFactory.createSync({ backend: 'git' }, '/custom/path') as GitBackend;
+    expect(b.projectPath).toBe('/custom/path');
+  });
+});
+
 // ── fromEnv ───────────────────────────────────────────────────────────────────
 
 describe("VcsBackendFactory.fromEnv", () => {
