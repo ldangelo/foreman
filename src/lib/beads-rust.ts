@@ -75,7 +75,9 @@ export async function execBr(
   args: string[],
   cwd?: string,
 ): Promise<unknown> {
-  const finalArgs = [...args, "--json"];
+  // --lock-timeout: wait up to 10s for SQLite lock instead of failing with SQLITE_BUSY
+  // when concurrent agents hold read locks on .beads/beads.db.
+  const finalArgs = [...args, "--json", "--lock-timeout", "10000"];
   try {
     const { stdout } = await execFileAsync(BR_PATH, finalArgs, {
       cwd,
