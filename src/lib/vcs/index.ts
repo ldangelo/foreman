@@ -81,19 +81,37 @@ export class VcsBackendFactory {
 
   /**
    * Resolve the backend type from config, performing auto-detection if needed.
+   *
+   * @throws {Error} If `backend === 'auto'` and neither `.git/` nor `.jj/` exists.
+   * @throws {Error} If `backend` is not a recognized value ('git', 'jujutsu', 'auto').
    */
   static resolveBackend(config: VcsConfig, projectPath: string): 'git' | 'jujutsu' {
-    if (config.backend !== 'auto') {
+    if (config.backend === 'auto') {
+      // Auto-detect: presence of .jj/ directory indicates Jujutsu (takes precedence)
+      if (existsSync(join(projectPath, '.jj'))) {
+        return 'jujutsu';
+      }
+
+      // Fall back to git if .git/ exists
+      if (existsSync(join(projectPath, '.git'))) {
+        return 'git';
+      }
+
+      throw new Error(
+        `VcsBackendFactory: auto-detection failed — neither .git/ nor .jj/ found in "${projectPath}". ` +
+        `Initialize a git repository (git init) or jujutsu repository (jj git init) first.`
+      );
+    }
+
+    if (config.backend === 'git' || config.backend === 'jujutsu') {
       return config.backend;
     }
 
-    // Auto-detect: presence of .jj/ directory indicates Jujutsu
-    if (existsSync(join(projectPath, '.jj'))) {
-      return 'jujutsu';
-    }
-
-    // Default to git
-    return 'git';
+    // Runtime guard for invalid backend values (e.g., when using 'as any' casts)
+    throw new Error(
+      `VcsBackendFactory: unrecognized backend "${String(config.backend)}". ` +
+      `Valid values are: 'git', 'jujutsu', 'auto'.`
+    );
   }
 
   /**
