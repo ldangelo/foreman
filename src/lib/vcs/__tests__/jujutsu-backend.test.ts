@@ -317,6 +317,252 @@ describe.skipIf(!JJ_AVAILABLE)(
   },
 );
 
+// ── AC-T-020: Sync Operations ─────────────────────────────────────────────────
+
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend sync operations (AC-T-020)", () => {
+  /**
+   * Helper: create a jj repo with a local bare git remote registered as "origin".
+   * Returns both paths; both are pushed to tempDirs for cleanup.
+   */
+  function makeRepoWithBareRemote(): { repoPath: string; remotePath: string } {
+    const repoPath = makeTempJjRepo();
+    const remotePath = realpathSync(
+      mkdtempSync(join(tmpdir(), "foreman-jj-bare-")),
+    );
+    tempDirs.push(repoPath, remotePath);
+
+    execFileSync("git", ["init", "--bare"], { cwd: remotePath, stdio: "pipe" });
+    execFileSync("git", ["remote", "add", "origin", remotePath], {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+
+    return { repoPath, remotePath };
+  }
+
+  // AC-T-020-1: fetch() succeeds against a valid remote ─────────────────────
+
+  it("fetch() succeeds against a local bare remote (AC-T-020-1)", async () => {
+    const { repoPath } = makeRepoWithBareRemote();
+    const backend = new JujutsuBackend(repoPath);
+
+    // Fetching from an empty-but-valid remote should not throw
+    await expect(backend.fetch(repoPath)).resolves.toBeUndefined();
+  });
+
+  it("fetch() resolves to undefined (return type matches interface)", async () => {
+    const { repoPath } = makeRepoWithBareRemote();
+    const backend = new JujutsuBackend(repoPath);
+    const result = await backend.fetch(repoPath);
+    expect(result).toBeUndefined();
+  });
+
+  // AC-T-020-2: rebase() onto non-conflicting target returns success ─────────
+
+  it("rebase() returns success:true for a no-conflict rebase (AC-T-020-2)", async () => {
+    const repoPath = makeTempJjRepo();
+    tempDirs.push(repoPath);
+
+    // Describe the initial working copy (becomes "base")
+    writeFileSync(join(repoPath, "base.txt"), "base content");
+    execFileSync("jj", ["describe", "-m", "Base commit"], {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+    execFileSync("jj", ["bookmark", "create", "base", "-r", "@"], {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+
+    // Create a new revision on top of base with a non-conflicting file
+    execFileSync("jj", ["new"], { cwd: repoPath, stdio: "pipe" });
+    writeFileSync(join(repoPath, "feature.txt"), "feature content");
+    execFileSync("jj", ["describe", "-m", "Feature commit"], {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+
+    const backend = new JujutsuBackend(repoPath);
+    const result = await backend.rebase(repoPath, "base");
+
+    expect(result.success).toBe(true);
+    expect(result.hasConflicts).toBe(false);
+    expect(result.conflictingFiles ?? []).toHaveLength(0);
+  });
+
+  it("rebase() result has the expected shape (RebaseResult interface)", async () => {
+    const repoPath = makeTempJjRepo();
+    tempDirs.push(repoPath);
+
+    writeFileSync(join(repoPath, "a.txt"), "a");
+    execFileSync("jj", ["describe", "-m", "A"], { cwd: repoPath, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "target", "-r", "@"], {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+    execFileSync("jj", ["new"], { cwd: repoPath, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repoPath);
+    const result = await backend.rebase(repoPath, "target");
+
+    // Shape check
+    expect(typeof result.success).toBe("boolean");
+    expect(typeof result.hasConflicts).toBe("boolean");
+  });
+
+  // AC-T-020-3: abortRebase() calls jj undo ────────────────────────────────
+
+  it("abortRebase() resolves without throwing (AC-T-020-3)", async () => {
+    const repoPath = makeTempJjRepo();
+    tempDirs.push(repoPath);
+
+    // Create some state for undo to act on
+    writeFileSync(join(repoPath, "file.txt"), "initial content");
+    execFileSync("jj", ["describe", "-m", "Initial"], {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+
+    const backend = new JujutsuBackend(repoPath);
+    await expect(backend.abortRebase(repoPath)).resolves.toBeUndefined();
+  });
+
+  it("abortRebase() records an undo entry in jj op log (AC-T-020-3)", async () => {
+    const repoPath = makeTempJjRepo();
+    tempDirs.push(repoPath);
+
+    // Set up some state
+    writeFileSync(join(repoPath, "file.txt"), "content");
+    execFileSync("jj", ["describe", "-m", "Commit for undo test"], {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+
+    const backend = new JujutsuBackend(repoPath);
+    await backend.abortRebase(repoPath);
+
+    // jj op log --no-graph --limit 1 should include "undo" in its output
+    const opLog = execFileSync(
+      "jj",
+      ["op", "log", "--no-graph", "--limit", "1"],
+      { cwd: repoPath, stdio: "pipe" },
+    ).toString();
+
+    expect(opLog.toLowerCase()).toContain("undo");
+  });
+
+  // Push operations (AC-011-1, AC-011-2) ────────────────────────────────────
+
+  it("push() with allowNew:true pushes a bookmark to a local remote (AC-011-1, AC-011-2)", async () => {
+    const repoPath = makeTempJjRepo();
+    const remotePath = realpathSync(
+      mkdtempSync(join(tmpdir(), "foreman-jj-push-remote-")),
+    );
+    tempDirs.push(repoPath, remotePath);
+
+    execFileSync("git", ["init", "--bare"], { cwd: remotePath, stdio: "pipe" });
+    execFileSync("git", ["remote", "add", "origin", remotePath], {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+
+    // Create a commit and bookmark to push
+    writeFileSync(join(repoPath, "hello.txt"), "hello world");
+    execFileSync("jj", ["describe", "-m", "Hello"], {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+    execFileSync("jj", ["bookmark", "create", "test-branch", "-r", "@"], {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+
+    const backend = new JujutsuBackend(repoPath);
+    await expect(
+      backend.push(repoPath, "test-branch", { allowNew: true }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("push() without allowNew:true does not append --allow-new (AC-011-2 negative)", async () => {
+    // We can't easily test CLI flags directly, but we verify push() doesn't throw
+    // when the bookmark is already tracked on the remote.
+    const repoPath = makeTempJjRepo();
+    const remotePath = realpathSync(
+      mkdtempSync(join(tmpdir(), "foreman-jj-push-neg-")),
+    );
+    tempDirs.push(repoPath, remotePath);
+
+    execFileSync("git", ["init", "--bare"], { cwd: remotePath, stdio: "pipe" });
+    execFileSync("git", ["remote", "add", "origin", remotePath], {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+
+    writeFileSync(join(repoPath, "a.txt"), "a");
+    execFileSync("jj", ["describe", "-m", "A"], { cwd: repoPath, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "my-branch", "-r", "@"], {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+    // First push with --allow-new to establish tracking
+    execFileSync(
+      "jj",
+      ["git", "push", "--bookmark", "my-branch", "--allow-new"],
+      { cwd: repoPath, stdio: "pipe" },
+    );
+
+    // Second push without allowNew — bookmark already tracked, should succeed
+    const backend = new JujutsuBackend(repoPath);
+    await expect(
+      backend.push(repoPath, "my-branch", { allowNew: false }),
+    ).resolves.toBeUndefined();
+  });
+
+  // Pull operations ─────────────────────────────────────────────────────────
+
+  it("pull() fetches and tracks a remote bookmark without throwing", async () => {
+    // Set up: source repo → bare remote; consumer repo pulls from that remote
+    const remotePath = realpathSync(
+      mkdtempSync(join(tmpdir(), "foreman-jj-pull-remote-")),
+    );
+    tempDirs.push(remotePath);
+    execFileSync("git", ["init", "--bare"], { cwd: remotePath, stdio: "pipe" });
+
+    // Source repo: create a commit and push it to remote
+    const sourceRepo = makeTempJjRepo();
+    tempDirs.push(sourceRepo);
+    writeFileSync(join(sourceRepo, "source.txt"), "source");
+    execFileSync("jj", ["describe", "-m", "Source commit"], {
+      cwd: sourceRepo,
+      stdio: "pipe",
+    });
+    execFileSync("jj", ["bookmark", "create", "main", "-r", "@"], {
+      cwd: sourceRepo,
+      stdio: "pipe",
+    });
+    execFileSync("git", ["remote", "add", "origin", remotePath], {
+      cwd: sourceRepo,
+      stdio: "pipe",
+    });
+    execFileSync(
+      "jj",
+      ["git", "push", "--bookmark", "main", "--allow-new"],
+      { cwd: sourceRepo, stdio: "pipe" },
+    );
+
+    // Consumer repo: add the same remote and pull
+    const consumerRepo = makeTempJjRepo();
+    tempDirs.push(consumerRepo);
+    execFileSync("git", ["remote", "add", "origin", remotePath], {
+      cwd: consumerRepo,
+      stdio: "pipe",
+    });
+
+    const backend = new JujutsuBackend(consumerRepo);
+    await expect(backend.pull(consumerRepo, "main")).resolves.toBeUndefined();
+  });
+});
+
 // ── AC-T-017-3: Error handling ────────────────────────────────────────────────
 
 describe("JujutsuBackend error handling (AC-T-017-3)", () => {
