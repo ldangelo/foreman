@@ -461,19 +461,41 @@ export class ConflictResolver {
     await fs.writeFile(fullPath, fileContent, "utf-8");
 
     // ── Run Pi conflict-resolution agent ──
-    const prompt = [
-      `You are resolving a git merge conflict. The file \`${filePath}\` contains conflict markers.`,
-      ``,
-      `Instructions:`,
-      `1. Read the file \`${filePath}\``,
-      `2. Examine git log or related files if you need context to understand each side's intent`,
-      `3. Resolve ALL conflicts — produce a correct, logical merged result`,
-      `4. Write the resolved content back to \`${filePath}\``,
-      ``,
-      `CRITICAL RULES:`,
-      `- The resolved file MUST contain ZERO conflict markers (no <<<<<<< HEAD, =======, or >>>>>>>)`,
-      `- Write ONLY valid code — no explanations, no markdown fencing, no prose`,
-    ].join("\n");
+    const isJujutsu = this.vcs?.name === "jujutsu";
+    const prompt = isJujutsu
+      ? [
+          `You are resolving a jujutsu (jj) merge conflict. The file \`${filePath}\` contains conflict markers.`,
+          ``,
+          `Jujutsu conflict format:`,
+          `  <<<<<<< (label A)  — start of conflicted region`,
+          `  ... content from side A ...`,
+          `  %%%%%%%            — separator (diff-style marker)`,
+          `  ... content from side B (may use +/- diff notation) ...`,
+          `  >>>>>>> (label B)  — end of conflicted region`,
+          ``,
+          `Instructions:`,
+          `1. Read the file \`${filePath}\``,
+          `2. Examine jj log or related files if you need context to understand each side's intent`,
+          `3. Resolve ALL conflicts — produce a correct, logical merged result`,
+          `4. Write the resolved content back to \`${filePath}\``,
+          ``,
+          `CRITICAL RULES:`,
+          `- The resolved file MUST contain ZERO conflict markers (no <<<<<<<, %%%%%%%,  +++++++, or >>>>>>>)`,
+          `- Write ONLY valid code — no explanations, no markdown fencing, no prose`,
+        ].join("\n")
+      : [
+          `You are resolving a git merge conflict. The file \`${filePath}\` contains conflict markers.`,
+          ``,
+          `Instructions:`,
+          `1. Read the file \`${filePath}\``,
+          `2. Examine git log or related files if you need context to understand each side's intent`,
+          `3. Resolve ALL conflicts — produce a correct, logical merged result`,
+          `4. Write the resolved content back to \`${filePath}\``,
+          ``,
+          `CRITICAL RULES:`,
+          `- The resolved file MUST contain ZERO conflict markers (no <<<<<<< HEAD, =======, or >>>>>>>)`,
+          `- Write ONLY valid code — no explanations, no markdown fencing, no prose`,
+        ].join("\n");
 
     const piResult = await runWithPiSdk({
       prompt,
