@@ -361,6 +361,24 @@ export function buildPhasePrompt(
     /** Absolute path to the worktree. Passed to finalize prompt so it can cd
      *  to the correct directory before running git commands. */
     worktreePath?: string;
+    // ── VCS command variables (TRD-026: finalize phase) ───────────────────
+    /** Command to stage all changes (e.g. 'git add -A'). Empty for auto-staging backends. */
+    vcsStageCommand?: string;
+    /** Command to commit staged changes. */
+    vcsCommitCommand?: string;
+    /** Command to push the branch to remote. */
+    vcsPushCommand?: string;
+    /** Command to rebase onto the base branch. */
+    vcsRebaseCommand?: string;
+    /** Command to verify the current branch name. */
+    vcsBranchVerifyCommand?: string;
+    /** Command to clean up the workspace. */
+    vcsCleanCommand?: string;
+    // ── VCS context variables (TRD-027: reviewer phase) ──────────────────
+    /** VCS backend name (e.g. 'git' or 'jujutsu'). */
+    vcsBackendName?: string;
+    /** Branch prefix used for agent branches (e.g. 'foreman/'). */
+    vcsBranchPrefix?: string;
   },
   opts?: PromptLoaderOpts,
 ): string {
@@ -384,6 +402,16 @@ export function buildPhasePrompt(
     baseBranch: context.baseBranch ?? "main",
     worktreePath: context.worktreePath ?? "",
     seedType: context.seedType ?? "",
+    // VCS finalize command variables (TRD-026)
+    vcsStageCommand: context.vcsStageCommand ?? "git add -A",
+    vcsCommitCommand: context.vcsCommitCommand ?? `git commit -m "${context.seedTitle} (${context.seedId})"`,
+    vcsPushCommand: context.vcsPushCommand ?? `git push -u origin foreman/${context.seedId}`,
+    vcsRebaseCommand: context.vcsRebaseCommand ?? `git fetch origin && git rebase origin/${context.baseBranch ?? "main"}`,
+    vcsBranchVerifyCommand: context.vcsBranchVerifyCommand ?? "git rev-parse --abbrev-ref HEAD",
+    vcsCleanCommand: context.vcsCleanCommand ?? `git worktree remove --force ${context.worktreePath ?? ""}`,
+    // VCS context variables (TRD-027)
+    vcsBackendName: context.vcsBackendName ?? "git",
+    vcsBranchPrefix: context.vcsBranchPrefix ?? "foreman/",
   };
 
   // Map phase names to legacy template filenames for bundled fallback.
@@ -463,9 +491,25 @@ export function reviewerPrompt(seedId: string, seedTitle: string, seedDescriptio
 }
 
 export function finalizePrompt(seedId: string, seedTitle: string, runId?: string, baseBranch?: string, opts?: PromptLoaderOpts, worktreePath?: string): string {
+  const resolvedBase = baseBranch ?? "main";
+  const resolvedWorktree = worktreePath ?? "";
   return resolvePrompt(
     "finalize",
-    { seedId, seedTitle, runId: runId ?? "", agentRole: "finalize", baseBranch: baseBranch ?? "main", worktreePath: worktreePath ?? "" },
+    {
+      seedId,
+      seedTitle,
+      runId: runId ?? "",
+      agentRole: "finalize",
+      baseBranch: resolvedBase,
+      worktreePath: resolvedWorktree,
+      // Default to git commands for backward compatibility (TRD-026)
+      vcsStageCommand: "git add -A",
+      vcsCommitCommand: `git commit -m "${seedTitle} (${seedId})"`,
+      vcsPushCommand: `git push -u origin foreman/${seedId}`,
+      vcsRebaseCommand: `git fetch origin && git rebase origin/${resolvedBase}`,
+      vcsBranchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
+      vcsCleanCommand: `git worktree remove --force ${resolvedWorktree}`,
+    },
     "finalize-prompt.md",
     opts,
   );
