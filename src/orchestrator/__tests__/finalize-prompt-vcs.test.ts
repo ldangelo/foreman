@@ -242,7 +242,7 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
-    expect(prompt).toContain("jj git fetch --remote origin");
+    expect(prompt).toContain("jj git fetch && jj rebase -d");
     expect(prompt).not.toContain("{{vcsRebaseCommand}}");
   });
 
