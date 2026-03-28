@@ -575,6 +575,22 @@ export class GitBackend implements VcsBackend {
   }
 
   /**
+   * Get the Unix timestamp (seconds since epoch) of the most recent commit on a ref.
+   * Equivalent to `git log -1 --format=%ct <ref>`.
+   * Returns null if the ref does not exist or the timestamp cannot be determined.
+   */
+  async getRefCommitTimestamp(repoPath: string, ref: string): Promise<number | null> {
+    try {
+      const out = await this.git(["log", "-1", "--format=%ct", ref], repoPath);
+      const ts = parseInt(out.trim(), 10);
+      if (isNaN(ts)) return null;
+      return ts;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * List files modified (staged or unstaged) in the workspace.
    */
   async getModifiedFiles(workspacePath: string): Promise<string[]> {

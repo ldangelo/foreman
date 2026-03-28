@@ -188,6 +188,14 @@ export interface VcsBackend {
   getChangedFiles(repoPath: string, from: string, to: string): Promise<string[]>;
 
   /**
+   * Get the Unix timestamp (seconds since epoch) of the most recent commit on a ref.
+   * For git: equivalent to `git log -1 --format=%ct <ref>`.
+   * For jujutsu: returns the commit timestamp for the given revision.
+   * Returns null if the ref does not exist or the timestamp cannot be determined.
+   */
+  getRefCommitTimestamp(repoPath: string, ref: string): Promise<number | null>;
+
+  /**
    * List files modified (staged or unstaged) in the workspace.
    */
   getModifiedFiles(workspacePath: string): Promise<string[]>;
