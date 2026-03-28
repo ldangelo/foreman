@@ -169,7 +169,9 @@ describe("Refinery.resolveConflict()", () => {
       },
     );
 
-    const result = await refinery.resolveConflict("run-1", "theirs");
+    // Provide targetBranch explicitly to avoid calling vcsBackend.detectDefaultBranch()
+    // (which would also fail since ALL execFile calls throw in this mock).
+    const result = await refinery.resolveConflict("run-1", "theirs", { targetBranch: "main" });
 
     expect(result).toBe(false);
     expect(store.updateRun).toHaveBeenCalledWith(

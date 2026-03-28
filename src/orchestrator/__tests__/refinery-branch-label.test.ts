@@ -135,17 +135,37 @@ describe("Refinery — branch label targeting", () => {
   });
 
   it("uses detectDefaultBranch when targetBranch not given and no label", async () => {
-    vi.mocked(detectDefaultBranch).mockResolvedValue("develop");
-
+    // detectDefaultBranch from lib/git.js is no longer called directly by Refinery.
+    // Now Refinery uses vcsBackend.detectDefaultBranch(). Pass a mock VcsBackend
+    // that returns "develop" to verify the correct branch is used.
     const run = makeRun();
     const { store, seeds } = makeMocks([]); // no branch: label
     store.getRunsByStatus = vi.fn().mockReturnValue([run]);
 
     vi.mocked(mergeWorktree).mockResolvedValue({ success: true });
 
-    const refinery = new Refinery(store as never, seeds as never, "/tmp");
+    // Mock VcsBackend with detectDefaultBranch returning "develop"
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mockVcsBackend: any = {
+      name: "git",
+      detectDefaultBranch: vi.fn().mockResolvedValue("develop"),
+      status: vi.fn().mockResolvedValue(""),
+      getModifiedFiles: vi.fn().mockResolvedValue([]),
+      commit: vi.fn().mockResolvedValue(undefined),
+      fetch: vi.fn().mockResolvedValue(undefined),
+      checkoutBranch: vi.fn().mockResolvedValue(undefined),
+      push: vi.fn().mockResolvedValue(undefined),
+      getHeadId: vi.fn().mockResolvedValue("abc1234"),
+      abortRebase: vi.fn().mockResolvedValue(undefined),
+      diff: vi.fn().mockResolvedValue(""),
+      branchExists: vi.fn().mockResolvedValue(false),
+      rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    };
+
+    const refinery = new Refinery(store as never, seeds as never, "/tmp", mockVcsBackend);
     await refinery.mergeCompleted({ runTests: false }); // no targetBranch
 
+    expect(mockVcsBackend.detectDefaultBranch).toHaveBeenCalledWith("/tmp");
     expect(mergeWorktree).toHaveBeenCalledWith("/tmp", "foreman/seed-abc", "develop");
   });
 
