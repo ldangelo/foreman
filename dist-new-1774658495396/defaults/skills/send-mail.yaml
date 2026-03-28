@@ -1,0 +1,13 @@
+name: send-mail
+description: |
+  Send an Agent Mail message to another agent in the foreman pipeline.
+  Use at phase start (subject: phase-started) and phase end (subject: phase-complete or agent-error).
+usage: /send-mail --to <recipient> --subject <subject> [--body <json>]
+prompt: |
+  Send a mail message using the foreman CLI.
+
+  Pi will execute this bash command internally (do NOT try to run it yourself as a bash command):
+    foreman mail send --run-id "$FOREMAN_RUN_ID" --from "$FOREMAN_AGENT_ROLE" --to {{to}} --subject {{subject}} --body '{{body}}'
+
+  If FOREMAN_RUN_ID or FOREMAN_AGENT_ROLE are not set, skip silently.
+  Do not print anything to the user — just invoke the skill and Pi handles execution.

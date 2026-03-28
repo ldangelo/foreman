@@ -68,13 +68,15 @@ class MockVcsBackend implements VcsBackend {
     return { success: true };
   }
   async getHeadId(_p: string): Promise<string> { return 'abc123'; }
+  async resolveRef(_p: string, _r: string): Promise<string> { return 'abc123'; }
   async fetch(_p: string): Promise<void> {}
   async diff(_p: string, _f: string, _t: string): Promise<string> { return ''; }
+  async getChangedFiles(_p: string, _f: string, _t: string): Promise<string[]> { return []; }
   async getModifiedFiles(_p: string): Promise<string[]> { return []; }
   async getConflictingFiles(_p: string): Promise<string[]> { return []; }
   async status(_p: string): Promise<string> { return ''; }
   async cleanWorkingTree(_p: string): Promise<void> {}
-  getFinalizeCommands(): FinalizeCommands {
+  getFinalizeCommands(_vars: import('../types.js').FinalizeTemplateVars): FinalizeCommands {
     return {
       stageCommand: 'git add -A',
       commitCommand: 'git commit -m "test"',
@@ -209,8 +211,10 @@ describe("GitBackend satisfies VcsBackend", () => {
     expect(typeof b.abortRebase).toBe('function');
     expect(typeof b.merge).toBe('function');
     expect(typeof b.getHeadId).toBe('function');
+    expect(typeof b.resolveRef).toBe('function');
     expect(typeof b.fetch).toBe('function');
     expect(typeof b.diff).toBe('function');
+    expect(typeof b.getChangedFiles).toBe('function');
     expect(typeof b.getModifiedFiles).toBe('function');
     expect(typeof b.getConflictingFiles).toBe('function');
     expect(typeof b.status).toBe('function');
@@ -246,8 +250,10 @@ describe("JujutsuBackend satisfies VcsBackend", () => {
     expect(typeof b.abortRebase).toBe('function');
     expect(typeof b.merge).toBe('function');
     expect(typeof b.getHeadId).toBe('function');
+    expect(typeof b.resolveRef).toBe('function');
     expect(typeof b.fetch).toBe('function');
     expect(typeof b.diff).toBe('function');
+    expect(typeof b.getChangedFiles).toBe('function');
     expect(typeof b.getModifiedFiles).toBe('function');
     expect(typeof b.getConflictingFiles).toBe('function');
     expect(typeof b.status).toBe('function');

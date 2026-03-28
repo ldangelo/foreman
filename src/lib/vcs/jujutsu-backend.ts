@@ -554,6 +554,18 @@ export class JujutsuBackend implements VcsBackend {
   }
 
   /**
+   * Resolve an arbitrary revision expression to its change ID.
+   * Equivalent to `jj log -r <ref> -T commit_id`.
+   * Throws if the ref does not exist.
+   */
+  async resolveRef(repoPath: string, ref: string): Promise<string> {
+    return this.jj(
+      ["log", "--no-graph", "-r", ref, "-T", "commit_id"],
+      repoPath,
+    );
+  }
+
+  /**
    * Fetch updates from origin via `jj git fetch`.
    */
   async fetch(repoPath: string): Promise<void> {
@@ -565,6 +577,27 @@ export class JujutsuBackend implements VcsBackend {
    */
   async diff(repoPath: string, from: string, to: string): Promise<string> {
     return this.jj(["diff", "--from", from, "--to", to], repoPath);
+  }
+
+  /**
+   * Get a list of file paths changed between two revisions.
+   * Uses `jj diff --summary --from <from> --to <to>` and extracts filenames.
+   * Returns an empty array if no files changed or revisions do not exist.
+   */
+  async getChangedFiles(repoPath: string, from: string, to: string): Promise<string[]> {
+    try {
+      const out = await this.jj(
+        ["diff", "--summary", "--from", from, "--to", to],
+        repoPath,
+      );
+      if (!out) return [];
+      return out
+        .split("\n")
+        .map((l) => l.replace(/^[MA?D]\s+/, "").trim())
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
   }
 
   /**

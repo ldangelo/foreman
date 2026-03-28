@@ -537,6 +537,15 @@ export class GitBackend implements VcsBackend {
   }
 
   /**
+   * Resolve an arbitrary ref (branch name, remote ref, tag, etc.) to its commit hash.
+   * Equivalent to `git rev-parse <ref>`.
+   * Throws if the ref does not exist.
+   */
+  async resolveRef(repoPath: string, ref: string): Promise<string> {
+    return this.git(["rev-parse", ref], repoPath);
+  }
+
+  /**
    * Fetch updates from origin (no merge).
    */
   async fetch(repoPath: string): Promise<void> {
@@ -548,6 +557,21 @@ export class GitBackend implements VcsBackend {
    */
   async diff(repoPath: string, from: string, to: string): Promise<string> {
     return this.git(["diff", `${from}..${to}`, "--"], repoPath);
+  }
+
+  /**
+   * Get a list of file paths changed between two refs (three-dot semantics).
+   * Equivalent to `git diff --name-only <from>...<to>`.
+   * Returns an empty array if no files changed or refs do not exist.
+   */
+  async getChangedFiles(repoPath: string, from: string, to: string): Promise<string[]> {
+    try {
+      const out = await this.git(["diff", "--name-only", `${from}...${to}`], repoPath);
+      if (!out) return [];
+      return out.split("\n").map((f) => f.trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
   }
 
   /**

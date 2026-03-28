@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { orderByCluster } from "./conflict-cluster.js";
 import { detectDefaultBranch } from "../lib/git.js";
+import { GitBackend } from "../lib/vcs/git-backend.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
