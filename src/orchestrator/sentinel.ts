@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import type { ForemanStore } from "../lib/store.js";
 import type { BeadsRustClient } from "../lib/beads-rust.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
+import { GitBackend } from "../lib/vcs/git-backend.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -206,12 +207,10 @@ export class SentinelAgent {
   // ── Private helpers ──────────────────────────────────────────────────
 
   private async resolveCommit(branch: string): Promise<string | null> {
+    const backend = new GitBackend(this.projectPath);
     for (const ref of [`origin/${branch}`, branch]) {
       try {
-        const { stdout } = await execFileAsync("git", ["rev-parse", ref], {
-          cwd: this.projectPath,
-        });
-        return stdout.trim();
+        return await backend.resolveRef(this.projectPath, ref);
       } catch {
         // Try next ref
       }

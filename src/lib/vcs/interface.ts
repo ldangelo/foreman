@@ -162,6 +162,14 @@ export interface VcsBackend {
   getHeadId(workspacePath: string): Promise<string>;
 
   /**
+   * Resolve an arbitrary ref (branch name, remote ref, etc.) to its commit hash.
+   * For git: equivalent to `git rev-parse <ref>`.
+   * For jujutsu: resolves a revision expression to its change ID.
+   * Throws if the ref does not exist.
+   */
+  resolveRef(repoPath: string, ref: string): Promise<string>;
+
+  /**
    * Fetch updates from the remote (does not merge/rebase).
    */
   fetch(repoPath: string): Promise<void>;
@@ -170,6 +178,14 @@ export interface VcsBackend {
    * Get a unified diff between two refs.
    */
   diff(repoPath: string, from: string, to: string): Promise<string>;
+
+  /**
+   * Get a list of file paths changed between two refs (three-dot semantics).
+   * For git: equivalent to `git diff --name-only <from>...<to>`.
+   * For jujutsu: lists files changed between two revisions.
+   * Returns an empty array if no files have changed or refs do not exist.
+   */
+  getChangedFiles(repoPath: string, from: string, to: string): Promise<string[]>;
 
   /**
    * List files modified (staged or unstaged) in the workspace.
