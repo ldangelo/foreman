@@ -155,7 +155,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
   const refinery = new Refinery(store, taskClient, projectPath);
 
   // Reconcile completed runs into the queue
-  await mq.reconcile(store.getDb(), projectPath, execFileAsync);
+  await mq.reconcile(store.getDb(), projectPath);
 
   let mergedCount = 0;
   let conflictCount = 0;

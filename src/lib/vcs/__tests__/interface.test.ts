@@ -69,6 +69,7 @@ class MockVcsBackend implements VcsBackend {
   }
   async getHeadId(_p: string): Promise<string> { return 'abc123'; }
   async resolveRef(_p: string, _r: string): Promise<string> { return 'abc123'; }
+  async getRefCommitTimestamp(_p: string, _r: string): Promise<number | null> { return null; }
   async fetch(_p: string): Promise<void> {}
   async diff(_p: string, _f: string, _t: string): Promise<string> { return ''; }
   async getChangedFiles(_p: string, _f: string, _t: string): Promise<string[]> { return []; }
@@ -215,6 +216,7 @@ describe("GitBackend satisfies VcsBackend", () => {
     expect(typeof b.fetch).toBe('function');
     expect(typeof b.diff).toBe('function');
     expect(typeof b.getChangedFiles).toBe('function');
+    expect(typeof b.getRefCommitTimestamp).toBe('function');
     expect(typeof b.getModifiedFiles).toBe('function');
     expect(typeof b.getConflictingFiles).toBe('function');
     expect(typeof b.status).toBe('function');
@@ -254,6 +256,7 @@ describe("JujutsuBackend satisfies VcsBackend", () => {
     expect(typeof b.fetch).toBe('function');
     expect(typeof b.diff).toBe('function');
     expect(typeof b.getChangedFiles).toBe('function');
+    expect(typeof b.getRefCommitTimestamp).toBe('function');
     expect(typeof b.getModifiedFiles).toBe('function');
     expect(typeof b.getConflictingFiles).toBe('function');
     expect(typeof b.status).toBe('function');

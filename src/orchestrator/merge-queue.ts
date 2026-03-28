@@ -355,8 +355,9 @@ export class MergeQueue {
   async reconcile(
     db: Database.Database,
     repoPath: string,
-    execFileAsync: ExecFileAsyncFn
+    backend?: GitBackend
   ): Promise<ReconcileResult> {
+    const git = backend ?? new GitBackend(repoPath);
     // Get all completed runs
     const completedRuns = db
       .prepare("SELECT * FROM runs WHERE status = 'completed' ORDER BY created_at ASC")
@@ -392,12 +393,9 @@ export class MergeQueue {
 
       const branchName = `foreman/${run.seed_id}`;
 
-      // Validate branch exists
-      try {
-        await execFileAsync("git", ["rev-parse", "--verify", `refs/heads/${branchName}`], {
-          cwd: repoPath,
-        });
-      } catch {
+      // Validate branch exists via VcsBackend
+      const exists = await git.branchExists(repoPath, branchName);
+      if (!exists) {
         invalidBranch++;
         failedToEnqueue.push({
           run_id: run.id,
@@ -407,18 +405,8 @@ export class MergeQueue {
         continue;
       }
 
-      // Get modified files
-      let filesModified: string[] = [];
-      try {
-        const { stdout } = await execFileAsync(
-          "git",
-          ["diff", "--name-only", `${defaultBranch}...${branchName}`],
-          { cwd: repoPath }
-        );
-        filesModified = stdout.trim().split("\n").filter(Boolean);
-      } catch {
-        // If diff fails, proceed with empty files list
-      }
+      // Get modified files via VcsBackend
+      const filesModified = await git.getChangedFiles(repoPath, defaultBranch, branchName);
 
       this.enqueue({
         branchName,
@@ -466,13 +454,8 @@ export class MergeQueue {
       const branchName = `foreman/${run.seed_id}`;
 
       // Check if the remote branch exists (indicates push succeeded before crash)
-      try {
-        await execFileAsync(
-          "git",
-          ["rev-parse", "--verify", `refs/remotes/origin/${branchName}`],
-          { cwd: repoPath }
-        );
-      } catch {
+      const remoteExists = await git.branchExistsOnRemote(repoPath, branchName);
+      if (!remoteExists) {
         // No remote branch — run is genuinely in-progress or never pushed
         continue;
       }
@@ -490,22 +473,17 @@ export class MergeQueue {
       // normal completion path).
       if (run.created_at) {
         const runCreatedMs = new Date(run.created_at).getTime();
-        try {
-          const { stdout: commitEpochStr } = await execFileAsync(
-            "git",
-            ["log", "-1", "--format=%ct", `refs/remotes/origin/${branchName}`],
-            { cwd: repoPath }
-          );
-          const commitMs = parseInt(commitEpochStr.trim(), 10) * 1000;
-          if (!isNaN(commitMs) && commitMs < runCreatedMs) {
-            // Remote branch was pushed before this run was created — stale ref
-            // from a previous run (e.g. after foreman reset --seed <id>).
-            // Skip to prevent the refinery from attempting a merge with no commits.
-            continue;
-          }
-        } catch {
+        const commitTs = await git.getRefCommitTimestamp(repoPath, `refs/remotes/origin/${branchName}`);
+        if (commitTs === null) {
           // Cannot determine commit timestamp — skip to avoid false recovery.
           // The reconcile() primary pass handles completed runs normally.
+          continue;
+        }
+        const commitMs = commitTs * 1000;
+        if (commitMs < runCreatedMs) {
+          // Remote branch was pushed before this run was created — stale ref
+          // from a previous run (e.g. after foreman reset --seed <id>).
+          // Skip to prevent the refinery from attempting a merge with no commits.
           continue;
         }
       }
@@ -519,18 +497,8 @@ export class MergeQueue {
         run.id
       );
 
-      // Get modified files
-      let recoveredFiles: string[] = [];
-      try {
-        const { stdout } = await execFileAsync(
-          "git",
-          ["diff", "--name-only", `${defaultBranch}...${branchName}`],
-          { cwd: repoPath }
-        );
-        recoveredFiles = stdout.trim().split("\n").filter(Boolean);
-      } catch {
-        // If diff fails, proceed with empty files list
-      }
+      // Get modified files via VcsBackend
+      const recoveredFiles = await git.getChangedFiles(repoPath, defaultBranch, branchName);
 
       this.enqueue({
         branchName,
