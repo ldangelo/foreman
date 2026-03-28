@@ -52,5 +52,11 @@ export function applyBranchLabel(
   branchName: string,
 ): string[] {
   const filtered = (existingLabels ?? []).filter((l) => !l.startsWith("branch:"));
-  return [...filtered, `branch:${branchName}`];
+  // br enforces a 50-character limit per label. Skip the label entirely if it
+  // would exceed the limit — a truncated branch name would cause the refinery
+  // to target a non-existent branch. The explicit targetBranch threading in
+  // dispatch/auto-merge handles merge targeting for long branch names.
+  const label = `branch:${branchName}`;
+  if (label.length > 50) return filtered;
+  return [...filtered, label];
 }
