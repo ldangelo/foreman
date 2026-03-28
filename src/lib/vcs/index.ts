@@ -29,6 +29,8 @@ export { JujutsuBackend } from "./jujutsu-backend.js";
 
 import type { VcsBackend } from "./interface.js";
 import type { VcsConfig } from "./types.js";
+import { GitBackend } from "./git-backend.js";
+import { JujutsuBackend } from "./jujutsu-backend.js";
 
 // ── VcsBackendFactory ────────────────────────────────────────────────────────
 
@@ -59,24 +61,23 @@ export class VcsBackendFactory {
   }
 
   /**
-   * Create a `VcsBackend` instance synchronously.
+   * Create a `VcsBackend` instance synchronously using direct class instantiation.
    *
-   * Note: In ESM modules, prefer `create()` (async). This sync variant works in
-   * CommonJS contexts or when the backends have already been loaded.
+   * This method avoids `require()` (which is not available in ESM) by importing the
+   * concrete backend classes at the top of the file. Both `GitBackend` and
+   * `JujutsuBackend` are exported above and available synchronously.
+   *
+   * Prefer `create()` (async) in most contexts. Use `createSync()` only when an
+   * async factory is not feasible (e.g., inside constructors or synchronous init code).
    */
   static createSync(config: VcsConfig, projectPath: string): VcsBackend {
     const resolved = VcsBackendFactory.resolveBackend(config, projectPath);
 
     if (resolved === 'jujutsu') {
-      // Dynamic require for sync usage
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const mod = require("./jujutsu-backend.js") as { JujutsuBackend: new (p: string) => VcsBackend };
-      return new mod.JujutsuBackend(projectPath);
+      return new JujutsuBackend(projectPath);
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require("./git-backend.js") as { GitBackend: new (p: string) => VcsBackend };
-    return new mod.GitBackend(projectPath);
+    return new GitBackend(projectPath);
   }
 
   /**
