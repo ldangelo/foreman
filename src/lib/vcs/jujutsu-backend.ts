@@ -71,7 +71,9 @@ export class JujutsuBackend implements VcsBackend {
           .map((s) => (s ?? "").trim())
           .filter(Boolean)
           .join("\n") || e.message || String(err);
-      throw new Error(`jj ${args[0]} failed: ${combined}`);
+      // Use first two args for compound subcommands (e.g. "jj git push" → "jj git push failed")
+      const cmdLabel = args.slice(0, 2).join(" ");
+      throw new Error(`jj ${cmdLabel} failed: ${combined}`);
     }
   }
 
@@ -178,9 +180,18 @@ export class JujutsuBackend implements VcsBackend {
   /**
    * Checkout (switch to) a bookmark by name.
    * In jj this is `jj edit <bookmark>`.
+   *
+   * Attempts to track the remote bookmark first (for remote-backed branches),
+   * but gracefully ignores failures when the bookmark only exists locally.
    */
   async checkoutBranch(repoPath: string, branchName: string): Promise<void> {
-    await this.jj(["bookmark", "track", `${branchName}@origin`], repoPath);
+    // Try to track the remote bookmark — this succeeds only if the bookmark exists on origin.
+    // For local-only branches, this is expected to fail and we continue without tracking.
+    try {
+      await this.jj(["bookmark", "track", `${branchName}@origin`], repoPath);
+    } catch {
+      // Bookmark may not exist on origin yet — that's fine for local branches
+    }
     await this.jj(["edit", branchName], repoPath);
   }
 
@@ -532,10 +543,12 @@ export class JujutsuBackend implements VcsBackend {
 
   /**
    * Get the current change ID (jj's equivalent of a commit hash).
+   * Returns the short (12-char) change ID for consistency with how callers
+   * typically use commit/change IDs (e.g., as labels or references).
    */
   async getHeadId(workspacePath: string): Promise<string> {
     return this.jj(
-      ["log", "--no-graph", "-r", "@", "-T", "change_id"],
+      ["log", "--no-graph", "-r", "@", "-T", "change_id.short()"],
       workspacePath,
     );
   }
@@ -592,10 +605,41 @@ export class JujutsuBackend implements VcsBackend {
   }
 
   /**
-   * Restore all files to their state in the parent revision.
+   * Restore all files to their state in the parent revision and remove untracked files.
+   *
+   * Equivalent to `git checkout -- . && git clean -fd` — restores tracked files
+   * to parent-revision state AND removes any new untracked files from the working tree.
    */
   async cleanWorkingTree(workspacePath: string): Promise<void> {
+    // Restore tracked files to parent-revision state
     await this.jj(["restore"], workspacePath);
+
+    // Remove untracked files by abandoning the current change and starting fresh.
+    // `jj abandon --ignore-immutable` discards the current working-copy change
+    // and all its pending changes (tracked + untracked), leaving a clean state.
+    // We do this via jj git reset equivalent: restore is sufficient for tracked files,
+    // but we also need to remove files added in the current change that aren't in parent.
+    // Use `jj diff --summary -r @` to find added files and remove them.
+    try {
+      const diffOut = await this.jj(["diff", "--summary", "-r", "@"], workspacePath);
+      if (diffOut) {
+        const addedFiles = diffOut
+          .split("\n")
+          .filter((l) => l.startsWith("A "))
+          .map((l) => l.replace(/^A\s+/, "").trim())
+          .filter(Boolean);
+
+        for (const file of addedFiles) {
+          try {
+            await fs.rm(join(workspacePath, file), { force: true, recursive: false });
+          } catch {
+            // best effort — file may have already been removed
+          }
+        }
+      }
+    } catch {
+      // best effort — diff failure should not block the restore
+    }
   }
 
   // ── Finalize Support ─────────────────────────────────────────────────
@@ -610,7 +654,7 @@ export class JujutsuBackend implements VcsBackend {
       commitCommand: `jj describe -m "${seedTitle} (${seedId})" && jj new`,
       pushCommand: `jj git push --bookmark foreman/${seedId} --allow-new`,
       rebaseCommand: `jj git fetch && jj rebase -d ${baseBranch}@origin`,
-      branchVerifyCommand: `jj bookmark list --name foreman/${seedId}`,
+      branchVerifyCommand: `jj bookmark list foreman/${seedId}`,
       cleanCommand: `jj workspace forget foreman-${seedId}`,
     };
   }

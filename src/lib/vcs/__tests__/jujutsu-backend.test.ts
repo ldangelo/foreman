@@ -173,7 +173,7 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
     expect(typeof cmds.cleanCommand).toBe('string');
   });
 
-  it("branchVerifyCommand uses jj bookmark list", () => {
+  it("branchVerifyCommand uses jj bookmark list (positional arg, no --name flag)", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({
       seedId: 'bd-xyz',
@@ -183,6 +183,8 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
     });
     expect(cmds.branchVerifyCommand).toContain('jj bookmark list');
     expect(cmds.branchVerifyCommand).toContain('bd-xyz');
+    // Must NOT use the --name flag (broken in jj 0.39.0+)
+    expect(cmds.branchVerifyCommand).not.toContain('--name');
   });
 });
 
@@ -584,7 +586,8 @@ describe("JujutsuBackend error handling (AC-T-017-3)", () => {
     tempDirs.push(dir);
     const backend = new JujutsuBackend(dir);
 
-    await expect(backend.getCurrentBranch(dir)).rejects.toThrow(/jj log failed/);
+    // Match "jj log failed" or "jj log --no-graph failed" (error format includes subcommand args)
+    await expect(backend.getCurrentBranch(dir)).rejects.toThrow(/jj log.*failed/);
   });
 
   it("detectDefaultBranch throws a formatted error outside a jj repository", async () => {
@@ -595,7 +598,8 @@ describe("JujutsuBackend error handling (AC-T-017-3)", () => {
     tempDirs.push(dir);
     const backend = new JujutsuBackend(dir);
 
-    await expect(backend.detectDefaultBranch(dir)).rejects.toThrow(/jj log failed/);
+    // Match "jj log failed" or "jj log --no-graph failed" (error format includes subcommand args)
+    await expect(backend.detectDefaultBranch(dir)).rejects.toThrow(/jj log.*failed/);
   });
 });
 
@@ -900,6 +904,30 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.cleanWorkingTree (AC-T-022-5)", (
     const backend = new JujutsuBackend(repo);
     // cleanWorkingTree should restore without throwing
     await expect(backend.cleanWorkingTree(repo)).resolves.toBeUndefined();
+  });
+
+  it("removes newly added (untracked) files from the working tree (AC-T-022-5b)", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    // Create a base commit
+    writeFileSync(join(repo, "base.txt"), "base\n");
+    execFileSync("jj", ["describe", "-m", "base commit"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    // Add a new file in the working copy (not yet committed)
+    const newFile = join(repo, "untracked-new.txt");
+    writeFileSync(newFile, "new file content\n");
+
+    // Verify the file exists before clean
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(newFile)).toBe(true);
+
+    const backend = new JujutsuBackend(repo);
+    await backend.cleanWorkingTree(repo);
+
+    // The newly added file should be removed
+    expect(existsSync(newFile)).toBe(false);
   });
 });
 

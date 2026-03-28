@@ -258,7 +258,7 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
-    expect(prompt).toContain("jj bookmark list --name foreman/bd-test");
+    expect(prompt).toContain("jj bookmark list foreman/bd-test");
     expect(prompt).not.toContain("{{vcsBranchVerifyCommand}}");
   });
 
