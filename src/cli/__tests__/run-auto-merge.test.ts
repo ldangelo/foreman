@@ -39,8 +39,10 @@ const {
   mockRefineryMergeCompleted,
   MockRefinery,
   mockAddNotesToBead,
+  mockEnqueueSetBeadStatus,
 } = vi.hoisted(() => {
   const mockAddNotesToBead = vi.fn();
+  const mockEnqueueSetBeadStatus = vi.fn();
   const mockExecFileSync = vi.fn().mockReturnValue(Buffer.from(""));
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
   const MockBeadsRustClient = vi.fn(function (this: Record<string, unknown>) {
@@ -112,6 +114,7 @@ const {
     mockRefineryMergeCompleted,
     MockRefinery,
     mockAddNotesToBead,
+    mockEnqueueSetBeadStatus,
   };
 });
 
@@ -139,7 +142,7 @@ vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }
 vi.mock("../watch-ui.js", () => ({ watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args) }));
 vi.mock("../../orchestrator/merge-queue.js", () => ({ MergeQueue: MockMergeQueue }));
 vi.mock("../../orchestrator/refinery.js", () => ({ Refinery: MockRefinery }));
-vi.mock("../../orchestrator/task-backend-ops.js", () => ({ enqueueAddNotesToBead: mockAddNotesToBead, enqueueMarkBeadFailed: vi.fn() }));
+vi.mock("../../orchestrator/task-backend-ops.js", () => ({ enqueueAddNotesToBead: mockAddNotesToBead, enqueueMarkBeadFailed: vi.fn(), enqueueSetBeadStatus: mockEnqueueSetBeadStatus }));
 vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
   isPiAvailable: vi.fn().mockReturnValue(false),
   PiRpcSpawnStrategy: vi.fn(),
@@ -865,7 +868,7 @@ describe("autoMerge() — immediate bead status sync", () => {
     return new MockForemanStore() as ReturnType<typeof MockForemanStore>;
   }
 
-  it("calls taskClient.update() with status 'closed' when run status is 'merged'", async () => {
+  it("enqueues set-status 'closed' when run status is 'merged'", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
@@ -887,25 +890,19 @@ describe("autoMerge() — immediate bead status sync", () => {
     // Store returns the run with status 'merged' after refinery completes
     mockGetRun.mockReturnValue({ id: "r1", seed_id: "s1", status: "merged" });
 
-    const mockUpdate = vi.fn().mockResolvedValue(undefined);
     const store = makeStore();
     const result = await autoMerge({
       store: store as never,
-      taskClient: { update: mockUpdate } as never,
+      taskClient: {} as never,
       projectPath: "/mock/project",
     });
 
     expect(result.merged).toBe(1);
-    expect(mockUpdate).toHaveBeenCalledWith("s1", { status: "closed" });
-    // br sync --flush-only should have been called
-    expect(mockExecFileSync).toHaveBeenCalledWith(
-      expect.stringContaining("br"),
-      ["sync", "--flush-only"],
-      expect.objectContaining({ stdio: "pipe" }),
-    );
+    // Status is enqueued via the bead writer queue (not called directly)
+    expect(mockEnqueueSetBeadStatus).toHaveBeenCalledWith(expect.anything(), "s1", "closed", "auto-merge");
   });
 
-  it("calls taskClient.update() with status 'blocked' when run status is 'conflict'", async () => {
+  it("enqueues set-status 'blocked' when run status is 'conflict'", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
@@ -927,18 +924,17 @@ describe("autoMerge() — immediate bead status sync", () => {
     // Run status after refinery is 'conflict'
     mockGetRun.mockReturnValue({ id: "r2", seed_id: "s2", status: "conflict" });
 
-    const mockUpdate = vi.fn().mockResolvedValue(undefined);
     const store = makeStore();
     await autoMerge({
       store: store as never,
-      taskClient: { update: mockUpdate } as never,
+      taskClient: {} as never,
       projectPath: "/mock/project",
     });
 
-    expect(mockUpdate).toHaveBeenCalledWith("s2", { status: "blocked" });
+    expect(mockEnqueueSetBeadStatus).toHaveBeenCalledWith(expect.anything(), "s2", "blocked", "auto-merge");
   });
 
-  it("calls taskClient.update() with status 'blocked' when run status is 'test-failed'", async () => {
+  it("enqueues set-status 'blocked' when run status is 'test-failed'", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
@@ -959,18 +955,17 @@ describe("autoMerge() — immediate bead status sync", () => {
 
     mockGetRun.mockReturnValue({ id: "r3", seed_id: "s3", status: "test-failed" });
 
-    const mockUpdate = vi.fn().mockResolvedValue(undefined);
     const store = makeStore();
     await autoMerge({
       store: store as never,
-      taskClient: { update: mockUpdate } as never,
+      taskClient: {} as never,
       projectPath: "/mock/project",
     });
 
-    expect(mockUpdate).toHaveBeenCalledWith("s3", { status: "blocked" });
+    expect(mockEnqueueSetBeadStatus).toHaveBeenCalledWith(expect.anything(), "s3", "blocked", "auto-merge");
   });
 
-  it("calls taskClient.update() with status 'failed' when refinery throws (exception path)", async () => {
+  it("enqueues set-status 'failed' when refinery throws (exception path)", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
@@ -988,16 +983,15 @@ describe("autoMerge() — immediate bead status sync", () => {
     // Run has status 'failed' (set by refinery exception handler in refinery.ts)
     mockGetRun.mockReturnValue({ id: "r4", seed_id: "s4", status: "failed" });
 
-    const mockUpdate = vi.fn().mockResolvedValue(undefined);
     const store = makeStore();
     const result = await autoMerge({
       store: store as never,
-      taskClient: { update: mockUpdate } as never,
+      taskClient: {} as never,
       projectPath: "/mock/project",
     });
 
     expect(result.failed).toBe(1);
-    expect(mockUpdate).toHaveBeenCalledWith("s4", { status: "failed" });
+    expect(mockEnqueueSetBeadStatus).toHaveBeenCalledWith(expect.anything(), "s4", "failed", "auto-merge");
   });
 
   it("skips bead update when getRun returns null (no run found)", async () => {
@@ -1021,20 +1015,18 @@ describe("autoMerge() — immediate bead status sync", () => {
     // Run not found (deleted between refinery and sync)
     mockGetRun.mockReturnValue(null);
 
-    const mockUpdate = vi.fn().mockResolvedValue(undefined);
     const store = makeStore();
     await autoMerge({
       store: store as never,
-      taskClient: { update: mockUpdate } as never,
+      taskClient: {} as never,
       projectPath: "/mock/project",
     });
 
-    // update should NOT have been called since no run was found
-    expect(mockUpdate).not.toHaveBeenCalled();
-    expect(mockExecFileSync).not.toHaveBeenCalled();
+    // enqueueSetBeadStatus should NOT have been called since no run was found
+    expect(mockEnqueueSetBeadStatus).not.toHaveBeenCalled();
   });
 
-  it("is non-fatal: continues when taskClient.update() throws", async () => {
+  it("is non-fatal: merge result is still reported when bead status enqueue succeeds", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
@@ -1054,16 +1046,17 @@ describe("autoMerge() — immediate bead status sync", () => {
 
     mockGetRun.mockReturnValue({ id: "r6", seed_id: "s6", status: "merged" });
 
-    const mockUpdate = vi.fn().mockRejectedValue(new Error("br binary missing"));
     const store = makeStore();
 
-    // Should NOT throw — bead sync is non-fatal
+    // Should resolve with merge results — bead sync is via queue (non-blocking)
     await expect(
       autoMerge({
         store: store as never,
-        taskClient: { update: mockUpdate } as never,
+        taskClient: {} as never,
         projectPath: "/mock/project",
       })
     ).resolves.toEqual({ merged: 1, conflicts: 0, failed: 0 });
+
+    expect(mockEnqueueSetBeadStatus).toHaveBeenCalledWith(expect.anything(), "s6", "closed", "auto-merge");
   });
 });

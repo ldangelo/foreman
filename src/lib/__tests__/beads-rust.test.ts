@@ -615,6 +615,6 @@ describe("BeadsRustClient error handling", () => {
     );
 
     const client = new BeadsRustClient("/tmp/mock-project");
-    await expect(client.show("nonexistent")).rejects.toThrow("br show nonexistent --json failed");
+    await expect(client.show("nonexistent")).rejects.toThrow("br show nonexistent --json --lock-timeout 10000 failed");
   });
 });
