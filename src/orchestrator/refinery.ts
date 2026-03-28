@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { ForemanStore } from "../lib/store.js";
 import type { BeadGraph } from "../lib/beads.js";
 import type { UpdateOptions } from "../lib/task-client.js";
-import { mergeWorktree, removeWorktree } from "../lib/git.js";
+import { removeWorktree } from "../lib/git.js";
 import { extractBranchLabel } from "../lib/branch-label.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
@@ -192,7 +192,7 @@ export class Refinery {
   /**
    * Archive report files after a successful merge.
    * Moves report files from the working tree into .foreman/reports/<name>-<seedId>.md
-   * and creates a follow-up commit. Called after mergeWorktree() succeeds so we
+   * and creates a follow-up commit. Called after vcsBackend.merge() succeeds so we
    * don't need to checkout branches or deal with dirty working trees.
    * Delegates to ConflictResolver.archiveReportsPostMerge().
    */
@@ -623,7 +623,7 @@ export class Refinery {
         // Save pre-merge HEAD so we can revert merge + archive if tests fail
         const preMergeHead = await this.vcsBackend.getHeadId(this.projectPath);
 
-        const result = await mergeWorktree(this.projectPath, branchName, targetBranch);
+        const result = await this.vcsBackend.merge(this.projectPath, branchName, targetBranch);
 
         if (!result.success) {
           const allConflicts = result.conflicts ?? [];
