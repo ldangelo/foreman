@@ -569,24 +569,6 @@ export class JujutsuBackend implements VcsBackend {
    * Fetch updates from origin via `jj git fetch`.
    */
 
-  /**
-   * Get the commit timestamp for a given ref (bookmark).
-   * Returns a Unix timestamp in seconds, or null if not found.
-   */
-  async getRefCommitTimestamp(repoPath: string, ref: string): Promise<number | null> {
-    try {
-      const out = await this.jj(
-        ["log", "-r", ref, "-T", "committer.timestamp"],
-        repoPath,
-      );
-      const ts = parseInt(out.trim(), 10);
-      if (isNaN(ts)) return null;
-      return Math.floor(ts / 1000); // jj timestamp is in milliseconds, convert to seconds
-    } catch {
-      return null;
-    }
-  }
-
   async fetch(repoPath: string): Promise<void> {
     await this.jj(["git", "fetch", "--remote", "origin"], repoPath);
   }
