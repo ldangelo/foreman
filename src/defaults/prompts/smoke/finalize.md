@@ -5,11 +5,11 @@ This is a smoke/integration test run. Your only job is to commit files and write
 **0. Verify working directory:**
 Run `pwd` and confirm you are in `{{worktreePath}}`. If not, run `cd {{worktreePath}}` first.
 
-**1. Run git add and git commit:**
+**1. Run stage and commit (skip stage command if empty — some backends auto-stage):**
 ```
-git add -A
+{{vcsStageCommand}}
 git reset HEAD SESSION_LOG.md RUN_LOG.md 2>/dev/null || true
-git commit -m "{{seedTitle}} ({{seedId}})"
+{{vcsCommitCommand}}
 ```
 If git reports "nothing to commit", that is fine — continue anyway (do not send an error).
 

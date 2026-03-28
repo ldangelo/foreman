@@ -52,12 +52,13 @@ describe("default/finalize.md: worktree cwd fix", () => {
 
   it("default/finalize.md has a working directory verification step before Step 1", () => {
     const content = readFileSync(DEFAULT_FINALIZE, "utf-8");
-    // Step 0 (or equivalent) must come before the git add step
+    // Step 0 (or equivalent) must come before the stage command step
+    // Stage command is now a VCS template variable (TRD-026)
     const cdPos = content.indexOf("cd {{worktreePath}}");
-    const gitAddPos = content.indexOf("git add -A");
+    const vcsStagePos = content.indexOf("{{vcsStageCommand}}");
     expect(cdPos).toBeGreaterThan(-1);
-    expect(gitAddPos).toBeGreaterThan(-1);
-    expect(cdPos).toBeLessThan(gitAddPos);
+    expect(vcsStagePos).toBeGreaterThan(-1);
+    expect(cdPos).toBeLessThan(vcsStagePos);
   });
 });
 
@@ -124,10 +125,11 @@ describe("smoke workflow: structural invariants", () => {
     expect(content).toContain("PASS");
   });
 
-  it("smoke/finalize.md instructs Pi to write FINALIZE_REPORT.md and run git commit (not git push)", () => {
+  it("smoke/finalize.md instructs Pi to write FINALIZE_REPORT.md and run commit (not git push)", () => {
     const content = readFileSync(join(SMOKE_PROMPTS_DIR, "finalize.md"), "utf-8");
     expect(content).toContain("FINALIZE_REPORT.md");
-    expect(content).toContain("git commit");
+    // Commit command is now a VCS template variable (TRD-026)
+    expect(content).toContain("{{vcsCommitCommand}}");
     // Must explicitly NOT push in smoke mode
     expect(content).toContain("git push");
     expect(content.toLowerCase()).toContain("do not run");

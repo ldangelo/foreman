@@ -163,7 +163,8 @@ describe("default.yaml: finalize phase pre-push validation config", () => {
 describe("default/finalize.md: pre-push test validation prompt", () => {
   it("prompt contains npm test instruction after rebase step", () => {
     const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
-    const rebasePos = content.indexOf("git rebase origin/");
+    // Rebase command is now a template variable {{vcsRebaseCommand}} (TRD-026)
+    const rebasePos = content.indexOf("{{vcsRebaseCommand}}");
     const npmTestPos = content.indexOf("npm test");
     expect(rebasePos).toBeGreaterThan(-1);
     expect(npmTestPos).toBeGreaterThan(-1);
@@ -188,13 +189,14 @@ describe("default/finalize.md: pre-push test validation prompt", () => {
     expect(content.toLowerCase()).toMatch(/do not push|stop here|not push|do not run step 8/i);
   });
 
-  it("npm test must appear before git push in the prompt", () => {
+  it("npm test must appear before push command in the prompt", () => {
     const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
     const npmTestPos = content.indexOf("npm test");
-    const gitPushPos = content.indexOf("git push -u origin");
+    // Push command is now a template variable {{vcsPushCommand}} (TRD-026)
+    const vcsPushPos = content.indexOf("{{vcsPushCommand}}");
     expect(npmTestPos).toBeGreaterThan(-1);
-    expect(gitPushPos).toBeGreaterThan(-1);
-    expect(npmTestPos).toBeLessThan(gitPushPos);
+    expect(vcsPushPos).toBeGreaterThan(-1);
+    expect(npmTestPos).toBeLessThan(vcsPushPos);
   });
 
   it("prompt does not send agent-error mail on test failure (expected retry condition)", () => {

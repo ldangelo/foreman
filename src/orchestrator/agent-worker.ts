@@ -32,6 +32,7 @@ import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { autoMerge } from "./auto-merge.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -570,9 +571,23 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     }
   }
 
+  // Initialize VCS backend for prompt templating (TRD-026, TRD-027).
+  // Reconstructed from FOREMAN_VCS_BACKEND env var set by dispatcher.
+  let vcsBackend;
+  try {
+    vcsBackend = await VcsBackendFactory.fromEnv(
+      pipelineProjectPath,
+      process.env.FOREMAN_VCS_BACKEND,
+    );
+    log(`[PIPELINE] VCS backend: ${vcsBackend.name}`);
+  } catch {
+    // Non-fatal: falls back to git defaults in buildPhasePrompt
+    log(`[PIPELINE] VCS backend init failed — using prompt defaults`);
+  }
+
   // Delegate to the generic workflow-driven executor.
   await executePipeline({
-    config,
+    config: { ...config, vcsBackend },
     workflowConfig,
     store,
     logFile,
