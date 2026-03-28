@@ -555,9 +555,20 @@ export class GitBackend implements VcsBackend {
    */
   async getModifiedFiles(workspacePath: string): Promise<string[]> {
     const out = await this.git(["status", "--porcelain"], workspacePath);
+    if (!out) return [];
     return out
       .split("\n")
-      .map((l) => l.slice(3).trim())
+      .map((l) => {
+        // Porcelain v1: "XY PATH" — 2 status chars + 1 space + path.
+        // The private git() helper trims() the entire stdout string, which can
+        // strip the leading space from the first line when the X status char is
+        // a space (e.g., " M file" becomes "M file" after whole-string trim).
+        // Trimming each line individually normalises all lines to "YY PATH"
+        // form, then slice(2) + trim() extracts the path robustly.
+        const normalized = l.trim();
+        if (normalized.length < 3) return "";
+        return normalized.slice(2).trim();
+      })
       .filter(Boolean);
   }
 
