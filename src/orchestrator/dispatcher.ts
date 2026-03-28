@@ -19,6 +19,8 @@ import { PLAN_STEP_CONFIG } from "./roles.js";
 import { isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
+import type { VcsBackend } from "../lib/vcs/index.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -365,6 +367,19 @@ export class Dispatcher {
           log(`[foreman] Could not load workflow config '${resolvedWorkflow}' for setup steps — using default dependency install`);
         }
 
+        // 1b. Create VcsBackend instance at startup (AC-020-1)
+        // The instance encapsulates backend-specific VCS operations and its name
+        // is propagated via FOREMAN_VCS_BACKEND so agent-worker can reconstruct
+        // without re-detecting.
+        let vcsBackend: VcsBackend | undefined;
+        try {
+          vcsBackend = await VcsBackendFactory.create({ backend: vcsBackendName }, this.projectPath);
+          log(`[foreman] Created VcsBackend: ${vcsBackend.name}`);
+        } catch (vcsErr: unknown) {
+          const vcsMsg = vcsErr instanceof Error ? vcsErr.message : String(vcsErr);
+          log(`[foreman] VcsBackend creation failed: ${vcsMsg} — continuing without VcsBackend instance`);
+        }
+
         // 2. Create git worktree (optionally branched from a dependency branch)
         const { worktreePath, branchName } = await createWorktree(
           this.projectPath,
@@ -446,7 +461,7 @@ export class Dispatcher {
             skipReview: opts?.skipReview,
           },
           opts?.notifyUrl,
-          vcsBackendName,
+          vcsBackend,
           opts?.targetBranch,
         );
 
@@ -773,7 +788,7 @@ export class Dispatcher {
       skipReview?: boolean;
     },
     notifyUrl?: string,
-    vcsBackend?: string,
+    vcsBackend?: VcsBackend,
     targetBranch?: string,
   ): Promise<{ sessionKey: string }> {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
@@ -1234,7 +1249,7 @@ function buildWorkerEnv(
   runId: string,
   model: string,
   notifyUrl?: string,
-  vcsBackend?: string,
+  vcsBackend?: VcsBackend,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -1249,9 +1264,11 @@ function buildWorkerEnv(
     env.FOREMAN_NOTIFY_URL = notifyUrl;
   }
 
-  // Pass VCS backend to workers so they can instantiate the correct backend
-  if (vcsBackend) {
-    env.FOREMAN_VCS_BACKEND = vcsBackend;
+  // Pass VCS backend name to workers via env var so they can instantiate the
+  // correct backend without re-detecting (AC-020-2). The backend was already
+  // resolved and instantiated by the dispatcher; we serialize just the name.
+  if (vcsBackend?.name) {
+    env.FOREMAN_VCS_BACKEND = vcsBackend.name;
   }
 
   if (telemetry) {
