@@ -366,7 +366,8 @@ describe("Refinery.resolveConflict()", () => {
   });
 
   it("theirs strategy removes worktree on success", async () => {
-    const { store, refinery } = makeMocks();
+    // TRD-012: removeWorktree shim replaced by vcs.removeWorkspace()
+    const { store, refinery, vcs } = makeMocks();
     const run = makeRun({ id: "run-1", status: "conflict", worktree_path: "/tmp/worktrees/seed-abc" });
     store.getRun.mockReturnValue(run);
 
@@ -375,11 +376,10 @@ describe("Refinery.resolveConflict()", () => {
         callback(null, { stdout: "", stderr: "" });
       },
     );
-    (removeWorktree as any).mockResolvedValue(undefined);
 
     await refinery.resolveConflict("run-1", "theirs");
 
-    expect(removeWorktree).toHaveBeenCalledWith("/tmp/project", "/tmp/worktrees/seed-abc");
+    expect(vcs.removeWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/worktrees/seed-abc");
   });
 
   it("theirs strategy succeeds even if worktree removal fails", async () => {

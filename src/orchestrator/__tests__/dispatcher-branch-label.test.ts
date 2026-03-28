@@ -14,15 +14,27 @@ import type { ForemanStore, Run } from "../../lib/store.js";
 
 // ── Module mocks ─────────────────────────────────────────────────────────────
 
+// TRD-015: getCurrentBranch and detectDefaultBranch now go through GitBackend
+// Use module-level mock functions so per-test overrides work
+let mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
+let mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
+
 vi.mock("../../lib/git.js", () => ({
-  getCurrentBranch: vi.fn().mockResolvedValue("installer"),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
-  createWorktree: vi.fn().mockResolvedValue({
-    worktreePath: "/tmp/worktrees/seed-001",
-    branchName: "foreman/seed-001",
-  }),
-  gitBranchExists: vi.fn().mockResolvedValue(false),
-  getRepoRoot: vi.fn().mockResolvedValue("/tmp"),
+  // TRD-015: createWorktree, getCurrentBranch, detectDefaultBranch, gitBranchExists replaced by VcsBackend
+  installDependencies: vi.fn().mockResolvedValue(undefined),
+  runSetupWithCache: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../../lib/vcs/git-backend.js", () => ({
+  GitBackend: class {
+    constructor(_path: string) {}
+    async getCurrentBranch(path: string): Promise<string> { return mockGetCurrentBranch(path); }
+    async detectDefaultBranch(path: string): Promise<string> { return mockDetectDefaultBranch(path); }
+    async branchExists(_path: string, _branch: string): Promise<boolean> { return false; }
+    async createWorkspace(_repoPath: string, seedId: string): Promise<{ workspacePath: string; branchName: string }> {
+      return { workspacePath: `/tmp/worktrees/${seedId}`, branchName: `foreman/${seedId}` };
+    }
+  },
 }));
 
 vi.mock("../../lib/workflow-config-loader.js", () => ({
@@ -47,7 +59,6 @@ vi.mock("../dispatcher.js", async (importOriginal) => {
 });
 
 import { Dispatcher } from "../dispatcher.js";
-import { getCurrentBranch, detectDefaultBranch } from "../../lib/git.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -104,8 +115,9 @@ function makeTaskClient(issues: Issue[], detailLabels?: Record<string, string[]>
 describe("Dispatcher — branch label auto-labeling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getCurrentBranch).mockResolvedValue("installer");
-    vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+    // Reset to default values (non-default branch)
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
   });
 
   it("adds branch:installer label when on non-default branch", async () => {
@@ -123,8 +135,8 @@ describe("Dispatcher — branch label auto-labeling", () => {
   });
 
   it("does NOT add branch label when on default branch (main)", async () => {
-    vi.mocked(getCurrentBranch).mockResolvedValue("main");
-    vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("main");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
 
     const seed = makeIssue("seed-001");
     const taskClient = makeTaskClient([seed]);
@@ -142,8 +154,8 @@ describe("Dispatcher — branch label auto-labeling", () => {
   });
 
   it("does NOT add branch label when on dev branch (known default)", async () => {
-    vi.mocked(getCurrentBranch).mockResolvedValue("dev");
-    vi.mocked(detectDefaultBranch).mockResolvedValue("dev");
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("dev");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("dev");
 
     const seed = makeIssue("seed-001");
     const taskClient = makeTaskClient([seed]);
@@ -177,8 +189,8 @@ describe("Dispatcher — branch label auto-labeling", () => {
 
   it("inherits branch: label from parent bead", async () => {
     // On default branch but parent has branch:feature-x
-    vi.mocked(getCurrentBranch).mockResolvedValue("main");
-    vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("main");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
 
     const parentSeed = makeIssue("parent-001");
     const childSeed = makeIssue("child-001", "parent-001");
@@ -198,8 +210,8 @@ describe("Dispatcher — branch label auto-labeling", () => {
   });
 
   it("does NOT inherit branch: label when parent targets default branch", async () => {
-    vi.mocked(getCurrentBranch).mockResolvedValue("main");
-    vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("main");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
 
     const parentSeed = makeIssue("parent-001");
     const childSeed = makeIssue("child-001", "parent-001");
