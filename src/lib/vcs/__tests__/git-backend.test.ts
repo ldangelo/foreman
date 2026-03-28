@@ -715,6 +715,119 @@ describe("GitBackend.branchExistsOnRemote", () => {
   });
 });
 
+// ── GitBackend.commit ─────────────────────────────────────────────────────────
+
+describe("GitBackend.commit", () => {
+  it("AC-T-007-1: stageAll + commit, then getHeadId returns a valid 40-char hash", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Record the initial HEAD so we can confirm it changed
+    const initialHead = await backend.getHeadId(repo);
+
+    // Write a new file and stage + commit it
+    writeFileSync(join(repo, "feature.txt"), "new content\n");
+    await backend.stageAll(repo);
+    await backend.commit(repo, "add feature file");
+
+    const newHead = await backend.getHeadId(repo);
+
+    // Must be a valid 40-character lowercase hex SHA-1
+    expect(newHead).toHaveLength(40);
+    expect(newHead).toMatch(/^[0-9a-f]{40}$/);
+
+    // Commit actually advanced HEAD
+    expect(newHead).not.toBe(initialHead);
+  });
+
+  it("commit() returns void (undefined)", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    writeFileSync(join(repo, "file.txt"), "content\n");
+    await backend.stageAll(repo);
+    const result = await backend.commit(repo, "test commit");
+
+    expect(result).toBeUndefined();
+  });
+
+  it("AC-T-007-3: commit() on a clean workspace throws an error about nothing to commit", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Repo has no uncommitted changes — commit should fail
+    await expect(backend.commit(repo, "empty commit")).rejects.toThrow();
+  });
+});
+
+// ── GitBackend.rebase ─────────────────────────────────────────────────────────
+
+describe("GitBackend.rebase", () => {
+  it("AC-T-007-2: rebase without conflicts returns { success: true, hasConflicts: false }", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Create a feature branch
+    execFileSync("git", ["checkout", "-b", "feature/rebase-test"], { cwd: repo });
+
+    // Add a commit on the feature branch (touches a unique file)
+    writeFileSync(join(repo, "feature-only.txt"), "feature work\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "feature work"], { cwd: repo });
+
+    // Go back to main and add a non-conflicting commit there
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    writeFileSync(join(repo, "main-only.txt"), "main progress\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "main progress"], { cwd: repo });
+
+    // Checkout feature branch and rebase onto main
+    execFileSync("git", ["checkout", "feature/rebase-test"], { cwd: repo });
+
+    const result = await backend.rebase(repo, "main");
+
+    expect(result.success).toBe(true);
+    expect(result.hasConflicts).toBe(false);
+    expect(result.conflictingFiles).toBeUndefined();
+  });
+
+  it("rebase with conflicts returns { success: false, hasConflicts: true } with conflicting files", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    // Create a feature branch
+    execFileSync("git", ["checkout", "-b", "feature/conflict-test"], { cwd: repo });
+
+    // Add a commit that modifies README.md on feature branch
+    writeFileSync(join(repo, "README.md"), "# feature version\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "feature: update README"], { cwd: repo });
+
+    // Go back to main and modify the same file differently
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    writeFileSync(join(repo, "README.md"), "# main version\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "main: update README"], { cwd: repo });
+
+    // Checkout feature branch and attempt to rebase onto main — should conflict
+    execFileSync("git", ["checkout", "feature/conflict-test"], { cwd: repo });
+
+    const result = await backend.rebase(repo, "main");
+
+    expect(result.success).toBe(false);
+    expect(result.hasConflicts).toBe(true);
+    expect(result.conflictingFiles).toContain("README.md");
+
+    // Abort the conflicting rebase so cleanup works
+    await backend.abortRebase(repo);
+  });
+});
+
 // ── GitBackend.deleteBranch ───────────────────────────────────────────────────
 
 describe("GitBackend.deleteBranch", () => {
