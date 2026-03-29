@@ -198,6 +198,27 @@ export interface SentinelRunRow {
   completed_at: string | null;
 }
 
+// ── Error classes ───────────────────────────────────────────────────────
+
+/**
+ * Thrown when a task status value is not in the set of valid statuses defined
+ * by the tasks table CHECK constraint.
+ *
+ * Valid statuses mirror the CHECK constraint in TASKS_SCHEMA below.
+ * Update both if new statuses are added (ref: PRD-2026-006 REQ-003).
+ */
+export class InvalidTaskStatusError extends Error {
+  constructor(
+    public readonly attemptedStatus: string,
+    public readonly validStatuses: string[],
+  ) {
+    super(
+      `Invalid task status '${attemptedStatus}'. Valid statuses: ${validStatuses.join(", ")}`,
+    );
+    this.name = "InvalidTaskStatusError";
+  }
+}
+
 // ── Schema migration ────────────────────────────────────────────────────
 
 const SCHEMA = `
@@ -341,6 +362,53 @@ CREATE INDEX IF NOT EXISTS idx_messages_run_sender
   ON messages (run_id, sender_agent_type);
 `;
 
+// Tasks table DDL — native task management (PRD-2026-006 REQ-003).
+// Stores tasks created by `foreman task create` or imported from beads.
+// All valid statuses are enumerated in the CHECK constraint; update
+// InvalidTaskStatusError.VALID_STATUSES if this list changes.
+const TASKS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS tasks (
+  id          TEXT PRIMARY KEY,
+  title       TEXT NOT NULL,
+  description TEXT,
+  type        TEXT NOT NULL DEFAULT 'task',
+  priority    INTEGER NOT NULL DEFAULT 2,
+  status      TEXT NOT NULL DEFAULT 'backlog',
+  run_id      TEXT REFERENCES runs(id),
+  branch      TEXT,
+  external_id TEXT UNIQUE,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  approved_at TEXT,
+  closed_at   TEXT,
+  CHECK (status IN (
+    'backlog', 'ready', 'in-progress',
+    'explorer', 'developer', 'qa', 'reviewer', 'finalize',
+    'merged', 'conflict', 'failed', 'stuck', 'blocked'
+  ))
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status     ON tasks (status);
+CREATE INDEX IF NOT EXISTS idx_tasks_run_id     ON tasks (run_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks (created_at);
+`;
+
+// Task dependencies table DDL — DAG edges for task blocking (PRD-2026-006 REQ-004).
+// from_task_id blocks to_task_id when type='blocks';
+// parent-child expresses hierarchical decomposition.
+const TASK_DEPENDENCIES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS task_dependencies (
+  from_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  to_task_id   TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  type         TEXT NOT NULL DEFAULT 'blocks',
+  PRIMARY KEY (from_task_id, to_task_id, type),
+  CHECK (type IN ('blocks', 'parent-child'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_to_task
+  ON task_dependencies (to_task_id);
+`;
+
 // Add progress column to runs table if not present (migration)
 // These migrations are idempotent via failure: ALTER TABLE and RENAME COLUMN throw
 // if the change was already applied, which is caught and silently ignored.
@@ -460,6 +528,11 @@ export class ForemanStore {
     // Apply bead write queue schema. Uses CREATE TABLE IF NOT EXISTS so it is
     // safe to apply on every startup for both new and existing databases.
     this.db.exec(BEAD_WRITE_QUEUE_SCHEMA);
+
+    // Apply native task management schemas (PRD-2026-006 REQ-003, REQ-004).
+    // Both use CREATE TABLE IF NOT EXISTS — safe to run on every startup.
+    this.db.exec(TASKS_SCHEMA);
+    this.db.exec(TASK_DEPENDENCIES_SCHEMA);
   }
 
   /** Expose the underlying database for modules that need direct access (e.g. MergeQueue). */
