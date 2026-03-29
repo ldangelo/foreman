@@ -426,35 +426,52 @@ describe("AC-022-1: GitBackend abstraction overhead is negligible", () => {
     expect(mergeResult.success).toBe(true);
   });
 
-  it("abstraction layer overhead per-call is < 50ms over direct git", async () => {
+  it("abstraction layer overhead per-call is negligible relative to direct git", async () => {
     const { remoteDir, localDir } = makeRemoteAndLocal();
     tempDirs.push(remoteDir, localDir);
 
     const backend = new GitBackend(localDir);
 
+    // Use 100 iterations to average out OS scheduling noise.
+    // performance.now() gives sub-millisecond resolution, unlike Date.now().
+    const iterations = 100;
+
+    // Warm-up pass — discard results so JIT / disk caches don't skew the first
+    // timed run.
+    for (let i = 0; i < 5; i++) {
+      await backend.getCurrentBranch(localDir);
+      execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+        cwd: localDir,
+        stdio: "pipe",
+      });
+    }
+
     // Measure time for getCurrentBranch via abstraction
-    const iterations = 10;
-    const abstractionStart = Date.now();
+    const abstractionStart = performance.now();
     for (let i = 0; i < iterations; i++) {
       await backend.getCurrentBranch(localDir);
     }
-    const abstractionTime = Date.now() - abstractionStart;
+    const abstractionTime = performance.now() - abstractionStart;
 
     // Measure time for the equivalent direct git command
-    const directStart = Date.now();
+    const directStart = performance.now();
     for (let i = 0; i < iterations; i++) {
       execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
         cwd: localDir,
         stdio: "pipe",
       });
     }
-    const directTime = Date.now() - directStart;
+    const directTime = performance.now() - directStart;
 
-    // The overhead per call should be < 50ms
-    const overheadPerCall = (abstractionTime - directTime) / iterations;
-
-    // Allow generous tolerance for CI environments — just assert < 50ms per call
-    expect(overheadPerCall).toBeLessThan(50);
+    // Threshold rationale: the real acceptance criterion (AC-022) is < 1%
+    // end-to-end pipeline overhead, not a fixed per-call budget.  A 100-call
+    // batch over a plain git repo typically completes in < 2 s total, so the
+    // abstraction overhead (abstractionTime - directTime) is well under 200 ms
+    // even on a loaded CI machine.  The 200 ms ceiling gives ~10× headroom
+    // while still catching regressions like accidental network I/O or
+    // synchronous blocking inside the backend.
+    const overheadTotal = abstractionTime - directTime;
+    expect(overheadTotal).toBeLessThan(200);
   });
 });
 
