@@ -62,6 +62,7 @@ export class JujutsuBackend implements VcsBackend {
       const { stdout } = await execFileAsync("jj", args, {
         cwd,
         maxBuffer: 10 * 1024 * 1024,
+        timeout: 60_000,
       });
       return stdout.trim();
     } catch (err: unknown) {
@@ -87,6 +88,13 @@ export class JujutsuBackend implements VcsBackend {
       const { stdout } = await execFileAsync("git", args, {
         cwd,
         maxBuffer: 10 * 1024 * 1024,
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          GIT_EDITOR: "true",
+          GIT_TERMINAL_PROMPT: "0",
+          GIT_ASKPASS: "true",
+        },
       });
       return stdout.trim();
     } catch (err: unknown) {
