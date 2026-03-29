@@ -44,9 +44,9 @@ Run the stage command (skip if empty — some backends auto-stage):
 ```
 Then exclude diagnostic artifacts that cause merge conflicts:
 ```
-git reset HEAD SESSION_LOG.md RUN_LOG.md 2>/dev/null || true
+git reset HEAD SESSION_LOG.md RUN_LOG.md .beads/issues.jsonl 2>/dev/null || true
 ```
-SESSION_LOG.md and RUN_LOG.md are diagnostic artifacts that cause merge conflicts when multiple pipelines run concurrently. They remain in the worktree for debugging but are excluded from the commit.
+SESSION_LOG.md and RUN_LOG.md are diagnostic artifacts that cause merge conflicts when multiple pipelines run concurrently. .beads/issues.jsonl is managed centrally by the bead-writer process — committing it from worktrees causes merge conflicts when multiple agents run in parallel. All three remain in the worktree for debugging but are excluded from the commit.
 
 ### Step 4: Commit
 Run:
@@ -188,5 +188,5 @@ Use this format:
 - **DO NOT modify any source code files** — only write FINALIZE_VALIDATION.md, FINALIZE_REPORT.md and run git commands
 - Run steps in order — do not skip any step unless explicitly told to stop
 - All failures except "nothing to commit" (for non-verification beads) are logged and continue (non-fatal) unless they prevent git push
-- Do NOT commit SESSION_LOG.md or RUN_LOG.md — they are excluded from commits to prevent merge conflicts
+- Do NOT commit SESSION_LOG.md, RUN_LOG.md, or .beads/issues.jsonl — they are excluded from commits to prevent merge conflicts when multiple agents run in parallel
 - **If tests fail in Step 7, stop after writing FINALIZE_VALIDATION.md — do NOT run Steps 8 or 9**
