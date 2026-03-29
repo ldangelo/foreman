@@ -14,6 +14,7 @@ import { appendFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import { resolvePhaseModel } from "../lib/workflow-loader.js";
+import type { PipelineEventBus } from "./pipeline-events.js";
 import { ROLE_CONFIGS } from "./roles.js";
 import { buildPhasePrompt, parseVerdict, extractIssues } from "./roles.js";
 import { enqueueAddLabelsToBead } from "./task-backend-ops.js";
@@ -109,9 +110,25 @@ export interface PipelineContext {
   /** Prompt loader options */
   promptOpts: { projectRoot: string; workflow: string };
   /**
+   * Optional event bus for pipeline lifecycle events.
+   *
+   * When provided, the executor emits typed PipelineEvent values at each
+   * phase lifecycle boundary (phase:start, phase:complete, phase:fail,
+   * pipeline:complete, pipeline:fail). All registered handlers receive
+   * strongly-typed event objects.
+   *
+   * This replaces the onPipelineComplete/onPipelineFailure callback pattern.
+   * Callers should register handlers on the event bus in agent-worker.ts.
+   */
+  eventBus?: PipelineEventBus;
+  /**
    * Called after the last phase (finalize) completes successfully.
    * Responsible for: reading finalize mail, enqueuing to merge queue,
    * updating run status, resetting seed on failure, sending branch-ready mail.
+   *
+   * @deprecated Prefer registering a pipeline:complete handler on eventBus.
+   *             This callback remains for backward compatibility with callers
+   *             that have not yet migrated to the event-driven model.
    */
   onPipelineComplete?: (info: {
     progress: RunProgress;
@@ -191,6 +208,9 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
 
     progress.currentPhase = phaseName;
     store.updateRunProgress(runId, progress);
+
+    // Emit phase:start for all phases (including skipped — emitted before skip check)
+    ctx.eventBus?.safeEmit({ type: "phase:start", runId, phase: phaseName, worktreePath });
 
     // 1. Skip if artifact already exists (resume from crash)
     if (phase.skipIfArtifact) {
@@ -307,12 +327,23 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
 
     // 7. Handle failure
     if (!result.success) {
+      ctx.eventBus?.safeEmit({
+        type: "phase:fail",
+        runId,
+        phase: phaseName,
+        error: result.error ?? `${phaseName} failed`,
+        retryable: true,
+      });
       ctx.sendMail(agentMailClient, "foreman", "agent-error", {
         seedId, phase: phaseName, error: result.error ?? `${phaseName} failed`, retryable: true,
       });
       await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, result.error ?? `${phaseName} failed`, notifyClient, config.projectPath);
+      ctx.eventBus?.safeEmit({ type: "pipeline:fail", runId, error: result.error ?? `${phaseName} failed` });
       return;
     }
+
+    // Emit phase:complete
+    ctx.eventBus?.safeEmit({ type: "phase:complete", runId, phase: phaseName, worktreePath, cost: result.costUsd });
 
     // 8. Handle success: send phase-complete, labels, forward artifact
     if (phase.mail?.onComplete !== false) {
@@ -418,6 +449,11 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
   }
 
   // ── Pipeline completion ──────────────────────────────────────────────
+  // Emit pipeline:complete before invoking the completion callback so that
+  // event-bus handlers (e.g. RebaseHook) can observe completion before
+  // merge-queue enqueue.
+  ctx.eventBus?.safeEmit({ type: "pipeline:complete", runId, status: "completed" });
+
   // Delegate finalize-specific post-processing (merge queue, run status)
   // to the caller via the onPipelineComplete callback.
   if (ctx.onPipelineComplete) {

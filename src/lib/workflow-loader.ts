@@ -214,6 +214,24 @@ export interface WorkflowConfig {
    * is invoked after a pipeline failure to attempt automatic recovery.
    */
   onFailure?: OnFailureConfig;
+  /**
+   * Mid-pipeline rebase: phase name after which a rebase fires (opt-in).
+   * When set, the RebaseHook executes `vcs.rebase()` after this phase
+   * completes and before the next phase begins.
+   *
+   * The named phase must exist in the `phases` array — loading throws a
+   * WorkflowConfigError if it does not.
+   *
+   * @example `rebaseAfterPhase: developer`
+   */
+  rebaseAfterPhase?: string;
+  /**
+   * Remote ref to rebase onto. Defaults to `origin/<defaultBranch>` when
+   * absent (resolved at runtime via VcsBackend.detectDefaultBranch()).
+   *
+   * @example `rebaseTarget: origin/dev`
+   */
+  rebaseTarget?: string;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -416,6 +434,29 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       onFailure.models = models;
     }
     config.onFailure = onFailure;
+  }
+
+  // ── Parse optional rebaseAfterPhase / rebaseTarget ────────────────────────
+  if (raw["rebaseAfterPhase"] !== undefined) {
+    if (typeof raw["rebaseAfterPhase"] !== "string" || !raw["rebaseAfterPhase"]) {
+      throw new WorkflowConfigError(workflowName, "rebaseAfterPhase must be a non-empty string");
+    }
+    const rebasePhase = raw["rebaseAfterPhase"] as string;
+    const validPhaseNames = phases.map((p) => p.name);
+    if (!validPhaseNames.includes(rebasePhase)) {
+      throw new WorkflowConfigError(
+        workflowName,
+        `rebaseAfterPhase names unknown phase '${rebasePhase}'. Valid phases: ${validPhaseNames.join(", ")}.`,
+      );
+    }
+    config.rebaseAfterPhase = rebasePhase;
+  }
+
+  if (raw["rebaseTarget"] !== undefined) {
+    if (typeof raw["rebaseTarget"] !== "string" || !raw["rebaseTarget"]) {
+      throw new WorkflowConfigError(workflowName, "rebaseTarget must be a non-empty string");
+    }
+    config.rebaseTarget = raw["rebaseTarget"] as string;
   }
 
   return config;

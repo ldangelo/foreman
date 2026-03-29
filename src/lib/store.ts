@@ -43,6 +43,24 @@ export interface Project {
   updated_at: string;
 }
 
+/**
+ * All valid values for the `runs.status` column.
+ * New values must also be handled in status display (status.ts, dashboard.ts).
+ */
+export type RunStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "stuck"
+  | "merged"
+  | "conflict"
+  | "test-failed"
+  | "pr-created"
+  | "reset"
+  | "rebase_conflict"   // mid-pipeline rebase hit unresolvable conflicts
+  | "rebase_resolving"; // troubleshooter is actively resolving the conflict
+
 export interface Run {
   id: string;
   project_id: string;
@@ -50,7 +68,7 @@ export interface Run {
   agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
-  status: "pending" | "running" | "completed" | "failed" | "stuck" | "merged" | "conflict" | "test-failed" | "pr-created" | "reset";
+  status: RunStatus;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -581,6 +599,14 @@ export class ForemanStore {
     }
     if (fields.length === 0) return;
     this.db.prepare(`UPDATE runs SET ${fields.join(", ")} WHERE id = @id`).run(values);
+  }
+
+  /**
+   * Convenience method for updating only the run status.
+   * Accepts all RunStatus values including the new rebase-related statuses.
+   */
+  updateRunStatus(runId: string, status: RunStatus): void {
+    this.db.prepare("UPDATE runs SET status = ? WHERE id = ?").run(status, runId);
   }
 
   getRun(id: string): Run | null {

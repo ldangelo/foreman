@@ -15,6 +15,7 @@ import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Message, Run } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
+import { statusLabel } from "../watch-ui.js";
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -52,7 +53,7 @@ function formatRunStatus(run: Run): string {
   } else if (run.status === "running") {
     statusStr = chalk.blue("RUNNING");
   } else {
-    statusStr = chalk.yellow(run.status.toUpperCase());
+    statusStr = chalk.yellow(statusLabel(run.status));
   }
   return `[${ts}] ${chalk.bold("●")} ${run.seed_id} ${statusStr} (run ${run.id})`;
 }
@@ -62,7 +63,7 @@ function formatRunStatus(run: Run): string {
 function resolveLatestRunId(store: ForemanStore): string | null {
   // Get the most recently created run (any status)
   const runs = store.getRunsByStatuses(
-    ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
+    ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset", "rebase_conflict", "rebase_resolving"],
   );
   if (runs.length === 0) return null;
   // Runs are returned in DESC created_at order
@@ -71,7 +72,7 @@ function resolveLatestRunId(store: ForemanStore): string | null {
 
 function resolveRunIdBySeed(store: ForemanStore, seedId: string): string | null {
   const runs = store.getRunsByStatuses(
-    ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
+    ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset", "rebase_conflict", "rebase_resolving"],
   );
   const seedRuns = runs.filter((r) => r.seed_id === seedId);
   // Runs are returned DESC by created_at, so [0] is most recent
@@ -90,6 +91,7 @@ export const inboxCommand = new Command("inbox")
   .option("--unread", "Show only unread messages")
   .option("--limit <n>", "Max messages to show", "50")
   .option("--ack", "Mark shown messages as read after displaying them")
+  .option("--type <type>", "Filter by mail type (e.g. rebase-context, rebase-conflict)")
   .action(async (options: {
     agent?: string;
     run?: string;
@@ -99,6 +101,7 @@ export const inboxCommand = new Command("inbox")
     unread?: boolean;
     limit?: string;
     ack?: boolean;
+    type?: string;
   }) => {
     const limit = parseInt(options.limit ?? "50", 10);
 
@@ -186,7 +189,7 @@ export const inboxCommand = new Command("inbox")
 
       // Resolve seed ID for display (run record carries seed_id)
       const allRuns = store.getRunsByStatuses(
-        ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
+        ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset", "rebase_conflict", "rebase_resolving"],
       );
       const thisRun = allRuns.find((r) => r.id === runId);
       const seedLabel = thisRun?.seed_id ? `  bead: ${thisRun.seed_id}` : "";
@@ -200,7 +203,7 @@ export const inboxCommand = new Command("inbox")
           console.log("");
         }
 
-        const messages = fetchMessages(store, runId, options.agent, options.unread ?? false, limit);
+        const messages = fetchMessages(store, runId, options.agent, options.unread ?? false, limit, options.type);
         if (messages.length === 0) {
           console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
         } else {
@@ -227,7 +230,7 @@ export const inboxCommand = new Command("inbox")
       const seenRunIds = new Set<string>();
 
       // Initial fetch — print existing messages immediately, then track them as seen
-      const initial = fetchMessages(store, runId, options.agent, false, limit);
+      const initial = fetchMessages(store, runId, options.agent, false, limit, options.type);
       if (initial.length > 0) {
         console.log(`── past messages ${"─".repeat(53)}`);
         for (const m of initial) {
@@ -254,7 +257,7 @@ export const inboxCommand = new Command("inbox")
         }
 
         // Poll messages
-        const msgs = fetchMessages(store, runId, options.agent, options.unread ?? false, limit);
+        const msgs = fetchMessages(store, runId, options.agent, options.unread ?? false, limit, options.type);
         const newMsgs = msgs.filter((m) => !seenIds.has(m.id));
         for (const msg of newMsgs) {
           seenIds.add(msg.id);
@@ -292,6 +295,7 @@ function fetchMessages(
   agent: string | undefined,
   unreadOnly: boolean,
   limit: number,
+  typeFilter?: string,
 ): Message[] {
   let messages: Message[];
   if (agent) {
@@ -300,6 +304,20 @@ function fetchMessages(
     // No agent filter — get all messages for the run
     const all = store.getAllMessages(runId);
     messages = unreadOnly ? all.filter((m) => m.read === 0) : all;
+  }
+  // Apply --type filter: match messages whose subject contains [<type>] or body.type === <type>
+  if (typeFilter) {
+    const pattern = `[${typeFilter}]`;
+    messages = messages.filter((m) => {
+      if (m.subject.includes(pattern)) return true;
+      // Also check body JSON for a type field
+      try {
+        const body = JSON.parse(m.body) as { type?: string };
+        return body.type === typeFilter;
+      } catch {
+        return false;
+      }
+    });
   }
   return messages.slice(0, limit);
 }

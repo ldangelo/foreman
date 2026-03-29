@@ -146,8 +146,12 @@ async function renderStatus(): Promise<void> {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const failedCount = store.getRunsByStatusSince("failed", since, project.id).length;
     const stuckCount = store.getRunsByStatusSince("stuck", since, project.id).length;
-    if (failedCount > 0) console.log(`  Failed:      ${chalk.red(failedCount)} ${chalk.dim("(last 24h)")}`);
-    if (stuckCount > 0) console.log(`  Stuck:       ${chalk.red(stuckCount)} ${chalk.dim("(last 24h)")}`);
+    const rebaseConflictCount = store.getRunsByStatusSince("rebase_conflict", since, project.id).length;
+    const rebaseResolvingCount = store.getRunsByStatusSince("rebase_resolving", since, project.id).length;
+    if (failedCount > 0) console.log(`  Failed:          ${chalk.red(failedCount)} ${chalk.dim("(last 24h)")}`);
+    if (stuckCount > 0) console.log(`  Stuck:           ${chalk.red(stuckCount)} ${chalk.dim("(last 24h)")}`);
+    if (rebaseConflictCount > 0) console.log(`  Rebase Conflict: ${chalk.yellow(rebaseConflictCount)} ${chalk.dim("(last 24h) — REBASE CONFLICT")}`);
+    if (rebaseResolvingCount > 0) console.log(`  Resolving:       ${chalk.blue(rebaseResolvingCount)} ${chalk.dim("(last 24h) — RESOLVING")}`);
   }
 
   console.log();

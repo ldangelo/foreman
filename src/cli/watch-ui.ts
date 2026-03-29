@@ -38,19 +38,35 @@ const STATUS_ICONS: Record<string, string> = {
   merged: "⊕",
   conflict: "⊘",
   "test-failed": "⊘",
+  rebase_conflict: "↯",
+  rebase_resolving: "↺",
 };
 
 function statusColor(status: string, text: string): string {
   switch (status) {
-    case "pending":    return chalk.gray(text);
-    case "running":    return chalk.blue(text);
-    case "completed":  return chalk.green(text);
-    case "failed":     return chalk.red(text);
-    case "stuck":      return chalk.yellow(text);
-    case "merged":     return chalk.green(text);
-    case "conflict":   return chalk.red(text);
-    case "test-failed": return chalk.red(text);
-    default:           return chalk.gray(text);
+    case "pending":          return chalk.gray(text);
+    case "running":          return chalk.blue(text);
+    case "completed":        return chalk.green(text);
+    case "failed":           return chalk.red(text);
+    case "stuck":            return chalk.yellow(text);
+    case "merged":           return chalk.green(text);
+    case "conflict":         return chalk.red(text);
+    case "test-failed":      return chalk.red(text);
+    case "rebase_conflict":  return chalk.yellow(text);   // amber — mid-pipeline rebase conflict
+    case "rebase_resolving": return chalk.blue(text);     // blue — troubleshooter resolving
+    default:                 return chalk.gray(text);
+  }
+}
+
+/**
+ * Map a run status to its human-readable display label.
+ * Returns a short uppercase label suitable for status displays and dashboards.
+ */
+export function statusLabel(status: string): string {
+  switch (status) {
+    case "rebase_conflict":  return "REBASE CONFLICT";
+    case "rebase_resolving": return "RESOLVING";
+    default:                 return status.toUpperCase();
   }
 }
 
@@ -97,7 +113,7 @@ export function renderAgentCardSummary(run: Run, progress: RunProgress | null, i
     ? chalk.dim(` (attempt ${attemptNumber}${previousStatus ? ", prev: " + previousStatus : ""})`)
     : "";
 
-  let line = `${indexPrefix}${expandIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}${attemptInfo}  ${chalk.magenta(shortModel(run.agent_type))}`;
+  let line = `${indexPrefix}${expandIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, statusLabel(run.status))} ${chalk.dim(time)}${attemptInfo}  ${chalk.magenta(shortModel(run.agent_type))}`;
 
   if (progress && progress.toolCalls > 0) {
     const activity = progress.currentPhase
@@ -145,7 +161,7 @@ export function renderAgentCard(run: Run, progress: RunProgress | null, isExpand
     ? chalk.dim(` (attempt ${attemptNumber}${previousStatus ? ", prev: " + previousStatus : ""})`)
     : "";
   lines.push(
-    `${indexPrefix}${collapseIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}${attemptInfo}`,
+    `${indexPrefix}${collapseIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, statusLabel(run.status))} ${chalk.dim(time)}${attemptInfo}`,
   );
   lines.push(`  ${chalk.dim("Model     ")} ${chalk.magenta(shortModel(run.agent_type))}`);
 

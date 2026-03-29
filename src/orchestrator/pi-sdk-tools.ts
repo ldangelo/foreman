@@ -126,6 +126,65 @@ export function createGetRunStatusTool(store: ForemanStore): ToolDefinition {
   } as ToolDefinition;
 }
 
+// ── signal-rebase-resolved tool ────────────────────────────────────────
+
+const SignalRebaseResolvedParams = Type.Object({
+  runId: Type.String({ description: "The run ID whose rebase conflict has been resolved" }),
+  resumePhase: Type.String({ description: "Phase to resume from (usually 'developer')" }),
+});
+
+/**
+ * Create a signal_rebase_resolved ToolDefinition.
+ *
+ * Used by the troubleshooter agent after manually resolving rebase conflicts.
+ * Updates run status to 'rebase_resolving' and sends a rebase-resolved mail
+ * to the foreman inbox so the agent-worker polling loop can emit rebase:resolved
+ * and resume the pipeline.
+ */
+export function createSignalRebaseResolvedTool(
+  store: ForemanStore,
+  mailClient: SqliteMailClient,
+): ToolDefinition {
+  return {
+    name: "signal_rebase_resolved",
+    label: "Signal Rebase Resolved",
+    description: "Signal that a rebase conflict has been manually resolved and the pipeline should resume. Call this after successfully integrating upstream changes.",
+    promptSnippet: "Signal pipeline resume after conflict resolution",
+    promptGuidelines: [
+      "Only call this after you have committed the resolved changes and verified tests pass",
+      "Do not call this if the conflict cannot be resolved — use send_mail with subject 'rebase-failed' instead",
+    ],
+    parameters: SignalRebaseResolvedParams,
+    async execute(
+      _toolCallId: string,
+      params: Static<typeof SignalRebaseResolvedParams>,
+    ) {
+      try {
+        // Send rebase-resolved signal to foreman inbox so the agent-worker can pick it up
+        await mailClient.sendMessage(
+          "foreman",
+          `[rebase-resolved] run ${params.runId} conflict resolved, resuming ${params.resumePhase}`,
+          JSON.stringify({
+            type: "rebase-resolved",
+            runId: params.runId,
+            resumePhase: params.resumePhase,
+          }),
+        );
+        return {
+          content: [{ type: "text" as const, text: `Rebase resolved signal sent for run ${params.runId}. Pipeline will resume from ${params.resumePhase}.` }],
+          details: undefined,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Failed to signal rebase resolved: ${msg}` }],
+          details: undefined,
+        };
+      }
+    },
+  } as ToolDefinition;
+}
+
 // ── close-bead tool ─────────────────────────────────────────────────────
 
 const CloseBeadParams = Type.Object({

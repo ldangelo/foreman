@@ -13,6 +13,13 @@
 #
 # vcs:
 #   backend: auto
+#
+# Mid-pipeline rebase (opt-in). Uncomment to activate.
+# Rebases the worktree onto the target branch after the named phase,
+# before the next phase runs. Conflicts are escalated to the troubleshooter.
+#
+# rebaseAfterPhase: developer    # Rebase onto target after developer phase, before QA
+# rebaseTarget: origin/dev       # Defaults to origin/<defaultBranch> when absent
 name: default
 setup:
   - command: npm install --prefer-offline --no-audit
