@@ -10,7 +10,8 @@ import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
-import { createWorktree, gitBranchExists, getCurrentBranch, detectDefaultBranch } from "../lib/git.js";
+import { installDependencies, runSetupWithCache } from "../lib/git.js";
+import { GitBackend } from "../lib/vcs/git-backend.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel } from "../lib/branch-label.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
@@ -19,6 +20,9 @@ import { PLAN_STEP_CONFIG } from "./roles.js";
 import { isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
+import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
+import type { VcsBackend } from "../lib/vcs/index.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -58,6 +62,8 @@ export class Dispatcher {
     seedId?: string;
     /** URL of the notification server (e.g. "http://127.0.0.1:PORT") */
     notifyUrl?: string;
+    /** Override target branch for merges (when working on a feature branch instead of default). */
+    targetBranch?: string;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = opts?.projectId ?? this.resolveProjectId();
@@ -167,12 +173,13 @@ export class Dispatcher {
     const skipped: SkippedTask[] = [];
 
     // Detect current branch for auto-labeling (branch:<name> label).
-    // Done once per dispatch() call to avoid repeated git invocations.
+    // Done once per dispatch() call using VcsBackend (TRD-015: migrate from git.js shims).
     let currentBranch: string | undefined;
     let defaultBranch: string | undefined;
     try {
-      currentBranch = await getCurrentBranch(this.projectPath);
-      defaultBranch = await detectDefaultBranch(this.projectPath);
+      const branchBackend = new GitBackend(this.projectPath);
+      currentBranch = await branchBackend.getCurrentBranch(this.projectPath);
+      defaultBranch = await branchBackend.detectDefaultBranch(this.projectPath);
     } catch {
       // Non-fatal: branch detection failure must not block dispatch
     }
@@ -342,23 +349,71 @@ export class Dispatcher {
         const resolvedWorkflow = resolveWorkflowName(seedInfo.type ?? "feature", seedInfo.labels);
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
         let setupCache: import("../lib/workflow-loader.js").WorkflowSetupCache | undefined;
+        let vcsBackendName: 'git' | 'jujutsu' = 'git'; // default to git
         try {
           const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
           setupSteps = wfConfig.setup;
           setupCache = wfConfig.setupCache;
+
+          // Load project-level config (optional — returns null if .foreman/config.yaml absent)
+          let projectVcs: import("../lib/project-config.js").ProjectConfig["vcs"] | undefined;
+          try {
+            const projectCfg = loadProjectConfig(this.projectPath);
+            projectVcs = projectCfg?.vcs;
+          } catch (projErr: unknown) {
+            // Non-fatal: log and continue without project config
+            const projMsg = projErr instanceof Error ? projErr.message : String(projErr);
+            log(`[foreman] Could not load project config — ${projMsg}`);
+          }
+
+          // Resolve VCS backend: workflow > project > auto-detect
+          const resolvedVcs = resolveVcsConfig(wfConfig.vcs, projectVcs);
+          if (resolvedVcs.backend !== 'auto') {
+            vcsBackendName = resolvedVcs.backend;
+          } else {
+            // Auto-detect: .jj/ → jujutsu, else git
+            const { existsSync } = await import("node:fs");
+            const { join: pathJoin } = await import("node:path");
+            if (existsSync(pathJoin(this.projectPath, '.jj'))) {
+              vcsBackendName = 'jujutsu';
+            }
+            // else: stay with 'git' default
+          }
         } catch {
           // Non-fatal: fall back to default installDependencies behavior
           log(`[foreman] Could not load workflow config '${resolvedWorkflow}' for setup steps — using default dependency install`);
         }
 
-        // 2. Create git worktree (optionally branched from a dependency branch)
-        const { worktreePath, branchName } = await createWorktree(
+        // 1b. Create VcsBackend instance at startup (AC-020-1)
+        // The instance encapsulates backend-specific VCS operations and its name
+        // is propagated via FOREMAN_VCS_BACKEND so agent-worker can reconstruct
+        // without re-detecting.
+        let vcsBackend: VcsBackend | undefined;
+        try {
+          vcsBackend = await VcsBackendFactory.create({ backend: vcsBackendName }, this.projectPath);
+          log(`[foreman] Created VcsBackend: ${vcsBackend.name}`);
+        } catch (vcsErr: unknown) {
+          const vcsMsg = vcsErr instanceof Error ? vcsErr.message : String(vcsErr);
+          log(`[foreman] VcsBackend creation failed: ${vcsMsg} — continuing without VcsBackend instance`);
+        }
+
+        // 2. Create workspace via VcsBackend (TRD-015: replaces createWorktree shim)
+        // Falls back to GitBackend if vcsBackend creation failed (non-fatal).
+        const workspaceBackend = vcsBackend ?? new GitBackend(this.projectPath);
+        const workspaceResult = await workspaceBackend.createWorkspace(
           this.projectPath,
           seed.id,
           baseBranch,
-          setupSteps,
-          setupCache,
         );
+        const worktreePath = workspaceResult.workspacePath;
+        const branchName = workspaceResult.branchName;
+
+        // Run setup steps / install dependencies (not part of VcsBackend interface)
+        if (setupSteps && setupSteps.length > 0) {
+          await runSetupWithCache(worktreePath, this.projectPath, setupSteps, setupCache);
+        } else {
+          await installDependencies(worktreePath);
+        }
 
         // 3. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
         const taskMd = workerAgentMd(seedInfo, worktreePath, model);
@@ -432,6 +487,8 @@ export class Dispatcher {
             skipReview: opts?.skipReview,
           },
           opts?.notifyUrl,
+          vcsBackend,
+          opts?.targetBranch,
         );
 
         // Update run with session key
@@ -757,10 +814,12 @@ export class Dispatcher {
       skipReview?: boolean;
     },
     notifyUrl?: string,
+    vcsBackend?: VcsBackend,
+    targetBranch?: string,
   ): Promise<{ sessionKey: string }> {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
-    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
+    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, vcsBackend);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
@@ -787,6 +846,7 @@ export class Dispatcher {
       seedType,
       seedLabels: seed.labels,
       seedPriority: seed.priority,
+      targetBranch,
     });
 
     return { sessionKey };
@@ -926,26 +986,30 @@ export class Dispatcher {
 
         const seedId = payload.seedId as string;
 
+        // All br commands get --lock-timeout so they wait for concurrent agent
+        // reads to release the SQLite lock instead of failing with SQLITE_BUSY.
+        const lockArgs = ["--lock-timeout", "10000"];
+
         switch (entry.operation) {
           case "close-seed":
             // Use --no-db to write directly to JSONL, bypassing broken DB cache (beads_rust#204).
-            execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline"], execOpts);
+            execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
             console.error(`[bead-writer] Closed seed ${seedId} via --no-db (from ${entry.sender})`);
             break;
 
           case "reset-seed":
-            execFileSync(bin, ["update", seedId, "--status", "open"], execOpts);
+            execFileSync(bin, ["update", seedId, "--status", "open", ...lockArgs], execOpts);
             console.error(`[bead-writer] Reset seed ${seedId} to open (from ${entry.sender})`);
             break;
 
           case "mark-failed":
-            execFileSync(bin, ["update", seedId, "--status", "failed"], execOpts);
+            execFileSync(bin, ["update", seedId, "--status", "failed", ...lockArgs], execOpts);
             console.error(`[bead-writer] Marked seed ${seedId} as failed (from ${entry.sender})`);
             break;
 
           case "set-status": {
             const targetStatus = payload.status as string;
-            execFileSync(bin, ["update", seedId, "--status", targetStatus], execOpts);
+            execFileSync(bin, ["update", seedId, "--status", targetStatus, ...lockArgs], execOpts);
             console.error(`[bead-writer] Set seed ${seedId} to ${targetStatus} (from ${entry.sender})`);
             break;
           }
@@ -953,7 +1017,7 @@ export class Dispatcher {
           case "add-notes": {
             const notes = payload.notes as string;
             if (notes) {
-              execFileSync(bin, ["update", seedId, "--notes", notes], execOpts);
+              execFileSync(bin, ["update", seedId, "--notes", notes, ...lockArgs], execOpts);
               console.error(`[bead-writer] Added notes to seed ${seedId} (from ${entry.sender})`);
             }
             break;
@@ -962,7 +1026,7 @@ export class Dispatcher {
           case "add-labels": {
             const labels = payload.labels as string[];
             if (labels && labels.length > 0) {
-              const args = ["update", seedId, ...labels.flatMap((l) => ["--add-label", l])];
+              const args = ["update", seedId, ...labels.flatMap((l) => ["--add-label", l]), ...lockArgs];
               execFileSync(bin, args, execOpts);
               console.error(`[bead-writer] Added labels [${labels.join(", ")}] to seed ${seedId} (from ${entry.sender})`);
             }
@@ -989,8 +1053,16 @@ export class Dispatcher {
     // blocked cache. This ensures br ready reflects newly-unblocked beads.
     if (processed > 0) {
       try {
-        // Flush any non-close operations (reset, labels, notes) that used the DB
-        execFileSync(bin, ["sync", "--flush-only"], execOpts);
+        // Force full re-export so JSONL stays in sync with the DB.
+        // Regular --flush-only only exports "dirty" entries, but dirty flags
+        // can get out of sync (e.g. after --no-db writes or interrupted sessions),
+        // causing bv to see stale data. --force re-exports everything.
+        // Use a longer timeout than individual bead operations since full export
+        // scales with total issue count.
+        execFileSync(bin, ["sync", "--flush-only", "--force"], {
+          ...execOpts,
+          timeout: Math.max(execOpts.timeout, 60_000),
+        });
         // Clear the blocked_issues_cache so br ready reflects newly-unblocked beads.
         // Using sqlite3 CLI is safer and faster than deleting the entire DB.
         try {
@@ -1054,8 +1126,9 @@ export async function resolveBaseBranch(
     // detail.dependencies is string[] of dep IDs that this seed depends on
     for (const depId of detail.dependencies ?? []) {
       const depBranch = `foreman/${depId}`;
-      // Check if this branch exists locally
-      const branchExists = await gitBranchExists(projectPath, depBranch);
+      // Check if this branch exists locally via VcsBackend (TRD-015: migrate from gitBranchExists shim)
+      const depBackend = new GitBackend(projectPath);
+      const branchExists = await depBackend.branchExists(projectPath, depBranch);
       if (!branchExists) continue;
       // Check if the dep's most recent run is "completed" (done but not yet merged)
       const depRuns = store.getRunsForSeed(depId);
@@ -1107,6 +1180,11 @@ export interface WorkerConfig {
    * Forwarded to the pipeline executor to resolve per-priority models from YAML.
    */
   seedPriority?: string;
+  /**
+   * Override target branch for auto-merge after finalize.
+   * When set, the agent worker merges into this branch instead of detectDefaultBranch().
+   */
+  targetBranch?: string;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────
@@ -1202,6 +1280,7 @@ function buildWorkerEnv(
   runId: string,
   model: string,
   notifyUrl?: string,
+  vcsBackend?: VcsBackend,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -1214,6 +1293,13 @@ function buildWorkerEnv(
 
   if (notifyUrl) {
     env.FOREMAN_NOTIFY_URL = notifyUrl;
+  }
+
+  // Pass VCS backend name to workers via env var so they can instantiate the
+  // correct backend without re-detecting (AC-020-2). The backend was already
+  // resolved and instantiated by the dispatcher; we serialize just the name.
+  if (vcsBackend?.name) {
+    env.FOREMAN_VCS_BACKEND = vcsBackend.name;
   }
 
   if (telemetry) {

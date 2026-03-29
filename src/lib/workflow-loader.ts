@@ -162,6 +162,20 @@ export interface WorkflowPhaseConfig {
   builtin?: boolean;
 }
 
+/** Configuration for the onFailure troubleshooter phase. */
+export interface OnFailureConfig {
+  /** Phase name (e.g. "troubleshooter"). */
+  name: string;
+  /** Prompt file name (e.g. "troubleshooter.md"). */
+  prompt: string;
+  /** Priority-based model selection map. */
+  models?: Record<string, string>;
+  /** Maximum conversation turns for the troubleshooter. */
+  maxTurns?: number;
+  /** Report artifact filename (e.g. "TROUBLESHOOT_REPORT.md"). */
+  artifact?: string;
+}
+
 /** A loaded, validated workflow configuration. */
 export interface WorkflowConfig {
   /** Workflow name (e.g. "default", "smoke"). */
@@ -180,6 +194,26 @@ export interface WorkflowConfig {
   setupCache?: WorkflowSetupCache;
   /** Ordered list of phases to execute. */
   phases: WorkflowPhaseConfig[];
+  /**
+   * Optional VCS backend configuration. When present, overrides project-level
+   * config and auto-detection. Use 'auto' to detect from repository contents
+   * (.jj/ → jujutsu, .git/ → git).
+   *
+   * @example
+   * ```yaml
+   * vcs:
+   *   backend: jujutsu
+   * ```
+   */
+  vcs?: {
+    /** VCS backend to use: 'git' | 'jujutsu' | 'auto'. Default: 'auto'. */
+    backend: 'git' | 'jujutsu' | 'auto';
+  };
+  /**
+   * Optional troubleshooter phase config. When present, the troubleshooter
+   * is invoked after a pipeline failure to attempt automatic recovery.
+   */
+  onFailure?: OnFailureConfig;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -347,6 +381,43 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   const config: WorkflowConfig = { name, phases };
   if (setup !== undefined) config.setup = setup;
   if (setupCache !== undefined) config.setupCache = setupCache;
+
+  // ── Parse optional vcs block ───────────────────────────────────────────────
+  if (isRecord(raw["vcs"])) {
+    const vcsRaw = raw["vcs"];
+    const backend = vcsRaw["backend"];
+    if (backend === "git" || backend === "jujutsu" || backend === "auto") {
+      config.vcs = { backend };
+    } else if (backend !== undefined) {
+      throw new WorkflowConfigError(
+        workflowName,
+        `vcs.backend must be 'git', 'jujutsu', or 'auto' (got: ${String(backend)})`,
+      );
+    }
+  }
+
+  // ── Parse optional onFailure block ────────────────────────────────────────
+  if (isRecord(raw["onFailure"])) {
+    const of_ = raw["onFailure"];
+    if (typeof of_["name"] !== "string" || !of_["name"]) {
+      throw new WorkflowConfigError(workflowName, "onFailure.name must be a non-empty string");
+    }
+    const onFailure: OnFailureConfig = {
+      name: of_["name"] as string,
+      prompt: typeof of_["prompt"] === "string" ? of_["prompt"] : `${of_["name"] as string}.md`,
+    };
+    if (typeof of_["maxTurns"] === "number") onFailure.maxTurns = of_["maxTurns"];
+    if (typeof of_["artifact"] === "string") onFailure.artifact = of_["artifact"];
+    if (isRecord(of_["models"])) {
+      const models: Record<string, string> = {};
+      for (const [k, v] of Object.entries(of_["models"])) {
+        if (typeof v === "string") models[k] = v;
+      }
+      onFailure.models = models;
+    }
+    config.onFailure = onFailure;
+  }
+
   return config;
 }
 

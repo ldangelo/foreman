@@ -12,10 +12,9 @@
 import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join, basename } from "node:path";
-import { execFileSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
-import { createSendMailTool } from "./pi-sdk-tools.js";
+import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
@@ -25,12 +24,15 @@ import {
   getDisallowedTools,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
+import { detectDefaultBranch } from "../lib/git.js";
 import { enqueueResetSeedToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { autoMerge } from "./auto-merge.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
+import { GitBackend } from "../lib/vcs/git-backend.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -210,6 +212,11 @@ interface WorkerConfig {
    * Forwarded to the pipeline executor to resolve per-priority models from YAML.
    */
   seedPriority?: string;
+  /**
+   * Override target branch for auto-merge after finalize.
+   * When set, merges into this branch instead of detectDefaultBranch().
+   */
+  targetBranch?: string;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -538,6 +545,92 @@ function readReport(worktreePath: string, filename: string): string | null {
 
 
 /**
+ * Run the troubleshooter phase as a separate SDK session.
+ *
+ * Invoked after a pipeline failure when workflowConfig.onFailure is present.
+ * The troubleshooter reads failure context (artifacts, run status) and attempts
+ * to resolve the issue automatically (fix test failures, resolve conflicts, etc.).
+ *
+ * Returns true if the troubleshooter reports RESOLVED in its artifact, false otherwise.
+ */
+async function runTroubleshooterPhase(
+  config: WorkerConfig,
+  workflowConfig: import("../lib/workflow-loader.js").WorkflowConfig,
+  store: ForemanStore,
+  logFile: string,
+  notifyClient: NotificationClient,
+  agentMailClient: AnyMailClient | null,
+  failureContext: string,
+  pipelineProjectPath: string,
+): Promise<boolean> {
+  const onFailure = workflowConfig.onFailure;
+  if (!onFailure) return false;
+
+  const { runId, seedId, seedTitle } = config;
+  log(`[TROUBLESHOOTER] Activating for ${seedId} — failure context: ${failureContext.slice(0, 120)}`);
+
+  // Build a basic troubleshooter prompt with failure context injected
+  const prompt = [
+    `# Troubleshooter Agent`,
+    ``,
+    `**Seed:** ${seedId} — ${seedTitle}`,
+    `**Run ID:** ${runId}`,
+    `**Failure Context:**`,
+    failureContext,
+    ``,
+    `Use get_run_status, read artifacts, and apply fixes. Write TROUBLESHOOT_REPORT.md when done.`,
+    `Include "RESOLVED" in the report if the failure was fixed, or "ESCALATED" if not.`,
+  ].join("\n");
+
+  const roleConfig = ROLE_CONFIGS.troubleshooter;
+  const resolvedModel = onFailure.models?.["default"] ?? roleConfig.model;
+
+  const customTools: import("@mariozechner/pi-coding-agent").ToolDefinition[] = [];
+  if (agentMailClient) {
+    customTools.push(createSendMailTool(agentMailClient, `troubleshooter-${seedId}`));
+  }
+  customTools.push(createGetRunStatusTool(store));
+  customTools.push(createCloseBeadTool(pipelineProjectPath));
+
+  try {
+    const result = await runWithPiSdk({
+      prompt,
+      systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for task: ${seedTitle}`,
+      cwd: config.worktreePath,
+      model: resolvedModel,
+      allowedTools: roleConfig.allowedTools,
+      customTools,
+      logFile,
+      onToolCall: () => { /* no-op */ },
+      onTurnEnd: () => { /* no-op */ },
+    });
+
+    log(`[TROUBLESHOOTER] Completed (${result.turns} turns, $${result.costUsd.toFixed(4)})`);
+    await appendFile(logFile, `[TROUBLESHOOTER] ${result.success ? "COMPLETED" : "FAILED"} ($${result.costUsd.toFixed(4)})\n`);
+
+    // Check if TROUBLESHOOT_REPORT.md contains "RESOLVED"
+    const { join: pathJoin } = await import("node:path");
+    const { readFileSync: rfs } = await import("node:fs");
+    try {
+      const report = rfs(pathJoin(config.worktreePath, "TROUBLESHOOT_REPORT.md"), "utf-8");
+      const troubleshooterResolved = report.includes("RESOLVED");
+      if (troubleshooterResolved) {
+        log(`[TROUBLESHOOTER] PIPELINE RECOVERED for ${seedId}`);
+        await appendFile(logFile, `[TROUBLESHOOTER] PIPELINE RECOVERED\n`);
+        return true;
+      }
+    } catch {
+      // Report not written — escalated
+    }
+    return false;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[TROUBLESHOOTER] Error: ${msg}`);
+    return false;
+  }
+}
+
+/**
  * Run the full pipeline: Explorer → Developer ⇄ QA → Reviewer → Finalize.
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
@@ -554,9 +647,33 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     throw err;
   }
 
+  // Ensure targetBranch is set so finalize rebases onto the correct branch.
+  // If not provided by the dispatcher, detect the default branch (e.g. dev).
+  if (!config.targetBranch) {
+    try {
+      config.targetBranch = await detectDefaultBranch(pipelineProjectPath);
+    } catch {
+      // Non-fatal: falls back to "main" in buildPhasePrompt
+    }
+  }
+
+  // Initialize VCS backend for prompt templating (TRD-026, TRD-027).
+  // Reconstructed from FOREMAN_VCS_BACKEND env var set by dispatcher.
+  let vcsBackend;
+  try {
+    vcsBackend = await VcsBackendFactory.fromEnv(
+      pipelineProjectPath,
+      process.env.FOREMAN_VCS_BACKEND,
+    );
+    log(`[PIPELINE] VCS backend: ${vcsBackend.name}`);
+  } catch {
+    // Non-fatal: falls back to git defaults in buildPhasePrompt
+    log(`[PIPELINE] VCS backend init failed — using prompt defaults`);
+  }
+
   // Delegate to the generic workflow-driven executor.
   await executePipeline({
-    config,
+    config: { ...config, vcsBackend },
     workflowConfig,
     store,
     logFile,
@@ -595,18 +712,55 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           const errorDetail = typeof body["error"] === "string" ? body["error"] : "unknown finalize error";
           log(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
 
-          // Special case: "nothing to commit" is success for verification/test beads.
-          // The finalize agent should already handle this in its prompt, but as a
-          // safety net we also check here so verification beads aren't stuck in a
-          // reset-to-open loop when the LLM misses the conditional logic.
+          // Special case: "nothing to commit" may be normal when a worktree is
+          // reused from a previous run (commits already exist). Check if the
+          // branch has commits ahead of the target — if so, the work is done.
+          // Also handle verification/test beads which genuinely have no changes.
           if (errorDetail === "nothing_to_commit") {
             const beadType = config.seedType ?? "";
             const beadTitle = config.seedTitle ?? "";
             const isVerificationBead = beadType === "test" ||
               /verify|validate|test/i.test(beadTitle);
-            if (isVerificationBead) {
+
+            // Check if branch has commits ahead of target (reused worktree scenario).
+            // Try multiple refs: the remote target branch may not exist if it hasn't
+            // been pushed yet. Fall back to the local branch, then origin/dev.
+            let hasCommitsAhead = false;
+            {
+              const candidates: string[] = [];
+              if (config.targetBranch) {
+                candidates.push(`origin/${config.targetBranch}`, config.targetBranch);
+              }
+              candidates.push("origin/dev", "origin/main");
+              const aheadBackend = new GitBackend(worktreePath);
+              for (const ref of candidates) {
+                try {
+                  // Use VcsBackend.getChangedFiles() as a proxy for checking if
+                  // HEAD has any commits ahead of the given ref. Three-dot
+                  // semantics are used for consistency with the rest of the VCS layer.
+                  const changedFiles = await aheadBackend.getChangedFiles(worktreePath, ref, "HEAD");
+                  hasCommitsAhead = changedFiles.length > 0;
+                  break; // First valid ref wins
+                } catch {
+                  // Ref doesn't exist or git failed — try next
+                }
+              }
+            }
+
+            if (hasCommitsAhead) {
+              finalizeSucceeded = true;
+              log(`[FINALIZE] nothing_to_commit but branch has prior commits — treating as success (reused worktree)`);
+            } else if (isVerificationBead) {
               finalizeSucceeded = true;
               log(`[FINALIZE] nothing_to_commit on verification bead (type="${beadType}", title="${beadTitle}") — treating as success`);
+            } else {
+              // The pipeline passed developer + QA + reviewer — all phases
+              // succeeded. If finalize finds nothing to commit and no commits
+              // ahead, the work was already merged into the target branch
+              // (e.g. from a previous run). The developer report confirms it.
+              // Treat as success rather than getting stuck in a reset loop.
+              finalizeSucceeded = true;
+              log(`[FINALIZE] nothing_to_commit and no commits ahead — work already on target branch, treating as success`);
             }
           }
         } else {
@@ -618,6 +772,27 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         finalizeSucceeded = true;
       }
 
+      // ── Troubleshooter: attempt recovery on failure ──────────────────────
+      const troubleshooterEnabled = !finalizeSucceeded && !!workflowConfig.onFailure;
+      let troubleshooterResolved = false;
+      if (troubleshooterEnabled) {
+        const failureContext = `Pipeline failed at finalize phase. finalizeRetryable=${String(finalizeRetryable)}`;
+        troubleshooterResolved = await runTroubleshooterPhase(
+          config,
+          workflowConfig,
+          store,
+          logFile,
+          notifyClient,
+          agentMailClient,
+          failureContext,
+          pipelineProjectPath,
+        );
+        if (troubleshooterResolved) {
+          // Troubleshooter resolved the issue — treat as success
+          finalizeSucceeded = true;
+        }
+      }
+
       const now = new Date().toISOString();
       if (finalizeSucceeded) {
         // Mark run as completed BEFORE enqueue/autoMerge — autoMerge looks
@@ -627,16 +802,22 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
         try {
           const enqueueStore = ForemanStore.forProject(pipelineProjectPath);
-          const enqueueOpts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
+          // Pre-compute modified files via VcsBackend (async) before calling
+          // enqueueToMergeQueue which expects a synchronous getFilesModified callback.
+          let enqueueFiles: string[] = [];
+          try {
+            const enqueueBackend = new GitBackend(worktreePath);
+            const enqueueDefaultBranch = await detectDefaultBranch(worktreePath);
+            enqueueFiles = await enqueueBackend.getChangedFiles(worktreePath, enqueueDefaultBranch, "HEAD");
+          } catch {
+            // Non-fatal — proceed with empty file list
+          }
           const enqueueResult = enqueueToMergeQueue({
             db: enqueueStore.getDb(),
             seedId,
             runId,
             worktreePath,
-            getFilesModified: () => {
-              const output = execFileSync("git", ["diff", "--name-only", "main...HEAD"], enqueueOpts).toString().trim();
-              return output ? output.split("\n") : [];
-            },
+            getFilesModified: () => enqueueFiles,
           });
           enqueueStore.close();
           if (enqueueResult.success) {
@@ -650,11 +831,12 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
             try {
               const mergeStore = ForemanStore.forProject(pipelineProjectPath);
               const mergeTaskClient = new BeadsRustClient(pipelineProjectPath);
-              log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}`);
+              log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}${config.targetBranch ? ` → ${config.targetBranch}` : ""}`);
               const mergeResult = await autoMerge({
                 store: mergeStore,
                 taskClient: mergeTaskClient,
                 projectPath: pipelineProjectPath,
+                targetBranch: config.targetBranch,
               });
               mergeStore.close();
               log(`[FINALIZE] autoMerge result: merged=${mergeResult.merged} conflicts=${mergeResult.conflicts} failed=${mergeResult.failed}`);

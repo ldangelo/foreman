@@ -6,20 +6,36 @@ import { join } from "node:path";
 import type { ForemanStore } from "../lib/store.js";
 import type { BeadGraph } from "../lib/beads.js";
 import type { UpdateOptions } from "../lib/task-client.js";
-import { mergeWorktree, removeWorktree, detectDefaultBranch, gitBranchExists } from "../lib/git.js";
+// Note: removeWorktree shim removed in TRD-012; workspace removal now goes through this.vcsBackend.removeWorkspace()
 import { extractBranchLabel } from "../lib/branch-label.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
-import { enqueueCloseSeed, enqueueResetSeedToOpen } from "./task-backend-ops.js";
+import { enqueueCloseSeed, enqueueResetSeedToOpen, enqueueAddNotesToBead } from "./task-backend-ops.js";
+import type { VcsBackend } from "../lib/vcs/index.js";
+import { GitBackend } from "../lib/vcs/git-backend.js";
 
 const execFileAsync = promisify(execFile);
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-async function git(args: string[], cwd: string): Promise<string> {
+/**
+ * Run git commands that are NOT covered by the VcsBackend interface:
+ *   - git stash push / pop  (no stash support in VcsBackend)
+ *   - git log --oneline     (no log method in VcsBackend)
+ *   - git reset --hard      (no reset method in VcsBackend)
+ *   - git merge --abort     (no merge-abort method in VcsBackend)
+ *   - git rebase --onto     (no 3-ref rebase form in VcsBackend)
+ *   - git rebase <upstream> <branch>  (2-arg form, operates on non-current branch)
+ *   - git checkout --theirs <file>  (no per-file resolution in VcsBackend)
+ *   - git add <specific files>  (VcsBackend.stageAll stages everything)
+ *   - git commit --no-edit  (VcsBackend.commit() requires a message)
+ *   - git apply --index     (no apply in VcsBackend)
+ *   - git merge -X theirs   (VcsBackend.merge() doesn't support -X strategy)
+ */
+async function gitSpecial(args: string[], cwd: string): Promise<string> {
   const { stdout } = await execFileAsync("git", args, {
     cwd,
     maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
@@ -73,12 +89,17 @@ export interface IRefineryTaskClient {
 
 export class Refinery {
   private conflictResolver: ConflictResolver;
+  private vcsBackend: VcsBackend;
 
   constructor(
     private store: ForemanStore,
     private seeds: IRefineryTaskClient,
     private projectPath: string,
+    vcsBackend?: VcsBackend,
   ) {
+    // Default to GitBackend for backward compatibility with callers that don't
+    // provide an explicit VcsBackend (e.g. CLI commands, existing tests).
+    this.vcsBackend = vcsBackend ?? new GitBackend(projectPath);
     this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG);
   }
 
@@ -91,7 +112,7 @@ export class Refinery {
    */
   private async scanForConflictMarkers(branchName: string, targetBranch: string): Promise<string[]> {
     try {
-      const diff = await git(["diff", `${targetBranch}..${branchName}`, "--"], this.projectPath);
+      const diff = await this.vcsBackend.diff(this.projectPath, targetBranch, branchName);
       if (!diff.trim()) return [];
       const files = new Set<string>();
       let currentFile = "";
@@ -135,24 +156,23 @@ export class Refinery {
    */
   private async autoCommitStateFiles(): Promise<void> {
     try {
-      // Use execFileAsync directly (not the git() helper) because git() trims
-      // stdout, which strips the leading whitespace from porcelain status codes.
-      const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
-        cwd: this.projectPath,
-        maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
-      });
-      if (!stdout || !stdout.trim()) return;
+      // Use vcsBackend.getModifiedFiles() to retrieve file paths with correct
+      // per-line whitespace handling. This avoids the XY-code trimming issue
+      // that occurs when using status() on the whole output string (git status
+      // --porcelain lines starting with ' M' have a leading space that trim()
+      // removes from the first line of the combined output).
+      const modifiedFiles = await this.vcsBackend.getModifiedFiles(this.projectPath);
+      if (modifiedFiles.length === 0) return;
 
-      const lines = stdout.split("\n").filter(Boolean);
-      // Each line has format "XY path" — the path starts at column 3
-      const stateFiles = lines
-        .map((line) => line.slice(3))
-        .filter((path) => path.startsWith(".seeds/") || path.startsWith(".foreman/"));
+      const stateFiles = modifiedFiles.filter(
+        (path) => path.startsWith(".seeds/") || path.startsWith(".foreman/"),
+      );
 
       if (stateFiles.length === 0) return;
 
-      await git(["add", ...stateFiles], this.projectPath);
-      await git(["commit", "-m", "chore: auto-commit state files before merge"], this.projectPath);
+      // Use gitSpecial for selective staging (VcsBackend.stageAll stages everything)
+      await gitSpecial(["add", ...stateFiles], this.projectPath);
+      await this.vcsBackend.commit(this.projectPath, "chore: auto-commit state files before merge");
     } catch (err: unknown) {
       // MQ-020: Auto-commit failure is non-fatal — log and continue
       const message = err instanceof Error ? err.message : String(err);
@@ -172,7 +192,7 @@ export class Refinery {
   /**
    * Archive report files after a successful merge.
    * Moves report files from the working tree into .foreman/reports/<name>-<seedId>.md
-   * and creates a follow-up commit. Called after mergeWorktree() succeeds so we
+   * and creates a follow-up commit. Called after vcsBackend.merge() succeeds so we
    * don't need to checkout branches or deal with dirty working trees.
    * Delegates to ConflictResolver.archiveReportsPostMerge().
    */
@@ -204,13 +224,14 @@ export class Refinery {
    * Non-fatal — a failure to annotate the bead must not mask the original error.
    */
   private async addFailureNote(seedId: string, note: string): Promise<void> {
-    if (!this.seeds.update) return;
+    // Enqueue instead of calling br directly — multiple agent workers run
+    // refinery concurrently, and direct calls cause SQLITE_BUSY on beads DB.
     try {
-      await this.seeds.update(seedId, { notes: note.slice(0, 500) });
+      enqueueAddNotesToBead(this.store, seedId, note.slice(0, 500), "refinery");
     } catch (err: unknown) {
       // Non-fatal: best-effort annotation
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[Refinery] Failed to add failure note to bead ${seedId}: ${message}`);
+      console.warn(`[Refinery] Failed to enqueue failure note for bead ${seedId}: ${message}`);
     }
   }
 
@@ -236,11 +257,13 @@ export class Refinery {
         if (!activeStatuses.includes(stackedRun.status)) continue;
 
         const stackedBranch = `foreman/${stackedRun.seed_id}`;
-        const branchExists = await gitBranchExists(this.projectPath, stackedBranch);
+        const branchExists = await this.vcsBackend.branchExists(this.projectPath, stackedBranch);
         if (!branchExists) continue;
 
         try {
-          await git(["rebase", "--onto", targetBranch, mergedBranch, stackedBranch], this.projectPath);
+          // Use gitSpecial for the --onto form which is not supported by VcsBackend.rebase()
+          // (VcsBackend.rebase() only supports simple "rebase onto" without --onto syntax)
+          await gitSpecial(["rebase", "--onto", targetBranch, mergedBranch, stackedBranch], this.projectPath);
           console.error(`[Refinery] Rebased stacked branch ${stackedBranch} onto ${targetBranch} (was on ${mergedBranch})`);
           // Update the run's base_branch to reflect it's now on targetBranch
           this.store.updateRun(stackedRun.id, { base_branch: null });
@@ -248,7 +271,7 @@ export class Refinery {
           const msg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
           console.warn(`[Refinery] Warning: failed to rebase stacked branch ${stackedBranch} onto ${targetBranch}: ${msg.slice(0, 300)}`);
           // Abort any partial rebase to leave the repo in a clean state
-          try { await git(["rebase", "--abort"], this.projectPath); } catch { /* already clean */ }
+          try { await this.vcsBackend.abortRebase(this.projectPath); } catch { /* already clean */ }
         }
       }
     } catch (err: unknown) {
@@ -270,7 +293,7 @@ export class Refinery {
   ): Promise<import("./types.js").CreatedPr | null> {
     try {
       // Push branch to origin (force-push since rebase may have rewritten history)
-      await git(["push", "-u", "-f", "origin", branchName], this.projectPath);
+      await this.vcsBackend.push(this.projectPath, branchName, { force: true });
 
       // Get seed info for PR title/body
       let seedTitle = run.seed_id;
@@ -435,7 +458,7 @@ export class Refinery {
     projectId?: string;
     seedId?: string;
   }): Promise<MergeReport> {
-    const defaultTargetBranch = opts?.targetBranch ?? await detectDefaultBranch(this.projectPath);
+    const defaultTargetBranch = opts?.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
 
@@ -468,7 +491,7 @@ export class Refinery {
         // nothing. Creating a PR would fail ("no commits between ..."). Don't reset to open
         // (that would cause infinite redispatch to the same broken worktree). Mark as a
         // conflict so the user can investigate.
-        const branchCommits = await git(["log", "--oneline", `${targetBranch}..${branchName}`], this.projectPath).catch(() => "");
+        const branchCommits = await gitSpecial(["log", "--oneline", `${targetBranch}..${branchName}`], this.projectPath).catch(() => "");
         if (!branchCommits.trim()) {
           console.warn(`[Refinery] Branch ${branchName} has no commits beyond ${targetBranch} — agent may not have committed work`);
           await this.addFailureNote(run.seed_id, `Branch ${branchName} has no unique commits beyond ${targetBranch}. The agent may not have committed its work. Manual intervention required — do not auto-reset.`);
@@ -521,7 +544,7 @@ export class Refinery {
         // on origin and not be fetched yet. Silently skip if the fetch fails (the
         // reconcile step already validates the branch exists).
         try {
-          await git(["fetch", "origin", `${branchName}:${branchName}`], this.projectPath);
+          await this.vcsBackend.fetch(this.projectPath);
         } catch {
           // Fetch failure is non-fatal: branch may already be local, or the remote
           // may be unreachable. The subsequent rebase/merge will surface any real error.
@@ -532,9 +555,9 @@ export class Refinery {
         // so git rebase doesn't refuse to run.
         let stashedBeforeRebase = false;
         try {
-          const dirty = await git(["status", "--porcelain"], this.projectPath);
+          const dirty = await this.vcsBackend.status(this.projectPath);
           if (dirty.trim()) {
-            await git(["stash", "push", "--include-untracked", "-m", "foreman-rebase-pre-stash"], this.projectPath);
+            await gitSpecial(["stash", "push", "--include-untracked", "-m", "foreman-rebase-pre-stash"], this.projectPath);
             stashedBeforeRebase = true;
           }
         } catch {
@@ -546,7 +569,9 @@ export class Refinery {
         {
           let rebaseOk = true;
           try {
-            await git(["rebase", targetBranch, branchName], this.projectPath);
+            // Use gitSpecial for the 2-arg rebase form (rebase <upstream> <branch>) which
+            // operates on a non-current branch and is not supported by VcsBackend.rebase().
+            await gitSpecial(["rebase", targetBranch, branchName], this.projectPath);
           } catch (err: unknown) {
             const errMsg = err instanceof Error ? err.message : String(err);
             if (errMsg.includes("already used by worktree") || errMsg.includes("is already checked out")) {
@@ -561,12 +586,12 @@ export class Refinery {
           }
 
           // Return to target branch regardless
-          try { await git(["checkout", targetBranch], this.projectPath); } catch { /* best effort */ }
+          try { await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch); } catch { /* best effort */ }
 
           if (!rebaseOk) {
             // Restore stash before bailing out so working directory stays clean
             if (stashedBeforeRebase) {
-              try { await git(["stash", "pop"], this.projectPath); } catch { /* best effort */ }
+              try { await gitSpecial(["stash", "pop"], this.projectPath); } catch { /* best effort */ }
             }
             // Add failure note before resetting so the bead records why it was reset
             await this.addFailureNote(
@@ -593,13 +618,13 @@ export class Refinery {
         // Restore any stash we created before the rebase (working dir should be clean after
         // a successful rebase, but pop defensively to avoid losing the stash entry)
         if (stashedBeforeRebase) {
-          try { await git(["stash", "pop"], this.projectPath); } catch { /* best effort — may be empty */ }
+          try { await gitSpecial(["stash", "pop"], this.projectPath); } catch { /* best effort — may be empty */ }
         }
 
         // Save pre-merge HEAD so we can revert merge + archive if tests fail
-        const preMergeHead = await git(["rev-parse", "HEAD"], this.projectPath);
+        const preMergeHead = await this.vcsBackend.getHeadId(this.projectPath);
 
-        const result = await mergeWorktree(this.projectPath, branchName, targetBranch);
+        const result = await this.vcsBackend.merge(this.projectPath, branchName, targetBranch);
 
         if (!result.success) {
           const allConflicts = result.conflicts ?? [];
@@ -609,7 +634,7 @@ export class Refinery {
           if (codeConflicts.length > 0) {
             // Real code conflicts — abort merge and create PR instead
             try {
-              await git(["merge", "--abort"], this.projectPath);
+              await gitSpecial(["merge", "--abort"], this.projectPath);
             } catch {
               // merge --abort may fail if already clean
             }
@@ -641,10 +666,10 @@ export class Refinery {
 
           // Only report-file conflicts — auto-resolve by accepting the branch version
           for (const f of reportConflicts) {
-            await git(["checkout", "--theirs", f], this.projectPath);
-            await git(["add", "-f", f], this.projectPath);
+            await gitSpecial(["checkout", "--theirs", f], this.projectPath);
+            await gitSpecial(["add", "-f", f], this.projectPath);
           }
-          await git(["commit", "--no-edit"], this.projectPath);
+          await gitSpecial(["commit", "--no-edit"], this.projectPath);
         }
 
         // Merge succeeded — archive report files so they don't conflict with next merge
@@ -656,7 +681,7 @@ export class Refinery {
 
           if (!testResult.ok) {
             // Revert the merge + archive commits
-            await git(["reset", "--hard", preMergeHead], this.projectPath);
+            await gitSpecial(["reset", "--hard", preMergeHead], this.projectPath);
 
             // Add failure note before resetting so the bead records why it was reset
             await this.addFailureNote(
@@ -698,7 +723,7 @@ export class Refinery {
             // Archive is best-effort — don't block worktree removal
           }
           try {
-            await removeWorktree(this.projectPath, run.worktree_path);
+            await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
           } catch {
             // Non-fatal — worktree may already be gone
           }
@@ -806,17 +831,18 @@ export class Refinery {
     }
 
     // strategy === 'theirs' — attempt merge with -X theirs
-    const targetBranch = opts?.targetBranch ?? await detectDefaultBranch(this.projectPath);
+    const targetBranch = opts?.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
 
     try {
-      await git(["checkout", targetBranch], this.projectPath);
-      await git(["merge", branchName, "--no-ff", "-X", "theirs"], this.projectPath);
+      await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
+      // Use gitSpecial for -X theirs merge strategy (not supported by VcsBackend.merge())
+      await gitSpecial(["merge", branchName, "--no-ff", "-X", "theirs"], this.projectPath);
     } catch (err: unknown) {
       // Merge failed — abort to leave repo in a clean state
       try {
-        await git(["merge", "--abort"], this.projectPath);
+        await gitSpecial(["merge", "--abort"], this.projectPath);
       } catch {
         // merge --abort may fail if there is nothing to abort
       }
@@ -843,7 +869,7 @@ export class Refinery {
 
       if (!testResult.ok) {
         // Revert the merge
-        await git(["reset", "--hard", "HEAD~1"], this.projectPath);
+        await gitSpecial(["reset", "--hard", "HEAD~1"], this.projectPath);
 
         // Reset seed to open so it can be retried
         enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
@@ -870,7 +896,7 @@ export class Refinery {
         // Archive is best-effort — don't block worktree removal
       }
       try {
-        await removeWorktree(this.projectPath, run.worktree_path);
+        await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
       } catch {
         // Non-fatal
       }
@@ -922,7 +948,7 @@ export class Refinery {
     draft?: boolean;
     projectId?: string;
   }): Promise<PrReport> {
-    const baseBranch = opts?.baseBranch ?? await detectDefaultBranch(this.projectPath);
+    const baseBranch = opts?.baseBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
     const draft = opts?.draft ?? false;
 
     const completedRuns = this.store.getRunsByStatus("completed", opts?.projectId);
@@ -935,7 +961,7 @@ export class Refinery {
 
       try {
         // Push branch to origin
-        await git(["push", "-u", "origin", branchName], this.projectPath);
+        await this.vcsBackend.push(this.projectPath, branchName);
 
         // Build PR title and body
         const title = `${run.seed_id}: ${branchName.replace("foreman/", "")}`;
@@ -956,7 +982,7 @@ export class Refinery {
         // Get commit log for the PR body
         let commitLog = "";
         try {
-          commitLog = await git(
+          commitLog = await gitSpecial(
             ["log", `${baseBranch}..${branchName}`, "--oneline"],
             this.projectPath,
           );
@@ -1000,6 +1026,9 @@ export class Refinery {
           branchName,
           prUrl,
         });
+
+        // Suppress unused variable warning for `title`
+        void title;
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         this.store.logEvent(
@@ -1153,17 +1182,17 @@ export async function preserveBeadChanges(
     // Write temp patch
     writeFileSync(tmpPatchPath, patchContent);
 
-    // Apply the patch to the index
+    // Apply the patch to the index (gitSpecial: git apply not in VcsBackend)
     try {
-      await git(["apply", "--index", tmpPatchPath], projectPath);
+      await gitSpecial(["apply", "--index", tmpPatchPath], projectPath);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       return { preserved: false, error: `MQ-019: ${message}` };
     }
 
-    // Commit the seed changes
+    // Commit the seed changes (gitSpecial: need specific message format)
     const seedId = branchName.replace(/^foreman\//, "");
-    await git(
+    await gitSpecial(
       ["commit", "-m", `chore: preserve seed changes from ${seedId}`],
       projectPath,
     );

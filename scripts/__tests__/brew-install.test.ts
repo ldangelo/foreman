@@ -330,8 +330,33 @@ describe("foreman brew install — live binary tests", () => {
         "  [brew] Skipping live tests: foreman not installed via brew.\n" +
         "  Install with: brew tap oftheangels/tap && brew install foreman"
       );
-    } else {
-      console.log(`  [brew] Found brew-installed foreman at: ${binaryPath}`);
+      return;
+    }
+
+    console.log(`  [brew] Found brew-installed foreman at: ${binaryPath}`);
+
+    // Smoke test: verify the binary is actually functional before running live
+    // tests. A dev environment may have an `npm link` symlink at the Homebrew
+    // bin path pointing to a local repo with a stale or absent dist build.
+    // In that case, the binary exits with "foreman is not built" — we treat it
+    // the same as "not found" so the live tests are skipped rather than failed.
+    const smokeResult = spawnSync(binaryPath, ["--version"], {
+      encoding: "utf-8",
+      timeout: 15_000,
+    });
+    const smokeOutput = (smokeResult.stdout ?? "") + (smokeResult.stderr ?? "");
+    if (
+      smokeResult.status !== 0 ||
+      smokeOutput.includes("foreman is not built") ||
+      smokeOutput.includes("not built")
+    ) {
+      console.warn(
+        `  [brew] Skipping live tests: binary found at ${binaryPath} but not functional.\n` +
+        `  This usually means the binary is a development symlink pointing to an unbuilt dist.\n` +
+        `  Run 'npm run build' in the foreman repo, or install via: brew tap oftheangels/tap && brew install foreman`
+      );
+      binaryPath = null;
+      return;
     }
   });
 

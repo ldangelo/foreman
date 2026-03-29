@@ -17,12 +17,12 @@ import { writeFileSync, renameSync, existsSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { homedir } from "node:os";
 import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import { enqueueSetBeadStatus } from "./task-backend-ops.js";
 import { detectDefaultBranch as _detectDefaultBranch } from "../lib/git.js"; // reserved for future use
+import type { VcsBackend } from "../lib/vcs/index.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -85,22 +85,22 @@ function log(msg: string): void {
 // ── finalize ──────────────────────────────────────────────────────────────────
 
 /**
- * Run git finalization: add, commit, push, and enqueue for merge.
+ * Run VCS finalization: stage, commit, push, and enqueue for merge.
  *
- * Uses execFileSync for safety — no shell interpolation.
+ * Uses VcsBackend for all VCS operations — no direct execFileSync git calls.
  *
- * @returns `{ success: true, retryable: true }` when the git push succeeded;
+ * @returns `{ success: true, retryable: true }` when the push succeeded;
  *          `{ success: false, retryable: true }` for transient push failures;
  *          `{ success: false, retryable: false }` for deterministic failures
  *          (e.g. diverged history that could not be rebased via pull --rebase).
  */
-export async function finalize(config: FinalizeConfig, logFile: string): Promise<FinalizeResult> {
+export async function finalize(config: FinalizeConfig, logFile: string, vcs: VcsBackend): Promise<FinalizeResult> {
   const { seedId, seedTitle, worktreePath } = config;
   // `storeProjectPath` is used only to open the SQLite store for the merge
   // queue — it must never be undefined, so we fall back to worktreePath/../..
   // (the conventional repo root for a worktree at <root>/.foreman-worktrees/<id>).
   const storeProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
-  const opts = { cwd: worktreePath, stdio: "pipe" as const, timeout: PIPELINE_TIMEOUTS.gitOperationMs };
+  const buildOpts = { cwd: worktreePath, stdio: "pipe" as const, timeout: 60_000 };
 
   const report: string[] = [
     `# Finalize Report: ${seedTitle}`,
@@ -111,7 +111,6 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
   ];
 
   // Bug scan (pre-commit type check) — 60 s timeout to handle TypeScript cold-start
-  const buildOpts = { ...opts, timeout: 60_000 };
   try {
     execFileSync("npx", ["tsc", "--noEmit"], buildOpts);
     log(`[FINALIZE] Type check passed`);
@@ -129,12 +128,12 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     report.push(`## Build / Type Check`, `- Status: FAILED`, `- Errors:`, "```", detail, "```", "");
   }
 
-  // Commit
+  // Commit — use VcsBackend.stageAll() + VcsBackend.commit() + VcsBackend.getHeadId()
   let commitHash = "(none)";
   try {
-    execFileSync("git", ["add", "-A"], opts);
-    execFileSync("git", ["commit", "-m", `${seedTitle} (${seedId})`], opts);
-    commitHash = execFileSync("git", ["rev-parse", "--short", "HEAD"], opts).toString().trim();
+    await vcs.stageAll(worktreePath);
+    await vcs.commit(worktreePath, `${seedTitle} (${seedId})`);
+    commitHash = await vcs.getHeadId(worktreePath);
     log(`[FINALIZE] Committed ${commitHash}`);
     report.push(`## Commit`, `- Status: SUCCESS`, `- Hash: ${commitHash}`, "");
   } catch (err: unknown) {
@@ -151,17 +150,15 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
 
   // Branch Verification — ensure we're on the correct branch before pushing.
   // Worktrees can end up in detached HEAD or on a wrong branch (e.g. after a
-  // failed rebase or manual intervention), causing `git push foreman/<seedId>`
-  // to fail with "src refspec does not match any".
+  // failed rebase or manual intervention), causing push to fail with
+  // "src refspec does not match any".
   const expectedBranch = `foreman/${seedId}`;
   let branchVerified = false;
   try {
-    const currentBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], opts)
-      .toString()
-      .trim();
+    const currentBranch = await vcs.getCurrentBranch(worktreePath);
     if (currentBranch !== expectedBranch) {
       log(`[FINALIZE] Branch mismatch: on '${currentBranch}', expected '${expectedBranch}' — attempting checkout`);
-      execFileSync("git", ["checkout", expectedBranch], opts);
+      await vcs.checkoutBranch(worktreePath, expectedBranch);
       log(`[FINALIZE] Checked out ${expectedBranch}`);
       report.push(
         `## Branch Verification`,
@@ -195,7 +192,7 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
 
   // Enqueue to merge queue BEFORE push — source-of-truth write.
   //
-  // Writing the queue entry BEFORE git push eliminates the crash window where
+  // Writing the queue entry BEFORE push eliminates the crash window where
   // the push succeeded but the agent died before enqueue() ran. With this order:
   //   - If the agent crashes after enqueue but before push: entry exists in
   //     'pending' state; on re-dispatch the agent will push the branch and
@@ -207,6 +204,25 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
   //
   // Fire-and-forget semantics are preserved: an enqueue failure is non-fatal.
   if (branchVerified) {
+    // Pre-compute modified files using VcsBackend.diff() (async) so we can pass
+    // a synchronous closure to enqueueToMergeQueue.
+    let modifiedFiles: string[] = [];
+    try {
+      // Get list of files changed between main and HEAD via unified diff,
+      // then parse out just the filenames from "diff --git a/... b/..." headers.
+      const diffOutput = await vcs.diff(worktreePath, "main", "HEAD");
+      modifiedFiles = diffOutput
+        .split("\n")
+        .filter(l => l.startsWith("diff --git "))
+        .map(l => {
+          const match = /^diff --git a\/(.+) b\//.exec(l);
+          return match ? match[1] : "";
+        })
+        .filter(Boolean);
+    } catch {
+      // Non-fatal — proceed with empty list
+    }
+
     try {
       const enqueueStore = ForemanStore.forProject(storeProjectPath);
       const enqueueResult = enqueueToMergeQueue({
@@ -214,10 +230,7 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
         seedId,
         runId: config.runId,
         worktreePath,
-        getFilesModified: () => {
-          const output = execFileSync("git", ["diff", "--name-only", "main...HEAD"], opts).toString().trim();
-          return output ? output.split("\n") : [];
-        },
+        getFilesModified: () => modifiedFiles,
       });
       enqueueStore.close();
 
@@ -239,7 +252,7 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
   //
   // Non-fast-forward errors are deterministic (diverged history) and will
   // always fail on retry unless the local branch is rebased onto the remote.
-  // Attempting git pull --rebase here resolves the common case where origin
+  // Attempting fetch + rebase here resolves the common case where origin
   // received a commit (e.g. from a previous partial run) while the worktree
   // continued on a different history.  If the rebase itself fails (real
   // conflicts), we return retryable=false so the caller does NOT reset the
@@ -251,7 +264,7 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
     report.push(`## Push`, `- Status: SKIPPED (branch verification failed)`, "");
   } else {
     try {
-      execFileSync("git", ["push", "-u", "origin", expectedBranch], opts);
+      await vcs.push(worktreePath, expectedBranch);
       log(`[FINALIZE] Pushed to origin`);
       report.push(`## Push`, `- Status: SUCCESS`, `- Branch: ${expectedBranch}`, "");
       pushSucceeded = true;
@@ -265,17 +278,31 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
         pushMsg.includes("fetch first");
 
       if (isNonFastForward) {
-        log(`[FINALIZE] Push rejected (non-fast-forward) — attempting git pull --rebase`);
+        log(`[FINALIZE] Push rejected (non-fast-forward) — attempting fetch + rebase`);
         await appendFile(logFile, `[FINALIZE] Push rejected (non-fast-forward): ${pushMsg}\n`);
         report.push(`## Push`, `- Status: REJECTED (non-fast-forward) — attempting rebase`, "");
 
-        // Attempt rebase. A failed rebase is deterministic — do NOT reset seed to open.
+        // Attempt fetch + rebase. A failed rebase is deterministic — do NOT reset seed to open.
         let rebaseSucceeded = false;
         try {
-          execFileSync("git", ["pull", "--rebase", "origin", expectedBranch], opts);
-          log(`[FINALIZE] Rebase succeeded — retrying push`);
-          report.push(`## Rebase`, `- Status: SUCCESS`, "");
-          rebaseSucceeded = true;
+          await vcs.fetch(worktreePath);
+          const rebaseResult = await vcs.rebase(worktreePath, `origin/${expectedBranch}`);
+          if (rebaseResult.success) {
+            log(`[FINALIZE] Rebase succeeded — retrying push`);
+            report.push(`## Rebase`, `- Status: SUCCESS`, "");
+            rebaseSucceeded = true;
+          } else {
+            const conflictList = rebaseResult.conflictingFiles?.join(", ") ?? "";
+            const detail = conflictList ? `conflicts in: ${conflictList}` : "rebase conflict";
+            log(`[FINALIZE] Rebase failed: ${detail}`);
+            await appendFile(logFile, `[FINALIZE] Rebase conflict: ${detail}\n`);
+            report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${detail.slice(0, 300)}`, "");
+            report.push(`## Push`, `- Status: FAILED (rebase could not resolve diverged history)`, "");
+            // Abort any partial rebase to leave the worktree clean
+            try { await vcs.abortRebase(worktreePath); } catch { /* already clean */ }
+            // Deterministic failure — do NOT reset seed to open (prevents infinite loop)
+            pushRetryable = false;
+          }
         } catch (rebaseErr: unknown) {
           const rebaseMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
           log(`[FINALIZE] Rebase failed: ${rebaseMsg.slice(0, 200)}`);
@@ -283,7 +310,7 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
           report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${rebaseMsg.slice(0, 300)}`, "");
           report.push(`## Push`, `- Status: FAILED (rebase could not resolve diverged history)`, "");
           // Abort any partial rebase to leave the worktree clean
-          try { execFileSync("git", ["rebase", "--abort"], opts); } catch { /* already clean */ }
+          try { await vcs.abortRebase(worktreePath); } catch { /* already clean */ }
           // Deterministic failure — do NOT reset seed to open (prevents infinite loop)
           pushRetryable = false;
         }
@@ -292,7 +319,7 @@ export async function finalize(config: FinalizeConfig, logFile: string): Promise
         // as transient (retryable=true) — it is distinct from a rebase conflict.
         if (rebaseSucceeded) {
           try {
-            execFileSync("git", ["push", "-u", "origin", expectedBranch], opts);
+            await vcs.push(worktreePath, expectedBranch);
             log(`[FINALIZE] Pushed to origin (after rebase)`);
             report.push(`## Push`, `- Status: SUCCESS (after rebase)`, `- Branch: ${expectedBranch}`, "");
             pushSucceeded = true;

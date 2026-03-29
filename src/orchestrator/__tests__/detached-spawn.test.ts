@@ -1,18 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
-import { mkdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { spawn, execFileSync } from "node:child_process";
-
-const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
-const TSX_BIN = join(PROJECT_ROOT, "node_modules", ".bin", "tsx");
+import { spawn } from "node:child_process";
 
 /**
  * Integration test: verify that a detached child process survives
  * the parent process exiting.
  *
  * This is the core guarantee of foreman-azo — agents must survive Ctrl+C.
+ *
+ * NOTE: We use plain `node` (not tsx) for child scripts to avoid the 2-3s
+ * tsx startup overhead which causes flaky failures under full-suite load.
  */
 describe("detached process survival", () => {
   let tmpDir: string;
@@ -37,24 +42,42 @@ describe("detached process survival", () => {
     }
   });
 
+  /** Poll until predicate returns true or timeout elapses. */
+  async function waitFor(
+    predicate: () => boolean,
+    timeoutMs = 10_000,
+    pollMs = 100
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return true;
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+    return predicate();
+  }
+
   it("detached child process writes a file after parent exits", async () => {
-    // Write a small script that sleeps 1s then writes a marker file.
+    // Write a small CJS script (no tsx needed — plain node is much faster to start).
+    // The child sleeps briefly then writes a marker file.
     // We spawn it detached, unref it, and exit our "parent" wrapper.
     // After a short wait, the marker file should exist.
     const markerFile = join(tmpDir, "child-was-here.txt");
-    const childScript = join(tmpDir, "child.ts");
+    const childScript = join(tmpDir, "child.cjs");
 
-    writeFileSync(childScript, `
-      import { writeFileSync } from "node:fs";
-      // Small delay to ensure parent has exited
-      setTimeout(() => {
-        writeFileSync("${markerFile.replace(/\\/g, "\\\\")}", "alive", "utf-8");
-        process.exit(0);
-      }, 200);
-    `);
+    writeFileSync(
+      childScript,
+      `
+const { writeFileSync } = require("node:fs");
+// Small delay to ensure parent has exited
+setTimeout(() => {
+  writeFileSync(${JSON.stringify(markerFile)}, "alive", "utf-8");
+  process.exit(0);
+}, 200);
+    `.trim()
+    );
 
     // Spawn the child as detached + unref (same as spawnWorkerProcess)
-    const child = spawn(TSX_BIN, [childScript], {
+    const child = spawn(process.execPath, [childScript], {
       detached: true,
       stdio: "ignore",
       cwd: tmpDir,
@@ -64,12 +87,13 @@ describe("detached process survival", () => {
       spawnedPids.push(child.pid);
     }
 
-    // At this point, if we were in a separate parent process, it could exit.
-    // The child should still run independently.
+    expect(child.pid).toBeDefined();
 
-    // Wait for the child to complete its work (tsx startup can take 2-3s under load)
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    // Poll until the marker file appears (or 10s timeout).
+    // Polling is more robust than a fixed wait because it adapts to system load.
+    const appeared = await waitFor(() => existsSync(markerFile), 10_000);
 
+    expect(appeared).toBe(true);
     expect(existsSync(markerFile)).toBe(true);
     expect(readFileSync(markerFile, "utf-8")).toBe("alive");
   });
@@ -78,19 +102,26 @@ describe("detached process survival", () => {
     // This simulates what happens when a user presses Ctrl+C:
     // SIGINT is sent to the foreground process group. Detached children
     // are in their own process group and should NOT receive the signal.
+    //
+    // We verify that:
+    //   1. The child is spawned in its own process group (child.pid defined)
+    //   2. The child completes its work independently of the parent
     const markerFile = join(tmpDir, "survived-sigint.txt");
-    const childScript = join(tmpDir, "child-sigint.ts");
+    const childScript = join(tmpDir, "child-sigint.cjs");
 
-    writeFileSync(childScript, `
-      import { writeFileSync } from "node:fs";
-      // Write marker after 1s
-      setTimeout(() => {
-        writeFileSync("${markerFile.replace(/\\/g, "\\\\")}", "survived", "utf-8");
-        process.exit(0);
-      }, 1000);
-    `);
+    writeFileSync(
+      childScript,
+      `
+const { writeFileSync } = require("node:fs");
+// Write marker after a short delay
+setTimeout(() => {
+  writeFileSync(${JSON.stringify(markerFile)}, "survived", "utf-8");
+  process.exit(0);
+}, 500);
+    `.trim()
+    );
 
-    const child = spawn(TSX_BIN, [childScript], {
+    const child = spawn(process.execPath, [childScript], {
       detached: true,
       stdio: "ignore",
       cwd: tmpDir,
@@ -102,13 +133,12 @@ describe("detached process survival", () => {
 
     // The child is in its own process group (detached: true).
     // Sending SIGINT to OUR process group won't affect it.
-    // We can't easily send SIGINT to our own group in a test,
-    // but we can verify the child's process group is different.
     expect(child.pid).toBeDefined();
 
-    // Wait for child to finish
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // Poll until the marker file appears (or 10s timeout).
+    const appeared = await waitFor(() => existsSync(markerFile), 10_000);
 
+    expect(appeared).toBe(true);
     expect(existsSync(markerFile)).toBe(true);
     expect(readFileSync(markerFile, "utf-8")).toBe("survived");
   });

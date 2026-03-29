@@ -7,6 +7,22 @@ import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { MonitorReport } from "./types.js";
 import { PIPELINE_LIMITS } from "../lib/config.js";
 
+// ── Hung session detection types ─────────────────────────────────────────
+
+export interface HungSessionInfo {
+  runId: string;
+  seedId: string;
+  worktreePath: string | null;
+  currentPhase: string | null;
+  lastActivity: string | null;
+  staleMins: number;
+}
+
+export interface HungSessionReport {
+  hung: HungSessionInfo[];
+  checked: number;
+}
+
 /**
  * Pipeline artifact filenames written by each phase.
  * Used to detect which phases have already completed when recovering a stuck run.
@@ -147,6 +163,67 @@ export class Monitor {
     }
 
     return report;
+  }
+
+  /**
+   * Detect sessions that appear to be hung waiting on a Pi SDK API response.
+   *
+   * A session is considered hung when its `lastActivity` timestamp in run progress
+   * has not been updated for more than `hangThresholdMinutes` (default 10 min).
+   * This catches cases where the Pi SDK awaits an API response that never returns
+   * (rate limits, network timeouts) — the process stays alive at 0% CPU.
+   *
+   * Detected hung runs are marked as `stuck` in the store.
+   */
+  async detectHungSessions(opts?: {
+    hangThresholdMinutes?: number;
+    projectId?: string;
+  }): Promise<HungSessionReport> {
+    const threshold = (opts?.hangThresholdMinutes ?? 10) * 60 * 1000; // ms
+    const activeRuns = this.store.getActiveRuns(opts?.projectId);
+    const now = Date.now();
+    const hung: HungSessionInfo[] = [];
+
+    for (const run of activeRuns) {
+      // Only check runs that are actually running (not just pending)
+      if (run.status !== "running") continue;
+
+      const progress = this.store.getRunProgress(run.id);
+      if (!progress?.lastActivity) continue;
+
+      const lastActivityMs = new Date(progress.lastActivity).getTime();
+      const staleMins = (now - lastActivityMs) / (1000 * 60);
+      const staleMs = now - lastActivityMs;
+
+      if (staleMs > threshold) {
+        const info: HungSessionInfo = {
+          runId: run.id,
+          seedId: run.seed_id,
+          worktreePath: run.worktree_path,
+          currentPhase: progress.currentPhase ?? null,
+          lastActivity: progress.lastActivity,
+          staleMins: Math.round(staleMins),
+        };
+        hung.push(info);
+
+        // Mark as stuck with a descriptive note
+        this.store.updateRun(run.id, { status: "stuck" });
+        this.store.logEvent(
+          run.project_id,
+          "stuck",
+          {
+            seedId: run.seed_id,
+            reason: "hung_api_session",
+            currentPhase: progress.currentPhase ?? null,
+            lastActivity: progress.lastActivity,
+            staleMins: Math.round(staleMins),
+          },
+          run.id,
+        );
+      }
+    }
+
+    return { hung, checked: activeRuns.length };
   }
 
   /**

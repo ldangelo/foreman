@@ -5,6 +5,14 @@
 #
 # Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
 # Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
+#
+# Optional: specify VCS backend for this workflow.
+# Overrides project-level .foreman/config.yaml if set.
+# Values: 'auto' (detect from repo), 'git', 'jujutsu'.
+# When absent, project config or auto-detection is used.
+#
+# vcs:
+#   backend: auto
 name: default
 setup:
   - command: npm install --prefer-offline --no-audit
@@ -13,6 +21,8 @@ setup:
 setupCache:
   key: package-lock.json
   path: node_modules
+rebaseAfterPhase: developer
+
 phases:
   - name: explorer
     prompt: explorer.md
@@ -85,3 +95,12 @@ phases:
       onStart: true
       onComplete: true
       onFail: developer
+
+onFailure:
+  name: troubleshooter
+  prompt: troubleshooter.md
+  models:
+    default: sonnet
+    P0: opus
+  maxTurns: 20
+  artifact: TROUBLESHOOT_REPORT.md

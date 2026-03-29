@@ -96,6 +96,8 @@ export function renderEventLine(event: Event): string {
       if (parsed.phase) parts.push(`phase:${parsed.phase}`);
       if (parsed.title && parsed.title !== parsed.seedId) parts.push(String(parsed.title));
       if (parsed.reason) parts.push(String(parsed.reason).slice(0, 60));
+      if (parsed.branch) parts.push(`branch:${parsed.branch}`);
+      if (parsed.commitHash) parts.push(String(parsed.commitHash).slice(0, 8));
       if (parts.length > 0) detail = ` — ${parts.join(" ")}`;
     } catch {
       detail = ` — ${event.details.slice(0, 60)}`;

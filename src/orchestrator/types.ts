@@ -4,7 +4,7 @@ export type RuntimeSelection = "claude-code";
 
 export type ModelSelection = "anthropic/claude-opus-4-6" | "anthropic/claude-sonnet-4-6" | "anthropic/claude-haiku-4-5";
 
-export type AgentRole = "lead" | "explorer" | "developer" | "qa" | "reviewer" | "finalize" | "worker" | "sentinel";
+export type AgentRole = "lead" | "explorer" | "developer" | "qa" | "reviewer" | "finalize" | "worker" | "sentinel" | "troubleshooter";
 
 export type Priority = "critical" | "high" | "medium" | "low";
 

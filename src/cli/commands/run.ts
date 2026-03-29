@@ -8,7 +8,7 @@ import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
-import { getRepoRoot, getCurrentBranch, checkoutBranch } from "../../lib/git.js";
+import { getRepoRoot, getCurrentBranch, checkoutBranch, detectDefaultBranch } from "../../lib/git.js";
 import { extractBranchLabel } from "../../lib/branch-label.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js";
@@ -337,6 +337,41 @@ export const runCommand = new Command("run")
         }
       }
 
+      // ── Target branch confirmation ──────────────────────────────────────────
+      // When the current branch differs from the detected default branch (e.g.
+      // working on a feature branch instead of dev/main), confirm with the user
+      // that agent worktrees and merges should target the current branch.
+      // The confirmed targetBranch is threaded through to autoMerge and workers.
+      let targetBranch: string | undefined;
+      if (!dryRun) {
+        try {
+          const cb = await getCurrentBranch(projectPath);
+          const db = await detectDefaultBranch(projectPath);
+          if (cb !== db) {
+            const question = chalk.yellow(
+              `\nYou are on branch ${chalk.green(cb)}, ` +
+              `which differs from the default branch ${chalk.cyan(db)}.\n` +
+              `Agent work will be branched from and merged into ${chalk.green(cb)}.\n` +
+              `Continue? [Y/n] `,
+            );
+            const confirmed = await promptYesNo(question);
+            if (!confirmed) {
+              console.log(
+                chalk.dim(`Aborted. Switch to ${db} or the desired target branch and re-run.`),
+              );
+              stopSentinel();
+              store.close();
+              await notifyServer.stop().catch(() => { /* ignore */ });
+              process.exit(1);
+            }
+            targetBranch = cb;
+            console.log(chalk.green(`Target branch: ${cb}`));
+          }
+        } catch {
+          // Non-fatal: if branch detection fails, fall back to default behavior
+        }
+      }
+
       /**
        * Build the auto-dispatch callback passed to watchRunsInk.
        * Called when an agent completes mid-watch and capacity may be available.
@@ -354,6 +389,7 @@ export const runCommand = new Command("run")
               skipReview,
               seedId: beadFilter,
               notifyUrl,
+              targetBranch,
             });
             return newResult.dispatched.map((t) => t.runId);
           }
@@ -423,7 +459,7 @@ export const runCommand = new Command("run")
       // drains here provide an additional safety net.
       if (!dryRun && project) {
         try {
-          const startupMerge = await autoMerge({ store, taskClient, projectPath });
+          const startupMerge = await autoMerge({ store, taskClient, projectPath, targetBranch });
           if (startupMerge.merged > 0) {
             console.log(chalk.green(`[startup] Merged ${startupMerge.merged} previously completed branch(es).`));
           }
@@ -460,6 +496,7 @@ export const runCommand = new Command("run")
           skipReview,
           seedId: beadFilter,
           notifyUrl,
+          targetBranch,
         });
 
         // Print dispatched tasks
@@ -510,7 +547,7 @@ export const runCommand = new Command("run")
             {
               console.log(chalk.dim("Auto-merging completed branches..."));
               try {
-                const mergeResult = await autoMerge({ store, taskClient, projectPath });
+                const mergeResult = await autoMerge({ store, taskClient, projectPath, targetBranch });
                 if (mergeResult.merged > 0) {
                   console.log(chalk.green(`  Auto-merged ${mergeResult.merged} branch(es).`));
                 }
@@ -589,7 +626,7 @@ export const runCommand = new Command("run")
           {
             console.log(chalk.dim("Auto-merging completed branches..."));
             try {
-              const mergeResult = await autoMerge({ store, taskClient, projectPath });
+              const mergeResult = await autoMerge({ store, taskClient, projectPath, targetBranch });
               if (mergeResult.merged > 0) {
                 console.log(chalk.green(`  Auto-merged ${mergeResult.merged} branch(es).`));
               }
@@ -631,7 +668,7 @@ export const runCommand = new Command("run")
       if (!dryRun && !userDetached) {
         console.log(chalk.dim("Processing remaining merge queue entries..."));
         try {
-          const mergeResult = await autoMerge({ store, taskClient, projectPath });
+          const mergeResult = await autoMerge({ store, taskClient, projectPath, targetBranch });
           if (mergeResult.merged > 0 || mergeResult.conflicts > 0 || mergeResult.failed > 0) {
             if (mergeResult.merged > 0) {
               console.log(chalk.green(`  Auto-merged ${mergeResult.merged} branch(es).`));

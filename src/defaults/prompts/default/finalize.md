@@ -38,9 +38,12 @@ Run `npm ci` to perform a clean, deterministic dependency install. If it fails, 
 Run `npx tsc --noEmit` to check for type errors. If it fails, log the error in FINALIZE_REPORT.md and continue — do not stop.
 
 ### Step 3: Stage all files (excluding diagnostic artifacts)
-Run:
+Run the stage command (skip if empty — some backends auto-stage):
 ```
-git add -A
+{{vcsStageCommand}}
+```
+Then exclude diagnostic artifacts that cause merge conflicts:
+```
 git reset HEAD SESSION_LOG.md RUN_LOG.md 2>/dev/null || true
 ```
 SESSION_LOG.md and RUN_LOG.md are diagnostic artifacts that cause merge conflicts when multiple pipelines run concurrently. They remain in the worktree for debugging but are excluded from the commit.
@@ -48,10 +51,18 @@ SESSION_LOG.md and RUN_LOG.md are diagnostic artifacts that cause merge conflict
 ### Step 4: Commit
 Run:
 ```
-git commit -m "{{seedTitle}} ({{seedId}})"
+{{vcsCommitCommand}}
 ```
 
-If git reports "nothing to commit", check whether this is a verification/test bead:
+If git reports "nothing to commit", first check if the branch already has commits ahead of the target:
+```
+git log origin/{{baseBranch}}..HEAD --oneline 2>/dev/null || git log {{baseBranch}}..HEAD --oneline 2>/dev/null || git log origin/dev..HEAD --oneline
+```
+(Try `origin/{{baseBranch}}` first; if that ref doesn't exist, fall back to the local branch or `origin/dev`.)
+
+**If there ARE commits ahead** (output is non-empty), the work was already committed in a previous run. This is normal for reused worktrees. Proceed to Step 5 (Verify branch) — no mail needed.
+
+**If there are NO commits ahead** (output is empty), check whether this is a verification/test bead:
 - Bead type is `{{seedType}}`
 - Bead title is `{{seedTitle}}`
 
@@ -62,7 +73,7 @@ No changes is the correct and expected outcome for a verification bead. Treat th
 ```
 Then proceed to Step 5 (Verify branch).
 
-**Otherwise (non-verification bead):**
+**Otherwise (non-verification bead with no commits at all):**
 Send this mail and stop immediately:
 ```
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"nothing_to_commit"}'
@@ -71,7 +82,7 @@ Send this mail and stop immediately:
 ### Step 5: Verify branch
 Check the current branch:
 ```
-git rev-parse --abbrev-ref HEAD
+{{vcsBranchVerifyCommand}}
 ```
 If the output is NOT `foreman/{{seedId}}`, check it out:
 ```
@@ -81,8 +92,7 @@ git checkout foreman/{{seedId}}
 ### Step 6: Rebase onto target branch
 Always rebase before pushing so the branch is up-to-date with the target branch. This ensures the refinery can fast-forward merge without conflicts.
 ```
-git fetch origin
-git rebase origin/{{baseBranch}}
+{{vcsRebaseCommand}}
 ```
 
 **If the rebase has conflicts**, run `git rebase --abort` to clean up, then send an error and stop:
@@ -134,7 +144,7 @@ Then write `FINALIZE_VALIDATION.md` in the worktree root:
 ### Step 8: Push to origin
 Run:
 ```
-git push -u origin foreman/{{seedId}}
+{{vcsPushCommand}}
 ```
 
 **If the push fails for any reason**, send an error and stop:

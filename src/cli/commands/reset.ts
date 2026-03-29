@@ -4,7 +4,7 @@ import chalk from "chalk";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
-import { getRepoRoot, getCurrentBranch } from "../../lib/git.js";
+import { getRepoRoot, getCurrentBranch, checkoutBranch, detectDefaultBranch } from "../../lib/git.js";
 import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
 import { existsSync, readdirSync } from "node:fs";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
@@ -26,6 +26,251 @@ export type { StateMismatch } from "../../lib/run-status.js";
 export interface IShowUpdateClient {
   show(id: string): Promise<{ status: string }>;
   update(id: string, opts: UpdateOptions): Promise<void>;
+}
+
+// ── Stale-branch detection types ─────────────────────────────────────────────
+
+/**
+ * Signature for an injected async execFile function.
+ * Matches node:child_process.promisify(execFile) but can be swapped in tests.
+ */
+export type ExecFileAsyncFn = (
+  cmd: string,
+  args: string[],
+  options?: { cwd?: string },
+) => Promise<{ stdout: string; stderr: string }>;
+
+/**
+ * Result of stale-branch analysis for a single completed run.
+ *
+ * - "close"  — branch is merged into target; bead should be closed.
+ * - "reset"  — branch not merged; bead should be reset to open for retry.
+ * - "skip"   — skipped (active MQ entry, active run, or already in reset set).
+ * - "error"  — an error occurred; see `error` field.
+ */
+export interface StaleBranchResult {
+  seedId: string;
+  runId: string;
+  branchName: string;
+  action: "close" | "reset" | "skip" | "error";
+  reason: string;
+  error?: string;
+}
+
+/** Aggregate output from `detectAndHandleStaleBranches()`. */
+export interface StaleBranchDetectionOutput {
+  results: StaleBranchResult[];
+  closed: number;
+  reset: number;
+  errors: string[];
+}
+
+// ── Git helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Count commits in `branchName` that are NOT in `targetBranch`.
+ * Returns 0 if the branch doesn't exist or on any error.
+ */
+export async function countCommitsAhead(
+  projectPath: string,
+  targetBranch: string,
+  branchName: string,
+  execFn?: ExecFileAsyncFn,
+): Promise<number> {
+  const fn = execFn ?? (await getDefaultExecFileAsync());
+  try {
+    const { stdout } = await fn(
+      "git",
+      ["rev-list", "--count", `${targetBranch}..${branchName}`],
+      { cwd: projectPath },
+    );
+    return parseInt(stdout.trim(), 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Check whether `branchName` is an ancestor of `targetBranch`
+ * (i.e., all of the branch's commits are reachable from the target).
+ * Returns false on any error.
+ */
+export async function isBranchMergedIntoTarget(
+  projectPath: string,
+  targetBranch: string,
+  branchName: string,
+  execFn?: ExecFileAsyncFn,
+): Promise<boolean> {
+  const fn = execFn ?? (await getDefaultExecFileAsync());
+  try {
+    await fn(
+      "git",
+      ["merge-base", "--is-ancestor", branchName, targetBranch],
+      { cwd: projectPath },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Lazily import and promisify node:child_process.execFile. */
+async function getDefaultExecFileAsync(): Promise<ExecFileAsyncFn> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  return promisify(execFile) as ExecFileAsyncFn;
+}
+
+// ── Stale-branch detection ────────────────────────────────────────────────────
+
+/**
+ * Detect and handle completed runs whose branches are stale or already merged.
+ *
+ * For each "completed" run (bead in "review" status):
+ * - If an active MQ entry (pending/merging) exists → skip (merge is in progress).
+ * - If the branch is merged into the target branch → action "close" (work landed).
+ * - If the branch is NOT merged (has commits ahead or is simply stale) → action
+ *   "reset" (work needs to be re-tried).
+ *
+ * Seeds in `skipSeedIds` (already being reset by the main loop) are skipped.
+ * Seeds with active (pending/running) dispatched runs are also skipped.
+ *
+ * When `dryRun` is false:
+ * - "close" → update bead to "closed", mark run as "reset"
+ * - "reset" → update bead to "open",   mark run as "reset"
+ * In both cases the MQ entry for the seed is removed so the run is not
+ * re-processed by the refinery.
+ */
+export async function detectAndHandleStaleBranches(
+  store: Pick<ForemanStore, "getRunsByStatus" | "getActiveRuns" | "updateRun">,
+  seeds: IShowUpdateClient,
+  mergeQueue: MergeQueue,
+  projectPath: string,
+  projectId: string,
+  skipSeedIds: ReadonlySet<string>,
+  opts?: {
+    dryRun?: boolean;
+    execFileAsync?: ExecFileAsyncFn;
+  },
+): Promise<StaleBranchDetectionOutput> {
+  const dryRun = opts?.dryRun ?? false;
+  const execFn = opts?.execFileAsync;
+
+  const completedRuns = store.getRunsByStatus("completed", projectId);
+
+  // Build a set of seed IDs that have active (pending/running) dispatched runs.
+  const activeRuns = store.getActiveRuns(projectId);
+  const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
+
+  // Deduplicate by seed_id: keep the most recently created run per seed.
+  const latestBySeed = new Map<string, Run>();
+  for (const run of completedRuns) {
+    if (skipSeedIds.has(run.seed_id)) continue;
+    if (activeSeedIds.has(run.seed_id)) continue;
+    const existing = latestBySeed.get(run.seed_id);
+    if (!existing || run.created_at > existing.created_at) {
+      latestBySeed.set(run.seed_id, run);
+    }
+  }
+
+  const results: StaleBranchResult[] = [];
+  let closed = 0;
+  let reset = 0;
+  const errors: string[] = [];
+
+  // Detect the target branch once (e.g. "dev" or "main") — used for all checks.
+  let targetBranch: string;
+  try {
+    targetBranch = await detectDefaultBranch(projectPath);
+  } catch {
+    targetBranch = "dev";
+  }
+
+  // Snapshot MQ entries once so we don't call list() in a tight loop.
+  const mqEntries = mergeQueue.list();
+  const activeMqSeedIds = new Set(
+    mqEntries
+      .filter((e) => e.status === "pending" || e.status === "merging")
+      .map((e) => e.seed_id),
+  );
+
+  for (const run of latestBySeed.values()) {
+    const branchName = `foreman/${run.seed_id}`;
+
+    // Skip if the merge is actively pending/in-progress — don't interrupt the refinery.
+    if (activeMqSeedIds.has(run.seed_id)) {
+      results.push({
+        seedId: run.seed_id,
+        runId: run.id,
+        branchName,
+        action: "skip",
+        reason: "active merge queue entry (pending or merging)",
+      });
+      continue;
+    }
+
+    try {
+      // Check if the branch's commits have already landed in the target.
+      const merged = await isBranchMergedIntoTarget(projectPath, targetBranch, branchName, execFn);
+
+      let action: "close" | "reset";
+      let reason: string;
+
+      if (merged) {
+        action = "close";
+        reason = `branch ${branchName} is merged into ${targetBranch}`;
+      } else {
+        // Branch is not merged — reset bead so it can be re-dispatched.
+        action = "reset";
+        reason = `branch ${branchName} is NOT merged into ${targetBranch}`;
+      }
+
+      results.push({ seedId: run.seed_id, runId: run.id, branchName, action, reason });
+
+      if (!dryRun) {
+        // Update bead status.
+        try {
+          if (action === "close") {
+            await seeds.update(run.seed_id, { status: "closed" });
+            closed++;
+          } else {
+            await seeds.update(run.seed_id, { status: "open" });
+            reset++;
+          }
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.includes("not found")) {
+            errors.push(`Failed to update bead ${run.seed_id}: ${msg}`);
+          }
+        }
+
+        // Mark the run as reset regardless of action.
+        store.updateRun(run.id, { status: "reset", completed_at: new Date().toISOString() });
+
+        // Remove any MQ entries for this seed (conflict/failed ones).
+        const seedMqEntries = mqEntries.filter((e) => e.seed_id === run.seed_id);
+        for (const entry of seedMqEntries) {
+          mergeQueue.remove(entry.id);
+        }
+      } else {
+        if (action === "close") closed++;
+        else reset++;
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`Failed to check branch status for ${run.seed_id}: ${msg}`);
+      results.push({
+        seedId: run.seed_id,
+        runId: run.id,
+        branchName,
+        action: "error",
+        reason: "git check failed",
+        error: msg,
+      });
+    }
+  }
+
+  return { results, closed, reset, errors };
 }
 
 // ── State mismatch detection ─────────────────────────────────────────────
@@ -273,6 +518,11 @@ export const resetCommand = new Command("reset")
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
+      // Save current branch so we can restore it after worktree/branch cleanup,
+      // which can change HEAD as a side effect of git worktree remove / branch -D.
+      let originalBranch: string | undefined;
+      try { originalBranch = await getCurrentBranch(projectPath); } catch { /* ignore */ }
+
       const seeds: IShowUpdateClient = new BeadsRustClient(projectPath);
       const store = ForemanStore.forProject(projectPath);
       const project = store.getProjectByPath(projectPath);
@@ -328,8 +578,8 @@ export const resetCommand = new Command("reset")
         }
       } else {
         const statuses = all
-          ? ["pending", "running", "failed", "stuck"] as const
-          : ["failed", "stuck"] as const;
+          ? ["pending", "running", "failed", "stuck", "conflict", "test-failed"] as const
+          : ["failed", "stuck", "conflict", "test-failed"] as const;
         runs = statuses.flatMap((s) => store.getRunsByStatus(s, project.id));
       }
 
@@ -611,12 +861,52 @@ export const resetCommand = new Command("reset")
         console.log(chalk.dim("  No mismatches found."));
       }
 
+      // 8. Detect and handle stale branches for completed (review) runs.
+      //    This covers beads stuck in 'review' status from failed merge attempts.
+      console.log(chalk.bold("\nChecking for stale / already-merged review branches..."));
+      const staleResult = await detectAndHandleStaleBranches(
+        store,
+        seeds,
+        mergeQueue,
+        projectPath,
+        project.id,
+        seedIds, // skip seeds already handled by the main reset loop
+        { dryRun },
+      );
+
+      for (const r of staleResult.results) {
+        if (r.action === "skip") continue;
+        if (r.action === "error") {
+          console.log(`  ${chalk.red("error")} ${chalk.cyan(r.seedId)}: ${r.error ?? r.reason}`);
+        } else if (r.action === "close") {
+          console.log(
+            `  ${dryRun ? chalk.yellow("(would close)") : chalk.green("close")} ` +
+            `bead ${chalk.cyan(r.seedId)} — ${r.reason}`,
+          );
+        } else {
+          console.log(
+            `  ${dryRun ? chalk.yellow("(would reset)") : chalk.yellow("reset")} ` +
+            `bead ${chalk.cyan(r.seedId)} → open — ${r.reason}`,
+          );
+        }
+      }
+
+      if (staleResult.results.filter((r) => r.action !== "skip" && r.action !== "error").length === 0) {
+        console.log(chalk.dim("  No stale review branches found."));
+      }
+
       // Summary
       console.log(chalk.bold("\nSummary:"));
       if (dryRun) {
         console.log(chalk.yellow(`  Would reset ${runs.length} runs across ${seedIds.size} beads`));
         if (mismatchResult.mismatches.length > 0) {
           console.log(chalk.yellow(`  Would fix ${mismatchResult.mismatches.length} mismatch(es)`));
+        }
+        if (staleResult.closed > 0) {
+          console.log(chalk.yellow(`  Would close ${staleResult.closed} already-merged bead(s)`));
+        }
+        if (staleResult.reset > 0) {
+          console.log(chalk.yellow(`  Would reset ${staleResult.reset} stale review bead(s) to open`));
         }
       } else {
         console.log(`  Processes killed:   ${killed}`);
@@ -626,13 +916,29 @@ export const resetCommand = new Command("reset")
         console.log(`  MQ entries removed:  ${mqEntriesRemoved}`);
         console.log(`  Beads reset:        ${seedsReset}`);
         console.log(`  Mismatches fixed:   ${mismatchResult.fixed}`);
+        console.log(`  Beads closed (merged): ${staleResult.closed}`);
+        console.log(`  Beads reset (review):  ${staleResult.reset}`);
       }
 
-      const allErrors = [...errors, ...mismatchResult.errors];
+      const allErrors = [...errors, ...mismatchResult.errors, ...staleResult.errors];
       if (allErrors.length > 0) {
         console.log(chalk.red(`\n  Errors (${allErrors.length}):`));
         for (const err of allErrors) {
           console.log(chalk.red(`    ${err}`));
+        }
+      }
+
+      // Restore the original branch — worktree removal and branch deletion can
+      // change HEAD as a side effect.
+      if (originalBranch) {
+        try {
+          const currentBranch = await getCurrentBranch(projectPath);
+          if (currentBranch !== originalBranch) {
+            await checkoutBranch(projectPath, originalBranch);
+            console.log(chalk.dim(`Restored branch: ${originalBranch}`));
+          }
+        } catch {
+          console.warn(chalk.yellow(`Warning: could not restore branch '${originalBranch}'. Run: git checkout ${originalBranch}`));
         }
       }
 

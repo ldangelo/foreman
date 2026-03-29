@@ -75,7 +75,9 @@ export async function execBr(
   args: string[],
   cwd?: string,
 ): Promise<unknown> {
-  const finalArgs = [...args, "--json"];
+  // --lock-timeout: wait up to 10s for SQLite lock instead of failing with SQLITE_BUSY
+  // when concurrent agents hold read locks on .beads/beads.db.
+  const finalArgs = [...args, "--json", "--lock-timeout", "10000"];
   try {
     const { stdout } = await execFileAsync(BR_PATH, finalArgs, {
       cwd,
@@ -192,7 +194,7 @@ export class BeadsRustClient implements ITaskClient {
     if (opts.notes) args.push("--notes", opts.notes);
     if (opts.acceptance) args.push("--acceptance", opts.acceptance);
     if (opts.claim) args.push("--claim");
-    if (opts.labels && opts.labels.length > 0) args.push("--labels", opts.labels.join(","));
+    if (opts.labels && opts.labels.length > 0) args.push("--set-labels", opts.labels.join(","));
     await execBr(args, this.projectPath);
   }
 

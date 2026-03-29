@@ -38,6 +38,7 @@ foreman run
 name: default                    # Workflow name (required)
 setup: [...]                     # Setup steps (optional)
 setupCache: { key, path }        # Dependency cache (optional)
+vcs: { backend, git, jujutsu }   # VCS backend override (optional)
 phases: [...]                    # Phase sequence (required)
 ```
 
@@ -48,6 +49,43 @@ The workflow identifier. Must match the filename (e.g. `default.yaml` → `name:
 ```yaml
 name: default
 ```
+
+---
+
+## VCS Configuration
+
+The optional top-level `vcs:` block overrides the project-level VCS configuration in `.foreman/config.yaml` for this specific workflow.
+
+### `vcs` (optional)
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `backend` | string | `'auto'` | VCS backend to use: `'git'`, `'jujutsu'`, or `'auto'` |
+
+> **Note:** Backend-specific sub-options (`git.useTown`, `jujutsu.minVersion`) are only available in the project-level `.foreman/config.yaml`, not in workflow YAML.
+
+**Resolution priority** (highest wins): workflow `vcs.backend` → project `.foreman/config.yaml` `vcs.backend` → auto-detection.
+
+```yaml
+# Force git even if .jj/ is present
+vcs:
+  backend: git
+
+# Require jujutsu
+vcs:
+  backend: jujutsu
+
+# Explicit auto-detection (same as omitting the vcs block)
+vcs:
+  backend: auto
+```
+
+**When to set workflow-level VCS:**
+- Multi-team monorepo where teams use different VCS backends
+- Documenting the expected VCS backend in the workflow definition
+- Temporarily overriding the project default for a specific workflow (e.g. a migration workflow)
+
+See [VCS Configuration Guide](./guides/vcs-configuration.md) for full details.
 
 ---
 

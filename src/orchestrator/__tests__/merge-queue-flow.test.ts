@@ -1,10 +1,39 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { MergeQueue } from "../merge-queue.js";
+import type { GitBackend } from "../../lib/vcs/git-backend.js";
 
 vi.mock("../../lib/git.js", () => ({
   detectDefaultBranch: vi.fn().mockResolvedValue("main"),
 }));
+
+/**
+ * Create a minimal GitBackend mock for reconcile() tests.
+ * By default: branchExists=true, branchExistsOnRemote=false, getChangedFiles=[], getRefCommitTimestamp=null.
+ */
+function makeBackend(opts?: {
+  branchExists?: boolean | ((branch: string) => boolean);
+  branchExistsOnRemote?: boolean | ((branch: string) => boolean);
+  files?: string[];
+  timestamp?: number | null;
+}): GitBackend {
+  const {
+    branchExists: be = true,
+    branchExistsOnRemote: beor = false,
+    files = [],
+    timestamp = null,
+  } = opts ?? {};
+  return {
+    branchExists: vi.fn().mockImplementation((_repo: string, branch: string) =>
+      Promise.resolve(typeof be === "function" ? be(branch) : be)
+    ),
+    branchExistsOnRemote: vi.fn().mockImplementation((_repo: string, branch: string) =>
+      Promise.resolve(typeof beor === "function" ? beor(branch) : beor)
+    ),
+    getChangedFiles: vi.fn().mockResolvedValue(files),
+    getRefCommitTimestamp: vi.fn().mockResolvedValue(timestamp),
+  } as unknown as GitBackend;
+}
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT, path TEXT UNIQUE, status TEXT, created_at TEXT, updated_at TEXT);
@@ -26,7 +55,7 @@ function addRun(db: Database.Database, id: string, seedId: string, status = "com
   db.prepare("INSERT INTO runs (id,project_id,seed_id,agent_type,status,created_at) VALUES (?,'p1',?,'w',?,datetime('now'))").run(id, seedId, status);
 }
 
-const mockGit = () => vi.fn().mockResolvedValue({ stdout: "ok\n", stderr: "" });
+const mockGit = () => makeBackend({ branchExists: true, branchExistsOnRemote: false });
 
 // ── Test 1: Reconcile ───────────────────────────────────────────────
 
@@ -41,11 +70,10 @@ describe("Reconcile detects missing entries", () => {
     addRun(db, "r2", "s2", "completed");
     addRun(db, "r3", "s3", "running");
     // Secondary pass checks remote branch existence for pending/running runs.
-    // r3 has no remote branch (still genuinely running), so git fails for it.
-    const git = vi.fn().mockImplementation((...args: unknown[]) => {
-      const argStr = JSON.stringify(args);
-      if (argStr.includes("s3")) return Promise.reject(new Error("not found"));
-      return Promise.resolve({ stdout: "ok\n", stderr: "" });
+    // r3 has no remote branch (still genuinely running), so branchExistsOnRemote=false for s3.
+    const git = makeBackend({
+      branchExists: true,
+      branchExistsOnRemote: (branch) => !branch.includes("s3"),
     });
     const r = await mq.reconcile(db, "/tmp", git);
     expect(r.enqueued).toBe(2);
@@ -115,7 +143,7 @@ describe("Reconcile reports invalid branches in failedToEnqueue", () => {
 
   it("populates failedToEnqueue when branch does not exist", async () => {
     addRun(db, "r1", "s1", "completed");
-    const mockFail = vi.fn().mockRejectedValue(new Error("fatal: not a valid branch"));
+    const mockFail = makeBackend({ branchExists: false });
     const r = await mq.reconcile(db, "/tmp", mockFail);
     expect(r.invalidBranch).toBe(1);
     expect(r.enqueued).toBe(0);
@@ -135,7 +163,7 @@ describe("Reconcile reports invalid branches in failedToEnqueue", () => {
   it("reports multiple failed branches separately", async () => {
     addRun(db, "r1", "s1", "completed");
     addRun(db, "r2", "s2", "completed");
-    const mockFail = vi.fn().mockRejectedValue(new Error("fatal: not a valid branch"));
+    const mockFail = makeBackend({ branchExists: false });
     const r = await mq.reconcile(db, "/tmp", mockFail);
     expect(r.invalidBranch).toBe(2);
     expect(r.failedToEnqueue).toHaveLength(2);

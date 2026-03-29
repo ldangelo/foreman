@@ -88,6 +88,11 @@ export function getSentinelBudget(): number {
   return readBudgetFromEnv("FOREMAN_SENTINEL_BUDGET_USD", 2.00);
 }
 
+/** Budget for the Troubleshooter phase (default: $1.50, uses Sonnet model). */
+export function getTroubleshooterBudget(): number {
+  return readBudgetFromEnv("FOREMAN_TROUBLESHOOTER_BUDGET_USD", 1.50);
+}
+
 /** Budget for the session-log SDK query (default: $0.50, uses Haiku model). */
 export function getSessionLogBudget(): number {
   return readBudgetFromEnv("FOREMAN_SESSION_LOG_BUDGET_USD", 0.50);

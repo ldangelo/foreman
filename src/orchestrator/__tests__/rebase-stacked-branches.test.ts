@@ -149,13 +149,16 @@ describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
     store.getRunsByStatus.mockReturnValue([mergedRun]);
     (mergeWorktree as any).mockResolvedValue({ success: true });
     (removeWorktree as any).mockResolvedValue(undefined);
-    (gitBranchExists as any).mockResolvedValue(false); // branch does NOT exist
-
+    // gitBranchExists mock is no longer called; VcsBackend.branchExists() is used instead.
+    // Make execFile throw for "show-ref" calls so GitBackend.branchExists() returns false.
     const gitCalls: string[][] = [];
     (execFile as any).mockImplementation(
       (_cmd: string, args: string[], _opts: any, callback: Function) => {
         if (Array.isArray(args)) gitCalls.push(args);
-        if (Array.isArray(args) && args[0] === "log") {
+        if (Array.isArray(args) && args[0] === "show-ref") {
+          // Simulate branch not existing — GitBackend.branchExists() catches this and returns false
+          callback(new Error("fatal: not a valid ref"), { stdout: "", stderr: "" });
+        } else if (Array.isArray(args) && args[0] === "log") {
           callback(null, { stdout: "abc1234 commit\n", stderr: "" });
         } else {
           callback(null, { stdout: "", stderr: "" });

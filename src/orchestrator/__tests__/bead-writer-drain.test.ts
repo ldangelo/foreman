@@ -116,7 +116,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     expect(closeCall).toBeTruthy();
     const [cmd, args] = closeCall!;
     expect(cmd).toBe(BR_PATH);
-    expect(args).toEqual(["close", "bd-abc", "--no-db", "--force", "--reason", "Completed via pipeline"]);
+    expect(args).toEqual(["close", "bd-abc", "--no-db", "--force", "--reason", "Completed via pipeline", "--lock-timeout", "10000"]);
   });
 
   it("executes br update --status open for reset-seed operation", async () => {
@@ -129,7 +129,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     expect(updateCall).toBeTruthy();
     const [cmd, args] = updateCall!;
     expect(cmd).toBe(BR_PATH);
-    expect(args).toEqual(["update", "bd-xyz", "--status", "open"]);
+    expect(args).toEqual(["update", "bd-xyz", "--status", "open", "--lock-timeout", "10000"]);
   });
 
   it("executes br update --status failed for mark-failed operation", async () => {
@@ -142,7 +142,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     expect(updateCall).toBeTruthy();
     const [cmd, args] = updateCall!;
     expect(cmd).toBe(BR_PATH);
-    expect(args).toEqual(["update", "bd-fail", "--status", "failed"]);
+    expect(args).toEqual(["update", "bd-fail", "--status", "failed", "--lock-timeout", "10000"]);
   });
 
   it("executes br update --notes for add-notes operation", async () => {
@@ -155,7 +155,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     expect(notesCall).toBeTruthy();
     const [cmd, args] = notesCall!;
     expect(cmd).toBe(BR_PATH);
-    expect(args).toEqual(["update", "bd-notes", "--notes", "Some failure note"]);
+    expect(args).toEqual(["update", "bd-notes", "--notes", "Some failure note", "--lock-timeout", "10000"]);
   });
 
   it("executes br update --add-label for add-labels operation", async () => {
@@ -168,7 +168,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     expect(labelsCall).toBeTruthy();
     const [cmd, args] = labelsCall!;
     expect(cmd).toBe(BR_PATH);
-    expect(args).toEqual(["update", "bd-labels", "--add-label", "phase:dev", "--add-label", "ci:pass"]);
+    expect(args).toEqual(["update", "bd-labels", "--add-label", "phase:dev", "--add-label", "ci:pass", "--lock-timeout", "10000"]);
   });
 
   it("calls br sync --flush-only once after processing all entries", async () => {
