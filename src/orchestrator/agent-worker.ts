@@ -14,7 +14,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { request as httpRequest } from "node:http";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
-import { createSendMailTool } from "./pi-sdk-tools.js";
+import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
@@ -545,6 +545,92 @@ function readReport(worktreePath: string, filename: string): string | null {
 
 
 /**
+ * Run the troubleshooter phase as a separate SDK session.
+ *
+ * Invoked after a pipeline failure when workflowConfig.onFailure is present.
+ * The troubleshooter reads failure context (artifacts, run status) and attempts
+ * to resolve the issue automatically (fix test failures, resolve conflicts, etc.).
+ *
+ * Returns true if the troubleshooter reports RESOLVED in its artifact, false otherwise.
+ */
+async function runTroubleshooterPhase(
+  config: WorkerConfig,
+  workflowConfig: import("../lib/workflow-loader.js").WorkflowConfig,
+  store: ForemanStore,
+  logFile: string,
+  notifyClient: NotificationClient,
+  agentMailClient: AnyMailClient | null,
+  failureContext: string,
+  pipelineProjectPath: string,
+): Promise<boolean> {
+  const onFailure = workflowConfig.onFailure;
+  if (!onFailure) return false;
+
+  const { runId, seedId, seedTitle } = config;
+  log(`[TROUBLESHOOTER] Activating for ${seedId} — failure context: ${failureContext.slice(0, 120)}`);
+
+  // Build a basic troubleshooter prompt with failure context injected
+  const prompt = [
+    `# Troubleshooter Agent`,
+    ``,
+    `**Seed:** ${seedId} — ${seedTitle}`,
+    `**Run ID:** ${runId}`,
+    `**Failure Context:**`,
+    failureContext,
+    ``,
+    `Use get_run_status, read artifacts, and apply fixes. Write TROUBLESHOOT_REPORT.md when done.`,
+    `Include "RESOLVED" in the report if the failure was fixed, or "ESCALATED" if not.`,
+  ].join("\n");
+
+  const roleConfig = ROLE_CONFIGS.troubleshooter;
+  const resolvedModel = onFailure.models?.["default"] ?? roleConfig.model;
+
+  const customTools: import("@mariozechner/pi-coding-agent").ToolDefinition[] = [];
+  if (agentMailClient) {
+    customTools.push(createSendMailTool(agentMailClient, `troubleshooter-${seedId}`));
+  }
+  customTools.push(createGetRunStatusTool(store));
+  customTools.push(createCloseBeadTool(pipelineProjectPath));
+
+  try {
+    const result = await runWithPiSdk({
+      prompt,
+      systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for task: ${seedTitle}`,
+      cwd: config.worktreePath,
+      model: resolvedModel,
+      allowedTools: roleConfig.allowedTools,
+      customTools,
+      logFile,
+      onToolCall: () => { /* no-op */ },
+      onTurnEnd: () => { /* no-op */ },
+    });
+
+    log(`[TROUBLESHOOTER] Completed (${result.turns} turns, $${result.costUsd.toFixed(4)})`);
+    await appendFile(logFile, `[TROUBLESHOOTER] ${result.success ? "COMPLETED" : "FAILED"} ($${result.costUsd.toFixed(4)})\n`);
+
+    // Check if TROUBLESHOOT_REPORT.md contains "RESOLVED"
+    const { join: pathJoin } = await import("node:path");
+    const { readFileSync: rfs } = await import("node:fs");
+    try {
+      const report = rfs(pathJoin(config.worktreePath, "TROUBLESHOOT_REPORT.md"), "utf-8");
+      const troubleshooterResolved = report.includes("RESOLVED");
+      if (troubleshooterResolved) {
+        log(`[TROUBLESHOOTER] PIPELINE RECOVERED for ${seedId}`);
+        await appendFile(logFile, `[TROUBLESHOOTER] PIPELINE RECOVERED\n`);
+        return true;
+      }
+    } catch {
+      // Report not written — escalated
+    }
+    return false;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[TROUBLESHOOTER] Error: ${msg}`);
+    return false;
+  }
+}
+
+/**
  * Run the full pipeline: Explorer → Developer ⇄ QA → Reviewer → Finalize.
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
@@ -684,6 +770,27 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         }
       } else {
         finalizeSucceeded = true;
+      }
+
+      // ── Troubleshooter: attempt recovery on failure ──────────────────────
+      const troubleshooterEnabled = !finalizeSucceeded && !!workflowConfig.onFailure;
+      let troubleshooterResolved = false;
+      if (troubleshooterEnabled) {
+        const failureContext = `Pipeline failed at finalize phase. finalizeRetryable=${String(finalizeRetryable)}`;
+        troubleshooterResolved = await runTroubleshooterPhase(
+          config,
+          workflowConfig,
+          store,
+          logFile,
+          notifyClient,
+          agentMailClient,
+          failureContext,
+          pipelineProjectPath,
+        );
+        if (troubleshooterResolved) {
+          // Troubleshooter resolved the issue — treat as success
+          finalizeSucceeded = true;
+        }
       }
 
       const now = new Date().toISOString();

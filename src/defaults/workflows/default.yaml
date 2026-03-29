@@ -93,3 +93,12 @@ phases:
       onStart: true
       onComplete: true
       onFail: developer
+
+onFailure:
+  name: troubleshooter
+  prompt: troubleshooter.md
+  models:
+    default: sonnet
+    P0: opus
+  maxTurns: 20
+  artifact: TROUBLESHOOT_REPORT.md

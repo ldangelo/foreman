@@ -17,6 +17,7 @@ import {
   getReviewerBudget,
   getPlanStepBudget,
   getSentinelBudget,
+  getTroubleshooterBudget,
 } from "../lib/config.js";
 import { loadAndInterpolate } from "./template-loader.js";
 import { loadPrompt, PromptNotFoundError } from "../lib/prompt-loader.js";
@@ -163,6 +164,7 @@ const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker" | "se
   qa: "anthropic/claude-sonnet-4-6",
   reviewer: "anthropic/claude-sonnet-4-6",
   finalize: "anthropic/claude-haiku-4-5",
+  troubleshooter: "anthropic/claude-sonnet-4-6",
 };
 
 /**
@@ -221,6 +223,14 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
       permissionMode: "acceptEdits",
       reportFile: "FINALIZE_REPORT.md",
       allowedTools: ["Bash", "Glob", "Grep", "Read", "Write"],
+    },
+    troubleshooter: {
+      role: "troubleshooter",
+      model: resolveModel("FOREMAN_TROUBLESHOOTER_MODEL", DEFAULT_MODELS.troubleshooter),
+      maxBudgetUsd: getTroubleshooterBudget(),
+      permissionMode: "acceptEdits",
+      reportFile: "TROUBLESHOOT_REPORT.md",
+      allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "Write"],
     },
   };
 }
@@ -286,6 +296,14 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
         permissionMode: "acceptEdits",
         reportFile: "FINALIZE_REPORT.md",
         allowedTools: ["Bash", "Glob", "Grep", "Read", "Write"],
+      },
+      troubleshooter: {
+        role: "troubleshooter",
+        model: DEFAULT_MODELS.troubleshooter,
+        maxBudgetUsd: 1.50,
+        permissionMode: "acceptEdits",
+        reportFile: "TROUBLESHOOT_REPORT.md",
+        allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "Write"],
       },
     };
   }

@@ -7,7 +7,12 @@
 
 import { Type, type Static } from "@mariozechner/pi-ai";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
+import type { ForemanStore } from "../lib/store.js";
+
+const execFileAsync = promisify(execFile);
 
 // ── send-mail tool ──────────────────────────────────────────────────────
 
@@ -51,6 +56,118 @@ export function createSendMailTool(
         const msg = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: "text" as const, text: `Failed to send mail: ${msg}` }],
+          details: undefined,
+        };
+      }
+    },
+  } as ToolDefinition;
+}
+
+// ── get-run-status tool ─────────────────────────────────────────────────
+
+const GetRunStatusParams = Type.Object({
+  runId: Type.String({ description: "The run ID to look up" }),
+});
+
+/**
+ * Create a get_run_status ToolDefinition that reads run state from the store.
+ *
+ * Used by the troubleshooter agent to understand why a run failed and what
+ * phase it was in when it stopped making progress.
+ */
+export function createGetRunStatusTool(store: ForemanStore): ToolDefinition {
+  return {
+    name: "get_run_status",
+    label: "Get Run Status",
+    description: "Read the current status and progress of a pipeline run. Returns phase, cost, turns, and the reason it failed (if applicable).",
+    promptSnippet: "Read run status from the database",
+    promptGuidelines: [
+      "Call get_run_status at the start of a troubleshooter session to understand the run's current state",
+    ],
+    parameters: GetRunStatusParams,
+    async execute(
+      _toolCallId: string,
+      params: Static<typeof GetRunStatusParams>,
+    ) {
+      try {
+        const run = store.getRun(params.runId);
+        if (!run) {
+          return {
+            content: [{ type: "text" as const, text: `Run ${params.runId} not found` }],
+            details: undefined,
+          };
+        }
+        const progress = store.getRunProgress(params.runId);
+        const info = {
+          runId: run.id,
+          seedId: run.seed_id,
+          status: run.status,
+          startedAt: run.started_at,
+          completedAt: run.completed_at,
+          worktreePath: run.worktree_path,
+          currentPhase: progress?.currentPhase ?? null,
+          lastActivity: progress?.lastActivity ?? null,
+          costUsd: progress?.costUsd ?? 0,
+          turns: progress?.turns ?? 0,
+          toolCalls: progress?.toolCalls ?? 0,
+        };
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(info, null, 2) }],
+          details: undefined,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Failed to get run status: ${msg}` }],
+          details: undefined,
+        };
+      }
+    },
+  } as ToolDefinition;
+}
+
+// ── close-bead tool ─────────────────────────────────────────────────────
+
+const CloseBeadParams = Type.Object({
+  seedId: Type.String({ description: "The seed/bead ID to close (e.g. 'bd-abc')" }),
+  reason: Type.String({ description: "Brief reason for closing (e.g. 'Work already merged into dev')" }),
+});
+
+/**
+ * Create a close_bead ToolDefinition that runs `br close <seedId>`.
+ *
+ * Used by the troubleshooter agent to mark a bead complete when the work has
+ * been confirmed as done (e.g. already merged into the target branch).
+ */
+export function createCloseBeadTool(projectPath: string): ToolDefinition {
+  return {
+    name: "close_bead",
+    label: "Close Bead",
+    description: "Mark a bead/seed as complete using the br CLI. Only call this when you have confirmed the work is done and merged.",
+    promptSnippet: "Close a completed bead using br",
+    promptGuidelines: [
+      "Only close a bead when the work is confirmed complete and merged into the target branch",
+    ],
+    parameters: CloseBeadParams,
+    async execute(
+      _toolCallId: string,
+      params: Static<typeof CloseBeadParams>,
+    ) {
+      try {
+        const brBin = process.env["BR_BIN"] ?? "br";
+        const { stdout } = await execFileAsync(
+          brBin,
+          ["close", params.seedId, "--reason", params.reason],
+          { cwd: projectPath },
+        );
+        return {
+          content: [{ type: "text" as const, text: `Bead ${params.seedId} closed: ${stdout.trim()}` }],
+          details: undefined,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Failed to close bead ${params.seedId}: ${msg}` }],
           details: undefined,
         };
       }
