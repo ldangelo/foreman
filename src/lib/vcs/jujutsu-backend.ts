@@ -463,6 +463,20 @@ export class JujutsuBackend implements VcsBackend {
   async rebase(workspacePath: string, onto: string): Promise<RebaseResult> {
     try {
       await this.jj(["rebase", "-d", onto], workspacePath);
+
+      // jj rebase exits 0 even when conflicts exist — it embeds conflict
+      // markers in files and continues. Check explicitly after each rebase.
+      let conflictingFiles: string[] = [];
+      try {
+        conflictingFiles = await this.getConflictingFiles(workspacePath);
+      } catch {
+        // best effort
+      }
+
+      if (conflictingFiles.length > 0) {
+        return { success: false, hasConflicts: true, conflictingFiles };
+      }
+
       return { success: true, hasConflicts: false };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

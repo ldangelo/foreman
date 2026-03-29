@@ -776,6 +776,68 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.rebase (AC-T-020-3)", () => {
   });
 });
 
+describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.rebase — conflict detection (AC-T-020-2b)", () => {
+  it("returns success=false and hasConflicts=true when jj rebase exits 0 with conflicts", async () => {
+    // jj rebase exits with code 0 even when conflicts arise — it embeds
+    // conflict markers in files. The implementation must detect this explicitly.
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    // Create a "base" commit
+    writeFileSync(join(repo, "shared.txt"), "base version\n");
+    execFileSync("jj", ["describe", "-m", "base commit"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "base", "-r", "@"], { cwd: repo, stdio: "pipe" });
+
+    // Create a "feature" change from base: write conflicting shared.txt
+    execFileSync("jj", ["new", "base"], { cwd: repo, stdio: "pipe" });
+    writeFileSync(join(repo, "shared.txt"), "feature version\n");
+    execFileSync("jj", ["describe", "-m", "feature: write shared.txt"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "feature", "-r", "@"], { cwd: repo, stdio: "pipe" });
+
+    // Advance "main" from base: write conflicting shared.txt
+    execFileSync("jj", ["new", "base"], { cwd: repo, stdio: "pipe" });
+    writeFileSync(join(repo, "shared.txt"), "main version\n");
+    execFileSync("jj", ["describe", "-m", "main: update shared.txt"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "main", "-r", "@"], { cwd: repo, stdio: "pipe" });
+
+    // Switch @ to feature so rebase acts on it
+    execFileSync("jj", ["edit", "feature"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    // Rebase feature onto main — jj exits 0 but embeds conflict markers
+    const result = await backend.rebase(repo, "main");
+
+    expect(result.success).toBe(false);
+    expect(result.hasConflicts).toBe(true);
+    // conflictingFiles should include an entry mentioning shared.txt
+    // jj resolve --list outputs lines like "shared.txt    2-sided conflict"
+    if (result.conflictingFiles !== undefined) {
+      expect(result.conflictingFiles.some((f) => f.includes("shared.txt"))).toBe(true);
+    }
+  });
+
+  it("returns success=true when rebase has no conflicts (AC-T-020-2 regression check)", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    // Create a "base" commit
+    writeFileSync(join(repo, "base.txt"), "base content\n");
+    execFileSync("jj", ["describe", "-m", "base commit"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "main", "-r", "@"], { cwd: repo, stdio: "pipe" });
+
+    // Create a new change on top with a unique file (no overlap with main)
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+    writeFileSync(join(repo, "feature-only.txt"), "feature content\n");
+    execFileSync("jj", ["describe", "-m", "feature: unique file"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    const result = await backend.rebase(repo, "main");
+
+    expect(result.success).toBe(true);
+    expect(result.hasConflicts).toBe(false);
+  });
+});
+
 describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.abortRebase (AC-T-020-5)", () => {
   it("does not throw (uses jj undo)", async () => {
     const repo = makeTempJjRepo();
