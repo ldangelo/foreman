@@ -150,4 +150,57 @@ export class PipelineEventBus {
   removeAllListeners(): void {
     this.emitter.removeAllListeners();
   }
+
+  // ── Phase Gate ────────────────────────────────────────────────────────────
+
+  private _phaseGate: Promise<boolean> | null = null;
+  private _resolvePhaseGate: ((suspended: boolean) => void) | null = null;
+
+  /**
+   * Open the phase gate synchronously.
+   *
+   * Must be called synchronously (before the first `await`) by a phase:complete
+   * handler that needs to pause the pipeline executor before it advances to the
+   * next phase. The executor calls `waitForPhaseGate()` after every `safeEmit`
+   * of `phase:complete` to check whether it should suspend.
+   *
+   * Typically called by RebaseHook before starting a mid-pipeline rebase.
+   */
+  holdPhaseGate(): void {
+    this._phaseGate = new Promise<boolean>((resolve) => {
+      this._resolvePhaseGate = resolve;
+    });
+  }
+
+  /**
+   * Release the phase gate with a "continue" verdict.
+   * Called by the hook after completing cleanly (no suspension needed).
+   */
+  releasePhaseGate(): void {
+    this._resolvePhaseGate?.(false);
+    this._phaseGate = null;
+    this._resolvePhaseGate = null;
+  }
+
+  /**
+   * Release the phase gate with a "suspend" verdict.
+   * Called by the hook when the pipeline should stop (e.g., rebase conflict).
+   */
+  suspendPhaseGate(): void {
+    this._resolvePhaseGate?.(true);
+    this._phaseGate = null;
+    this._resolvePhaseGate = null;
+  }
+
+  /**
+   * Await the phase gate.
+   *
+   * Returns `true` if the pipeline should suspend after the current phase,
+   * `false` if it should continue normally. Returns `false` immediately when
+   * no gate was opened (the common case for phases with no mid-pipeline hooks).
+   */
+  async waitForPhaseGate(): Promise<boolean> {
+    if (!this._phaseGate) return false;
+    return this._phaseGate;
+  }
 }

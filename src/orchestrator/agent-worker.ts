@@ -14,7 +14,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { request as httpRequest } from "node:http";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
-import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
+import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool, createSignalRebaseResolvedTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
@@ -33,6 +33,8 @@ import { autoMerge } from "./auto-merge.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
+import { PipelineEventBus } from "./pipeline-events.js";
+import { RebaseHook } from "./rebase-hook.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -631,6 +633,142 @@ async function runTroubleshooterPhase(
 }
 
 /**
+ * Handle a mid-pipeline rebase conflict:
+ * 1. Dispatch the troubleshooter with rebase-conflict context.
+ * 2. After the troubleshooter completes (it calls signal_rebase_resolved),
+ *    poll the foreman inbox for the [rebase-resolved] mail.
+ * 3. If found, emit rebase:resolved on the eventBus and return true.
+ * 4. If not found (troubleshooter did not resolve), return false.
+ */
+async function runRebaseTroubleshooterCycle(
+  config: WorkerConfig,
+  workflowConfig: import("../lib/workflow-loader.js").WorkflowConfig,
+  store: ForemanStore,
+  logFile: string,
+  notifyClient: NotificationClient,
+  agentMailClient: AnyMailClient | null,
+  eventBus: PipelineEventBus,
+  pipelineProjectPath: string,
+): Promise<boolean> {
+  const { runId, seedId, seedTitle, worktreePath } = config;
+  log(`[REBASE] Conflict detected for run ${runId} — activating rebase troubleshooter`);
+
+  if (!agentMailClient) {
+    log(`[REBASE] No mail client — cannot dispatch rebase troubleshooter`);
+    return false;
+  }
+
+  // Read the rebase-conflict mail that RebaseHook sent to the troubleshooter inbox
+  const troubleshooterInbox = `troubleshooter-${seedId}`;
+  const inboxMessages = await agentMailClient.fetchInbox(troubleshooterInbox);
+  const conflictMail = inboxMessages.find((m) => m.subject?.includes("[rebase-conflict]"));
+
+  let conflictContext: Record<string, unknown> = {};
+  if (conflictMail?.body) {
+    try {
+      conflictContext = JSON.parse(conflictMail.body) as Record<string, unknown>;
+    } catch {
+      // Non-fatal — proceed with empty context
+    }
+  }
+
+  const rebaseTarget = typeof conflictContext["rebaseTarget"] === "string"
+    ? conflictContext["rebaseTarget"]
+    : "(unknown target)";
+  const conflictingFiles = Array.isArray(conflictContext["conflictingFiles"])
+    ? (conflictContext["conflictingFiles"] as string[]).join(", ")
+    : "(unknown files)";
+  const upstreamDiff = typeof conflictContext["upstreamDiff"] === "string"
+    ? conflictContext["upstreamDiff"]
+    : "(diff unavailable)";
+
+  // Build prompt by loading and filling the resolve-rebase-conflict.md template
+  let resolvePrompt: string;
+  try {
+    const { loadPrompt } = await import("../lib/prompt-loader.js");
+    resolvePrompt = loadPrompt(
+      "resolve-rebase-conflict",
+      { runId, rebaseTarget, conflictingFiles, upstreamDiff, worktreePath },
+      "default",
+      pipelineProjectPath,
+    );
+  } catch {
+    // Fallback to inline prompt if template loading fails
+    resolvePrompt = [
+      `# Resolve Rebase Conflict`,
+      ``,
+      `**Run ID:** ${runId}`,
+      `**Worktree:** ${worktreePath}`,
+      `**Rebase target:** ${rebaseTarget}`,
+      `**Conflicting files:** ${conflictingFiles}`,
+      ``,
+      `Manually resolve the conflicts, then call \`signal_rebase_resolved\` with runId="${runId}" and resumePhase="developer".`,
+    ].join("\n");
+  }
+
+  const onFailure = workflowConfig.onFailure;
+  const roleConfig = ROLE_CONFIGS.troubleshooter;
+  const resolvedModel = onFailure?.models?.["default"] ?? roleConfig.model;
+
+  const customTools: import("@mariozechner/pi-coding-agent").ToolDefinition[] = [];
+  customTools.push(createSendMailTool(agentMailClient, `troubleshooter-${seedId}`));
+  customTools.push(createGetRunStatusTool(store));
+  customTools.push(createSignalRebaseResolvedTool(store, agentMailClient));
+
+  try {
+    const result = await runWithPiSdk({
+      prompt: resolvePrompt,
+      systemPrompt: `You are the rebase conflict resolver for Foreman. Resolve all conflicts for task: ${seedTitle}`,
+      cwd: worktreePath,
+      model: resolvedModel,
+      allowedTools: roleConfig.allowedTools,
+      customTools,
+      logFile,
+      onToolCall: () => { /* no-op */ },
+      onTurnEnd: () => { /* no-op */ },
+    });
+
+    log(`[REBASE] Troubleshooter completed (${result.turns} turns, $${result.costUsd.toFixed(4)})`);
+    await appendFile(logFile, `[REBASE] Troubleshooter ${result.success ? "COMPLETED" : "FAILED"} ($${result.costUsd.toFixed(4)})\n`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[REBASE] Troubleshooter error: ${msg}`);
+    return false;
+  }
+
+  // Check foreman inbox for [rebase-resolved] mail sent by signal_rebase_resolved tool
+  const foremanMsgs = await agentMailClient.fetchInbox("foreman");
+  const resolvedMail = foremanMsgs.find((m) =>
+    m.subject?.includes("[rebase-resolved]") && m.subject?.includes(runId),
+  );
+
+  if (!resolvedMail) {
+    log(`[REBASE] No rebase-resolved signal found — troubleshooter did not resolve conflict`);
+    store.updateRunStatus(runId, "failed");
+    return false;
+  }
+
+  // Parse resumePhase from the resolved mail body
+  let resumePhase = "developer";
+  try {
+    const body = JSON.parse(resolvedMail.body ?? "{}") as Record<string, unknown>;
+    if (typeof body["resumePhase"] === "string") {
+      resumePhase = body["resumePhase"];
+    }
+  } catch {
+    // Use default
+  }
+
+  log(`[REBASE] Conflict resolved — emitting rebase:resolved, resuming from ${resumePhase}`);
+  await appendFile(logFile, `[REBASE] Conflict RESOLVED — resuming from ${resumePhase}\n`);
+
+  // Emit rebase:resolved to let RebaseHook do its bookkeeping (operator mail, phase:start)
+  eventBus.safeEmit({ type: "rebase:resolved", runId, resumePhase });
+
+  return true;
+}
+
+/**
  * Run the full pipeline: Explorer → Developer ⇄ QA → Reviewer → Finalize.
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
@@ -671,26 +809,31 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     log(`[PIPELINE] VCS backend init failed — using prompt defaults`);
   }
 
-  // Delegate to the generic workflow-driven executor.
-  await executePipeline({
-    config: { ...config, vcsBackend },
-    workflowConfig,
-    store,
-    logFile,
-    notifyClient,
-    agentMailClient,
-    runPhase,
-    registerAgent,
-    sendMail,
-    sendMailText,
-    reserveFiles,
-    releaseFiles,
-    markStuck,
-    log,
-    promptOpts: { projectRoot: pipelineProjectPath, workflow: resolvedWorkflow },
+  // Create PipelineEventBus and register RebaseHook when mid-pipeline rebase is configured.
+  let rebaseEventBus: PipelineEventBus | undefined;
+  if (workflowConfig.rebaseAfterPhase && vcsBackend && agentMailClient) {
+    rebaseEventBus = new PipelineEventBus();
+    const rebaseHook = new RebaseHook({
+      runId: config.runId,
+      seedId: config.seedId,
+      worktreePath: config.worktreePath,
+      workflow: workflowConfig,
+      vcs: vcsBackend,
+      store,
+      mailClient: agentMailClient,
+      eventBus: rebaseEventBus,
+    });
+    rebaseHook.register();
+    log(`[PIPELINE] RebaseHook registered (rebaseAfterPhase: ${workflowConfig.rebaseAfterPhase})`);
+  }
 
-    // Finalize post-processing: determine push success, enqueue to merge queue, update run status.
-    async onPipelineComplete({ progress }) {
+  // Shared pipeline completion callback — used by both the initial run and the
+  // post-rebase resume run so that finalize logic is not duplicated.
+  const handlePipelineComplete = async ({ progress }: {
+    progress: import("../lib/store.js").RunProgress;
+    phaseRecords: import("./session-log.js").PhaseRecord[];
+    retryCounts: Record<string, number>;
+  }) => {
       const { runId, projectId, seedId, seedTitle, worktreePath } = config;
 
       // Read finalize outcome from agent mail.
@@ -883,8 +1026,71 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         log(`PIPELINE STUCK for ${seedId} — finalize failed ($${progress.costUsd.toFixed(4)})`);
         await appendFile(logFile, `\n[PIPELINE] STUCK — finalize failed ($${progress.costUsd.toFixed(4)})\n`);
       }
-    },
-  });
+  };
+
+  // Shared executePipeline options (used by both the initial run and the post-rebase resume).
+  const pipelineOpts = {
+    config: { ...config, vcsBackend },
+    workflowConfig,
+    store,
+    logFile,
+    notifyClient,
+    agentMailClient,
+    runPhase,
+    registerAgent,
+    sendMail,
+    sendMailText,
+    reserveFiles,
+    releaseFiles,
+    markStuck,
+    log,
+    promptOpts: { projectRoot: pipelineProjectPath, workflow: resolvedWorkflow },
+    eventBus: rebaseEventBus,
+    onPipelineComplete: handlePipelineComplete,
+  };
+
+  // Execute the pipeline (may suspend early if a mid-pipeline rebase conflict occurs).
+  await executePipeline(pipelineOpts);
+
+  // If the pipeline was suspended for a rebase conflict, handle the resolution cycle.
+  // The RebaseHook sets the run status to 'rebase_resolving' before suspending.
+  if (rebaseEventBus) {
+    const postRunStatus = store.getRun(config.runId)?.status;
+    if (postRunStatus === "rebase_conflict" || postRunStatus === "rebase_resolving") {
+      log(`[REBASE] Pipeline suspended (status: ${postRunStatus}) — dispatching rebase troubleshooter`);
+      await appendFile(logFile, `\n[REBASE] Pipeline suspended — dispatching conflict resolver\n`);
+
+      const resolved = await runRebaseTroubleshooterCycle(
+        config,
+        workflowConfig,
+        store,
+        logFile,
+        notifyClient,
+        agentMailClient,
+        rebaseEventBus,
+        pipelineProjectPath,
+      );
+
+      if (resolved) {
+        log(`[REBASE] Conflict resolved — resuming pipeline`);
+        await appendFile(logFile, `[REBASE] Conflict resolved — resuming pipeline\n`);
+        // Re-execute the pipeline; phases that produced artifacts are skipped via skipIfArtifact.
+        await executePipeline(pipelineOpts);
+      } else {
+        log(`[REBASE] Conflict resolution failed — marking pipeline stuck`);
+        await appendFile(logFile, `[REBASE] Conflict resolution FAILED — pipeline stuck\n`);
+        const now = new Date().toISOString();
+        store.updateRun(config.runId, { status: "stuck", completed_at: now });
+        notifyClient.send({ type: "status", runId: config.runId, status: "stuck", timestamp: now });
+        sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId: config.seedId,
+          phase: "rebase",
+          error: "Rebase conflict could not be resolved automatically",
+          retryable: false,
+        });
+      }
+    }
+  }
 
 }
 

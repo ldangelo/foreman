@@ -93,32 +93,48 @@ export class RebaseHook {
       return;
     }
 
-    // Resolve the rebase target
-    const target = workflow.rebaseTarget ?? `origin/${await vcs.detectDefaultBranch(worktreePath)}`;
+    // Hold the phase gate SYNCHRONOUSLY before the first await.
+    // This causes the pipeline executor to wait for this hook to finish
+    // before advancing to the next phase — enabling clean suspension on conflict.
+    eventBus.holdPhaseGate();
 
-    // Emit rebase:start
-    eventBus.safeEmit({ type: "rebase:start", runId, phase, target });
-
-    // Record the HEAD commit before rebase for diff computation
-    let priorHead: string;
     try {
-      const headDiff = await vcs.diff(worktreePath, "HEAD", "HEAD");
-      void headDiff; // not used here — we just want HEAD hash
-    } catch {
-      // diff call for priorHead reference; HEAD resolution is best-effort
-    }
-    // Use git rev-parse HEAD to get the actual commit hash
-    priorHead = await this.resolveHead(worktreePath);
+      // Resolve the rebase target
+      const target = workflow.rebaseTarget ?? `origin/${await vcs.detectDefaultBranch(worktreePath)}`;
 
-    // Execute the rebase
-    const result = await vcs.rebase(worktreePath, target);
+      // Emit rebase:start
+      eventBus.safeEmit({ type: "rebase:start", runId, phase, target });
 
-    if (!result.hasConflicts) {
-      // ── Clean path ────────────────────────────────────────────────────────
-      await this.handleCleanRebase(phase, worktreePath, priorHead, target);
-    } else {
-      // ── Conflict path ─────────────────────────────────────────────────────
-      await this.handleConflict(phase, worktreePath, target);
+      // Record the HEAD commit before rebase for diff computation
+      let priorHead: string;
+      try {
+        const headDiff = await vcs.diff(worktreePath, "HEAD", "HEAD");
+        void headDiff; // not used here — we just want HEAD hash
+      } catch {
+        // diff call for priorHead reference; HEAD resolution is best-effort
+      }
+      // Use git rev-parse HEAD to get the actual commit hash
+      priorHead = await this.resolveHead(worktreePath);
+
+      // Execute the rebase
+      const result = await vcs.rebase(worktreePath, target);
+
+      if (!result.hasConflicts) {
+        // ── Clean path ──────────────────────────────────────────────────────
+        await this.handleCleanRebase(phase, worktreePath, priorHead, target);
+        // Release the gate: pipeline executor may continue to the next phase
+        eventBus.releasePhaseGate();
+      } else {
+        // ── Conflict path ───────────────────────────────────────────────────
+        // Suspend the gate BEFORE handleConflict — the executor must stop
+        // before it dispatches the next phase (e.g. QA).
+        eventBus.suspendPhaseGate();
+        await this.handleConflict(phase, worktreePath, target);
+      }
+    } catch (err) {
+      // Unexpected error — release the gate to avoid deadlocking the executor.
+      eventBus.releasePhaseGate();
+      throw err;
     }
   }
 

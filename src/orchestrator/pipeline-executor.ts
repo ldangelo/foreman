@@ -345,6 +345,17 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
     // Emit phase:complete
     ctx.eventBus?.safeEmit({ type: "phase:complete", runId, phase: phaseName, worktreePath, cost: result.costUsd });
 
+    // Wait for any phase gate opened by a phase:complete handler (e.g. RebaseHook).
+    // Returns true when the pipeline should suspend — stop the phase loop so the
+    // caller (agent-worker) can dispatch the appropriate follow-up work.
+    if (ctx.eventBus) {
+      const shouldSuspend = await ctx.eventBus.waitForPhaseGate();
+      if (shouldSuspend) {
+        ctx.log(`[PIPELINE] Suspended after ${phaseName} — mid-pipeline hook requested suspension`);
+        return;
+      }
+    }
+
     // 8. Handle success: send phase-complete, labels, forward artifact
     if (phase.mail?.onComplete !== false) {
       ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
