@@ -144,7 +144,7 @@ If the env var is absent or unrecognized, it falls back to `git`.
 
 ## Git-Specific Options
 
-### `git.useTown`
+### `vcs.git.useTown`
 
 Controls whether `detectDefaultBranch()` uses git-town configuration.
 
@@ -163,7 +163,7 @@ Set `useTown: false` if you don't use git-town and want to skip that lookup.
 
 ## Jujutsu-Specific Options
 
-### `jujutsu.minVersion`
+### `vcs.jujutsu.minVersion`
 
 Specifies the minimum acceptable jj CLI version. Validated by `foreman doctor`.
 
