@@ -59,6 +59,20 @@ export interface BrComment {
 // ── Low-level helper ────────────────────────────────────────────────────
 
 /**
+ * Normalize a single bead object: remap `issue_type` → `type` so all
+ * downstream code can use the stable `BrIssue.type` field regardless of
+ * which br command produced the object.
+ */
+function normalizeBead(item: unknown): unknown {
+  if (item == null || typeof item !== "object" || Array.isArray(item)) return item;
+  const obj = item as Record<string, unknown>;
+  if ("issue_type" in obj && !("type" in obj)) {
+    obj.type = obj.issue_type;
+  }
+  return obj;
+}
+
+/**
  * Unwrap the br CLI JSON response.
  *
  * br returns objects directly (not wrapped in an envelope like sd).
@@ -67,20 +81,22 @@ export interface BrComment {
 export function unwrapBrResponse(raw: unknown): unknown {
   if (raw == null || typeof raw !== "object") return raw;
 
-  // br list returns array directly
-  if (Array.isArray(raw)) return raw;
-
-  // br create returns { id, ... } directly — check for error field
-  const obj = raw as Record<string, unknown>;
-  if (obj.success === false && typeof obj.error === "string") {
-    throw new Error(obj.error);
+  // br list/ready return { issues: [...] } envelope
+  if (!Array.isArray(raw)) {
+    const obj = raw as Record<string, unknown>;
+    if (obj.success === false && typeof obj.error === "string") {
+      throw new Error(obj.error);
+    }
+    if ("issues" in obj && Array.isArray(obj.issues)) {
+      return (obj.issues as unknown[]).map(normalizeBead);
+    }
+    if ("issue" in obj && obj.issue != null) return normalizeBead(obj.issue);
+    // Single object (e.g. br create result) — normalize in place
+    return normalizeBead(raw);
   }
 
-  // Unwrap known envelope keys (br may use these in some versions)
-  if ("issues" in obj && Array.isArray(obj.issues)) return obj.issues;
-  if ("issue" in obj && obj.issue != null) return obj.issue;
-
-  return raw;
+  // Plain array (e.g. br show returns [{...}])
+  return (raw as unknown[]).map(normalizeBead);
 }
 
 export async function execBr(
