@@ -126,6 +126,7 @@ function makeMockStore(opts: {
       },
     ),
     getEvents: vi.fn((projectId: string) => opts.events?.[projectId] ?? []),
+    getSuccessRate: vi.fn(() => ({ rate: null, merged: 0, failed: 0 })),
   };
 }
 
