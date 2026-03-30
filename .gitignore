@@ -43,3 +43,4 @@ RUN_LOG.md
 .claude/settings.local.json
 .claude/worktrees/
 var/
+dist-new-*/
