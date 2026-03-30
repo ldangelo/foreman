@@ -120,6 +120,8 @@ function makeStore(): ForemanStore {
     logEvent: vi.fn(),
     sendMessage: vi.fn(),
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-001" }),
+    hasNativeTasks: vi.fn().mockReturnValue(false),
+    getReadyTasks: vi.fn().mockReturnValue([]),
   } as unknown as ForemanStore;
 }
 
@@ -129,7 +131,7 @@ function makeSeeds(issue?: Partial<Issue>): ITaskClient {
     title: "Test Seed",
     status: "open",
     priority: "P2",
-    type: "feature",
+    type: "task",
     assignee: null,
     parent: null,
     created_at: new Date().toISOString(),

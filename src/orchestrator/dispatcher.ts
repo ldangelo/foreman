@@ -7,7 +7,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
-import type { ForemanStore } from "../lib/store.js";
+import type { ForemanStore, NativeTask } from "../lib/store.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache } from "../lib/git.js";
@@ -34,6 +34,53 @@ import type {
   ModelSelection,
   PlanStepDispatched,
 } from "./types.js";
+
+// ── Task store resolution (REQ-014 / REQ-017) ────────────────────────────
+
+/**
+ * Valid values for the FOREMAN_TASK_STORE environment variable.
+ * - 'native': force native SQLite tasks table even if empty
+ * - 'beads': force BeadsRustClient fallback even if native tasks exist
+ * - 'auto' / undefined: auto-detect based on hasNativeTasks()
+ */
+export type TaskStoreMode = "native" | "beads" | "auto";
+
+/**
+ * Resolve the task store mode from the FOREMAN_TASK_STORE environment variable.
+ *
+ * Invalid values are treated as 'auto' and a warning is emitted.
+ */
+export function resolveTaskStoreMode(): TaskStoreMode {
+  const raw = process.env.FOREMAN_TASK_STORE;
+  if (!raw || raw === "auto") return "auto";
+  if (raw === "native" || raw === "beads") return raw;
+  console.error(
+    `[dispatch] Warning: FOREMAN_TASK_STORE='${raw}' is not valid ('native'|'beads'|'auto'). Treating as 'auto'.`,
+  );
+  return "auto";
+}
+
+/**
+ * Convert a NativeTask row into a normalized Issue so that native tasks can be
+ * processed by the same dispatch loop that handles Beads issues.
+ *
+ * Priority is stored as INTEGER (0–4) in the native store; normalise to string
+ * form ('P0'–'P4') so the existing normalizePriority() helper works correctly.
+ */
+export function nativeTaskToIssue(task: NativeTask): Issue {
+  return {
+    id: task.id,
+    title: task.title,
+    type: task.type,
+    priority: `P${task.priority}`,
+    status: task.status,
+    assignee: null,
+    parent: null,
+    created_at: task.created_at,
+    updated_at: task.updated_at,
+    description: task.description ?? undefined,
+  };
+}
 
 // ── Dispatcher ──────────────────────────────────────────────────────────
 
@@ -131,11 +178,75 @@ export class Dispatcher {
       console.error(`[bead-writer] Warning: drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
     }
 
+    // Clear br's blocked_issues_cache before querying ready seeds.
+    // The cache goes stale when beads are closed by the refinery, auto-close
+    // logic, or manual operations outside br's normal flow.
+    try {
+      execFileSync("sqlite3", [
+        join(this.projectPath, ".beads", "beads.db"),
+        "DELETE FROM blocked_issues_cache;",
+      ], { timeout: 5000 });
+    } catch {
+      // sqlite3 not available or .beads/beads.db missing — non-fatal
+    }
+
+    // ── onError=stop guard ─────────────────────────────────────────────────
+    // When the workflow's onError is "stop", refuse to dispatch if any recent
+    // runs ended in a terminal failure state.
+    try {
+      const wfConfig = loadWorkflowConfig("default", this.projectPath);
+      if (wfConfig.onError === "stop") {
+        const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const failureStatuses: Array<"test-failed" | "failed" | "stuck" | "conflict"> =
+          ["test-failed", "failed", "stuck", "conflict"];
+        const failedRuns = this.store.getRunsByStatusesSince(failureStatuses, since, projectId);
+        if (failedRuns.length > 0) {
+          log(`[dispatch] onError=stop — ${failedRuns.length} failed run(s) detected. Refusing to dispatch until resolved. Use 'foreman reset' to clear.`);
+          return {
+            dispatched: [],
+            skipped: [],
+            resumed: [],
+            activeAgents: this.store.getActiveRuns(projectId).length,
+          };
+        }
+      }
+    } catch {
+      // Workflow config not found — continue with default behavior
+    }
+
     // Determine how many agent slots are available
     const activeRuns = this.store.getActiveRuns(projectId);
     const available = Math.max(0, maxAgents - activeRuns.length);
 
-    let readySeeds = await this.getReadyTasks();
+    // ── Task store coexistence (REQ-014 / REQ-017) ────────────────────────
+    // Decide whether to query the native SQLite task store or fall back to
+    // the BeadsRustClient based on FOREMAN_TASK_STORE and hasNativeTasks().
+    const taskStoreMode = resolveTaskStoreMode();
+    let usingNativeStore = false;
+
+    if (taskStoreMode === "native") {
+      usingNativeStore = true;
+      console.error("[dispatch] FOREMAN_TASK_STORE=native — using native task store");
+    } else if (taskStoreMode === "beads") {
+      usingNativeStore = false;
+      console.error("[dispatch] FOREMAN_TASK_STORE=beads — using beads fallback");
+    } else {
+      // 'auto': use native if tasks exist, otherwise fall back to beads
+      usingNativeStore = this.store.hasNativeTasks();
+      if (usingNativeStore) {
+        console.error("[dispatch] Native tasks detected — using native task store (AC-014.1)");
+      } else {
+        console.error("[dispatch] No native tasks — using beads fallback (AC-014.1)");
+      }
+    }
+
+    let readySeeds: Issue[];
+    if (usingNativeStore) {
+      const nativeTasks = this.store.getReadyTasks();
+      readySeeds = nativeTasks.map(nativeTaskToIssue);
+    } else {
+      readySeeds = await this.seeds.ready();
+    }
 
     // Sort ready seeds using bv triage scores when available, falling back to priority sort.
     if (!opts?.seedId) {
@@ -256,6 +367,70 @@ export class Dispatcher {
           title: seed.title,
           reason: "Has completed run awaiting merge — run 'foreman merge' or wait for auto-merge",
         });
+        continue;
+      }
+
+      // ── Auto-close feature/epic containers ────────────────────────────────
+      // Feature and epic beads are organizational containers — never dispatch
+      // agents for them. Instead, check if all children are closed and auto-close
+      // the container bead when they are.
+      if (seed.type === "feature" || seed.type === "epic") {
+        try {
+          const detail = await this.seeds.show(seed.id);
+          const detailWithChildren = detail as { children?: string[]; status: string };
+          const childIds = detailWithChildren.children ?? [];
+
+          if (childIds.length === 0) {
+            // No children — close the container directly
+            await this.seeds.close(seed.id, "Auto-closed: no children (empty container)");
+            log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — no children`);
+            skipped.push({
+              seedId: seed.id,
+              title: seed.title,
+              reason: `Type '${seed.type}' auto-closed — no children`,
+            });
+          } else {
+            // Check each child's status
+            let openCount = 0;
+            for (const childId of childIds) {
+              try {
+                const child = await this.seeds.show(childId);
+                if (child.status !== "closed" && child.status !== "completed") {
+                  openCount++;
+                }
+              } catch {
+                // If we can't check a child, assume it's still open to be safe
+                openCount++;
+              }
+            }
+
+            if (openCount === 0) {
+              await this.seeds.close(seed.id, "Auto-closed: all children completed");
+              log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — all children completed`);
+              skipped.push({
+                seedId: seed.id,
+                title: seed.title,
+                reason: `Type '${seed.type}' auto-closed — all ${childIds.length} children completed`,
+              });
+            } else {
+              log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — waiting on ${openCount} open children`);
+              skipped.push({
+                seedId: seed.id,
+                title: seed.title,
+                reason: `Type '${seed.type}' is an organizational container — waiting on ${openCount} open child${openCount === 1 ? "" : "ren"}`,
+              });
+            }
+          }
+        } catch (err: unknown) {
+          // If we can't inspect the container, skip it rather than crashing
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — failed to check children: ${msg}`);
+          skipped.push({
+            seedId: seed.id,
+            title: seed.title,
+            reason: `Type '${seed.type}' is an organizational container — skipped (error checking children)`,
+          });
+        }
         continue;
       }
 
@@ -501,15 +676,25 @@ export class Dispatcher {
         }
 
         // 6. Mark seed as in_progress before spawning agent.
-        // When native task store is active, use atomic claim() transaction (REQ-020).
-        // Otherwise fall back to beads update (may fail non-fatally for stale cache).
-        const nativeMode = this.resolveNativeMode();
-        if (nativeMode && this.taskStore) {
-          try {
-            this.taskStore.claim(seed.id, run.id);
-          } catch (claimErr: unknown) {
-            const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
-            console.error(`[dispatch] Warning: native claim failed for ${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+        if (usingNativeStore) {
+          // Atomic claim: UPDATE tasks SET status='in-progress', run_id=? WHERE id=? AND status='ready'
+          // REQ-017 AC-017.2: claim + run_id linkage in one transaction (prevents double-dispatch).
+          const claimed = this.store.claimTask(seed.id, run.id);
+          if (!claimed) {
+            // Another dispatcher instance claimed this task between our getReadyTasks() query
+            // and now — skip it and clean up the run we just created.
+            skipped.push({
+              seedId: seed.id,
+              title: seed.title,
+              reason: "Already claimed by another dispatcher (atomic claim failed)",
+            });
+            // Best-effort cleanup: mark run as failed so it doesn't appear as active
+            try {
+              this.store.updateRun(run.id, { status: "failed", completed_at: new Date().toISOString() });
+            } catch {
+              // Non-fatal — run cleanup is best-effort
+            }
+            continue;
           }
         } else {
           // Non-fatal: br may reject the claim due to stale blocked cache (beads_rust#204).
@@ -1059,8 +1244,8 @@ export class Dispatcher {
 
         switch (entry.operation) {
           case "close-seed":
-            // Use --no-db to write directly to JSONL, bypassing broken DB cache (beads_rust#204).
-            execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
+            // Use --no-db to write directly to JSONL, bypassing the SQLite blocked cache.
+            execFileSync(bin, ["close", seedId, "--no-db", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
             console.error(`[bead-writer] Closed seed ${seedId} via --no-db (from ${entry.sender})`);
             break;
 
@@ -1253,10 +1438,10 @@ export interface WorkerConfig {
    */
   targetBranch?: string;
   /**
-   * Task ID from the native task store (null when using beads fallback mode).
-   * Populated by Dispatcher when FOREMAN_TASK_STORE=native or when native tasks
-   * are auto-detected.  Pipeline executor uses this for phase progress updates.
-   * Null means phase updates are no-ops (REQ-020 backward compatibility).
+   * Optional task ID from native task store (NativeTaskStore.claim()).
+   * When present, pipeline will call taskStore.updatePhase(taskId, phaseName)
+   * at each phase transition for phase-level visibility (REQ-012).
+   * Null/undefined in beads fallback mode — no-op via optional chaining.
    */
   taskId?: string | null;
 }

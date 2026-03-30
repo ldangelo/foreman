@@ -39,7 +39,7 @@ describe("closeSeed — br backend", () => {
     delete process.env.FOREMAN_TASK_BACKEND;
   });
 
-  it("calls br close --no-db --force with seedId (beads_rust#204 workaround)", async () => {
+  it("calls br close --no-db with seedId (JSONL-direct close)", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await closeSeed("bd-abc-001");
@@ -48,7 +48,7 @@ describe("closeSeed — br backend", () => {
     expect(cmd).toContain("br");
     expect(args[0]).toBe("close");
     expect(args).toContain("--no-db");
-    expect(args).toContain("--force");
+    expect(args).not.toContain("--force");
     expect(args).toContain("bd-abc-001");
   });
 
@@ -78,7 +78,7 @@ describe("closeSeed — br backend", () => {
     await expect(closeSeed("bd-fail-002")).resolves.toBeUndefined();
   });
 
-  it("passes --no-db --force flags for JSONL-direct close (beads_rust#204)", async () => {
+  it("passes --no-db flag without --force for JSONL-direct close", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await closeSeed("bd-reason-test");
@@ -86,7 +86,7 @@ describe("closeSeed — br backend", () => {
     const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(args[0]).toBe("close");
     expect(args).toContain("--no-db");
-    expect(args).toContain("--force");
+    expect(args).not.toContain("--force");
   });
 
   it("defaults to br backend when FOREMAN_TASK_BACKEND is not set", async () => {
@@ -104,7 +104,7 @@ describe("closeSeed — br backend", () => {
     await closeSeed("bd-flush-test", "/my/project");
 
     // Two execFileSync calls:
-    // 1. br close --no-db --force (write to JSONL)
+    // 1. br close --no-db (write to JSONL)
     // 2. sqlite3 ... DELETE FROM blocked_issues_cache; (clear cache)
     expect(mockExecFileSync).toHaveBeenCalledTimes(2);
     const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];

@@ -56,6 +56,8 @@ import { purgeLogsCommand } from "./commands/purge-logs.js";
 import { inboxCommand } from "./commands/inbox.js";
 import { mailCommand } from "./commands/mail.js";
 import { debugCommand } from "./commands/debug.js";
+import { projectCommand } from "./commands/project.js";
+import { recoverCommand } from "./commands/recover.js";
 
 const program = new Command();
 
@@ -86,5 +88,7 @@ program.addCommand(purgeLogsCommand);
 program.addCommand(inboxCommand);
 program.addCommand(mailCommand);
 program.addCommand(debugCommand);
+program.addCommand(projectCommand);
+program.addCommand(recoverCommand);
 
 program.parse();

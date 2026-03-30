@@ -1,11 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { Run, RunProgress, Project, Metrics, Event } from "../../lib/store.js";
+import { ForemanStore } from "../../lib/store.js";
+import type { Run, RunProgress, Project, Metrics, Event, NativeTask } from "../../lib/store.js";
 import {
   renderEventLine,
   renderProjectHeader,
   renderDashboard,
   pollDashboard,
+  renderNeedsHumanPanel,
+  renderProjectAgentPanel,
+  sortNeedsHumanTasks,
+  readProjectSnapshot,
+  aggregateSnapshots,
+  approveTask,
+  retryTask,
   type DashboardState,
+  type ProjectSnapshot,
+  type RegisteredProject,
 } from "../commands/dashboard.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
@@ -126,6 +136,7 @@ function makeMockStore(opts: {
       },
     ),
     getEvents: vi.fn((projectId: string) => opts.events?.[projectId] ?? []),
+    getSuccessRate: vi.fn(() => ({ rate: null, merged: 0, failed: 0 })),
   };
 }
 
@@ -410,5 +421,338 @@ describe("pollDashboard", () => {
     const after = Date.now();
     expect(state.lastUpdated.getTime()).toBeGreaterThanOrEqual(before);
     expect(state.lastUpdated.getTime()).toBeLessThanOrEqual(after);
+  });
+});
+
+// ── NativeTask fixture helper ─────────────────────────────────────────────
+
+function makeNativeTask(overrides?: Partial<NativeTask>): NativeTask {
+  return {
+    id: "task-001",
+    title: "Fix authentication bug",
+    description: null,
+    type: "task",
+    priority: 2,
+    status: "backlog",
+    run_id: null,
+    branch: null,
+    external_id: null,
+    created_at: new Date(Date.now() - 3_600_000).toISOString(),
+    updated_at: new Date(Date.now() - 1_800_000).toISOString(),
+    approved_at: null,
+    closed_at: null,
+    ...overrides,
+  };
+}
+
+function makeProjectSnapshot(overrides?: Partial<ProjectSnapshot>): ProjectSnapshot {
+  const project = makeProject();
+  return {
+    project,
+    activeRuns: [],
+    completedRuns: [],
+    progresses: new Map(),
+    metrics: makeMetrics(),
+    events: [],
+    successRate: { rate: null, merged: 0, failed: 0 },
+    needsHumanTasks: [],
+    offline: false,
+    ...overrides,
+  };
+}
+
+// ── sortNeedsHumanTasks() ─────────────────────────────────────────────────
+
+describe("sortNeedsHumanTasks", () => {
+  it("sorts conflict before failed before stuck before backlog", () => {
+    const tasks = [
+      makeNativeTask({ id: "t1", status: "backlog", priority: 0 }),
+      makeNativeTask({ id: "t2", status: "stuck", priority: 0 }),
+      makeNativeTask({ id: "t3", status: "conflict", priority: 0 }),
+      makeNativeTask({ id: "t4", status: "failed", priority: 0 }),
+    ];
+    const sorted = sortNeedsHumanTasks(tasks);
+    expect(sorted.map((t) => t.status)).toEqual(["conflict", "failed", "stuck", "backlog"]);
+  });
+
+  it("sorts by priority (P0 first) within same status", () => {
+    const tasks = [
+      makeNativeTask({ id: "t1", status: "failed", priority: 3 }),
+      makeNativeTask({ id: "t2", status: "failed", priority: 0 }),
+      makeNativeTask({ id: "t3", status: "failed", priority: 1 }),
+    ];
+    const sorted = sortNeedsHumanTasks(tasks);
+    expect(sorted.map((t) => t.priority)).toEqual([0, 1, 3]);
+  });
+
+  it("sorts by age (oldest updated_at first) within same status and priority", () => {
+    const old = new Date(Date.now() - 7_200_000).toISOString();
+    const recent = new Date(Date.now() - 1_000).toISOString();
+    const tasks = [
+      makeNativeTask({ id: "t1", status: "stuck", priority: 1, updated_at: recent }),
+      makeNativeTask({ id: "t2", status: "stuck", priority: 1, updated_at: old }),
+    ];
+    const sorted = sortNeedsHumanTasks(tasks);
+    expect(sorted[0].id).toBe("t2"); // older first
+    expect(sorted[1].id).toBe("t1");
+  });
+
+  it("returns empty array for empty input", () => {
+    expect(sortNeedsHumanTasks([])).toEqual([]);
+  });
+
+  it("does not mutate the input array", () => {
+    const tasks = [
+      makeNativeTask({ id: "t1", status: "backlog", priority: 2 }),
+      makeNativeTask({ id: "t2", status: "conflict", priority: 2 }),
+    ];
+    const original = [...tasks];
+    sortNeedsHumanTasks(tasks);
+    expect(tasks).toEqual(original);
+  });
+});
+
+// ── renderNeedsHumanPanel() ───────────────────────────────────────────────
+
+describe("renderNeedsHumanPanel", () => {
+  it("returns empty string when no tasks", () => {
+    expect(renderNeedsHumanPanel([])).toBe("");
+  });
+
+  it("shows NEEDS HUMAN ATTENTION header when tasks exist", () => {
+    const output = renderNeedsHumanPanel([makeNativeTask()]);
+    expect(output).toContain("NEEDS HUMAN ATTENTION");
+  });
+
+  it("shows task title in output", () => {
+    const output = renderNeedsHumanPanel([makeNativeTask({ title: "My broken task" })]);
+    expect(output).toContain("My broken task");
+  });
+
+  it("shows task status in output", () => {
+    const output = renderNeedsHumanPanel([makeNativeTask({ status: "conflict" })]);
+    expect(output.toUpperCase()).toContain("CONFLICT");
+  });
+
+  it("shows priority label", () => {
+    const output = renderNeedsHumanPanel([makeNativeTask({ priority: 0 })]);
+    expect(output).toContain("P0");
+  });
+
+  it("shows project name when available", () => {
+    const output = renderNeedsHumanPanel([makeNativeTask({ projectName: "my-api" })]);
+    expect(output).toContain("my-api");
+  });
+
+  it("truncates display to maxRows and shows overflow count", () => {
+    const tasks = Array.from({ length: 15 }, (_, i) =>
+      makeNativeTask({ id: `t${i}`, title: `Task ${i}` })
+    );
+    const output = renderNeedsHumanPanel(tasks, 5);
+    expect(output).toContain("10 more");
+  });
+
+  it("shows all tasks when count <= maxRows", () => {
+    const tasks = [
+      makeNativeTask({ id: "t1", title: "First task" }),
+      makeNativeTask({ id: "t2", title: "Second task" }),
+    ];
+    const output = renderNeedsHumanPanel(tasks, 10);
+    expect(output).toContain("First task");
+    expect(output).toContain("Second task");
+    expect(output).not.toContain("more");
+  });
+});
+
+// ── renderProjectAgentPanel() ─────────────────────────────────────────────
+
+describe("renderProjectAgentPanel", () => {
+  it("shows [offline] indicator when project is offline", () => {
+    const project = makeProject({ name: "remote-project" });
+    const output = renderProjectAgentPanel(project, [], [], new Map(), makeMetrics(), [], true);
+    expect(output).toContain("[offline]");
+  });
+
+  it("shows project name", () => {
+    const project = makeProject({ name: "my-project" });
+    const output = renderProjectAgentPanel(project, [], [], new Map(), makeMetrics(), [], false);
+    expect(output).toContain("my-project");
+  });
+
+  it("shows 'no agents running' when active runs are empty", () => {
+    const project = makeProject();
+    const output = renderProjectAgentPanel(project, [], [], new Map(), makeMetrics(), [], false);
+    expect(output).toContain("no agents running");
+  });
+
+  it("shows RECENT EVENTS when events exist", () => {
+    const project = makeProject();
+    const event = makeEvent({ project_id: project.id });
+    const output = renderProjectAgentPanel(project, [], [], new Map(), makeMetrics(), [event], false);
+    expect(output).toContain("RECENT EVENTS");
+  });
+});
+
+// ── aggregateSnapshots() ─────────────────────────────────────────────────
+
+describe("aggregateSnapshots", () => {
+  it("merges multiple project snapshots into a single DashboardState", () => {
+    const proj1 = makeProject({ id: "proj-1", name: "p1" });
+    const proj2 = makeProject({ id: "proj-2", name: "p2" });
+    const snap1 = makeProjectSnapshot({ project: proj1 });
+    const snap2 = makeProjectSnapshot({ project: proj2 });
+    const state = aggregateSnapshots([snap1, snap2]);
+    expect(state.projects).toHaveLength(2);
+    expect(state.projects.map((p) => p.id)).toContain("proj-1");
+    expect(state.projects.map((p) => p.id)).toContain("proj-2");
+  });
+
+  it("marks offline projects in offlineProjects set", () => {
+    const proj = makeProject({ id: "proj-offline" });
+    const snap = makeProjectSnapshot({ project: proj, offline: true });
+    const state = aggregateSnapshots([snap]);
+    expect(state.offlineProjects?.has("proj-offline")).toBe(true);
+  });
+
+  it("aggregates needsHumanTasks from all projects and sorts them", () => {
+    const proj1 = makeProject({ id: "proj-1" });
+    const proj2 = makeProject({ id: "proj-2" });
+    const snap1 = makeProjectSnapshot({
+      project: proj1,
+      needsHumanTasks: [makeNativeTask({ id: "t1", status: "backlog", priority: 1 })],
+    });
+    const snap2 = makeProjectSnapshot({
+      project: proj2,
+      needsHumanTasks: [makeNativeTask({ id: "t2", status: "conflict", priority: 2 })],
+    });
+    const state = aggregateSnapshots([snap1, snap2]);
+    expect(state.needsHumanTasks).toHaveLength(2);
+    // conflict should come first
+    expect(state.needsHumanTasks![0].status).toBe("conflict");
+  });
+
+  it("sets lastUpdated to a recent timestamp", () => {
+    const before = Date.now();
+    const state = aggregateSnapshots([]);
+    expect(state.lastUpdated.getTime()).toBeGreaterThanOrEqual(before);
+  });
+
+  it("returns empty projects when snapshots is empty", () => {
+    const state = aggregateSnapshots([]);
+    expect(state.projects).toHaveLength(0);
+    expect(state.needsHumanTasks).toHaveLength(0);
+  });
+});
+
+// ── readProjectSnapshot() ─────────────────────────────────────────────────
+
+describe("readProjectSnapshot", () => {
+  it("returns an offline snapshot for a project with no DB file", async () => {
+    const project: RegisteredProject = {
+      id: "proj-missing",
+      name: "missing-project",
+      path: "/nonexistent/path",
+    };
+    const snapshots = await readProjectSnapshot([project]);
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].offline).toBe(true);
+  });
+
+  it("returns an array of snapshots for each project", async () => {
+    const projects: RegisteredProject[] = [
+      { id: "p1", name: "first", path: "/nonexistent/p1" },
+      { id: "p2", name: "second", path: "/nonexistent/p2" },
+    ];
+    const snapshots = await readProjectSnapshot(projects);
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots.every((s) => s.offline)).toBe(true);
+  });
+
+  it("returns empty array for empty input", async () => {
+    const snapshots = await readProjectSnapshot([]);
+    expect(snapshots).toHaveLength(0);
+  });
+
+  it("handles a mix of accessible and inaccessible projects", async () => {
+    const projects: RegisteredProject[] = [
+      { id: "p-missing", name: "missing", path: "/nonexistent" },
+    ];
+    const snapshots = await readProjectSnapshot(projects);
+    expect(snapshots[0].offline).toBe(true);
+    expect(snapshots[0].project.name).toBe("missing");
+  });
+});
+
+// ── renderDashboard() with needsHumanTasks ────────────────────────────────
+
+describe("renderDashboard with needsHumanTasks", () => {
+  it("shows NEEDS HUMAN ATTENTION when needsHumanTasks is non-empty", () => {
+    const state = makeDashboardState({
+      needsHumanTasks: [makeNativeTask({ status: "conflict", title: "Merge conflict in auth" })],
+    });
+    const output = renderDashboard(state);
+    expect(output).toContain("NEEDS HUMAN ATTENTION");
+    expect(output).toContain("Merge conflict in auth");
+  });
+
+  it("does not show NEEDS HUMAN ATTENTION when there are no such tasks", () => {
+    const state = makeDashboardState({ needsHumanTasks: [] });
+    const output = renderDashboard(state);
+    expect(output).not.toContain("NEEDS HUMAN ATTENTION");
+  });
+
+  it("shows offline indicator for offline projects", () => {
+    const proj = makeProject({ id: "proj-x" });
+    const state = makeDashboardState({
+      projects: [proj],
+      offlineProjects: new Set(["proj-x"]),
+      activeRuns: new Map([["proj-x", []]]),
+      completedRuns: new Map([["proj-x", []]]),
+      metrics: new Map([["proj-x", makeMetrics()]]),
+      events: new Map([["proj-x", []]]),
+    });
+    const output = renderDashboard(state);
+    expect(output).toContain("[offline]");
+  });
+});
+
+// ── approveTask() / retryTask() ───────────────────────────────────────────
+
+describe("approveTask and retryTask", () => {
+  it("approveTask calls updateTaskStatus with 'ready'", () => {
+    const mockUpdateTaskStatus = vi.fn();
+    const mockClose = vi.fn();
+    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
+      updateTaskStatus: mockUpdateTaskStatus,
+      close: mockClose,
+    } as unknown as ForemanStore);
+
+    approveTask("task-001", "/some/project");
+    expect(mockUpdateTaskStatus).toHaveBeenCalledWith("task-001", "ready");
+    expect(mockClose).toHaveBeenCalled();
+  });
+
+  it("retryTask calls updateTaskStatus with 'backlog'", () => {
+    const mockUpdateTaskStatus = vi.fn();
+    const mockClose = vi.fn();
+    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
+      updateTaskStatus: mockUpdateTaskStatus,
+      close: mockClose,
+    } as unknown as ForemanStore);
+
+    retryTask("task-001", "/some/project");
+    expect(mockUpdateTaskStatus).toHaveBeenCalledWith("task-001", "backlog");
+    expect(mockClose).toHaveBeenCalled();
+  });
+
+  it("approveTask closes the store even if updateTaskStatus throws", () => {
+    const mockClose = vi.fn();
+    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
+      updateTaskStatus: vi.fn().mockImplementation(() => { throw new Error("DB error"); }),
+      close: mockClose,
+    } as unknown as ForemanStore);
+
+    expect(() => approveTask("task-001", "/some/project")).toThrow("DB error");
+    expect(mockClose).toHaveBeenCalled();
   });
 });
