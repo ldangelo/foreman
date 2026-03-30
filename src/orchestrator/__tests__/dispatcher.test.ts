@@ -1009,3 +1009,249 @@ describe("PLAN_STEP_CONFIG", () => {
     expect(PLAN_STEP_CONFIG.maxTurns).toBe(50);
   });
 });
+
+// ── NativeTaskStore integration ──────────────────────────────────────────
+
+import { NativeTaskStore } from "../../lib/task-store.js";
+
+describe("Dispatcher.getReadyTasks() — native vs beads routing", () => {
+  function makeIssue(id: string): Issue {
+    return {
+      id,
+      title: `Task ${id}`,
+      status: "ready",
+      priority: "P2",
+      type: "task",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  function makeBeadsClient(issues: Issue[]): ITaskClient {
+    return {
+      ready: vi.fn().mockResolvedValue(issues),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+  }
+
+  function makeStore(): ForemanStore {
+    return {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+    } as unknown as ForemanStore;
+  }
+
+  it("uses beads fallback when no taskStore is injected", async () => {
+    const beadsIssues = [makeIssue("bd-001")];
+    const seedsClient = makeBeadsClient(beadsIssues);
+    const dispatcher = new Dispatcher(seedsClient, makeStore(), "/tmp");
+
+    const tasks = await dispatcher.getReadyTasks();
+    expect(tasks).toEqual(beadsIssues);
+    expect(seedsClient.ready).toHaveBeenCalledOnce();
+  });
+
+  it("uses beads fallback when taskStore is injected but has no tasks", async () => {
+    const beadsIssues = [makeIssue("bd-001")];
+    const seedsClient = makeBeadsClient(beadsIssues);
+
+    const mockTaskStore = {
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      list: vi.fn().mockReturnValue([]),
+      claim: vi.fn(),
+      updatePhase: vi.fn(),
+      updateStatus: vi.fn(),
+    } as unknown as NativeTaskStore;
+
+    const dispatcher = new Dispatcher(seedsClient, makeStore(), "/tmp", null, mockTaskStore);
+
+    const tasks = await dispatcher.getReadyTasks();
+    expect(tasks).toEqual(beadsIssues);
+    expect(seedsClient.ready).toHaveBeenCalledOnce();
+    expect(mockTaskStore.list).not.toHaveBeenCalled();
+  });
+
+  it("uses native store when taskStore is injected and has tasks", async () => {
+    const nativeIssues = [makeIssue("task-001")];
+    const seedsClient = makeBeadsClient([makeIssue("bd-001")]);
+
+    const mockTaskStore = {
+      hasNativeTasks: vi.fn().mockReturnValue(true),
+      list: vi.fn().mockReturnValue(nativeIssues),
+      claim: vi.fn(),
+      updatePhase: vi.fn(),
+      updateStatus: vi.fn(),
+    } as unknown as NativeTaskStore;
+
+    const dispatcher = new Dispatcher(seedsClient, makeStore(), "/tmp", null, mockTaskStore);
+
+    const tasks = await dispatcher.getReadyTasks();
+    expect(tasks).toEqual(nativeIssues);
+    expect(mockTaskStore.list).toHaveBeenCalledWith({ status: "ready" });
+    expect(seedsClient.ready).not.toHaveBeenCalled();
+  });
+
+  it("forces beads when FOREMAN_TASK_STORE=beads even if native tasks exist", async () => {
+    const beadsIssues = [makeIssue("bd-001")];
+    const seedsClient = makeBeadsClient(beadsIssues);
+
+    const mockTaskStore = {
+      hasNativeTasks: vi.fn().mockReturnValue(true),
+      list: vi.fn().mockReturnValue([makeIssue("task-001")]),
+      claim: vi.fn(),
+      updatePhase: vi.fn(),
+      updateStatus: vi.fn(),
+    } as unknown as NativeTaskStore;
+
+    const orig = process.env.FOREMAN_TASK_STORE;
+    process.env.FOREMAN_TASK_STORE = "beads";
+    try {
+      const dispatcher = new Dispatcher(seedsClient, makeStore(), "/tmp", null, mockTaskStore);
+      const tasks = await dispatcher.getReadyTasks();
+      expect(tasks).toEqual(beadsIssues);
+      expect(seedsClient.ready).toHaveBeenCalledOnce();
+      expect(mockTaskStore.list).not.toHaveBeenCalled();
+    } finally {
+      if (orig === undefined) {
+        delete process.env.FOREMAN_TASK_STORE;
+      } else {
+        process.env.FOREMAN_TASK_STORE = orig;
+      }
+    }
+  });
+
+  it("forces native store when FOREMAN_TASK_STORE=native even if no tasks", async () => {
+    const seedsClient = makeBeadsClient([makeIssue("bd-001")]);
+
+    const mockTaskStore = {
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      list: vi.fn().mockReturnValue([]),
+      claim: vi.fn(),
+      updatePhase: vi.fn(),
+      updateStatus: vi.fn(),
+    } as unknown as NativeTaskStore;
+
+    const orig = process.env.FOREMAN_TASK_STORE;
+    process.env.FOREMAN_TASK_STORE = "native";
+    try {
+      const dispatcher = new Dispatcher(seedsClient, makeStore(), "/tmp", null, mockTaskStore);
+      const tasks = await dispatcher.getReadyTasks();
+      expect(tasks).toEqual([]);
+      expect(mockTaskStore.list).toHaveBeenCalledWith({ status: "ready" });
+      expect(seedsClient.ready).not.toHaveBeenCalled();
+    } finally {
+      if (orig === undefined) {
+        delete process.env.FOREMAN_TASK_STORE;
+      } else {
+        process.env.FOREMAN_TASK_STORE = orig;
+      }
+    }
+  });
+
+  it("ignores invalid FOREMAN_TASK_STORE and uses auto-detection", async () => {
+    const beadsIssues = [makeIssue("bd-001")];
+    const seedsClient = makeBeadsClient(beadsIssues);
+
+    const mockTaskStore = {
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      list: vi.fn().mockReturnValue([]),
+      claim: vi.fn(),
+      updatePhase: vi.fn(),
+      updateStatus: vi.fn(),
+    } as unknown as NativeTaskStore;
+
+    const orig = process.env.FOREMAN_TASK_STORE;
+    process.env.FOREMAN_TASK_STORE = "invalid-value";
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const dispatcher = new Dispatcher(seedsClient, makeStore(), "/tmp", null, mockTaskStore);
+      const tasks = await dispatcher.getReadyTasks();
+      // Should fall back to beads (hasNativeTasks() = false, so auto → beads)
+      expect(tasks).toEqual(beadsIssues);
+      expect(seedsClient.ready).toHaveBeenCalledOnce();
+      // Should warn about invalid value
+      const warnCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
+      expect(warnCalls.some((msg) => msg.includes("not recognised"))).toBe(true);
+    } finally {
+      if (orig === undefined) {
+        delete process.env.FOREMAN_TASK_STORE;
+      } else {
+        process.env.FOREMAN_TASK_STORE = orig;
+      }
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("FOREMAN_TASK_STORE=native is no-op when no taskStore injected", async () => {
+    const beadsIssues = [makeIssue("bd-001")];
+    const seedsClient = makeBeadsClient(beadsIssues);
+
+    const orig = process.env.FOREMAN_TASK_STORE;
+    process.env.FOREMAN_TASK_STORE = "native";
+    try {
+      // No taskStore injected
+      const dispatcher = new Dispatcher(seedsClient, makeStore(), "/tmp");
+      const tasks = await dispatcher.getReadyTasks();
+      // Should fall back to beads since taskStore is undefined
+      expect(tasks).toEqual(beadsIssues);
+      expect(seedsClient.ready).toHaveBeenCalledOnce();
+    } finally {
+      if (orig === undefined) {
+        delete process.env.FOREMAN_TASK_STORE;
+      } else {
+        process.env.FOREMAN_TASK_STORE = orig;
+      }
+    }
+  });
+});
+
+describe("WorkerConfig — taskId field", () => {
+  it("WorkerConfig type accepts taskId as string or null", () => {
+    // Type-level test: if this compiles, WorkerConfig correctly has the taskId field.
+    const config1: import("../dispatcher.js").WorkerConfig = {
+      runId: "run-1",
+      projectId: "proj-1",
+      seedId: "seed-1",
+      seedTitle: "Test",
+      model: "anthropic/claude-sonnet-4-6",
+      worktreePath: "/tmp/wt",
+      prompt: "Do stuff",
+      env: {},
+      taskId: "native-task-001",  // string
+    };
+    expect(config1.taskId).toBe("native-task-001");
+
+    const config2: import("../dispatcher.js").WorkerConfig = {
+      runId: "run-2",
+      projectId: "proj-2",
+      seedId: "seed-2",
+      seedTitle: "Test 2",
+      model: "anthropic/claude-sonnet-4-6",
+      worktreePath: "/tmp/wt2",
+      prompt: "Do stuff",
+      env: {},
+      taskId: null,  // null (beads fallback)
+    };
+    expect(config2.taskId).toBeNull();
+
+    const config3: import("../dispatcher.js").WorkerConfig = {
+      runId: "run-3",
+      projectId: "proj-3",
+      seedId: "seed-3",
+      seedTitle: "Test 3",
+      model: "anthropic/claude-sonnet-4-6",
+      worktreePath: "/tmp/wt3",
+      prompt: "Do stuff",
+      env: {},
+      // taskId not set (undefined — backward-compatible)
+    };
+    expect(config3.taskId).toBeUndefined();
+  });
+});

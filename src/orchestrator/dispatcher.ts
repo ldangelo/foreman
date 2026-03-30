@@ -14,6 +14,7 @@ import { installDependencies, runSetupWithCache } from "../lib/git.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel } from "../lib/branch-label.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
+import { NativeTaskStore } from "../lib/task-store.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
@@ -44,7 +45,55 @@ export class Dispatcher {
     private store: ForemanStore,
     private projectPath: string,
     private bvClient?: BvClient | null,
+    private taskStore?: NativeTaskStore,
   ) {}
+
+  /**
+   * Return the list of ready tasks, routing through the native task store
+   * when available (REQ-014, REQ-017) or falling back to BeadsRustClient.
+   *
+   * Resolution order (highest priority first):
+   *  1. FOREMAN_TASK_STORE=beads  — always use BeadsRustClient
+   *  2. FOREMAN_TASK_STORE=native — always use NativeTaskStore
+   *  3. auto (default)            — native if NativeTaskStore has rows, else beads
+   */
+  async getReadyTasks(): Promise<Issue[]> {
+    if (this.resolveNativeMode()) {
+      log("[dispatcher] Using native task store (tasks table)");
+      return this.taskStore!.list({ status: "ready" });
+    }
+
+    // Beads fallback path (REQ-020 backward compatibility)
+    log("[dispatcher] Using beads fallback (BeadsRustClient.ready())");
+    return this.seeds.ready();
+  }
+
+  /**
+   * Determine whether native-task-store mode is active.
+   *
+   * Resolution order (highest priority first):
+   *  1. FOREMAN_TASK_STORE=beads  — always false (beads forced)
+   *  2. FOREMAN_TASK_STORE=native — always true  (native forced)
+   *  3. auto                      — true if taskStore injected and has rows
+   *
+   * Also validates FOREMAN_TASK_STORE and emits a warning on invalid values.
+   */
+  private resolveNativeMode(): boolean {
+    const override = process.env.FOREMAN_TASK_STORE;
+
+    // Validate env value; warn on unrecognised values but don't crash.
+    if (override && override !== "native" && override !== "beads") {
+      console.error(
+        `[dispatcher] Warning: FOREMAN_TASK_STORE='${override}' is not recognised ` +
+          `(expected 'native' or 'beads'). Ignoring and using auto-detection.`,
+      );
+    }
+
+    if (override === "beads") return false;
+    if (override === "native") return this.taskStore !== undefined;
+    // Auto-detect: prefer native if NativeTaskStore is injected and has rows.
+    return this.taskStore !== undefined && this.taskStore.hasNativeTasks();
+  }
 
   /**
    * Query ready seeds, create worktrees, write TASK.md, and record runs.
@@ -86,7 +135,7 @@ export class Dispatcher {
     const activeRuns = this.store.getActiveRuns(projectId);
     const available = Math.max(0, maxAgents - activeRuns.length);
 
-    let readySeeds = await this.seeds.ready();
+    let readySeeds = await this.getReadyTasks();
 
     // Sort ready seeds using bv triage scores when available, falling back to priority sort.
     if (!opts?.seedId) {
@@ -452,13 +501,25 @@ export class Dispatcher {
         }
 
         // 6. Mark seed as in_progress before spawning agent.
-        // Non-fatal: br may reject the claim due to stale blocked cache (beads_rust#204).
-        // The agent can still run — the status update is cosmetic.
-        try {
-          await this.seeds.update(seed.id, { status: "in_progress" });
-        } catch (claimErr: unknown) {
-          const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
-          console.error(`[dispatch] Warning: br claim failed for ${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+        // When native task store is active, use atomic claim() transaction (REQ-020).
+        // Otherwise fall back to beads update (may fail non-fatally for stale cache).
+        const nativeMode = this.resolveNativeMode();
+        if (nativeMode && this.taskStore) {
+          try {
+            this.taskStore.claim(seed.id, run.id);
+          } catch (claimErr: unknown) {
+            const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
+            console.error(`[dispatch] Warning: native claim failed for ${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+          }
+        } else {
+          // Non-fatal: br may reject the claim due to stale blocked cache (beads_rust#204).
+          // The agent can still run — the status update is cosmetic.
+          try {
+            await this.seeds.update(seed.id, { status: "in_progress" });
+          } catch (claimErr: unknown) {
+            const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
+            console.error(`[dispatch] Warning: br claim failed for ${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+          }
         }
 
         // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
@@ -475,6 +536,8 @@ export class Dispatcher {
         }
 
         // 7. Spawn the coding agent
+        // Pass taskId from native store (null in beads fallback mode — REQ-020).
+        const taskId = nativeMode ? seed.id : null;
         const { sessionKey } = await this.spawnAgent(
           model,
           worktreePath,
@@ -489,6 +552,7 @@ export class Dispatcher {
           opts?.notifyUrl,
           vcsBackend,
           opts?.targetBranch,
+          taskId,
         );
 
         // Update run with session key
@@ -816,6 +880,7 @@ export class Dispatcher {
     notifyUrl?: string,
     vcsBackend?: VcsBackend,
     targetBranch?: string,
+    taskId?: string | null,
   ): Promise<{ sessionKey: string }> {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
@@ -847,6 +912,7 @@ export class Dispatcher {
       seedLabels: seed.labels,
       seedPriority: seed.priority,
       targetBranch,
+      taskId: taskId ?? null,
     });
 
     return { sessionKey };
@@ -885,6 +951,7 @@ export class Dispatcher {
       env,
       resume: sdkSessionId,
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
+      taskId: null, // resume path: taskId not tracked (beads fallback mode)
     });
 
     return { sessionKey };
@@ -1185,6 +1252,13 @@ export interface WorkerConfig {
    * When set, the agent worker merges into this branch instead of detectDefaultBranch().
    */
   targetBranch?: string;
+  /**
+   * Task ID from the native task store (null when using beads fallback mode).
+   * Populated by Dispatcher when FOREMAN_TASK_STORE=native or when native tasks
+   * are auto-detected.  Pipeline executor uses this for phase progress updates.
+   * Null means phase updates are no-ops (REQ-020 backward compatibility).
+   */
+  taskId?: string | null;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────
