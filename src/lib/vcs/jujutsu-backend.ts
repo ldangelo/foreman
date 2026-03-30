@@ -436,11 +436,15 @@ export class JujutsuBackend implements VcsBackend {
 
   /**
    * Commit the current revision with a message using `jj describe -m`.
-   * Creates a new empty revision on top with `jj new`.
+   *
+   * Does NOT call `jj new` afterwards. The `jj new` convention is for
+   * interactive workflows where the user wants a fresh working revision.
+   * In Foreman's agent pipeline, each workspace commits once and pushes;
+   * the extra `jj new` would create an empty revision that gets exported
+   * as an empty git commit and pollutes the branch history.
    */
   async commit(workspacePath: string, message: string): Promise<void> {
     await this.jj(["describe", "-m", message], workspacePath);
-    await this.jj(["new"], workspacePath);
   }
 
   /**
@@ -740,7 +744,7 @@ export class JujutsuBackend implements VcsBackend {
     const { seedId, seedTitle, baseBranch } = vars;
     return {
       stageCommand: "", // jj auto-stages
-      commitCommand: `jj describe -m "${seedTitle} (${seedId})" && jj new`,
+      commitCommand: `jj describe -m "${seedTitle} (${seedId})"`,
       pushCommand: `jj git push --bookmark foreman/${seedId} --allow-new`,
       rebaseCommand: `jj git fetch && jj rebase -d ${baseBranch}@origin`,
       branchVerifyCommand: `jj bookmark list foreman/${seedId}`,
