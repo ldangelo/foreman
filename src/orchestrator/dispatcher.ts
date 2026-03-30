@@ -1056,8 +1056,8 @@ export class Dispatcher {
 
         switch (entry.operation) {
           case "close-seed":
-            // Use --no-db to write directly to JSONL, bypassing broken DB cache (beads_rust#204).
-            execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
+            // Use --no-db to write directly to JSONL, bypassing the SQLite blocked cache.
+            execFileSync(bin, ["close", seedId, "--no-db", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
             console.error(`[bead-writer] Closed seed ${seedId} via --no-db (from ${entry.sender})`);
             break;
 
