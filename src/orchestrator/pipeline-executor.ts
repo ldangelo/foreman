@@ -161,12 +161,29 @@ function readReport(worktreePath: string, filename: string): string | null {
   try { return readFileSync(p, "utf-8"); } catch { return null; }
 }
 
+/** Result of running a sequence of phases. */
+interface PhaseSequenceResult {
+  success: boolean;
+  phaseRecords: PhaseRecord[];
+  retryCounts: Record<string, number>;
+  qaVerdictForLog: "pass" | "fail" | "unknown";
+  progress: RunProgress;
+  /** Set when a verdict-FAIL exhausted retries (task failed, not stuck). */
+  retriesExhausted?: boolean;
+}
+
 // ── Generic Pipeline Executor ───────────────────────────────────────────────
 
 /**
  * Execute a workflow pipeline driven entirely by the YAML config.
  *
- * Iterates workflowConfig.phases in order. For each phase:
+ * Two modes:
+ * - **Single-task mode** (default): iterates all `phases` in order for one task.
+ * - **Epic mode**: when `ctx.epicTasks` is set AND workflow has `taskPhases`,
+ *   iterates child tasks running only `taskPhases` per task (with per-task commits),
+ *   then runs `finalPhases` once at the end.
+ *
+ * Per-phase behavior:
  *  1. Check skipIfArtifact (resume from crash)
  *  2. Register agent mail identity
  *  3. Send phase-started mail (if mail.onStart)
@@ -178,10 +195,191 @@ function readReport(worktreePath: string, filename: string): string | null {
  *  9. If verdict phase: parse PASS/FAIL, handle retryWith loop
  */
 export async function executePipeline(ctx: PipelineContext): Promise<void> {
-  const { config, workflowConfig, store, logFile, notifyClient, agentMailClient } = ctx;
-  const { runId, projectId, seedId, seedTitle, worktreePath } = config;
-  const description = config.seedDescription ?? "(no description)";
-  const comments = config.seedComments;
+  const { config, workflowConfig } = ctx;
+  const epicTasks = ctx.epicTasks;
+  const isEpicMode = epicTasks && epicTasks.length > 0 && workflowConfig.taskPhases;
+
+  if (isEpicMode) {
+    await executeEpicPipeline(ctx);
+  } else {
+    await executeSingleTaskPipeline(ctx);
+  }
+}
+
+// ── Epic mode executor ──────────────────────────────────────────────────────
+
+/**
+ * Epic mode: iterate child tasks, running taskPhases per task with commits
+ * between, then finalPhases once at the end.
+ */
+async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
+  const { config, workflowConfig, store, logFile } = ctx;
+  const { runId, seedId, worktreePath } = config;
+  const epicTasks = ctx.epicTasks!;
+  const taskPhaseNames = workflowConfig.taskPhases!;
+  const finalPhaseNames = workflowConfig.finalPhases ?? [];
+
+  // Resolve phase configs for task phases and final phases
+  const allPhases = workflowConfig.phases;
+  const taskPhases = taskPhaseNames
+    .map((name) => allPhases.find((p) => p.name === name))
+    .filter((p): p is typeof allPhases[number] => p !== undefined);
+  const finalPhases = finalPhaseNames
+    .map((name) => allPhases.find((p) => p.name === name))
+    .filter((p): p is typeof allPhases[number] => p !== undefined);
+
+  const taskPhaseStr = taskPhaseNames.join(" → ");
+  const finalPhaseStr = finalPhaseNames.length > 0 ? ` | final: ${finalPhaseNames.join(" → ")}` : "";
+  ctx.log(`[EPIC] Starting epic pipeline for ${seedId} — ${epicTasks.length} tasks`);
+  ctx.log(`[EPIC] Per-task phases: ${taskPhaseStr}${finalPhaseStr}`);
+  await appendFile(logFile, `\n[EPIC] Epic pipeline: ${epicTasks.length} tasks, taskPhases: ${taskPhaseStr}${finalPhaseStr}\n`);
+
+  const allPhaseRecords: PhaseRecord[] = [];
+  const allRetryCounts: Record<string, number> = {};
+  let totalProgress: RunProgress = {
+    toolCalls: 0,
+    toolBreakdown: {},
+    filesChanged: [],
+    turns: 0,
+    costUsd: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    lastToolCall: null,
+    lastActivity: new Date().toISOString(),
+    currentPhase: "epic-init",
+  };
+
+  let completedCount = 0;
+  let failedCount = 0;
+  const completedTaskIds: string[] = [];
+
+  // ── Outer task loop ──────────────────────────────────────────────────
+  for (let taskIdx = 0; taskIdx < epicTasks.length; taskIdx++) {
+    const task = epicTasks[taskIdx];
+    ctx.log(`[EPIC] Task ${taskIdx + 1}/${epicTasks.length}: ${task.seedId} — ${task.seedTitle}`);
+    await appendFile(logFile, `\n[EPIC] === Task ${taskIdx + 1}/${epicTasks.length}: ${task.seedId} ===\n`);
+
+    // Build a task-specific config overlay (use task's seedId/title/description for prompts)
+    const taskConfig: PipelineRunConfig = {
+      ...config,
+      // Keep the epic's seedId for run tracking, but pass task info for prompts
+      seedDescription: task.seedDescription ?? config.seedDescription,
+      seedComments: `Epic task ${taskIdx + 1}/${epicTasks.length}: ${task.seedTitle}\n` +
+        (completedTaskIds.length > 0
+          ? `Previously completed: ${completedTaskIds.join(", ")}\n`
+          : "") +
+        (config.seedComments ?? ""),
+    };
+
+    // Create a task-scoped context with taskPhases only
+    const taskWorkflowConfig = { ...workflowConfig, phases: taskPhases };
+    const taskCtx: PipelineContext = {
+      ...ctx,
+      config: taskConfig,
+      workflowConfig: taskWorkflowConfig,
+      epicTasks: undefined, // prevent recursion
+    };
+
+    // Run the task phases (developer → QA with retry).
+    // failOnRetriesExhausted=true: in epic mode, exhausted retries mean the task failed.
+    const result = await runPhaseSequence(taskCtx, taskPhases, totalProgress, true);
+
+    // Accumulate progress
+    totalProgress = result.progress;
+    allPhaseRecords.push(...result.phaseRecords);
+    for (const [k, v] of Object.entries(result.retryCounts)) {
+      allRetryCounts[k] = (allRetryCounts[k] ?? 0) + v;
+    }
+
+    if (result.success) {
+      completedCount++;
+      completedTaskIds.push(task.seedId);
+
+      // Commit after each successful task (epic mode: one commit per task)
+      if (config.vcsBackend) {
+        try {
+          await config.vcsBackend.commit(worktreePath, `${task.seedTitle} (${task.seedId})`);
+          ctx.log(`[EPIC] Committed task ${task.seedId}`);
+        } catch (err: unknown) {
+          // Non-fatal: commit may fail if no changes (e.g. test-only task)
+          const msg = err instanceof Error ? err.message : String(err);
+          ctx.log(`[EPIC] Commit for ${task.seedId} skipped: ${msg}`);
+        }
+      }
+
+      ctx.log(`[EPIC] Task ${task.seedId} PASSED (${completedCount}/${epicTasks.length} done)`);
+      await appendFile(logFile, `\n[EPIC] Task ${task.seedId} PASSED\n`);
+    } else {
+      failedCount++;
+      ctx.log(`[EPIC] Task ${task.seedId} FAILED${result.retriesExhausted ? " (retries exhausted)" : ""}`);
+      await appendFile(logFile, `\n[EPIC] Task ${task.seedId} FAILED\n`);
+
+      // Apply onError strategy
+      if (workflowConfig.onError === "stop") {
+        ctx.log(`[EPIC] onError=stop — halting epic after task ${task.seedId} failure`);
+        await appendFile(logFile, `\n[EPIC] Halted (onError=stop)\n`);
+        await ctx.markStuck(
+          store, runId, config.projectId, seedId, config.seedTitle,
+          totalProgress, "epic-task-failed",
+          `Task ${task.seedId} failed — epic halted (onError=stop)`,
+          ctx.notifyClient, config.projectPath,
+        );
+        return;
+      }
+      // onError=continue: skip failed task and continue to next
+    }
+  }
+
+  ctx.log(`[EPIC] Task loop complete: ${completedCount} passed, ${failedCount} failed`);
+  await appendFile(logFile, `\n[EPIC] Task loop complete: ${completedCount}/${epicTasks.length} passed\n`);
+
+  // ── Final phases (finalize) — run once after all tasks ─────────────
+  if (finalPhases.length > 0 && completedCount > 0) {
+    ctx.log(`[EPIC] Running final phases: ${finalPhaseNames.join(" → ")}`);
+    await appendFile(logFile, `\n[EPIC] === Final phases ===\n`);
+
+    const finalWorkflowConfig = { ...workflowConfig, phases: finalPhases };
+    const finalCtx: PipelineContext = {
+      ...ctx,
+      workflowConfig: finalWorkflowConfig,
+      epicTasks: undefined,
+    };
+
+    const finalResult = await runPhaseSequence(finalCtx, finalPhases, totalProgress);
+    totalProgress = finalResult.progress;
+    allPhaseRecords.push(...finalResult.phaseRecords);
+    for (const [k, v] of Object.entries(finalResult.retryCounts)) {
+      allRetryCounts[k] = (allRetryCounts[k] ?? 0) + v;
+    }
+
+    if (!finalResult.success) {
+      ctx.log(`[EPIC] Final phases failed`);
+      return; // markStuck already called inside runPhaseSequence
+    }
+  }
+
+  // ── Session log ──────────────────────────────────────────────────────
+  writeSessionLogSafe(ctx, totalProgress, allPhaseRecords, allRetryCounts, "unknown");
+
+  // ── Pipeline completion ──────────────────────────────────────────────
+  if (ctx.onPipelineComplete) {
+    await ctx.onPipelineComplete({
+      progress: totalProgress,
+      phaseRecords: allPhaseRecords,
+      retryCounts: allRetryCounts,
+    });
+  }
+}
+
+// ── Single-task mode executor ───────────────────────────────────────────────
+
+/**
+ * Original single-task mode: run all phases in sequence for one task.
+ * This is the pre-existing behavior, extracted for clarity.
+ */
+async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
+  const { config, workflowConfig, store, logFile } = ctx;
+  const { seedId } = config;
 
   const progress: RunProgress = {
     toolCalls: 0,
@@ -201,24 +399,54 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
   ctx.log(`[PIPELINE] Phase sequence: ${phaseNames}`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n[PIPELINE] Phase sequence: ${phaseNames}\n`);
 
-  const phaseRecords: PhaseRecord[] = [];
+  const result = await runPhaseSequence(ctx, workflowConfig.phases, progress);
 
-  // Track feedback context for retry loops (QA/reviewer → developer)
+  // Session log
+  writeSessionLogSafe(ctx, result.progress, result.phaseRecords, result.retryCounts, result.qaVerdictForLog);
+
+  // Pipeline completion callback
+  if (ctx.onPipelineComplete) {
+    await ctx.onPipelineComplete({
+      progress: result.progress,
+      phaseRecords: result.phaseRecords,
+      retryCounts: result.retryCounts,
+    });
+  }
+}
+
+// ── Phase sequence runner (shared by both modes) ────────────────────────────
+
+/**
+ * Run a sequence of phases in order with retry/verdict logic.
+ * This is the core phase iteration loop used by both single-task and epic modes.
+ */
+async function runPhaseSequence(
+  ctx: PipelineContext,
+  phases: import("../lib/workflow-loader.js").WorkflowPhaseConfig[],
+  initialProgress: RunProgress,
+  /** When true (epic task mode), exhausted retries return failure instead of continuing. */
+  failOnRetriesExhausted: boolean = false,
+): Promise<PhaseSequenceResult> {
+  const { config, store, logFile, notifyClient, agentMailClient } = ctx;
+  const { runId, projectId, seedId, seedTitle, worktreePath } = config;
+  const description = config.seedDescription ?? "(no description)";
+  const comments = config.seedComments;
+
+  const progress = { ...initialProgress };
+  const phaseRecords: PhaseRecord[] = [];
   let feedbackContext: string | undefined;
-  // Track QA verdict for session log
   let qaVerdictForLog: "pass" | "fail" | "unknown" = "unknown";
-  // Track retry counts per retryWith target (e.g. "developer" → count)
   const retryCounts: Record<string, number> = {};
 
   // Build a phase index for retryWith lookups
   const phaseIndex = new Map<string, number>();
-  for (let i = 0; i < workflowConfig.phases.length; i++) {
-    phaseIndex.set(workflowConfig.phases[i].name, i);
+  for (let idx = 0; idx < phases.length; idx++) {
+    phaseIndex.set(phases[idx].name, idx);
   }
 
   let i = 0;
-  while (i < workflowConfig.phases.length) {
-    const phase = workflowConfig.phases[i];
+  while (i < phases.length) {
+    const phase = phases[i];
     const phaseName = phase.name;
     const agentName = `${phaseName}-${seedId}`;
     const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
@@ -271,11 +499,9 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
     } = {};
 
     if (vcsBackend) {
-      // All phases get vcsBackendName and vcsBranchPrefix (TRD-027 for reviewer)
       vcsPromptVars.vcsBackendName = vcsBackend.name;
       vcsPromptVars.vcsBranchPrefix = "foreman/";
 
-      // Finalize phase gets all 6 VCS command variables (TRD-026)
       if (phaseName === "finalize") {
         const finalizeCommands = vcsBackend.getFinalizeCommands({
           seedId,
@@ -306,8 +532,6 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       ...vcsPromptVars,
     }, ctx.promptOpts);
 
-    // Resolve the model for this phase from the workflow YAML + bead priority.
-    // Falls back to ROLE_CONFIGS[phaseName] if the phase has no models map.
     const roleConfigFallback = (ROLE_CONFIGS as Record<string, { model: string } | undefined>)[phaseName];
     const fallbackModel = roleConfigFallback?.model ?? config.model;
     const phaseModel = resolvePhaseModel(phase, config.seedPriority, fallbackModel);
@@ -345,17 +569,14 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
         seedId, phase: phaseName, error: result.error ?? `${phaseName} failed`, retryable: true,
       });
       await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, result.error ?? `${phaseName} failed`, notifyClient, config.projectPath);
-      return;
+      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
     }
 
     // 8. Verdict handling: parse PASS/FAIL, retry if needed.
-    // MUST happen BEFORE phase-complete notification so that a FAIL verdict
-    // loops back to the retry target instead of triggering autoMerge.
     if (phase.verdict && phase.artifact) {
       const report = readReport(worktreePath, phase.artifact);
       const verdict = report ? parseVerdict(report) : "unknown";
 
-      // Track QA verdict for session log
       if (phaseName === "qa") {
         qaVerdictForLog = verdict as "pass" | "fail" | "unknown";
       }
@@ -363,15 +584,12 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       if (verdict === "fail" && phase.retryWith) {
         const retryTarget = phase.retryWith;
         const maxRetries = phase.retryOnFail ?? 0;
-        // Key retry counter by the phase performing the verdict check (e.g. "qa", "reviewer")
-        // NOT by the retry target ("developer"), so QA and Reviewer have independent retry budgets.
         const retryCountKey = phaseName;
         const currentRetries = retryCounts[retryCountKey] ?? 0;
 
         if (currentRetries < maxRetries) {
           retryCounts[retryCountKey] = currentRetries + 1;
 
-          // Send failure feedback to retry target
           if (phase.mail?.onFail && report) {
             const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
             ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, report);
@@ -381,45 +599,38 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
           ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
 
-          // Jump back to the retryWith phase — skip phase-complete notification
           const targetIdx = phaseIndex.get(retryTarget);
           if (targetIdx !== undefined) {
             i = targetIdx;
             continue;
           }
-          // If retryWith target not found, fall through
           ctx.log(`[${phaseName.toUpperCase()}] retryWith target '${retryTarget}' not found in workflow — continuing`);
         } else {
-          ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted, continuing`);
-          await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries, continuing\n`);
-          // Clear feedback for subsequent phases
+          ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted${failOnRetriesExhausted ? "" : ", continuing"}`);
+          await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries${failOnRetriesExhausted ? "" : ", continuing"}\n`);
           feedbackContext = undefined;
+          if (failOnRetriesExhausted) {
+            return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, retriesExhausted: true };
+          }
         }
       } else {
-        // Verdict passed or no retry config — clear feedback
         feedbackContext = undefined;
       }
     } else {
-      // Non-verdict phase — clear feedback
       feedbackContext = undefined;
     }
 
     // 9. Handle success: send phase-complete, labels, forward artifact.
-    // This runs AFTER verdict check — if verdict was FAIL and we jumped back
-    // to retry, the `continue` above skips this block entirely.
     if (phase.mail?.onComplete !== false) {
       ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
         seedId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
       });
     }
-    store.logEvent(projectId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, runId);
+    store.logEvent(config.projectId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, runId);
     enqueueAddLabelsToBead(store, seedId, [`phase:${phaseName}`], "pipeline-executor");
 
-    // Update native task store with phase completion (REQ-012, AC-012.2).
-    // No-op when ctx.taskStore is absent or config.taskId is null/undefined.
     ctx.taskStore?.updatePhase(config.taskId ?? null, phaseName);
 
-    // Forward artifact to another agent's inbox
     if (phase.mail?.forwardArtifactTo && phase.artifact) {
       const artifactContent = readReport(worktreePath, phase.artifact);
       if (artifactContent) {
@@ -436,7 +647,22 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
     i++;
   }
 
-  // ── Session log ──────────────────────────────────────────────────────
+  return { success: true, phaseRecords, retryCounts, qaVerdictForLog, progress };
+}
+
+// ── Session log helper ──────────────────────────────────────────────────────
+
+function writeSessionLogSafe(
+  ctx: PipelineContext,
+  progress: RunProgress,
+  phaseRecords: PhaseRecord[],
+  retryCounts: Record<string, number>,
+  qaVerdictForLog: "pass" | "fail" | "unknown",
+): void {
+  const { config } = ctx;
+  const { seedId, seedTitle, worktreePath } = config;
+  const description = config.seedDescription ?? "(no description)";
+
   try {
     const pipelineProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
     const sessionLogData: SessionLogData = {
@@ -452,17 +678,15 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       devRetries: retryCounts["developer"] ?? 0,
       qaVerdict: qaVerdictForLog,
     };
-    const sessionLogPath = await writeSessionLog(worktreePath, sessionLogData);
-    ctx.log(`[SESSION LOG] Written: ${sessionLogPath}`);
+    // Fire-and-forget — session log is non-critical
+    writeSessionLog(worktreePath, sessionLogData)
+      .then((p) => ctx.log(`[SESSION LOG] Written: ${p}`))
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.log(`[SESSION LOG] Failed to write (non-fatal): ${msg}`);
+      });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     ctx.log(`[SESSION LOG] Failed to write (non-fatal): ${msg}`);
-  }
-
-  // ── Pipeline completion ──────────────────────────────────────────────
-  // Delegate finalize-specific post-processing (merge queue, run status)
-  // to the caller via the onPipelineComplete callback.
-  if (ctx.onPipelineComplete) {
-    await ctx.onPipelineComplete({ progress, phaseRecords, retryCounts });
   }
 }

@@ -274,8 +274,8 @@ Dispatcher
 - [x] **TRD-003** (2h): Task ordering module
 - [x] **TRD-003-TEST** (1h): Tests for task ordering
 - [x] **TRD-004** (1h): Epic fields in PipelineContext
-- [ ] **TRD-005** (4h): Outer task loop in executePipeline [CRITICAL PATH]
-- [ ] **TRD-005-TEST** (3h): Integration tests for task loop
+- [x] **TRD-005** (4h): Outer task loop in executePipeline [CRITICAL PATH]
+- [x] **TRD-005-TEST** (3h): Integration tests for task loop
 - [ ] **TRD-006** (3h): Dispatcher epic detection
 - [ ] **TRD-006-TEST** (2h): Tests for epic dispatch
 
