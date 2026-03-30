@@ -1130,7 +1130,7 @@ export class ForemanStore {
    */
   getSuccessRate(projectId?: string): { rate: number | null; merged: number; failed: number } {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const statuses = ["merged", "test-failed", "failed", "pr-created"];
+    const statuses = ["merged", "test-failed", "failed", "pr-created", "reset"];
     const placeholders = statuses.map(() => "?").join(", ");
 
     let rows: Array<{ status: string; count: number }>;
@@ -1158,7 +1158,7 @@ export class ForemanStore {
     }
 
     const merged = (counts["merged"] ?? 0) + (counts["pr-created"] ?? 0);
-    const failed = (counts["failed"] ?? 0) + (counts["test-failed"] ?? 0);
+    const failed = (counts["failed"] ?? 0) + (counts["test-failed"] ?? 0) + (counts["reset"] ?? 0);
     const total = merged + failed;
 
     // Require at least 3 terminal runs before showing a percentage
