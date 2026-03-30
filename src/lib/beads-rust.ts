@@ -27,12 +27,24 @@ export interface BrIssue {
   updated_at: string;
 }
 
+export interface BrDepRef {
+  id: string;
+  title: string;
+  status: string;
+  priority: number;
+  dependency_type: string;
+}
+
 export interface BrIssueDetail extends BrIssue {
   description: string | null;
   labels: string[];
   estimate_minutes: number | null;
-  dependencies: string[];
-  children: string[];
+  /** Beads this issue blocks (downstream dependents). Returned by `br show --json`. */
+  dependents: BrDepRef[];
+  /** Beads this issue depends on (upstream blockers). Returned by `br show --json`. */
+  dependencies: BrDepRef[];
+  /** @deprecated br show --json does not return a children field; use dependents instead */
+  children?: string[];
   notes?: string | null;
 }
 

@@ -330,58 +330,50 @@ export class Dispatcher {
       if (seed.type === "feature") {
         try {
           const detail = await this.seeds.show(seed.id);
-          const detailWithChildren = detail as { children?: string[]; status: string };
-          const childIds = detailWithChildren.children ?? [];
+          // br show --json returns `dependents` (the tasks this container blocks), not `children`.
+          // Use dependents to determine whether all downstream work is complete.
+          const brDetail = detail as import("../lib/beads-rust.js").BrIssueDetail;
+          const dependents = brDetail.dependents ?? [];
 
-          if (childIds.length === 0) {
-            // No children — close the container directly
-            await this.seeds.close(seed.id, "Auto-closed: no children (empty container)");
-            log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — no children`);
+          if (dependents.length === 0) {
+            // No dependents — close the container directly
+            await this.seeds.close(seed.id, "Auto-closed: no dependent tasks (empty container)");
+            log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — no dependent tasks`);
             skipped.push({
               seedId: seed.id,
               title: seed.title,
-              reason: `Type '${seed.type}' auto-closed — no children`,
+              reason: `Type '${seed.type}' auto-closed — no dependent tasks`,
             });
           } else {
-            // Check each child's status
-            let openCount = 0;
-            for (const childId of childIds) {
-              try {
-                const child = await this.seeds.show(childId);
-                if (child.status !== "closed" && child.status !== "completed") {
-                  openCount++;
-                }
-              } catch {
-                // If we can't check a child, assume it's still open to be safe
-                openCount++;
-              }
-            }
+            const openDeps = dependents.filter(
+              (d) => d.status !== "closed" && d.status !== "completed",
+            );
 
-            if (openCount === 0) {
-              await this.seeds.close(seed.id, "Auto-closed: all children completed");
-              log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — all children completed`);
+            if (openDeps.length === 0) {
+              await this.seeds.close(seed.id, "Auto-closed: all dependent tasks completed");
+              log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — all ${dependents.length} dependent tasks completed`);
               skipped.push({
                 seedId: seed.id,
                 title: seed.title,
-                reason: `Type '${seed.type}' auto-closed — all ${childIds.length} children completed`,
+                reason: `Type '${seed.type}' auto-closed — all ${dependents.length} dependent tasks completed`,
               });
             } else {
-              log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — waiting on ${openCount} open children`);
+              log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`);
               skipped.push({
                 seedId: seed.id,
                 title: seed.title,
-                reason: `Type '${seed.type}' is an organizational container — waiting on ${openCount} open child${openCount === 1 ? "" : "ren"}`,
+                reason: `Type '${seed.type}' is an organizational container — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`,
               });
             }
           }
         } catch (err: unknown) {
           // If we can't inspect the container, skip it rather than crashing
           const msg = err instanceof Error ? err.message : String(err);
-          log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — failed to check children: ${msg}`);
+          log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — failed to check dependents: ${msg}`);
           skipped.push({
             seedId: seed.id,
             title: seed.title,
-            reason: `Type '${seed.type}' is an organizational container — skipped (error checking children)`,
+            reason: `Type '${seed.type}' is an organizational container — skipped (error checking dependents)`,
           });
         }
         continue;
