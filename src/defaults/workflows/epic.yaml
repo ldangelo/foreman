@@ -1,0 +1,83 @@
+# Epic workflow: Developer ⇄ QA per task, then Finalize once at the end.
+#
+# Used when a bead of type "epic" is dispatched. The pipeline executor
+# iterates child tasks in dependency order, running taskPhases for each.
+# After all tasks pass, finalPhases execute once to rebase, test, and push.
+#
+# Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
+# Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
+name: epic
+onError: stop
+# Per-task timeout in seconds. If a task's phases exceed this, the task fails.
+# Default: 300 (5 minutes). Set to 0 to disable.
+taskTimeout: 300
+
+setup:
+  - command: npm install --prefer-offline --no-audit
+    description: Install Node.js dependencies
+    failFatal: true
+setupCache:
+  key: package-lock.json
+  path: node_modules
+
+# Per-task phases: run for each child task in the epic
+taskPhases:
+  - developer
+  - qa
+
+# Final phases: run once after all tasks complete
+finalPhases:
+  - finalize
+
+phases:
+  - name: developer
+    prompt: developer.md
+    models:
+      default: sonnet
+      P0: opus
+    maxTurns: 80
+    artifact: DEVELOPER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  - name: qa
+    prompt: qa.md
+    models:
+      default: sonnet
+      P0: opus
+    maxTurns: 30
+    artifact: QA_REPORT.md
+    verdict: true
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  - name: finalize
+    prompt: finalize.md
+    models:
+      default: haiku
+    maxTurns: 30
+    artifact: FINALIZE_VALIDATION.md
+    verdict: true
+    retryWith: developer
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+onFailure:
+  name: troubleshooter
+  prompt: troubleshooter.md
+  models:
+    default: sonnet
+    P0: opus
+  maxTurns: 20
+  artifact: TROUBLESHOOT_REPORT.md

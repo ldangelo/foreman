@@ -20,6 +20,8 @@ import { PLAN_STEP_CONFIG } from "./roles.js";
 import { isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
+import { getTaskOrder } from "./task-ordering.js";
+import type { EpicTask } from "./pipeline-executor.js";
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
@@ -321,11 +323,11 @@ export class Dispatcher {
         continue;
       }
 
-      // ── Auto-close feature/epic containers ────────────────────────────────
-      // Feature and epic beads are organizational containers — never dispatch
-      // agents for them. Instead, check if all children are closed and auto-close
-      // the container bead when they are.
-      if (seed.type === "feature" || seed.type === "epic") {
+      // ── Auto-close feature containers ──────────────────────────────────────
+      // Feature beads are organizational containers — never dispatch agents for
+      // them. Instead, check if all children are closed and auto-close the
+      // container bead when they are.
+      if (seed.type === "feature") {
         try {
           const detail = await this.seeds.show(seed.id);
           const detailWithChildren = detail as { children?: string[]; status: string };
@@ -383,6 +385,69 @@ export class Dispatcher {
           });
         }
         continue;
+      }
+
+      // ── Epic beads: dispatch through epic pipeline or auto-close ──────────
+      // Epic beads with children are dispatched as a single epic runner that
+      // executes all child tasks sequentially within one worktree.
+      // Epic beads with 0 children are auto-closed.
+      if (seed.type === "epic") {
+        try {
+          const detail = await this.seeds.show(seed.id);
+          const detailWithChildren = detail as { children?: string[]; status: string };
+          const childIds = detailWithChildren.children ?? [];
+
+          if (childIds.length === 0) {
+            // No children — auto-close the epic
+            await this.seeds.close(seed.id, "Auto-closed: no children (empty epic)");
+            log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no children`);
+            skipped.push({
+              seedId: seed.id,
+              title: seed.title,
+              reason: "Type 'epic' auto-closed — no children",
+            });
+            continue;
+          }
+
+          // Epic has children — query task order and dispatch through epic path.
+          // getTaskOrder returns only actionable child types (task, bug, chore).
+          const brClient = this.seeds as unknown as BeadsRustClient;
+          const epicTasks: EpicTask[] = await getTaskOrder(
+            seed.id,
+            brClient,
+            this.projectPath,
+          );
+
+          if (epicTasks.length === 0) {
+            // All children are non-actionable types (e.g. all feature/story containers)
+            // or all children are already closed. Auto-close.
+            await this.seeds.close(seed.id, "Auto-closed: no actionable child tasks");
+            log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no actionable child tasks`);
+            skipped.push({
+              seedId: seed.id,
+              title: seed.title,
+              reason: "Type 'epic' auto-closed — no actionable child tasks",
+            });
+            continue;
+          }
+
+          log(`[dispatch] Epic ${seed.id} has ${epicTasks.length} ordered tasks — dispatching epic runner`);
+
+          // Store epicTasks for use by the dispatch logic below.
+          // We set a marker on the seed object so the dispatch code further down
+          // can include epicTasks in the worker config.
+          (seed as unknown as Record<string, unknown>).__epicTasks = epicTasks;
+          // Fall through to normal dispatch logic (worktree creation, spawn, etc.)
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`[dispatch] Failed to prepare epic ${seed.id}: ${msg}`);
+          skipped.push({
+            seedId: seed.id,
+            title: seed.title,
+            reason: `Epic dispatch failed: ${msg}`,
+          });
+          continue;
+        }
       }
 
       // Skip seeds that are in exponential backoff after recent stuck runs
@@ -672,6 +737,10 @@ export class Dispatcher {
         }
 
         // 7. Spawn the coding agent
+        // Extract epic context if this seed was marked as an epic dispatch
+        const epicTasksForSeed = (seed as unknown as Record<string, unknown>).__epicTasks as EpicTask[] | undefined;
+        const epicIdForSeed = epicTasksForSeed ? seed.id : undefined;
+
         const { sessionKey } = await this.spawnAgent(
           model,
           worktreePath,
@@ -686,6 +755,8 @@ export class Dispatcher {
           opts?.notifyUrl,
           vcsBackend,
           opts?.targetBranch,
+          epicTasksForSeed,
+          epicIdForSeed,
         );
 
         // Update run with session key
@@ -1013,6 +1084,8 @@ export class Dispatcher {
     notifyUrl?: string,
     vcsBackend?: VcsBackend,
     targetBranch?: string,
+    epicTasks?: EpicTask[],
+    epicId?: string,
   ): Promise<{ sessionKey: string }> {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
@@ -1020,7 +1093,8 @@ export class Dispatcher {
     const sessionKey = `foreman:sdk:${model}:${runId}`;
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
-    log(`Spawning ${usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}`);
+    const isEpic = epicTasks && epicTasks.length > 0;
+    log(`Spawning ${isEpic ? "epic runner" : usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}${isEpic ? ` (${epicTasks.length} tasks)` : ""}`);
 
     const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
 
@@ -1044,6 +1118,8 @@ export class Dispatcher {
       seedLabels: seed.labels,
       seedPriority: seed.priority,
       targetBranch,
+      epicTasks,
+      epicId,
     });
 
     return { sessionKey };
@@ -1389,6 +1465,18 @@ export interface WorkerConfig {
    * Null/undefined in beads fallback mode — no-op via optional chaining.
    */
   taskId?: string | null;
+  /**
+   * Ordered list of child tasks for epic execution mode (TRD-2026-007).
+   * When set, the worker runs the epic pipeline: taskPhases per child task,
+   * then finalPhases once at the end.
+   */
+  epicTasks?: EpicTask[];
+  /**
+   * Parent epic bead ID (TRD-2026-007).
+   * When set, this run is an epic execution — the worker executes all
+   * epicTasks within a single worktree.
+   */
+  epicId?: string;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

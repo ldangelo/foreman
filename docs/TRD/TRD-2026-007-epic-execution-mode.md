@@ -268,36 +268,36 @@ Dispatcher
 ## Sprint Planning
 
 ### Sprint 1: Core Epic Runner (~20h)
-- [ ] **TRD-001** (2h): Epic workflow YAML fields
-- [ ] **TRD-001-TEST** (1h): Tests for YAML parsing
-- [ ] **TRD-002** (1h): Bundled epic.yaml
-- [ ] **TRD-003** (2h): Task ordering module
-- [ ] **TRD-003-TEST** (1h): Tests for task ordering
-- [ ] **TRD-004** (1h): Epic fields in PipelineContext
-- [ ] **TRD-005** (4h): Outer task loop in executePipeline [CRITICAL PATH]
-- [ ] **TRD-005-TEST** (3h): Integration tests for task loop
-- [ ] **TRD-006** (3h): Dispatcher epic detection
-- [ ] **TRD-006-TEST** (2h): Tests for epic dispatch
+- [x] **TRD-001** (2h): Epic workflow YAML fields
+- [x] **TRD-001-TEST** (1h): Tests for YAML parsing
+- [x] **TRD-002** (1h): Bundled epic.yaml
+- [x] **TRD-003** (2h): Task ordering module
+- [x] **TRD-003-TEST** (1h): Tests for task ordering
+- [x] **TRD-004** (1h): Epic fields in PipelineContext
+- [x] **TRD-005** (4h): Outer task loop in executePipeline [CRITICAL PATH]
+- [x] **TRD-005-TEST** (3h): Integration tests for task loop
+- [x] **TRD-006** (3h): Dispatcher epic detection
+- [x] **TRD-006-TEST** (2h): Tests for epic dispatch
 
 ### Sprint 2: Session, Finalize, Resume (~13h)
 - [ ] **TRD-007** (3h): Session reuse [depends: TRD-005]
 - [ ] **TRD-007-TEST** (2h): Tests for session reuse
-- [ ] **TRD-008** (2h): Single finalize [depends: TRD-005]
-- [ ] **TRD-008-TEST** (1h): Tests for finalize
-- [ ] **TRD-009** (3h): Resume from last task [depends: TRD-005]
-- [ ] **TRD-009-TEST** (2h): Tests for resume
+- [x] **TRD-008** (2h): Single finalize [depends: TRD-005]
+- [x] **TRD-008-TEST** (1h): Tests for finalize
+- [x] **TRD-009** (3h): Resume from last task [depends: TRD-005]
+- [x] **TRD-009-TEST** (2h): Tests for resume
 
 ### Sprint 3: Observability and Polish (~11h)
-- [ ] **TRD-010** (1h): Bug bead creation [depends: TRD-005]
-- [ ] **TRD-010-TEST** (1h): Tests for bug beads
-- [ ] **TRD-011** (1h): Per-task bead status [depends: TRD-005]
-- [ ] **TRD-011-TEST** (1h): Tests for bead status
-- [ ] **TRD-012** (2h): Epic progress display [depends: TRD-005]
-- [ ] **TRD-012-TEST** (1h): Tests for status display
-- [ ] **TRD-013** (1h): onError for epics [depends: TRD-005]
-- [ ] **TRD-013-TEST** (1h): Tests for onError
-- [ ] **TRD-014** (1h): Workflow override [depends: TRD-001]
-- [ ] **TRD-015** (1h): Task timeout [depends: TRD-005]
+- [x] **TRD-010** (1h): Bug bead creation [depends: TRD-005]
+- [x] **TRD-010-TEST** (1h): Tests for bug beads
+- [x] **TRD-011** (1h): Per-task bead status [depends: TRD-005]
+- [x] **TRD-011-TEST** (1h): Tests for bead status
+- [x] **TRD-012** (2h): Epic progress display [depends: TRD-005]
+- [x] **TRD-012-TEST** (1h): Tests for status display
+- [x] **TRD-013** (1h): onError for epics [depends: TRD-005]
+- [x] **TRD-013-TEST** (1h): Tests for onError
+- [x] **TRD-014** (1h): Workflow override [depends: TRD-001]
+- [x] **TRD-015** (1h): Task timeout [depends: TRD-005]
 
 **Total: ~44h estimated across 30 tasks (15 implementation + 15 test)**
 

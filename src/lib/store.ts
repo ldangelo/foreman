@@ -113,6 +113,14 @@ export interface RunProgress {
   currentPhase?: string;        // Pipeline phase: "explorer" | "developer" | "qa" | "reviewer" | "finalize"
   costByPhase?: Record<string, number>;  // e.g. { explorer: 0.10, developer: 0.50 }
   agentByPhase?: Record<string, string>; // e.g. { explorer: "claude-haiku-4-5", developer: "claude-sonnet-4-6" }
+  /** Epic mode: total number of child tasks. */
+  epicTaskCount?: number;
+  /** Epic mode: number of tasks completed so far. */
+  epicTasksCompleted?: number;
+  /** Epic mode: seed ID of the currently executing task. */
+  epicCurrentTaskId?: string;
+  /** Epic mode: per-task cost breakdown. */
+  epicCostByTask?: Record<string, number>;
 }
 
 export interface Metrics {

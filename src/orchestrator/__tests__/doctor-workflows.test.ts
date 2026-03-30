@@ -45,11 +45,12 @@ describe("Doctor.checkWorkflows()", () => {
   });
 
   it("passes when all bundled workflows are installed", () => {
-    // Install both default.yaml and smoke.yaml
+    // Install default.yaml, smoke.yaml, and epic.yaml
     const workflowsDir = join(tmpDir, ".foreman", "workflows");
     mkdirSync(workflowsDir, { recursive: true });
     writeFileSync(join(workflowsDir, "default.yaml"), "name: default\nphases:\n  - name: finalize\n    builtin: true\n");
     writeFileSync(join(workflowsDir, "smoke.yaml"), "name: smoke\nphases:\n  - name: finalize\n    builtin: true\n");
+    writeFileSync(join(workflowsDir, "epic.yaml"), "name: epic\nphases:\n  - name: finalize\n    builtin: true\n");
 
     const { doctor } = makeMocks(tmpDir);
     return doctor.checkWorkflows().then((result) => {

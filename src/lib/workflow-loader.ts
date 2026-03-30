@@ -228,6 +228,31 @@ export interface WorkflowConfig {
    * @default "continue"
    */
   onError?: OnErrorStrategy;
+  /**
+   * Epic mode: ordered list of phase names to execute per-task.
+   * When present, the pipeline executor runs these phases for each child task
+   * instead of using the top-level `phases` array.
+   *
+   * Example: `taskPhases: [developer, qa]` — each task runs developer→QA with retry.
+   * When absent (undefined), the pipeline runs in single-task mode using `phases`.
+   */
+  taskPhases?: string[];
+  /**
+   * Epic mode: ordered list of phase names to execute once after all tasks complete.
+   * Only used when `taskPhases` is also set (epic mode).
+   *
+   * Example: `finalPhases: [finalize]` — run finalize once after all tasks pass.
+   * When absent in epic mode, defaults to no final phases.
+   */
+  finalPhases?: string[];
+  /**
+   * Epic mode: maximum seconds allowed per task's phase execution.
+   * When a task's developer phase exceeds this timeout, the phase is terminated
+   * and the task is marked failed. Only used when `taskPhases` is set.
+   *
+   * @example `taskTimeout: 300` — 5 minute timeout per task
+   */
+  taskTimeout?: number;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -241,7 +266,7 @@ const BUNDLED_WORKFLOWS_DIR = join(
 );
 
 /** Known workflow names with bundled defaults. */
-export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = ["default", "smoke"];
+export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = ["default", "smoke", "epic"];
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
@@ -432,6 +457,61 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     config.onFailure = onFailure;
   }
 
+  // ── Parse optional epic mode fields (taskPhases, finalPhases) ──────────
+  if (raw["taskPhases"] !== undefined) {
+    if (!Array.isArray(raw["taskPhases"])) {
+      throw new WorkflowConfigError(workflowName, "'taskPhases' must be an array of phase names");
+    }
+    const taskPhases: string[] = [];
+    for (let j = 0; j < raw["taskPhases"].length; j++) {
+      const pName = raw["taskPhases"][j];
+      if (typeof pName !== "string" || !pName) {
+        throw new WorkflowConfigError(workflowName, `taskPhases[${j}] must be a non-empty string`);
+      }
+      // Validate that referenced phase exists in the phases array
+      if (!phases.some((p) => p.name === pName)) {
+        throw new WorkflowConfigError(
+          workflowName,
+          `taskPhases[${j}] references phase '${pName}' which is not defined in phases`,
+        );
+      }
+      taskPhases.push(pName);
+    }
+    if (taskPhases.length > 0) {
+      config.taskPhases = taskPhases;
+    }
+  }
+  if (raw["finalPhases"] !== undefined) {
+    if (!Array.isArray(raw["finalPhases"])) {
+      throw new WorkflowConfigError(workflowName, "'finalPhases' must be an array of phase names");
+    }
+    const finalPhases: string[] = [];
+    for (let j = 0; j < raw["finalPhases"].length; j++) {
+      const pName = raw["finalPhases"][j];
+      if (typeof pName !== "string" || !pName) {
+        throw new WorkflowConfigError(workflowName, `finalPhases[${j}] must be a non-empty string`);
+      }
+      if (!phases.some((p) => p.name === pName)) {
+        throw new WorkflowConfigError(
+          workflowName,
+          `finalPhases[${j}] references phase '${pName}' which is not defined in phases`,
+        );
+      }
+      finalPhases.push(pName);
+    }
+    if (finalPhases.length > 0) {
+      config.finalPhases = finalPhases;
+    }
+  }
+
+  // ── Parse optional taskTimeout ─────────────────────────────────────────
+  if (raw["taskTimeout"] !== undefined) {
+    if (typeof raw["taskTimeout"] !== "number" || raw["taskTimeout"] <= 0) {
+      throw new WorkflowConfigError(workflowName, "taskTimeout must be a positive number (seconds)");
+    }
+    config.taskTimeout = raw["taskTimeout"];
+  }
+
   // ── Parse optional onError strategy ─────────────────────────────────────
   if (raw["onError"] !== undefined) {
     const onError = raw["onError"];
@@ -584,7 +664,9 @@ export function resolveWorkflowName(seedType: string, labels?: string[]): string
       }
     }
   }
-  return seedType === "smoke" ? "smoke" : "default";
+  if (seedType === "smoke") return "smoke";
+  if (seedType === "epic") return "epic";
+  return "default";
 }
 
 // ── Compatibility exports ─────────────────────────────────────────────────────
