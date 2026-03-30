@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { ForemanStore, type Project, type Run, type RunProgress, type Metrics, type Event } from "../../lib/store.js";
-import { elapsed, renderAgentCard } from "../watch-ui.js";
+import { elapsed, renderAgentCard, formatSuccessRate } from "../watch-ui.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { BrIssue } from "../../lib/beads-rust.js";
 import type { Issue } from "../../lib/task-client.js";
@@ -57,6 +57,8 @@ export interface DashboardState {
   metrics: Map<string, Metrics>;
   events: Map<string, Event[]>;
   lastUpdated: Date;
+  /** 24-hour success rate stats per project ID. rate=null means insufficient data. Optional for backward compat. */
+  successRates?: Map<string, { rate: number | null; merged: number; failed: number }>;
 }
 
 // ── Event icons ──────────────────────────────────────────────────────────
@@ -230,11 +232,22 @@ export function renderDashboard(state: DashboardState): string {
     totalActive += runs.length;
   }
 
+  // Aggregate success rate across all projects using raw merged/failed counts
+  let globalMerged = 0;
+  let globalFailed = 0;
+  for (const sr of (state.successRates ?? new Map()).values()) {
+    globalMerged += sr.merged;
+    globalFailed += sr.failed;
+  }
+  const globalTotal = globalMerged + globalFailed;
+  const globalRate: number | null = globalTotal >= 3 ? globalMerged / globalTotal : null;
+
   lines.push(
     `${chalk.bold("TOTALS")}  ` +
     `${chalk.blue(`${totalActive} active`)}  ` +
     `${chalk.yellow(`$${totalCost.toFixed(2)}`)}  ` +
-    `${chalk.dim(`${(totalTokens / 1000).toFixed(1)}k tokens`)}`,
+    `${chalk.dim(`${(totalTokens / 1000).toFixed(1)}k tokens`)}  ` +
+    `${chalk.dim("success (24h)")} ${formatSuccessRate(globalRate)}`,
   );
   lines.push(chalk.dim(`Last updated: ${state.lastUpdated.toLocaleTimeString()}`));
 
@@ -256,6 +269,7 @@ export function pollDashboard(store: ForemanStore, projectId?: string, eventsLim
   const progresses = new Map<string, RunProgress | null>();
   const metrics = new Map<string, Metrics>();
   const events = new Map<string, Event[]>();
+  const successRates = new Map<string, { rate: number | null; merged: number; failed: number }>();
 
   for (const project of projects) {
     const active = store.getActiveRuns(project.id);
@@ -274,6 +288,7 @@ export function pollDashboard(store: ForemanStore, projectId?: string, eventsLim
 
     metrics.set(project.id, store.getMetrics(project.id));
     events.set(project.id, store.getEvents(project.id, eventsLimit));
+    successRates.set(project.id, store.getSuccessRate(project.id));
   }
 
   return {
@@ -284,6 +299,7 @@ export function pollDashboard(store: ForemanStore, projectId?: string, eventsLim
     metrics,
     events,
     lastUpdated: new Date(),
+    successRates,
   };
 }
 
@@ -323,6 +339,21 @@ export function renderSimpleDashboard(
   lines.push(`  Completed:   ${chalk.cyan(counts.completed)}`);
   if (counts.blocked > 0) {
     lines.push(`  Blocked:     ${chalk.red(counts.blocked)}`);
+  }
+
+  // Success rate: look up from the first project in state
+  {
+    const proj = projectId
+      ? state.projects.find((p) => p.id === projectId)
+      : state.projects[0];
+    if (proj) {
+      const sr = state.successRates?.get(proj.id);
+      if (sr !== undefined) {
+        const rateStr = formatSuccessRate(sr.rate);
+        const hint = sr.rate === null ? chalk.dim(" (need 3+ runs)") : "";
+        lines.push(`  Success Rate (24h): ${rateStr}${hint}`);
+      }
+    }
   }
   lines.push("");
 

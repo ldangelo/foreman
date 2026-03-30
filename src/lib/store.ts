@@ -975,6 +975,61 @@ export class ForemanStore {
     return { totalByPhase, totalByAgent, runsByPhase };
   }
 
+  // ── Success Rate ─────────────────────────────────────────────────────
+
+  /**
+   * Compute the 24-hour pipeline success rate for a project.
+   *
+   * Success rate = merged / (merged + test-failed + failed), where:
+   * - "merged" includes both `merged` and `pr-created` statuses
+   * - `completed` (pending merge), `reset`, `running`, `pending`, `stuck` are excluded
+   *
+   * Returns `{ rate: null, merged: 0, failed: 0 }` when fewer than 3 terminal
+   * runs have completed in the last 24 hours (not enough data to be meaningful).
+   *
+   * @param projectId - Scope to a specific project; omit for global.
+   */
+  getSuccessRate(projectId?: string): { rate: number | null; merged: number; failed: number } {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const statuses = ["merged", "test-failed", "failed", "pr-created"];
+    const placeholders = statuses.map(() => "?").join(", ");
+
+    let rows: Array<{ status: string; count: number }>;
+    if (projectId) {
+      rows = this.db
+        .prepare(
+          `SELECT status, COUNT(*) as count FROM runs
+           WHERE project_id = ? AND completed_at > ? AND status IN (${placeholders})
+           GROUP BY status`,
+        )
+        .all(projectId, since, ...statuses) as Array<{ status: string; count: number }>;
+    } else {
+      rows = this.db
+        .prepare(
+          `SELECT status, COUNT(*) as count FROM runs
+           WHERE completed_at > ? AND status IN (${placeholders})
+           GROUP BY status`,
+        )
+        .all(since, ...statuses) as Array<{ status: string; count: number }>;
+    }
+
+    const counts: Record<string, number> = {};
+    for (const row of rows) {
+      counts[row.status] = row.count;
+    }
+
+    const merged = (counts["merged"] ?? 0) + (counts["pr-created"] ?? 0);
+    const failed = (counts["failed"] ?? 0) + (counts["test-failed"] ?? 0);
+    const total = merged + failed;
+
+    // Require at least 3 terminal runs before showing a percentage
+    if (total < 3) {
+      return { rate: null, merged, failed };
+    }
+
+    return { rate: merged / total, merged, failed };
+  }
+
   // ── Events ──────────────────────────────────────────────────────────
 
   logEvent(
