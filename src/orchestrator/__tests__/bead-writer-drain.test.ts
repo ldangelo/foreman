@@ -116,7 +116,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     expect(closeCall).toBeTruthy();
     const [cmd, args] = closeCall!;
     expect(cmd).toBe(BR_PATH);
-    expect(args).toEqual(["close", "bd-abc", "--no-db", "--force", "--reason", "Completed via pipeline", "--lock-timeout", "10000"]);
+    expect(args).toEqual(["close", "bd-abc", "--no-db", "--reason", "Completed via pipeline", "--lock-timeout", "10000"]);
   });
 
   it("executes br update --status open for reset-seed operation", async () => {

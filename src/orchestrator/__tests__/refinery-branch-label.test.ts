@@ -156,8 +156,14 @@ describe("Refinery — branch label targeting", () => {
     const refinery = new Refinery(store as never, seeds as never, "/tmp", vcs);
     await refinery.mergeCompleted({ targetBranch: "main", runTests: false });
 
-    // vcs.merge() should have been called with "installer" not "main"
-    expect(vcs.merge).toHaveBeenCalledWith("/tmp", "foreman/seed-abc", "installer");
+    // checkoutBranch should be called with "installer" (from branch: label), not "main"
+    expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp", "installer");
+    // git merge --squash should reference the feature branch
+    const calls: any[][] = (execFile as any).mock.calls;
+    const squashCall = calls.find(
+      (c: any[]) => c[0] === "git" && Array.isArray(c[1]) && c[1].includes("--squash") && c[1].includes("foreman/seed-abc"),
+    );
+    expect(squashCall).toBeDefined();
   });
 
   it("falls back to default target when no branch: label exists", async () => {
@@ -169,8 +175,8 @@ describe("Refinery — branch label targeting", () => {
     const refinery = new Refinery(store as never, seeds as never, "/tmp", vcs);
     await refinery.mergeCompleted({ targetBranch: "main", runTests: false });
 
-    // vcs.merge() should be called with "main" (the default)
-    expect(vcs.merge).toHaveBeenCalledWith("/tmp", "foreman/seed-abc", "main");
+    // checkoutBranch should be called with "main" (the default)
+    expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp", "main");
   });
 
   it("uses detectDefaultBranch when targetBranch not given and no label", async () => {
@@ -188,7 +194,8 @@ describe("Refinery — branch label targeting", () => {
     await refinery.mergeCompleted({ runTests: false }); // no targetBranch
 
     expect(vcs.detectDefaultBranch).toHaveBeenCalledWith("/tmp");
-    expect(vcs.merge).toHaveBeenCalledWith("/tmp", "foreman/seed-abc", "develop");
+    // checkoutBranch should be called with "develop" (from detectDefaultBranch)
+    expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp", "develop");
   });
 
   it("each run can target a different branch when multiple runs are merged", async () => {
@@ -198,7 +205,7 @@ describe("Refinery — branch label targeting", () => {
     const { store } = makeMocks();
     store.getRunsByStatus = vi.fn().mockReturnValue([run1, run2]);
 
-    // seed-aaa has branch:installer, seed-bbb has no label → targets main
+    // seed-aaa has branch:installer, seed-bbb has no label -> targets main
     const seeds = {
       getGraph: vi.fn().mockResolvedValue({ edges: [] }),
       show: vi.fn().mockImplementation(async (id: string) => ({
@@ -214,10 +221,13 @@ describe("Refinery — branch label targeting", () => {
     const refinery = new Refinery(store as never, seeds as never, "/tmp", vcs);
     await refinery.mergeCompleted({ targetBranch: "main", runTests: false });
 
-    // run1 (seed-aaa) → installer
-    expect(vcs.merge).toHaveBeenCalledWith("/tmp", "foreman/seed-aaa", "installer");
-    // run2 (seed-bbb) → main
-    expect(vcs.merge).toHaveBeenCalledWith("/tmp", "foreman/seed-bbb", "main");
+    // run1 (seed-aaa) -> checkoutBranch with installer
+    // run2 (seed-bbb) -> checkoutBranch with main
+    const checkoutCalls = (vcs.checkoutBranch as ReturnType<typeof vi.fn>).mock.calls;
+    // Filter to only the squash-merge checkout calls (not rebase-return checkouts)
+    // The pattern is: checkout target -> squash merge -> commit -> ... -> checkout target (for next run)
+    expect(checkoutCalls.some((c: any[]) => c[1] === "installer")).toBe(true);
+    expect(checkoutCalls.some((c: any[]) => c[1] === "main")).toBe(true);
   });
 
   it("is non-fatal when branch label lookup fails", async () => {
@@ -238,7 +248,7 @@ describe("Refinery — branch label targeting", () => {
       refinery.mergeCompleted({ targetBranch: "main", runTests: false }),
     ).resolves.toBeDefined();
 
-    // Falls back to "main" (the default)
-    expect(vcs.merge).toHaveBeenCalledWith("/tmp", "foreman/seed-abc", "main");
+    // Falls back to "main" (the default) — checkoutBranch called with "main"
+    expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp", "main");
   });
 });

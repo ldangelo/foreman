@@ -6,7 +6,7 @@ import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Metrics, Run, RunProgress } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
-import { renderAgentCard } from "../watch-ui.js";
+import { renderAgentCard, formatSuccessRate } from "../watch-ui.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { BrIssue } from "../../lib/beads-rust.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
@@ -141,13 +141,16 @@ async function renderStatus(): Promise<void> {
   const store = ForemanStore.forProject(projectPath);
   const project = store.getProjectByPath(projectPath);
 
-  // Show failed/stuck run counts from SQLite (only recent — last 24h)
+  // Show failed/stuck run counts and success rate from SQLite (only recent — last 24h)
   if (project) {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const failedCount = store.getRunsByStatusSince("failed", since, project.id).length;
     const stuckCount = store.getRunsByStatusSince("stuck", since, project.id).length;
     if (failedCount > 0) console.log(`  Failed:      ${chalk.red(failedCount)} ${chalk.dim("(last 24h)")}`);
     if (stuckCount > 0) console.log(`  Stuck:       ${chalk.red(stuckCount)} ${chalk.dim("(last 24h)")}`);
+
+    const sr = store.getSuccessRate(project.id);
+    console.log(`  Success Rate (24h): ${formatSuccessRate(sr.rate)}${sr.rate === null ? chalk.dim(" (need 3+ runs)") : ""}`);
   }
 
   console.log();
@@ -266,6 +269,7 @@ export const statusCommand = new Command("status")
         let stuck = 0;
         let activeRuns: Array<{ run: Run; progress: RunProgress | null }> = [];
         let metrics: Metrics = { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] };
+        let successRateData: { rate: number | null; merged: number; failed: number } = { rate: null, merged: 0, failed: 0 };
 
         if (project) {
           const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -274,6 +278,7 @@ export const statusCommand = new Command("status")
           const runs = store.getActiveRuns(project.id);
           activeRuns = runs.map((run) => ({ run, progress: store.getRunProgress(run.id) }));
           metrics = store.getMetrics(project.id);
+          successRateData = store.getSuccessRate(project.id);
         }
 
         store.close();
@@ -287,6 +292,11 @@ export const statusCommand = new Command("status")
             blocked: counts.blocked,
             failed,
             stuck,
+          },
+          successRate: {
+            rate: successRateData.rate,
+            merged: successRateData.merged,
+            failed: successRateData.failed,
           },
           agents: {
             active: activeRuns.map(({ run, progress }) => ({ ...run, progress })),

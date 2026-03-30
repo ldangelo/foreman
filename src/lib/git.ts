@@ -23,6 +23,26 @@ import type { Workspace, MergeResult as VcsMergeResult, DeleteBranchResult as Vc
 
 const execFileAsync = promisify(execFile);
 
+// ── Spawn Environment ─────────────────────────────────────────────────────────
+
+/**
+ * Build an environment for spawned setup processes that includes common binary
+ * directories in PATH.  On macOS (Apple Silicon), Homebrew installs to
+ * `/opt/homebrew/bin` which may not be present in a non-interactive shell's
+ * PATH.  Similarly, user-local binaries in `~/.local/bin` must be reachable.
+ *
+ * This mirrors the PATH augmentation in `buildWorkerEnv()` (dispatcher.ts) so
+ * that setup steps (e.g. `npm install`) can find their binaries regardless of
+ * how the parent process was launched.
+ */
+function buildSetupEnv(): NodeJS.ProcessEnv {
+  const home = process.env.HOME ?? "/home/nobody";
+  return {
+    ...process.env,
+    PATH: `${home}/.local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`,
+  };
+}
+
 // ── Backward-Compat Type Re-exports ──────────────────────────────────────────
 
 /**
@@ -79,7 +99,7 @@ export async function installDependencies(dir: string): Promise<void> {
         : ["install", "--prefer-offline"]; // pnpm
 
   try {
-    await execFileAsync(pm, args, { cwd: dir, maxBuffer: 10 * 1024 * 1024 });
+    await execFileAsync(pm, args, { cwd: dir, maxBuffer: 10 * 1024 * 1024, env: buildSetupEnv() });
   } catch (err: unknown) {
     const e = err as { stdout?: string; stderr?: string; message?: string };
     const combined = [e.stdout, e.stderr]
@@ -108,7 +128,7 @@ export async function runSetupSteps(
     const [cmd, ...args] = argv;
 
     try {
-      await execFileAsync(cmd, args, { cwd: dir, maxBuffer: 10 * 1024 * 1024 });
+      await execFileAsync(cmd, args, { cwd: dir, maxBuffer: 10 * 1024 * 1024, env: buildSetupEnv() });
     } catch (err: unknown) {
       const e = err as { stdout?: string; stderr?: string; message?: string };
       const joined = [e.stdout, e.stderr]

@@ -117,7 +117,9 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
     expect(cmds.commitCommand).toContain('jj describe');
     expect(cmds.commitCommand).toContain('bd-test');
     expect(cmds.commitCommand).toContain('Test task');
-    expect(cmds.commitCommand).toContain('jj new');
+    // jj new is intentionally NOT included — it creates an empty revision
+    // that gets exported as an empty git commit when pushed.
+    expect(cmds.commitCommand).not.toContain('jj new');
   });
 
   it("returns jj git push with --allow-new for pushCommand", () => {
@@ -708,7 +710,7 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.listWorkspaces (AC-T-018-4)", () 
 // ── AC-T-019: Commit Operations ───────────────────────────────────────────────
 
 describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.commit (AC-T-019-1)", () => {
-  it("sets a commit message using jj describe and advances to new change", async () => {
+  it("sets a commit message using jj describe without advancing to new change", async () => {
     const repo = makeTempJjRepo();
     tempDirs.push(repo);
 
@@ -718,18 +720,17 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.commit (AC-T-019-1)", () => {
     // commit should not throw
     await expect(backend.commit(repo, "my commit message")).resolves.toBeUndefined();
 
-    // The current @ should now be a new empty change (no description)
+    // The current @ should have the commit message (no jj new was called)
     const desc = execFileSync(
       "jj",
       ["log", "--no-graph", "-r", "@", "-T", "description"],
       { cwd: repo, stdio: "pipe" },
     ).toString().trim();
 
-    // The new change created by `jj new` should have empty description
-    expect(desc).toBe("");
+    expect(desc).toContain("my commit message");
   });
 
-  it("includes the message in the committed change", async () => {
+  it("includes the message in the current change (not parent)", async () => {
     const repo = makeTempJjRepo();
     tempDirs.push(repo);
 
@@ -738,10 +739,10 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.commit (AC-T-019-1)", () => {
 
     await backend.commit(repo, "Test commit message (AC-019)");
 
-    // The parent change should have the message
+    // The current change @ should have the message (commit() no longer calls jj new)
     const desc = execFileSync(
       "jj",
-      ["log", "--no-graph", "-r", "@-", "-T", "description"],
+      ["log", "--no-graph", "-r", "@", "-T", "description"],
       { cwd: repo, stdio: "pipe" },
     ).toString().trim();
 

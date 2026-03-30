@@ -113,6 +113,14 @@ export interface RunProgress {
   currentPhase?: string;        // Pipeline phase: "explorer" | "developer" | "qa" | "reviewer" | "finalize"
   costByPhase?: Record<string, number>;  // e.g. { explorer: 0.10, developer: 0.50 }
   agentByPhase?: Record<string, string>; // e.g. { explorer: "claude-haiku-4-5", developer: "claude-sonnet-4-6" }
+  /** Epic mode: total number of child tasks. */
+  epicTaskCount?: number;
+  /** Epic mode: number of tasks completed so far. */
+  epicTasksCompleted?: number;
+  /** Epic mode: seed ID of the currently executing task. */
+  epicCurrentTaskId?: string;
+  /** Epic mode: per-task cost breakdown. */
+  epicCostByTask?: Record<string, number>;
 }
 
 export interface Metrics {
@@ -160,6 +168,28 @@ export interface BeadWriteEntry {
   processed_at: string | null;
 }
 
+// ── Native Task interfaces ───────────────────────────────────────────────
+
+/**
+ * A task row from the native SQLite `tasks` table (PRD-2026-006 REQ-003).
+ * Matches the TASKS_SCHEMA column definitions.
+ */
+export interface NativeTask {
+  id: string;
+  title: string;
+  description: string | null;
+  type: string;
+  priority: number;
+  status: string;
+  run_id: string | null;
+  branch: string | null;
+  external_id: string | null;
+  created_at: string;
+  updated_at: string;
+  approved_at: string | null;
+  closed_at: string | null;
+}
+
 // ── Merge Agent interfaces ───────────────────────────────────────────────
 
 export interface MergeAgentConfigRow {
@@ -196,6 +226,32 @@ export interface SentinelRunRow {
   failure_count: number;
   started_at: string;
   completed_at: string | null;
+}
+
+// ── Native Task interface ────────────────────────────────────────────────
+
+/**
+ * A task row from the native `tasks` table (PRD-2026-006 REQ-003).
+ * Used by the dashboard "Needs Human" panel and phase-visibility views.
+ */
+export interface NativeTask {
+  id: string;
+  title: string;
+  description: string | null;
+  type: string;
+  priority: number;   // 0=P0 (critical) … 4=P4 (backlog)
+  status: string;
+  run_id: string | null;
+  branch: string | null;
+  external_id: string | null;
+  created_at: string;
+  updated_at: string;
+  approved_at: string | null;
+  closed_at: string | null;
+  /** Attached project name/id for cross-project aggregation (not a DB column). */
+  projectName?: string;
+  projectId?: string;
+  projectPath?: string;
 }
 
 // ── Error classes ───────────────────────────────────────────────────────
@@ -487,6 +543,28 @@ export class ForemanStore {
     return new ForemanStore(join(projectPath, ".foreman", "foreman.db"));
   }
 
+  /**
+   * Open the project database in READONLY mode for safe concurrent dashboard reads.
+   *
+   * Returns a raw better-sqlite3 `Database` instance opened with `{ readonly: true }`.
+   * The caller is responsible for calling `.close()` when done.
+   *
+   * This is intentionally a static factory that bypasses the normal ForemanStore
+   * constructor (which runs migrations and writes to the DB) — the dashboard reads
+   * should never write to a project's database.
+   *
+   * @param projectPath - Absolute path to the project root directory.
+   * @returns A readonly better-sqlite3 Database (throws if DB does not exist).
+   */
+  static openReadonly(projectPath: string): Database.Database {
+    const dbPath = join(projectPath, ".foreman", "foreman.db");
+    const nativeBinding = resolveBundledNativeBinding();
+    const db = nativeBinding
+      ? new Database(dbPath, { readonly: true, nativeBinding })
+      : new Database(dbPath, { readonly: true });
+    return db;
+  }
+
   constructor(dbPath?: string) {
     const resolvedPath = dbPath ?? join(homedir(), ".foreman", "foreman.db");
     mkdirSync(join(resolvedPath, ".."), { recursive: true });
@@ -542,6 +620,46 @@ export class ForemanStore {
 
   close(): void {
     this.db.close();
+  }
+
+  // ── Native Tasks ─────────────────────────────────────────────────────
+
+  /**
+   * List tasks from the native `tasks` table filtered by one or more statuses.
+   * Returns an empty array if the `tasks` table does not exist (older DBs).
+   *
+   * @param statuses - Array of status strings to filter by (e.g. ['conflict', 'failed', 'stuck', 'backlog'])
+   * @param limit    - Maximum number of rows to return (default: 200)
+   */
+  listTasksByStatus(statuses: string[], limit = 200): NativeTask[] {
+    if (statuses.length === 0) return [];
+    try {
+      const placeholders = statuses.map(() => "?").join(", ");
+      return this.db
+        .prepare(
+          `SELECT * FROM tasks WHERE status IN (${placeholders})
+           ORDER BY priority ASC, updated_at ASC
+           LIMIT ?`
+        )
+        .all(...statuses, limit) as NativeTask[];
+    } catch {
+      // tasks table may not exist on older project databases
+      return [];
+    }
+  }
+
+  /**
+   * Update a task status via a short-lived write.  Used by dashboard
+   * interactive actions (approve / retry).
+   *
+   * @param taskId    - Task UUID to update.
+   * @param newStatus - Target status (must be in TASKS_SCHEMA CHECK constraint).
+   */
+  updateTaskStatus(taskId: string, newStatus: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`)
+      .run(newStatus, now, taskId);
   }
 
   // ── Projects ────────────────────────────────────────────────────────
@@ -721,6 +839,27 @@ export class ForemanStore {
     return this.db
       .prepare("SELECT * FROM runs WHERE status = ? AND created_at >= ? ORDER BY created_at DESC")
       .all(status, since) as Run[];
+  }
+
+  /**
+   * Fetch runs matching any of the given statuses created on or after `since`.
+   * Used by the dispatcher's onError=stop guard to check for recent failures.
+   */
+  getRunsByStatusesSince(statuses: Run["status"][], since: string, projectId?: string): Run[] {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => "?").join(", ");
+    if (projectId) {
+      return this.db
+        .prepare(
+          `SELECT * FROM runs WHERE project_id = ? AND status IN (${placeholders}) AND created_at >= ? ORDER BY created_at DESC`
+        )
+        .all(projectId, ...statuses, since) as Run[];
+    }
+    return this.db
+      .prepare(
+        `SELECT * FROM runs WHERE status IN (${placeholders}) AND created_at >= ? ORDER BY created_at DESC`
+      )
+      .all(...statuses, since) as Run[];
   }
 
   /**
@@ -973,6 +1112,61 @@ export class ForemanStore {
     }
 
     return { totalByPhase, totalByAgent, runsByPhase };
+  }
+
+  // ── Success Rate ─────────────────────────────────────────────────────
+
+  /**
+   * Compute the 24-hour pipeline success rate for a project.
+   *
+   * Success rate = merged / (merged + test-failed + failed), where:
+   * - "merged" includes both `merged` and `pr-created` statuses
+   * - `completed` (pending merge), `reset`, `running`, `pending`, `stuck` are excluded
+   *
+   * Returns `{ rate: null, merged: 0, failed: 0 }` when fewer than 3 terminal
+   * runs have completed in the last 24 hours (not enough data to be meaningful).
+   *
+   * @param projectId - Scope to a specific project; omit for global.
+   */
+  getSuccessRate(projectId?: string): { rate: number | null; merged: number; failed: number } {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const statuses = ["merged", "test-failed", "failed", "pr-created"];
+    const placeholders = statuses.map(() => "?").join(", ");
+
+    let rows: Array<{ status: string; count: number }>;
+    if (projectId) {
+      rows = this.db
+        .prepare(
+          `SELECT status, COUNT(*) as count FROM runs
+           WHERE project_id = ? AND completed_at > ? AND status IN (${placeholders})
+           GROUP BY status`,
+        )
+        .all(projectId, since, ...statuses) as Array<{ status: string; count: number }>;
+    } else {
+      rows = this.db
+        .prepare(
+          `SELECT status, COUNT(*) as count FROM runs
+           WHERE completed_at > ? AND status IN (${placeholders})
+           GROUP BY status`,
+        )
+        .all(since, ...statuses) as Array<{ status: string; count: number }>;
+    }
+
+    const counts: Record<string, number> = {};
+    for (const row of rows) {
+      counts[row.status] = row.count;
+    }
+
+    const merged = (counts["merged"] ?? 0) + (counts["pr-created"] ?? 0);
+    const failed = (counts["failed"] ?? 0) + (counts["test-failed"] ?? 0);
+    const total = merged + failed;
+
+    // Require at least 3 terminal runs before showing a percentage
+    if (total < 3) {
+      return { rate: null, merged, failed };
+    }
+
+    return { rate: merged / total, merged, failed };
   }
 
   // ── Events ──────────────────────────────────────────────────────────
@@ -1438,5 +1632,66 @@ export class ForemanStore {
         ? phaseMetrics.totalByAgent
         : undefined,
     };
+  }
+
+  // ── Native Task Store (PRD-2026-006 REQ-003 / REQ-017) ──────────────
+
+  /**
+   * Check whether the native `tasks` table exists and contains at least one row.
+   *
+   * Used by the dispatcher to decide whether to query the native store or fall
+   * back to the BeadsRustClient (br) CLI.  Returns false if the table is missing
+   * (schema not yet applied) or empty.
+   */
+  hasNativeTasks(): boolean {
+    try {
+      const row = this.db
+        .prepare("SELECT COUNT(*) as cnt FROM tasks")
+        .get() as { cnt: number } | undefined;
+      return (row?.cnt ?? 0) > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Return all tasks with status = 'ready', ordered by priority ASC then created_at ASC.
+   *
+   * Implements REQ-017 AC-017.1: "SELECT * FROM tasks WHERE status = 'ready'
+   * ORDER BY priority ASC, created_at ASC".
+   */
+  getReadyTasks(): NativeTask[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM tasks
+         WHERE status = 'ready'
+         ORDER BY priority ASC, created_at ASC`,
+      )
+      .all() as NativeTask[];
+  }
+
+  /**
+   * Atomically claim a task by transitioning its status from 'ready' to 'in-progress'
+   * and recording the associated run_id in a single SQLite transaction.
+   *
+   * Implements REQ-017 AC-017.2: the UPDATE is atomic — if two concurrent dispatcher
+   * instances attempt to claim the same task, exactly one succeeds (the WHERE clause
+   * only matches rows still in status='ready').
+   *
+   * @param taskId - The task ID to claim.
+   * @param runId  - The run ID to associate with the claimed task.
+   * @returns true if the task was claimed (row affected), false if it was already
+   *          claimed by another process (0 rows affected).
+   */
+  claimTask(taskId: string, runId: string): boolean {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE tasks
+         SET status = 'in-progress', run_id = @runId, updated_at = @now
+         WHERE id = @taskId AND status = 'ready'`,
+      )
+      .run({ taskId, runId, now });
+    return result.changes > 0;
   }
 }

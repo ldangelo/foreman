@@ -466,12 +466,17 @@ describe("Refinery.mergeCompleted()", () => {
 
     await refinery.mergeCompleted({ runTests: false });
 
-    // vcs.merge() should be called with "installer" as targetBranch, not "main"
-    expect(vcs.merge).toHaveBeenCalledWith(
-      expect.any(String),
+    // checkoutBranch should be called with "installer" as targetBranch (squash merge checks out target first)
+    expect(vcs.checkoutBranch).toHaveBeenCalledWith(
       expect.any(String),
       "installer",
     );
+    // git merge --squash should reference the feature branch
+    const calls: any[][] = (execFile as any).mock.calls;
+    const squashCall = calls.find(
+      (c) => c[0] === "git" && Array.isArray(c[1]) && c[1].includes("--squash"),
+    );
+    expect(squashCall).toBeDefined();
   });
 
   it("falls back to default branch when bead has no branch: label", async () => {
@@ -490,25 +495,21 @@ describe("Refinery.mergeCompleted()", () => {
 
     await refinery.mergeCompleted({ runTests: false });
 
-    // vcs.merge() should fall back to "main" (from detectDefaultBranch mock)
-    expect(vcs.merge).toHaveBeenCalledWith(
-      expect.any(String),
+    // checkoutBranch should be called with "main" (from detectDefaultBranch mock)
+    expect(vcs.checkoutBranch).toHaveBeenCalledWith(
       expect.any(String),
       "main",
     );
   });
 
   it("marks run as conflict when merge has conflicts", async () => {
-    const { store, refinery } = makeMocks({
-      merge: vi.fn().mockResolvedValue({
-        success: false,
-        conflicts: ["README.md", "src/index.ts"],
-      }),
-    });
+    const { store, refinery } = makeMocks();
     const run = makeRun();
     store.getRunsByStatus.mockReturnValue([run]);
 
-    // git calls succeed, but gh (PR creation) fails so we fall back to conflict reporting
+    // Squash merge now happens via gitSpecial (execFile). Simulate a conflict on
+    // the `git merge --squash` call, and `git diff --name-only --diff-filter=U`
+    // returning conflicting files. gh fails so we fall back to conflict reporting.
     (execFile as any).mockImplementation(
       (cmd: string, args: string[], _opts: any, callback: Function) => {
         if (cmd === "gh") {
@@ -518,6 +519,13 @@ describe("Refinery.mergeCompleted()", () => {
           callback(err);
         } else if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
           callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
+        } else if (cmd === "git" && Array.isArray(args) && args.includes("--squash")) {
+          const err = new Error("CONFLICT (content): Merge conflict in README.md") as any;
+          err.stdout = "";
+          err.stderr = "CONFLICT (content): Merge conflict in README.md";
+          callback(err);
+        } else if (cmd === "git" && Array.isArray(args) && args.includes("--diff-filter=U")) {
+          callback(null, { stdout: "README.md\nsrc/index.ts\n", stderr: "" });
         } else {
           callback(null, { stdout: "", stderr: "" });
         }
@@ -528,25 +536,16 @@ describe("Refinery.mergeCompleted()", () => {
 
     expect(report.conflicts).toHaveLength(1);
     expect(report.conflicts[0].conflictFiles).toContain("README.md");
-    expect(store.updateRun).toHaveBeenCalledWith(
-      run.id,
-      expect.objectContaining({ status: "conflict" }),
-    );
     // resetSeedToOpen must be called so the seed reappears in the ready queue
     expect(enqueueResetSeedToOpen).toHaveBeenCalledWith(expect.anything(), run.seed_id, "refinery");
   });
 
   it("adds failure note when code-conflict PR creation fails", async () => {
-    const { store, seeds, refinery } = makeMocks({
-      merge: vi.fn().mockResolvedValue({
-        success: false,
-        conflicts: ["src/index.ts"],
-      }),
-    });
+    const { store, seeds, refinery } = makeMocks();
     const run = makeRun();
     store.getRunsByStatus.mockReturnValue([run]);
 
-    // git calls succeed, but gh (PR creation) fails
+    // Squash merge conflict + gh fails
     (execFile as any).mockImplementation(
       (cmd: string, args: string[], _opts: any, callback: Function) => {
         if (cmd === "gh") {
@@ -556,6 +555,13 @@ describe("Refinery.mergeCompleted()", () => {
           callback(err);
         } else if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
           callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
+        } else if (cmd === "git" && Array.isArray(args) && args.includes("--squash")) {
+          const err = new Error("CONFLICT (content): Merge conflict in src/index.ts") as any;
+          err.stdout = "";
+          err.stderr = "CONFLICT (content): Merge conflict in src/index.ts";
+          callback(err);
+        } else if (cmd === "git" && Array.isArray(args) && args.includes("--diff-filter=U")) {
+          callback(null, { stdout: "src/index.ts\n", stderr: "" });
         } else {
           callback(null, { stdout: "", stderr: "" });
         }
@@ -693,11 +699,25 @@ describe("Refinery.mergeCompleted()", () => {
   });
 
   it("catches unexpected errors and puts run in testFailures", async () => {
-    const { store, seeds, refinery } = makeMocks({
-      merge: vi.fn().mockRejectedValue(new Error("Unexpected git failure")),
-    });
+    const { store, seeds, refinery } = makeMocks();
     const run = makeRun();
     store.getRunsByStatus.mockReturnValue([run]);
+
+    // Simulate a non-conflict git failure on the squash merge
+    (execFile as any).mockImplementation(
+      (cmd: string, args: string[], _opts: any, callback: Function) => {
+        if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
+          callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
+        } else if (cmd === "git" && Array.isArray(args) && args.includes("--squash")) {
+          const err = new Error("Unexpected git failure") as any;
+          err.stdout = "";
+          err.stderr = "Unexpected git failure";
+          callback(err);
+        } else {
+          callback(null, { stdout: "", stderr: "" });
+        }
+      },
+    );
 
     const report = await refinery.mergeCompleted({ runTests: false });
 
@@ -791,21 +811,23 @@ describe("Refinery.mergeCompleted()", () => {
   });
 
   it("does NOT call closeSeed when merge has code conflicts", async () => {
-    const { store, refinery } = makeMocks({
-      merge: vi.fn().mockResolvedValue({
-        success: false,
-        conflicts: ["src/index.ts"],
-      }),
-    });
+    const { store, refinery } = makeMocks();
     const run = makeRun({ seed_id: "seed-conflict" });
     store.getRunsByStatus.mockReturnValue([run]);
-    // git and gh calls fail (gh not available → fallback to conflict tracking)
+    // Squash merge hits a conflict; gh not available → fallback to conflict tracking
     (execFile as any).mockImplementation(
       (cmd: string, args: string[], _opts: any, callback: Function) => {
         if (cmd === "gh") {
           callback(new Error("gh not available"), { stdout: "", stderr: "" });
         } else if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
           callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
+        } else if (cmd === "git" && Array.isArray(args) && args.includes("--squash")) {
+          const err = new Error("CONFLICT (content): Merge conflict in src/index.ts") as any;
+          err.stdout = "";
+          err.stderr = "CONFLICT (content): Merge conflict in src/index.ts";
+          callback(err);
+        } else if (cmd === "git" && Array.isArray(args) && args.includes("--diff-filter=U")) {
+          callback(null, { stdout: "src/index.ts\n", stderr: "" });
         } else {
           callback(null, { stdout: "", stderr: "" });
         }

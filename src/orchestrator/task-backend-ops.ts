@@ -167,10 +167,10 @@ function execOpts(projectPath?: string): { stdio: "pipe"; timeout: number; cwd?:
 /**
  * Close (complete) a bead in the br backend.
  *
- * Uses `br close --no-db --force` to write directly to JSONL, bypassing
- * the broken SQLite blocked cache (beads_rust#204). After the JSONL write,
- * deletes the br DB files so the next br command reimports from the
- * corrected JSONL with a fresh cache.
+ * Uses `br close --no-db` to write directly to JSONL, bypassing
+ * the SQLite blocked cache. After the JSONL write, clears the
+ * blocked_issues_cache so br ready reflects the close immediately.
+ * The dispatcher also clears this cache at dispatch startup as a safety net.
  *
  * @param projectPath - The project root directory that contains .beads/.
  */
@@ -180,7 +180,7 @@ export async function closeSeed(seedId: string, projectPath?: string): Promise<v
 
   try {
     // Write close directly to JSONL (bypass broken DB cache)
-    execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline"], execOpts(projectPath));
+    execFileSync(bin, ["close", seedId, "--no-db", "--reason", "Completed via pipeline"], execOpts(projectPath));
     console.error(`[task-backend-ops] Closed seed ${seedId} via br --no-db`);
 
     // Clear the blocked_issues_cache so br ready reflects the close immediately.

@@ -16,8 +16,10 @@ import { request as httpRequest } from "node:http";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
+import type { EpicTask } from "./pipeline-executor.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
+import { NativeTaskStore } from "../lib/task-store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import {
   ROLE_CONFIGS,
@@ -217,6 +219,16 @@ interface WorkerConfig {
    * When set, merges into this branch instead of detectDefaultBranch().
    */
   targetBranch?: string;
+  /**
+   * Ordered list of child tasks for epic execution mode (TRD-2026-007).
+   * When set, the worker runs the epic pipeline path.
+   */
+  epicTasks?: EpicTask[];
+  /**
+   * Parent epic bead ID (TRD-2026-007).
+   * When set, this run is an epic execution.
+   */
+  epicId?: string;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -657,6 +669,11 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     }
   }
 
+  // Create a NativeTaskStore from the same DB for phase-level visibility (REQ-012).
+  // updatePhase() is called after each successful phase transition.
+  // No-op when config.taskId is absent (beads fallback mode — REQ-017).
+  const taskStore = new NativeTaskStore(store.getDb());
+
   // Initialize VCS backend for prompt templating (TRD-026, TRD-027).
   // Reconstructed from FOREMAN_VCS_BACKEND env var set by dispatcher.
   let vcsBackend;
@@ -679,6 +696,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     logFile,
     notifyClient,
     agentMailClient,
+    taskStore,
+    epicTasks: config.epicTasks,
     runPhase,
     registerAgent,
     sendMail,

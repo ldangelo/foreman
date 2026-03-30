@@ -192,7 +192,7 @@ export class Refinery {
   /**
    * Archive report files after a successful merge.
    * Moves report files from the working tree into .foreman/reports/<name>-<seedId>.md
-   * and creates a follow-up commit. Called after vcsBackend.merge() succeeds so we
+   * and creates a follow-up commit. Called after a successful squash merge so we
    * don't need to checkout branches or deal with dirty working trees.
    * Delegates to ConflictResolver.archiveReportsPostMerge().
    */
@@ -624,52 +624,94 @@ export class Refinery {
         // Save pre-merge HEAD so we can revert merge + archive if tests fail
         const preMergeHead = await this.vcsBackend.getHeadId(this.projectPath);
 
-        const result = await this.vcsBackend.merge(this.projectPath, branchName, targetBranch);
+        // Use squash merge so each feature branch becomes a single commit on
+        // the target branch, regardless of how many commits the branch contains.
+        // This prevents empty or noisy intermediate commits from polluting dev.
+        let squashMergeOk = true;
+        try {
+          await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
+          await gitSpecial(["merge", "--squash", branchName], this.projectPath);
+        } catch (mergeErr: unknown) {
+          const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
 
-        if (!result.success) {
-          const allConflicts = result.conflicts ?? [];
-          const reportConflicts = allConflicts.filter((f) => this.isReportFile(f));
-          const codeConflicts = allConflicts.filter((f) => !this.isReportFile(f));
-
-          if (codeConflicts.length > 0) {
-            // Real code conflicts — abort merge and create PR instead
-            try {
-              await gitSpecial(["merge", "--abort"], this.projectPath);
-            } catch {
-              // merge --abort may fail if already clean
-            }
-
-            // Add failure note before resetting so the bead records why it was reset
-            await this.addFailureNote(
-              run.seed_id,
-              `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — branch reset to open for retry. Conflicting files: ${codeConflicts.join(", ")}`,
-            );
-
-            // Reset seed to open so it can be retried after manual conflict resolution
-            enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
-            this.sendMail(run.id, "merge-failed", {
-              seedId: run.seed_id,
-              branchName,
-              reason: "merge-conflict",
-              conflictFiles: codeConflicts,
-            });
-
-            const pr = await this.createPrForConflict(run, branchName, targetBranch,
-              `Conflicts in: ${codeConflicts.join(", ")}`);
-            if (pr) {
-              prsCreated.push(pr);
-            } else {
-              conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: codeConflicts });
-            }
-            continue;
+          // Check for conflicts
+          let conflictingFiles: string[] = [];
+          try {
+            const statusOut = await gitSpecial(["diff", "--name-only", "--diff-filter=U"], this.projectPath);
+            conflictingFiles = statusOut.split("\n").map((f) => f.trim()).filter(Boolean);
+          } catch {
+            // best effort
           }
 
-          // Only report-file conflicts — auto-resolve by accepting the branch version
-          for (const f of reportConflicts) {
-            await gitSpecial(["checkout", "--theirs", f], this.projectPath);
-            await gitSpecial(["add", "-f", f], this.projectPath);
+          if (mergeMsg.includes("CONFLICT") || mergeMsg.includes("Merge conflict") || conflictingFiles.length > 0) {
+            const allConflicts = conflictingFiles;
+            const reportConflicts = allConflicts.filter((f) => this.isReportFile(f));
+            const codeConflicts = allConflicts.filter((f) => !this.isReportFile(f));
+
+            if (codeConflicts.length > 0) {
+              // Real code conflicts — abort merge and create PR instead
+              try {
+                await gitSpecial(["merge", "--abort"], this.projectPath);
+              } catch {
+                // merge --abort may fail if already clean; reset as fallback
+                try { await gitSpecial(["reset", "--hard", "HEAD"], this.projectPath); } catch { /* best effort */ }
+              }
+
+              await this.addFailureNote(
+                run.seed_id,
+                `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — branch reset to open for retry. Conflicting files: ${codeConflicts.join(", ")}`,
+              );
+
+              enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
+              this.sendMail(run.id, "merge-failed", {
+                seedId: run.seed_id,
+                branchName,
+                reason: "merge-conflict",
+                conflictFiles: codeConflicts,
+              });
+
+              const pr = await this.createPrForConflict(run, branchName, targetBranch,
+                `Conflicts in: ${codeConflicts.join(", ")}`);
+              if (pr) {
+                prsCreated.push(pr);
+              } else {
+                conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: codeConflicts });
+              }
+              continue;
+            }
+
+            // Only report-file conflicts — auto-resolve by accepting the branch version
+            for (const f of reportConflicts) {
+              await gitSpecial(["checkout", "--theirs", f], this.projectPath);
+              await gitSpecial(["add", "-f", f], this.projectPath);
+            }
+          } else {
+            // Non-conflict error — rethrow
+            throw mergeErr;
           }
-          await gitSpecial(["commit", "--no-edit"], this.projectPath);
+        }
+
+        // Commit the squash merge (git merge --squash stages but does not commit)
+        if (squashMergeOk) {
+          // Build a concise squash commit message with seed info
+          let squashMsg = `${branchName}: squash merge`;
+          try {
+            const seedDetail = await this.seeds.show(run.seed_id);
+            if (seedDetail?.title) {
+              squashMsg = `${seedDetail.title} (${run.seed_id})`;
+            }
+          } catch {
+            // Non-fatal — use default message
+          }
+          try {
+            await gitSpecial(["commit", "-m", squashMsg], this.projectPath);
+          } catch (commitErr: unknown) {
+            // commit may fail if there's nothing to commit (empty squash)
+            const commitMsg = commitErr instanceof Error ? commitErr.message : String(commitErr);
+            if (!commitMsg.includes("nothing to commit")) {
+              throw commitErr;
+            }
+          }
         }
 
         // Merge succeeded — archive report files so they don't conflict with next merge

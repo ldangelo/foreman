@@ -1,0 +1,1 @@
+{"type":"reference","name":"epic-resume-detection","description":"TRD-009: parseCompletedTaskIds() in pipeline-executor.ts parses git log --oneline matching trailing (beadId) pattern. detectCompletedTasks() wraps with error handling. Resume logic filters epicTasks before the task loop.","classification":"tactical","recorded_at":"2026-03-30T14:49:04.542Z","id":"mx-6b2456"}

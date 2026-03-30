@@ -21,6 +21,19 @@ import type { VcsConfig } from "./vcs/index.js";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /**
+ * Dashboard configuration (REQ-010, REQ-019).
+ * Controls the dashboard refresh interval when using `foreman dashboard`.
+ */
+export interface DashboardConfig {
+  /**
+   * Polling interval for the live dashboard in milliseconds.
+   * Default: 5000 (5 seconds). Minimum enforced: 1000 (1 second).
+   * Can be overridden by the `--refresh` CLI flag.
+   */
+  refreshInterval?: number;
+}
+
+/**
  * Shape of `.foreman/config.yaml` (or `.foreman/config.json`).
  * Only the `vcs` section is currently defined; additional top-level keys may
  * be added in future phases without breaking this interface.
@@ -46,6 +59,8 @@ export interface ProjectConfig {
       minVersion?: string;
     };
   };
+  /** Dashboard configuration (REQ-010, REQ-019). */
+  dashboard?: DashboardConfig;
 }
 
 /** Error thrown when the project config file is present but malformed. */
@@ -140,6 +155,26 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
     config.vcs = vcsConfig;
   }
 
+  // Optional dashboard sub-config
+  if ("dashboard" in raw) {
+    const dashRaw = raw["dashboard"];
+    if (!isRecord(dashRaw)) {
+      throw new ProjectConfigError(filePath, "'dashboard' must be an object");
+    }
+    const dashConfig: DashboardConfig = {};
+    if ("refreshInterval" in dashRaw) {
+      const ri = dashRaw["refreshInterval"];
+      if (typeof ri !== "number" || !Number.isFinite(ri) || ri < 0) {
+        throw new ProjectConfigError(
+          filePath,
+          "'dashboard.refreshInterval' must be a non-negative number (milliseconds)",
+        );
+      }
+      dashConfig.refreshInterval = ri as number;
+    }
+    config.dashboard = dashConfig;
+  }
+
   return config;
 }
 
@@ -186,6 +221,29 @@ export function loadProjectConfig(projectPath: string): ProjectConfig | null {
 
   // No project config file — not an error
   return null;
+}
+
+/**
+ * Load and return the dashboard configuration for a project.
+ *
+ * Reads `dashboard.refreshInterval` from `.foreman/config.yaml` and returns
+ * a merged `DashboardConfig` with default values filled in.
+ *
+ * @param projectPath - Absolute path to the project root.
+ * @returns Resolved `DashboardConfig` with defaults applied.
+ */
+export function loadDashboardConfig(projectPath: string): Required<DashboardConfig> {
+  const defaults: Required<DashboardConfig> = { refreshInterval: 5000 };
+  try {
+    const config = loadProjectConfig(projectPath);
+    if (!config?.dashboard) return defaults;
+    const ri = config.dashboard.refreshInterval;
+    return {
+      refreshInterval: typeof ri === "number" && ri >= 1000 ? ri : defaults.refreshInterval,
+    };
+  } catch {
+    return defaults;
+  }
 }
 
 /**

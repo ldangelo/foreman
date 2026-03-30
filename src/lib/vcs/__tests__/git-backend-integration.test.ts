@@ -464,11 +464,14 @@ describe("AC-022-1: GitBackend abstraction overhead is negligible", () => {
     const directTime = performance.now() - directStart;
 
     // Threshold rationale: the real acceptance criterion (AC-022) is < 1%
-    // end-to-end pipeline overhead, not a fixed per-call budget.  We check
-    // that the abstraction takes no more than 3× the direct git time — i.e.
-    // < 200% relative overhead.  An absolute ceiling is too noise-sensitive
-    // under load (other agents running concurrently inflate timing).
-    expect(abstractionTime).toBeLessThan(directTime * 3);
+    // end-to-end pipeline overhead, not a fixed per-call budget.  A 100-call
+    // batch over a plain git repo typically completes in < 2 s total, so the
+    // abstraction overhead (abstractionTime - directTime) is well under 200 ms
+    // even on a loaded CI machine.  The 200 ms ceiling gives ~10× headroom
+    // while still catching regressions like accidental network I/O or
+    // synchronous blocking inside the backend.
+    const overheadTotal = abstractionTime - directTime;
+    expect(overheadTotal).toBeLessThan(200);
   });
 });
 
