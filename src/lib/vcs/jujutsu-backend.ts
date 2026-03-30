@@ -324,7 +324,17 @@ export class JujutsuBackend implements VcsBackend {
       );
     } catch (err: unknown) {
       const msg = (err as Error).message ?? "";
-      if (!msg.includes("already exists")) {
+      if (msg.includes("already exists")) {
+        // Workspace registered in jj but directory missing (stale metadata from
+        // a previous run that was cleaned up). Forget and recreate.
+        if (!existsSync(workspacePath)) {
+          await this.jj(["workspace", "forget", `foreman-${seedId}`], repoPath);
+          await this.jj(
+            ["workspace", "add", "--name", `foreman-${seedId}`, workspacePath],
+            repoPath,
+          );
+        }
+      } else {
         throw err;
       }
     }
