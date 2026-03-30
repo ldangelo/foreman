@@ -1185,6 +1185,13 @@ export interface WorkerConfig {
    * When set, the agent worker merges into this branch instead of detectDefaultBranch().
    */
   targetBranch?: string;
+  /**
+   * Optional task ID from native task store (NativeTaskStore.claim()).
+   * When present, pipeline will call taskStore.updatePhase(taskId, phaseName)
+   * at each phase transition for phase-level visibility (REQ-012).
+   * Null/undefined in beads fallback mode — no-op via optional chaining.
+   */
+  taskId?: string | null;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

@@ -18,6 +18,7 @@ import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from 
 import { executePipeline } from "./pipeline-executor.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
+import { NativeTaskStore } from "../lib/task-store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import {
   ROLE_CONFIGS,
@@ -657,6 +658,11 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     }
   }
 
+  // Create a NativeTaskStore from the same DB for phase-level visibility (REQ-012).
+  // updatePhase() is called after each successful phase transition.
+  // No-op when config.taskId is absent (beads fallback mode — REQ-017).
+  const taskStore = new NativeTaskStore(store.getDb());
+
   // Initialize VCS backend for prompt templating (TRD-026, TRD-027).
   // Reconstructed from FOREMAN_VCS_BACKEND env var set by dispatcher.
   let vcsBackend;
@@ -679,6 +685,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     logFile,
     notifyClient,
     agentMailClient,
+    taskStore,
     runPhase,
     registerAgent,
     sendMail,

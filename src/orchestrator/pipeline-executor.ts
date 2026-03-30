@@ -23,6 +23,7 @@ import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import type { ForemanStore, RunProgress } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
+import type { NativeTaskStore } from "../lib/task-store.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,12 @@ export interface PipelineRunConfig {
    * Falls back to git defaults when absent.
    */
   vcsBackend?: VcsBackend;
+  /**
+   * Optional task ID from native task store.
+   * When present, pipeline-executor calls taskStore?.updatePhase(taskId, phaseName)
+   * at each phase transition (REQ-012). Null/undefined in beads fallback mode.
+   */
+  taskId?: string | null;
 }
 
 export interface PipelineContext {
@@ -89,6 +96,12 @@ export interface PipelineContext {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   notifyClient: any;
   agentMailClient: AnyMailClient | null;
+  /**
+   * Optional native task store for phase-level visibility (REQ-012).
+   * When present and config.taskId is set, updatePhase() is called at each
+   * phase transition. No-op if absent or if config.taskId is null/undefined.
+   */
+  taskStore?: NativeTaskStore;
   /** The runPhase function from agent-worker.ts */
   runPhase: RunPhaseFn;
   /** Register an agent identity for mail */
@@ -322,6 +335,10 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
     }
     store.logEvent(projectId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, runId);
     enqueueAddLabelsToBead(store, seedId, [`phase:${phaseName}`], "pipeline-executor");
+
+    // Update native task store with phase completion (REQ-012, AC-012.2).
+    // No-op when ctx.taskStore is absent or config.taskId is null/undefined.
+    ctx.taskStore?.updatePhase(config.taskId ?? null, phaseName);
 
     // Forward artifact to another agent's inbox
     if (phase.mail?.forwardArtifactTo && phase.artifact) {
