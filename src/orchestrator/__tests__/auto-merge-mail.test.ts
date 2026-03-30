@@ -50,6 +50,7 @@ const {
     merged: [],
     conflicts: [],
     testFailures: [],
+    unexpectedErrors: [],
     prsCreated: [],
   });
   const MockRefinery = vi.fn(function (this: Record<string, unknown>) {
@@ -163,6 +164,7 @@ function resetMocks(): void {
     merged: [],
     conflicts: [],
     testFailures: [],
+    unexpectedErrors: [],
     prsCreated: [],
   });
   mockTaskClientUpdate.mockResolvedValue(undefined);
@@ -193,6 +195,7 @@ describe("autoMerge() mail — merge-complete", () => {
       merged: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001" }],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -223,6 +226,7 @@ describe("autoMerge() mail — merge-complete", () => {
       ],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -246,6 +250,7 @@ describe("autoMerge() mail — merge-conflict", () => {
       merged: [],
       conflicts: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", conflictFiles: ["src/foo.ts"] }],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -273,6 +278,7 @@ describe("autoMerge() mail — merge-conflict", () => {
       merged: [],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", prUrl: "https://github.com/x/y/pull/42" }],
     });
 
@@ -293,6 +299,7 @@ describe("autoMerge() mail — merge-conflict", () => {
       merged: [],
       conflicts: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", conflictFiles: [] }],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [{ runId: "run-002", seedId: "bd-test-002", branchName: "foreman/bd-test-002", prUrl: "https://github.com/x/y/pull/43" }],
     });
 
@@ -316,6 +323,7 @@ describe("autoMerge() mail — merge-failed (test failures)", () => {
       merged: [],
       conflicts: [],
       testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "Tests failed: 3 failures" }],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -347,6 +355,7 @@ describe("autoMerge() mail — merge-failed (no completed run)", () => {
       merged: [],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -417,6 +426,7 @@ describe("autoMerge() mail — bead-closed", () => {
       merged: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001" }],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -436,12 +446,13 @@ describe("autoMerge() mail — bead-closed", () => {
     expect(body.timestamp).toBeDefined();
   });
 
-  it("sends bead-closed mail even when merge fails (after conflict)", async () => {
+  it("does NOT send bead-closed mail when merge fails (after conflict) — Fix 2", async () => {
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry(1)).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
       conflicts: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", conflictFiles: [] }],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -450,11 +461,11 @@ describe("autoMerge() mail — bead-closed", () => {
     const beadClosedCalls = mockSendMessage.mock.calls.filter(
       (c: unknown[]) => c[3] === "bead-closed",
     );
-    expect(beadClosedCalls).toHaveLength(1);
-    expect(beadClosedCalls[0][0]).toBe("run-001");
+    // bead-closed must NOT be sent when merge did not succeed (Fix 2)
+    expect(beadClosedCalls).toHaveLength(0);
   });
 
-  it("sends bead-closed mail even when refinery throws", async () => {
+  it("does NOT send bead-closed mail when refinery throws — Fix 2", async () => {
     mockMergeQueueDequeue
       .mockReturnValueOnce(makeEntry(1))
       .mockReturnValue(null);
@@ -465,7 +476,8 @@ describe("autoMerge() mail — bead-closed", () => {
     const beadClosedCalls = mockSendMessage.mock.calls.filter(
       (c: unknown[]) => c[3] === "bead-closed",
     );
-    expect(beadClosedCalls).toHaveLength(1);
+    // bead-closed must NOT be sent when refinery throws (Fix 2)
+    expect(beadClosedCalls).toHaveLength(0);
   });
 });
 
@@ -481,6 +493,7 @@ describe("autoMerge() mail — non-fatal", () => {
       merged: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001" }],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
     mockSendMessage.mockImplementation(() => { throw new Error("DB write failed"); });
@@ -495,6 +508,7 @@ describe("autoMerge() mail — non-fatal", () => {
       merged: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001" }],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
     mockSendMessage.mockImplementation(() => { throw new Error("DB write failed"); });
@@ -516,6 +530,7 @@ describe("autoMerge() mail — run_id scoping", () => {
       merged: [],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -533,8 +548,8 @@ describe("autoMerge() mail — run_id scoping", () => {
       .mockReturnValueOnce({ id: 2, seed_id: "bd-002", run_id: "run-bbb" })
       .mockReturnValue(null);
     mockRefineryMergeCompleted
-      .mockResolvedValueOnce({ merged: [{ runId: "run-aaa", seedId: "bd-001", branchName: "foreman/bd-001" }], conflicts: [], testFailures: [], prsCreated: [] })
-      .mockResolvedValueOnce({ merged: [{ runId: "run-bbb", seedId: "bd-002", branchName: "foreman/bd-002" }], conflicts: [], testFailures: [], prsCreated: [] });
+      .mockResolvedValueOnce({ merged: [{ runId: "run-aaa", seedId: "bd-001", branchName: "foreman/bd-001" }], conflicts: [], testFailures: [], unexpectedErrors: [], prsCreated: [] })
+      .mockResolvedValueOnce({ merged: [{ runId: "run-bbb", seedId: "bd-002", branchName: "foreman/bd-002" }], conflicts: [], testFailures: [], unexpectedErrors: [], prsCreated: [] });
 
     await autoMerge(makeOpts());
 

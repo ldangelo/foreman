@@ -654,9 +654,15 @@ export class GitBackend implements VcsBackend {
    */
   getFinalizeCommands(vars: FinalizeTemplateVars): FinalizeCommands {
     const { seedId, seedTitle, baseBranch } = vars;
+    // Escape single quotes in seedTitle so the shell-level single-quoted commit
+    // message is safe even when the title contains apostrophes or shell-special
+    // characters (brackets, colons, parentheses, $, !, etc.).
+    // Strategy: end the single-quoted string, escape the quote, reopen it:
+    //   O'Brien → 'O'\''Brien'
+    const safeSeedTitle = seedTitle.replace(/'/g, "'\\''");
     return {
       stageCommand: "git add -A",
-      commitCommand: `git commit -m "${seedTitle} (${seedId})"`,
+      commitCommand: `git commit -m '${safeSeedTitle} (${seedId})'`,
       pushCommand: `git push -u origin foreman/${seedId}`,
       rebaseCommand: `git fetch origin && git rebase origin/${baseBranch}`,
       branchVerifyCommand: `git rev-parse --abbrev-ref HEAD`,

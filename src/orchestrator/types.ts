@@ -105,6 +105,12 @@ export interface MergeReport {
   merged: MergedRun[];
   conflicts: ConflictRun[];
   testFailures: FailedRun[];
+  /**
+   * Runs that failed due to a git/shell command error (not a test runner exit).
+   * Reported with reason "unexpected-error" rather than "test-failure" in mail.
+   * Separated from testFailures so auto-merge uses the correct retry path (Fix 3).
+   */
+  unexpectedErrors: FailedRun[];
   /** PRs created for branches that had code conflicts */
   prsCreated: CreatedPr[];
 }

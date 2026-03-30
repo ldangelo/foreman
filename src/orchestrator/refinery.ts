@@ -468,6 +468,10 @@ export class Refinery {
     const merged: MergedRun[] = [];
     const conflicts: ConflictRun[] = [];
     const testFailures: FailedRun[] = [];
+    // Runs that failed due to git/shell command errors (not test runner exit).
+    // Kept separate from testFailures so auto-merge reports reason "unexpected-error"
+    // rather than "test-failure" and uses the correct retry path (Fix 3).
+    const unexpectedErrors: FailedRun[] = [];
     const prsCreated: import("./types.js").CreatedPr[] = [];
 
     for (const run of completedRuns) {
@@ -826,7 +830,9 @@ export class Refinery {
           error: message.slice(0, 400),
         });
         await this.addFailureNote(run.seed_id, `Merge failed: ${message.slice(0, 400)}`);
-        testFailures.push({
+        // Push to unexpectedErrors (not testFailures) so auto-merge reports
+        // reason "unexpected-error" instead of "test-failure" (Fix 3).
+        unexpectedErrors.push({
           runId: run.id,
           seedId: run.seed_id,
           branchName,
@@ -835,7 +841,7 @@ export class Refinery {
       }
     }
 
-    return { merged, conflicts, testFailures, prsCreated };
+    return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
   }
 
   /**
