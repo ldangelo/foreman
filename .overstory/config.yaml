@@ -46,6 +46,9 @@ watchdog:
   staleThresholdMs: 300000
   zombieThresholdMs: 600000
   nudgeIntervalMs: 60000
+  rpcTimeoutMs: 5000
+  triageTimeoutMs: 30000
+  maxEscalationLevel: 3
 coordinator:
   exitTriggers:
     allAgentsDone: false

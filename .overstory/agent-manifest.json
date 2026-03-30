@@ -114,6 +114,27 @@
 				"no-worktree"
 			]
 		},
+		"orchestrator": {
+			"file": "orchestrator.md",
+			"model": "opus",
+			"tools": [
+				"Read",
+				"Glob",
+				"Grep",
+				"Bash"
+			],
+			"capabilities": [
+				"orchestrate",
+				"coordinate",
+				"dispatch",
+				"escalate"
+			],
+			"canSpawn": true,
+			"constraints": [
+				"read-only",
+				"no-worktree"
+			]
+		},
 		"monitor": {
 			"file": "monitor.md",
 			"model": "sonnet",
@@ -160,7 +181,8 @@
 		],
 		"coordinate": [
 			"lead",
-			"coordinator"
+			"coordinator",
+			"orchestrator"
 		],
 		"merge": [
 			"merger"
@@ -169,10 +191,15 @@
 			"merger"
 		],
 		"dispatch": [
-			"coordinator"
+			"coordinator",
+			"orchestrator"
 		],
 		"escalate": [
-			"coordinator"
+			"coordinator",
+			"orchestrator"
+		],
+		"orchestrate": [
+			"orchestrator"
 		],
 		"monitor": [
 			"monitor"
