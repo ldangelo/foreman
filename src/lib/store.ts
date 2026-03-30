@@ -198,6 +198,32 @@ export interface SentinelRunRow {
   completed_at: string | null;
 }
 
+// ── Native Task interface ────────────────────────────────────────────────
+
+/**
+ * A task row from the native `tasks` table (PRD-2026-006 REQ-003).
+ * Used by the dashboard "Needs Human" panel and phase-visibility views.
+ */
+export interface NativeTask {
+  id: string;
+  title: string;
+  description: string | null;
+  type: string;
+  priority: number;   // 0=P0 (critical) … 4=P4 (backlog)
+  status: string;
+  run_id: string | null;
+  branch: string | null;
+  external_id: string | null;
+  created_at: string;
+  updated_at: string;
+  approved_at: string | null;
+  closed_at: string | null;
+  /** Attached project name/id for cross-project aggregation (not a DB column). */
+  projectName?: string;
+  projectId?: string;
+  projectPath?: string;
+}
+
 // ── Error classes ───────────────────────────────────────────────────────
 
 /**
@@ -487,6 +513,28 @@ export class ForemanStore {
     return new ForemanStore(join(projectPath, ".foreman", "foreman.db"));
   }
 
+  /**
+   * Open the project database in READONLY mode for safe concurrent dashboard reads.
+   *
+   * Returns a raw better-sqlite3 `Database` instance opened with `{ readonly: true }`.
+   * The caller is responsible for calling `.close()` when done.
+   *
+   * This is intentionally a static factory that bypasses the normal ForemanStore
+   * constructor (which runs migrations and writes to the DB) — the dashboard reads
+   * should never write to a project's database.
+   *
+   * @param projectPath - Absolute path to the project root directory.
+   * @returns A readonly better-sqlite3 Database (throws if DB does not exist).
+   */
+  static openReadonly(projectPath: string): Database.Database {
+    const dbPath = join(projectPath, ".foreman", "foreman.db");
+    const nativeBinding = resolveBundledNativeBinding();
+    const db = nativeBinding
+      ? new Database(dbPath, { readonly: true, nativeBinding })
+      : new Database(dbPath, { readonly: true });
+    return db;
+  }
+
   constructor(dbPath?: string) {
     const resolvedPath = dbPath ?? join(homedir(), ".foreman", "foreman.db");
     mkdirSync(join(resolvedPath, ".."), { recursive: true });
@@ -542,6 +590,46 @@ export class ForemanStore {
 
   close(): void {
     this.db.close();
+  }
+
+  // ── Native Tasks ─────────────────────────────────────────────────────
+
+  /**
+   * List tasks from the native `tasks` table filtered by one or more statuses.
+   * Returns an empty array if the `tasks` table does not exist (older DBs).
+   *
+   * @param statuses - Array of status strings to filter by (e.g. ['conflict', 'failed', 'stuck', 'backlog'])
+   * @param limit    - Maximum number of rows to return (default: 200)
+   */
+  listTasksByStatus(statuses: string[], limit = 200): NativeTask[] {
+    if (statuses.length === 0) return [];
+    try {
+      const placeholders = statuses.map(() => "?").join(", ");
+      return this.db
+        .prepare(
+          `SELECT * FROM tasks WHERE status IN (${placeholders})
+           ORDER BY priority ASC, updated_at ASC
+           LIMIT ?`
+        )
+        .all(...statuses, limit) as NativeTask[];
+    } catch {
+      // tasks table may not exist on older project databases
+      return [];
+    }
+  }
+
+  /**
+   * Update a task status via a short-lived write.  Used by dashboard
+   * interactive actions (approve / retry).
+   *
+   * @param taskId    - Task UUID to update.
+   * @param newStatus - Target status (must be in TASKS_SCHEMA CHECK constraint).
+   */
+  updateTaskStatus(taskId: string, newStatus: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`)
+      .run(newStatus, now, taskId);
   }
 
   // ── Projects ────────────────────────────────────────────────────────
