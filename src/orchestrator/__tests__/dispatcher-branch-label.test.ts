@@ -66,7 +66,7 @@ function makeIssue(id: string, parent?: string, labels?: string[]): Issue {
   return {
     id,
     title: `Seed ${id}`,
-    type: "feature",
+    type: "task",
     priority: "2",
     status: "open",
     assignee: null,
