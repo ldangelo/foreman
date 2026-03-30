@@ -51,6 +51,16 @@ export interface PhaseResult {
   error?: string;
 }
 
+/** A child task within an epic pipeline run. */
+export interface EpicTask {
+  /** Bead/seed ID of the child task. */
+  seedId: string;
+  /** Title of the child task bead. */
+  seedTitle: string;
+  /** Description of the child task bead. */
+  seedDescription?: string;
+}
+
 export interface PipelineRunConfig {
   runId: string;
   projectId: string;
@@ -86,6 +96,11 @@ export interface PipelineRunConfig {
    * at each phase transition (REQ-012). Null/undefined in beads fallback mode.
    */
   taskId?: string | null;
+  /**
+   * Parent epic bead ID. When set, this run is part of an epic execution.
+   * Used to link child task results back to the parent epic.
+   */
+  epicId?: string;
 }
 
 export interface PipelineContext {
@@ -102,6 +117,12 @@ export interface PipelineContext {
    * phase transition. No-op if absent or if config.taskId is null/undefined.
    */
   taskStore?: NativeTaskStore;
+  /**
+   * Epic mode: ordered list of child tasks to execute.
+   * When set, the pipeline executor runs taskPhases for each task
+   * instead of running all phases in sequence for a single task.
+   */
+  epicTasks?: EpicTask[];
   /** The runPhase function from agent-worker.ts */
   runPhase: RunPhaseFn;
   /** Register an agent identity for mail */

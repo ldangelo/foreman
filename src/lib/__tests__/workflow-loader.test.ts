@@ -405,6 +405,10 @@ describe("resolveWorkflowName", () => {
     expect(resolveWorkflowName("smoke")).toBe("smoke");
   });
 
+  it("returns 'epic' for epic bead type", () => {
+    expect(resolveWorkflowName("epic")).toBe("epic");
+  });
+
   it("returns 'default' for feature bead type", () => {
     expect(resolveWorkflowName("feature")).toBe("default");
   });
@@ -650,5 +654,92 @@ describe("validateWorkflowConfig — vcs block", () => {
         "test",
       ),
     ).toThrow(/vcs.backend must be/);
+  });
+});
+
+// ── validateWorkflowConfig — epic mode (taskPhases, finalPhases) ────────────
+
+describe("validateWorkflowConfig — epic mode", () => {
+  const epicConfig = {
+    name: "epic",
+    phases: [
+      { name: "developer", prompt: "developer.md" },
+      { name: "qa", prompt: "qa.md", verdict: true, retryWith: "developer", retryOnFail: 2 },
+      { name: "finalize", prompt: "finalize.md" },
+    ],
+  };
+
+  it("parses taskPhases and finalPhases from YAML", () => {
+    const raw = {
+      ...epicConfig,
+      taskPhases: ["developer", "qa"],
+      finalPhases: ["finalize"],
+    };
+    const config = validateWorkflowConfig(raw, "epic");
+    expect(config.taskPhases).toEqual(["developer", "qa"]);
+    expect(config.finalPhases).toEqual(["finalize"]);
+  });
+
+  it("leaves taskPhases and finalPhases undefined when absent (single-task mode)", () => {
+    const config = validateWorkflowConfig(epicConfig, "default");
+    expect(config.taskPhases).toBeUndefined();
+    expect(config.finalPhases).toBeUndefined();
+  });
+
+  it("throws on non-array taskPhases", () => {
+    const raw = { ...epicConfig, taskPhases: "developer" };
+    expect(() => validateWorkflowConfig(raw, "epic")).toThrow(
+      /taskPhases.*must be an array/,
+    );
+  });
+
+  it("throws on non-array finalPhases", () => {
+    const raw = { ...epicConfig, finalPhases: "finalize" };
+    expect(() => validateWorkflowConfig(raw, "epic")).toThrow(
+      /finalPhases.*must be an array/,
+    );
+  });
+
+  it("throws when taskPhases references a phase not in phases array", () => {
+    const raw = { ...epicConfig, taskPhases: ["developer", "explorer"] };
+    expect(() => validateWorkflowConfig(raw, "epic")).toThrow(
+      /references phase 'explorer' which is not defined/,
+    );
+  });
+
+  it("throws when finalPhases references a phase not in phases array", () => {
+    const raw = { ...epicConfig, finalPhases: ["nonexistent"] };
+    expect(() => validateWorkflowConfig(raw, "epic")).toThrow(
+      /references phase 'nonexistent' which is not defined/,
+    );
+  });
+
+  it("throws on non-string entry in taskPhases", () => {
+    const raw = { ...epicConfig, taskPhases: ["developer", 42] };
+    expect(() => validateWorkflowConfig(raw, "epic")).toThrow(
+      /taskPhases\[1\] must be a non-empty string/,
+    );
+  });
+
+  it("throws on empty string entry in taskPhases", () => {
+    const raw = { ...epicConfig, taskPhases: ["developer", ""] };
+    expect(() => validateWorkflowConfig(raw, "epic")).toThrow(
+      /taskPhases\[1\] must be a non-empty string/,
+    );
+  });
+
+  it("bundled epic.yaml loads with taskPhases and finalPhases", () => {
+    const tmpDir2 = tmpdir() + `/wl-epic-test-${Date.now()}`;
+    mkdirSync(tmpDir2, { recursive: true });
+    const config = loadWorkflowConfig("epic", tmpDir2);
+    rmSync(tmpDir2, { recursive: true, force: true });
+    expect(config.name).toBe("epic");
+    expect(config.taskPhases).toEqual(["developer", "qa"]);
+    expect(config.finalPhases).toEqual(["finalize"]);
+    expect(config.phases.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("includes 'epic' in BUNDLED_WORKFLOW_NAMES", () => {
+    expect(BUNDLED_WORKFLOW_NAMES).toContain("epic");
   });
 });

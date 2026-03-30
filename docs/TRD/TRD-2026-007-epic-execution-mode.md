@@ -268,12 +268,12 @@ Dispatcher
 ## Sprint Planning
 
 ### Sprint 1: Core Epic Runner (~20h)
-- [ ] **TRD-001** (2h): Epic workflow YAML fields
-- [ ] **TRD-001-TEST** (1h): Tests for YAML parsing
-- [ ] **TRD-002** (1h): Bundled epic.yaml
-- [ ] **TRD-003** (2h): Task ordering module
-- [ ] **TRD-003-TEST** (1h): Tests for task ordering
-- [ ] **TRD-004** (1h): Epic fields in PipelineContext
+- [x] **TRD-001** (2h): Epic workflow YAML fields
+- [x] **TRD-001-TEST** (1h): Tests for YAML parsing
+- [x] **TRD-002** (1h): Bundled epic.yaml
+- [x] **TRD-003** (2h): Task ordering module
+- [x] **TRD-003-TEST** (1h): Tests for task ordering
+- [x] **TRD-004** (1h): Epic fields in PipelineContext
 - [ ] **TRD-005** (4h): Outer task loop in executePipeline [CRITICAL PATH]
 - [ ] **TRD-005-TEST** (3h): Integration tests for task loop
 - [ ] **TRD-006** (3h): Dispatcher epic detection
