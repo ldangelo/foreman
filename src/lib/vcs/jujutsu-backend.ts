@@ -59,10 +59,15 @@ export class JujutsuBackend implements VcsBackend {
    */
   private async jj(args: string[], cwd: string): Promise<string> {
     try {
+      const home = process.env.HOME ?? "/home/nobody";
       const { stdout } = await execFileAsync("jj", args, {
         cwd,
         maxBuffer: 10 * 1024 * 1024,
         timeout: 60_000,
+        env: {
+          ...process.env,
+          PATH: `${home}/.local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`,
+        },
       });
       return stdout.trim();
     } catch (err: unknown) {
