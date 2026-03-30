@@ -708,6 +708,41 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     log,
     promptOpts: { projectRoot: pipelineProjectPath, workflow: resolvedWorkflow },
 
+    // Epic mode: sync child task bead status into br as the pipeline progresses.
+    async onTaskStatusChange(taskSeedId, status) {
+      const seeds = new BeadsRustClient(pipelineProjectPath);
+      if (status === "in_progress") {
+        await seeds.update(taskSeedId, { status: "in_progress" });
+        log(`[EPIC] br update ${taskSeedId} → in_progress`);
+      } else if (status === "completed") {
+        await seeds.close(taskSeedId, "Completed via epic pipeline");
+        log(`[EPIC] br close ${taskSeedId} (completed)`);
+      } else if (status === "failed") {
+        await seeds.update(taskSeedId, { status: "failed" });
+        log(`[EPIC] br update ${taskSeedId} → failed`);
+      }
+    },
+
+    // Epic mode: create a bug bead when QA fails on a child task.
+    async onTaskQaFailure(taskSeedId, taskTitle, epicId) {
+      const seeds = new BeadsRustClient(pipelineProjectPath);
+      const bug = await seeds.create(`QA failure: ${taskTitle}`, {
+        type: "bug",
+        priority: "1",
+        parent: epicId,
+        description: `QA failed for task ${taskSeedId} (${taskTitle}) during epic pipeline run.`,
+      });
+      log(`[EPIC] Created bug bead ${bug.id} for QA failure on ${taskSeedId}`);
+      return bug.id;
+    },
+
+    // Epic mode: close a bug bead when QA passes on retry.
+    async onTaskQaPass(bugBeadId) {
+      const seeds = new BeadsRustClient(pipelineProjectPath);
+      await seeds.close(bugBeadId, "QA passed on retry");
+      log(`[EPIC] Closed bug bead ${bugBeadId} (QA passed on retry)`);
+    },
+
     // Finalize post-processing: determine push success, enqueue to merge queue, update run status.
     async onPipelineComplete({ progress }) {
       const { runId, projectId, seedId, seedTitle, worktreePath } = config;
