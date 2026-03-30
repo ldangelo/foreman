@@ -82,6 +82,18 @@ export class Dispatcher {
       console.error(`[bead-writer] Warning: drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
     }
 
+    // Clear br's blocked_issues_cache before querying ready seeds.
+    // The cache goes stale when beads are closed by the refinery, auto-close
+    // logic, or manual operations outside br's normal flow.
+    try {
+      execFileSync("sqlite3", [
+        join(this.projectPath, ".beads", "beads.db"),
+        "DELETE FROM blocked_issues_cache;",
+      ], { timeout: 5000 });
+    } catch {
+      // sqlite3 not available or .beads/beads.db missing — non-fatal
+    }
+
     // Determine how many agent slots are available
     const activeRuns = this.store.getActiveRuns(projectId);
     const available = Math.max(0, maxAgents - activeRuns.length);
