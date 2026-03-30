@@ -36,8 +36,14 @@ function makeDetail(
     description: `Description for ${title}`,
     labels: [],
     estimate_minutes: null,
-    dependencies: deps,
-    children: [],
+    dependencies: deps.map((depId) => ({
+      id: depId,
+      title: depId,
+      status: "open",
+      priority: 1,
+      dependency_type: "blocks",
+    })),
+    dependents: [],
   };
 }
 

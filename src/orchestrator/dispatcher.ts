@@ -1388,8 +1388,9 @@ export async function resolveBaseBranch(
   const brClient = new BeadsRustClient(projectPath);
   try {
     const detail = await brClient.show(seedId);
-    // detail.dependencies is string[] of dep IDs that this seed depends on
-    for (const depId of detail.dependencies ?? []) {
+    // detail.dependencies is BrDepRef[] — extract id for branch resolution
+    for (const dep of detail.dependencies ?? []) {
+      const depId = typeof dep === "string" ? dep : (dep as { id: string }).id;
       const depBranch = `foreman/${depId}`;
       // Check if this branch exists locally via VcsBackend (TRD-015: migrate from gitBranchExists shim)
       const depBackend = new GitBackend(projectPath);
