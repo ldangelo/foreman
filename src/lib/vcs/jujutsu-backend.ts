@@ -351,7 +351,7 @@ export class JujutsuBackend implements VcsBackend {
       // Bookmark may already exist — try to move it
       try {
         await this.jj(
-          ["bookmark", "move", branchName, "--to", workspaceRef],
+          ["bookmark", "move", branchName, "--allow-backwards", "--to", workspaceRef],
           repoPath,
         );
       } catch (moveErr) {
