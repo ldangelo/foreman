@@ -210,17 +210,67 @@ export class Dispatcher {
         continue;
       }
 
-      // Skip feature/epic containers — they are organizational only and have no
-      // implementation work. Dispatching them produces empty commits.
+      // ── Auto-close feature/epic containers ────────────────────────────────
+      // Feature and epic beads are organizational containers — never dispatch
+      // agents for them. Instead, check if all children are closed and auto-close
+      // the container bead when they are.
       if (seed.type === "feature" || seed.type === "epic") {
-        log(
-          `[dispatch] Skipping ${seed.id} (type: ${seed.type ?? "unknown"}) — feature/epic containers are not dispatchable`,
-        );
-        skipped.push({
-          seedId: seed.id,
-          title: seed.title,
-          reason: `Type '${seed.type}' is an organizational container — not dispatchable`,
-        });
+        try {
+          const detail = await this.seeds.show(seed.id);
+          const detailWithChildren = detail as { children?: string[]; status: string };
+          const childIds = detailWithChildren.children ?? [];
+
+          if (childIds.length === 0) {
+            // No children — close the container directly
+            await this.seeds.close(seed.id, "Auto-closed: no children (empty container)");
+            log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — no children`);
+            skipped.push({
+              seedId: seed.id,
+              title: seed.title,
+              reason: `Type '${seed.type}' auto-closed — no children`,
+            });
+          } else {
+            // Check each child's status
+            let openCount = 0;
+            for (const childId of childIds) {
+              try {
+                const child = await this.seeds.show(childId);
+                if (child.status !== "closed" && child.status !== "completed") {
+                  openCount++;
+                }
+              } catch {
+                // If we can't check a child, assume it's still open to be safe
+                openCount++;
+              }
+            }
+
+            if (openCount === 0) {
+              await this.seeds.close(seed.id, "Auto-closed: all children completed");
+              log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — all children completed`);
+              skipped.push({
+                seedId: seed.id,
+                title: seed.title,
+                reason: `Type '${seed.type}' auto-closed — all ${childIds.length} children completed`,
+              });
+            } else {
+              log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — waiting on ${openCount} open children`);
+              skipped.push({
+                seedId: seed.id,
+                title: seed.title,
+                reason: `Type '${seed.type}' is an organizational container — waiting on ${openCount} open child${openCount === 1 ? "" : "ren"}`,
+              });
+            }
+          }
+        } catch (err: unknown) {
+          // If we can't inspect the container, skip it rather than crashing
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — failed to check children: ${msg}`);
+          skipped.push({
+            seedId: seed.id,
+            title: seed.title,
+            reason: `Type '${seed.type}' is an organizational container — skipped (error checking children)`,
+          });
+        }
         continue;
       }
 
