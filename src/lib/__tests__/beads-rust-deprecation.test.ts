@@ -191,6 +191,11 @@ const BEADS_RUST_KNOWN_VIOLATIONS: Record<string, string> = {
   // Needs: change all parameter types from BeadsRustClient to ITaskClient.
   "orchestrator/sling-executor.ts":
     "TRD-014: function parameter types → ITaskClient",
+
+  // Epic task ordering imports BeadsRustClient for bead detail queries.
+  // Needs: change parameter type from BeadsRustClient to ITaskClient.
+  "orchestrator/task-ordering.ts":
+    "TRD-2026-007: parameter type → ITaskClient",
 };
 
 /** Test files (in __tests__/, or *.test.ts / *.spec.ts) are always exempt. */
