@@ -700,10 +700,13 @@ async function runPhaseSequence(
     }
 
     // 8. Verdict handling: parse PASS/FAIL, retry if needed.
+    // MUST happen BEFORE phase-complete notification so that a FAIL verdict
+    // loops back to the retry target instead of triggering autoMerge.
     if (phase.verdict && phase.artifact) {
       const report = readReport(worktreePath, phase.artifact);
       const verdict = report ? parseVerdict(report) : "unknown";
 
+      // Track QA verdict for session log
       if (phaseName === "qa") {
         qaVerdictForLog = verdict as "pass" | "fail" | "unknown";
       }
@@ -711,12 +714,15 @@ async function runPhaseSequence(
       if (verdict === "fail" && phase.retryWith) {
         const retryTarget = phase.retryWith;
         const maxRetries = phase.retryOnFail ?? 0;
+        // Key retry counter by the phase performing the verdict check (e.g. "qa", "reviewer")
+        // NOT by the retry target ("developer"), so QA and Reviewer have independent retry budgets.
         const retryCountKey = phaseName;
         const currentRetries = retryCounts[retryCountKey] ?? 0;
 
         if (currentRetries < maxRetries) {
           retryCounts[retryCountKey] = currentRetries + 1;
 
+          // Send failure feedback to retry target
           if (phase.mail?.onFail && report) {
             const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
             ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, report);
@@ -726,38 +732,48 @@ async function runPhaseSequence(
           ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
 
+          // Jump back to the retryWith phase — skip phase-complete notification
           const targetIdx = phaseIndex.get(retryTarget);
           if (targetIdx !== undefined) {
             i = targetIdx;
             continue;
           }
+          // If retryWith target not found, fall through
           ctx.log(`[${phaseName.toUpperCase()}] retryWith target '${retryTarget}' not found in workflow — continuing`);
         } else {
           ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted${failOnRetriesExhausted ? "" : ", continuing"}`);
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries${failOnRetriesExhausted ? "" : ", continuing"}\n`);
+          // Clear feedback for subsequent phases
           feedbackContext = undefined;
           if (failOnRetriesExhausted) {
             return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, retriesExhausted: true };
           }
         }
       } else {
+        // Verdict passed or no retry config — clear feedback
         feedbackContext = undefined;
       }
     } else {
+      // Non-verdict phase — clear feedback
       feedbackContext = undefined;
     }
 
     // 9. Handle success: send phase-complete, labels, forward artifact.
+    // This runs AFTER verdict check — if verdict was FAIL and we jumped back
+    // to retry, the `continue` above skips this block entirely.
     if (phase.mail?.onComplete !== false) {
       ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
         seedId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
       });
     }
-    store.logEvent(config.projectId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, runId);
+    store.logEvent(projectId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, runId);
     enqueueAddLabelsToBead(store, seedId, [`phase:${phaseName}`], "pipeline-executor");
 
+    // Update native task store with phase completion (REQ-012, AC-012.2).
+    // No-op when ctx.taskStore is absent or config.taskId is null/undefined.
     ctx.taskStore?.updatePhase(config.taskId ?? null, phaseName);
 
+    // Forward artifact to another agent's inbox
     if (phase.mail?.forwardArtifactTo && phase.artifact) {
       const artifactContent = readReport(worktreePath, phase.artifact);
       if (artifactContent) {

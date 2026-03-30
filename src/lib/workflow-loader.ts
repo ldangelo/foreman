@@ -512,6 +512,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     config.taskTimeout = raw["taskTimeout"];
   }
 
+
   // ── Parse optional onError strategy ─────────────────────────────────────
   if (raw["onError"] !== undefined) {
     const onError = raw["onError"];
