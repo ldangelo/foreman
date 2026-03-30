@@ -486,7 +486,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
   }
 
   // ── Session log ──────────────────────────────────────────────────────
-  writeSessionLogSafe(ctx, totalProgress, allPhaseRecords, allRetryCounts, "unknown");
+  await writeSessionLogSafe(ctx, totalProgress, allPhaseRecords, allRetryCounts, "unknown");
 
   // ── Pipeline completion ──────────────────────────────────────────────
   if (ctx.onPipelineComplete) {
@@ -529,7 +529,7 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
   const result = await runPhaseSequence(ctx, workflowConfig.phases, progress);
 
   // Session log
-  writeSessionLogSafe(ctx, result.progress, result.phaseRecords, result.retryCounts, result.qaVerdictForLog);
+  await writeSessionLogSafe(ctx, result.progress, result.phaseRecords, result.retryCounts, result.qaVerdictForLog);
 
   // Pipeline completion callback
   if (ctx.onPipelineComplete) {
@@ -779,13 +779,13 @@ async function runPhaseSequence(
 
 // ── Session log helper ──────────────────────────────────────────────────────
 
-function writeSessionLogSafe(
+async function writeSessionLogSafe(
   ctx: PipelineContext,
   progress: RunProgress,
   phaseRecords: PhaseRecord[],
   retryCounts: Record<string, number>,
   qaVerdictForLog: "pass" | "fail" | "unknown",
-): void {
+): Promise<void> {
   const { config } = ctx;
   const { seedId, seedTitle, worktreePath } = config;
   const description = config.seedDescription ?? "(no description)";
@@ -805,13 +805,8 @@ function writeSessionLogSafe(
       devRetries: retryCounts["developer"] ?? 0,
       qaVerdict: qaVerdictForLog,
     };
-    // Fire-and-forget — session log is non-critical
-    writeSessionLog(worktreePath, sessionLogData)
-      .then((p) => ctx.log(`[SESSION LOG] Written: ${p}`))
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        ctx.log(`[SESSION LOG] Failed to write (non-fatal): ${msg}`);
-      });
+    const sessionLogPath = await writeSessionLog(worktreePath, sessionLogData);
+    ctx.log(`[SESSION LOG] Written: ${sessionLogPath}`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     ctx.log(`[SESSION LOG] Failed to write (non-fatal): ${msg}`);
