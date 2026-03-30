@@ -59,9 +59,15 @@ export class JujutsuBackend implements VcsBackend {
    */
   private async jj(args: string[], cwd: string): Promise<string> {
     try {
+      const home = process.env.HOME ?? "/home/nobody";
       const { stdout } = await execFileAsync("jj", args, {
         cwd,
         maxBuffer: 10 * 1024 * 1024,
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          PATH: `${home}/.local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`,
+        },
       });
       return stdout.trim();
     } catch (err: unknown) {
@@ -87,6 +93,13 @@ export class JujutsuBackend implements VcsBackend {
       const { stdout } = await execFileAsync("git", args, {
         cwd,
         maxBuffer: 10 * 1024 * 1024,
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          GIT_EDITOR: "true",
+          GIT_TERMINAL_PROMPT: "0",
+          GIT_ASKPASS: "true",
+        },
       });
       return stdout.trim();
     } catch (err: unknown) {
@@ -311,7 +324,17 @@ export class JujutsuBackend implements VcsBackend {
       );
     } catch (err: unknown) {
       const msg = (err as Error).message ?? "";
-      if (!msg.includes("already exists")) {
+      if (msg.includes("already exists")) {
+        // Workspace registered in jj but directory missing (stale metadata from
+        // a previous run that was cleaned up). Forget and recreate.
+        if (!existsSync(workspacePath)) {
+          await this.jj(["workspace", "forget", `foreman-${seedId}`], repoPath);
+          await this.jj(
+            ["workspace", "add", "--name", `foreman-${seedId}`, workspacePath],
+            repoPath,
+          );
+        }
+      } else {
         throw err;
       }
     }
@@ -328,7 +351,7 @@ export class JujutsuBackend implements VcsBackend {
       // Bookmark may already exist — try to move it
       try {
         await this.jj(
-          ["bookmark", "move", branchName, "--to", workspaceRef],
+          ["bookmark", "move", branchName, "--allow-backwards", "--to", workspaceRef],
           repoPath,
         );
       } catch (moveErr) {

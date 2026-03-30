@@ -21,6 +21,8 @@ setup:
 setupCache:
   key: package-lock.json
   path: node_modules
+rebaseAfterPhase: developer
+
 phases:
   - name: explorer
     prompt: explorer.md

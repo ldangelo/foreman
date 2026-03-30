@@ -58,6 +58,7 @@ const {
     this.getRunProgress = mockGetRunProgress;
     this.getDb = mockGetDb;
     this.close = vi.fn();
+    this.getSuccessRate = vi.fn(() => ({ rate: null, merged: 0, failed: 0 }));
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
