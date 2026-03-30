@@ -16,6 +16,7 @@ import { request as httpRequest } from "node:http";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
+import type { EpicTask } from "./pipeline-executor.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import { NativeTaskStore } from "../lib/task-store.js";
@@ -218,6 +219,16 @@ interface WorkerConfig {
    * When set, merges into this branch instead of detectDefaultBranch().
    */
   targetBranch?: string;
+  /**
+   * Ordered list of child tasks for epic execution mode (TRD-2026-007).
+   * When set, the worker runs the epic pipeline path.
+   */
+  epicTasks?: EpicTask[];
+  /**
+   * Parent epic bead ID (TRD-2026-007).
+   * When set, this run is an epic execution.
+   */
+  epicId?: string;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -686,6 +697,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     notifyClient,
     agentMailClient,
     taskStore,
+    epicTasks: config.epicTasks,
     runPhase,
     registerAgent,
     sendMail,
