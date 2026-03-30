@@ -198,6 +198,32 @@ export interface SentinelRunRow {
   completed_at: string | null;
 }
 
+// ── Native Task interface ────────────────────────────────────────────────
+
+/**
+ * A task row from the native `tasks` table (PRD-2026-006 REQ-003).
+ * Used by the dashboard "Needs Human" panel and phase-visibility views.
+ */
+export interface NativeTask {
+  id: string;
+  title: string;
+  description: string | null;
+  type: string;
+  priority: number;   // 0=P0 (critical) … 4=P4 (backlog)
+  status: string;
+  run_id: string | null;
+  branch: string | null;
+  external_id: string | null;
+  created_at: string;
+  updated_at: string;
+  approved_at: string | null;
+  closed_at: string | null;
+  /** Attached project name/id for cross-project aggregation (not a DB column). */
+  projectName?: string;
+  projectId?: string;
+  projectPath?: string;
+}
+
 // ── Error classes ───────────────────────────────────────────────────────
 
 /**
@@ -487,6 +513,28 @@ export class ForemanStore {
     return new ForemanStore(join(projectPath, ".foreman", "foreman.db"));
   }
 
+  /**
+   * Open the project database in READONLY mode for safe concurrent dashboard reads.
+   *
+   * Returns a raw better-sqlite3 `Database` instance opened with `{ readonly: true }`.
+   * The caller is responsible for calling `.close()` when done.
+   *
+   * This is intentionally a static factory that bypasses the normal ForemanStore
+   * constructor (which runs migrations and writes to the DB) — the dashboard reads
+   * should never write to a project's database.
+   *
+   * @param projectPath - Absolute path to the project root directory.
+   * @returns A readonly better-sqlite3 Database (throws if DB does not exist).
+   */
+  static openReadonly(projectPath: string): Database.Database {
+    const dbPath = join(projectPath, ".foreman", "foreman.db");
+    const nativeBinding = resolveBundledNativeBinding();
+    const db = nativeBinding
+      ? new Database(dbPath, { readonly: true, nativeBinding })
+      : new Database(dbPath, { readonly: true });
+    return db;
+  }
+
   constructor(dbPath?: string) {
     const resolvedPath = dbPath ?? join(homedir(), ".foreman", "foreman.db");
     mkdirSync(join(resolvedPath, ".."), { recursive: true });
@@ -542,6 +590,46 @@ export class ForemanStore {
 
   close(): void {
     this.db.close();
+  }
+
+  // ── Native Tasks ─────────────────────────────────────────────────────
+
+  /**
+   * List tasks from the native `tasks` table filtered by one or more statuses.
+   * Returns an empty array if the `tasks` table does not exist (older DBs).
+   *
+   * @param statuses - Array of status strings to filter by (e.g. ['conflict', 'failed', 'stuck', 'backlog'])
+   * @param limit    - Maximum number of rows to return (default: 200)
+   */
+  listTasksByStatus(statuses: string[], limit = 200): NativeTask[] {
+    if (statuses.length === 0) return [];
+    try {
+      const placeholders = statuses.map(() => "?").join(", ");
+      return this.db
+        .prepare(
+          `SELECT * FROM tasks WHERE status IN (${placeholders})
+           ORDER BY priority ASC, updated_at ASC
+           LIMIT ?`
+        )
+        .all(...statuses, limit) as NativeTask[];
+    } catch {
+      // tasks table may not exist on older project databases
+      return [];
+    }
+  }
+
+  /**
+   * Update a task status via a short-lived write.  Used by dashboard
+   * interactive actions (approve / retry).
+   *
+   * @param taskId    - Task UUID to update.
+   * @param newStatus - Target status (must be in TASKS_SCHEMA CHECK constraint).
+   */
+  updateTaskStatus(taskId: string, newStatus: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`)
+      .run(newStatus, now, taskId);
   }
 
   // ── Projects ────────────────────────────────────────────────────────
@@ -973,6 +1061,61 @@ export class ForemanStore {
     }
 
     return { totalByPhase, totalByAgent, runsByPhase };
+  }
+
+  // ── Success Rate ─────────────────────────────────────────────────────
+
+  /**
+   * Compute the 24-hour pipeline success rate for a project.
+   *
+   * Success rate = merged / (merged + test-failed + failed), where:
+   * - "merged" includes both `merged` and `pr-created` statuses
+   * - `completed` (pending merge), `reset`, `running`, `pending`, `stuck` are excluded
+   *
+   * Returns `{ rate: null, merged: 0, failed: 0 }` when fewer than 3 terminal
+   * runs have completed in the last 24 hours (not enough data to be meaningful).
+   *
+   * @param projectId - Scope to a specific project; omit for global.
+   */
+  getSuccessRate(projectId?: string): { rate: number | null; merged: number; failed: number } {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const statuses = ["merged", "test-failed", "failed", "pr-created"];
+    const placeholders = statuses.map(() => "?").join(", ");
+
+    let rows: Array<{ status: string; count: number }>;
+    if (projectId) {
+      rows = this.db
+        .prepare(
+          `SELECT status, COUNT(*) as count FROM runs
+           WHERE project_id = ? AND completed_at > ? AND status IN (${placeholders})
+           GROUP BY status`,
+        )
+        .all(projectId, since, ...statuses) as Array<{ status: string; count: number }>;
+    } else {
+      rows = this.db
+        .prepare(
+          `SELECT status, COUNT(*) as count FROM runs
+           WHERE completed_at > ? AND status IN (${placeholders})
+           GROUP BY status`,
+        )
+        .all(since, ...statuses) as Array<{ status: string; count: number }>;
+    }
+
+    const counts: Record<string, number> = {};
+    for (const row of rows) {
+      counts[row.status] = row.count;
+    }
+
+    const merged = (counts["merged"] ?? 0) + (counts["pr-created"] ?? 0);
+    const failed = (counts["failed"] ?? 0) + (counts["test-failed"] ?? 0);
+    const total = merged + failed;
+
+    // Require at least 3 terminal runs before showing a percentage
+    if (total < 3) {
+      return { rate: null, merged, failed };
+    }
+
+    return { rate: merged / total, merged, failed };
   }
 
   // ── Events ──────────────────────────────────────────────────────────

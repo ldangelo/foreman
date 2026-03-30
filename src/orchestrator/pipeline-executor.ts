@@ -23,6 +23,7 @@ import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import type { ForemanStore, RunProgress } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
+import type { NativeTaskStore } from "../lib/task-store.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,12 @@ export interface PipelineRunConfig {
    * Falls back to git defaults when absent.
    */
   vcsBackend?: VcsBackend;
+  /**
+   * Optional task ID from native task store.
+   * When present, pipeline-executor calls taskStore?.updatePhase(taskId, phaseName)
+   * at each phase transition (REQ-012). Null/undefined in beads fallback mode.
+   */
+  taskId?: string | null;
 }
 
 export interface PipelineContext {
@@ -89,6 +96,12 @@ export interface PipelineContext {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   notifyClient: any;
   agentMailClient: AnyMailClient | null;
+  /**
+   * Optional native task store for phase-level visibility (REQ-012).
+   * When present and config.taskId is set, updatePhase() is called at each
+   * phase transition. No-op if absent or if config.taskId is null/undefined.
+   */
+  taskStore?: NativeTaskStore;
   /** The runPhase function from agent-worker.ts */
   runPhase: RunPhaseFn;
   /** Register an agent identity for mail */
@@ -314,30 +327,9 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
       return;
     }
 
-    // 8. Handle success: send phase-complete, labels, forward artifact
-    if (phase.mail?.onComplete !== false) {
-      ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
-        seedId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
-      });
-    }
-    store.logEvent(projectId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, runId);
-    enqueueAddLabelsToBead(store, seedId, [`phase:${phaseName}`], "pipeline-executor");
-
-    // Forward artifact to another agent's inbox
-    if (phase.mail?.forwardArtifactTo && phase.artifact) {
-      const artifactContent = readReport(worktreePath, phase.artifact);
-      if (artifactContent) {
-        const targetAgent = phase.mail.forwardArtifactTo === "foreman"
-          ? "foreman"
-          : `${phase.mail.forwardArtifactTo}-${seedId}`;
-        const subject = phase.mail.forwardArtifactTo === "foreman"
-          ? `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Complete`
-          : `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Report`;
-        ctx.sendMailText(agentMailClient, targetAgent, subject, artifactContent);
-      }
-    }
-
-    // 9. Verdict handling: parse PASS/FAIL, retry if needed
+    // 8. Verdict handling: parse PASS/FAIL, retry if needed.
+    // MUST happen BEFORE phase-complete notification so that a FAIL verdict
+    // loops back to the retry target instead of triggering autoMerge.
     if (phase.verdict && phase.artifact) {
       const report = readReport(worktreePath, phase.artifact);
       const verdict = report ? parseVerdict(report) : "unknown";
@@ -368,7 +360,7 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
           ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
 
-          // Jump back to the retryWith phase
+          // Jump back to the retryWith phase — skip phase-complete notification
           const targetIdx = phaseIndex.get(retryTarget);
           if (targetIdx !== undefined) {
             i = targetIdx;
@@ -389,6 +381,35 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
     } else {
       // Non-verdict phase — clear feedback
       feedbackContext = undefined;
+    }
+
+    // 9. Handle success: send phase-complete, labels, forward artifact.
+    // This runs AFTER verdict check — if verdict was FAIL and we jumped back
+    // to retry, the `continue` above skips this block entirely.
+    if (phase.mail?.onComplete !== false) {
+      ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
+        seedId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
+      });
+    }
+    store.logEvent(projectId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, runId);
+    enqueueAddLabelsToBead(store, seedId, [`phase:${phaseName}`], "pipeline-executor");
+
+    // Update native task store with phase completion (REQ-012, AC-012.2).
+    // No-op when ctx.taskStore is absent or config.taskId is null/undefined.
+    ctx.taskStore?.updatePhase(config.taskId ?? null, phaseName);
+
+    // Forward artifact to another agent's inbox
+    if (phase.mail?.forwardArtifactTo && phase.artifact) {
+      const artifactContent = readReport(worktreePath, phase.artifact);
+      if (artifactContent) {
+        const targetAgent = phase.mail.forwardArtifactTo === "foreman"
+          ? "foreman"
+          : `${phase.mail.forwardArtifactTo}-${seedId}`;
+        const subject = phase.mail.forwardArtifactTo === "foreman"
+          ? `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Complete`
+          : `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Report`;
+        ctx.sendMailText(agentMailClient, targetAgent, subject, artifactContent);
+      }
     }
 
     i++;

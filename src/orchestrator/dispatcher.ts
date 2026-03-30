@@ -82,6 +82,18 @@ export class Dispatcher {
       console.error(`[bead-writer] Warning: drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
     }
 
+    // Clear br's blocked_issues_cache before querying ready seeds.
+    // The cache goes stale when beads are closed by the refinery, auto-close
+    // logic, or manual operations outside br's normal flow.
+    try {
+      execFileSync("sqlite3", [
+        join(this.projectPath, ".beads", "beads.db"),
+        "DELETE FROM blocked_issues_cache;",
+      ], { timeout: 5000 });
+    } catch {
+      // sqlite3 not available or .beads/beads.db missing — non-fatal
+    }
+
     // Determine how many agent slots are available
     const activeRuns = this.store.getActiveRuns(projectId);
     const available = Math.max(0, maxAgents - activeRuns.length);
@@ -207,6 +219,70 @@ export class Dispatcher {
           title: seed.title,
           reason: "Has completed run awaiting merge — run 'foreman merge' or wait for auto-merge",
         });
+        continue;
+      }
+
+      // ── Auto-close feature/epic containers ────────────────────────────────
+      // Feature and epic beads are organizational containers — never dispatch
+      // agents for them. Instead, check if all children are closed and auto-close
+      // the container bead when they are.
+      if (seed.type === "feature" || seed.type === "epic") {
+        try {
+          const detail = await this.seeds.show(seed.id);
+          const detailWithChildren = detail as { children?: string[]; status: string };
+          const childIds = detailWithChildren.children ?? [];
+
+          if (childIds.length === 0) {
+            // No children — close the container directly
+            await this.seeds.close(seed.id, "Auto-closed: no children (empty container)");
+            log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — no children`);
+            skipped.push({
+              seedId: seed.id,
+              title: seed.title,
+              reason: `Type '${seed.type}' auto-closed — no children`,
+            });
+          } else {
+            // Check each child's status
+            let openCount = 0;
+            for (const childId of childIds) {
+              try {
+                const child = await this.seeds.show(childId);
+                if (child.status !== "closed" && child.status !== "completed") {
+                  openCount++;
+                }
+              } catch {
+                // If we can't check a child, assume it's still open to be safe
+                openCount++;
+              }
+            }
+
+            if (openCount === 0) {
+              await this.seeds.close(seed.id, "Auto-closed: all children completed");
+              log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — all children completed`);
+              skipped.push({
+                seedId: seed.id,
+                title: seed.title,
+                reason: `Type '${seed.type}' auto-closed — all ${childIds.length} children completed`,
+              });
+            } else {
+              log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — waiting on ${openCount} open children`);
+              skipped.push({
+                seedId: seed.id,
+                title: seed.title,
+                reason: `Type '${seed.type}' is an organizational container — waiting on ${openCount} open child${openCount === 1 ? "" : "ren"}`,
+              });
+            }
+          }
+        } catch (err: unknown) {
+          // If we can't inspect the container, skip it rather than crashing
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — failed to check children: ${msg}`);
+          skipped.push({
+            seedId: seed.id,
+            title: seed.title,
+            reason: `Type '${seed.type}' is an organizational container — skipped (error checking children)`,
+          });
+        }
         continue;
       }
 
@@ -992,8 +1068,8 @@ export class Dispatcher {
 
         switch (entry.operation) {
           case "close-seed":
-            // Use --no-db to write directly to JSONL, bypassing broken DB cache (beads_rust#204).
-            execFileSync(bin, ["close", seedId, "--no-db", "--force", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
+            // Use --no-db to write directly to JSONL, bypassing the SQLite blocked cache.
+            execFileSync(bin, ["close", seedId, "--no-db", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
             console.error(`[bead-writer] Closed seed ${seedId} via --no-db (from ${entry.sender})`);
             break;
 
@@ -1185,6 +1261,13 @@ export interface WorkerConfig {
    * When set, the agent worker merges into this branch instead of detectDefaultBranch().
    */
   targetBranch?: string;
+  /**
+   * Optional task ID from native task store (NativeTaskStore.claim()).
+   * When present, pipeline will call taskStore.updatePhase(taskId, phaseName)
+   * at each phase transition for phase-level visibility (REQ-012).
+   * Null/undefined in beads fallback mode — no-op via optional chaining.
+   */
+  taskId?: string | null;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

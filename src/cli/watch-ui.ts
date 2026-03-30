@@ -56,6 +56,23 @@ function statusColor(status: string, text: string): string {
 
 const RULE = chalk.dim("━".repeat(60));
 
+// ── Success rate display ─────────────────────────────────────────────────
+
+/**
+ * Format a success rate value as a colored percentage string.
+ *
+ * @param rate - Value between 0 and 1, or null/undefined when there is insufficient data.
+ * @returns A chalk-colored string like "87%" or "--" when rate is null/undefined.
+ */
+export function formatSuccessRate(rate: number | null | undefined): string {
+  if (rate == null) return chalk.dim("--");
+  const pct = Math.round(rate * 100);
+  const label = `${pct}%`;
+  if (pct >= 90) return chalk.green(label);
+  if (pct >= 70) return chalk.yellow(label);
+  return chalk.red(label);
+}
+
 // ── Error log helper ─────────────────────────────────────────────────────
 
 /**
@@ -255,6 +272,8 @@ export interface WatchState {
   completedCount: number;
   failedCount: number;
   stuckCount: number;
+  /** 24-hour success rate (0–1), or null when fewer than 3 terminal runs exist. */
+  successRate?: number | null;
 }
 
 export function poll(store: ForemanStore, runIds: string[]): WatchState {
@@ -348,11 +367,15 @@ export function renderWatchDisplay(state: WatchState, showDetachHint = true, exp
 
   // Summary bar
   lines.push(RULE);
+  const successRatePart = state.successRate !== undefined
+    ? `  ${chalk.dim("success (24h)")} ${formatSuccessRate(state.successRate)}`
+    : "";
   lines.push(
     `${chalk.dim(String(state.runs.length) + " agents")}  ` +
     `${state.totalTools} tool calls  ` +
     `${chalk.yellow(String(state.totalFiles) + " files")}  ` +
-    `${chalk.green("$" + state.totalCost.toFixed(4))}`,
+    `${chalk.green("$" + state.totalCost.toFixed(4))}` +
+    successRatePart,
   );
 
   // Completion banner
@@ -538,6 +561,17 @@ export async function watchRunsInk(
         }
       }
       prevActiveCount = currentActiveCount;
+
+      // Enrich state with 24-hour success rate
+      {
+        const projectId = state.runs[0]?.run.project_id;
+        try {
+          const sr = store.getSuccessRate(projectId);
+          state = { ...state, successRate: sr.rate };
+        } catch {
+          // Non-fatal — success rate is supplemental
+        }
+      }
 
       lastState = state;
 
