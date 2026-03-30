@@ -245,6 +245,14 @@ export interface WorkflowConfig {
    * When absent in epic mode, defaults to no final phases.
    */
   finalPhases?: string[];
+  /**
+   * Epic mode: maximum seconds allowed per task's phase execution.
+   * When a task's developer phase exceeds this timeout, the phase is terminated
+   * and the task is marked failed. Only used when `taskPhases` is set.
+   *
+   * @example `taskTimeout: 300` — 5 minute timeout per task
+   */
+  taskTimeout?: number;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -494,6 +502,14 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (finalPhases.length > 0) {
       config.finalPhases = finalPhases;
     }
+  }
+
+  // ── Parse optional taskTimeout ─────────────────────────────────────────
+  if (raw["taskTimeout"] !== undefined) {
+    if (typeof raw["taskTimeout"] !== "number" || raw["taskTimeout"] <= 0) {
+      throw new WorkflowConfigError(workflowName, "taskTimeout must be a positive number (seconds)");
+    }
+    config.taskTimeout = raw["taskTimeout"];
   }
 
   // ── Parse optional onError strategy ─────────────────────────────────────

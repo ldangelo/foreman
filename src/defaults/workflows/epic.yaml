@@ -8,6 +8,9 @@
 # Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
 name: epic
 onError: stop
+# Per-task timeout in seconds. If a task's phases exceed this, the task fails.
+# Default: 300 (5 minutes). Set to 0 to disable.
+taskTimeout: 300
 
 setup:
   - command: npm install --prefer-offline --no-audit

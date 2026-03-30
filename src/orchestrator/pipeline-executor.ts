@@ -10,6 +10,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { appendFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader.js";
@@ -143,6 +144,20 @@ export interface PipelineContext {
   /** Prompt loader options */
   promptOpts: { projectRoot: string; workflow: string };
   /**
+   * Epic mode callback: update a child task bead's status.
+   * Called when a task starts (in_progress) or completes (closed/failed).
+   */
+  onTaskStatusChange?: (taskSeedId: string, status: "in_progress" | "completed" | "failed") => Promise<void>;
+  /**
+   * Epic mode callback: create a bug bead when QA fails on a task.
+   * Returns the created bug bead ID, or undefined if creation fails.
+   */
+  onTaskQaFailure?: (taskSeedId: string, taskTitle: string, epicId: string) => Promise<string | undefined>;
+  /**
+   * Epic mode callback: close a bug bead when QA passes after retry.
+   */
+  onTaskQaPass?: (bugBeadId: string) => Promise<void>;
+  /**
    * Called after the last phase (finalize) completes successfully.
    * Responsible for: reading finalize mail, enqueuing to merge queue,
    * updating run status, resetting seed on failure, sending branch-ready mail.
@@ -206,16 +221,68 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
   }
 }
 
+// ── Resume detection ────────────────────────────────────────────────────────
+
+/**
+ * Parse `git log --oneline` output from an epic worktree and extract
+ * the bead/seed IDs of tasks that have already been committed.
+ *
+ * Commit messages follow the format: `<title> (<beadId>)`
+ * For example: `Add user auth (task-7)` → extracts `task-7`.
+ *
+ * @returns A Set of completed task seed IDs found in the git history.
+ */
+export function parseCompletedTaskIds(gitLogOutput: string): Set<string> {
+  const completed = new Set<string>();
+  // Match the trailing parenthesized bead ID in each commit line.
+  // git log --oneline format: "<hash> <message>"
+  // We look for the pattern "(<beadId>)" at the end of each line.
+  const regex = /\(([^)]+)\)\s*$/;
+  for (const line of gitLogOutput.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = regex.exec(trimmed);
+    if (match) {
+      completed.add(match[1]);
+    }
+  }
+  return completed;
+}
+
+/**
+ * Read git log from a worktree directory and return completed task IDs.
+ * Returns an empty set if the git command fails (e.g. no commits yet).
+ *
+ * Note: uses execSync with a hardcoded command string (no user input),
+ * so shell injection is not a concern here.
+ */
+function detectCompletedTasks(worktreePath: string): Set<string> {
+  try {
+    const output = execSync("git log --oneline", {
+      cwd: worktreePath,
+      encoding: "utf-8",
+      timeout: 10_000,
+    });
+    return parseCompletedTaskIds(output);
+  } catch {
+    // No git history or command failed — no completed tasks
+    return new Set<string>();
+  }
+}
+
 // ── Epic mode executor ──────────────────────────────────────────────────────
 
 /**
  * Epic mode: iterate child tasks, running taskPhases per task with commits
  * between, then finalPhases once at the end.
+ *
+ * Resume support (TRD-009): on re-dispatch, parses git log to find
+ * already-committed task bead IDs and skips them.
  */
 async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
   const { config, workflowConfig, store, logFile } = ctx;
   const { runId, seedId, worktreePath } = config;
-  const epicTasks = ctx.epicTasks!;
+  let epicTasks = ctx.epicTasks!;
   const taskPhaseNames = workflowConfig.taskPhases!;
   const finalPhaseNames = workflowConfig.finalPhases ?? [];
 
@@ -227,6 +294,21 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
   const finalPhases = finalPhaseNames
     .map((name) => allPhases.find((p) => p.name === name))
     .filter((p): p is typeof allPhases[number] => p !== undefined);
+
+  // ── Resume detection (TRD-009) ──────────────────────────────────────
+  const totalTaskCount = epicTasks.length;
+  const resumedTaskIds = detectCompletedTasks(worktreePath);
+
+  if (resumedTaskIds.size > 0) {
+    const remainingTasks = epicTasks.filter((t) => !resumedTaskIds.has(t.seedId));
+    const skippedCount = totalTaskCount - remainingTasks.length;
+
+    if (skippedCount > 0) {
+      ctx.log(`[EPIC] Resuming from task ${skippedCount + 1} of ${totalTaskCount} (${skippedCount} completed)`);
+      await appendFile(logFile, `\n[EPIC] Resume: ${skippedCount} tasks already committed, skipping to task ${skippedCount + 1}\n`);
+      epicTasks = remainingTasks;
+    }
+  }
 
   const taskPhaseStr = taskPhaseNames.join(" → ");
   const finalPhaseStr = finalPhaseNames.length > 0 ? ` | final: ${finalPhaseNames.join(" → ")}` : "";
@@ -247,6 +329,9 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
     lastToolCall: null,
     lastActivity: new Date().toISOString(),
     currentPhase: "epic-init",
+    epicTaskCount: epicTasks.length,
+    epicTasksCompleted: 0,
+    epicCostByTask: {},
   };
 
   let completedCount = 0;
@@ -254,10 +339,21 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
   const completedTaskIds: string[] = [];
 
   // ── Outer task loop ──────────────────────────────────────────────────
+  let activeBugBeadId: string | undefined;
+
   for (let taskIdx = 0; taskIdx < epicTasks.length; taskIdx++) {
     const task = epicTasks[taskIdx];
     ctx.log(`[EPIC] Task ${taskIdx + 1}/${epicTasks.length}: ${task.seedId} — ${task.seedTitle}`);
     await appendFile(logFile, `\n[EPIC] === Task ${taskIdx + 1}/${epicTasks.length}: ${task.seedId} ===\n`);
+
+    // TRD-012: Update epic progress in RunProgress
+    totalProgress.epicCurrentTaskId = task.seedId;
+    store.updateRunProgress(runId, totalProgress);
+
+    // TRD-011: Mark task bead as in_progress
+    if (ctx.onTaskStatusChange) {
+      await ctx.onTaskStatusChange(task.seedId, "in_progress").catch(() => {});
+    }
 
     // Build a task-specific config overlay (use task's seedId/title/description for prompts)
     const taskConfig: PipelineRunConfig = {
@@ -295,6 +391,12 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
       completedCount++;
       completedTaskIds.push(task.seedId);
 
+      // TRD-010: Close bug bead if QA passed after retry
+      if (activeBugBeadId && ctx.onTaskQaPass) {
+        await ctx.onTaskQaPass(activeBugBeadId).catch(() => {});
+        activeBugBeadId = undefined;
+      }
+
       // Commit after each successful task (epic mode: one commit per task)
       if (config.vcsBackend) {
         try {
@@ -307,10 +409,35 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
         }
       }
 
+      // TRD-011: Mark task bead as completed
+      if (ctx.onTaskStatusChange) {
+        await ctx.onTaskStatusChange(task.seedId, "completed").catch(() => {});
+      }
+
+      // TRD-012: Update epic progress
+      totalProgress.epicTasksCompleted = completedCount;
+      totalProgress.epicCostByTask ??= {};
+      totalProgress.epicCostByTask[task.seedId] = result.progress.costUsd - (totalProgress.costUsd - result.progress.costUsd);
+      store.updateRunProgress(runId, totalProgress);
+
       ctx.log(`[EPIC] Task ${task.seedId} PASSED (${completedCount}/${epicTasks.length} done)`);
       await appendFile(logFile, `\n[EPIC] Task ${task.seedId} PASSED\n`);
     } else {
       failedCount++;
+
+      // TRD-010: Create bug bead on QA failure
+      if (result.retriesExhausted && ctx.onTaskQaFailure && config.epicId) {
+        activeBugBeadId = await ctx.onTaskQaFailure(task.seedId, task.seedTitle, config.epicId).catch(() => undefined);
+        if (activeBugBeadId) {
+          ctx.log(`[EPIC] Created bug bead ${activeBugBeadId} for QA failure on ${task.seedId}`);
+        }
+      }
+
+      // TRD-011: Mark task bead as failed
+      if (ctx.onTaskStatusChange) {
+        await ctx.onTaskStatusChange(task.seedId, "failed").catch(() => {});
+      }
+
       ctx.log(`[EPIC] Task ${task.seedId} FAILED${result.retriesExhausted ? " (retries exhausted)" : ""}`);
       await appendFile(logFile, `\n[EPIC] Task ${task.seedId} FAILED\n`);
 
