@@ -176,6 +176,9 @@ export interface OnFailureConfig {
   artifact?: string;
 }
 
+/** Valid onError strategies for workflow-level error handling. */
+export type OnErrorStrategy = "stop" | "continue";
+
 /** A loaded, validated workflow configuration. */
 export interface WorkflowConfig {
   /** Workflow name (e.g. "default", "smoke"). */
@@ -214,6 +217,17 @@ export interface WorkflowConfig {
    * is invoked after a pipeline failure to attempt automatic recovery.
    */
   onFailure?: OnFailureConfig;
+  /**
+   * Dispatcher error strategy. Controls whether the dispatcher stops or
+   * continues when any bead ends in a non-merged terminal failure state
+   * (test-failed, failed, stuck, conflict).
+   *
+   * - "stop": refuse to dispatch new agents until failures are resolved
+   * - "continue": keep dispatching regardless of failures (default)
+   *
+   * @default "continue"
+   */
+  onError?: OnErrorStrategy;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -416,6 +430,19 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       onFailure.models = models;
     }
     config.onFailure = onFailure;
+  }
+
+  // ── Parse optional onError strategy ─────────────────────────────────────
+  if (raw["onError"] !== undefined) {
+    const onError = raw["onError"];
+    if (onError === "stop" || onError === "continue") {
+      config.onError = onError;
+    } else {
+      throw new WorkflowConfigError(
+        workflowName,
+        `onError must be 'stop' or 'continue' (got: ${String(onError)})`,
+      );
+    }
   }
 
   return config;

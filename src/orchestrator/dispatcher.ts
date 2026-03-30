@@ -141,6 +141,30 @@ export class Dispatcher {
       // sqlite3 not available or .beads/beads.db missing — non-fatal
     }
 
+    // ── onError=stop guard ─────────────────────────────────────────────────
+    // When the workflow's onError is "stop", refuse to dispatch if any recent
+    // runs ended in a terminal failure state.
+    try {
+      const wfConfig = loadWorkflowConfig("default", this.projectPath);
+      if (wfConfig.onError === "stop") {
+        const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const failureStatuses: Array<"test-failed" | "failed" | "stuck" | "conflict"> =
+          ["test-failed", "failed", "stuck", "conflict"];
+        const failedRuns = this.store.getRunsByStatusesSince(failureStatuses, since, projectId);
+        if (failedRuns.length > 0) {
+          log(`[dispatch] onError=stop — ${failedRuns.length} failed run(s) detected. Refusing to dispatch until resolved. Use 'foreman reset' to clear.`);
+          return {
+            dispatched: [],
+            skipped: [],
+            resumed: [],
+            activeAgents: this.store.getActiveRuns(projectId).length,
+          };
+        }
+      }
+    } catch {
+      // Workflow config not found — continue with default behavior
+    }
+
     // Determine how many agent slots are available
     const activeRuns = this.store.getActiveRuns(projectId);
     const available = Math.max(0, maxAgents - activeRuns.length);

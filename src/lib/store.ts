@@ -834,6 +834,27 @@ export class ForemanStore {
   }
 
   /**
+   * Fetch runs matching any of the given statuses created on or after `since`.
+   * Used by the dispatcher's onError=stop guard to check for recent failures.
+   */
+  getRunsByStatusesSince(statuses: Run["status"][], since: string, projectId?: string): Run[] {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => "?").join(", ");
+    if (projectId) {
+      return this.db
+        .prepare(
+          `SELECT * FROM runs WHERE project_id = ? AND status IN (${placeholders}) AND created_at >= ? ORDER BY created_at DESC`
+        )
+        .all(projectId, ...statuses, since) as Run[];
+    }
+    return this.db
+      .prepare(
+        `SELECT * FROM runs WHERE status IN (${placeholders}) AND created_at >= ? ORDER BY created_at DESC`
+      )
+      .all(...statuses, since) as Run[];
+  }
+
+  /**
    * Purge old runs in terminal states (failed, merged, test-failed, conflict)
    * that are older than the given cutoff date. Returns number of rows deleted.
    */

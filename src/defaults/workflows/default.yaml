@@ -14,6 +14,7 @@
 # vcs:
 #   backend: auto
 name: default
+onError: stop
 setup:
   - command: npm install --prefer-offline --no-audit
     description: Install Node.js dependencies
