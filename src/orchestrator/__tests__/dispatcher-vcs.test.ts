@@ -120,6 +120,8 @@ function makeStore(): ForemanStore {
     logEvent: vi.fn(),
     sendMessage: vi.fn(),
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-001" }),
+    hasNativeTasks: vi.fn().mockReturnValue(false),
+    getReadyTasks: vi.fn().mockReturnValue([]),
   } as unknown as ForemanStore;
 }
 

@@ -7,7 +7,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
-import type { ForemanStore } from "../lib/store.js";
+import type { ForemanStore, NativeTask } from "../lib/store.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache } from "../lib/git.js";
@@ -33,6 +33,53 @@ import type {
   ModelSelection,
   PlanStepDispatched,
 } from "./types.js";
+
+// ── Task store resolution (REQ-014 / REQ-017) ────────────────────────────
+
+/**
+ * Valid values for the FOREMAN_TASK_STORE environment variable.
+ * - 'native': force native SQLite tasks table even if empty
+ * - 'beads': force BeadsRustClient fallback even if native tasks exist
+ * - 'auto' / undefined: auto-detect based on hasNativeTasks()
+ */
+export type TaskStoreMode = "native" | "beads" | "auto";
+
+/**
+ * Resolve the task store mode from the FOREMAN_TASK_STORE environment variable.
+ *
+ * Invalid values are treated as 'auto' and a warning is emitted.
+ */
+export function resolveTaskStoreMode(): TaskStoreMode {
+  const raw = process.env.FOREMAN_TASK_STORE;
+  if (!raw || raw === "auto") return "auto";
+  if (raw === "native" || raw === "beads") return raw;
+  console.error(
+    `[dispatch] Warning: FOREMAN_TASK_STORE='${raw}' is not valid ('native'|'beads'|'auto'). Treating as 'auto'.`,
+  );
+  return "auto";
+}
+
+/**
+ * Convert a NativeTask row into a normalized Issue so that native tasks can be
+ * processed by the same dispatch loop that handles Beads issues.
+ *
+ * Priority is stored as INTEGER (0–4) in the native store; normalise to string
+ * form ('P0'–'P4') so the existing normalizePriority() helper works correctly.
+ */
+export function nativeTaskToIssue(task: NativeTask): Issue {
+  return {
+    id: task.id,
+    title: task.title,
+    type: task.type,
+    priority: `P${task.priority}`,
+    status: task.status,
+    assignee: null,
+    parent: null,
+    created_at: task.created_at,
+    updated_at: task.updated_at,
+    description: task.description ?? undefined,
+  };
+}
 
 // ── Dispatcher ──────────────────────────────────────────────────────────
 
@@ -98,7 +145,35 @@ export class Dispatcher {
     const activeRuns = this.store.getActiveRuns(projectId);
     const available = Math.max(0, maxAgents - activeRuns.length);
 
-    let readySeeds = await this.seeds.ready();
+    // ── Task store coexistence (REQ-014 / REQ-017) ────────────────────────
+    // Decide whether to query the native SQLite task store or fall back to
+    // the BeadsRustClient based on FOREMAN_TASK_STORE and hasNativeTasks().
+    const taskStoreMode = resolveTaskStoreMode();
+    let usingNativeStore = false;
+
+    if (taskStoreMode === "native") {
+      usingNativeStore = true;
+      console.error("[dispatch] FOREMAN_TASK_STORE=native — using native task store");
+    } else if (taskStoreMode === "beads") {
+      usingNativeStore = false;
+      console.error("[dispatch] FOREMAN_TASK_STORE=beads — using beads fallback");
+    } else {
+      // 'auto': use native if tasks exist, otherwise fall back to beads
+      usingNativeStore = this.store.hasNativeTasks();
+      if (usingNativeStore) {
+        console.error("[dispatch] Native tasks detected — using native task store (AC-014.1)");
+      } else {
+        console.error("[dispatch] No native tasks — using beads fallback (AC-014.1)");
+      }
+    }
+
+    let readySeeds: Issue[];
+    if (usingNativeStore) {
+      const nativeTasks = this.store.getReadyTasks();
+      readySeeds = nativeTasks.map(nativeTaskToIssue);
+    } else {
+      readySeeds = await this.seeds.ready();
+    }
 
     // Sort ready seeds using bv triage scores when available, falling back to priority sort.
     if (!opts?.seedId) {
@@ -528,13 +603,35 @@ export class Dispatcher {
         }
 
         // 6. Mark seed as in_progress before spawning agent.
-        // Non-fatal: br may reject the claim due to stale blocked cache (beads_rust#204).
-        // The agent can still run — the status update is cosmetic.
-        try {
-          await this.seeds.update(seed.id, { status: "in_progress" });
-        } catch (claimErr: unknown) {
-          const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
-          console.error(`[dispatch] Warning: br claim failed for ${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+        if (usingNativeStore) {
+          // Atomic claim: UPDATE tasks SET status='in-progress', run_id=? WHERE id=? AND status='ready'
+          // REQ-017 AC-017.2: claim + run_id linkage in one transaction (prevents double-dispatch).
+          const claimed = this.store.claimTask(seed.id, run.id);
+          if (!claimed) {
+            // Another dispatcher instance claimed this task between our getReadyTasks() query
+            // and now — skip it and clean up the run we just created.
+            skipped.push({
+              seedId: seed.id,
+              title: seed.title,
+              reason: "Already claimed by another dispatcher (atomic claim failed)",
+            });
+            // Best-effort cleanup: mark run as failed so it doesn't appear as active
+            try {
+              this.store.updateRun(run.id, { status: "failed", completed_at: new Date().toISOString() });
+            } catch {
+              // Non-fatal — run cleanup is best-effort
+            }
+            continue;
+          }
+        } else {
+          // Non-fatal: br may reject the claim due to stale blocked cache (beads_rust#204).
+          // The agent can still run — the status update is cosmetic.
+          try {
+            await this.seeds.update(seed.id, { status: "in_progress" });
+          } catch (claimErr: unknown) {
+            const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
+            console.error(`[dispatch] Warning: br claim failed for ${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+          }
         }
 
         // 6a. Send bead-claimed mail so inbox shows bead lifecycle event

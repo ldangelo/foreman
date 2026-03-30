@@ -160,6 +160,28 @@ export interface BeadWriteEntry {
   processed_at: string | null;
 }
 
+// ── Native Task interfaces ───────────────────────────────────────────────
+
+/**
+ * A task row from the native SQLite `tasks` table (PRD-2026-006 REQ-003).
+ * Matches the TASKS_SCHEMA column definitions.
+ */
+export interface NativeTask {
+  id: string;
+  title: string;
+  description: string | null;
+  type: string;
+  priority: number;
+  status: string;
+  run_id: string | null;
+  branch: string | null;
+  external_id: string | null;
+  created_at: string;
+  updated_at: string;
+  approved_at: string | null;
+  closed_at: string | null;
+}
+
 // ── Merge Agent interfaces ───────────────────────────────────────────────
 
 export interface MergeAgentConfigRow {
@@ -1581,5 +1603,66 @@ export class ForemanStore {
         ? phaseMetrics.totalByAgent
         : undefined,
     };
+  }
+
+  // ── Native Task Store (PRD-2026-006 REQ-003 / REQ-017) ──────────────
+
+  /**
+   * Check whether the native `tasks` table exists and contains at least one row.
+   *
+   * Used by the dispatcher to decide whether to query the native store or fall
+   * back to the BeadsRustClient (br) CLI.  Returns false if the table is missing
+   * (schema not yet applied) or empty.
+   */
+  hasNativeTasks(): boolean {
+    try {
+      const row = this.db
+        .prepare("SELECT COUNT(*) as cnt FROM tasks")
+        .get() as { cnt: number } | undefined;
+      return (row?.cnt ?? 0) > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Return all tasks with status = 'ready', ordered by priority ASC then created_at ASC.
+   *
+   * Implements REQ-017 AC-017.1: "SELECT * FROM tasks WHERE status = 'ready'
+   * ORDER BY priority ASC, created_at ASC".
+   */
+  getReadyTasks(): NativeTask[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM tasks
+         WHERE status = 'ready'
+         ORDER BY priority ASC, created_at ASC`,
+      )
+      .all() as NativeTask[];
+  }
+
+  /**
+   * Atomically claim a task by transitioning its status from 'ready' to 'in-progress'
+   * and recording the associated run_id in a single SQLite transaction.
+   *
+   * Implements REQ-017 AC-017.2: the UPDATE is atomic — if two concurrent dispatcher
+   * instances attempt to claim the same task, exactly one succeeds (the WHERE clause
+   * only matches rows still in status='ready').
+   *
+   * @param taskId - The task ID to claim.
+   * @param runId  - The run ID to associate with the claimed task.
+   * @returns true if the task was claimed (row affected), false if it was already
+   *          claimed by another process (0 rows affected).
+   */
+  claimTask(taskId: string, runId: string): boolean {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE tasks
+         SET status = 'in-progress', run_id = @runId, updated_at = @now
+         WHERE id = @taskId AND status = 'ready'`,
+      )
+      .run({ taskId, runId, now });
+    return result.changes > 0;
   }
 }

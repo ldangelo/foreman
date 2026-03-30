@@ -88,6 +88,8 @@ function makeStore(overrides: Partial<ForemanStore> = {}): ForemanStore {
     logEvent: vi.fn(),
     sendMessage: vi.fn(),
     getRunsForSeed: vi.fn().mockReturnValue([]),
+    hasNativeTasks: vi.fn().mockReturnValue(false),
+    getReadyTasks: vi.fn().mockReturnValue([]),
     ...overrides,
   } as unknown as ForemanStore;
 }
