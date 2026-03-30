@@ -167,6 +167,7 @@ export class Dispatcher {
       // Workflow config not found — continue with default behavior
     }
 
+
     // Determine how many agent slots are available
     const activeRuns = this.store.getActiveRuns(projectId);
     const available = Math.max(0, maxAgents - activeRuns.length);
