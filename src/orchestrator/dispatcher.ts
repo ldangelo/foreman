@@ -210,6 +210,20 @@ export class Dispatcher {
         continue;
       }
 
+      // Skip feature/epic containers — they are organizational only and have no
+      // implementation work. Dispatching them produces empty commits.
+      if (seed.type === "feature" || seed.type === "epic") {
+        log(
+          `[dispatch] Skipping ${seed.id} (type: ${seed.type ?? "unknown"}) — feature/epic containers are not dispatchable`,
+        );
+        skipped.push({
+          seedId: seed.id,
+          title: seed.title,
+          reason: `Type '${seed.type}' is an organizational container — not dispatchable`,
+        });
+        continue;
+      }
+
       // Skip seeds that are in exponential backoff after recent stuck runs
       const backoffResult = this.checkStuckBackoff(seed.id, projectId);
       if (backoffResult.inBackoff) {
