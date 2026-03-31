@@ -20,7 +20,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
-import { join, relative as pathRelative } from "node:path";
+import { dirname, join, relative as pathRelative } from "node:path";
 
 import type {
   Workspace,
@@ -33,6 +33,11 @@ import type {
   FinalizeTemplateVars,
   FinalizeCommands,
 } from "./types.js";
+import {
+  buildTrackedStateRestoreCommand,
+  getWorkspacePath,
+  getWorkspaceRoot,
+} from "../workspace-paths.js";
 import type { VcsBackend } from "./interface.js";
 
 const execFileAsync = promisify(execFile);
@@ -286,7 +291,7 @@ export class JujutsuBackend implements VcsBackend {
   /**
    * Create a jj workspace for a seed.
    *
-   * Creates a workspace at `.foreman-worktrees/<seedId>` and sets up
+   * Creates a workspace in Foreman's external workspace root and sets up
    * a bookmark `foreman/<seedId>` pointing to the new workspace's revision.
    *
    * Handles existing workspaces by rebasing onto the base branch.
@@ -298,7 +303,7 @@ export class JujutsuBackend implements VcsBackend {
   ): Promise<WorkspaceResult> {
     const base = baseBranch ?? (await this.getCurrentBranch(repoPath));
     const branchName = `foreman/${seedId}`;
-    const workspacePath = join(repoPath, ".foreman-worktrees", seedId);
+    const workspacePath = getWorkspacePath(repoPath, seedId);
 
     // If workspace directory already exists, reuse it
     if (existsSync(workspacePath)) {
@@ -313,8 +318,9 @@ export class JujutsuBackend implements VcsBackend {
     }
 
     // Ensure the parent directory exists (jj workspace add requires it)
-    const worktreesDir = join(repoPath, ".foreman-worktrees");
+    const worktreesDir = getWorkspaceRoot(repoPath);
     await fs.mkdir(worktreesDir, { recursive: true });
+    await fs.mkdir(dirname(workspacePath), { recursive: true });
 
     // Create new workspace
     try {
@@ -408,7 +414,7 @@ export class JujutsuBackend implements VcsBackend {
           // Map workspace name back to a path
           if (name !== "default") {
             const seedId = name.replace(/^foreman-/, "");
-            const path = join(repoPath, ".foreman-worktrees", seedId);
+            const path = getWorkspacePath(repoPath, seedId);
             const branchName = `foreman/${seedId}`;
             workspaces.push({
               path,
@@ -941,7 +947,7 @@ export class JujutsuBackend implements VcsBackend {
    * Return pre-computed jj finalize commands for prompt rendering.
    */
   getFinalizeCommands(vars: FinalizeTemplateVars): FinalizeCommands {
-    const { seedId, seedTitle, baseBranch } = vars;
+    const { seedId, seedTitle, baseBranch, worktreePath } = vars;
     // Escape single quotes so the shell-level single-quoted commit message is
     // safe even when seedTitle contains apostrophes or shell-special characters.
     const safeSeedTitle = seedTitle.replace(/'/g, "'\\''");
@@ -952,6 +958,7 @@ export class JujutsuBackend implements VcsBackend {
       rebaseCommand: `jj git fetch && jj rebase -d ${baseBranch}@origin`,
       branchVerifyCommand: `jj bookmark list foreman/${seedId}`,
       cleanCommand: `jj workspace forget foreman-${seedId}`,
+      restoreTrackedStateCommand: buildTrackedStateRestoreCommand(worktreePath, this.projectPath),
     };
   }
 }

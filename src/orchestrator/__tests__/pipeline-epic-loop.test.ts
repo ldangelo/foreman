@@ -252,6 +252,7 @@ describe("epic task loop (TRD-005)", () => {
         rebaseCommand: "git rebase",
         branchVerifyCommand: "git branch",
         cleanCommand: "git clean",
+        restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",
       }),
     };
 

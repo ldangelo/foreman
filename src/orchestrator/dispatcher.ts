@@ -23,6 +23,7 @@ import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.
 import { getTaskOrder } from "./task-ordering.js";
 import type { EpicTask } from "./pipeline-executor.js";
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
+import { getWorkspacePath } from "../lib/workspace-paths.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import type {
@@ -551,7 +552,7 @@ export class Dispatcher {
           title: seed.title,
           runtime,
           model,
-          worktreePath: join(this.projectPath, ".foreman-worktrees", seed.id),
+          worktreePath: getWorkspacePath(this.projectPath, seed.id),
           runId: "(dry-run)",
           branchName: `foreman/${seed.id}`,
         });

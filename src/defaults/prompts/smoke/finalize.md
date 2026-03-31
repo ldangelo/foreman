@@ -8,7 +8,7 @@ Run `pwd` and confirm you are in `{{worktreePath}}`. If not, run `cd {{worktreeP
 **1. Run stage and commit (skip stage command if empty — some backends auto-stage):**
 ```
 {{vcsStageCommand}}
-git reset HEAD SESSION_LOG.md RUN_LOG.md .beads/issues.jsonl 2>/dev/null || true
+{{vcsRestoreTrackedStateCommand}}
 {{vcsCommitCommand}}
 ```
 If git reports "nothing to commit", that is fine — continue anyway (do not send an error).

@@ -181,10 +181,10 @@ describe('FinalizeTemplateVars type', () => {
   });
 });
 
-// ── AC-I-002-2: FinalizeCommands has all 6 required fields ──────────────
+// ── AC-I-002-2: FinalizeCommands has all 7 required fields ──────────────
 
 describe('FinalizeCommands type', () => {
-  it('has all 6 required fields', () => {
+  it('has all 7 required fields', () => {
     const cmds: FinalizeCommands = {
       stageCommand: 'git add -A',
       commitCommand: 'git commit -m "feat: implement task"',
@@ -192,14 +192,16 @@ describe('FinalizeCommands type', () => {
       rebaseCommand: 'git rebase origin/dev',
       branchVerifyCommand: 'git ls-remote --heads origin foreman/bd-deoi',
       cleanCommand: 'git worktree remove /tmp/worktrees/bd-deoi',
+      restoreTrackedStateCommand: 'git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl',
     };
-    // Verify all 6 are present and string-typed
+    // Verify all 7 are present and string-typed
     expect(typeof cmds.stageCommand).toBe('string');
     expect(typeof cmds.commitCommand).toBe('string');
     expect(typeof cmds.pushCommand).toBe('string');
     expect(typeof cmds.rebaseCommand).toBe('string');
     expect(typeof cmds.branchVerifyCommand).toBe('string');
     expect(typeof cmds.cleanCommand).toBe('string');
+    expect(typeof cmds.restoreTrackedStateCommand).toBe('string');
   });
 
   it('accepts empty strings for no-op commands (e.g. jj auto-staging)', () => {
@@ -210,6 +212,7 @@ describe('FinalizeCommands type', () => {
       rebaseCommand: 'jj rebase -d main',
       branchVerifyCommand: 'jj bookmark list',
       cleanCommand: 'jj workspace forget foreman-bd-deoi',
+      restoreTrackedStateCommand: 'git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl',
     };
     expect(cmds.stageCommand).toBe('');
   });

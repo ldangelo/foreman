@@ -17,7 +17,6 @@ import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader
 import { resolvePhaseModel } from "../lib/workflow-loader.js";
 import { ROLE_CONFIGS } from "./roles.js";
 import { buildPhasePrompt, parseVerdict, extractIssues } from "./roles.js";
-import { enqueueAddLabelsToBead } from "./task-backend-ops.js";
 import { rotateReport } from "./agent-worker-finalize.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
@@ -26,6 +25,7 @@ import type { ForemanStore, RunProgress } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import type { NativeTaskStore } from "../lib/task-store.js";
 import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs } from "../lib/config.js";
+import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -695,6 +695,7 @@ async function runPhaseSequence(
       vcsRebaseCommand?: string;
       vcsBranchVerifyCommand?: string;
       vcsCleanCommand?: string;
+      vcsRestoreTrackedStateCommand?: string;
       vcsBackendName?: string;
       vcsBranchPrefix?: string;
     } = {};
@@ -716,6 +717,17 @@ async function runPhaseSequence(
         vcsPromptVars.vcsRebaseCommand = finalizeCommands.rebaseCommand;
         vcsPromptVars.vcsBranchVerifyCommand = finalizeCommands.branchVerifyCommand;
         vcsPromptVars.vcsCleanCommand = finalizeCommands.cleanCommand;
+        vcsPromptVars.vcsRestoreTrackedStateCommand = finalizeCommands.restoreTrackedStateCommand;
+
+        try {
+          execSync(finalizeCommands.restoreTrackedStateCommand, {
+            cwd: worktreePath,
+            stdio: "ignore",
+            shell: "/bin/bash",
+          });
+        } catch {
+          // Best effort: the finalize prompt also carries the same restore command.
+        }
       }
     }
 
@@ -867,7 +879,6 @@ async function runPhaseSequence(
                 });
               }
               store.logEvent(config.projectId, "complete", { seedId, phase: phaseName, costUsd: fallbackResult.costUsd }, runId);
-              enqueueAddLabelsToBead(store, seedId, [`phase:${phaseName}`], "pipeline-executor");
               ctx.taskStore?.updatePhase(config.taskId ?? null, phaseName);
 
               if (phase.mail?.forwardArtifactTo && phase.artifact) {
@@ -970,8 +981,6 @@ async function runPhaseSequence(
       });
     }
     store.logEvent(config.projectId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, runId);
-    enqueueAddLabelsToBead(store, seedId, [`phase:${phaseName}`], "pipeline-executor");
-
     ctx.taskStore?.updatePhase(config.taskId ?? null, phaseName);
 
     if (phase.mail?.forwardArtifactTo && phase.artifact) {
@@ -1007,7 +1016,7 @@ async function writeSessionLogSafe(
   const description = config.seedDescription ?? "(no description)";
 
   try {
-    const pipelineProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
+    const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(worktreePath);
     const sessionLogData: SessionLogData = {
       seedId,
       seedTitle,

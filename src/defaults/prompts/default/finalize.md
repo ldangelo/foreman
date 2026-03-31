@@ -42,11 +42,11 @@ Run the stage command (skip if empty — some backends auto-stage):
 ```
 {{vcsStageCommand}}
 ```
-Then exclude diagnostic artifacts that cause merge conflicts:
+Then restore tracked shared-state files that must never be committed from a workspace:
 ```
-git reset HEAD SESSION_LOG.md RUN_LOG.md .beads/issues.jsonl 2>/dev/null || true
+{{vcsRestoreTrackedStateCommand}}
 ```
-SESSION_LOG.md and RUN_LOG.md are diagnostic artifacts that cause merge conflicts when multiple pipelines run concurrently. .beads/issues.jsonl is managed centrally by the bead-writer process — committing it from worktrees causes merge conflicts when multiple agents run in parallel. All three remain in the worktree for debugging but are excluded from the commit.
+SESSION_LOG.md and RUN_LOG.md are already gitignored diagnostic artifacts. `.beads/issues.jsonl` is managed centrally by the bead-writer process, so finalize restores it out of the workspace before commit using a backend-aware path. This prevents parent-branch Beads updates from dirtying active workspaces.
 
 ### Step 4: Commit
 Run:
@@ -188,5 +188,5 @@ Use this format:
 - **DO NOT modify any source code files** — only write FINALIZE_VALIDATION.md, FINALIZE_REPORT.md and run git commands
 - Run steps in order — do not skip any step unless explicitly told to stop
 - All failures except "nothing to commit" (for non-verification beads) are logged and continue (non-fatal) unless they prevent git push
-- Do NOT commit SESSION_LOG.md, RUN_LOG.md, or .beads/issues.jsonl — they are excluded from commits to prevent merge conflicts when multiple agents run in parallel
+- Do NOT commit SESSION_LOG.md, RUN_LOG.md, or .beads/issues.jsonl — SESSION_LOG.md / RUN_LOG.md are gitignored, and finalize restores tracked Beads state out of the workspace before commit
 - **If tests fail in Step 7, stop after writing FINALIZE_VALIDATION.md — do NOT run Steps 8 or 9**

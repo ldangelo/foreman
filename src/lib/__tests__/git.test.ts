@@ -13,6 +13,7 @@ import {
   detectPackageManager,
   installDependencies,
 } from "../git.js";
+import { getWorkspacePath } from "../workspace-paths.js";
 
 function makeTempRepo(): string {
   // realpathSync resolves macOS /var → /private/var symlink
@@ -71,7 +72,7 @@ describe("git worktree manager", () => {
 
     const { worktreePath } = await createWorktree(repo, "seed-002");
 
-    expect(worktreePath).toBe(join(repo, ".foreman-worktrees", "seed-002"));
+    expect(worktreePath).toBe(getWorkspacePath(repo, "seed-002"));
     expect(existsSync(worktreePath)).toBe(true);
   });
 

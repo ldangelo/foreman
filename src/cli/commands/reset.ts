@@ -13,6 +13,7 @@ import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { deleteWorkerConfigFile } from "../../orchestrator/dispatcher.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { StateMismatch } from "../../lib/run-status.js";
+import { getWorkspaceRoot } from "../../lib/workspace-paths.js";
 // Re-export for callers that import these from this module (backward compatibility).
 export { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 export type { StateMismatch } from "../../lib/run-status.js";
@@ -786,7 +787,7 @@ export const resetCommand = new Command("reset")
       //     no SQLite run record OR only have completed/merged runs (finalize should remove them
       //     but sometimes fails to do so)
       if (!dryRun) {
-        const worktreesDir = `${projectPath}/.foreman-worktrees`;
+        const worktreesDir = getWorkspaceRoot(projectPath);
         if (existsSync(worktreesDir)) {
           // Paths that still have truly active runs (pending or running) — keep these.
           // "failed" and "stuck" are terminal states: their agents have stopped, so

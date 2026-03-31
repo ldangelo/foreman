@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { JujutsuBackend } from "../jujutsu-backend.js";
+import { getWorkspacePath } from "../../workspace-paths.js";
 
 // ── Check if jj is available ──────────────────────────────────────────────────
 
@@ -674,7 +675,7 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.removeWorkspace (AC-T-018-2)", ()
     tempDirs.push(repo);
 
     const backend = new JujutsuBackend(repo);
-    const nonExistent = join(repo, ".foreman-worktrees", "nonexistent");
+    const nonExistent = getWorkspacePath(repo, "nonexistent");
     await expect(backend.removeWorkspace(repo, nonExistent)).resolves.toBeUndefined();
   });
 });

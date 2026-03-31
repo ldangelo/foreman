@@ -33,6 +33,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { JujutsuBackend } from "../jujutsu-backend.js";
+import { getWorkspacePath } from "../../workspace-paths.js";
 
 // ── Check if jj is available ──────────────────────────────────────────────────
 
@@ -163,7 +164,7 @@ describe.skipIf(!JJ_AVAILABLE)(
 
       expect(workspaceResult.branchName).toBe(`foreman/${seedId}`);
       expect(workspaceResult.workspacePath).toBe(
-        join(localDir, ".foreman-worktrees", seedId),
+        getWorkspacePath(localDir, seedId),
       );
       expect(existsSync(workspaceResult.workspacePath)).toBe(true);
 

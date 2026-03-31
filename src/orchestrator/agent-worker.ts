@@ -28,6 +28,7 @@ import {
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import { enqueueResetSeedToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
+import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { autoMerge } from "./auto-merge.js";
@@ -252,7 +253,7 @@ async function main(): Promise<void> {
 
   // Resolve the project-local store path from the config, falling back to the
   // parent of the worktree directory if projectPath is not provided.
-  const storeProjectPath = configProjectPath ?? join(worktreePath, "..", "..");
+  const storeProjectPath = configProjectPath ?? inferProjectPathFromWorkspacePath(worktreePath);
 
   // Set up logging
   const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
@@ -646,7 +647,7 @@ async function runTroubleshooterPhase(
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
 async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string, notifyClient: NotificationClient, agentMailClient: AnyMailClient | null): Promise<void> {
-  const pipelineProjectPath = config.projectPath ?? join(config.worktreePath, "..", "..");
+  const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(config.worktreePath);
   const resolvedWorkflow = resolveWorkflowName(config.seedType ?? "feature", config.seedLabels);
   // Load the workflow config (phase sequence + per-phase overrides).
   let workflowConfig: WorkflowConfig;
@@ -1073,7 +1074,7 @@ async function fatalHandler(err: unknown): Promise<void> {
     const cfg = JSON.parse(raw) as Partial<WorkerConfig>;
     runId = cfg.runId;
     seedId = cfg.seedId;
-    projectPath = cfg.projectPath ?? (cfg.worktreePath ? join(cfg.worktreePath, "..", "..") : undefined);
+    projectPath = cfg.projectPath ?? (cfg.worktreePath ? inferProjectPathFromWorkspacePath(cfg.worktreePath) : undefined);
   } catch {
     // Config already deleted (worker started successfully but crashed later).
     // We cannot recover context from disk at this point.

@@ -27,6 +27,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { getWorkspacePath } from "../workspace-paths.js";
 
 // ── Type imports from git.ts (old API) ──────────────────────────────────────
 import type { Worktree, MergeResult, DeleteBranchResult } from "../git.js";
@@ -162,7 +163,7 @@ describe("AC-T-011-1: Existing function behaviour is preserved", () => {
     expect(result).toHaveProperty("worktreePath");
     expect(result).toHaveProperty("branchName");
     expect(result.branchName).toBe("foreman/shim-seed-001");
-    expect(result.worktreePath).toBe(join(repo, ".foreman-worktrees", "shim-seed-001"));
+    expect(result.worktreePath).toBe(getWorkspacePath(repo, "shim-seed-001"));
     expect(existsSync(result.worktreePath)).toBe(true);
   });
 

@@ -3,8 +3,8 @@
  *
  * Verifies that:
  *   AC-T-026-1: {{vcsStageCommand}} is rendered in finalize.md
- *   AC-T-026-2: All 6 vcs* variables are substituted correctly for GitBackend
- *   AC-T-026-3: All 6 vcs* variables are substituted correctly for JujutsuBackend
+ *   AC-T-026-2: All vcs* variables are substituted correctly for GitBackend
+ *   AC-T-026-3: All vcs* variables are substituted correctly for JujutsuBackend
  */
 
 import { describe, it, expect } from "vitest";
@@ -43,6 +43,11 @@ describe("finalize.md template: VCS placeholder variables (AC-T-026-1)", () => {
   it("raw template contains {{vcsBranchVerifyCommand}} placeholder", () => {
     const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
     expect(content).toContain("{{vcsBranchVerifyCommand}}");
+  });
+
+  it("raw template contains {{vcsRestoreTrackedStateCommand}} placeholder", () => {
+    const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
+    expect(content).toContain("{{vcsRestoreTrackedStateCommand}}");
   });
 
   it("raw template does NOT contain hardcoded 'git add -A' stage command", () => {
@@ -89,9 +94,28 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
       vcsRebaseCommand: finalizeCommands.rebaseCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
+      vcsRestoreTrackedStateCommand: finalizeCommands.restoreTrackedStateCommand,
     });
     expect(prompt).toContain("git add -A");
     expect(prompt).not.toContain("{{vcsStageCommand}}");
+  });
+
+  it("renders git tracked-state restore command in finalize prompt", () => {
+    const prompt = buildPhasePrompt("finalize", {
+      seedId: "bd-test",
+      seedTitle: "Fix authentication",
+      seedDescription: "desc",
+      worktreePath: "/tmp/worktrees/bd-test",
+      vcsStageCommand: finalizeCommands.stageCommand,
+      vcsCommitCommand: finalizeCommands.commitCommand,
+      vcsPushCommand: finalizeCommands.pushCommand,
+      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
+      vcsCleanCommand: finalizeCommands.cleanCommand,
+      vcsRestoreTrackedStateCommand: finalizeCommands.restoreTrackedStateCommand,
+    });
+    expect(prompt).toContain("git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl");
+    expect(prompt).not.toContain("{{vcsRestoreTrackedStateCommand}}");
   });
 
   it("renders git commit command in finalize prompt", () => {

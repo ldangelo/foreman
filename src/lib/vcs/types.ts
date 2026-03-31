@@ -105,6 +105,8 @@ export interface FinalizeCommands {
   branchVerifyCommand: string;
   /** Command to clean up the workspace after finalization. */
   cleanCommand: string;
+  /** Command to restore tracked shared-state files that must never be committed from a workspace. */
+  restoreTrackedStateCommand: string;
 }
 
 /** VCS configuration read from project config YAML (.foreman/config.yaml). */

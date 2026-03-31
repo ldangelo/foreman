@@ -16,6 +16,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { GitBackend } from "../git-backend.js";
+import { getWorkspacePath } from "../../workspace-paths.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -697,7 +698,7 @@ describe("GitBackend.createWorkspace", () => {
     const result = await backend.createWorkspace(repo, "seed-abc");
 
     expect(result.branchName).toBe("foreman/seed-abc");
-    expect(result.workspacePath).toBe(join(repo, ".foreman-worktrees", "seed-abc"));
+    expect(result.workspacePath).toBe(getWorkspacePath(repo, "seed-abc"));
     // The directory should exist
     const { existsSync } = await import("node:fs");
     expect(existsSync(result.workspacePath)).toBe(true);
@@ -717,7 +718,7 @@ describe("GitBackend.createWorkspace", () => {
       branchName: "foreman/seed-reuse",
     });
 
-    await backend.removeWorkspace(repo, join(repo, ".foreman-worktrees", "seed-reuse"));
+    await backend.removeWorkspace(repo, getWorkspacePath(repo, "seed-reuse"));
   });
 });
 

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Doctor } from "../doctor.js";
 import type { Run } from "../../lib/store.js";
+import { getWorkspacePath } from "../../lib/workspace-paths.js";
 
 const {
   mockListWorkspaces,
@@ -1558,7 +1559,7 @@ describe("checkOrphanedGlobalStoreRuns", () => {
     const { ForemanStore } = await import("../../lib/store.js");
     const store = new ForemanStore(globalDbPath);
     const project = store.registerProject("test-project", projectPath);
-    store.createRun(project.id, "seed-abc", "developer", join(projectPath, ".foreman-worktrees", "seed-abc"));
+    store.createRun(project.id, "seed-abc", "developer", getWorkspacePath(projectPath, "seed-abc"));
     const runs = store.getRunsByStatus("pending", project.id);
     store.updateRun(runs[0].id, { status: "completed", completed_at: new Date().toISOString() });
     store.close();
@@ -1647,7 +1648,7 @@ describe("checkOrphanedGlobalStoreRuns", () => {
       const globalDbPath = join(globalDir, "foreman.db");
       const globalStore = new ForemanStore(globalDbPath);
       const globalProject = globalStore.registerProject("my-project", projectDir);
-      const run = globalStore.createRun(globalProject.id, "seed-001", "developer", join(projectDir, ".foreman-worktrees", "seed-001"));
+      const run = globalStore.createRun(globalProject.id, "seed-001", "developer", getWorkspacePath(projectDir, "seed-001"));
       globalStore.updateRun(run.id, { status: "completed", completed_at: new Date().toISOString() });
       globalStore.close();
 
