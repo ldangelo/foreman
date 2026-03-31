@@ -1,0 +1,1 @@
+{"type":"convention","content":"CLI commands should resolve project paths through VcsBackendFactory.create({ backend: \"auto\" }, process.cwd()) and backend getRepoRoot()/getMainRepoRoot() rather than direct lib/git.ts helpers in colocated jj repos.","classification":"tactical","recorded_at":"2026-03-31T15:58:27.752Z","id":"mx-424b0c"}
