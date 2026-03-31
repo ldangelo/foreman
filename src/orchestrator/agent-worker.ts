@@ -743,8 +743,37 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       log(`[EPIC] Closed bug bead ${bugBeadId} (QA passed on retry)`);
     },
 
+    // P1: Rate limit alert callback - log rate limit events for alerting
+    onRateLimit(model, phase, error, retryAfterSeconds) {
+      // P1: Alert when rate limit detected in logs
+      const alertMsg = `[RATE_LIMIT_ALERT] ${phase} phase rate limited on ${model}` +
+        (retryAfterSeconds ? ` (Retry-After: ${retryAfterSeconds}s)` : "") +
+        ` at ${new Date().toISOString()}`;
+      console.error(alertMsg);
+      log(alertMsg);
+
+      // P1: Log rate limit event for pattern detection
+      store.logRateLimitEvent(config.projectId, model, phase, error, retryAfterSeconds, config.runId);
+
+      // Also send agent-error mail for visibility
+      sendMail(agentMailClient, "foreman", "rate-limit-alert", {
+        seedId: config.seedId,
+        phase,
+        model,
+        error,
+        retryAfterSeconds,
+      });
+    },
+
     // Finalize post-processing: determine push success, enqueue to merge queue, update run status.
-    async onPipelineComplete({ progress }) {
+    // P0 fix: Only send branch-ready if pipeline succeeded AND we're at the finalize phase.
+    async onPipelineComplete({ progress, success }) {
+      // Guard: only send branch-ready if pipeline completed successfully at finalize phase.
+      // This prevents sending branch-ready when Explorer or other phases fail.
+      if (!success || progress.currentPhase !== "finalize") {
+        log(`[FINALIZE] Skipping branch-ready: success=${String(success)}, currentPhase=${progress.currentPhase}`);
+        return;
+      }
       const { runId, projectId, seedId, seedTitle, worktreePath } = config;
 
       // Read finalize outcome from agent mail.
@@ -876,6 +905,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           enqueueStore.close();
           if (enqueueResult.success) {
             log(`[FINALIZE] Enqueued to merge queue`);
+            // Guard: Only send branch-ready after successful finalize push (double-check).
+            // Primary guard is at function entry, this is defense-in-depth.
             sendMail(agentMailClient, "refinery", "branch-ready", {
               seedId, runId, branch: `foreman/${seedId}`, worktreePath,
             });

@@ -8,7 +8,7 @@ import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore, NativeTask } from "../lib/store.js";
-import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS } from "../lib/config.js";
+import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache } from "../lib/git.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
@@ -113,6 +113,8 @@ export class Dispatcher {
     notifyUrl?: string;
     /** Override target branch for merges (when working on a feature branch instead of default). */
     targetBranch?: string;
+    /** P1: Stagger delay in milliseconds between dispatches to prevent thundering herd. */
+    staggerMs?: number;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = opts?.projectId ?? this.resolveProjectId();
@@ -541,7 +543,7 @@ export class Dispatcher {
       // Use opts.model if provided (e.g. --model flag), otherwise fall back to the
       // developer-role default.  This value is the outer fallback only — executePipeline
       // will override it per phase via resolvePhaseModel().
-      const model: ModelSelection = opts?.model ?? "anthropic/claude-sonnet-4-6";
+      const model: ModelSelection = opts?.model ?? getDefaultModel() as ModelSelection;
 
       if (opts?.dryRun) {
         dispatched.push({
@@ -767,6 +769,13 @@ export class Dispatcher {
           runId: run.id,
           branchName,
         });
+
+        // P1: Apply stagger delay between dispatches to prevent thundering herd on Haiku quotas
+        if (opts?.staggerMs && opts?.staggerMs > 0 && dispatched.length < readySeeds.length) {
+          const staggerMsg = `[dispatch] Staggering ${opts.staggerMs / 1000}s before next dispatch...`;
+          console.error(staggerMsg);
+          await new Promise((resolve) => setTimeout(resolve, opts.staggerMs));
+        }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         skipped.push({
@@ -1013,7 +1022,7 @@ export class Dispatcher {
   generateAgentInstructions(seed: SeedInfo, worktreePath: string): string {
     // Use developer-role default for TASK.md informational display.
     // The actual per-phase model is resolved from workflow YAML at runtime.
-    const model: ModelSelection = "anthropic/claude-sonnet-4-6";
+    const model: ModelSelection = getDefaultModel() as ModelSelection;
     return workerAgentMd(seed, worktreePath, model);
   }
 

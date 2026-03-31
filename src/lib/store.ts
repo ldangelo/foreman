@@ -465,6 +465,27 @@ CREATE INDEX IF NOT EXISTS idx_task_dependencies_to_task
   ON task_dependencies (to_task_id);
 `;
 
+// Rate limit events table for tracking per-model rate limits (P2 recommendation)
+const RATE_LIMIT_EVENTS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS rate_limit_events (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL,
+  run_id      TEXT,
+  model       TEXT NOT NULL,
+  phase       TEXT,
+  error       TEXT NOT NULL,
+  retry_after_seconds INTEGER,
+  recorded_at TEXT NOT NULL,
+  FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rate_limit_events_model
+  ON rate_limit_events (model, recorded_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_rate_limit_events_project
+  ON rate_limit_events (project_id, recorded_at DESC);
+`;
+
 // Add progress column to runs table if not present (migration)
 // These migrations are idempotent via failure: ALTER TABLE and RENAME COLUMN throw
 // if the change was already applied, which is caught and silently ignored.
@@ -510,6 +531,22 @@ const MIGRATIONS = [
     updated_at TEXT NOT NULL
   )`,
   `ALTER TABLE runs ADD COLUMN base_branch TEXT DEFAULT NULL`,
+  // Rate limit events table migration (P2: per-model rate limit tracking)
+  `CREATE TABLE IF NOT EXISTS rate_limit_events (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL,
+    run_id      TEXT,
+    model       TEXT NOT NULL,
+    phase       TEXT,
+    error       TEXT NOT NULL,
+    retry_after_seconds INTEGER,
+    recorded_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_rate_limit_events_model
+    ON rate_limit_events (model, recorded_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_rate_limit_events_project
+    ON rate_limit_events (project_id, recorded_at DESC)`,
 ];
 
 // One-time destructive migrations that cannot be made idempotent via failure
@@ -611,6 +648,10 @@ export class ForemanStore {
     // Both use CREATE TABLE IF NOT EXISTS — safe to run on every startup.
     this.db.exec(TASKS_SCHEMA);
     this.db.exec(TASK_DEPENDENCIES_SCHEMA);
+
+    // Apply rate limit events schema (P2: per-model rate limit tracking).
+    // Uses CREATE TABLE IF NOT EXISTS — safe to run on every startup.
+    this.db.exec(RATE_LIMIT_EVENTS_SCHEMA);
   }
 
   /** Expose the underlying database for modules that need direct access (e.g. MergeQueue). */
@@ -1207,6 +1248,86 @@ export class ForemanStore {
     return this.db
       .prepare(`SELECT * FROM events ${where} ORDER BY created_at DESC ${limitClause}`)
       .all(...params) as Event[];
+  }
+
+  // ── Rate Limit Events (P2: per-model rate limit tracking) ─────────────────────
+
+  /**
+   * Log a rate limit event when a 429 is detected.
+   * This enables per-model rate limit tracking and alerting.
+   */
+  logRateLimitEvent(
+    projectId: string,
+    model: string,
+    phase: string | undefined,
+    error: string,
+    retryAfterSeconds?: number,
+    runId?: string
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO rate_limit_events (id, project_id, run_id, model, phase, error, retry_after_seconds, recorded_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        randomUUID(),
+        projectId,
+        runId ?? null,
+        model,
+        phase ?? null,
+        error,
+        retryAfterSeconds ?? null,
+        new Date().toISOString()
+      );
+  }
+
+  /**
+   * Get rate limit event counts grouped by model for the last N hours.
+   * Used for visualization and alerting (P2, P3 recommendations).
+   */
+  getRateLimitCountsByModel(projectId: string, hoursBack = 24): Record<string, number> {
+    const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
+    const rows = this.db
+      .prepare(
+        `SELECT model, COUNT(*) as count FROM rate_limit_events
+         WHERE project_id = ? AND recorded_at > ?
+         GROUP BY model`
+      )
+      .all(projectId, since) as Array<{ model: string; count: number }>;
+    const result: Record<string, number> = {};
+    for (const row of rows) {
+      result[row.model] = row.count;
+    }
+    return result;
+  }
+
+  /**
+   * Get recent rate limit events for alerting purposes.
+   */
+  getRecentRateLimitEvents(projectId: string, limit = 10): Array<{
+    id: string;
+    model: string;
+    phase: string | null;
+    error: string;
+    retry_after_seconds: number | null;
+    recorded_at: string;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT id, model, phase, error, retry_after_seconds, recorded_at
+         FROM rate_limit_events
+         WHERE project_id = ?
+         ORDER BY recorded_at DESC
+         LIMIT ?`
+      )
+      .all(projectId, limit) as Array<{
+        id: string;
+        model: string;
+        phase: string | null;
+        error: string;
+        retry_after_seconds: number | null;
+        recorded_at: string;
+      }>;
   }
 
   // ── Messaging ───────────────────────────────────────────────────────

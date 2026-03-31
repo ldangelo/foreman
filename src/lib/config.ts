@@ -56,6 +56,28 @@ function envNonNegativeInt(name: string, defaultValue: number): number {
   return parsed;
 }
 
+// ── Model defaults ───────────────────────────────────────────────────────
+
+/**
+ * Read a model string from an environment variable.
+ * Returns the default if the variable is not set or empty.
+ */
+function envModel(name: string, defaultValue: string): string {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return defaultValue;
+  return raw;
+}
+
+/** Default model for pipeline phases, dispatch fallback, and general use. */
+export function getDefaultModel(): string {
+  return envModel("FOREMAN_DEFAULT_MODEL", "minimax/MiniMax-M2.7");
+}
+
+/** High-capability model for analysis, debugging, and conflict resolution. */
+export function getHighspeedModel(): string {
+  return envModel("FOREMAN_HIGHSPEED_MODEL", "minimax/MiniMax-M2.7-highspeed");
+}
+
 // ── Budget getters (USD) ─────────────────────────────────────────────────
 
 /** Budget for the Explorer phase (default: $1.00, uses Haiku model). */
@@ -168,6 +190,35 @@ export const STUCK_RETRY_CONFIG = {
   /** Time window in milliseconds for counting recent stuck runs (default: 24h) */
   windowMs: envInt("FOREMAN_STUCK_WINDOW_MS", 24 * 60 * 60 * 1000),
 };
+
+/**
+ * Rate limit backoff configuration for when a 429 error is received.
+ * P1 recommendation: Use longer backoff (30s, 60s, 120s) instead of current 8s max.
+ */
+export const RATE_LIMIT_BACKOFF_CONFIG = {
+  /** Initial backoff delay in milliseconds for rate limit errors */
+  initialDelayMs: envInt("FOREMAN_RATE_LIMIT_INITIAL_DELAY_MS", 30_000),
+  /** Second backoff delay in milliseconds */
+  secondDelayMs: envInt("FOREMAN_RATE_LIMIT_SECOND_DELAY_MS", 60_000),
+  /** Maximum backoff delay in milliseconds */
+  maxDelayMs: envInt("FOREMAN_RATE_LIMIT_MAX_DELAY_MS", 120_000),
+  /** Number of rate limit retries before giving up */
+  maxRetries: envNonNegativeInt("FOREMAN_RATE_LIMIT_MAX_RETRIES", 3),
+};
+
+/**
+ * Calculate the rate limit backoff delay based on retry count.
+ * Uses progressive delays: 30s, 60s, 120s (configurable via env vars).
+ */
+export function calculateRateLimitBackoffMs(retryCount: number): number {
+  const delays = [
+    RATE_LIMIT_BACKOFF_CONFIG.initialDelayMs,
+    RATE_LIMIT_BACKOFF_CONFIG.secondDelayMs,
+    RATE_LIMIT_BACKOFF_CONFIG.maxDelayMs,
+  ];
+  const idx = Math.min(retryCount, delays.length - 1);
+  return delays[idx];
+}
 
 /**
  * Calculate the required backoff delay in milliseconds for a seed that has

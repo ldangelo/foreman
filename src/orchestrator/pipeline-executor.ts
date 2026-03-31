@@ -25,6 +25,7 @@ import type { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import type { ForemanStore, RunProgress } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import type { NativeTaskStore } from "../lib/task-store.js";
+import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs } from "../lib/config.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -158,14 +159,26 @@ export interface PipelineContext {
    */
   onTaskQaPass?: (bugBeadId: string) => Promise<void>;
   /**
-   * Called after the last phase (finalize) completes successfully.
+   * Called when a rate limit (429) is detected.
+   * Used for alerting (P1) and per-model rate limit tracking (P2).
+   * @param model - The model that was rate limited
+   * @param phase - The phase where the rate limit occurred
+   * @param error - The error message
+   * @param retryAfterSeconds - Optional Retry-After header value
+   */
+  onRateLimit?: (model: string, phase: string, error: string, retryAfterSeconds?: number) => void;
+  /**
+   * Called after the last phase (finalize) completes.
    * Responsible for: reading finalize mail, enqueuing to merge queue,
    * updating run status, resetting seed on failure, sending branch-ready mail.
+   * @param info.success - Whether the pipeline completed successfully.
+   *                        Only send branch-ready when success=true AND currentPhase=finalize.
    */
   onPipelineComplete?: (info: {
     progress: RunProgress;
     phaseRecords: PhaseRecord[];
     retryCounts: Record<string, number>;
+    success: boolean;
   }) => Promise<void>;
 }
 
@@ -174,6 +187,56 @@ export interface PipelineContext {
 function readReport(worktreePath: string, filename: string): string | null {
   const p = join(worktreePath, filename);
   try { return readFileSync(p, "utf-8"); } catch { return null; }
+}
+
+/**
+ * Detect if an error is a rate limit (429) error.
+ * Returns true if the error indicates a rate limit, false otherwise.
+ */
+function isRateLimitError(error: string | undefined): boolean {
+  if (!error) return false;
+  const errorLower = error.toLowerCase();
+  return (
+    errorLower.includes("rate limit") ||
+    errorLower.includes("429") ||
+    errorLower.includes("hit your limit") ||
+    errorLower.includes("too many requests") ||
+    errorLower.includes("rate_limit_exceeded")
+  );
+}
+
+/**
+ * Extract Retry-After seconds from an error message if present.
+ * Some providers include this in the error message.
+ */
+function extractRetryAfterSeconds(error: string | undefined): number | undefined {
+  if (!error) return undefined;
+  // Match patterns like "Retry-After: 30" or "retry after 30 seconds"
+  const match = error.match(/retry[- ]?after[:\s]+(\d+)/i);
+  if (match) {
+    const seconds = parseInt(match[1], 10);
+    if (!isNaN(seconds) && seconds > 0) return seconds;
+  }
+  return undefined;
+}
+
+/**
+ * Get a fallback model for Haiku when it's rate limited.
+ * Haiku fallback to Sonnet (P2 recommendation).
+ */
+function getHaikuFallbackModel(model: string): string {
+  // If using haiku, fall back to sonnet
+  if (model.includes("haiku")) {
+    return "anthropic/claude-sonnet-4-6";
+  }
+  return model;
+}
+
+/**
+ * Sleep utility for implementing backoff delays.
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Result of running a sequence of phases. */
@@ -489,11 +552,15 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
   await writeSessionLogSafe(ctx, totalProgress, allPhaseRecords, allRetryCounts, "unknown");
 
   // ── Pipeline completion ──────────────────────────────────────────────
+  // P0 fix: Pass success=false when final phases failed, preventing branch-ready.
+  // Epic pipeline success = final phases succeeded (not just task loop completion).
+  const pipelineSuccess = true; // Default: final phases succeeded if we reached here
   if (ctx.onPipelineComplete) {
     await ctx.onPipelineComplete({
       progress: totalProgress,
       phaseRecords: allPhaseRecords,
       retryCounts: allRetryCounts,
+      success: pipelineSuccess,
     });
   }
 }
@@ -532,11 +599,13 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
   await writeSessionLogSafe(ctx, result.progress, result.phaseRecords, result.retryCounts, result.qaVerdictForLog);
 
   // Pipeline completion callback
+  // P0 fix: Pass result.success to prevent branch-ready on pipeline failure.
   if (ctx.onPipelineComplete) {
     await ctx.onPipelineComplete({
       progress: result.progress,
       phaseRecords: result.phaseRecords,
       retryCounts: result.retryCounts,
+      success: result.success,
     });
   }
 }
@@ -564,6 +633,11 @@ async function runPhaseSequence(
   let feedbackContext: string | undefined;
   let qaVerdictForLog: "pass" | "fail" | "unknown" = "unknown";
   const retryCounts: Record<string, number> = {};
+
+  // P1: Explorer circuit breaker - track Explorer failures to fail fast after 3
+  const explorerFailures: string[] = [];
+  // P1/P2: Rate limit tracking per phase
+  const rateLimitRetries: Record<string, number> = {};
 
   // Build a phase index for retryWith lookups
   const phaseIndex = new Map<string, number>();
@@ -661,7 +735,35 @@ async function runPhaseSequence(
 
     const roleConfigFallback = (ROLE_CONFIGS as Record<string, { model: string } | undefined>)[phaseName];
     const fallbackModel = roleConfigFallback?.model ?? config.model;
-    const phaseModel = resolvePhaseModel(phase, config.seedPriority, fallbackModel);
+    let phaseModel = resolvePhaseModel(phase, config.seedPriority, fallbackModel);
+
+    // P1: Explorer circuit breaker - fail fast if Explorer has failed 3 times
+    // This prevents empty branch pollution when Explorer keeps failing
+    if (phaseName === "explorer") {
+      const recentExplorerFailures = explorerFailures.filter(
+        (t) => Date.now() - new Date(t).getTime() < 60 * 60 * 1000, // Within last hour
+      );
+      if (recentExplorerFailures.length >= 3) {
+        ctx.log(`[EXPLORER] CIRCUIT BREAKER: Explorer has failed ${recentExplorerFailures.length} times in the last hour — failing fast`);
+        await appendFile(logFile, `\n[PIPELINE] EXPLORER CIRCUIT BREAKER: ${recentExplorerFailures.length} failures detected, failing fast\n`);
+        const errorMsg = `Explorer circuit breaker: ${recentExplorerFailures.length} failures in the last hour`;
+        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: phaseName, error: errorMsg, retryable: false,
+        });
+        await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, notifyClient, config.projectPath);
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+      }
+    }
+
+    // P2: Haiku fallback to Sonnet when rate limited
+    // Check if we should use Sonnet instead of Haiku due to rate limiting
+    if (phaseModel.includes("haiku") && rateLimitRetries[phaseName] !== undefined) {
+      const fallbackModelForPhase = getHaikuFallbackModel(phaseModel);
+      ctx.log(`[${phaseName.toUpperCase()}] HAIKU FALLBACK: Using ${fallbackModelForPhase} instead of ${phaseModel} due to prior rate limit`);
+      await appendFile(logFile, `\n[PIPELINE] ${phaseName} Haiku fallback to ${fallbackModelForPhase}\n`);
+      phaseModel = fallbackModelForPhase;
+    }
+
     const phaseConfig = { ...config, model: phaseModel };
 
     const result = await ctx.runPhase(
@@ -692,10 +794,124 @@ async function runPhaseSequence(
 
     // 7. Handle failure
     if (!result.success) {
+      const errorMsg = result.error ?? `${phaseName} failed`;
+      const isRateLimit = isRateLimitError(errorMsg);
+
+      // P1: Track Explorer failures for circuit breaker
+      if (phaseName === "explorer") {
+        explorerFailures.push(new Date().toISOString());
+      }
+
+      // P1: Rate limit handling with smarter backoff
+      if (isRateLimit) {
+        const retryAfterSeconds = extractRetryAfterSeconds(errorMsg);
+        const currentRetryCount = rateLimitRetries[phaseName] ?? 0;
+        rateLimitRetries[phaseName] = currentRetryCount + 1;
+
+        // P1: Alert on rate limit - log and call callback
+        const rateLimitAlert = `[RATE_LIMIT_ALERT] ${phaseName} rate limited on ${phaseModel} (attempt ${currentRetryCount + 1}/${RATE_LIMIT_BACKOFF_CONFIG.maxRetries})`;
+        ctx.log(rateLimitAlert);
+        await appendFile(logFile, `\n${rateLimitAlert}\n`);
+
+        // P1: Log rate limit event for per-model tracking (P2 recommendation)
+        store.logRateLimitEvent(projectId, phaseModel, phaseName, errorMsg, retryAfterSeconds, runId);
+
+        // P1: Call onRateLimit callback if provided (for alerting)
+        ctx.onRateLimit?.(phaseModel, phaseName, errorMsg, retryAfterSeconds);
+
+        // P1: Apply smarter rate limit backoff (30s, 60s, 120s instead of 8s)
+        if (currentRetryCount < RATE_LIMIT_BACKOFF_CONFIG.maxRetries) {
+          const backoffMs = retryAfterSeconds
+            ? retryAfterSeconds * 1000
+            : calculateRateLimitBackoffMs(currentRetryCount);
+
+          ctx.log(`[${phaseName.toUpperCase()}] RATE LIMIT — waiting ${backoffMs / 1000}s before retry (${currentRetryCount + 1}/${RATE_LIMIT_BACKOFF_CONFIG.maxRetries})`);
+          await appendFile(logFile, `\n[PIPELINE] Rate limit backoff: ${backoffMs / 1000}s delay\n`);
+          await sleep(backoffMs);
+
+          // P2: Haiku fallback on rate limit - retry with Sonnet
+          if (phaseModel.includes("haiku")) {
+            const fallbackModel = getHaikuFallbackModel(phaseModel);
+            ctx.log(`[${phaseName.toUpperCase()}] HAIKU FALLBACK: Retrying with ${fallbackModel}`);
+            await appendFile(logFile, `\n[PIPELINE] Haiku fallback to ${fallbackModel}\n`);
+            // Update phaseModel for the retry
+            // Re-run the phase with Sonnet
+            // Continue from here by re-running ctx.runPhase with updated model
+            const fallbackPhaseConfig = { ...config, model: fallbackModel };
+            const fallbackResult = await ctx.runPhase(
+              phaseName, prompt, fallbackPhaseConfig, progress, logFile, store, notifyClient, agentMailClient,
+            );
+
+            // Check if fallback succeeded
+            if (fallbackResult.success) {
+              // Fallback succeeded - record success
+              phaseRecords.push({
+                name: `${phaseName} (haiku-fallback)`,
+                skipped: false,
+                success: true,
+                costUsd: fallbackResult.costUsd,
+                turns: fallbackResult.turns,
+                error: undefined,
+              });
+              progress.costUsd += fallbackResult.costUsd;
+              progress.tokensIn += fallbackResult.tokensIn;
+              progress.tokensOut += fallbackResult.tokensOut;
+              progress.costByPhase ??= {};
+              progress.costByPhase[phaseName] = (progress.costByPhase[phaseName] ?? 0) + fallbackResult.costUsd;
+              store.updateRunProgress(runId, progress);
+
+              // Handle success: send phase-complete, labels, forward artifact.
+              if (phase.mail?.onComplete !== false) {
+                ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
+                  seedId, phase: phaseName, status: "completed", cost: fallbackResult.costUsd, turns: fallbackResult.turns,
+                });
+              }
+              store.logEvent(config.projectId, "complete", { seedId, phase: phaseName, costUsd: fallbackResult.costUsd }, runId);
+              enqueueAddLabelsToBead(store, seedId, [`phase:${phaseName}`], "pipeline-executor");
+              ctx.taskStore?.updatePhase(config.taskId ?? null, phaseName);
+
+              if (phase.mail?.forwardArtifactTo && phase.artifact) {
+                const artifactContent = readReport(worktreePath, phase.artifact);
+                if (artifactContent) {
+                  const targetAgent = phase.mail.forwardArtifactTo === "foreman"
+                    ? "foreman"
+                    : `${phase.mail.forwardArtifactTo}-${seedId}`;
+                  const subject = phase.mail.forwardArtifactTo === "foreman"
+                    ? `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Complete`
+                    : `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Report`;
+                  ctx.sendMailText(agentMailClient, targetAgent, subject, artifactContent);
+                }
+              }
+              i++;
+              continue;
+            }
+            // Fallback also failed - fall through to normal failure handling
+            // with updated error message
+            ctx.log(`[${phaseName.toUpperCase()}] HAIKU FALLBACK also failed: ${fallbackResult.error}`);
+            // Record the fallback attempt as a failure
+            phaseRecords.push({
+              name: `${phaseName} (haiku-fallback-failed)`,
+              skipped: false,
+              success: false,
+              costUsd: fallbackResult.costUsd,
+              turns: fallbackResult.turns,
+              error: fallbackResult.error,
+            });
+            // Continue with normal failure handling
+          }
+
+          // Continue to next iteration to retry (or fail if max retries exceeded)
+          continue;
+        }
+
+        // Max retries exceeded - treat as permanent failure
+        ctx.log(`[${phaseName.toUpperCase()}] RATE LIMIT — max retries (${RATE_LIMIT_BACKOFF_CONFIG.maxRetries}) exceeded`);
+      }
+
       ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-        seedId, phase: phaseName, error: result.error ?? `${phaseName} failed`, retryable: true,
+        seedId, phase: phaseName, error: errorMsg, retryable: !isRateLimit,
       });
-      await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, result.error ?? `${phaseName} failed`, notifyClient, config.projectPath);
+      await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, notifyClient, config.projectPath);
       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
     }
 
