@@ -561,9 +561,11 @@ export class NativeTaskStore {
         .get(task.id) as { cnt: number } | undefined;
 
       if ((unresolvedCount?.cnt ?? 0) === 0) {
+        // Transition to 'ready' and set approved_at so the task is treated as approved
+        // (matches the semantics of approve() which sets approved_at when → ready)
         this.db
-          .prepare("UPDATE tasks SET status = 'ready', updated_at = ? WHERE id = ?")
-          .run(now, task.id);
+          .prepare("UPDATE tasks SET status = 'ready', approved_at = COALESCE(approved_at, ?), updated_at = ? WHERE id = ?")
+          .run(now, now, task.id);
       }
     }
   }

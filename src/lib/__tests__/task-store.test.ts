@@ -36,6 +36,7 @@ import {
   InvalidStatusTransitionError,
   CircularDependencyError,
   type TaskRow,
+  type DependencyRow,
 } from "../task-store.js";
 
 // ── Test fixtures ─────────────────────────────────────────────────────────────
@@ -600,5 +601,160 @@ describe("NativeTaskStore.list()", () => {
   it("returns empty array when no tasks match filter", () => {
     const mergedTasks = ctx.taskStore.list({ status: "merged" });
     expect(mergedTasks).toHaveLength(0);
+  });
+});
+
+// ── Dependency Row Verification ───────────────────────────────────────────────
+
+describe("Dependency row verification", () => {
+  let ctx: ReturnType<typeof setupStore>;
+  let taskA: TaskRow;
+  let taskB: TaskRow;
+
+  beforeEach(() => {
+    ctx = setupStore();
+    taskA = ctx.taskStore.create({ title: "Task A" });
+    taskB = ctx.taskStore.create({ title: "Task B" });
+  });
+  afterEach(() => teardownStore(ctx));
+
+  it("stores blocks row with correct from/to after addDependency", () => {
+    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
+    const deps = ctx.taskStore.getDependencies(taskA.id, "outgoing");
+    expect(deps).toHaveLength(1);
+    expect(deps[0]!).toMatchObject({
+      from_task_id: taskA.id,
+      to_task_id: taskB.id,
+      type: "blocks",
+    } as DependencyRow);
+  });
+
+  it("stores parent-child row with correct type after addDependency", () => {
+    ctx.taskStore.addDependency(taskA.id, taskB.id, "parent-child");
+    const deps = ctx.taskStore.getDependencies(taskA.id, "outgoing");
+    expect(deps).toHaveLength(1);
+    expect(deps[0]!.type).toBe("parent-child");
+  });
+
+  it("blocks row appears in incoming query of the blocker", () => {
+    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
+    const incoming = ctx.taskStore.getDependencies(taskB.id, "incoming");
+    expect(incoming).toHaveLength(1);
+    expect(incoming[0]!.from_task_id).toBe(taskA.id);
+    expect(incoming[0]!.type).toBe("blocks");
+  });
+});
+
+// ── Cascade Unblock (reevaluateBlockedTasks) ──────────────────────────────────
+
+describe("NativeTaskStore.reevaluateBlockedTasks()", () => {
+  let ctx: ReturnType<typeof setupStore>;
+  let taskA: TaskRow;
+  let taskB: TaskRow;
+  let taskC: TaskRow;
+
+  beforeEach(() => {
+    ctx = setupStore();
+    taskA = ctx.taskStore.create({ title: "Task A" });
+    taskB = ctx.taskStore.create({ title: "Task B" });
+    taskC = ctx.taskStore.create({ title: "Task C" });
+  });
+  afterEach(() => teardownStore(ctx));
+
+  it("transitions blocked→ready when all blockers merged", () => {
+    // Setup: A is blocked by B
+    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
+    // Manually set A to blocked (dispatcher does this)
+    ctx.store.getDb().prepare("UPDATE tasks SET status='blocked' WHERE id=?").run(taskA.id);
+    // Approve and close the blocker
+    ctx.taskStore.approve(taskB.id);
+    ctx.taskStore.close(taskB.id);
+    // Re-evaluate
+    ctx.taskStore.reevaluateBlockedTasks();
+    // Verify
+    const updated = ctx.taskStore.get(taskA.id);
+    expect(updated?.status).toBe("ready");
+  });
+
+  it("does not unblock when any blocker is still open", () => {
+    // A blocked by B and C
+    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
+    ctx.taskStore.addDependency(taskA.id, taskC.id, "blocks");
+    ctx.store.getDb().prepare("UPDATE tasks SET status='blocked' WHERE id=?").run(taskA.id);
+    // Only close B, leave C open
+    ctx.taskStore.approve(taskB.id);
+    ctx.taskStore.close(taskB.id);
+    ctx.taskStore.reevaluateBlockedTasks();
+    // A should still be blocked
+    const updated = ctx.taskStore.get(taskA.id);
+    expect(updated?.status).toBe("blocked");
+  });
+
+  it("unblocks when all multiple blockers are merged", () => {
+    // A blocked by B and C
+    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
+    ctx.taskStore.addDependency(taskA.id, taskC.id, "blocks");
+    ctx.store.getDb().prepare("UPDATE tasks SET status='blocked' WHERE id=?").run(taskA.id);
+    // Close both blockers
+    ctx.taskStore.approve(taskB.id);
+    ctx.taskStore.close(taskB.id);
+    ctx.taskStore.approve(taskC.id);
+    ctx.taskStore.close(taskC.id);
+    ctx.taskStore.reevaluateBlockedTasks();
+    // A should now be ready
+    const updated = ctx.taskStore.get(taskA.id);
+    expect(updated?.status).toBe("ready");
+  });
+
+  it("is a no-op when no tasks are blocked", () => {
+    // No tasks are blocked - should not throw
+    expect(() => ctx.taskStore.reevaluateBlockedTasks()).not.toThrow();
+  });
+
+  it("parent-child dependency does not affect blocking", () => {
+    // Add parent-child relationship: A parent-child B
+    ctx.taskStore.addDependency(taskA.id, taskB.id, "parent-child");
+    // A is in backlog, B is closed - A should NOT be affected
+    ctx.taskStore.approve(taskB.id);
+    ctx.taskStore.close(taskB.id);
+    ctx.taskStore.reevaluateBlockedTasks();
+    // A should remain in whatever status it was (backlog, unchanged)
+    const updated = ctx.taskStore.get(taskA.id);
+    expect(updated?.status).toBe("backlog");
+  });
+
+  it("approved-only unblock: unblocked task transitions to ready with approved_at set", () => {
+    // A starts in backlog (not approved), then is marked blocked
+    ctx.store.getDb().prepare("UPDATE tasks SET status='blocked' WHERE id=?").run(taskA.id);
+    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
+    ctx.taskStore.approve(taskB.id);
+    ctx.taskStore.close(taskB.id);
+    const before = new Date().toISOString();
+    ctx.taskStore.reevaluateBlockedTasks();
+    const after = new Date().toISOString();
+    // When unblocked, status transitions to ready AND approved_at is set
+    // (so the task is treated as approved — matches approve() semantics)
+    const updated = ctx.taskStore.get(taskA.id);
+    expect(updated?.status).toBe("ready");
+    expect(updated?.approved_at).toBeTruthy();
+    expect(updated?.approved_at! >= before).toBe(true);
+    expect(updated?.approved_at! <= after).toBe(true);
+  });
+
+  it("does not overwrite approved_at when task was already approved before being blocked", () => {
+    // A is approved first, then marked blocked
+    ctx.taskStore.approve(taskA.id);
+    const originalApprovedAt = ctx.taskStore.get(taskA.id)?.approved_at;
+    expect(originalApprovedAt).toBeTruthy();
+    // Mark A as blocked
+    ctx.store.getDb().prepare("UPDATE tasks SET status='blocked' WHERE id=?").run(taskA.id);
+    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
+    ctx.taskStore.approve(taskB.id);
+    ctx.taskStore.close(taskB.id);
+    ctx.taskStore.reevaluateBlockedTasks();
+    // approved_at should be preserved (not overwritten with a new timestamp)
+    const updated = ctx.taskStore.get(taskA.id);
+    expect(updated?.status).toBe("ready");
+    expect(updated?.approved_at).toBe(originalApprovedAt);
   });
 });
