@@ -20,4 +20,9 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('const terminalStatus = finalizeRetryable ? "stuck" : "failed"');
     expect(source).toContain('enqueueMarkBeadFailed(store, seedId, "agent-worker-finalize")');
   });
+
+  it("does not assume finalize success when finalize mail is missing", () => {
+    expect(source).toContain('No finalize mail found — preserving pipeline success=');
+    expect(source).not.toContain('No finalize mail found — assuming success');
+  });
 });

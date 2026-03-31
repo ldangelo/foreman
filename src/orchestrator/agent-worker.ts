@@ -857,12 +857,12 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
             }
           }
         } else {
-          // No finalize-specific mail — assume success if all phases completed
-          finalizeSucceeded = true;
-          log(`[FINALIZE] No finalize mail found — assuming success`);
+          // No finalize-specific mail — preserve the pipeline success result.
+          // A finalize FAIL verdict may not emit phase-complete or agent-error
+          // mail, so assuming success here can incorrectly enqueue failed runs
+          // to the merge queue and send branch-ready.
+          log(`[FINALIZE] No finalize mail found — preserving pipeline success=${String(finalizeSucceeded)}`);
         }
-      } else {
-        finalizeSucceeded = true;
       }
 
       // ── Troubleshooter: attempt recovery on failure ──────────────────────
