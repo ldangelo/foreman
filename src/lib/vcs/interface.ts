@@ -231,9 +231,15 @@ export interface VcsBackend {
   ): Promise<MergeResult>;
 
   /**
+   * Commit the current staged changes with a custom message.
+   * Used after `mergeWithoutCommit()` to complete a merge with a descriptive message.
+   */
+  commit(workspacePath: string, message: string): Promise<void>;
+
+  /**
    * Commit the current staged changes using the auto-generated merge message.
    * Used after `mergeWithoutCommit()` to complete a merge without editing the message.
-   * For jujutsu this is a no-op (jj always uses auto-messages).
+   * For jujutsu this falls back to `commit()` with an auto-generated message.
    */
   commitNoEdit(workspacePath: string): Promise<void>;
 

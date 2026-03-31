@@ -448,6 +448,14 @@ export class JujutsuBackend implements VcsBackend {
   }
 
   /**
+   * Commit with auto-generated message.
+   * Jujutsu always uses auto-messages, so this uses a default message.
+   */
+  async commitNoEdit(workspacePath: string): Promise<void> {
+    await this.jj(["describe", "-m", "Auto-merge commit"], workspacePath);
+  }
+
+  /**
    * Push a bookmark to origin using `jj git push`.
    * Passes `--allow-new` when `options.allowNew` is true (required for new bookmarks).
    */
@@ -749,14 +757,6 @@ export class JujutsuBackend implements VcsBackend {
     targetBranch: string,
   ): Promise<MergeResult> {
     return this.merge(repoPath, sourceBranch, targetBranch);
-  }
-
-  /**
-   * Commit with auto-generated message.
-   * Jujutsu always uses auto-messages, so this is a no-op.
-   */
-  async commitNoEdit(_workspacePath: string): Promise<void> {
-    // jj always uses auto-messages — nothing to do
   }
 
   /**
