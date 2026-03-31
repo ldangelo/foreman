@@ -651,6 +651,144 @@ export class GitBackend implements VcsBackend {
     await this.git(["clean", "-fd"], workspacePath);
   }
 
+  // ── Conflict Resolution Operations ───────────────────────────────────
+
+  /**
+   * Merge a source branch into the target without auto-committing.
+   * Used by ConflictResolver for Tier 1 merge attempts.
+   */
+  async mergeWithoutCommit(
+    repoPath: string,
+    sourceBranch: string,
+    targetBranch: string,
+  ): Promise<MergeResult> {
+    await this.git(["checkout", targetBranch], repoPath);
+    try {
+      await this.git(["merge", sourceBranch, "--no-commit", "--no-ff"], repoPath);
+      return { success: true };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("CONFLICT") || message.includes("Merge conflict")) {
+        const statusOut = await this.git(
+          ["diff", "--name-only", "--diff-filter=U"],
+          repoPath,
+        );
+        const conflicts = statusOut
+          .split("\n")
+          .map((f) => f.trim())
+          .filter(Boolean);
+        return { success: false, conflicts };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Commit the current staged changes using the auto-generated merge message.
+   */
+  async commitNoEdit(workspacePath: string): Promise<void> {
+    await this.git(["commit", "--no-edit"], workspacePath);
+  }
+
+  /**
+   * Abort an in-progress merge.
+   */
+  async abortMerge(repoPath: string): Promise<void> {
+    await this.git(["merge", "--abort"], repoPath);
+  }
+
+  /**
+   * Stage a specific file.
+   */
+  async stageFile(workspacePath: string, filePath: string): Promise<void> {
+    await this.git(["add", filePath], workspacePath);
+  }
+
+  /**
+   * Checkout a file from a specific ref into the working tree.
+   * The special ref "--theirs" is resolved based on the current rebase context.
+   */
+  async checkoutFile(
+    workspacePath: string,
+    ref: string,
+    filePath: string,
+  ): Promise<void> {
+    await this.git(["checkout", ref, "--", filePath], workspacePath);
+  }
+
+  /**
+   * Get the content of a file at a specific ref.
+   */
+  async showFile(
+    repoPath: string,
+    ref: string,
+    filePath: string,
+  ): Promise<string> {
+    // Handle refs that are actually branch:path syntax (e.g., "main:src/foo.ts")
+    const colonIdx = ref.indexOf(":");
+    if (colonIdx !== -1) {
+      // ref is in "branch:path" format — split into branch and path
+      const branch = ref.slice(0, colonIdx);
+      const path = ref.slice(colonIdx + 1);
+      return this.git(["show", `${branch}:${path}`], repoPath);
+    }
+    return this.git(["show", `${ref}:${filePath}`], repoPath);
+  }
+
+  /**
+   * Reset the working tree to a specific ref (hard reset).
+   */
+  async resetHard(workspacePath: string, ref: string): Promise<void> {
+    await this.git(["reset", "--hard", ref], workspacePath);
+  }
+
+  /**
+   * Remove a tracked file from the repository.
+   */
+  async removeFile(workspacePath: string, filePath: string): Promise<void> {
+    await this.git(["rm", "-f", filePath], workspacePath);
+  }
+
+  /**
+   * Continue an in-progress rebase after resolving conflicts.
+   */
+  async rebaseContinue(workspacePath: string): Promise<void> {
+    await this.git(["rebase", "--continue"], workspacePath);
+  }
+
+  /**
+   * Remove a file from the staging area without modifying the working tree.
+   */
+  async removeFromIndex(workspacePath: string, filePath: string): Promise<void> {
+    await this.git(["rm", "--cached", filePath], workspacePath);
+  }
+
+  /**
+   * Get the merge base of two refs.
+   */
+  async getMergeBase(repoPath: string, ref1: string, ref2: string): Promise<string> {
+    try {
+      return await this.git(["merge-base", ref1, ref2], repoPath);
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * List untracked files in the working tree.
+   */
+  async getUntrackedFiles(workspacePath: string): Promise<string[]> {
+    try {
+      const out = await this.git(
+        ["ls-files", "--others", "--exclude-standard"],
+        workspacePath,
+      );
+      return out.split("\n").map((f) => f.trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
   // ── Finalize Support ─────────────────────────────────────────────────
 
   /**

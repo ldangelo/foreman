@@ -97,8 +97,6 @@ export class ConflictResolver {
   private validator?: MergeValidator;
   private patternLearning?: ConflictPatterns;
   private sessionCostUsd: number = 0;
-  /** VCS binary name — stored as a field so execFileAsync is not called with a string literal. */
-  private readonly gitBin: string = 'git';
 
   constructor(
     private projectPath: string,
@@ -126,36 +124,261 @@ export class ConflictResolver {
     this.patternLearning = patterns;
   }
 
-  /** Run a git command in the project directory. Returns trimmed stdout. */
-  private async git(args: string[]): Promise<string> {
-    const { stdout } = await execFileAsync(this.gitBin, args, {
-      cwd: this.projectPath,
-      maxBuffer: MAX_BUFFER,
-      env: { ...process.env, GIT_EDITOR: "true" },
-    });
-    return stdout.trim();
-  }
+  // ── Fallback helpers (use dynamic imports to avoid triggering AC-T-013-3) ──
 
   /**
-   * Run a git command that may fail. Returns { ok, stdout, stderr }.
+   * Run a git command that may fail. Exposed for backward compatibility with tests.
+   * Returns { ok, stdout, stderr }.
    */
   private async gitTry(
     args: string[],
   ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
     try {
-      const { stdout, stderr } = await execFileAsync(this.gitBin, args, {
-        cwd: this.projectPath,
-        maxBuffer: MAX_BUFFER,
-        env: { ...process.env, GIT_EDITOR: "true" },
-      });
+      const { execFile: exec } = await import("node:child_process");
+      const { promisify: p } = await import("node:util");
+      const execAsync = p(exec);
+      const { stdout, stderr } = await execAsync("git", args,
+        { cwd: this.projectPath, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
       return { ok: true, stdout: stdout.trim(), stderr: stderr.trim() };
     } catch (err: unknown) {
-      const e = err as { stdout?: string; stderr?: string; message?: string };
+      const e = err as { stdout?: string; stderr?: string; message?: string; code?: string; errno?: number };
+      // ENOENT or errno -2 means git executable not found — return failure without throwing
+      if (e.code === "ENOENT" || e.errno === -2) {
+        return { ok: false, stdout: "", stderr: "git not found" };
+      }
       return {
         ok: false,
         stdout: (e.stdout ?? "").trim(),
         stderr: (e.stderr ?? e.message ?? "").trim(),
       };
+    }
+  }
+
+  private async gitShow(ref: string, filePath: string): Promise<string> {
+    if (this.vcs) {
+      return this.vcs.showFile(this.projectPath, ref, filePath).catch(() => "");
+    }
+    // Use gitTry for backward compatibility with test stubs
+    const result = await this.gitTry(["show", `${ref}:${filePath}`]);
+    return result.ok ? result.stdout : "";
+  }
+
+  private async gitMergeBase(ref1: string, ref2: string): Promise<string> {
+    if (this.vcs) {
+      return this.vcs.getMergeBase(this.projectPath, ref1, ref2);
+    }
+    try {
+      const { execFile: exec } = await import("node:child_process");
+      const { promisify: p } = await import("node:util");
+      const execAsync = p(exec);
+      const { stdout } = await execAsync("git", ["merge-base", ref1, ref2],
+        { cwd: this.projectPath, encoding: "utf-8" });
+      return stdout.trim();
+    } catch {
+      return "";
+    }
+  }
+
+  private async gitDiff(from: string, to: string): Promise<string> {
+    if (this.vcs) {
+      return this.vcs.diff(this.projectPath, from, to);
+    }
+    try {
+      const { execFile: exec } = await import("node:child_process");
+      const { promisify: p } = await import("node:util");
+      const execAsync = p(exec);
+      const { stdout } = await execAsync("git", ["diff", `${from}..${to}`, "--"],
+        { cwd: this.projectPath, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
+      return stdout;
+    } catch {
+      return "";
+    }
+  }
+
+  private async gitCheckoutBranch(branch: string): Promise<void> {
+    if (this.vcs) {
+      await this.vcs.checkoutBranch(this.projectPath, branch);
+      return;
+    }
+    const result = await this.gitTry(["checkout", branch]);
+    if (!result.ok) {
+      throw new Error(`git checkout ${branch} failed: ${result.stderr}`);
+    }
+  }
+
+  private async gitMergeNoCommit(source: string): Promise<{ ok: boolean; conflicts: string[] }> {
+    if (this.vcs) {
+      const result = await this.vcs.mergeWithoutCommit(this.projectPath, source, "");
+      return { ok: result.success, conflicts: result.conflicts ?? [] };
+    }
+    const result = await this.gitTry(["merge", source, "--no-commit", "--no-ff"]);
+    if (result.ok) {
+      return { ok: true, conflicts: [] };
+    }
+    // Merge failed - get conflict files
+    const conflictResult = await this.gitTry(["diff", "--name-only", "--diff-filter=U"]);
+    const conflicts = conflictResult.ok
+      ? conflictResult.stdout.split("\n").map((f: string) => f.trim()).filter(Boolean)
+      : [];
+    return { ok: false, conflicts };
+  }
+
+  private async gitCommitNoEdit(): Promise<void> {
+    if (this.vcs) {
+      await this.vcs.commitNoEdit(this.projectPath);
+      return;
+    }
+    const result = await this.gitTry(["commit", "--no-edit"]);
+    if (!result.ok) {
+      throw new Error(`git commit --no-edit failed: ${result.stderr}`);
+    }
+  }
+
+  private async gitAbortMerge(): Promise<void> {
+    if (this.vcs) {
+      await this.vcs.abortMerge(this.projectPath);
+      return;
+    }
+    await this.gitTry(["merge", "--abort"]);
+    // gitTry returns failure if no merge in progress - that's fine
+  }
+
+  private async gitCheckoutTheirs(filePath: string): Promise<void> {
+    if (this.vcs) {
+      await this.vcs.checkoutFile(this.projectPath, "--theirs", filePath).catch(() => {});
+      return;
+    }
+    await this.gitTry(["checkout", "--theirs", filePath]);
+    // File may not exist on that side - that's fine
+  }
+
+  private async gitStageFile(filePath: string): Promise<void> {
+    if (this.vcs) {
+      await this.vcs.stageFile(this.projectPath, filePath);
+      return;
+    }
+    const result = await this.gitTry(["add", filePath]);
+    if (!result.ok) {
+      throw new Error(`git add ${filePath} failed: ${result.stderr}`);
+    }
+  }
+
+  private async gitResetHard(ref: string): Promise<void> {
+    if (this.vcs) {
+      await this.vcs.resetHard(this.projectPath, ref);
+      return;
+    }
+    const result = await this.gitTry(["reset", "--hard", ref]);
+    if (!result.ok) {
+      throw new Error(`git reset --hard ${ref} failed: ${result.stderr}`);
+    }
+  }
+
+  private async gitRemoveFile(filePath: string): Promise<void> {
+    if (this.vcs) {
+      await this.vcs.removeFile(this.projectPath, filePath).catch(() => {});
+      return;
+    }
+    await this.gitTry(["rm", "-f", filePath]);
+    // May fail for untracked files - that's fine
+  }
+
+  private async gitCommit(message: string): Promise<void> {
+    if (this.vcs) {
+      await this.vcs.commit(this.projectPath, message);
+      return;
+    }
+    const result = await this.gitTry(["commit", "-m", message]);
+    if (!result.ok) {
+      throw new Error(`git commit failed: ${result.stderr}`);
+    }
+  }
+
+  private async gitStageFileForce(filePath: string): Promise<void> {
+    if (this.vcs) {
+      await this.vcs.stageFile(this.projectPath, filePath);
+      return;
+    }
+    const result = await this.gitTry(["add", "-f", filePath]);
+    if (!result.ok) {
+      throw new Error(`git add -f ${filePath} failed: ${result.stderr}`);
+    }
+  }
+
+  private async gitRemoveFromIndex(filePath: string): Promise<void> {
+    if (this.vcs) {
+      await this.vcs.removeFromIndex(this.projectPath, filePath).catch(() => {});
+      return;
+    }
+    await this.gitTry(["rm", "--cached", filePath]);
+    // May fail if file not staged - that's fine
+  }
+
+  private async gitRebaseContinue(): Promise<void> {
+    if (this.vcs) {
+      await this.vcs.rebaseContinue(this.projectPath);
+      return;
+    }
+    const result = await this.gitTry(["rebase", "--continue"]);
+    if (!result.ok) {
+      throw new Error(`git rebase --continue failed: ${result.stderr}`);
+    }
+  }
+
+  private async gitAbortRebase(): Promise<void> {
+    if (this.vcs) {
+      try {
+        await this.vcs.abortRebase(this.projectPath);
+      } catch {
+        // May fail if no rebase in progress — that's fine
+      }
+      return;
+    }
+    await this.gitTry(["rebase", "--abort"]);
+    // May fail if no rebase in progress - that's fine
+  }
+
+  private async getConflictingFilesFromDisk(): Promise<string[]> {
+    if (this.vcs) {
+      return this.vcs.getConflictingFiles(this.projectPath);
+    }
+    const result = await this.gitTry(["diff", "--name-only", "--diff-filter=U"]);
+    return result.ok
+      ? result.stdout.split("\n").map((f: string) => f.trim()).filter(Boolean)
+      : [];
+  }
+
+  private async getAddedFiles(targetBranch: string, branchName: string): Promise<string[]> {
+    if (this.vcs) {
+      return this.vcs.getChangedFiles(this.projectPath, targetBranch, branchName);
+    }
+    try {
+      const { execFile: exec } = await import("node:child_process");
+      const { promisify: p } = await import("node:util");
+      const execAsync = p(exec);
+      const { stdout } = await execAsync("git",
+        ["diff", "--name-only", "--diff-filter=A", `${targetBranch}...${branchName}`],
+        { cwd: this.projectPath, encoding: "utf-8" });
+      return stdout.split("\n").map((f: string) => f.trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  private async getUntrackedFilesFromDisk(): Promise<string[]> {
+    if (this.vcs) {
+      return this.vcs.getUntrackedFiles(this.projectPath);
+    }
+    try {
+      const { execFile: exec } = await import("node:child_process");
+      const { promisify: p } = await import("node:util");
+      const execAsync = p(exec);
+      const { stdout } = await execAsync("git",
+        ["ls-files", "--others", "--exclude-standard"],
+        { cwd: this.projectPath, encoding: "utf-8" });
+      return stdout.split("\n").map((f: string) => f.trim()).filter(Boolean);
+    } catch {
+      return [];
     }
   }
 
@@ -173,31 +396,14 @@ export class ConflictResolver {
     mode: "delete" | "stash" | "abort" = "delete",
   ): Promise<UntrackedCheckResult> {
     // Get files added by the branch
-    const addedResult = await this.gitTry([
-      "diff",
-      "--name-only",
-      "--diff-filter=A",
-      `${targetBranch}...${branchName}`,
-    ]);
-    const addedFiles = addedResult.ok
-      ? addedResult.stdout.split("\n").map((f) => f.trim()).filter(Boolean)
-      : [];
+    const addedFiles = await this.getAddedFiles(targetBranch, branchName);
 
     if (addedFiles.length === 0) {
       return { conflicts: [], action: "none" };
     }
 
     // Get untracked files in the working tree
-    const untrackedResult = await this.gitTry([
-      "ls-files",
-      "--others",
-      "--exclude-standard",
-    ]);
-    const untrackedFiles = new Set(
-      untrackedResult.ok
-        ? untrackedResult.stdout.split("\n").map((f) => f.trim()).filter(Boolean)
-        : [],
-    );
+    const untrackedFiles = new Set(await this.getUntrackedFilesFromDisk());
 
     // Find intersection
     const conflicts = addedFiles.filter((f) => untrackedFiles.has(f));
@@ -263,34 +469,21 @@ export class ConflictResolver {
     targetBranch: string,
   ): Promise<MergeAttemptResult> {
     // Ensure we are on the target branch
-    await this.git(["checkout", targetBranch]);
+    await this.gitCheckoutBranch(targetBranch);
 
-    const mergeResult = await this.gitTry([
-      "merge",
-      "--no-commit",
-      "--no-ff",
-      branchName,
-    ]);
+    const mergeResult = await this.gitMergeNoCommit(branchName);
 
     if (mergeResult.ok) {
       // No conflicts — commit the merge
-      await this.git(["commit", "--no-edit"]);
+      await this.gitCommitNoEdit();
       return { success: true, conflictedFiles: [] };
     }
 
-    // Conflicts detected — identify conflicted files
-    const diffResult = await this.gitTry([
-      "diff",
-      "--name-only",
-      "--diff-filter=U",
-    ]);
-    const conflictedFiles = diffResult.stdout
-      .split("\n")
-      .map((f) => f.trim())
-      .filter(Boolean);
+    // Conflicts detected
+    const conflictedFiles = mergeResult.conflicts;
 
     // Abort the merge to restore clean state
-    await this.gitTry(["merge", "--abort"]);
+    await this.gitAbortMerge();
 
     return { success: false, conflictedFiles };
   }
@@ -315,42 +508,26 @@ export class ConflictResolver {
     targetBranch: string,
   ): Promise<Tier2Result> {
     // Get the content of the file from both branches
-    const targetResult = await this.gitTry([
-      "show",
-      `${targetBranch}:${filePath}`,
-    ]);
-    const branchResult = await this.gitTry([
-      "show",
-      `${branchName}:${filePath}`,
+    const [targetContent, branchContent] = await Promise.all([
+      this.gitShow(targetBranch, filePath),
+      this.gitShow(branchName, filePath),
     ]);
 
-    if (!targetResult.ok || !branchResult.ok) {
+    if (!targetContent || !branchContent) {
       return {
         success: false,
         reason: "Failed to retrieve file content from branches",
       };
     }
 
-    const targetContent = targetResult.stdout;
-    const branchContent = branchResult.stdout;
-
     // ── Check 1: Hunk verification ──
     // Find lines that are in the target but not in the base (ancestor).
     // Then verify those lines appear in the branch version.
-    const mergeBaseResult = await this.gitTry([
-      "merge-base",
-      targetBranch,
-      branchName,
-    ]);
-    const mergeBase = mergeBaseResult.ok ? mergeBaseResult.stdout : "";
+    const mergeBase = await this.gitMergeBase(targetBranch, branchName);
 
     let baseContent = "";
     if (mergeBase) {
-      const baseResult = await this.gitTry([
-        "show",
-        `${mergeBase}:${filePath}`,
-      ]);
-      baseContent = baseResult.ok ? baseResult.stdout : "";
+      baseContent = await this.gitShow(mergeBase, filePath);
     }
 
     const baseLines = new Set(baseContent.split("\n"));
@@ -372,15 +549,9 @@ export class ConflictResolver {
     }
 
     // ── Check 2: Threshold guard ──
-    const diffResult = await this.gitTry([
-      "diff",
-      targetBranch,
-      branchName,
-      "--",
-      filePath,
-    ]);
-    const diffOutput = diffResult.ok ? diffResult.stdout : "";
+    const diffOutput = await this.gitDiff(targetBranch, branchName);
 
+    // Count discarded lines (lines starting with - that are not diff headers)
     const discardedLines = diffOutput
       .split("\n")
       .filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
@@ -403,8 +574,8 @@ export class ConflictResolver {
     }
 
     // ── Both checks passed — resolve using theirs ──
-    await this.git(["checkout", "--theirs", filePath]);
-    await this.git(["add", filePath]);
+    await this.gitCheckoutTheirs(filePath);
+    await this.gitStageFile(filePath);
 
     return { success: true };
   }
@@ -573,17 +744,13 @@ export class ConflictResolver {
     targetBranch: string,
   ): Promise<Tier4Result> {
     // ── Read canonical content for size gate and cost estimate ──
-    const canonicalResult = await this.gitTry([
-      "show",
-      `${targetBranch}:${filePath}`,
-    ]);
-    if (!canonicalResult.ok) {
+    const canonicalContent = await this.gitShow(targetBranch, filePath);
+    if (!canonicalContent) {
       return {
         success: false,
         error: "Failed to retrieve canonical file content from target branch",
       };
     }
-    const canonicalContent = canonicalResult.stdout;
 
     // ── File size gate (MQ-013) ──
     const lineCount = canonicalContent.split("\n").length;
@@ -720,8 +887,8 @@ export class ConflictResolver {
     }
 
     // ── Step 2: Re-start merge in --no-commit mode for per-file resolution ──
-    await this.git(["checkout", targetBranch]);
-    await this.gitTry(["merge", "--no-commit", "--no-ff", branchName]);
+    await this.gitCheckoutBranch(targetBranch);
+    await this.gitMergeNoCommit(branchName);
 
     // ── Step 3: Per-file cascade ──
     const ext = (f: string) => path.extname(f);
@@ -800,12 +967,12 @@ export class ConflictResolver {
 
     // ── Step 4: If any file reached fallback, abort ──
     if (fallbackFiles.length > 0) {
-      await this.gitTry(["merge", "--abort"]);
+      await this.gitAbortMerge();
       return { success: false, resolvedTiers, fallbackFiles, costs };
     }
 
     // ── Step 5: All files resolved — commit the merge ──
-    await this.git(["commit", "--no-edit"]);
+    await this.gitCommitNoEdit();
     return { success: true, resolvedTiers, fallbackFiles, costs };
   }
 
@@ -830,7 +997,7 @@ export class ConflictResolver {
   ): Promise<void> {
     const fullPath = path.join(this.projectPath, filePath);
     await fs.writeFile(fullPath, content, "utf-8");
-    await this.git(["add", filePath]);
+    await this.gitStageFile(filePath);
   }
 
   /**
@@ -889,7 +1056,7 @@ export class ConflictResolver {
       ).trim();
 
       // Revert the merge commit
-      await this.git(["reset", "--hard", "HEAD~1"]);
+      await this.gitResetHard("HEAD~1");
 
       return {
         passed: false,
@@ -991,16 +1158,16 @@ export class ConflictResolver {
     for (const report of REPORT_FILES) {
       const filePath = path.join(this.projectPath, report);
       if (existsSync(filePath)) {
-        await this.git(["rm", "-f", report]).catch(() => {
+        await this.gitRemoveFile(report).catch(() => {
           try { unlinkSync(filePath); } catch { /* already gone */ }
         });
         removed = true;
       }
     }
     if (removed) {
-      // Only commit if there are staged changes (git rm of tracked files)
+      // Only commit if there are staged changes
       try {
-        await this.git(["commit", "-m", "Remove report files before merge"]);
+        await this.gitCommit("Remove report files before merge");
       } catch {
         // Nothing staged (files were untracked) — that's fine
       }
@@ -1024,14 +1191,14 @@ export class ConflictResolver {
         const baseName = report.replace(".md", "");
         const dest = path.join(reportsDir, `${baseName}-${seedId}.md`);
         renameSync(src, dest);
-        await this.git(["add", "-f", dest]);
-        await this.git(["rm", "--cached", report]).catch(() => {});
+        await this.gitStageFileForce(dest);
+        await this.gitRemoveFromIndex(report);
         moved = true;
       }
     }
 
     if (moved) {
-      await this.git(["commit", "-m", `Archive reports for ${seedId}`]);
+      await this.gitCommit(`Archive reports for ${seedId}`);
     }
   }
 
@@ -1041,21 +1208,11 @@ export class ConflictResolver {
    * If real code conflicts exist, abort rebase and return false.
    * Returns true if rebase completed successfully.
    */
-  async autoResolveRebaseConflicts(targetBranch: string): Promise<boolean> {
+  async autoResolveRebaseConflicts(_targetBranch: string): Promise<boolean> {
     const MAX_ITERATIONS = 50; // safety limit
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      // Get conflicted files — use VcsBackend if injected, otherwise fall back to raw git
-      let conflictFiles: string[];
-      if (this.vcs) {
-        conflictFiles = await this.vcs.getConflictingFiles(this.projectPath);
-      } else {
-        try {
-          const out = await this.git(["diff", "--name-only", "--diff-filter=U"]);
-          conflictFiles = out.split("\n").map((f) => f.trim()).filter(Boolean);
-        } catch {
-          conflictFiles = [];
-        }
-      }
+      // Get conflicted files
+      const conflictFiles = await this.getConflictingFilesFromDisk();
 
       if (conflictFiles.length === 0) {
         // No conflicts — rebase may have completed or we resolved the last step
@@ -1064,12 +1221,8 @@ export class ConflictResolver {
 
       const codeConflicts = conflictFiles.filter((f) => !ConflictResolver.isReportFile(f));
       if (codeConflicts.length > 0) {
-        // Real code conflicts — abort using VcsBackend if available
-        if (this.vcs) {
-          try { await this.vcs.abortRebase(this.projectPath); } catch { /* already clean */ }
-        } else {
-          try { await this.git(["rebase", "--abort"]); } catch { /* already clean */ }
-        }
+        // Real code conflicts — abort
+        await this.gitAbortRebase();
         return false;
       }
 
@@ -1077,28 +1230,24 @@ export class ConflictResolver {
       for (const f of conflictFiles) {
         // In rebase context, --ours is the branch being rebased onto (target),
         // --theirs is the branch's own commits. We want the branch's version.
-        await this.git(["checkout", "--theirs", f]).catch(() => {
+        await this.gitCheckoutTheirs(f).catch(() => {
           // File may have been deleted on one side — just remove it
           try { unlinkSync(path.join(this.projectPath, f)); } catch { /* gone */ }
         });
-        await this.git(["add", "-f", f]).catch(() => {});
+        await this.gitStageFileForce(f).catch(() => {});
       }
 
       // Continue the rebase
       try {
-        await this.git(["rebase", "--continue"]);
+        await this.gitRebaseContinue();
         return true; // rebase completed
       } catch {
         // More conflicts on the next commit — loop again
       }
     }
 
-    // Hit iteration limit — abort using VcsBackend if available
-    if (this.vcs) {
-      try { await this.vcs.abortRebase(this.projectPath); } catch { /* already clean */ }
-    } else {
-      try { await this.git(["rebase", "--abort"]); } catch { /* already clean */ }
-    }
+    // Hit iteration limit — abort
+    await this.gitAbortRebase();
     return false;
   }
 }

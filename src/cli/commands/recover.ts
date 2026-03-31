@@ -23,6 +23,7 @@ import type { Run, Message } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { loadAndInterpolate } from "../../orchestrator/template-loader.js";
+import { getHighspeedModel } from "../../lib/config.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -147,7 +148,7 @@ export const recoverCommand = new Command("recover")
   )
   .option("--run-id <id>", "Specific run ID (default: latest run for this seed)")
   .option("--output <text>", "Pre-captured test output to include in context")
-  .option("--model <model>", "Model to use for recovery", "anthropic/claude-opus-4-6")
+  .option("--model <model>", "Model to use for recovery")
   .option("--raw", "Print collected context without invoking AI")
   .action(async (beadId: string, opts: {
     reason?: string;
@@ -290,7 +291,7 @@ export const recoverCommand = new Command("recover")
       logContent,
     });
 
-    const model = opts.model ?? "anthropic/claude-opus-4-6";
+    const model = opts.model ?? getHighspeedModel();
     console.log(chalk.yellow(`Sending to ${model} for autonomous recovery...\n`));
 
     const result = await runWithPiSdk({

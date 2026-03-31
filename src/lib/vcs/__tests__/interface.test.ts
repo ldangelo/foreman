@@ -77,6 +77,20 @@ class MockVcsBackend implements VcsBackend {
   async getConflictingFiles(_p: string): Promise<string[]> { return []; }
   async status(_p: string): Promise<string> { return ''; }
   async cleanWorkingTree(_p: string): Promise<void> {}
+  async mergeWithoutCommit(_p: string, _s: string, _t: string): Promise<MergeResult> {
+    return { success: true };
+  }
+  async commitNoEdit(_p: string): Promise<void> {}
+  async abortMerge(_p: string): Promise<void> {}
+  async stageFile(_p: string, _f: string): Promise<void> {}
+  async checkoutFile(_p: string, _r: string, _f: string): Promise<void> {}
+  async showFile(_p: string, _r: string, _f: string): Promise<string> { return ''; }
+  async resetHard(_p: string, _r: string): Promise<void> {}
+  async removeFile(_p: string, _f: string): Promise<void> {}
+  async rebaseContinue(_p: string): Promise<void> {}
+  async removeFromIndex(_p: string, _f: string): Promise<void> {}
+  async getMergeBase(_p: string, _r1: string, _r2: string): Promise<string> { return ''; }
+  async getUntrackedFiles(_p: string): Promise<string[]> { return []; }
   getFinalizeCommands(_vars: import('../types.js').FinalizeTemplateVars): FinalizeCommands {
     return {
       stageCommand: 'git add -A',

@@ -15,6 +15,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { getDefaultModel } from "../lib/config.js";
 
 // ── Pi phase configuration ───────────────────────────────────────────────
 
@@ -32,11 +33,11 @@ export interface PiPhaseConfig {
 
 /** Fallback model per phase — used when workflow config is unavailable. */
 export const FALLBACK_PHASE_MODELS: Readonly<Record<string, string>> = {
-  explorer: "anthropic/claude-haiku-4-5",
-  developer: "anthropic/claude-sonnet-4-6",
-  qa: "anthropic/claude-sonnet-4-6",
-  reviewer: "anthropic/claude-sonnet-4-6",
-  finalize: "anthropic/claude-haiku-4-5",
+  explorer: getDefaultModel(),
+  developer: getDefaultModel(),
+  qa: getDefaultModel(),
+  reviewer: getDefaultModel(),
+  finalize: getDefaultModel(),
 };
 
 export const PI_PHASE_CONFIGS: Readonly<Record<string, PiPhaseConfig>> = {

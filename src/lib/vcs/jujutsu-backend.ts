@@ -20,7 +20,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative as pathRelative } from "node:path";
 
 import type {
   Workspace,
@@ -732,6 +732,206 @@ export class JujutsuBackend implements VcsBackend {
       }
     } catch {
       // best effort — diff failure should not block the restore
+    }
+  }
+
+  // ── Conflict Resolution Operations ───────────────────────────────────
+
+  /**
+   * Merge without auto-committing.
+   * Jujutsu always auto-commits merges, so this delegates to `merge()`.
+   * The conflict detection behavior is the same; the difference in commit
+   * behavior is a jujutsu limitation for this interface method.
+   */
+  async mergeWithoutCommit(
+    repoPath: string,
+    sourceBranch: string,
+    targetBranch: string,
+  ): Promise<MergeResult> {
+    return this.merge(repoPath, sourceBranch, targetBranch);
+  }
+
+  /**
+   * Commit with auto-generated message.
+   * Jujutsu always uses auto-messages, so this is a no-op.
+   */
+  async commitNoEdit(_workspacePath: string): Promise<void> {
+    // jj always uses auto-messages — nothing to do
+  }
+
+  /**
+   * Abort an in-progress merge.
+   * Jujutsu doesn't track merge state the same way as git.
+   * Uses `jj op restore @-` to restore to the pre-merge working copy state.
+   */
+  async abortMerge(workspacePath: string): Promise<void> {
+    // Restore to the working copy parent (pre-merge state)
+    try {
+      await this.jj(["op", "restore", "@-"], workspacePath);
+    } catch {
+      // Best effort — if there's no merge to abort, this will fail silently
+    }
+  }
+
+  /**
+   * Stage a specific file.
+   * Jujutsu auto-stages all changes, so this is a no-op.
+   */
+  async stageFile(_workspacePath: string, _filePath: string): Promise<void> {
+    // jj auto-stages — nothing to do
+  }
+
+  /**
+   * Checkout a file from a specific ref into the working tree.
+   * Uses `jj file show <ref> -- <path>` written to the working copy.
+   * The special ref "--theirs" during rebase resolves to the "other" parent.
+   */
+  async checkoutFile(
+    workspacePath: string,
+    ref: string,
+    filePath: string,
+  ): Promise<void> {
+    // Handle "--theirs" in rebase context — map to the appropriate jj revision
+    if (ref === "--theirs") {
+      // In a rebase, @- is the original (@ before rebase), @@ is the rebased version
+      // During rebase, "theirs" (the branch being rebased) is @+ or we use @-
+      // which is the parent commit we rebased onto. Use jj log to determine.
+      try {
+        const content = await this.jj(
+          ["file show", "@-", "--", filePath],
+          workspacePath,
+        );
+        await fs.writeFile(join(workspacePath, filePath), content, "utf-8");
+      } catch {
+        // Best effort — file may not exist on that side
+      }
+      return;
+    }
+
+    // Normal ref checkout
+    const content = await this.jj(
+      ["file", "show", ref, "--", filePath],
+      workspacePath,
+    );
+    await fs.writeFile(join(workspacePath, filePath), content, "utf-8");
+  }
+
+  /**
+   * Get the content of a file at a specific ref.
+   */
+  async showFile(
+    repoPath: string,
+    ref: string,
+    filePath: string,
+  ): Promise<string> {
+    // Handle "branch:path" format
+    const colonIdx = ref.indexOf(":");
+    if (colonIdx !== -1) {
+      const branch = ref.slice(0, colonIdx);
+      const path = ref.slice(colonIdx + 1);
+      return this.jj(["file", "show", branch, "--", path], repoPath);
+    }
+    return this.jj(["file", "show", ref, "--", filePath], repoPath);
+  }
+
+  /**
+   * Reset the working tree to a specific ref (hard reset).
+   * Jujutsu equivalent: restore all files to the target revision.
+   */
+  async resetHard(workspacePath: string, ref: string): Promise<void> {
+    await this.jj(["restore", "--to", ref], workspacePath);
+  }
+
+  /**
+   * Remove a tracked file from the repository.
+   */
+  async removeFile(workspacePath: string, filePath: string): Promise<void> {
+    await this.jj(["file", "rm", filePath], workspacePath);
+  }
+
+  /**
+   * Continue an in-progress rebase after resolving conflicts.
+   */
+  async rebaseContinue(workspacePath: string): Promise<void> {
+    await this.jj(["rebase", "--continue"], workspacePath);
+  }
+
+  /**
+   * Remove a file from the staging area.
+   * Jujutsu doesn't have a separate index, so this is a no-op.
+   */
+  async removeFromIndex(_workspacePath: string, _filePath: string): Promise<void> {
+    // jj has no separate index — nothing to do
+  }
+
+  /**
+   * Get the merge base of two refs.
+   * Uses jj's parent traversal to find the common ancestor.
+   */
+  async getMergeBase(repoPath: string, ref1: string, ref2: string): Promise<string> {
+    try {
+      // Get parents of ref1
+      const parents1 = await this.jj(
+        ["log", "-r", ref1, "--no-graph", "-T", "parents"],
+        repoPath,
+      );
+      // Check if any parent of ref1 is an ancestor of ref2
+      for (const parent of parents1.split(" ").filter(Boolean)) {
+        try {
+          // Use jj's ancestor check: if merge-base between parent and ref2 equals parent, it's the base
+          const base = await this.jj(
+            ["log", "-r", `(${parent}) && (${ref2})`, "--no-graph", "-T", "change_id"],
+            repoPath,
+          );
+          if (base.trim()) {
+            return parent;
+          }
+        } catch {
+          // This parent is not the merge base
+        }
+      }
+      return "";
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * List untracked files in the working tree.
+   * For jj, untracked files are files that exist in the working tree but are
+   * not part of the current revision's tree. We compare the working tree
+   * contents against what jj knows about.
+   */
+  async getUntrackedFiles(workspacePath: string): Promise<string[]> {
+    try {
+      // Recursively collect all file paths in the working tree
+      const allPaths: string[] = [];
+      const collectFiles = async (dir: string): Promise<void> => {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = join(dir, entry.name);
+          if (entry.isFile()) {
+            allPaths.push(pathRelative(workspacePath, fullPath));
+          } else if (entry.isDirectory() && entry.name !== '.git' && entry.name !== '.jj') {
+            await collectFiles(fullPath);
+          }
+        }
+      };
+      await collectFiles(workspacePath);
+
+      // Get files tracked in the current revision
+      const trackedOut = await this.jj(
+        ["files", "--rev", "@"],
+        workspacePath,
+      );
+      const trackedFiles = new Set(
+        trackedOut.split("\n").map((f) => f.trim()).filter(Boolean),
+      );
+
+      // Untracked = files in working tree but not in tracked set
+      return allPaths.filter((f) => !trackedFiles.has(f));
+    } catch {
+      return [];
     }
   }
 
