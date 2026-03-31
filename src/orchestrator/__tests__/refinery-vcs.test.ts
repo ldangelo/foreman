@@ -19,6 +19,9 @@ import type { Run } from "../../lib/store.js";
 import type { VcsBackend } from "../../lib/vcs/index.js";
 
 // ── Module mocks ─────────────────────────────────────────────────────────────
+// NOTE: This suite intentionally keeps a minimal lib/git.js mock because it
+// documents migration-boundary expectations while the refinery merge flow still
+// has legacy-oriented assertions around shim-era behavior.
 
 vi.mock("node:child_process", () => ({
   execFile: vi.fn(),

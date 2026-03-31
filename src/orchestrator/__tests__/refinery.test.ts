@@ -3,6 +3,9 @@ import type { Run } from "../../lib/store.js";
 import type { VcsBackend } from "../../lib/vcs/index.js";
 
 // ── Module mocks ─────────────────────────────────────────────────────────────
+// NOTE: This suite intentionally retains lib/git.js mocks/imports as
+// compatibility coverage for the transitional refinery/shim surface.
+// New runtime code should prefer VcsBackend/VcsBackendFactory instead.
 
 vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
