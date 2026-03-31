@@ -37,9 +37,7 @@ vi.mock("../../lib/workflow-config-loader.js", () => ({
   resolveWorkflowType: vi.fn().mockReturnValue("feature"),
 }));
 
-vi.mock("../../lib/git.js", () => ({
-  // TRD-015: createWorktree and gitBranchExists replaced by VcsBackend methods
-  // getCurrentBranch and detectDefaultBranch replaced by GitBackend methods
+vi.mock("../../lib/setup.js", () => ({
   installDependencies: vi.fn().mockResolvedValue(undefined),
   runSetupWithCache: vi.fn().mockResolvedValue(undefined),
 }));

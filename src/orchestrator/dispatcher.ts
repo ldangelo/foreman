@@ -10,7 +10,7 @@ import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore, NativeTask } from "../lib/store.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
-import { installDependencies, runSetupWithCache } from "../lib/git.js";
+import { installDependencies, runSetupWithCache } from "../lib/setup.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel } from "../lib/branch-label.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";

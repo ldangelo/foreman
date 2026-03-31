@@ -19,8 +19,7 @@ import type { ForemanStore, Run } from "../../lib/store.js";
 let mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
 let mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
 
-vi.mock("../../lib/git.js", () => ({
-  // TRD-015: createWorktree, getCurrentBranch, detectDefaultBranch, gitBranchExists replaced by VcsBackend
+vi.mock("../../lib/setup.js", () => ({
   installDependencies: vi.fn().mockResolvedValue(undefined),
   runSetupWithCache: vi.fn().mockResolvedValue(undefined),
 }));
