@@ -1644,7 +1644,8 @@ function seedToInfo(
     id: seed.id,
     title: seed.title,
     description: detail?.description ?? seed.description ?? undefined,
-    priority: seed.priority,
+    // Convert numeric priority (0-4) to string with "P" prefix (e.g., 0 → "P0", 2 → "P2")
+    priority: typeof seed.priority === "number" ? `P${seed.priority}` : seed.priority,
     type: seed.type,
     labels: detail?.labels ?? seed.labels,
     comments: combinedComments,

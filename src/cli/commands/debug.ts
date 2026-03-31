@@ -15,6 +15,7 @@ import type { Run, Message } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { loadAndInterpolate } from "../../orchestrator/template-loader.js";
+import { getHighspeedModel } from "../../lib/config.js";
 
 // ── Artifact collection ─────────────────────────────────────────────────────
 
@@ -102,7 +103,7 @@ export const debugCommand = new Command("debug")
   .description("AI-powered analysis of a bead's pipeline execution")
   .argument("<bead-id>", "The bead/seed ID to analyze")
   .option("--run <id>", "Specific run ID (default: latest run for this seed)")
-  .option("--model <model>", "Model to use for analysis", "anthropic/claude-opus-4-6")
+  .option("--model <model>", "Model to use for analysis")
   .option("--raw", "Print collected artifacts without AI analysis")
   .action(async (beadId: string, opts: { run?: string; model?: string; raw?: boolean }) => {
     const projectPath = await getRepoRoot(process.cwd());
@@ -184,7 +185,7 @@ export const debugCommand = new Command("debug")
     // Build the diagnostic prompt and send to AI
     const prompt = buildDiagnosticPrompt(beadId, runSummary, messagesText, reports, logContent);
 
-    const model = opts.model ?? "anthropic/claude-opus-4-6";
+    const model = opts.model ?? getHighspeedModel();
     console.log(chalk.yellow(`Sending to ${model} for analysis...\n`));
 
     const result = await runWithPiSdk({

@@ -18,6 +18,8 @@ import {
   getPlanStepBudget,
   getSentinelBudget,
   getTroubleshooterBudget,
+  getDefaultModel,
+  getHighspeedModel,
 } from "../lib/config.js";
 import { loadAndInterpolate } from "./template-loader.js";
 import { loadPrompt, PromptNotFoundError } from "../lib/prompt-loader.js";
@@ -71,7 +73,7 @@ export interface PlanStepConfig {
 }
 
 export const PLAN_STEP_CONFIG: PlanStepConfig = {
-  model: "anthropic/claude-sonnet-4-6",
+  model: getDefaultModel() as ModelSelection,
   maxBudgetUsd: getPlanStepBudget(),
   // Sufficient for typical PRD/TRD generation runs; raise if plan steps hit the turn limit
   maxTurns: 50,
@@ -161,12 +163,12 @@ function resolveModel(envVar: string, defaultModel: ModelSelection): ModelSelect
  * module-level initialisation catches an env-var validation error.
  */
 const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker" | "sentinel">, ModelSelection>> = {
-  explorer: "minimax/MiniMax-M2.7",
-  developer: "minimax/MiniMax-M2.7",
-  qa: "minimax/MiniMax-M2.7",
-  reviewer: "minimax/MiniMax-M2.7",
-  finalize: "anthropic/claude-haiku-4-5",
-  troubleshooter: "minimax/MiniMax-M2.7",
+  explorer: getDefaultModel() as ModelSelection,
+  developer: getDefaultModel() as ModelSelection,
+  qa: getDefaultModel() as ModelSelection,
+  reviewer: getDefaultModel() as ModelSelection,
+  finalize: getDefaultModel() as ModelSelection,
+  troubleshooter: getDefaultModel() as ModelSelection,
 };
 
 /**
@@ -314,7 +316,7 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
 /** Standalone role config for the sentinel (not part of the pipeline). */
 export const SENTINEL_ROLE_CONFIG: RoleConfig = {
   role: "sentinel",
-  model: "anthropic/claude-sonnet-4-6",
+  model: getDefaultModel() as ModelSelection,
   maxBudgetUsd: getSentinelBudget(),
   permissionMode: "acceptEdits",
   reportFile: "SENTINEL_REPORT.md",

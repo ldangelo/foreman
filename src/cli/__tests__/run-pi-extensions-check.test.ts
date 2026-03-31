@@ -116,6 +116,19 @@ vi.mock("../../lib/config.js", () => ({
     beadClosureMs: 5000,
     monitorPollMs: 5000,
   },
+  STUCK_RETRY_CONFIG: { maxRetries: 3, initialDelayMs: 60000, maxDelayMs: 3600000, backoffMultiplier: 2, windowMs: 86400000 },
+  calculateStuckBackoffMs: (n: number) => n <= 0 ? 0 : Math.min(60000 * Math.pow(2, n - 1), 3600000),
+  getDefaultModel: () => "minimax/MiniMax-M2.7",
+  getHighspeedModel: () => "minimax/MiniMax-M2.7-highspeed",
+  getExplorerBudget: () => 1.0,
+  getDeveloperBudget: () => 5.0,
+  getQaBudget: () => 3.0,
+  getReviewerBudget: () => 2.0,
+  getPlanStepBudget: () => 3.0,
+  getSentinelBudget: () => 2.0,
+  getTroubleshooterBudget: () => 1.5,
+  getSessionLogBudget: () => 0.5,
+  readBudgetFromEnv: (_name: string, defaultValue: number) => defaultValue,
 }));
 
 // ── Module under test ─────────────────────────────────────────────────────────
