@@ -537,8 +537,8 @@ describe("Dispatcher.dispatch — description fetching", () => {
 
     // show() must have been called to fetch the description
     expect(seedsClient.show).toHaveBeenCalledWith("bd-001");
-    // Model is now determined per-phase by workflow YAML; dispatch default is sonnet
-    expect(result.dispatched[0].model).toBe("anthropic/claude-sonnet-4-6");
+    // Model is now determined per-phase by workflow YAML; dispatch default is MiniMax
+    expect(result.dispatched[0].model).toBe("minimax/MiniMax-M2.7");
   });
 
   it("calls show() for each ready seed to fetch description", async () => {
@@ -594,8 +594,8 @@ describe("Dispatcher.dispatch — description fetching", () => {
     // Should not throw even when show() fails
     const result = await dispatcher.dispatch({ dryRun: true });
     expect(result.dispatched).toHaveLength(1);
-    // Without description, title-only task defaults to sonnet
-    expect(result.dispatched[0].model).toBe("anthropic/claude-sonnet-4-6");
+    // Without description, title-only task defaults to MiniMax
+    expect(result.dispatched[0].model).toBe("minimax/MiniMax-M2.7");
   });
 
   it("does not overwrite description when show() returns null description", async () => {
@@ -619,8 +619,8 @@ describe("Dispatcher.dispatch — description fetching", () => {
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
     const result = await dispatcher.dispatch({ dryRun: true });
-    // null description → no description-based opus upgrade, stays sonnet
-    expect(result.dispatched[0].model).toBe("anthropic/claude-sonnet-4-6");
+    // null description → no description-based opus upgrade, stays MiniMax
+    expect(result.dispatched[0].model).toBe("minimax/MiniMax-M2.7");
   });
 });
 
@@ -1024,7 +1024,7 @@ describe("Dispatcher.dispatch — concurrent dispatch race guard", () => {
 
 describe("PLAN_STEP_CONFIG", () => {
   it("has a valid model", () => {
-    expect(PLAN_STEP_CONFIG.model).toBe("anthropic/claude-sonnet-4-6");
+    expect(PLAN_STEP_CONFIG.model).toBe("minimax/MiniMax-M2.7");
   });
 
   it("has a finite maxBudgetUsd within a reasonable range", () => {
