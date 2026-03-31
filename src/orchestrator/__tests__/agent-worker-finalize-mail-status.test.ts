@@ -1,0 +1,23 @@
+import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
+const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
+
+describe("agent-worker finalize mail status handling", () => {
+  const source = readFileSync(WORKER_SRC, "utf-8");
+
+  it("parses status from finalize phase-complete mail bodies", () => {
+    expect(source).toContain('const status = typeof body["status"] === "string" ? body["status"] : "complete"');
+  });
+
+  it("only treats finalize phase-complete as success when status is complete/completed", () => {
+    expect(source).toContain('finalizeSucceeded = status === "complete" || status === "completed"');
+  });
+
+  it("marks deterministic finalize failures as failed without retry", () => {
+    expect(source).toContain('const terminalStatus = finalizeRetryable ? "stuck" : "failed"');
+    expect(source).toContain('enqueueMarkBeadFailed(store, seedId, "agent-worker-finalize")');
+  });
+});

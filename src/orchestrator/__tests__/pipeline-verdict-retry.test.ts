@@ -9,6 +9,7 @@
  *  5. After max retries exhausted, pipeline continues to next phase
  *  6. PASS verdict does NOT loop back (normal flow)
  *  7. Missing artifact yields "unknown" verdict — no retry triggered
+ *  8. QA report without npm test evidence is treated as FAIL
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -204,6 +205,37 @@ describe("verdict-triggered retry", () => {
     // No retry — straight through
     expect(phaseOrder).toEqual(["developer", "reviewer", "finalize"]);
     expect(log).not.toHaveBeenCalledWith(expect.stringContaining("FAIL — looping back"));
+  });
+
+  it("treats QA report without npm test evidence as FAIL and retries developer", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+
+    const phases = [
+      { name: "developer", artifact: "DEVELOPER_REPORT.md" },
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true, retryWith: "developer", retryOnFail: 1 },
+      { name: "finalize", artifact: "FINALIZE_REPORT.md" },
+    ];
+
+    let qaCallCount = 0;
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "qa") {
+        qaCallCount++;
+        if (qaCallCount === 1) {
+          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA Report\n\n## Verdict: PASS\n\n## Test Results\n- Looked good\n");
+        } else {
+          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA Report\n\n## Verdict: PASS\n\n## Test Results\n- Command run: npm test -- --reporter=dot 2>&1\n- Test suite: 12 passed, 0 failed\n- Raw summary: 12 passed, 0 failed\n");
+        }
+      }
+      return successResult();
+    });
+
+    await executePipeline(makeBasePipelineArgs(tmpDir, phases, runPhase, log) as never);
+
+    expect(phaseOrder).toEqual(["developer", "qa", "developer", "qa", "finalize"]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("report missing npm test evidence"));
   });
 
   it("missing artifact yields no retry (verdict unknown)", async () => {

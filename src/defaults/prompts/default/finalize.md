@@ -100,6 +100,13 @@ Always rebase before pushing so the branch is up-to-date with the target branch.
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"rebase_conflict","retryable":false}'
 ```
 
+**Special case: Jujutsu immutable commit protection**
+If the rebase fails because the target branch is immutable/protected in jj, fall back to a merge-based update instead of retrying developer work:
+```
+git fetch origin && git merge --no-edit origin/{{baseBranch}}
+```
+If that merge also conflicts, send the same `rebase_conflict` error and stop.
+
 ### Step 7: Run tests after rebase (pre-push validation)
 After the rebase succeeds, run the full test suite to catch any merge-induced failures before pushing.
 
@@ -128,6 +135,9 @@ Then write `FINALIZE_VALIDATION.md` in the worktree root:
 - Output:
 <include first 3000 characters of test output here>
 
+## Failure Scope
+- MODIFIED_FILES | UNRELATED_FILES | UNKNOWN
+
 ## Verdict: PASS | FAIL
 ```
 
@@ -138,8 +148,16 @@ Then write `FINALIZE_VALIDATION.md` in the worktree root:
 **If tests FAIL (non-zero exit code):**
 - Write `## Verdict: FAIL` in `FINALIZE_VALIDATION.md`
 - Include test failure details in the `## Test Validation` section
-- **STOP HERE — do not push.** The pipeline will detect the FAIL verdict and route back to the developer with the test output as feedback.
-- Do NOT send an error mail — this is an expected retry condition, not an unrecoverable error.
+- Classify the failures in `## Failure Scope`:
+  - `MODIFIED_FILES` if the failures are in files changed by this bead or are clearly caused by this bead's work
+  - `UNRELATED_FILES` if the failures are only in files unrelated to this bead (pre-existing failures on the target branch)
+  - `UNKNOWN` if you cannot determine the scope confidently
+- **If Failure Scope = MODIFIED_FILES or UNKNOWN:** STOP HERE — do not push. The pipeline will route back to developer.
+- **If Failure Scope = UNRELATED_FILES:** send a finalize result mail marking the phase as failed but non-retryable, then stop:
+```
+/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"finalize","seedId":"{{seedId}}","status":"failed","note":"tests_failed_pre_existing_issues","retryable":false}'
+```
+- Do NOT send a success/complete status when tests failed.
 
 ### Step 8: Push to origin
 Run:

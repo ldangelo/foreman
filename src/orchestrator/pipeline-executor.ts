@@ -16,7 +16,13 @@ import { join, basename } from "node:path";
 import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import { resolvePhaseModel } from "../lib/workflow-loader.js";
 import { ROLE_CONFIGS } from "./roles.js";
-import { buildPhasePrompt, parseVerdict, extractIssues } from "./roles.js";
+import {
+  buildPhasePrompt,
+  parseVerdict,
+  extractIssues,
+  parseFinalizeFailureScope,
+  qaReportHasTestEvidence,
+} from "./roles.js";
 import { rotateReport } from "./agent-worker-finalize.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
@@ -929,7 +935,13 @@ async function runPhaseSequence(
     // 8. Verdict handling: parse PASS/FAIL, retry if needed.
     if (phase.verdict && phase.artifact) {
       const report = readReport(worktreePath, phase.artifact);
-      const verdict = report ? parseVerdict(report) : "unknown";
+      let verdict = report ? parseVerdict(report) : "unknown";
+
+      if (phaseName === "qa" && report && !qaReportHasTestEvidence(report)) {
+        verdict = "fail";
+        feedbackContext = "QA report invalid: missing explicit `npm test` command/output evidence with pass/fail counts.";
+        ctx.log(`[QA] FAIL — report missing npm test evidence`);
+      }
 
       if (phaseName === "qa") {
         qaVerdictForLog = verdict as "pass" | "fail" | "unknown";
@@ -940,6 +952,15 @@ async function runPhaseSequence(
         const maxRetries = phase.retryOnFail ?? 0;
         const retryCountKey = phaseName;
         const currentRetries = retryCounts[retryCountKey] ?? 0;
+        const finalizeFailureScope = phaseName === "finalize" && report
+          ? parseFinalizeFailureScope(report)
+          : "unknown";
+
+        if (phaseName === "finalize" && finalizeFailureScope === "unrelated_files") {
+          ctx.log(`[FINALIZE] FAIL — unrelated/pre-existing test failures detected, skipping developer retry`);
+          await appendFile(logFile, `\n[PIPELINE] finalize failed due to unrelated/pre-existing test failures — no developer retry\n`);
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+        }
 
         if (currentRetries < maxRetries) {
           retryCounts[retryCountKey] = currentRetries + 1;
@@ -948,7 +969,7 @@ async function runPhaseSequence(
             const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
             ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, report);
           }
-          feedbackContext = report ? extractIssues(report) : `(${phaseName} failed but no report)`;
+          feedbackContext = feedbackContext ?? (report ? extractIssues(report) : `(${phaseName} failed but no report)`);
 
           ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
@@ -960,10 +981,11 @@ async function runPhaseSequence(
           }
           ctx.log(`[${phaseName.toUpperCase()}] retryWith target '${retryTarget}' not found in workflow — continuing`);
         } else {
-          ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted${failOnRetriesExhausted ? "" : ", continuing"}`);
-          await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries${failOnRetriesExhausted ? "" : ", continuing"}\n`);
+          const terminalFinalizeFailure = phaseName === "finalize";
+          ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted${failOnRetriesExhausted || terminalFinalizeFailure ? "" : ", continuing"}`);
+          await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries${failOnRetriesExhausted || terminalFinalizeFailure ? "" : ", continuing"}\n`);
           feedbackContext = undefined;
-          if (failOnRetriesExhausted) {
+          if (failOnRetriesExhausted || terminalFinalizeFailure) {
             return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, retriesExhausted: true };
           }
         }

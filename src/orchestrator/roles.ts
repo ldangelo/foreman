@@ -553,6 +553,7 @@ export function sentinelPrompt(branch: string, testCommand: string, opts?: Promp
 // ── Report parsing ──────────────────────────────────────────────────────
 
 export type Verdict = "pass" | "fail" | "unknown";
+export type FinalizeFailureScope = "modified_files" | "unrelated_files" | "unknown";
 
 /**
  * Parse a report file for a PASS/FAIL verdict.
@@ -567,6 +568,22 @@ export function parseVerdict(reportContent: string): Verdict {
 /**
  * Extract issues from a review report for developer feedback.
  */
+export function parseFinalizeFailureScope(reportContent: string): FinalizeFailureScope {
+  const inlineMatch = reportContent.match(/##\s*Failure Scope:\s*(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)/i);
+  if (inlineMatch) return inlineMatch[1].toLowerCase() as FinalizeFailureScope;
+
+  const sectionMatch = reportContent.match(/##\s*Failure Scope\s*\n-\s*(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)/i);
+  if (sectionMatch) return sectionMatch[1].toLowerCase() as FinalizeFailureScope;
+
+  return "unknown";
+}
+
+export function qaReportHasTestEvidence(reportContent: string): boolean {
+  const hasCommand = /npm test/i.test(reportContent);
+  const hasCounts = /(\b\d+\s+passed\b|\b\d+\s+failed\b|\btests? failed out of\b|\btests?:\s*\d+\s+passed[, ]+\d+\s+failed\b)/i.test(reportContent);
+  return hasCommand && hasCounts;
+}
+
 export function extractIssues(reportContent: string): string {
   // Extract everything between ## Issues and the next ## heading
   const issuesMatch = reportContent.match(/## Issues\n([\s\S]*?)(?=\n## |$)/);

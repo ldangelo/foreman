@@ -321,10 +321,10 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
 
     await executePipeline(ctx);
 
-    // retryOnFail: 1 means: developer → finalize(FAIL) → developer(retry) → finalize(FAIL, exhausted) → continue
-    // After exhausting retries it continues and calls onPipelineComplete
+    // retryOnFail: 1 means: developer → finalize(FAIL) → developer(retry) → finalize(FAIL, exhausted)
     expect(phaseOrder).toEqual(["developer", "finalize", "developer", "finalize"]);
     expect(onPipelineComplete).toHaveBeenCalledOnce();
+    expect(onPipelineComplete).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
   });
 
   it("sends mail feedback to developer on finalize FAIL", async () => {
@@ -371,6 +371,44 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
       expect.stringContaining("Finalize Feedback"),
       expect.stringContaining("FAIL"),
     );
+  });
+
+  it("does not retry developer for unrelated pre-existing finalize failures", async () => {
+    const phaseOrder: string[] = [];
+
+    const runPhase: RunPhaseFn = vi.fn(async (role: string) => {
+      phaseOrder.push(role);
+      if (role === "developer") {
+        writeFileSync(join(tmpDir, "DEVELOPER_REPORT.md"), "# Developer Report\n");
+      } else if (role === "finalize") {
+        writeFileSync(
+          join(tmpDir, "FINALIZE_VALIDATION.md"),
+          [
+            "# Finalize Validation",
+            "## Test Validation",
+            "- Status: FAIL",
+            "- Output: unrelated tests failed",
+            "",
+            "## Failure Scope",
+            "- UNRELATED_FILES",
+            "",
+            "## Verdict: FAIL",
+          ].join("\n"),
+        );
+      }
+      return { success: true, costUsd: 0.01, turns: 5, tokensIn: 100, tokensOut: 50 } as PhaseResult;
+    });
+
+    const onPipelineComplete = vi.fn().mockResolvedValue(undefined);
+    const ctx = makePipelineContext(tmpDir, runPhase, {
+      workflowConfig: makeTestWorkflow(1),
+      onPipelineComplete,
+    });
+
+    await executePipeline(ctx);
+
+    expect(phaseOrder).toEqual(["developer", "finalize"]);
+    expect(onPipelineComplete).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
   });
 
   it("proceeds to onPipelineComplete when finalize writes ## Verdict: PASS", async () => {

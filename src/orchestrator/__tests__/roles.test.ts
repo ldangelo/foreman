@@ -12,6 +12,8 @@ import {
   sentinelPrompt,
   buildPhasePrompt,
   parseVerdict,
+  parseFinalizeFailureScope,
+  qaReportHasTestEvidence,
   extractIssues,
 } from "../roles.js";
 import type { RoleConfig } from "../roles.js";
@@ -250,6 +252,34 @@ describe("parseVerdict", () => {
 
   it("returns unknown for empty content", () => {
     expect(parseVerdict("")).toBe("unknown");
+  });
+});
+
+describe("parseFinalizeFailureScope", () => {
+  it("parses MODIFIED_FILES scope", () => {
+    expect(parseFinalizeFailureScope("## Failure Scope: MODIFIED_FILES")).toBe("modified_files");
+  });
+
+  it("parses UNRELATED_FILES scope", () => {
+    expect(parseFinalizeFailureScope("## Failure Scope: UNRELATED_FILES")).toBe("unrelated_files");
+  });
+
+  it("returns unknown when no scope is present", () => {
+    expect(parseFinalizeFailureScope("no scope here")).toBe("unknown");
+  });
+});
+
+describe("qaReportHasTestEvidence", () => {
+  it("returns true when npm test command and pass/fail counts are present", () => {
+    expect(qaReportHasTestEvidence("Command run: npm test -- --reporter=dot\nTest suite: 10 passed, 0 failed\nRaw summary: 10 passed, 0 failed")).toBe(true);
+  });
+
+  it("returns false when npm test is missing", () => {
+    expect(qaReportHasTestEvidence("Test suite: 10 passed, 0 failed")).toBe(false);
+  });
+
+  it("returns false when pass/fail counts are missing", () => {
+    expect(qaReportHasTestEvidence("Command run: npm test -- --reporter=dot\nAll tests looked good")).toBe(false);
   });
 });
 

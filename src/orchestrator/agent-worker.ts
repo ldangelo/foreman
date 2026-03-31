@@ -768,17 +768,18 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     // Finalize post-processing: determine push success, enqueue to merge queue, update run status.
     // P0 fix: Only send branch-ready if pipeline succeeded AND we're at the finalize phase.
     async onPipelineComplete({ progress, success }) {
-      // Guard: only send branch-ready if pipeline completed successfully at finalize phase.
-      // This prevents sending branch-ready when Explorer or other phases fail.
-      if (!success || progress.currentPhase !== "finalize") {
+      // Guard: only finalize post-processing when the pipeline reached finalize.
+      // Earlier phase failures are already handled by markStuck().
+      if (progress.currentPhase !== "finalize") {
         log(`[FINALIZE] Skipping branch-ready: success=${String(success)}, currentPhase=${progress.currentPhase}`);
         return;
       }
       const { runId, projectId, seedId, seedTitle, worktreePath } = config;
 
       // Read finalize outcome from agent mail.
-      let finalizeSucceeded = false;
+      let finalizeSucceeded = success;
       let finalizeRetryable = true;
+      let finalizeFailureReason = success ? "" : "finalize_validation_failed";
       if (agentMailClient) {
         const foremanMsgs = await agentMailClient.fetchInbox("foreman");
         const finalizeSender = `finalize-${seedId}`;
@@ -787,12 +788,21 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
                   (m.from === finalizeSender || m.from === "finalize"),
         );
         if (finalizeMsg?.subject === "phase-complete") {
-          finalizeSucceeded = true;
-          log(`[FINALIZE] phase-complete mail received — push succeeded`);
+          const body = (() => { try { return JSON.parse(finalizeMsg.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
+          const status = typeof body["status"] === "string" ? body["status"] : "complete";
+          finalizeRetryable = body["retryable"] !== false;
+          finalizeSucceeded = status === "complete" || status === "completed";
+          if (!finalizeSucceeded) {
+            finalizeFailureReason = typeof body["note"] === "string"
+              ? body["note"]
+              : "finalize_phase_reported_failed_status";
+          }
+          log(`[FINALIZE] phase-complete mail received — status=${status}, retryable=${String(finalizeRetryable)}`);
         } else if (finalizeMsg?.subject === "agent-error") {
           const body = (() => { try { return JSON.parse(finalizeMsg.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
           finalizeRetryable = body["retryable"] !== false;
           const errorDetail = typeof body["error"] === "string" ? body["error"] : "unknown finalize error";
+          finalizeFailureReason = errorDetail;
           log(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
 
           // Special case: "nothing to commit" may be normal when a worktree is
@@ -937,21 +947,26 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqMsg}`);
         }
       } else {
-        store.updateRun(runId, { status: "stuck", completed_at: now });
-        notifyClient.send({ type: "status", runId, status: "stuck", timestamp: now });
+        const terminalStatus = finalizeRetryable ? "stuck" : "failed";
+        store.updateRun(runId, { status: terminalStatus, completed_at: now });
+        notifyClient.send({ type: "status", runId, status: terminalStatus, timestamp: now });
         sendMail(agentMailClient, "foreman", "agent-error", {
-          seedId, phase: "finalize", error: "Push failed", retryable: finalizeRetryable,
+          seedId,
+          phase: "finalize",
+          error: finalizeFailureReason || "Finalize failed",
+          retryable: finalizeRetryable,
         });
         if (finalizeRetryable) {
           enqueueResetSeedToOpen(store, seedId, "agent-worker-finalize");
         } else {
-          log(`[PIPELINE] Deterministic push failure for ${seedId} — seed left stuck (no reset to open)`);
+          enqueueMarkBeadFailed(store, seedId, "agent-worker-finalize");
+          log(`[PIPELINE] Deterministic finalize failure for ${seedId} — marking failed without retry`);
         }
       }
 
       // Log terminal event
       const completedPhases = workflowConfig.phases.map((p) => p.name).join("→");
-      store.logEvent(projectId, finalizeSucceeded ? "complete" : "stuck", {
+      store.logEvent(projectId, finalizeSucceeded ? "complete" : (finalizeRetryable ? "stuck" : "fail"), {
         seedId,
         title: seedTitle,
         costUsd: progress.costUsd,
