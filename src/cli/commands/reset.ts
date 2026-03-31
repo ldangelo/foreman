@@ -5,7 +5,7 @@ import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
 import { getRepoRoot, getCurrentBranch, checkoutBranch, detectDefaultBranch } from "../../lib/git.js";
-import { removeWorktree, deleteBranch, listWorktrees } from "../../lib/git.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { existsSync, readdirSync } from "node:fs";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import type { UpdateOptions } from "../../lib/task-client.js";
@@ -518,6 +518,7 @@ export const resetCommand = new Command("reset")
 
     try {
       const projectPath = await getRepoRoot(process.cwd());
+      const vcs = await VcsBackendFactory.create({ backend: 'auto' }, projectPath);
       // Save current branch so we can restore it after worktree/branch cleanup,
       // which can change HEAD as a side effect of git worktree remove / branch -D.
       let originalBranch: string | undefined;
@@ -630,12 +631,12 @@ export const resetCommand = new Command("reset")
           if (!dryRun) {
             try {
               await archiveWorktreeReports(projectPath, run.worktree_path, run.seed_id).catch(() => {});
-              await removeWorktree(projectPath, run.worktree_path);
+              await vcs.removeWorkspace(projectPath, run.worktree_path);
               worktreesRemoved++;
             } catch (err: unknown) {
               const msg = err instanceof Error ? err.message : String(err);
-              // Worktree may already be gone
-              if (!msg.includes("is not a working tree")) {
+              // Worktree/workspace may already be gone — not an error
+              if (!msg.includes("is not a working tree") && !msg.includes("doesn't exist")) {
                 errors.push(`Failed to remove worktree for ${run.seed_id}: ${msg}`);
                 console.log(`    ${chalk.red("error")} removing worktree: ${msg}`);
               } else {
@@ -651,7 +652,7 @@ export const resetCommand = new Command("reset")
           const { execFile } = await import("node:child_process");
           const { promisify } = await import("node:util");
           try {
-            const delResult = await deleteBranch(projectPath, branchName, { force: true });
+            const delResult = await vcs.deleteBranch(projectPath, branchName, { force: true });
             if (delResult.deleted) branchesDeleted++;
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -659,8 +660,8 @@ export const resetCommand = new Command("reset")
               // Branch is HEAD of the main worktree — switch to main then retry
               try {
                 console.log(`    ${chalk.dim("checkout")} main (branch is current HEAD)`);
-                await promisify(execFile)("git", ["checkout", "-f", "main"], { cwd: projectPath });
-                const retryResult = await deleteBranch(projectPath, branchName, { force: true });
+                await vcs.checkoutBranch(projectPath, "main");
+                const retryResult = await vcs.deleteBranch(projectPath, branchName, { force: true });
                 if (retryResult.deleted) branchesDeleted++;
               } catch (retryErr: unknown) {
                 const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
@@ -767,7 +768,11 @@ export const resetCommand = new Command("reset")
         try {
           const { execFile } = await import("node:child_process");
           const { promisify } = await import("node:util");
-          await promisify(execFile)("git", ["worktree", "prune"], { cwd: projectPath });
+          // git worktree prune only applies to git backends — jj manages workspaces separately
+          const { GitBackend } = await import("../../lib/vcs/git-backend.js");
+          if (vcs instanceof GitBackend) {
+            await promisify(execFile)("git", ["worktree", "prune"], { cwd: projectPath });
+          }
           // Prune stale remote tracking refs so reconcile() doesn't see deleted
           // remote branches and falsely recover newly-dispatched empty runs.
           await promisify(execFile)("git", ["fetch", "--prune"], { cwd: projectPath });
@@ -805,18 +810,18 @@ export const resetCommand = new Command("reset")
 
             console.log(`  ${chalk.yellow("orphan")} worktree ${fullPath}`);
             try {
-              await removeWorktree(projectPath, fullPath);
+              await vcs.removeWorkspace(projectPath, fullPath);
               worktreesRemoved++;
             } catch (err: unknown) {
               const msg = err instanceof Error ? err.message : String(err);
-              if (!msg.includes("is not a working tree")) {
+              if (!msg.includes("is not a working tree") && !msg.includes("doesn't exist")) {
                 console.log(`    ${chalk.red("error")} removing orphaned worktree: ${msg}`);
               }
             }
             // Delete the corresponding branch if it exists
             const orphanBranch = `foreman/${entry}`;
             try {
-              const delResult = await deleteBranch(projectPath, orphanBranch, { force: true });
+              const delResult = await vcs.deleteBranch(projectPath, orphanBranch, { force: true });
               if (delResult.deleted) {
                 branchesDeleted++;
                 console.log(`    ${chalk.yellow("delete")} orphan branch ${orphanBranch}`);

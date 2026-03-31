@@ -773,6 +773,8 @@ const MODEL_SHORTHANDS: Record<string, string> = {
   haiku: "anthropic/claude-haiku-4-5",
   sonnet: "anthropic/claude-sonnet-4-6",
   opus: "anthropic/claude-opus-4-6",
+  MiniMax: "minimax/MiniMax-M2.7",
+  "MiniMax-highspeed": "minimax/MiniMax-M2.7-highspeed",
 };
 
 /**

@@ -130,6 +130,8 @@ const VALID_MODELS: readonly ModelSelection[] = [
   "anthropic/claude-opus-4-6",
   "anthropic/claude-sonnet-4-6",
   "anthropic/claude-haiku-4-5",
+  "minimax/MiniMax-M2.7",
+  "minimax/MiniMax-M2.7-highspeed"
 ];
 
 /**
@@ -147,7 +149,7 @@ function resolveModel(envVar: string, defaultModel: ModelSelection): ModelSelect
   if (!(VALID_MODELS as string[]).includes(value)) {
     throw new Error(
       `Invalid model "${value}" in ${envVar}. ` +
-        `Valid values are: ${VALID_MODELS.join(", ")}`,
+      `Valid values are: ${VALID_MODELS.join(", ")}`,
     );
   }
   return value as ModelSelection;
@@ -159,12 +161,12 @@ function resolveModel(envVar: string, defaultModel: ModelSelection): ModelSelect
  * module-level initialisation catches an env-var validation error.
  */
 const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker" | "sentinel">, ModelSelection>> = {
-  explorer: "anthropic/claude-haiku-4-5",
-  developer: "anthropic/claude-sonnet-4-6",
-  qa: "anthropic/claude-sonnet-4-6",
-  reviewer: "anthropic/claude-sonnet-4-6",
+  explorer: "minimax/MiniMax-M2.7",
+  developer: "minimax/MiniMax-M2.7",
+  qa: "minimax/MiniMax-M2.7",
+  reviewer: "minimax/MiniMax-M2.7",
   finalize: "anthropic/claude-haiku-4-5",
-  troubleshooter: "anthropic/claude-sonnet-4-6",
+  troubleshooter: "minimax/MiniMax-M2.7",
 };
 
 /**

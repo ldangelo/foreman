@@ -335,9 +335,13 @@ export class GitBackend implements VcsBackend {
     } catch (removeErr) {
       const removeMsg =
         removeErr instanceof Error ? removeErr.message : String(removeErr);
-      console.error(
-        `[git] Warning: git worktree remove --force failed for ${workspacePath}: ${removeMsg}`,
-      );
+      // "not a working tree" means the path was never registered as a worktree
+      // (e.g. agent failed before worktree creation) — not an error worth logging.
+      if (!removeMsg.includes("is not a working tree")) {
+        console.error(
+          `[git] Warning: git worktree remove --force failed for ${workspacePath}: ${removeMsg}`,
+        );
+      }
       try {
         await fs.rm(workspacePath, { recursive: true, force: true });
       } catch (rmErr) {
