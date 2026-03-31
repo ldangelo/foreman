@@ -30,6 +30,7 @@ const {
   mockRefineryMergeCompleted,
   MockRefinery,
   mockDetectDefaultBranch,
+  mockCreateVcsBackend,
   mockTaskClientUpdate,
   mockAddNotesToBead,
   mockMarkBeadFailed,
@@ -73,6 +74,10 @@ const {
   });
 
   const mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
+  const mockCreateVcsBackend = vi.fn().mockResolvedValue({
+    name: "git",
+    detectDefaultBranch: mockDetectDefaultBranch,
+  });
   const mockTaskClientUpdate = vi.fn().mockResolvedValue(undefined);
   const mockMarkBeadFailed = vi.fn().mockResolvedValue(undefined);
   const mockGetRunsByStatuses = vi.fn().mockReturnValue([]);
@@ -90,6 +95,7 @@ const {
     mockRefineryMergeCompleted,
     MockRefinery,
     mockDetectDefaultBranch,
+    mockCreateVcsBackend,
     mockTaskClientUpdate,
     mockAddNotesToBead,
     mockMarkBeadFailed,
@@ -109,8 +115,14 @@ vi.mock("../merge-queue.js", () => ({
   RETRY_CONFIG: { maxRetries: 3, initialDelayMs: 60_000, maxDelayMs: 3_600_000, backoffMultiplier: 2 },
 }));
 vi.mock("../refinery.js", () => ({ Refinery: MockRefinery }));
-vi.mock("../../lib/git.js", () => ({
-  detectDefaultBranch: mockDetectDefaultBranch,
+vi.mock("../../lib/project-config.js", () => ({
+  loadProjectConfig: vi.fn().mockReturnValue(null),
+  resolveVcsConfig: vi.fn().mockReturnValue({ backend: "auto" }),
+}));
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: mockCreateVcsBackend,
+  },
 }));
 vi.mock("../task-backend-ops.js", () => ({
   enqueueAddNotesToBead: mockAddNotesToBead,
@@ -161,6 +173,10 @@ function resetMocks(): void {
 
   mockExecFileSync.mockReturnValue(Buffer.from(""));
   mockDetectDefaultBranch.mockResolvedValue("main");
+  mockCreateVcsBackend.mockResolvedValue({
+    name: "git",
+    detectDefaultBranch: mockDetectDefaultBranch,
+  });
   mockGetProjectByPath.mockReturnValue(null);
   mockGetDb.mockReturnValue({});
   mockGetRun.mockReturnValue(null);

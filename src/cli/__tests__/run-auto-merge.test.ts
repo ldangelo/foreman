@@ -38,6 +38,8 @@ const {
   MockMergeQueue,
   mockRefineryMergeCompleted,
   MockRefinery,
+  mockCreateVcsBackend,
+  mockDetectDefaultBranch,
   mockAddNotesToBead,
   mockEnqueueSetBeadStatus,
 } = vi.hoisted(() => {
@@ -93,6 +95,15 @@ const {
     this.mergeCompleted = mockRefineryMergeCompleted;
   });
 
+  const mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
+  const mockCreateVcsBackend = vi.fn().mockResolvedValue({
+    name: "git",
+    getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+    getCurrentBranch: vi.fn().mockResolvedValue("main"),
+    checkoutBranch: vi.fn().mockResolvedValue(undefined),
+    detectDefaultBranch: mockDetectDefaultBranch,
+  });
+
   return {
     mockExecFileSync,
     mockEnsureBrInstalled,
@@ -113,6 +124,8 @@ const {
     MockMergeQueue,
     mockRefineryMergeCompleted,
     MockRefinery,
+    mockCreateVcsBackend,
+    mockDetectDefaultBranch,
     mockAddNotesToBead,
     mockEnqueueSetBeadStatus,
   };
@@ -127,9 +140,14 @@ vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
-vi.mock("../../lib/git.js", () => ({
-  getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+vi.mock("../../lib/project-config.js", () => ({
+  loadProjectConfig: vi.fn().mockReturnValue(null),
+  resolveVcsConfig: vi.fn().mockReturnValue({ backend: "auto" }),
+}));
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: mockCreateVcsBackend,
+  },
 }));
 vi.mock("../../orchestrator/notification-server.js", () => ({
   NotificationServer: vi.fn(function (this: Record<string, unknown>) {
@@ -190,6 +208,14 @@ function resetMocks(): void {
   });
   MockRefinery.mockImplementation(function (this: Record<string, unknown>) {
     this.mergeCompleted = mockRefineryMergeCompleted;
+  });
+  mockDetectDefaultBranch.mockResolvedValue("main");
+  mockCreateVcsBackend.mockResolvedValue({
+    name: "git",
+    getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+    getCurrentBranch: vi.fn().mockResolvedValue("main"),
+    checkoutBranch: vi.fn().mockResolvedValue(undefined),
+    detectDefaultBranch: mockDetectDefaultBranch,
   });
 
   mockWatchRunsInk.mockResolvedValue({ detached: false });

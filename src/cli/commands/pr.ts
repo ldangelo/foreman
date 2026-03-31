@@ -3,7 +3,7 @@ import chalk from "chalk";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { Refinery } from "../../orchestrator/refinery.js";
 
 export const prCommand = new Command("pr")
@@ -12,7 +12,8 @@ export const prCommand = new Command("pr")
   .option("--draft", "Create draft PRs")
   .action(async (opts) => {
     try {
-      const projectPath = await getRepoRoot(process.cwd());
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      const projectPath = await vcs.getRepoRoot(process.cwd());
       const seeds = new BeadsRustClient(projectPath);
       const store = ForemanStore.forProject(projectPath);
       const refinery = new Refinery(store, seeds, projectPath);

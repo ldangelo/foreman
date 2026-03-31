@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { orderByCluster } from "./conflict-cluster.js";
-import { detectDefaultBranch } from "../lib/git.js";
-import { GitBackend } from "../lib/vcs/git-backend.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
+import type { VcsBackend } from "../lib/vcs/interface.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -355,9 +355,9 @@ export class MergeQueue {
   async reconcile(
     db: Database.Database,
     repoPath: string,
-    backend?: GitBackend
+    backend?: VcsBackend,
   ): Promise<ReconcileResult> {
-    const git = backend ?? new GitBackend(repoPath);
+    const vcs = backend ?? await VcsBackendFactory.create({ backend: "auto" }, repoPath);
     // Get all completed runs
     const completedRuns = db
       .prepare("SELECT * FROM runs WHERE status = 'completed' ORDER BY created_at ASC")
@@ -372,7 +372,7 @@ export class MergeQueue {
     const existingRunIds = new Set(mqRows.map((r) => r.run_id));
     const existingSeedIds = new Set(mqRows.map((r) => r.seed_id));
 
-    const defaultBranch = await detectDefaultBranch(repoPath);
+    const defaultBranch = await vcs.detectDefaultBranch(repoPath);
 
     let enqueued = 0;
     let skipped = 0;
@@ -394,7 +394,7 @@ export class MergeQueue {
       const branchName = `foreman/${run.seed_id}`;
 
       // Validate branch exists via VcsBackend
-      const exists = await git.branchExists(repoPath, branchName);
+      const exists = await vcs.branchExists(repoPath, branchName);
       if (!exists) {
         invalidBranch++;
         failedToEnqueue.push({
@@ -406,7 +406,7 @@ export class MergeQueue {
       }
 
       // Get modified files via VcsBackend
-      const filesModified = await git.getChangedFiles(repoPath, defaultBranch, branchName);
+      const filesModified = await vcs.getChangedFiles(repoPath, defaultBranch, branchName);
 
       this.enqueue({
         branchName,
@@ -454,7 +454,7 @@ export class MergeQueue {
       const branchName = `foreman/${run.seed_id}`;
 
       // Check if the remote branch exists (indicates push succeeded before crash)
-      const remoteExists = await git.branchExistsOnRemote(repoPath, branchName);
+      const remoteExists = await vcs.branchExistsOnRemote(repoPath, branchName);
       if (!remoteExists) {
         // No remote branch — run is genuinely in-progress or never pushed
         continue;
@@ -473,7 +473,7 @@ export class MergeQueue {
       // normal completion path).
       if (run.created_at) {
         const runCreatedMs = new Date(run.created_at).getTime();
-        const commitTs = await git.getRefCommitTimestamp(repoPath, `refs/remotes/origin/${branchName}`);
+        const commitTs = await vcs.getRefCommitTimestamp(repoPath, `refs/remotes/origin/${branchName}`);
         if (commitTs === null) {
           // Cannot determine commit timestamp — skip to avoid false recovery.
           // The reconcile() primary pass handles completed runs normally.
@@ -498,7 +498,7 @@ export class MergeQueue {
       );
 
       // Get modified files via VcsBackend
-      const recoveredFiles = await git.getChangedFiles(repoPath, defaultBranch, branchName);
+      const recoveredFiles = await vcs.getChangedFiles(repoPath, defaultBranch, branchName);
 
       this.enqueue({
         branchName,

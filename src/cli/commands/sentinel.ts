@@ -3,7 +3,7 @@ import chalk from "chalk";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
 
 export const sentinelCommand = new Command("sentinel")
@@ -20,7 +20,8 @@ sentinelCommand
   .option("--dry-run", "Simulate without running tests")
   .action(async (opts) => {
     try {
-      const projectPath = await getRepoRoot(process.cwd());
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      const projectPath = await vcs.getRepoRoot(process.cwd());
       const store = new ForemanStore();
       const seeds = new BeadsRustClient(projectPath);
 
@@ -83,7 +84,8 @@ sentinelCommand
   .option("--dry-run", "Simulate without running tests")
   .action(async (opts) => {
     try {
-      const projectPath = await getRepoRoot(process.cwd());
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      const projectPath = await vcs.getRepoRoot(process.cwd());
       const store = new ForemanStore();
       const seeds = new BeadsRustClient(projectPath);
 
@@ -166,7 +168,8 @@ sentinelCommand
   .option("--json", "Output as JSON")
   .action(async (opts) => {
     try {
-      const projectPath = await getRepoRoot(process.cwd());
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      const projectPath = await vcs.getRepoRoot(process.cwd());
       const store = new ForemanStore();
 
       const project = store.getProjectByPath(projectPath);
@@ -244,7 +247,8 @@ sentinelCommand
   .option("--force", "Force kill with SIGKILL instead of SIGTERM")
   .action(async (opts) => {
     try {
-      const projectPath = await getRepoRoot(process.cwd());
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      const projectPath = await vcs.getRepoRoot(process.cwd());
       const store = new ForemanStore();
 
       const project = store.getProjectByPath(projectPath);

@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { PlanStepDefinition } from "../../orchestrator/types.js";
 
@@ -63,7 +63,8 @@ export const planCommand = new Command("plan")
       },
     ) => {
       const outputDir = resolve(opts.outputDir);
-      const projectPath = await getRepoRoot(process.cwd());
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      const projectPath = await vcs.getRepoRoot(process.cwd());
 
       // Determine input
       let productDescription: string;

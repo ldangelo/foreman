@@ -13,15 +13,33 @@ vi.mock("node:child_process", () => ({
   }),
 }));
 
-vi.mock("../../lib/git.js", () => ({
-  listWorktrees: vi.fn(),
-  removeWorktree: vi.fn(),
-  branchExistsOnOrigin: vi.fn().mockResolvedValue(false),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+const {
+  mockListWorkspaces,
+  mockRemoveWorkspace,
+  mockBranchExistsOnRemote,
+  mockDetectDefaultBranch,
+  mockCreateVcsBackend,
+} = vi.hoisted(() => {
+  const mockListWorkspaces = vi.fn();
+  const mockRemoveWorkspace = vi.fn();
+  const mockBranchExistsOnRemote = vi.fn().mockResolvedValue(false);
+  const mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
+  const mockCreateVcsBackend = vi.fn().mockResolvedValue({
+    name: "git",
+    listWorkspaces: mockListWorkspaces,
+    removeWorkspace: mockRemoveWorkspace,
+    branchExistsOnRemote: mockBranchExistsOnRemote,
+    detectDefaultBranch: mockDetectDefaultBranch,
+  });
+  return { mockListWorkspaces, mockRemoveWorkspace, mockBranchExistsOnRemote, mockDetectDefaultBranch, mockCreateVcsBackend };
+});
+
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: mockCreateVcsBackend,
+  },
 }));
 
-// Import mocked modules AFTER vi.mock declarations
-import { listWorktrees, removeWorktree, branchExistsOnOrigin } from "../../lib/git.js";
 import { Doctor } from "../doctor.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -73,7 +91,7 @@ describe("Doctor.checkOrphanedWorktrees", () => {
 
   it("returns pass when no foreman worktrees exist", async () => {
     const { doctor } = makeMocks();
-    vi.mocked(listWorktrees).mockResolvedValue([]);
+    mockListWorkspaces.mockResolvedValue([]);
 
     const results = await doctor.checkOrphanedWorktrees();
 
@@ -85,7 +103,7 @@ describe("Doctor.checkOrphanedWorktrees", () => {
   it("returns pass for worktrees with active (running) runs", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
       // Use the test process PID so isProcessAlive() returns true
       makeRun({ seed_id: seedId, status: "running", worktree_path: `/tmp/worktrees/${seedId}`, session_key: `pid-${process.pid}` }),
@@ -96,13 +114,13 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     expect(results).toHaveLength(1);
     expect(results[0].status).toBe("pass");
     expect(results[0].message).toContain("Active run");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   it("returns pass for worktrees with active (pending) runs", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
       makeRun({ seed_id: seedId, status: "pending", worktree_path: `/tmp/worktrees/${seedId}` }),
     ]);
@@ -110,13 +128,13 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     const results = await doctor.checkOrphanedWorktrees();
 
     expect(results[0].status).toBe("pass");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   it("warns for completed (needs merge) run — does NOT remove worktree", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
       makeRun({ seed_id: seedId, status: "completed" }),
     ]);
@@ -125,14 +143,14 @@ describe("Doctor.checkOrphanedWorktrees", () => {
 
     expect(results[0].status).toBe("warn");
     expect(results[0].message).toContain("foreman merge");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   it("warns for merged run and removes worktree when fix=true", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
-    vi.mocked(removeWorktree).mockResolvedValue(undefined);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
+    mockRemoveWorkspace.mockResolvedValue(undefined);
     store.getRunsForSeed.mockReturnValue([
       makeRun({ seed_id: seedId, status: "merged" }),
     ]);
@@ -140,13 +158,13 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     const results = await doctor.checkOrphanedWorktrees({ fix: true });
 
     expect(results[0].status).toBe("fixed");
-    expect(vi.mocked(removeWorktree)).toHaveBeenCalled();
+    expect(mockRemoveWorkspace).toHaveBeenCalled();
   });
 
   it("shows dry-run message for merged run without removing", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
       makeRun({ seed_id: seedId, status: "merged" }),
     ]);
@@ -155,7 +173,7 @@ describe("Doctor.checkOrphanedWorktrees", () => {
 
     expect(results[0].status).toBe("warn");
     expect(results[0].message).toContain("dry-run");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   // ── Bug fix: failed/stuck/conflict/test-failed should NOT be removed ──────
@@ -163,7 +181,7 @@ describe("Doctor.checkOrphanedWorktrees", () => {
   it("preserves worktree for failed run — does NOT remove", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
       makeRun({ seed_id: seedId, status: "failed" }),
     ]);
@@ -173,13 +191,13 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     expect(results[0].status).toBe("warn");
     expect(results[0].message).toContain("failed");
     expect(results[0].message).toContain("foreman reset");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   it("preserves worktree for stuck run — does NOT remove", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
       makeRun({ seed_id: seedId, status: "stuck" }),
     ]);
@@ -189,13 +207,13 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     expect(results[0].status).toBe("warn");
     expect(results[0].message).toContain("stuck");
     expect(results[0].message).toContain("foreman reset");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   it("preserves worktree for conflict run — does NOT remove", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
       makeRun({ seed_id: seedId, status: "conflict" }),
     ]);
@@ -204,13 +222,13 @@ describe("Doctor.checkOrphanedWorktrees", () => {
 
     expect(results[0].status).toBe("warn");
     expect(results[0].message).toContain("conflict");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   it("preserves worktree for test-failed run — does NOT remove", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
       makeRun({ seed_id: seedId, status: "test-failed" }),
     ]);
@@ -220,7 +238,7 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     expect(results[0].status).toBe("warn");
     expect(results[0].message).toContain("test-failed");
     expect(results[0].message).toContain("foreman reset");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   it("preserves worktree when seed has mixed runs including a failed one", async () => {
@@ -228,7 +246,7 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     // The merged run check takes priority, so let's test with only failable runs
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
       makeRun({ id: "run-1", seed_id: seedId, status: "failed" }),
       makeRun({ id: "run-2", seed_id: seedId, status: "failed" }),
@@ -237,40 +255,40 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     const results = await doctor.checkOrphanedWorktrees({ fix: true });
 
     expect(results[0].status).toBe("warn");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   it("removes truly orphaned worktree (no runs) when fix=true", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-orphan";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
-    vi.mocked(removeWorktree).mockResolvedValue(undefined);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
+    mockRemoveWorkspace.mockResolvedValue(undefined);
     store.getRunsForSeed.mockReturnValue([]); // no runs at all
 
     const results = await doctor.checkOrphanedWorktrees({ fix: true });
 
     expect(results[0].status).toBe("fixed");
     expect(results[0].message).toContain("Orphaned");
-    expect(vi.mocked(removeWorktree)).toHaveBeenCalled();
+    expect(mockRemoveWorkspace).toHaveBeenCalled();
   });
 
   it("shows dry-run message for truly orphaned worktree without removing", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-orphan";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([]);
 
     const results = await doctor.checkOrphanedWorktrees({ dryRun: true });
 
     expect(results[0].status).toBe("warn");
     expect(results[0].message).toContain("dry-run");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   it("warns for orphaned worktree without fix flag", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-orphan";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([]);
 
     const results = await doctor.checkOrphanedWorktrees();
@@ -284,7 +302,7 @@ describe("Doctor.checkOrphanedWorktrees", () => {
   it("returns pass for SDK-based running run (no PID in session_key)", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
       makeRun({
         seed_id: seedId,
@@ -299,13 +317,13 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     expect(results).toHaveLength(1);
     expect(results[0].status).toBe("pass");
     expect(results[0].message).toContain("SDK-based worker");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   it("returns pass for SDK-based running run with session suffix", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
       makeRun({
         seed_id: seedId,
@@ -319,13 +337,13 @@ describe("Doctor.checkOrphanedWorktrees", () => {
 
     expect(results[0].status).toBe("pass");
     expect(results[0].message).toContain("SDK-based worker");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   it("never marks SDK-based running run as zombie even when fix=true", async () => {
     const { store, doctor } = makeMocks();
     const seedId = "seed-abc";
-    vi.mocked(listWorktrees).mockResolvedValue([makeWorktree(seedId)]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId)]);
     store.getRunsForSeed.mockReturnValue([
       makeRun({
         seed_id: seedId,
@@ -339,17 +357,17 @@ describe("Doctor.checkOrphanedWorktrees", () => {
 
     expect(results[0].status).toBe("pass");
     expect(results[0].message).not.toContain("Zombie");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
   it("handles mixed worktrees: SDK run (pass), traditional zombie (warn), orphan (fixed)", async () => {
     const { store, doctor } = makeMocks();
-    vi.mocked(listWorktrees).mockResolvedValue([
+    mockListWorkspaces.mockResolvedValue([
       makeWorktree("seed-sdk"),
       makeWorktree("seed-zombie"),
       makeWorktree("seed-orphan"),
     ]);
-    vi.mocked(removeWorktree).mockResolvedValue(undefined);
+    mockRemoveWorkspace.mockResolvedValue(undefined);
 
     store.getRunsForSeed.mockImplementation((seedId: string) => {
       if (seedId === "seed-sdk") {
@@ -393,8 +411,8 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     expect(orphanResult?.status).toBe("fixed");
 
     // Only the orphaned worktree should be removed (zombie stays, SDK is alive)
-    expect(vi.mocked(removeWorktree)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(removeWorktree)).toHaveBeenCalledWith(
+    expect(mockRemoveWorkspace).toHaveBeenCalledTimes(1);
+    expect(mockRemoveWorkspace).toHaveBeenCalledWith(
       expect.any(String),
       `/tmp/worktrees/seed-orphan`,
     );
@@ -402,7 +420,7 @@ describe("Doctor.checkOrphanedWorktrees", () => {
 
   it("returns warn when listWorktrees throws", async () => {
     const { doctor } = makeMocks();
-    vi.mocked(listWorktrees).mockRejectedValue(new Error("git error"));
+    mockListWorkspaces.mockRejectedValue(new Error("git error"));
 
     const results = await doctor.checkOrphanedWorktrees();
 
@@ -413,12 +431,12 @@ describe("Doctor.checkOrphanedWorktrees", () => {
 
   it("handles multiple worktrees with different statuses", async () => {
     const { store, doctor } = makeMocks();
-    vi.mocked(listWorktrees).mockResolvedValue([
+    mockListWorkspaces.mockResolvedValue([
       makeWorktree("seed-active"),
       makeWorktree("seed-failed"),
       makeWorktree("seed-orphan"),
     ]);
-    vi.mocked(removeWorktree).mockResolvedValue(undefined);
+    mockRemoveWorkspace.mockResolvedValue(undefined);
 
     store.getRunsForSeed.mockImplementation((seedId: string) => {
       if (seedId === "seed-active") {
@@ -444,8 +462,8 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     expect(orphanResult?.status).toBe("fixed");
 
     // Only the orphaned worktree should be removed
-    expect(vi.mocked(removeWorktree)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(removeWorktree)).toHaveBeenCalledWith(
+    expect(mockRemoveWorkspace).toHaveBeenCalledTimes(1);
+    expect(mockRemoveWorkspace).toHaveBeenCalledWith(
       expect.any(String),
       `/tmp/worktrees/seed-orphan`,
     );

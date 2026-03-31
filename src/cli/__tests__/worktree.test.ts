@@ -1,14 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { Worktree } from "../../lib/git.js";
+import type { Workspace } from "../../lib/vcs/types.js";
 import type { Run } from "../../lib/store.js";
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
-vi.mock("../../lib/git.js", () => ({
-  getRepoRoot: vi.fn(async () => "/tmp/project"),
-  listWorktrees: vi.fn(async () => []),
-  removeWorktree: vi.fn(async () => {}),
-  deleteBranch: vi.fn(async () => ({ deleted: true, wasFullyMerged: true })),
+const { mockListWorkspaces, mockRemoveWorkspace, mockDeleteBranch, mockCreateVcsBackend } = vi.hoisted(() => {
+  const mockListWorkspaces = vi.fn(async () => []);
+  const mockRemoveWorkspace = vi.fn(async () => {});
+  const mockDeleteBranch = vi.fn(async () => ({ deleted: true, wasFullyMerged: true }));
+  const mockCreateVcsBackend = vi.fn().mockResolvedValue({
+    name: "git",
+    getRepoRoot: vi.fn(async () => "/tmp/project"),
+    listWorkspaces: mockListWorkspaces,
+    removeWorkspace: mockRemoveWorkspace,
+    deleteBranch: mockDeleteBranch,
+  });
+  return { mockListWorkspaces, mockRemoveWorkspace, mockDeleteBranch, mockCreateVcsBackend };
+});
+
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: mockCreateVcsBackend,
+  },
 }));
 
 vi.mock("../../lib/store.js", () => {
@@ -21,7 +34,6 @@ vi.mock("../../lib/store.js", () => {
   return { ForemanStore: MockForemanStore };
 });
 
-import { listWorktrees, removeWorktree, deleteBranch } from "../../lib/git.js";
 import { ForemanStore } from "../../lib/store.js";
 import {
   listForemanWorktrees,
@@ -32,7 +44,7 @@ import {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function makeWorktree(overrides: Partial<Worktree> = {}): Worktree {
+function makeWorktree(overrides: Partial<Workspace> = {}): Workspace {
   return {
     path: "/tmp/project/.foreman-worktrees/seed-abc",
     branch: "foreman/seed-abc",
@@ -66,12 +78,12 @@ describe("listForemanWorktrees()", () => {
   });
 
   it("returns only foreman/* worktrees", async () => {
-    const worktrees: Worktree[] = [
+    const worktrees: Workspace[] = [
       makeWorktree({ path: "/tmp/project", branch: "main" }),
       makeWorktree({ path: "/tmp/project/.foreman-worktrees/seed-abc", branch: "foreman/seed-abc" }),
       makeWorktree({ path: "/tmp/project/.foreman-worktrees/seed-def", branch: "foreman/seed-def" }),
     ];
-    vi.mocked(listWorktrees).mockResolvedValue(worktrees);
+    mockListWorkspaces.mockResolvedValue(worktrees as never);
 
     const store = new ForemanStore() as any;
     const result = await listForemanWorktrees("/tmp/project", store);
@@ -82,9 +94,9 @@ describe("listForemanWorktrees()", () => {
   });
 
   it("includes run status and seed ID in metadata", async () => {
-    vi.mocked(listWorktrees).mockResolvedValue([
+    mockListWorkspaces.mockResolvedValue([
       makeWorktree({ branch: "foreman/seed-abc" }),
-    ]);
+    ] as never);
     const store = new ForemanStore() as any;
     const run = makeRun({ status: "running" });
     store.getRunsForSeed.mockReturnValue([run]);
@@ -96,18 +108,18 @@ describe("listForemanWorktrees()", () => {
   });
 
   it("returns empty array when no foreman worktrees exist", async () => {
-    vi.mocked(listWorktrees).mockResolvedValue([
+    mockListWorkspaces.mockResolvedValue([
       makeWorktree({ path: "/tmp/project", branch: "main" }),
-    ]);
+    ] as never);
     const store = new ForemanStore() as any;
     const result = await listForemanWorktrees("/tmp/project", store);
     expect(result).toHaveLength(0);
   });
 
   it("handles worktrees with no matching run", async () => {
-    vi.mocked(listWorktrees).mockResolvedValue([
+    mockListWorkspaces.mockResolvedValue([
       makeWorktree({ branch: "foreman/orphan-seed" }),
-    ]);
+    ] as never);
     const store = new ForemanStore() as any;
     store.getRunsForSeed.mockReturnValue([]);
 
@@ -150,8 +162,8 @@ describe("cleanWorktrees()", () => {
     const result = await cleanWorktrees("/tmp/project", worktrees, { all: false, force: false });
 
     expect(result.removed).toBe(1);
-    expect(vi.mocked(removeWorktree)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(removeWorktree)).toHaveBeenCalledWith("/tmp/project", "/tmp/project/.foreman-worktrees/seed-done");
+    expect(mockRemoveWorkspace).toHaveBeenCalledTimes(1);
+    expect(mockRemoveWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/project/.foreman-worktrees/seed-done");
   });
 
   it("with --all removes active worktrees too", async () => {
@@ -179,7 +191,7 @@ describe("cleanWorktrees()", () => {
     const result = await cleanWorktrees("/tmp/project", worktrees, { all: true, force: false });
 
     expect(result.removed).toBe(2);
-    expect(vi.mocked(removeWorktree)).toHaveBeenCalledTimes(2);
+    expect(mockRemoveWorkspace).toHaveBeenCalledTimes(2);
   });
 
   it("with --force uses force branch deletion", async () => {
@@ -197,7 +209,7 @@ describe("cleanWorktrees()", () => {
 
     await cleanWorktrees("/tmp/project", worktrees, { all: false, force: true });
 
-    expect(vi.mocked(deleteBranch)).toHaveBeenCalledWith(
+    expect(mockDeleteBranch).toHaveBeenCalledWith(
       "/tmp/project",
       "foreman/seed-done",
       expect.objectContaining({ force: true }),
@@ -233,7 +245,7 @@ describe("cleanWorktrees()", () => {
   });
 
   it("continues on error and collects failures", async () => {
-    vi.mocked(removeWorktree).mockRejectedValueOnce(new Error("locked"));
+    mockRemoveWorkspace.mockRejectedValueOnce(new Error("locked"));
 
     const worktrees: WorktreeInfo[] = [
       {
@@ -280,8 +292,8 @@ describe("cleanWorktrees()", () => {
 
     expect(result.removed).toBe(1);
     expect(result.errors).toHaveLength(0);
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
-    expect(vi.mocked(deleteBranch)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
+    expect(mockDeleteBranch).not.toHaveBeenCalled();
   });
 
   it("with --dry-run populates wouldRemove with the affected worktrees", async () => {
@@ -340,8 +352,8 @@ describe("cleanWorktrees()", () => {
     expect(result.removed).toBe(2);
     expect(result.errors).toHaveLength(0);
     expect(result.wouldRemove).toHaveLength(2);
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
-    expect(vi.mocked(deleteBranch)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
+    expect(mockDeleteBranch).not.toHaveBeenCalled();
   });
 
   it("with --dry-run and --all populates wouldRemove with all worktrees", async () => {
@@ -410,8 +422,8 @@ describe("cleanWorktrees()", () => {
     expect(result.removed).toBe(1);
     expect(result.wouldRemove).toHaveLength(1);
     expect(result.wouldRemove![0].seedId).toBe("seed-done");
-    expect(vi.mocked(removeWorktree)).not.toHaveBeenCalled();
-    expect(vi.mocked(deleteBranch)).not.toHaveBeenCalled();
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
+    expect(mockDeleteBranch).not.toHaveBeenCalled();
   });
 
   it("without --dry-run does not populate wouldRemove", async () => {
@@ -430,6 +442,6 @@ describe("cleanWorktrees()", () => {
     const result = await cleanWorktrees("/tmp/project", worktrees, { all: false, force: false });
 
     expect(result.wouldRemove).toBeUndefined();
-    expect(vi.mocked(removeWorktree)).toHaveBeenCalledTimes(1);
+    expect(mockRemoveWorkspace).toHaveBeenCalledTimes(1);
   });
 });

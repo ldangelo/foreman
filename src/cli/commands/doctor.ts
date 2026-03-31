@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { getRepoRoot } from "../../lib/git.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { ForemanStore } from "../../lib/store.js";
 import { Doctor } from "../../orchestrator/doctor.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
@@ -85,7 +85,8 @@ export const doctorCommand = new Command("doctor")
     // Determine project path
     let projectPath: string;
     try {
-      projectPath = await getRepoRoot(process.cwd());
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      projectPath = await vcs.getRepoRoot(process.cwd());
     } catch {
       if (!jsonOutput) {
         console.log(chalk.bold("Repository:"));

@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 
 import { ForemanStore } from "../lib/store.js";
 import type { Run } from "../lib/store.js";
-import { listWorktrees, removeWorktree, branchExistsOnOrigin, detectDefaultBranch } from "../lib/git.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -17,6 +16,8 @@ import { findMissingPrompts, installBundledPrompts, findMissingSkills, installBu
 import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig } from "../lib/project-config.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
+import type { VcsBackend } from "../lib/vcs/interface.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -50,6 +51,7 @@ function isSDKBasedRun(sessionKey: string | null): boolean {
 export class Doctor {
   private mergeQueue?: MergeQueue;
   private taskClient?: ITaskClient;
+  private vcsBackendPromise?: Promise<VcsBackend>;
   /**
    * Injected execFile-like function used only by `isBranchMerged`.
    * Defaults to the real `execFileAsync`; can be overridden in tests to avoid
@@ -67,6 +69,11 @@ export class Doctor {
     this.mergeQueue = mergeQueue;
     this.taskClient = taskClient;
     this.execFn = execFn ?? (execFileAsync as ExecFileAsyncFn);
+  }
+
+  private getVcsBackend(): Promise<VcsBackend> {
+    this.vcsBackendPromise ??= VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
+    return this.vcsBackendPromise;
   }
 
   // ── System checks ──────────────────────────────────────────────────
@@ -294,7 +301,7 @@ export class Doctor {
 
     let defaultBranch: string;
     try {
-      defaultBranch = await detectDefaultBranch(this.projectPath);
+      defaultBranch = await (await this.getVcsBackend()).detectDefaultBranch(this.projectPath);
     } catch {
       return {
         name: "git town main branch configured",
@@ -691,7 +698,7 @@ export class Doctor {
 
     let worktrees;
     try {
-      worktrees = await listWorktrees(this.projectPath);
+      worktrees = await (await this.getVcsBackend()).listWorkspaces(this.projectPath);
     } catch {
       results.push({
         name: "orphaned worktrees",
@@ -772,7 +779,7 @@ export class Doctor {
         } else if (fix) {
           try {
             await archiveWorktreeReports(this.projectPath, wt.path, seedId).catch(() => {});
-            await removeWorktree(this.projectPath, wt.path);
+            await (await this.getVcsBackend()).removeWorkspace(this.projectPath, wt.path);
             try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
             results.push({
               name: `worktree: ${seedId}`,
@@ -822,7 +829,7 @@ export class Doctor {
         // Check if the branch exists on origin before removing locally.
         // NOTE: Uses locally-cached remote-tracking refs; does NOT network-fetch.
         // Run `git fetch` first if you need an authoritative answer.
-        const onOrigin = await branchExistsOnOrigin(this.projectPath, wt.branch);
+        const onOrigin = await (await this.getVcsBackend()).branchExistsOnRemote(this.projectPath, wt.branch);
         if (onOrigin) {
           // Branch exists on origin — never auto-remove regardless of fix/dryRun.
           const dryRunSuffix = dryRun ? " (dry-run: would not remove either way)" : "";
@@ -840,7 +847,7 @@ export class Doctor {
         } else if (fix) {
           try {
             await archiveWorktreeReports(this.projectPath, wt.path, seedId).catch(() => {});
-            await removeWorktree(this.projectPath, wt.path);
+            await (await this.getVcsBackend()).removeWorkspace(this.projectPath, wt.path);
             try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
             results.push({
               name: `worktree: ${seedId}`,
@@ -1054,7 +1061,7 @@ export class Doctor {
     // Detect the default branch once; fall back gracefully on errors.
     let defaultBranch: string;
     try {
-      defaultBranch = await detectDefaultBranch(this.projectPath);
+      defaultBranch = await (await this.getVcsBackend()).detectDefaultBranch(this.projectPath);
     } catch {
       defaultBranch = "main";
     }

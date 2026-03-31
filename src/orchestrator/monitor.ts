@@ -2,8 +2,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ForemanStore, Run } from "../lib/store.js";
 import type { ITaskClient } from "../lib/task-client.js";
-import { removeWorktree, createWorktree } from "../lib/git.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
+import type { VcsBackend } from "../lib/vcs/interface.js";
 import type { MonitorReport } from "./types.js";
 import { PIPELINE_LIMITS } from "../lib/config.js";
 
@@ -66,7 +67,13 @@ export class Monitor {
     private store: ForemanStore,
     private taskClient: ITaskClient,
     private projectPath: string,
+    private vcsBackend?: VcsBackend,
   ) {
+  }
+
+  private getVcsBackend(): VcsBackend {
+    this.vcsBackend ??= VcsBackendFactory.createSync({ backend: "auto" }, this.projectPath);
+    return this.vcsBackend;
   }
 
   /**
@@ -287,7 +294,7 @@ export class Monitor {
         // Archive is best-effort — don't block worktree removal
       }
       try {
-        await removeWorktree(this.projectPath, run.worktree_path);
+        await this.getVcsBackend().removeWorkspace(this.projectPath, run.worktree_path);
       } catch {
         // Worktree may already be gone — that's fine
       }
@@ -295,7 +302,7 @@ export class Monitor {
 
     // Recreate worktree
     try {
-      const { worktreePath } = await createWorktree(this.projectPath, run.seed_id);
+      const { workspacePath: worktreePath } = await this.getVcsBackend().createWorkspace(this.projectPath, run.seed_id);
 
       this.store.updateRun(run.id, {
         status: "pending",
