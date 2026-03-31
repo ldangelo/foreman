@@ -9,6 +9,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Run } from "../../lib/store.js";
 
 // ── Module mocks ─────────────────────────────────────────────────────────────
+// NOTE: This suite intentionally exercises the lib/git.js compatibility shim
+// directly (mergeWorktree/removeWorktree/gitBranchExists), so it should remain
+// on the shim until that compatibility surface is explicitly retired.
 
 vi.mock("node:child_process", () => ({
   execFile: vi.fn(),

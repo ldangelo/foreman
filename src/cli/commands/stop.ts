@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { ForemanStore, type Run } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -279,7 +279,8 @@ export const stopCommand = new Command("stop")
     let projectPath: string;
     let isGitRepo = true;
     try {
-      projectPath = await getRepoRoot(process.cwd());
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      projectPath = await vcs.getRepoRoot(process.cwd());
     } catch {
       // Fall back to cwd for --list (shows runs even outside a git repo), but
       // for all other operations we require a git repo below.

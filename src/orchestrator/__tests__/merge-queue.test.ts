@@ -2,14 +2,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { MergeQueue } from "../merge-queue.js";
 import type { MergeQueueEntry, MergeQueueStatus } from "../merge-queue.js";
-import type { GitBackend } from "../../lib/vcs/git-backend.js";
+import type { VcsBackend } from "../../lib/vcs/interface.js";
 
-vi.mock("../../lib/git.js", () => ({
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+const { mockCreateVcsBackend } = vi.hoisted(() => ({
+  mockCreateVcsBackend: vi.fn(),
+}));
+
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: mockCreateVcsBackend,
+  },
 }));
 
 /**
- * Create a GitBackend mock for reconcile() tests.
+ * Create a VcsBackend mock for reconcile() tests.
  * All methods are vi.fn() instances for assertion tracking.
  */
 function makeBackend(opts?: {
@@ -17,7 +23,7 @@ function makeBackend(opts?: {
   branchExistsOnRemote?: boolean | ((branch: string) => boolean);
   files?: string[] | ((from: string, to: string) => string[]);
   timestamp?: number | null | ((ref: string) => number | null);
-}): GitBackend {
+}): VcsBackend {
   const { branchExists: be = true, branchExistsOnRemote: beor = false, files = [], timestamp = null } = opts ?? {};
   const backend = {
     branchExists: vi.fn().mockImplementation((_repo: string, branch: string) =>
@@ -34,8 +40,9 @@ function makeBackend(opts?: {
     getRefCommitTimestamp: vi.fn().mockImplementation((_repo: string, ref: string) =>
       Promise.resolve(typeof timestamp === "function" ? timestamp(ref) : timestamp)
     ),
+    detectDefaultBranch: vi.fn().mockResolvedValue("main"),
   };
-  return backend as unknown as GitBackend;
+  return backend as unknown as VcsBackend;
 }
 
 // Minimal schema needed for tests (merge_queue + runs for FK)
@@ -126,6 +133,7 @@ describe("MergeQueue", () => {
     insertRun(db, "run-2", "seed-2");
     insertRun(db, "run-3", "seed-3");
     queue = new MergeQueue(db);
+    mockCreateVcsBackend.mockResolvedValue(makeBackend());
   });
 
   afterEach(() => {

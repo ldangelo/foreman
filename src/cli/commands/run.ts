@@ -8,7 +8,9 @@ import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
-import { getRepoRoot, getCurrentBranch, checkoutBranch, detectDefaultBranch } from "../../lib/git.js";
+import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
+import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { extractBranchLabel } from "../../lib/branch-label.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js";
@@ -80,13 +82,27 @@ async function promptYesNo(question: string): Promise<boolean> {
  *
  * Returns true if the caller should abort (user declined to switch).
  */
+async function createRunVcsBackend(projectPath: string): Promise<VcsBackend> {
+  const projectCfg = loadProjectConfig(projectPath);
+  const vcsConfig = resolveVcsConfig(undefined, projectCfg?.vcs);
+  return VcsBackendFactory.create(vcsConfig, projectPath);
+}
+
 export async function checkBranchMismatch(
   taskClient: ITaskClient,
   projectPath: string,
 ): Promise<boolean> {
+  let vcs: VcsBackend;
+  try {
+    vcs = await createRunVcsBackend(projectPath);
+  } catch {
+    // Cannot determine VCS backend — skip mismatch check
+    return false;
+  }
+
   let currentBranch: string;
   try {
-    currentBranch = await getCurrentBranch(projectPath);
+    currentBranch = await vcs.getCurrentBranch(projectPath);
   } catch {
     // Cannot determine current branch — skip mismatch check
     return false;
@@ -132,7 +148,7 @@ export async function checkBranchMismatch(
     const shouldSwitch = await promptYesNo(question);
     if (shouldSwitch) {
       try {
-        await checkoutBranch(projectPath, targetBranch);
+        await vcs.checkoutBranch(projectPath, targetBranch);
         console.log(chalk.green(`Switched to branch ${targetBranch}.`));
         currentBranch = targetBranch;
       } catch (err: unknown) {
@@ -216,7 +232,8 @@ export const runCommand = new Command("run")
     }
 
     try {
-      const projectPath = await getRepoRoot(process.cwd());
+      const startupVcs = await createRunVcsBackend(process.cwd());
+      const projectPath = await startupVcs.getRepoRoot(process.cwd());
 
       // ── Pi Extensions check ──────────────────────────────────────────────────
       // If Pi is available, the extensions package must be built before dispatch.
@@ -360,8 +377,8 @@ export const runCommand = new Command("run")
       let targetBranch: string | undefined;
       if (!dryRun) {
         try {
-          const cb = await getCurrentBranch(projectPath);
-          const db = await detectDefaultBranch(projectPath);
+          const cb = await startupVcs.getCurrentBranch(projectPath);
+          const db = await startupVcs.detectDefaultBranch(projectPath);
           if (cb !== db) {
             const question = chalk.yellow(
               `\nYou are on branch ${chalk.green(cb)}, ` +

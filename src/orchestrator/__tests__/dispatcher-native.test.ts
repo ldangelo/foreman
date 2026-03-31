@@ -42,7 +42,7 @@ vi.mock("../../lib/vcs/index.js", () => ({
   },
 }));
 
-vi.mock("../../lib/git.js", () => ({
+vi.mock("../../lib/setup.js", () => ({
   installDependencies: vi.fn().mockResolvedValue(undefined),
   runSetupWithCache: vi.fn().mockResolvedValue(undefined),
 }));

@@ -26,7 +26,6 @@ import {
   getDisallowedTools,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { detectDefaultBranch } from "../lib/git.js";
 import { enqueueResetSeedToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
@@ -34,7 +33,7 @@ import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "..
 import { autoMerge } from "./auto-merge.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
-import { GitBackend } from "../lib/vcs/git-backend.js";
+import type { VcsBackend } from "../lib/vcs/interface.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -659,16 +658,6 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     throw err;
   }
 
-  // Ensure targetBranch is set so finalize rebases onto the correct branch.
-  // If not provided by the dispatcher, detect the default branch (e.g. dev).
-  if (!config.targetBranch) {
-    try {
-      config.targetBranch = await detectDefaultBranch(pipelineProjectPath);
-    } catch {
-      // Non-fatal: falls back to "main" in buildPhasePrompt
-    }
-  }
-
   // Create a NativeTaskStore from the same DB for phase-level visibility (REQ-012).
   // updatePhase() is called after each successful phase transition.
   // No-op when config.taskId is absent (beads fallback mode — REQ-017).
@@ -676,7 +665,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
   // Initialize VCS backend for prompt templating (TRD-026, TRD-027).
   // Reconstructed from FOREMAN_VCS_BACKEND env var set by dispatcher.
-  let vcsBackend;
+  let vcsBackend: VcsBackend | undefined;
   try {
     vcsBackend = await VcsBackendFactory.fromEnv(
       pipelineProjectPath,
@@ -686,6 +675,16 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   } catch {
     // Non-fatal: falls back to git defaults in buildPhasePrompt
     log(`[PIPELINE] VCS backend init failed — using prompt defaults`);
+  }
+
+  // Ensure targetBranch is set so finalize rebases onto the correct branch.
+  // If not provided by the dispatcher, detect the default branch from the active backend.
+  if (!config.targetBranch && vcsBackend) {
+    try {
+      config.targetBranch = await vcsBackend.detectDefaultBranch(pipelineProjectPath);
+    } catch {
+      // Non-fatal: falls back to "main" in buildPhasePrompt
+    }
   }
 
   // Delegate to the generic workflow-driven executor.
@@ -815,7 +814,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
                 candidates.push(`origin/${config.targetBranch}`, config.targetBranch);
               }
               candidates.push("origin/dev", "origin/main");
-              const aheadBackend = new GitBackend(worktreePath);
+              const aheadBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
               for (const ref of candidates) {
                 try {
                   // Use VcsBackend.getChangedFiles() as a proxy for checking if
@@ -889,8 +888,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           // enqueueToMergeQueue which expects a synchronous getFilesModified callback.
           let enqueueFiles: string[] = [];
           try {
-            const enqueueBackend = new GitBackend(worktreePath);
-            const enqueueDefaultBranch = await detectDefaultBranch(worktreePath);
+            const enqueueBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
+            const enqueueDefaultBranch = await enqueueBackend.detectDefaultBranch(worktreePath);
             enqueueFiles = await enqueueBackend.getChangedFiles(worktreePath, enqueueDefaultBranch, "HEAD");
           } catch {
             // Non-fatal — proceed with empty file list

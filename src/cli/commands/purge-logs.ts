@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 import { ForemanStore } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -276,7 +276,8 @@ export const purgeLogsCommand = new Command("purge-logs")
   .action(async (opts: { days?: number; dryRun?: boolean; all?: boolean }) => {
     let projectPath: string;
     try {
-      projectPath = await getRepoRoot(process.cwd());
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      projectPath = await vcs.getRepoRoot(process.cwd());
     } catch {
       console.error(
         chalk.red("Not in a git repository. Run from within a foreman project."),

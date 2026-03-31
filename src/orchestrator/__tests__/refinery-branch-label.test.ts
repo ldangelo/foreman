@@ -17,16 +17,10 @@ vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
 }));
 
-vi.mock("../../lib/git.js", () => ({
-  mergeWorktree: vi.fn().mockResolvedValue({ success: true }),
-  removeWorktree: vi.fn().mockResolvedValue(undefined),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
-  gitBranchExists: vi.fn().mockResolvedValue(false),
-}));
-
 vi.mock("../task-backend-ops.js", () => ({
   enqueueResetSeedToOpen: vi.fn().mockResolvedValue(undefined),
   enqueueCloseSeed: vi.fn().mockResolvedValue(undefined),
+  enqueueAddNotesToBead: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../lib/archive-reports.js", () => ({
@@ -97,6 +91,7 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
     rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
     abortRebase: vi.fn().mockResolvedValue(undefined),
     merge: vi.fn().mockResolvedValue({ success: true }),
+    mergeWithoutCommit: vi.fn().mockResolvedValue({ success: true }),
     getHeadId: vi.fn().mockResolvedValue("abc1234"),
     fetch: vi.fn().mockResolvedValue(undefined),
     diff: vi.fn().mockResolvedValue(""),
@@ -158,12 +153,8 @@ describe("Refinery — branch label targeting", () => {
 
     // checkoutBranch should be called with "installer" (from branch: label), not "main"
     expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp", "installer");
-    // git merge --squash should reference the feature branch
-    const calls: any[][] = (execFile as any).mock.calls;
-    const squashCall = calls.find(
-      (c: any[]) => c[0] === "git" && Array.isArray(c[1]) && c[1].includes("--squash") && c[1].includes("foreman/seed-abc"),
-    );
-    expect(squashCall).toBeDefined();
+    // Squash-merge flow is now backend-driven; verify the branch merge targeted installer.
+    expect(vcs.mergeWithoutCommit).toHaveBeenCalledWith("/tmp", "foreman/seed-abc", "installer");
   });
 
   it("falls back to default target when no branch: label exists", async () => {

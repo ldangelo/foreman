@@ -1,0 +1,1 @@
+{"type":"decision","title":"Separate setup helpers from VCS shim","rationale":"Dispatcher setup/install behavior is stack-specific setup logic rather than VCS branching logic, so it should live outside the git compatibility shim.","classification":"tactical","recorded_at":"2026-03-31T15:58:50.920Z","id":"mx-e4147b"}

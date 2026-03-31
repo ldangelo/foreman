@@ -34,12 +34,6 @@ vi.mock("node:os", async (importOriginal) => {
 
 // Mock heavy dependencies not needed for drain tests
 vi.mock("../pi-sdk-runner.js", () => ({ runWithPiSdk: vi.fn() }));
-vi.mock("../../lib/git.js", () => ({
-  createWorktree: vi.fn(),
-  gitBranchExists: vi.fn(),
-  getCurrentBranch: vi.fn().mockResolvedValue("main"),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
-}));
 vi.mock("../../lib/bv.js", () => ({}));
 vi.mock("../../lib/workflow-loader.js", () => ({
   loadWorkflowConfig: vi.fn(),

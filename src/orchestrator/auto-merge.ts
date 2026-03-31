@@ -15,9 +15,11 @@ import { promisify } from "node:util";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import type { ForemanStore } from "../lib/store.js";
 import type { ITaskClient } from "../lib/task-client.js";
-import { detectDefaultBranch } from "../lib/git.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
+import type { VcsBackend } from "../lib/vcs/interface.js";
 import { MergeQueue, RETRY_CONFIG } from "./merge-queue.js";
 import { Refinery } from "./refinery.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -25,6 +27,12 @@ import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
 import { enqueueAddNotesToBead, enqueueMarkBeadFailed, enqueueSetBeadStatus } from "./task-backend-ops.js";
 
 const execFileAsync = promisify(execFile);
+
+async function createAutoMergeVcsBackend(projectPath: string): Promise<VcsBackend> {
+  const projectCfg = loadProjectConfig(projectPath);
+  const vcsConfig = resolveVcsConfig(undefined, projectCfg?.vcs);
+  return VcsBackendFactory.create(vcsConfig, projectPath);
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -137,7 +145,8 @@ export interface AutoMergeResult {
  */
 export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
   const { store, taskClient, projectPath } = opts;
-  const targetBranch = opts.targetBranch ?? await detectDefaultBranch(projectPath);
+  const vcs = await createAutoMergeVcsBackend(projectPath);
+  const targetBranch = opts.targetBranch ?? await vcs.detectDefaultBranch(projectPath);
 
   const project = store.getProjectByPath(projectPath);
   if (!project) {

@@ -31,6 +31,7 @@ const {
   mockSentinelStop,
   mockSentinelIsRunning,
   MockSentinelAgent,
+  mockVcsCreate,
 } = vi.hoisted(() => {
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
   const MockBeadsRustClient = vi.fn(function (this: Record<string, unknown>) {
@@ -71,6 +72,11 @@ const {
     this.isRunning = mockSentinelIsRunning;
   });
 
+  const mockVcsCreate = vi.fn().mockResolvedValue({
+    getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+    detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+  });
+
   return {
     mockEnsureBrInstalled,
     MockBeadsRustClient,
@@ -87,6 +93,7 @@ const {
     mockSentinelStop,
     mockSentinelIsRunning,
     MockSentinelAgent,
+    mockVcsCreate,
   };
 });
 
@@ -94,9 +101,10 @@ vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
-vi.mock("../../lib/git.js", () => ({
-  getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: (...args: unknown[]) => mockVcsCreate(...args),
+  },
 }));
 vi.mock("../../orchestrator/notification-server.js", () => ({
   NotificationServer: vi.fn(function (this: Record<string, unknown>) {
@@ -178,6 +186,10 @@ describe("sentinel auto-start in foreman run", () => {
     mockWatchRunsInk.mockResolvedValue({ detached: false });
     mockGetActiveRuns.mockReturnValue([]);
     mockGetProjectByPath.mockReturnValue(null);
+    mockVcsCreate.mockResolvedValue({
+      getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+    });
     mockGetSentinelConfig.mockReturnValue(null);
     mockGetRunsByStatuses.mockReturnValue([]);
 

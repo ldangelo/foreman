@@ -4,7 +4,6 @@ import chalk from "chalk";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
-import { getRepoRoot, getCurrentBranch, checkoutBranch, detectDefaultBranch } from "../../lib/git.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { existsSync, readdirSync } from "node:fs";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
@@ -181,7 +180,8 @@ export async function detectAndHandleStaleBranches(
   // Detect the target branch once (e.g. "dev" or "main") — used for all checks.
   let targetBranch: string;
   try {
-    targetBranch = await detectDefaultBranch(projectPath);
+    const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+    targetBranch = await vcs.detectDefaultBranch(projectPath);
   } catch {
     targetBranch = "dev";
   }
@@ -517,12 +517,13 @@ export const resetCommand = new Command("reset")
     }
 
     try {
-      const projectPath = await getRepoRoot(process.cwd());
+      const startupVcs = await VcsBackendFactory.create({ backend: 'auto' }, process.cwd());
+      const projectPath = await startupVcs.getRepoRoot(process.cwd());
       const vcs = await VcsBackendFactory.create({ backend: 'auto' }, projectPath);
       // Save current branch so we can restore it after worktree/branch cleanup,
       // which can change HEAD as a side effect of git worktree remove / branch -D.
       let originalBranch: string | undefined;
-      try { originalBranch = await getCurrentBranch(projectPath); } catch { /* ignore */ }
+      try { originalBranch = await vcs.getCurrentBranch(projectPath); } catch { /* ignore */ }
 
       const seeds: IShowUpdateClient = new BeadsRustClient(projectPath);
       const store = ForemanStore.forProject(projectPath);
@@ -937,9 +938,9 @@ export const resetCommand = new Command("reset")
       // change HEAD as a side effect.
       if (originalBranch) {
         try {
-          const currentBranch = await getCurrentBranch(projectPath);
+          const currentBranch = await vcs.getCurrentBranch(projectPath);
           if (currentBranch !== originalBranch) {
-            await checkoutBranch(projectPath, originalBranch);
+            await vcs.checkoutBranch(projectPath, originalBranch);
             console.log(chalk.dim(`Restored branch: ${originalBranch}`));
           }
         } catch {

@@ -12,12 +12,6 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...original, execFile: mockExecFile };
 });
 
-vi.mock("../../lib/git.js", () => ({
-  mergeWorktree: vi.fn(),
-  removeWorktree: vi.fn(),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
-}));
-
 vi.mock("../task-backend-ops.js", () => ({
   resetSeedToOpen: vi.fn().mockResolvedValue(undefined),
   closeSeed: vi.fn().mockResolvedValue(undefined),

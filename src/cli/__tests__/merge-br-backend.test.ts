@@ -13,16 +13,23 @@ const {
   mockGetTaskBackend,
   mockEnsureBrInstalled,
   MockBeadsRustClient,
+  mockVcsCreate,
 } = vi.hoisted(() => {
   const mockGetTaskBackend = vi.fn().mockReturnValue("br");
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
   const MockBeadsRustClient = vi.fn(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
     this.ensureBrInstalled = mockEnsureBrInstalled;
   });
+  const mockVcsCreate = vi.fn().mockResolvedValue({
+    getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+    getCurrentBranch: vi.fn().mockResolvedValue("main"),
+    detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+  });
   return {
     mockGetTaskBackend,
     mockEnsureBrInstalled,
     MockBeadsRustClient,
+    mockVcsCreate,
   };
 });
 
@@ -42,9 +49,10 @@ vi.mock("../../lib/store.js", () => ({
   }),
 }));
 
-vi.mock("../../lib/git.js", () => ({
-  getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: (...args: unknown[]) => mockVcsCreate(...args),
+  },
 }));
 
 vi.mock("../../orchestrator/refinery.js", () => ({

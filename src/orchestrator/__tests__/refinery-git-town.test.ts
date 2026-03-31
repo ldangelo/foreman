@@ -26,12 +26,6 @@ vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
 }));
 
-vi.mock("../../lib/git.js", () => ({
-  mergeWorktree: vi.fn(),
-  removeWorktree: vi.fn(),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
-}));
-
 import { execFile } from "node:child_process";
 import { Refinery } from "../refinery.js";
 

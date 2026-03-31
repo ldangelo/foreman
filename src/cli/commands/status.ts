@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Metrics, Run, RunProgress } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { renderAgentCard, formatSuccessRate } from "../watch-ui.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { BrIssue } from "../../lib/beads-rust.js";
@@ -119,7 +119,8 @@ export async function fetchStatusCounts(projectPath: string): Promise<StatusCoun
 // ── Internal render helper ────────────────────────────────────────────────
 
 async function renderStatus(): Promise<void> {
-  const projectPath = await getRepoRoot(process.cwd());
+  const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+  const projectPath = await vcs.getRepoRoot(process.cwd());
   let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
   try {
     counts = await fetchStatusCounts(projectPath);
@@ -256,7 +257,8 @@ export const statusCommand = new Command("status")
     if (opts.json) {
       // JSON output path — gather data and serialize
       try {
-        const projectPath = await getRepoRoot(process.cwd());
+        const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+        const projectPath = await vcs.getRepoRoot(process.cwd());
         let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
         try {
           counts = await fetchStatusCounts(projectPath);
@@ -339,7 +341,8 @@ export const statusCommand = new Command("status")
 
       try {
         while (!detached) {
-          const projectPath = await getRepoRoot(process.cwd());
+          const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      const projectPath = await vcs.getRepoRoot(process.cwd());
           const store = ForemanStore.forProject(projectPath);
 
           let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
