@@ -554,55 +554,77 @@ export class Refinery {
           // may be unreachable. The subsequent rebase/merge will surface any real error.
         }
 
-        // Ensure working directory is clean before rebase — a previous partial rebase
-        // may have left patches applied but not committed. Stash any uncommitted changes
-        // so git rebase doesn't refuse to run.
-        let stashedBeforeRebase = false;
-        try {
-          const dirty = await this.vcsBackend.status(this.projectPath);
-          if (dirty.trim()) {
-            await gitSpecial(["stash", "push", "--include-untracked", "-m", "foreman-rebase-pre-stash"], this.projectPath);
-            stashedBeforeRebase = true;
-          }
-        } catch {
-          // stash failure is non-fatal — rebase will fail with a clear message if still dirty
-        }
-
         // Rebase branch onto current target so it picks up all prior merges.
-        // Auto-resolves report-file conflicts during rebase; aborts on real code conflicts.
+        // For git backends, refinery rebases the branch from the main repo.
+        // For jujutsu backends, rebase the branch inside its own workspace so
+        // we don't fall back to raw git rebase semantics in colocated jj repos.
         {
           let rebaseOk = true;
+          const rebaseWorkspacePath = this.vcsBackend.name === "jujutsu"
+            ? (run.worktree_path ?? this.projectPath)
+            : this.projectPath;
+          let stashedBeforeRebase = false;
+
           try {
-            // Use gitSpecial for the 2-arg rebase form (rebase <upstream> <branch>) which
-            // operates on a non-current branch and is not supported by VcsBackend.rebase().
-            await gitSpecial(["rebase", targetBranch, branchName], this.projectPath);
-          } catch (err: unknown) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            if (errMsg.includes("already used by worktree") || errMsg.includes("is already checked out")) {
-              // Branch is checked out in an active worktree — git refuses to rebase it from
-              // the main repo. Skip rebase and fall back to direct merge.
-              console.warn(`[Refinery] Skipping rebase for ${branchName} (active worktree) — falling back to direct merge`);
-              rebaseOk = true;
+            if (this.vcsBackend.name === "jujutsu") {
+              // Finalize should have committed all task changes already. Clean any
+              // leftover uncommitted artifacts in the agent workspace before rebasing.
+              try {
+                const dirty = await this.vcsBackend.status(rebaseWorkspacePath);
+                if (dirty.trim()) {
+                  await this.vcsBackend.cleanWorkingTree(rebaseWorkspacePath);
+                }
+              } catch {
+                // best effort — rebase will surface a real error if workspace is still dirty
+              }
+
+              const rebaseResult = await this.vcsBackend.rebase(rebaseWorkspacePath, targetBranch);
+              rebaseOk = rebaseResult.success;
             } else {
-              // Rebase hit conflicts — try to auto-resolve report files and continue
-              rebaseOk = await this.autoResolveRebaseConflicts(targetBranch);
+              // Ensure working directory is clean before rebase — a previous partial rebase
+              // may have left patches applied but not committed. Stash any uncommitted changes
+              // so git rebase doesn't refuse to run.
+              try {
+                const dirty = await this.vcsBackend.status(this.projectPath);
+                if (dirty.trim()) {
+                  await gitSpecial(["stash", "push", "--include-untracked", "-m", "foreman-rebase-pre-stash"], this.projectPath);
+                  stashedBeforeRebase = true;
+                }
+              } catch {
+                // stash failure is non-fatal — rebase will fail with a clear message if still dirty
+              }
+
+              try {
+                // Use gitSpecial for the 2-arg rebase form (rebase <upstream> <branch>) which
+                // operates on a non-current branch and is not supported by VcsBackend.rebase().
+                await gitSpecial(["rebase", targetBranch, branchName], this.projectPath);
+              } catch (err: unknown) {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                if (errMsg.includes("already used by worktree") || errMsg.includes("is already checked out")) {
+                  // Branch is checked out in an active worktree — git refuses to rebase it from
+                  // the main repo. Skip rebase and fall back to direct merge.
+                  console.warn(`[Refinery] Skipping rebase for ${branchName} (active worktree) — falling back to direct merge`);
+                  rebaseOk = true;
+                } else {
+                  // Rebase hit conflicts — try to auto-resolve report files and continue
+                  rebaseOk = await this.autoResolveRebaseConflicts(targetBranch);
+                }
+              }
+            }
+          } finally {
+            // Return to target branch regardless
+            try { await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch); } catch { /* best effort */ }
+
+            if (stashedBeforeRebase) {
+              try { await gitSpecial(["stash", "pop"], this.projectPath); } catch { /* best effort — may be empty */ }
             }
           }
 
-          // Return to target branch regardless
-          try { await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch); } catch { /* best effort */ }
-
           if (!rebaseOk) {
-            // Restore stash before bailing out so working directory stays clean
-            if (stashedBeforeRebase) {
-              try { await gitSpecial(["stash", "pop"], this.projectPath); } catch { /* best effort */ }
-            }
-            // Add failure note before resetting so the bead records why it was reset
             await this.addFailureNote(
               run.seed_id,
               `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — branch reset to open for retry. Rebase conflicts detected.`,
             );
-            // Rebase failed — reset seed to open so it can be retried, then create a PR for manual conflict resolution
             enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
             this.sendMail(run.id, "merge-failed", {
               seedId: run.seed_id,
@@ -617,12 +639,6 @@ export class Refinery {
             }
             continue;
           }
-        }
-
-        // Restore any stash we created before the rebase (working dir should be clean after
-        // a successful rebase, but pop defensively to avoid losing the stash entry)
-        if (stashedBeforeRebase) {
-          try { await gitSpecial(["stash", "pop"], this.projectPath); } catch { /* best effort — may be empty */ }
         }
 
         // Save pre-merge HEAD so we can revert merge + archive if tests fail
