@@ -84,8 +84,11 @@ function buildDiagnosticPrompt(
     .map(([name, content]) => `### ${name}\n\`\`\`\n${content.slice(0, 5000)}\n\`\`\``)
     .join("\n\n");
 
+  // Truncate log to last 30 lines AND cap total size to ~100KB
+  const LOG_LINES = 30;
+  const LOG_MAX_CHARS = 100_000;
   const logSection = logContent
-    ? `## Agent Worker Log (last 200 lines)\n\`\`\`\n${logContent.split("\n").slice(-200).join("\n")}\n\`\`\``
+    ? `## Agent Worker Log (last ${LOG_LINES} lines)\n\`\`\`\n${logContent.split("\n").slice(-LOG_LINES).join("\n").slice(-LOG_MAX_CHARS)}\n\`\`\``
     : "## Agent Worker Log\n(not found)";
 
   return loadAndInterpolate("debug.md", {
