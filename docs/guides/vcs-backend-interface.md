@@ -177,7 +177,7 @@ Deletes a local branch or bookmark.
 Creates an isolated workspace for a seed.
 
 - **Branch name:** `foreman/<seedId>` (both backends)
-- **Location:** `<repoPath>/.foreman-worktrees/<seedId>`
+- **Location:** Foreman's workspace root for the repo (default: `<repoParent>/.foreman-worktrees/<repoName>/<seedId>`; override with `FOREMAN_WORKTREE_ROOT`)
 
 | Backend | Equivalent |
 |---------|-----------|

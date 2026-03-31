@@ -121,7 +121,7 @@ Requires: filesystem, git (no network)
 | # | Test | What to verify |
 |---|------|---------------|
 | 1 | createWorktree creates directory + branch | Worktree exists, branch created |
-| 2 | createWorktree uses correct naming | Branch: `foreman/<bead-id>`, path: `.foreman-worktrees/<bead-id>` |
+| 2 | createWorktree uses correct naming | Branch: `foreman/<bead-id>`, path: external workspace root (default: `../.foreman-worktrees/<repo>/<bead-id>`) |
 | 3 | removeWorktree cleans up | Directory and branch removed |
 | 4 | listWorktrees returns all worktrees | Created worktrees appear in list |
 | 5 | mergeWorktree merges cleanly | Changes appear in target branch |

@@ -37,8 +37,8 @@ export interface FinalizeConfig {
   worktreePath: string;
   /**
    * Absolute path to the project root (contains .beads/).
-   * Used as cwd for br commands. Defaults to worktreePath/../..
-   * when not provided.
+   * Used as cwd for br commands. When omitted, Foreman infers the project root
+   * from the workspace path so both legacy nested and external workspace roots work.
    */
   projectPath?: string;
 }

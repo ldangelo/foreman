@@ -89,7 +89,8 @@ export interface VcsBackend {
    * Create a new workspace (git worktree / jj workspace) for a seed.
    *
    * Branch name: `foreman/<seedId>`
-   * Location: `<repoPath>/.foreman-worktrees/<seedId>`
+   * Location: Foreman's workspace root for the repo (default: external to the repo at
+   * `<repoParent>/.foreman-worktrees/<repoName>/<seedId>`)
    */
   createWorkspace(
     repoPath: string,

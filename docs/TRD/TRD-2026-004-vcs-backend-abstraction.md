@@ -509,7 +509,7 @@ Implement `createWorkspace()`, `removeWorkspace()`, `listWorkspaces()` by extrac
 **Validates PRD ACs:** AC-004-1, AC-004-2, AC-007-1, AC-007-2
 
 **Implementation ACs:**
-- ( ) AC-I-006-1: Given a git repository, when `GitBackend.createWorkspace('bd-abc1')` is called, then a git worktree is created at `<repoPath>/.foreman-worktrees/bd-abc1` on branch `foreman/bd-abc1`.
+- ( ) AC-I-006-1: Given a git repository, when `GitBackend.createWorkspace('bd-abc1')` is called, then a git worktree is created in Foreman's workspace root (default: `<repoParent>/.foreman-worktrees/<repoName>/bd-abc1`) on branch `foreman/bd-abc1`.
 - ( ) AC-I-006-2: Given an existing worktree from a failed run, when `createWorkspace()` is called for the same seedId, then the worktree is reused and rebased onto the base branch (matching current retry behavior).
 - ( ) AC-I-006-3: Given a worktree with untracked files, when `removeWorkspace()` is called, then the worktree is removed (falling back to `fs.rm` if `git worktree remove --force` fails) and `git worktree prune` is run.
 - ( ) AC-I-006-4: Given multiple worktrees, when `listWorkspaces()` is called, then all worktrees are returned as `Workspace[]` objects with `path`, `branch`, `head`, `bare` fields.
@@ -521,7 +521,7 @@ Implement `createWorkspace()`, `removeWorkspace()`, `listWorkspaces()` by extrac
 **File:** `src/lib/vcs/__tests__/git-backend.test.ts`
 **Estimate:** 3h
 
-- ( ) AC-T-006-1: Given a temp git repo, when `createWorkspace(repo, 'test-seed')`, then a worktree exists at `.foreman-worktrees/test-seed` on branch `foreman/test-seed`.
+- ( ) AC-T-006-1: Given a temp git repo, when `createWorkspace(repo, 'test-seed')`, then a worktree exists in Foreman's workspace root for that repo on branch `foreman/test-seed`.
 - ( ) AC-T-006-2: Given a worktree already exists, when `createWorkspace()` is called again, then no error is thrown and the workspace is reused.
 - ( ) AC-T-006-3: Given a created worktree, when `removeWorkspace()` is called, then the directory no longer exists and `listWorkspaces()` does not include it.
 
@@ -853,7 +853,7 @@ Implement `createWorkspace()` (`jj workspace add <path> --name foreman-<seedId>`
 **Validates PRD ACs:** AC-009-1, AC-009-2, AC-009-3, AC-009-4, AC-009-5
 
 **Implementation ACs:**
-- ( ) AC-I-018-1: Given a jj repo, when `createWorkspace('bd-abc1')` is called, then `jj workspace add <path> --name foreman-bd-abc1` is executed, placing the workspace at `<repoPath>/.foreman-worktrees/bd-abc1`.
+- ( ) AC-I-018-1: Given a jj repo, when `createWorkspace('bd-abc1')` is called, then `jj workspace add <path> --name foreman-bd-abc1` is executed, placing the workspace in Foreman's workspace root (default: `<repoParent>/.foreman-worktrees/<repoName>/bd-abc1`).
 - ( ) AC-I-018-2: Given the workspace is created, then a bookmark `foreman/bd-abc1` is created via `jj bookmark create foreman/bd-abc1 -r @`.
 - ( ) AC-I-018-3: Given an existing workspace, when `createWorkspace()` is called again, then `jj workspace update-stale` runs and the working copy is rebased onto base.
 - ( ) AC-I-018-4: Given a workspace, when `removeWorkspace()` is called, then `jj workspace forget <name>` is executed and the directory is removed.
@@ -1704,7 +1704,7 @@ Parallelizable with Sprint 2 (TRD-017 through TRD-023 depend only on Phase A).
 
 ### TD-005: jj Workspace Path Convention
 
-**Decision:** jj workspaces use the same path convention as git worktrees: `<repoPath>/.foreman-worktrees/<seedId>`.
+**Decision:** jj workspaces use the same Foreman-managed workspace root as git worktrees, defaulting to an external location (`<repoParent>/.foreman-worktrees/<repoName>/<seedId>`) so parent-repo state writes do not dirty active workspaces.
 
 **Rationale:** Consistency across backends. The dispatcher, agent-worker, and status commands all reference this path. Using a different convention for jj would require conditional logic throughout the codebase.
 

@@ -101,7 +101,8 @@ export async function checkoutBranch(repoPath: string, branchName: string): Prom
  * Create a worktree for a seed.
  *
  * - Branch: foreman/<seedId>
- * - Location: <repoPath>/.foreman-worktrees/<seedId>
+ * - Location: Foreman's workspace root for the repo (default: external to the
+ *   repo at <repoParent>/.foreman-worktrees/<repoName>/<seedId>)
  * - Base: current branch (auto-detected if not specified)
  *
  * @deprecated Use `GitBackend.createWorkspace()` from `src/lib/vcs/git-backend.js` instead.

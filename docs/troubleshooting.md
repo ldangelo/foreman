@@ -95,7 +95,7 @@ cat ~/.foreman/logs/<runId>.err | grep "SyntaxError\|Error\|Cannot find"
 
 **Diagnosis:**
 ```bash
-cd .foreman-worktrees/<bead-id>
+cd ../.foreman-worktrees/<repo-name>/<bead-id>
 git status                        # Check for uncommitted files
 git diff --stat                   # See what changed but wasn't committed
 ```
@@ -105,7 +105,7 @@ git diff --stat                   # See what changed but wasn't committed
 **Fix:** This was addressed by adding `cd {{worktreePath}}` to the finalize prompt. If you're on an older version:
 ```bash
 # Manually commit from the worktree
-cd .foreman-worktrees/<bead-id>
+cd ../.foreman-worktrees/<repo-name>/<bead-id>
 git add -A
 git commit -m "Manual commit for <bead-id>"
 git push -u origin foreman/<bead-id>
@@ -149,7 +149,7 @@ git merge --abort                 # Clean up
 2. **Branch diverged from target** — Other beads merged to dev while this one was running.
    ```bash
    # Rebase the branch onto latest dev
-   cd .foreman-worktrees/<bead-id>
+   cd ../.foreman-worktrees/<repo-name>/<bead-id>
    git fetch origin
    git rebase origin/dev
    git push -f origin foreman/<bead-id>
@@ -223,7 +223,7 @@ git push
 **Diagnosis:**
 ```bash
 # Check the worktree state
-cd .foreman-worktrees/<bead-id>
+cd ../.foreman-worktrees/<repo-name>/<bead-id>
 git status
 ```
 
@@ -231,7 +231,7 @@ git status
 ```bash
 # Nuclear cleanup
 foreman stop
-rm -rf .foreman-worktrees/<bead-id>
+rm -rf ../.foreman-worktrees/<repo-name>/<bead-id>
 rm -f .git/index.lock             # Remove stale lock if present
 git worktree prune
 foreman reset --bead <bead-id>
@@ -248,12 +248,12 @@ foreman run --bead <bead-id>      # Fresh dispatch
 ```bash
 rm -f .git/index.lock
 # Also check worktrees:
-rm -f .foreman-worktrees/*/.git/index.lock 2>/dev/null
+rm -f ../.foreman-worktrees/<repo-name>/*/.git/index.lock 2>/dev/null
 ```
 
 ### Orphaned worktrees accumulating
 
-**Symptoms:** Disk usage growing, `.foreman-worktrees/` has many directories.
+**Symptoms:** Disk usage growing, the external Foreman workspace root (`../.foreman-worktrees/<repo-name>/` by default) has many directories.
 
 **Fix:**
 ```bash
