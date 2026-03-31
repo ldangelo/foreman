@@ -21,6 +21,7 @@ const {
   mockDispatch,
   MockDispatcher,
   MockForemanStore,
+  mockVcsCreate,
 } = vi.hoisted(() => {
   const mockIsPiAvailable = vi.fn().mockReturnValue(false);
   const mockExistsSync = vi.fn().mockReturnValue(true);
@@ -56,6 +57,12 @@ const {
     (...args: unknown[]) => new (MockForemanStore as any)(...args),
   );
 
+  const mockVcsCreate = vi.fn().mockResolvedValue({
+    getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+    getCurrentBranch: vi.fn().mockResolvedValue("main"),
+    detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+  });
+
   return {
     mockIsPiAvailable,
     mockExistsSync,
@@ -65,6 +72,7 @@ const {
     mockDispatch,
     MockDispatcher,
     MockForemanStore,
+    mockVcsCreate,
   };
 });
 
@@ -83,9 +91,10 @@ vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
-vi.mock("../../lib/git.js", () => ({
-  getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: (...args: unknown[]) => mockVcsCreate(...args),
+  },
 }));
 vi.mock("../../orchestrator/notification-server.js", () => ({
   NotificationServer: vi.fn(function (this: Record<string, unknown>) {
@@ -107,6 +116,9 @@ vi.mock("../../orchestrator/sentinel.js", () => ({
 }));
 vi.mock("../../orchestrator/task-backend-ops.js", () => ({
   syncBeadStatusOnStartup: vi.fn().mockResolvedValue({ synced: 0, mismatches: [], errors: [] }),
+}));
+vi.mock("../../orchestrator/auto-merge.js", () => ({
+  autoMerge: vi.fn().mockResolvedValue({ merged: 0, conflicts: 0, failed: 0 }),
 }));
 vi.mock("../../lib/run-status.js", () => ({
   mapRunStatusToSeedStatus: vi.fn(),
@@ -157,9 +169,9 @@ describe("Pi extensions build check in foreman run", () => {
       throw new Error(`process.exit(${_code})`);
     });
 
-    // Default: Pi not available, dist exists, no tasks dispatched
+    // Default: Pi not available, no relevant files present, no tasks dispatched
     mockIsPiAvailable.mockReturnValue(false);
-    mockExistsSync.mockReturnValue(true);
+    mockExistsSync.mockImplementation(() => false);
     mockDispatch.mockResolvedValue({ dispatched: [], skipped: [], activeAgents: 0 });
 
     // Restore constructor implementations after clearAllMocks
@@ -183,6 +195,11 @@ describe("Pi extensions build check in foreman run", () => {
     (MockForemanStore as any).forProject = vi.fn(
       (...args: unknown[]) => new (MockForemanStore as any)(...args),
     );
+    mockVcsCreate.mockResolvedValue({
+      getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+      getCurrentBranch: vi.fn().mockResolvedValue("main"),
+      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+    });
   });
 
   afterEach(() => {
@@ -191,25 +208,25 @@ describe("Pi extensions build check in foreman run", () => {
 
   it("does not error when Pi is NOT available (check is skipped)", async () => {
     mockIsPiAvailable.mockReturnValue(false);
-    mockExistsSync.mockReturnValue(false); // dist missing, but irrelevant
+    mockExistsSync.mockImplementation(() => false); // dist missing, but irrelevant
 
-    await invokeRun(["--no-watch"]);
+    await invokeRun(["--resume", "--no-watch"]);
 
     expect(mockProcessExit).not.toHaveBeenCalled();
   });
 
   it("does not error when Pi IS available and dist/index.js exists", async () => {
     mockIsPiAvailable.mockReturnValue(true);
-    mockExistsSync.mockReturnValue(true); // dist present
+    mockExistsSync.mockImplementation((p: unknown) => String(p).endsWith("packages/foreman-pi-extensions/dist/index.js")); // dist present
 
-    await invokeRun(["--no-watch"]);
+    await invokeRun(["--resume", "--no-watch"]);
 
     expect(mockProcessExit).not.toHaveBeenCalled();
   });
 
   it("exits with process.exit(1) when Pi IS available but dist/index.js is missing", async () => {
     mockIsPiAvailable.mockReturnValue(true);
-    mockExistsSync.mockReturnValue(false); // dist missing
+    mockExistsSync.mockImplementation(() => false); // dist missing
 
     await expect(invokeRun(["--no-watch"])).rejects.toThrow("process.exit(1)");
 
@@ -221,7 +238,7 @@ describe("Pi extensions build check in foreman run", () => {
 
   it("does not error in --dry-run mode even when Pi is available and dist is missing", async () => {
     mockIsPiAvailable.mockReturnValue(true);
-    mockExistsSync.mockReturnValue(false); // dist missing
+    mockExistsSync.mockImplementation(() => false); // dist missing
 
     await invokeRun(["--dry-run", "--no-watch"]);
 

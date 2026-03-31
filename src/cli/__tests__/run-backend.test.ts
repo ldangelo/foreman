@@ -17,6 +17,7 @@ const {
   MockDispatcher,
   MockForemanStore,
   mockDispatch,
+  mockVcsCreate,
 } = vi.hoisted(() => {
   const mockGetTaskBackend = vi.fn().mockReturnValue("br");
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
@@ -43,6 +44,9 @@ const {
   const MockForemanStore = vi.fn(function MockForemanStoreImpl(this: Record<string, unknown>) {
     this.close = vi.fn();
   });
+  const mockVcsCreate = vi.fn().mockResolvedValue({
+    getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+  });
   return {
     mockGetTaskBackend,
     mockEnsureBrInstalled,
@@ -51,6 +55,7 @@ const {
     MockDispatcher,
     MockForemanStore,
     mockDispatch,
+    mockVcsCreate,
   };
 });
 
@@ -74,8 +79,10 @@ vi.mock("../../lib/store.js", () => ({
   ForemanStore: MockForemanStore,
 }));
 
-vi.mock("../../lib/git.js", () => ({
-  getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: (...args: unknown[]) => mockVcsCreate(...args),
+  },
 }));
 
 vi.mock("../../orchestrator/notification-server.js", () => ({
