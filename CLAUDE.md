@@ -86,7 +86,7 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 2. **Developer** (Sonnet) — implementation + tests → DEVELOPER_REPORT.md
 3. **QA** (Sonnet) — test verification → QA_REPORT.md (verdict: PASS/FAIL)
 4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
-5. **Finalize** (Haiku) — rebase, commit, push → FINALIZE_REPORT.md
+5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
 
 After finalize: autoMerge triggers immediately → refinery merges to dev → bead closed.
 
