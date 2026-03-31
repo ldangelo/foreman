@@ -65,6 +65,7 @@ const {
     merged: [],
     conflicts: [],
     testFailures: [],
+    unexpectedErrors: [],
     prsCreated: [],
   });
   const MockRefinery = vi.fn(function (this: Record<string, unknown>) {
@@ -170,6 +171,7 @@ function resetMocks(): void {
     merged: [],
     conflicts: [],
     testFailures: [],
+    unexpectedErrors: [],
     prsCreated: [],
   });
   mockTaskClientUpdate.mockResolvedValue(undefined);
@@ -272,6 +274,7 @@ describe("autoMerge() — merge outcomes", () => {
       merged: [{ seedId: "bd-test-001" }],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -291,6 +294,7 @@ describe("autoMerge() — merge outcomes", () => {
       merged: [],
       conflicts: [{ seedId: "bd-test-001" }],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -308,6 +312,7 @@ describe("autoMerge() — merge outcomes", () => {
       merged: [],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [{ seedId: "bd-test-001", url: "https://github.com/x/y/pull/1" }],
     });
 
@@ -325,6 +330,7 @@ describe("autoMerge() — merge outcomes", () => {
       merged: [],
       conflicts: [],
       testFailures: [{ seedId: "bd-test-001" }],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -342,6 +348,7 @@ describe("autoMerge() — merge outcomes", () => {
       merged: [],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -360,9 +367,9 @@ describe("autoMerge() — merge outcomes", () => {
       .mockReturnValueOnce(makeEntry(3))
       .mockReturnValue(null);
     mockRefineryMergeCompleted
-      .mockResolvedValueOnce({ merged: [{}], conflicts: [], testFailures: [], prsCreated: [] })
-      .mockResolvedValueOnce({ merged: [], conflicts: [{}], testFailures: [], prsCreated: [] })
-      .mockResolvedValueOnce({ merged: [], conflicts: [], testFailures: [{}], prsCreated: [] });
+      .mockResolvedValueOnce({ merged: [{}], conflicts: [], testFailures: [], unexpectedErrors: [], prsCreated: [] })
+      .mockResolvedValueOnce({ merged: [], conflicts: [{}], testFailures: [], unexpectedErrors: [], prsCreated: [] })
+      .mockResolvedValueOnce({ merged: [], conflicts: [], testFailures: [{}], unexpectedErrors: [], prsCreated: [] });
 
     const result = await autoMerge(makeOpts({
       store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
@@ -412,7 +419,7 @@ describe("autoMerge() — refinery errors are non-fatal", () => {
       .mockReturnValue(null);
     mockRefineryMergeCompleted
       .mockRejectedValueOnce(new Error("first entry fails"))
-      .mockResolvedValueOnce({ merged: [{}], conflicts: [], testFailures: [], prsCreated: [] });
+      .mockResolvedValueOnce({ merged: [{}], conflicts: [], testFailures: [], unexpectedErrors: [], prsCreated: [] });
 
     const result = await autoMerge(makeOpts({
       store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
@@ -567,6 +574,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
       merged: [],
       conflicts: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", conflictFiles: ["src/foo.ts", "src/bar.ts"] }],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -588,6 +596,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
       merged: [],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", prUrl: "https://github.com/x/y/pull/42" }],
     });
 
@@ -609,6 +618,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
       merged: [],
       conflicts: [],
       testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL src/foo.test.ts\n  ✕ should work (50ms)" }],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -649,6 +659,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
       merged: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001" }],
       conflicts: [],
       testFailures: [],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -682,6 +693,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
       merged: [],
       conflicts: [],
       testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -708,6 +720,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
       merged: [],
       conflicts: [],
       testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -736,6 +749,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
       merged: [],
       conflicts: [],
       testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "Tests failed" }],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -761,6 +775,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
       merged: [],
       conflicts: [],
       testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -786,6 +801,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
       merged: [],
       conflicts: [],
       testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -814,6 +830,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
       merged: [],
       conflicts: [],
       testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 
@@ -845,6 +862,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
       merged: [],
       conflicts: [],
       testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "Tests failed" }],
+      unexpectedErrors: [],
       prsCreated: [],
     });
 

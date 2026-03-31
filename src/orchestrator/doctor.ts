@@ -14,7 +14,7 @@ import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { findMissingPrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
-import { findMissingWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
+import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig } from "../lib/project-config.js";
 
@@ -594,15 +594,21 @@ export class Doctor {
   }
 
   /**
-   * Check that all bundled workflow YAML files are installed in .foreman/workflows/.
-   * With --fix, reinstalls missing workflow configs from bundled defaults.
+   * Check that all bundled workflow YAML files are installed in .foreman/workflows/
+   * and that locally installed files have the required verdict/retry config fields.
+   *
+   * With --fix, reinstalls ALL workflow configs (including stale ones) from bundled
+   * defaults using force=true so that outdated local copies are overwritten.
    */
   async checkWorkflows(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
     const missing = findMissingWorkflows(this.projectPath);
+    const stale = findStaleWorkflows(this.projectPath);
 
-    if (missing.length === 0) {
+    const problemCount = missing.length + stale.length;
+
+    if (problemCount === 0) {
       return {
         name: "workflow configs (.foreman/workflows/)",
         status: "pass",
@@ -611,31 +617,42 @@ export class Doctor {
     }
 
     const missingList = missing.map((n) => `${n}.yaml`).join(", ");
+    const staleList = stale.map((n) => `${n}.yaml`).join(", ");
+    const problemDesc = [
+      missing.length > 0 ? `missing: ${missingList}` : "",
+      stale.length > 0 ? `stale (missing verdict/retry config): ${staleList}` : "",
+    ]
+      .filter(Boolean)
+      .join("; ");
 
     if (dryRun) {
       return {
         name: "workflow configs (.foreman/workflows/)",
         status: "fail",
-        message: `${missing.length} missing workflow config(s): ${missingList}. Would reinstall (dry-run).`,
+        message: `${problemCount} workflow config issue(s): ${problemDesc}. Would reinstall (dry-run).`,
       };
     }
 
     if (fix) {
       try {
-        const { installed } = installBundledWorkflows(this.projectPath, false);
+        // Use force=true to overwrite both missing AND stale workflow files.
+        // Stale files (e.g. missing verdict/retryWith after a bundled update) are
+        // just as broken as missing ones — they must be replaced with the bundled version.
+        const { installed } = installBundledWorkflows(this.projectPath, true);
         const stillMissing = findMissingWorkflows(this.projectPath);
-        if (stillMissing.length === 0) {
+        const stillStale = findStaleWorkflows(this.projectPath);
+        if (stillMissing.length === 0 && stillStale.length === 0) {
           return {
             name: "workflow configs (.foreman/workflows/)",
             status: "fixed",
-            message: `${missing.length} missing workflow config(s)`,
-            fixApplied: `Installed ${installed.length} workflow config(s) from bundled defaults`,
+            message: `${problemCount} workflow config issue(s)`,
+            fixApplied: `Reinstalled ${installed.length} workflow config(s) from bundled defaults`,
           };
         }
         return {
           name: "workflow configs (.foreman/workflows/)",
           status: "fail",
-          message: `${stillMissing.length} workflow config(s) still missing after reinstall: ${stillMissing.map((n) => `${n}.yaml`).join(", ")}`,
+          message: `Workflow config issues remain after reinstall: missing=${stillMissing.join(", ")} stale=${stillStale.join(", ")}`,
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -650,7 +667,7 @@ export class Doctor {
     return {
       name: "workflow configs (.foreman/workflows/)",
       status: "fail",
-      message: `${missing.length} missing workflow config(s): ${missingList}. Run 'foreman init' or 'foreman doctor --fix' to reinstall.`,
+      message: `${problemCount} workflow config issue(s): ${problemDesc}. Run 'foreman init' or 'foreman doctor --fix' to reinstall.`,
     };
   }
 

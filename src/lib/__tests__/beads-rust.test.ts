@@ -46,9 +46,9 @@ describe("unwrapBrResponse", () => {
     expect(unwrapBrResponse(undefined)).toBeUndefined();
   });
 
-  it("returns arrays as-is", () => {
+  it("returns arrays normalized (issue_type → type)", () => {
     const arr = [{ id: "1" }, { id: "2" }];
-    expect(unwrapBrResponse(arr)).toBe(arr);
+    expect(unwrapBrResponse(arr)).toEqual(arr);
   });
 
   it("throws on error envelope", () => {
@@ -59,17 +59,30 @@ describe("unwrapBrResponse", () => {
 
   it("unwraps issues envelope", () => {
     const issues = [{ id: "1" }];
-    expect(unwrapBrResponse({ issues })).toBe(issues);
+    expect(unwrapBrResponse({ issues })).toEqual(issues);
   });
 
   it("unwraps issue envelope", () => {
     const issue = { id: "1", title: "test" };
-    expect(unwrapBrResponse({ issue })).toBe(issue);
+    expect(unwrapBrResponse({ issue })).toEqual(issue);
   });
 
   it("returns plain objects as-is", () => {
     const obj = { id: "beads-abc", title: "hello" };
-    expect(unwrapBrResponse(obj)).toBe(obj);
+    expect(unwrapBrResponse(obj)).toEqual(obj);
+  });
+
+  it("normalizes issue_type to type in array items", () => {
+    const arr = [{ id: "1", issue_type: "feature" }, { id: "2", issue_type: "task" }];
+    const result = unwrapBrResponse(arr) as Array<Record<string, unknown>>;
+    expect(result[0].type).toBe("feature");
+    expect(result[1].type).toBe("task");
+  });
+
+  it("normalizes issue_type to type in issues envelope", () => {
+    const issues = [{ id: "1", issue_type: "epic" }];
+    const result = unwrapBrResponse({ issues }) as Array<Record<string, unknown>>;
+    expect(result[0].type).toBe("epic");
   });
 });
 

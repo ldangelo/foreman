@@ -512,7 +512,6 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     config.taskTimeout = raw["taskTimeout"];
   }
 
-
   // ── Parse optional onError strategy ─────────────────────────────────────
   if (raw["onError"] !== undefined) {
     const onError = raw["onError"];
@@ -647,6 +646,80 @@ export function findMissingWorkflows(projectRoot: string): string[] {
 }
 
 /**
+ * Find locally installed workflow configs that are stale (missing critical
+ * verdict/retry fields that exist in the bundled default).
+ *
+ * A workflow is considered stale when any phase in the bundled version has
+ * `verdict: true` but the corresponding local phase is missing `verdict`,
+ * `retryWith`, or `retryOnFail`.
+ *
+ * This catches the class of bugs where `foreman init` installs an older copy
+ * of a workflow YAML and subsequent updates to the bundled default (adding
+ * verdict/retry config) are never propagated to the project-local copy.
+ *
+ * @param projectRoot - Absolute path to the project root.
+ * @returns Array of stale workflow names (present but outdated).
+ */
+export function findStaleWorkflows(projectRoot: string): string[] {
+  const stale: string[] = [];
+  for (const name of BUNDLED_WORKFLOW_NAMES) {
+    const localPath = join(projectRoot, ".foreman", "workflows", `${name}.yaml`);
+    if (!existsSync(localPath)) continue; // missing, not stale
+
+    const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${name}.yaml`);
+    if (!existsSync(bundledPath)) continue; // no bundled reference to compare against
+
+    try {
+      const localRaw = yamlLoad(readFileSync(localPath, "utf-8")) as {
+        phases?: Array<{ name: string; [k: string]: unknown }>;
+      };
+      const bundledRaw = yamlLoad(readFileSync(bundledPath, "utf-8")) as {
+        phases?: Array<{ name: string; [k: string]: unknown }>;
+      };
+
+      if (!Array.isArray(localRaw?.phases) || !Array.isArray(bundledRaw?.phases)) continue;
+
+      // Build a map from phase name → phase config for the local file
+      const localPhaseMap = new Map<string, Record<string, unknown>>();
+      for (const p of localRaw.phases) {
+        if (typeof p.name === "string") {
+          localPhaseMap.set(p.name, p as Record<string, unknown>);
+        }
+      }
+
+      // Check each bundled verdict-phase exists locally with the required fields
+      let isStale = false;
+      for (const bundledPhase of bundledRaw.phases) {
+        if (typeof bundledPhase.name !== "string") continue;
+        if (bundledPhase["verdict"] !== true) continue; // only check verdict phases
+
+        const localPhase = localPhaseMap.get(bundledPhase.name);
+        if (!localPhase) {
+          isStale = true;
+          break;
+        }
+
+        // Stale if local phase is missing verdict, retryWith, or retryOnFail
+        // that the bundled version defines
+        if (
+          (bundledPhase["verdict"] === true && localPhase["verdict"] !== true) ||
+          (bundledPhase["retryWith"] !== undefined && localPhase["retryWith"] === undefined) ||
+          (bundledPhase["retryOnFail"] !== undefined && localPhase["retryOnFail"] === undefined)
+        ) {
+          isStale = true;
+          break;
+        }
+      }
+
+      if (isStale) stale.push(name);
+    } catch {
+      // Parse error in local or bundled file — skip, let checkWorkflows handle it
+    }
+  }
+  return stale;
+}
+
+/**
  * Resolve the effective workflow name for a seed.
  *
  * Resolution order:
@@ -700,6 +773,9 @@ const MODEL_SHORTHANDS: Record<string, string> = {
   haiku: "anthropic/claude-haiku-4-5",
   sonnet: "anthropic/claude-sonnet-4-6",
   opus: "anthropic/claude-opus-4-6",
+  MiniMax: "minimax/MiniMax-M2.7",
+  "MiniMax-highspeed": "minimax/MiniMax-M2.7-highspeed",
+  gpt5: "openai/gpt-5.2-chat-latest",
 };
 
 /**

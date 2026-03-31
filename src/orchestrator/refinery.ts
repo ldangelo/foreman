@@ -468,6 +468,10 @@ export class Refinery {
     const merged: MergedRun[] = [];
     const conflicts: ConflictRun[] = [];
     const testFailures: FailedRun[] = [];
+    // Runs that failed due to git/shell command errors (not test runner exit).
+    // Kept separate from testFailures so auto-merge reports reason "unexpected-error"
+    // rather than "test-failure" and uses the correct retry path (Fix 3).
+    const unexpectedErrors: FailedRun[] = [];
     const prsCreated: import("./types.js").CreatedPr[] = [];
 
     for (const run of completedRuns) {
@@ -630,15 +634,14 @@ export class Refinery {
         let squashMergeOk = true;
         try {
           await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
-          await gitSpecial(["merge", "--squash", branchName], this.projectPath);
+          await this.vcsBackend.mergeWithoutCommit(this.projectPath, branchName, targetBranch);
         } catch (mergeErr: unknown) {
           const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
 
           // Check for conflicts
           let conflictingFiles: string[] = [];
           try {
-            const statusOut = await gitSpecial(["diff", "--name-only", "--diff-filter=U"], this.projectPath);
-            conflictingFiles = statusOut.split("\n").map((f) => f.trim()).filter(Boolean);
+            conflictingFiles = await this.vcsBackend.getConflictingFiles(this.projectPath);
           } catch {
             // best effort
           }
@@ -651,10 +654,10 @@ export class Refinery {
             if (codeConflicts.length > 0) {
               // Real code conflicts — abort merge and create PR instead
               try {
-                await gitSpecial(["merge", "--abort"], this.projectPath);
+                await this.vcsBackend.abortMerge(this.projectPath);
               } catch {
-                // merge --abort may fail if already clean; reset as fallback
-                try { await gitSpecial(["reset", "--hard", "HEAD"], this.projectPath); } catch { /* best effort */ }
+                // abortMerge may fail if already clean; reset as fallback
+                try { await this.vcsBackend.resetHard(this.projectPath, "HEAD"); } catch { /* best effort */ }
               }
 
               await this.addFailureNote(
@@ -682,8 +685,8 @@ export class Refinery {
 
             // Only report-file conflicts — auto-resolve by accepting the branch version
             for (const f of reportConflicts) {
-              await gitSpecial(["checkout", "--theirs", f], this.projectPath);
-              await gitSpecial(["add", "-f", f], this.projectPath);
+              await this.vcsBackend.checkoutFile(this.projectPath, "--theirs", f);
+              await this.vcsBackend.stageFile(this.projectPath, f);
             }
           } else {
             // Non-conflict error — rethrow
@@ -704,7 +707,7 @@ export class Refinery {
             // Non-fatal — use default message
           }
           try {
-            await gitSpecial(["commit", "-m", squashMsg], this.projectPath);
+            await this.vcsBackend.commit(this.projectPath, squashMsg);
           } catch (commitErr: unknown) {
             // commit may fail if there's nothing to commit (empty squash)
             const commitMsg = commitErr instanceof Error ? commitErr.message : String(commitErr);
@@ -723,7 +726,7 @@ export class Refinery {
 
           if (!testResult.ok) {
             // Revert the merge + archive commits
-            await gitSpecial(["reset", "--hard", preMergeHead], this.projectPath);
+            await this.vcsBackend.resetHard(this.projectPath, preMergeHead);
 
             // Add failure note before resetting so the bead records why it was reset
             await this.addFailureNote(
@@ -826,7 +829,9 @@ export class Refinery {
           error: message.slice(0, 400),
         });
         await this.addFailureNote(run.seed_id, `Merge failed: ${message.slice(0, 400)}`);
-        testFailures.push({
+        // Push to unexpectedErrors (not testFailures) so auto-merge reports
+        // reason "unexpected-error" instead of "test-failure" (Fix 3).
+        unexpectedErrors.push({
           runId: run.id,
           seedId: run.seed_id,
           branchName,
@@ -835,7 +840,7 @@ export class Refinery {
       }
     }
 
-    return { merged, conflicts, testFailures, prsCreated };
+    return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
   }
 
   /**

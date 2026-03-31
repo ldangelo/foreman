@@ -1511,7 +1511,7 @@ describe("Doctor.checkPrompts", () => {
       const doctor = new Doctor(store as any, tmpDir);
       const result = await doctor.checkWorkflows({ fix: true });
       expect(result.status).toBe("fixed");
-      expect(result.fixApplied).toContain("Installed");
+      expect(result.fixApplied).toMatch(/[Rr]e?installed/);
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }

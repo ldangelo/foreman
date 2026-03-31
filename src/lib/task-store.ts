@@ -2,19 +2,79 @@
  * NativeTaskStore — wraps the native `tasks` SQLite table for use as a
  * task-tracking back-end inside the Dispatcher.
  *
- * Implements a subset of ITaskClient focused on the Dispatcher's needs:
+ * Implements methods for the full lifecycle of native tasks:
  *   - hasNativeTasks() — coexistence check (REQ-014)
  *   - list()           — query tasks with optional status filter (REQ-017)
+ *   - get()            — fetch a single task row by ID
  *   - claim()          — atomically claim a task for a run (REQ-020)
  *   - updatePhase()    — update phase column (no-op when taskId is null)
  *   - updateStatus()   — update task status
+ *   - create()         — create a new task in backlog status (REQ-006)
+ *   - approve()        — transition backlog → ready (REQ-005)
+ *   - close()          — mark task as merged (REQ-008)
+ *   - addDependency()  — add a task dependency with cycle detection (REQ-004, REQ-021.3)
+ *   - getDependencies()— retrieve dependencies in either direction
+ *   - removeDependency()— remove a dependency edge
+ *   - hasCyclicDependency() — DFS cycle detection
+ *   - reevaluateBlockedTasks() — unblock tasks when all blockers merge
  */
 
+import { randomUUID } from "node:crypto";
 import type { Database } from "better-sqlite3";
 import type { Issue } from "./task-client.js";
 
-// ── Row type matching TASKS_SCHEMA ───────────────────────────────────────
+// ── Priority helpers ─────────────────────────────────────────────────────
 
+const PRIORITY_ALIAS_MAP: Record<string, number> = {
+  critical: 0,
+  p0: 0,
+  high: 1,
+  p1: 1,
+  medium: 2,
+  p2: 2,
+  low: 3,
+  p3: 3,
+  backlog: 4,
+  p4: 4,
+};
+
+const PRIORITY_LABEL_MAP: Record<number, string> = {
+  0: "critical",
+  1: "high",
+  2: "medium",
+  3: "low",
+  4: "backlog",
+};
+
+/**
+ * Parse a priority string (alias or numeric) to a numeric value (0–4).
+ *
+ * Accepts human-readable aliases: critical (0), high (1), medium (2), low (3), backlog (4).
+ * Also accepts p0-p4 and numeric strings "0"–"4".
+ *
+ * @throws {RangeError} If the value is not a recognised priority.
+ */
+export function parsePriority(value: string): number {
+  const lower = value.toLowerCase().trim();
+  if (lower in PRIORITY_ALIAS_MAP) return PRIORITY_ALIAS_MAP[lower]!;
+  const n = parseInt(lower, 10);
+  if (!isNaN(n) && n >= 0 && n <= 4) return n;
+  throw new RangeError(
+    `Invalid priority '${value}'. Use 0–4 or: critical, high, medium, low, backlog`,
+  );
+}
+
+/**
+ * Convert a numeric priority (0–4) to its human-readable label.
+ * Returns the string representation for unknown values.
+ */
+export function priorityLabel(priority: number): string {
+  return PRIORITY_LABEL_MAP[priority] ?? String(priority);
+}
+
+// ── Row types ────────────────────────────────────────────────────────────
+
+/** A row from the `tasks` table (matches TASKS_SCHEMA columns). */
 export interface TaskRow {
   id: string;
   title: string;
@@ -31,11 +91,72 @@ export interface TaskRow {
   closed_at: string | null;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+/** A row from the `task_dependencies` table. */
+export interface DependencyRow {
+  from_task_id: string;
+  to_task_id: string;
+  type: "blocks" | "parent-child";
+}
+
+// ── Options for task creation ────────────────────────────────────────────
+
+export interface CreateTaskOptions {
+  title: string;
+  description?: string | null;
+  type?: string;
+  priority?: number;
+  externalId?: string | null;
+}
+
+// ── Error classes ────────────────────────────────────────────────────────
 
 /**
- * Map a numeric priority (0–4) to the string format expected by Issue.priority.
- * Stores the value as-is ("0"–"4") so normalizePriority() works correctly.
+ * Thrown when a task ID is not found in the tasks table.
+ */
+export class TaskNotFoundError extends Error {
+  constructor(public readonly taskId: string) {
+    super(`Task '${taskId}' not found`);
+    this.name = "TaskNotFoundError";
+  }
+}
+
+/**
+ * Thrown when attempting an invalid status transition.
+ * (e.g. approving a task that is not in 'backlog' status)
+ */
+export class InvalidStatusTransitionError extends Error {
+  constructor(
+    public readonly taskId: string,
+    public readonly fromStatus: string,
+    public readonly toStatus: string,
+  ) {
+    super(
+      `Task '${taskId}': cannot transition from '${fromStatus}' to '${toStatus}'`,
+    );
+    this.name = "InvalidStatusTransitionError";
+  }
+}
+
+/**
+ * Thrown when attempting to add a dependency that would create a cycle.
+ */
+export class CircularDependencyError extends Error {
+  constructor(
+    public readonly fromId: string,
+    public readonly toId: string,
+  ) {
+    super(
+      `Adding dependency from '${fromId}' to '${toId}' would create a circular dependency`,
+    );
+    this.name = "CircularDependencyError";
+  }
+}
+
+// ── Helper: convert TaskRow to Issue ─────────────────────────────────────
+
+/**
+ * Convert a TaskRow to a normalized Issue (used by list()).
+ * Priority is stored as INTEGER (0–4); normalise to string for Issue.
  */
 function rowToIssue(row: TaskRow): Issue {
   return {
@@ -66,14 +187,13 @@ function rowToIssue(row: TaskRow): Issue {
 export class NativeTaskStore {
   constructor(private readonly db: Database) {}
 
+  // ── Existence check ───────────────────────────────────────────────────
+
   /**
    * Returns true when the `tasks` table contains at least one row.
    *
    * Used by Dispatcher.getReadyTasks() as a coexistence check: if native
    * tasks exist, use the native path; otherwise fall back to BeadsRustClient.
-   *
-   * Also guards against the case where the schema migration has not yet run
-   * by catching SQLite errors (table not found) and returning false.
    */
   hasNativeTasks(): boolean {
     try {
@@ -82,13 +202,14 @@ export class NativeTaskStore {
         .get() as { cnt: number } | undefined;
       return (row?.cnt ?? 0) > 0;
     } catch {
-      // Table may not exist (migration not yet applied) — treat as empty
       return false;
     }
   }
 
+  // ── Query operations ──────────────────────────────────────────────────
+
   /**
-   * List tasks from the `tasks` table.
+   * List tasks from the `tasks` table, ordered by priority ASC, created_at ASC.
    *
    * @param opts.status — filter by exact status value (e.g. "ready")
    */
@@ -108,11 +229,123 @@ export class NativeTaskStore {
   }
 
   /**
+   * Retrieve a single task by ID. Returns null if not found.
+   */
+  get(id: string): TaskRow | null {
+    const row = this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as
+      | TaskRow
+      | undefined;
+    return row ?? null;
+  }
+
+  // ── Lifecycle operations ──────────────────────────────────────────────
+
+  /**
+   * Create a new task in 'backlog' status.
+   *
+   * Implements REQ-006 (task creation). Tasks start in backlog and must be
+   * approved before the dispatcher will pick them up (REQ-005 approval gate).
+   *
+   * @returns The newly created TaskRow.
+   */
+  create(opts: CreateTaskOptions): TaskRow {
+    const now = new Date().toISOString();
+    const id = randomUUID();
+
+    this.db
+      .prepare(
+        `INSERT INTO tasks
+           (id, title, description, type, priority, status, external_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'backlog', ?, ?, ?)`,
+      )
+      .run(
+        id,
+        opts.title,
+        opts.description ?? null,
+        opts.type ?? "task",
+        opts.priority ?? 2,
+        opts.externalId ?? null,
+        now,
+        now,
+      );
+
+    return this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as TaskRow;
+  }
+
+  /**
+   * Approve a task: transition from 'backlog' → 'ready'.
+   *
+   * Implements REQ-005 (approval gate). Only backlog tasks can be approved.
+   * After approval, the task becomes visible to the dispatcher.
+   *
+   * @throws {TaskNotFoundError} If the task ID does not exist.
+   * @throws {InvalidStatusTransitionError} If the task is not in 'backlog' status.
+   */
+  approve(id: string): void {
+    const now = new Date().toISOString();
+
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .prepare("SELECT id, status FROM tasks WHERE id = ?")
+        .get(id) as { id: string; status: string } | undefined;
+
+      if (!row) {
+        throw new TaskNotFoundError(id);
+      }
+
+      if (row.status !== "backlog") {
+        throw new InvalidStatusTransitionError(id, row.status, "ready");
+      }
+
+      this.db
+        .prepare(
+          "UPDATE tasks SET status = 'ready', approved_at = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(now, now, id);
+    });
+
+    tx();
+  }
+
+  /**
+   * Close a task by setting its status to 'merged' (completed state).
+   *
+   * Implements REQ-008 (task closure). After closing, the task is no longer active.
+   *
+   * @param id     - Task ID to close.
+   * @param reason - Optional reason for closing (ignored in current implementation;
+   *                 could be stored in a notes field in a future iteration).
+   *
+   * @throws {TaskNotFoundError} If the task ID does not exist.
+   */
+  close(id: string, _reason?: string): void {
+    const now = new Date().toISOString();
+
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .prepare("SELECT id FROM tasks WHERE id = ?")
+        .get(id) as { id: string } | undefined;
+
+      if (!row) {
+        throw new TaskNotFoundError(id);
+      }
+
+      this.db
+        .prepare(
+          "UPDATE tasks SET status = 'merged', closed_at = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(now, now, id);
+    });
+
+    tx();
+  }
+
+  /**
    * Atomically claim a task: set status='in-progress' and run_id=runId
    * in a single synchronous transaction.
    *
-   * Throws if the task is already claimed by a different run (concurrent
-   * dispatch guard) or if the task does not exist.
+   * @throws {Error} If the task does not exist.
+   * @throws {Error} If the task is already claimed by a different run.
    */
   claim(id: string, runId: string): void {
     const now = new Date().toISOString();
@@ -145,10 +378,10 @@ export class NativeTaskStore {
 
   /**
    * Update the phase of a task (used by pipeline-executor to record progress).
-   * No-op when taskId is null (beads fallback mode — REQ-020).
+   * No-op when taskId is null or undefined (beads fallback mode — REQ-020).
    */
-  updatePhase(taskId: string | null, phase: string): void {
-    if (!taskId) return; // beads fallback — no-op
+  updatePhase(taskId: string | null | undefined, phase: string): void {
+    if (!taskId) return;
 
     const now = new Date().toISOString();
     this.db
@@ -164,5 +397,174 @@ export class NativeTaskStore {
     this.db
       .prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?")
       .run(status, now, taskId);
+  }
+
+  // ── Dependency Management ─────────────────────────────────────────────
+
+  /**
+   * Add a dependency between two tasks.
+   *
+   * Implements REQ-004 (dependency graph). Checks for circular dependencies
+   * before inserting (REQ-021.3).
+   *
+   * The dependency table stores: from_task_id → to_task_id, where
+   * from_task_id is the BLOCKED task and to_task_id is the BLOCKER.
+   *
+   * @param fromId - The task that depends on (is blocked by) toId.
+   * @param toId   - The task that blocks fromId.
+   * @param type   - 'blocks' (affects dispatch) or 'parent-child' (organizational).
+   *
+   * @throws {TaskNotFoundError} If either task ID does not exist.
+   * @throws {CircularDependencyError} If the dependency would create a cycle.
+   */
+  addDependency(fromId: string, toId: string, type: "blocks" | "parent-child" = "blocks"): void {
+    const tx = this.db.transaction(() => {
+      // Verify both tasks exist
+      const from = this.db.prepare("SELECT id FROM tasks WHERE id = ?").get(fromId) as
+        | { id: string }
+        | undefined;
+      if (!from) throw new TaskNotFoundError(fromId);
+
+      const to = this.db.prepare("SELECT id FROM tasks WHERE id = ?").get(toId) as
+        | { id: string }
+        | undefined;
+      if (!to) throw new TaskNotFoundError(toId);
+
+      // Check for self-dependency
+      if (fromId === toId) {
+        throw new CircularDependencyError(fromId, toId);
+      }
+
+      // Check for cycles: would adding fromId→toId create a cycle?
+      // A cycle exists if toId can already reach fromId (toId→...→fromId).
+      if (this._canReach(toId, fromId)) {
+        throw new CircularDependencyError(fromId, toId);
+      }
+
+      // Insert (ignore duplicates via OR IGNORE)
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO task_dependencies (from_task_id, to_task_id, type)
+           VALUES (?, ?, ?)`,
+        )
+        .run(fromId, toId, type);
+    });
+
+    tx();
+  }
+
+  /**
+   * Remove a dependency between two tasks. No-op if it does not exist.
+   *
+   * @param fromId - The dependent task.
+   * @param toId   - The blocker task.
+   * @param type   - Dependency type to remove.
+   */
+  removeDependency(
+    fromId: string,
+    toId: string,
+    type: "blocks" | "parent-child" = "blocks",
+  ): void {
+    this.db
+      .prepare(
+        "DELETE FROM task_dependencies WHERE from_task_id = ? AND to_task_id = ? AND type = ?",
+      )
+      .run(fromId, toId, type);
+  }
+
+  /**
+   * Get the dependencies of a task.
+   *
+   * @param id        - The task ID to query.
+   * @param direction - 'outgoing' (tasks this task depends on) | 'incoming' (tasks that depend on this).
+   */
+  getDependencies(
+    id: string,
+    direction: "outgoing" | "incoming" = "outgoing",
+  ): DependencyRow[] {
+    if (direction === "outgoing") {
+      return this.db
+        .prepare("SELECT * FROM task_dependencies WHERE from_task_id = ?")
+        .all(id) as DependencyRow[];
+    } else {
+      return this.db
+        .prepare("SELECT * FROM task_dependencies WHERE to_task_id = ?")
+        .all(id) as DependencyRow[];
+    }
+  }
+
+  /**
+   * Check whether adding a new fromId→toId dependency would create a cycle.
+   *
+   * Returns true if toId can already reach fromId (which would create a cycle).
+   * Uses DFS via existing dependency edges.
+   */
+  hasCyclicDependency(fromId: string, toId: string): boolean {
+    // "Would adding fromId→toId create a cycle?"
+    // Yes, if toId can already reach fromId via existing edges.
+    return this._canReach(toId, fromId);
+  }
+
+  /**
+   * Internal DFS: returns true if `target` is reachable from `start`
+   * via outgoing edges in the task_dependencies table.
+   */
+  private _canReach(start: string, target: string): boolean {
+    const visited = new Set<string>();
+    const queue: string[] = [start];
+
+    while (queue.length > 0) {
+      const current = queue.pop()!;
+      if (current === target) return true;
+      if (visited.has(current)) continue;
+      visited.add(current);
+
+      const deps = this.db
+        .prepare("SELECT to_task_id FROM task_dependencies WHERE from_task_id = ?")
+        .all(current) as Array<{ to_task_id: string }>;
+
+      for (const dep of deps) {
+        queue.push(dep.to_task_id);
+      }
+    }
+
+    return false;
+  }
+
+  // ── Bulk Operations ───────────────────────────────────────────────────
+
+  /**
+   * Re-evaluate tasks in 'blocked' status and transition them to 'ready'
+   * if all their blocking dependencies have been completed (status = 'merged').
+   *
+   * The dependency table stores from_task_id (BLOCKED) → to_task_id (BLOCKER).
+   * So unresolved blockers = rows WHERE from_task_id = <blocked_task>
+   *   AND type = 'blocks' AND blocker.status != 'merged'.
+   */
+  reevaluateBlockedTasks(): void {
+    const now = new Date().toISOString();
+
+    const blockedTasks = this.db
+      .prepare("SELECT id FROM tasks WHERE status = 'blocked'")
+      .all() as Array<{ id: string }>;
+
+    for (const task of blockedTasks) {
+      const unresolvedCount = this.db
+        .prepare(
+          `SELECT COUNT(*) as cnt
+           FROM task_dependencies td
+           JOIN tasks blocker ON blocker.id = td.to_task_id
+           WHERE td.from_task_id = ?
+             AND td.type = 'blocks'
+             AND blocker.status NOT IN ('merged')`,
+        )
+        .get(task.id) as { cnt: number } | undefined;
+
+      if ((unresolvedCount?.cnt ?? 0) === 0) {
+        this.db
+          .prepare("UPDATE tasks SET status = 'ready', updated_at = ? WHERE id = ?")
+          .run(now, task.id);
+      }
+    }
   }
 }

@@ -161,6 +161,9 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
     // Track the failure reason to attach as a bead note (if any failure occurs).
     // Declared outside try/catch so it's accessible in the finally block.
     let mergeFailureReason: string | undefined;
+    // Track whether this queue entry resulted in a successful merge so that
+    // bead-closed mail is only sent on actual success (Fix 2).
+    let mergeSucceeded = false;
     try {
       const report = await refinery.mergeCompleted({
         targetBranch,
@@ -174,6 +177,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       if (report.merged.length > 0) {
         mq.updateStatus(currentEntry.id, "merged", { completedAt: new Date().toISOString() });
         mergedCount += report.merged.length;
+        mergeSucceeded = true;
 
         // Send merge-complete mail for each successfully merged run
         for (const mergedRun of report.merged) {
@@ -268,6 +272,23 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
             retryExhausted: totalTestFailCount >= RETRY_CONFIG.maxRetries,
           });
         }
+      } else if (report.unexpectedErrors && report.unexpectedErrors.length > 0) {
+        // Git/shell command failures captured by refinery's outer catch (Fix 3).
+        // These are NOT test runner failures — use reason "unexpected-error".
+        mq.updateStatus(currentEntry.id, "failed", { error: "Unexpected git/shell error" });
+        failedCount += report.unexpectedErrors.length;
+
+        const firstError = report.unexpectedErrors[0];
+        mergeFailureReason = `Merge failed due to unexpected error: ${firstError.error.slice(0, 800)}`;
+
+        for (const errRun of report.unexpectedErrors) {
+          sendMail(store, currentEntry.run_id, "merge-failed", {
+            seedId: errRun.seedId,
+            branchName: errRun.branchName,
+            reason: "unexpected-error",
+            error: errRun.error.slice(0, 400),
+          });
+        }
       } else {
         mq.updateStatus(currentEntry.id, "failed", { error: "No completed run found" });
         failedCount++;
@@ -299,11 +320,14 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       // Always runs — ensures br reflects the latest run status immediately.
       await syncBeadStatusAfterMerge(store, taskClient, currentEntry.run_id, currentEntry.seed_id, projectPath, mergeFailureReason);
 
-      // Send bead-closed mail after bead status is synced.
-      // Always sent so inbox shows lifecycle completion for every queue entry.
-      sendMail(store, currentEntry.run_id, "bead-closed", {
-        seedId: currentEntry.seed_id,
-      });
+      // Send bead-closed mail only when the merge actually succeeded.
+      // Sending it on failure paths creates a misleading inbox entry where the
+      // bead shows OPEN in br but "closed" in pipeline mail (Fix 2).
+      if (mergeSucceeded) {
+        sendMail(store, currentEntry.run_id, "bead-closed", {
+          seedId: currentEntry.seed_id,
+        });
+      }
     }
 
     entry = mq.dequeue();

@@ -52,7 +52,7 @@ function makeBrDetail(status: string): BrIssueDetail {
     labels: [],
     estimate_minutes: null,
     dependencies: [],
-    children: [],
+    dependents: [],
   };
 }
 

@@ -698,7 +698,7 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.merged[0].seedId).toBe("seed-target");
   });
 
-  it("catches unexpected errors and puts run in testFailures", async () => {
+  it("catches unexpected errors and puts run in unexpectedErrors (not testFailures)", async () => {
     const { store, seeds, refinery } = makeMocks();
     const run = makeRun();
     store.getRunsByStatus.mockReturnValue([run]);
@@ -721,8 +721,10 @@ describe("Refinery.mergeCompleted()", () => {
 
     const report = await refinery.mergeCompleted({ runTests: false });
 
-    expect(report.testFailures).toHaveLength(1);
-    expect(report.testFailures[0].error).toContain("Unexpected git failure");
+    // Fix 3: git/shell errors go to unexpectedErrors, NOT testFailures
+    expect(report.testFailures).toHaveLength(0);
+    expect(report.unexpectedErrors).toHaveLength(1);
+    expect(report.unexpectedErrors[0].error).toContain("Unexpected git failure");
     expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
       expect.anything(), run.seed_id, expect.stringContaining("Merge failed"), "refinery",
     );

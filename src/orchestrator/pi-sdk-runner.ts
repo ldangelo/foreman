@@ -201,6 +201,17 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
           }
           break;
         }
+
+        case "auto_retry_end": {
+          // Pi SDK retried and still failed (e.g. persistent rate limit).
+          // Surface the error so callers get a meaningful failure message.
+          const retryEvent = event as Record<string, unknown>;
+          if (retryEvent.success === false) {
+            success = false;
+            errorMessage = (retryEvent.finalError as string) ?? "All retries exhausted";
+          }
+          break;
+        }
       }
 
       writeLog(JSON.stringify(event));

@@ -2,7 +2,7 @@
 
 export type RuntimeSelection = "claude-code";
 
-export type ModelSelection = "anthropic/claude-opus-4-6" | "anthropic/claude-sonnet-4-6" | "anthropic/claude-haiku-4-5";
+export type ModelSelection = "anthropic/claude-opus-4-6" | "anthropic/claude-sonnet-4-6" | "anthropic/claude-haiku-4-5" | "minimax/MiniMax-M2.7" | "minimax/MiniMax-M2.7-highspeed" | "openai/gpt-5.2-chat-latest";
 
 export type AgentRole = "lead" | "explorer" | "developer" | "qa" | "reviewer" | "finalize" | "worker" | "sentinel" | "troubleshooter";
 
@@ -105,6 +105,12 @@ export interface MergeReport {
   merged: MergedRun[];
   conflicts: ConflictRun[];
   testFailures: FailedRun[];
+  /**
+   * Runs that failed due to a git/shell command error (not a test runner exit).
+   * Reported with reason "unexpected-error" rather than "test-failure" in mail.
+   * Separated from testFailures so auto-merge uses the correct retry path (Fix 3).
+   */
+  unexpectedErrors: FailedRun[];
   /** PRs created for branches that had code conflicts */
   prsCreated: CreatedPr[];
 }

@@ -18,6 +18,8 @@ import {
   getPlanStepBudget,
   getSentinelBudget,
   getTroubleshooterBudget,
+  getDefaultModel,
+  getHighspeedModel,
 } from "../lib/config.js";
 import { loadAndInterpolate } from "./template-loader.js";
 import { loadPrompt, PromptNotFoundError } from "../lib/prompt-loader.js";
@@ -71,7 +73,7 @@ export interface PlanStepConfig {
 }
 
 export const PLAN_STEP_CONFIG: PlanStepConfig = {
-  model: "anthropic/claude-sonnet-4-6",
+  model: getDefaultModel() as ModelSelection,
   maxBudgetUsd: getPlanStepBudget(),
   // Sufficient for typical PRD/TRD generation runs; raise if plan steps hit the turn limit
   maxTurns: 50,
@@ -130,6 +132,9 @@ const VALID_MODELS: readonly ModelSelection[] = [
   "anthropic/claude-opus-4-6",
   "anthropic/claude-sonnet-4-6",
   "anthropic/claude-haiku-4-5",
+  "minimax/MiniMax-M2.7",
+  "minimax/MiniMax-M2.7-highspeed",
+  "openai/gpt-5.2-chat-latest"
 ];
 
 /**
@@ -147,7 +152,7 @@ function resolveModel(envVar: string, defaultModel: ModelSelection): ModelSelect
   if (!(VALID_MODELS as string[]).includes(value)) {
     throw new Error(
       `Invalid model "${value}" in ${envVar}. ` +
-        `Valid values are: ${VALID_MODELS.join(", ")}`,
+      `Valid values are: ${VALID_MODELS.join(", ")}`,
     );
   }
   return value as ModelSelection;
@@ -159,12 +164,12 @@ function resolveModel(envVar: string, defaultModel: ModelSelection): ModelSelect
  * module-level initialisation catches an env-var validation error.
  */
 const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker" | "sentinel">, ModelSelection>> = {
-  explorer: "anthropic/claude-haiku-4-5",
-  developer: "anthropic/claude-sonnet-4-6",
-  qa: "anthropic/claude-sonnet-4-6",
-  reviewer: "anthropic/claude-sonnet-4-6",
-  finalize: "anthropic/claude-haiku-4-5",
-  troubleshooter: "anthropic/claude-sonnet-4-6",
+  explorer: getDefaultModel() as ModelSelection,
+  developer: getDefaultModel() as ModelSelection,
+  qa: getDefaultModel() as ModelSelection,
+  reviewer: getDefaultModel() as ModelSelection,
+  finalize: getDefaultModel() as ModelSelection,
+  troubleshooter: getDefaultModel() as ModelSelection,
 };
 
 /**
@@ -312,7 +317,7 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
 /** Standalone role config for the sentinel (not part of the pipeline). */
 export const SENTINEL_ROLE_CONFIG: RoleConfig = {
   role: "sentinel",
-  model: "anthropic/claude-sonnet-4-6",
+  model: getDefaultModel() as ModelSelection,
   maxBudgetUsd: getSentinelBudget(),
   permissionMode: "acceptEdits",
   reportFile: "SENTINEL_REPORT.md",

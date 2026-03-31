@@ -105,7 +105,7 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
-    expect(prompt).toContain('git commit -m "Fix authentication (bd-test)"');
+    expect(prompt).toContain("git commit -m 'Fix authentication (bd-test)'");
     expect(prompt).not.toContain("{{vcsCommitCommand}}");
   });
 
@@ -209,7 +209,7 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
-    expect(prompt).toContain('jj describe -m "Fix authentication (bd-test)"');
+    expect(prompt).toContain("jj describe -m 'Fix authentication (bd-test)'");
     expect(prompt).not.toContain("{{vcsCommitCommand}}");
   });
 

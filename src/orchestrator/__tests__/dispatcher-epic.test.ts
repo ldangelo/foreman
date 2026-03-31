@@ -307,7 +307,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
       ready: vi.fn().mockResolvedValue([featureIssue]),
       show: vi.fn().mockResolvedValue({
         ...featureIssue,
-        children: ["child-1"],
+        dependents: [{ id: "child-1", status: "open" }],
         status: "open",
       }),
     });

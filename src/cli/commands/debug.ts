@@ -15,6 +15,7 @@ import type { Run, Message } from "../../lib/store.js";
 import { getRepoRoot } from "../../lib/git.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { loadAndInterpolate } from "../../orchestrator/template-loader.js";
+import { getHighspeedModel } from "../../lib/config.js";
 
 // ── Artifact collection ─────────────────────────────────────────────────────
 
@@ -83,8 +84,11 @@ function buildDiagnosticPrompt(
     .map(([name, content]) => `### ${name}\n\`\`\`\n${content.slice(0, 5000)}\n\`\`\``)
     .join("\n\n");
 
+  // Truncate log to last 30 lines AND cap total size to ~100KB
+  const LOG_LINES = 30;
+  const LOG_MAX_CHARS = 100_000;
   const logSection = logContent
-    ? `## Agent Worker Log (last 200 lines)\n\`\`\`\n${logContent.split("\n").slice(-200).join("\n")}\n\`\`\``
+    ? `## Agent Worker Log (last ${LOG_LINES} lines)\n\`\`\`\n${logContent.split("\n").slice(-LOG_LINES).join("\n").slice(-LOG_MAX_CHARS)}\n\`\`\``
     : "## Agent Worker Log\n(not found)";
 
   return loadAndInterpolate("debug.md", {
@@ -102,7 +106,7 @@ export const debugCommand = new Command("debug")
   .description("AI-powered analysis of a bead's pipeline execution")
   .argument("<bead-id>", "The bead/seed ID to analyze")
   .option("--run <id>", "Specific run ID (default: latest run for this seed)")
-  .option("--model <model>", "Model to use for analysis", "anthropic/claude-opus-4-6")
+  .option("--model <model>", "Model to use for analysis")
   .option("--raw", "Print collected artifacts without AI analysis")
   .action(async (beadId: string, opts: { run?: string; model?: string; raw?: boolean }) => {
     const projectPath = await getRepoRoot(process.cwd());
@@ -184,7 +188,7 @@ export const debugCommand = new Command("debug")
     // Build the diagnostic prompt and send to AI
     const prompt = buildDiagnosticPrompt(beadId, runSummary, messagesText, reports, logContent);
 
-    const model = opts.model ?? "anthropic/claude-opus-4-6";
+    const model = opts.model ?? getHighspeedModel();
     console.log(chalk.yellow(`Sending to ${model} for analysis...\n`));
 
     const result = await runWithPiSdk({

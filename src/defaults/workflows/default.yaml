@@ -28,8 +28,8 @@ phases:
   - name: explorer
     prompt: explorer.md
     models:
-      default: haiku
-      P0: sonnet
+      default: MiniMax
+      P0: MiniMax-highspeed
     maxTurns: 30
     artifact: EXPLORER_REPORT.md
     skipIfArtifact: EXPLORER_REPORT.md
@@ -41,8 +41,8 @@ phases:
   - name: developer
     prompt: developer.md
     models:
-      default: sonnet
-      P0: opus
+      default: MiniMax
+      P0: MiniMax-highspeed
     maxTurns: 80
     artifact: DEVELOPER_REPORT.md
     mail:
@@ -55,8 +55,8 @@ phases:
   - name: qa
     prompt: qa.md
     models:
-      default: sonnet
-      P0: opus
+      default: MiniMax
+      P0: MiniMax-highspeed
     maxTurns: 30
     artifact: QA_REPORT.md
     verdict: true
@@ -70,8 +70,8 @@ phases:
   - name: reviewer
     prompt: reviewer.md
     models:
-      default: sonnet
-      P0: opus
+      default: MiniMax
+      P0: MiniMax-highspeed
     maxTurns: 20
     artifact: REVIEW.md
     verdict: true
@@ -101,7 +101,7 @@ onFailure:
   name: troubleshooter
   prompt: troubleshooter.md
   models:
-    default: sonnet
-    P0: opus
+    default: MiniMax
+    P0: MiniMax-highspeed
   maxTurns: 20
   artifact: TROUBLESHOOT_REPORT.md

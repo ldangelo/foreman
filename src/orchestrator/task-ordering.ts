@@ -150,10 +150,12 @@ function topologicalSort(childDetails: Map<string, BrIssueDetail>): OrderedTask[
 
   for (const [id, detail] of childDetails) {
     for (const dep of detail.dependencies) {
+      // dep is a BrDepRef object — extract its id
+      const depId = typeof dep === "string" ? dep : (dep as { id: string }).id;
       // Only count deps within our child set
-      if (childIds.has(dep)) {
+      if (childIds.has(depId)) {
         inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
-        dependents.get(dep)?.push(id);
+        dependents.get(depId)?.push(id);
       }
     }
   }

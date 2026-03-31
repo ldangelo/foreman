@@ -81,8 +81,8 @@ describe("ROLE_CONFIGS: troubleshooter", () => {
     expect(ROLE_CONFIGS.troubleshooter).toBeDefined();
   });
 
-  it("troubleshooter uses sonnet model by default", () => {
-    expect(ROLE_CONFIGS.troubleshooter.model).toBe("anthropic/claude-sonnet-4-6");
+  it("troubleshooter uses MiniMax model by default", () => {
+    expect(ROLE_CONFIGS.troubleshooter.model).toBe("minimax/MiniMax-M2.7");
   });
 
   it("troubleshooter produces TROUBLESHOOT_REPORT.md", () => {

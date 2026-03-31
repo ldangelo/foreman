@@ -37,12 +37,30 @@ const finalDir = join(root, 'dist');
 console.error(`[build-atomic] tmp  → ${tmpDir}`);
 console.error(`[build-atomic] dest → ${finalDir}`);
 
+// ── Cleanup helper ──────────────────────────────────────────────────────────────
+function cleanup() {
+  if (existsSync(tmpDir)) {
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+      console.error(`[build-atomic] Cleaned up temp dir ${tmpDir}`);
+    } catch (e) {
+      console.error(`[build-atomic] Warning: failed to clean up ${tmpDir}: ${e.message}`);
+    }
+  }
+}
+
 // ── Step 1: compile TypeScript into tmpDir ────────────────────────────────────
-console.error('[build-atomic] Running tsc …');
-execSync(
-  `npx tsc -p tsconfig.build.json --outDir ${tmpDir}`,
-  { cwd: root, stdio: 'inherit' },
-);
+try {
+  console.error('[build-atomic] Running tsc …');
+  execSync(
+    `npx tsc -p tsconfig.build.json --outDir ${tmpDir}`,
+    { cwd: root, stdio: 'inherit' },
+  );
+} catch (e) {
+  cleanup();
+  console.error(`[build-atomic] Build failed: ${e.message}`);
+  process.exit(1);
+}
 
 // ── Step 2: copy static assets into tmpDir ────────────────────────────────────
 console.error('[build-atomic] Copying assets …');

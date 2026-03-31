@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Doctor } from "../doctor.js";
+import { installBundledWorkflows } from "../../lib/workflow-loader.js";
 
 // Mock git module (required by Doctor constructor chain)
 vi.mock("../../lib/git.js", async (importOriginal) => {
@@ -44,13 +45,9 @@ describe("Doctor.checkWorkflows()", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("passes when all bundled workflows are installed", () => {
-    // Install default.yaml, smoke.yaml, and epic.yaml
-    const workflowsDir = join(tmpDir, ".foreman", "workflows");
-    mkdirSync(workflowsDir, { recursive: true });
-    writeFileSync(join(workflowsDir, "default.yaml"), "name: default\nphases:\n  - name: finalize\n    builtin: true\n");
-    writeFileSync(join(workflowsDir, "smoke.yaml"), "name: smoke\nphases:\n  - name: finalize\n    builtin: true\n");
-    writeFileSync(join(workflowsDir, "epic.yaml"), "name: epic\nphases:\n  - name: finalize\n    builtin: true\n");
+  it("passes when all bundled workflows are installed with correct content", () => {
+    // Install the real bundled workflows (not minimal stubs) so staleness check passes
+    installBundledWorkflows(tmpDir, true);
 
     const { doctor } = makeMocks(tmpDir);
     return doctor.checkWorkflows().then((result) => {
@@ -63,7 +60,7 @@ describe("Doctor.checkWorkflows()", () => {
     const { doctor } = makeMocks(tmpDir);
     return doctor.checkWorkflows().then((result) => {
       expect(result.status).toBe("fail");
-      expect(result.message).toMatch(/missing workflow/i);
+      expect(result.message).toMatch(/missing/i);
     });
   });
 
@@ -100,5 +97,57 @@ describe("Doctor.checkWorkflows()", () => {
       expect(result.message).toMatch(/dry-run/i);
       expect(existsSync(join(tmpDir, ".foreman", "workflows", "default.yaml"))).toBe(false);
     });
+  });
+
+  it("detects stale workflow missing verdict/retryWith on reviewer phase", () => {
+    // Install a default.yaml that exists but has a reviewer phase without verdict/retryWith
+    const workflowsDir = join(tmpDir, ".foreman", "workflows");
+    mkdirSync(workflowsDir, { recursive: true });
+    // Stale format: reviewer phase lacks verdict and retryWith (old foreman init output)
+    writeFileSync(
+      join(workflowsDir, "default.yaml"),
+      [
+        "name: default",
+        "phases:",
+        "  - name: developer",
+        "    prompt: developer.md",
+        "  - name: qa",
+        "    prompt: qa.md",
+        "    retryOnFail: 2",    // missing verdict: true and retryWith
+        "  - name: reviewer",
+        "    prompt: reviewer.md",
+        "    maxTurns: 20",       // missing verdict: true, retryWith, retryOnFail
+        "  - name: finalize",
+        "    prompt: finalize.md",
+      ].join("\n"),
+    );
+    writeFileSync(join(workflowsDir, "smoke.yaml"), "name: smoke\nphases:\n  - name: finalize\n    builtin: true\n");
+    writeFileSync(join(workflowsDir, "epic.yaml"), "name: epic\nphases:\n  - name: finalize\n    builtin: true\n");
+
+    const { doctor } = makeMocks(tmpDir);
+    return doctor.checkWorkflows().then((result) => {
+      expect(result.status).toBe("fail");
+      expect(result.message).toMatch(/stale/i);
+    });
+  });
+
+  it("fix=true overwrites stale workflow files (force reinstall)", async () => {
+    // Install a stale default.yaml missing verdict/retryWith
+    const workflowsDir = join(tmpDir, ".foreman", "workflows");
+    mkdirSync(workflowsDir, { recursive: true });
+    writeFileSync(
+      join(workflowsDir, "default.yaml"),
+      "name: default\nphases:\n  - name: reviewer\n    prompt: reviewer.md\n",
+    );
+    writeFileSync(join(workflowsDir, "smoke.yaml"), "name: smoke\nphases:\n  - name: finalize\n    builtin: true\n");
+    writeFileSync(join(workflowsDir, "epic.yaml"), "name: epic\nphases:\n  - name: finalize\n    builtin: true\n");
+
+    const { doctor } = makeMocks(tmpDir);
+    const fixResult = await doctor.checkWorkflows({ fix: true });
+    expect(fixResult.status).toBe("fixed");
+
+    // After fix, should pass (stale file overwritten with current bundled version)
+    const checkResult = await doctor.checkWorkflows();
+    expect(checkResult.status).toBe("pass");
   });
 });

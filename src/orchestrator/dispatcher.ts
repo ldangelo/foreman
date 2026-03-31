@@ -8,7 +8,7 @@ import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore, NativeTask } from "../lib/store.js";
-import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS } from "../lib/config.js";
+import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache } from "../lib/git.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
@@ -113,6 +113,8 @@ export class Dispatcher {
     notifyUrl?: string;
     /** Override target branch for merges (when working on a feature branch instead of default). */
     targetBranch?: string;
+    /** P1: Stagger delay in milliseconds between dispatches to prevent thundering herd. */
+    staggerMs?: number;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = opts?.projectId ?? this.resolveProjectId();
@@ -166,7 +168,6 @@ export class Dispatcher {
     } catch {
       // Workflow config not found — continue with default behavior
     }
-
 
     // Determine how many agent slots are available
     const activeRuns = this.store.getActiveRuns(projectId);
@@ -331,58 +332,50 @@ export class Dispatcher {
       if (seed.type === "feature") {
         try {
           const detail = await this.seeds.show(seed.id);
-          const detailWithChildren = detail as { children?: string[]; status: string };
-          const childIds = detailWithChildren.children ?? [];
+          // br show --json returns `dependents` (the tasks this container blocks), not `children`.
+          // Use dependents to determine whether all downstream work is complete.
+          const brDetail = detail as import("../lib/beads-rust.js").BrIssueDetail;
+          const dependents = brDetail.dependents ?? [];
 
-          if (childIds.length === 0) {
-            // No children — close the container directly
-            await this.seeds.close(seed.id, "Auto-closed: no children (empty container)");
-            log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — no children`);
+          if (dependents.length === 0) {
+            // No dependents — close the container directly
+            await this.seeds.close(seed.id, "Auto-closed: no dependent tasks (empty container)");
+            log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — no dependent tasks`);
             skipped.push({
               seedId: seed.id,
               title: seed.title,
-              reason: `Type '${seed.type}' auto-closed — no children`,
+              reason: `Type '${seed.type}' auto-closed — no dependent tasks`,
             });
           } else {
-            // Check each child's status
-            let openCount = 0;
-            for (const childId of childIds) {
-              try {
-                const child = await this.seeds.show(childId);
-                if (child.status !== "closed" && child.status !== "completed") {
-                  openCount++;
-                }
-              } catch {
-                // If we can't check a child, assume it's still open to be safe
-                openCount++;
-              }
-            }
+            const openDeps = dependents.filter(
+              (d) => d.status !== "closed" && d.status !== "completed",
+            );
 
-            if (openCount === 0) {
-              await this.seeds.close(seed.id, "Auto-closed: all children completed");
-              log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — all children completed`);
+            if (openDeps.length === 0) {
+              await this.seeds.close(seed.id, "Auto-closed: all dependent tasks completed");
+              log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — all ${dependents.length} dependent tasks completed`);
               skipped.push({
                 seedId: seed.id,
                 title: seed.title,
-                reason: `Type '${seed.type}' auto-closed — all ${childIds.length} children completed`,
+                reason: `Type '${seed.type}' auto-closed — all ${dependents.length} dependent tasks completed`,
               });
             } else {
-              log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — waiting on ${openCount} open children`);
+              log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`);
               skipped.push({
                 seedId: seed.id,
                 title: seed.title,
-                reason: `Type '${seed.type}' is an organizational container — waiting on ${openCount} open child${openCount === 1 ? "" : "ren"}`,
+                reason: `Type '${seed.type}' is an organizational container — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`,
               });
             }
           }
         } catch (err: unknown) {
           // If we can't inspect the container, skip it rather than crashing
           const msg = err instanceof Error ? err.message : String(err);
-          log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — failed to check children: ${msg}`);
+          log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — failed to check dependents: ${msg}`);
           skipped.push({
             seedId: seed.id,
             title: seed.title,
-            reason: `Type '${seed.type}' is an organizational container — skipped (error checking children)`,
+            reason: `Type '${seed.type}' is an organizational container — skipped (error checking dependents)`,
           });
         }
         continue;
@@ -550,7 +543,7 @@ export class Dispatcher {
       // Use opts.model if provided (e.g. --model flag), otherwise fall back to the
       // developer-role default.  This value is the outer fallback only — executePipeline
       // will override it per phase via resolvePhaseModel().
-      const model: ModelSelection = opts?.model ?? "anthropic/claude-sonnet-4-6";
+      const model: ModelSelection = opts?.model ?? getDefaultModel() as ModelSelection;
 
       if (opts?.dryRun) {
         dispatched.push({
@@ -776,6 +769,13 @@ export class Dispatcher {
           runId: run.id,
           branchName,
         });
+
+        // P1: Apply stagger delay between dispatches to prevent thundering herd on Haiku quotas
+        if (opts?.staggerMs && opts?.staggerMs > 0 && dispatched.length < readySeeds.length) {
+          const staggerMsg = `[dispatch] Staggering ${opts.staggerMs / 1000}s before next dispatch...`;
+          console.error(staggerMsg);
+          await new Promise((resolve) => setTimeout(resolve, opts.staggerMs));
+        }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         skipped.push({
@@ -1022,7 +1022,7 @@ export class Dispatcher {
   generateAgentInstructions(seed: SeedInfo, worktreePath: string): string {
     // Use developer-role default for TASK.md informational display.
     // The actual per-phase model is resolved from workflow YAML at runtime.
-    const model: ModelSelection = "anthropic/claude-sonnet-4-6";
+    const model: ModelSelection = getDefaultModel() as ModelSelection;
     return workerAgentMd(seed, worktreePath, model);
   }
 
@@ -1397,8 +1397,9 @@ export async function resolveBaseBranch(
   const brClient = new BeadsRustClient(projectPath);
   try {
     const detail = await brClient.show(seedId);
-    // detail.dependencies is string[] of dep IDs that this seed depends on
-    for (const depId of detail.dependencies ?? []) {
+    // detail.dependencies is BrDepRef[] — extract id for branch resolution
+    for (const dep of detail.dependencies ?? []) {
+      const depId = typeof dep === "string" ? dep : (dep as { id: string }).id;
       const depBranch = `foreman/${depId}`;
       // Check if this branch exists locally via VcsBackend (TRD-015: migrate from gitBranchExists shim)
       const depBackend = new GitBackend(projectPath);
@@ -1643,7 +1644,8 @@ function seedToInfo(
     id: seed.id,
     title: seed.title,
     description: detail?.description ?? seed.description ?? undefined,
-    priority: seed.priority,
+    // Convert numeric priority (0-4) to string with "P" prefix (e.g., 0 → "P0", 2 → "P2")
+    priority: typeof seed.priority === "number" ? `P${seed.priority}` : seed.priority,
     type: seed.type,
     labels: detail?.labels ?? seed.labels,
     comments: combinedComments,

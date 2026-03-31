@@ -158,7 +158,7 @@ export async function checkBranchMismatch(
 export const runCommand = new Command("run")
   .description("Dispatch ready tasks to agents")
   .option("--max-agents <n>", "Maximum concurrent agents", "5")
-  .option("--model <model>", "Force a specific model (anthropic/claude-opus-4-6, anthropic/claude-sonnet-4-6, anthropic/claude-haiku-4-5)")
+  .option("--model <model>", "Force a specific model (overrides FOREMAN_DEFAULT_MODEL)")
   .option("--dry-run", "Show what would be dispatched without doing it")
   .option("--no-watch", "Exit immediately after dispatching (don't monitor agents)")
   .option("--telemetry", "Enable OpenTelemetry tracing on spawned agents (requires OTEL_* env vars)")
@@ -169,6 +169,7 @@ export const runCommand = new Command("run")
   .option("--skip-review", "Skip the reviewer phase in the pipeline")
   .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
+  .option("--stagger <duration>", "Stagger delay between dispatches to prevent thundering herd (e.g. '30s', '1m')")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -182,6 +183,20 @@ export const runCommand = new Command("run")
     const skipReview = opts.skipReview as boolean | undefined;
     const beadFilter = opts.bead as string | undefined;
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
+
+    // P1: Parse stagger delay for preventing thundering herd on Haiku quotas
+    // Accept formats like "30s", "1m", "2m30s"
+    let staggerMs: number | undefined;
+    if (opts.stagger) {
+      const match = opts.stagger.match(/^(\d+)([smh])/);
+      if (match) {
+        const value = parseInt(match[1], 10);
+        const unit = match[2];
+        staggerMs = unit === "s" ? value * 1000 : unit === "m" ? value * 60 * 1000 : value * 60 * 60 * 1000;
+      } else {
+        console.warn(chalk.yellow(`[foreman] Warning: invalid --stagger value "${opts.stagger}", ignoring (use formats like "30s", "1m")`));
+      }
+    }
 
     // Start notification server so workers can POST status updates immediately
     // instead of waiting for the next poll cycle. Stopped in the finally block.
@@ -390,6 +405,7 @@ export const runCommand = new Command("run")
               seedId: beadFilter,
               notifyUrl,
               targetBranch,
+              staggerMs,
             });
             return newResult.dispatched.map((t) => t.runId);
           }
@@ -497,6 +513,7 @@ export const runCommand = new Command("run")
           seedId: beadFilter,
           notifyUrl,
           targetBranch,
+          staggerMs,
         });
 
         // Print dispatched tasks

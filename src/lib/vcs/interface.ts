@@ -215,6 +215,106 @@ export interface VcsBackend {
    */
   cleanWorkingTree(workspacePath: string): Promise<void>;
 
+  // ── Conflict Resolution Operations ───────────────────────────────────
+
+  /**
+   * Merge a source branch into the target without auto-committing.
+   * Used by ConflictResolver for Tier 1 merge attempts where we need to
+   * detect conflicts before committing.
+   *
+   * Returns `MergeResult` with success flag and any conflicting files.
+   */
+  mergeWithoutCommit(
+    repoPath: string,
+    sourceBranch: string,
+    targetBranch: string,
+  ): Promise<MergeResult>;
+
+  /**
+   * Commit the current staged changes with a custom message.
+   * Used after `mergeWithoutCommit()` to complete a merge with a descriptive message.
+   */
+  commit(workspacePath: string, message: string): Promise<void>;
+
+  /**
+   * Commit the current staged changes using the auto-generated merge message.
+   * Used after `mergeWithoutCommit()` to complete a merge without editing the message.
+   * For jujutsu this falls back to `commit()` with an auto-generated message.
+   */
+  commitNoEdit(workspacePath: string): Promise<void>;
+
+  /**
+   * Abort an in-progress merge, returning to pre-merge state.
+   * For git: `git merge --abort`. For jujutsu: `jj op restore` to pre-merge state.
+   */
+  abortMerge(repoPath: string): Promise<void>;
+
+  /**
+   * Stage a specific file (git add <path>).
+   * For jujutsu this is a no-op (auto-staged).
+   */
+  stageFile(workspacePath: string, filePath: string): Promise<void>;
+
+  /**
+   * Checkout a file from a specific ref into the working tree.
+   * For git: `git checkout <ref> -- <path>`.
+   * For jujutsu: `jj file show <ref> -- <path>` written to working tree.
+   * The special ref "--theirs" during a rebase means "the version from the
+   * branch being rebased onto" — resolved by the backend based on context.
+   */
+  checkoutFile(workspacePath: string, ref: string, filePath: string): Promise<void>;
+
+  /**
+   * Get the content of a file at a specific ref (revision).
+   * For git: `git show <ref>:<path>`.
+   * For jujutsu: `jj file show <ref> -- <path>`.
+   */
+  showFile(repoPath: string, ref: string, filePath: string): Promise<string>;
+
+  /**
+   * Reset the working tree to a specific ref (hard reset).
+   * For git: `git reset --hard <ref>`.
+   * For jujutsu: `jj restore --to <ref>` (restores all files to that revision).
+   */
+  resetHard(workspacePath: string, ref: string): Promise<void>;
+
+  /**
+   * Remove a tracked file from the repository.
+   * For git: `git rm -f <path>`.
+   * For jujutsu: removes the file from the current change.
+   */
+  removeFile(workspacePath: string, filePath: string): Promise<void>;
+
+  /**
+   * Continue an in-progress rebase after resolving conflicts.
+   * For git: `git rebase --continue`.
+   * For jujutsu: `jj rebase --continue` or similar.
+   */
+  rebaseContinue(workspacePath: string): Promise<void>;
+
+  /**
+   * Remove a file from the staging area (index) without modifying the working tree.
+   * For git: `git rm --cached <path>` (unstage a new file).
+   * For jujutsu: not applicable (no separate index).
+   */
+  removeFromIndex(workspacePath: string, filePath: string): Promise<void>;
+
+  /**
+   * Get the merge base (common ancestor) of two refs.
+   * For git: `git merge-base <ref1> <ref2>`.
+   * For jujutsu: `jj log -r <ref1> + <ref2> -T 'parent'`.
+   * Returns empty string if merge base cannot be determined.
+   */
+  getMergeBase(repoPath: string, ref1: string, ref2: string): Promise<string>;
+
+  /**
+   * List untracked files in the working tree.
+   * For git: `git ls-files --others --exclude-standard`.
+   * For jujutsu: uses jj's conflict/working-copy state inspection.
+   * Returns an array of file paths relative to the workspace root.
+   */
+  getUntrackedFiles(workspacePath: string): Promise<string[]>;
+
   // ── Finalize Support ─────────────────────────────────────────────────
 
   /**

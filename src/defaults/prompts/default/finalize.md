@@ -105,10 +105,10 @@ After the rebase succeeds, run the full test suite to catch any merge-induced fa
 
 Run:
 ```
-npm test 2>&1
+npm test -- --reporter=dot 2>&1
 ```
 
-Capture the full output and exit code.
+Capture the full output and exit code. The `--reporter=dot` flag reduces per-test output to a single dot per passing test, keeping the agent context concise. Failures still print full details.
 
 Then write `FINALIZE_VALIDATION.md` in the worktree root:
 
