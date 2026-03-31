@@ -125,9 +125,10 @@ describe("smoke workflow: structural invariants", () => {
     expect(content).toContain("PASS");
   });
 
-  it("smoke/finalize.md instructs Pi to write FINALIZE_REPORT.md and run commit (not git push)", () => {
+  it("smoke/finalize.md instructs Pi to write FINALIZE_VALIDATION.md with PASS verdict and run commit (not git push)", () => {
     const content = readFileSync(join(SMOKE_PROMPTS_DIR, "finalize.md"), "utf-8");
-    expect(content).toContain("FINALIZE_REPORT.md");
+    expect(content).toContain("FINALIZE_VALIDATION.md");
+    expect(content).toContain("## Verdict: PASS");
     // Commit command is now a VCS template variable (TRD-026)
     expect(content).toContain("{{vcsCommitCommand}}");
     // Must explicitly NOT push in smoke mode
@@ -139,6 +140,15 @@ describe("smoke workflow: structural invariants", () => {
     const content = readFileSync(join(SMOKE_PROMPTS_DIR, "finalize.md"), "utf-8");
     // Template must reference {{worktreePath}} so the agent can cd to the correct dir
     expect(content).toContain("{{worktreePath}}");
+  });
+
+  it("smoke workflow finalize phase has artifact/verdict/retry wiring", () => {
+    const content = readFileSync(SMOKE_WORKFLOW, "utf-8");
+    expect(content).toContain("artifact: FINALIZE_VALIDATION.md");
+    expect(content).toContain("verdict: true");
+    expect(content).toContain("retryWith: developer");
+    expect(content).toContain("retryOnFail: 1");
+    expect(content).toContain("onFail: developer");
   });
 
   it("smoke prompts include error reporting instructions (lifecycle mail handled by executor)", () => {
