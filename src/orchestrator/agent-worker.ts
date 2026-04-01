@@ -578,20 +578,20 @@ async function runTroubleshooterPhase(
   const onFailure = workflowConfig.onFailure;
   if (!onFailure) return false;
 
-  const { runId, seedId, seedTitle } = config;
-  log(`[TROUBLESHOOTER] Activating for ${seedId} — failure context: ${failureContext.slice(0, 120)}`);
+  const { runId, seedId: beadId, seedTitle: beadTitle } = config;
+  log(`[TROUBLESHOOTER] Activating for ${beadId} — failure context: ${failureContext.slice(0, 120)}`);
 
   // Build a basic troubleshooter prompt with failure context injected
   const prompt = [
     `# Troubleshooter Agent`,
     ``,
-    `**Seed:** ${seedId} — ${seedTitle}`,
+    `**Bead:** ${beadId} — ${beadTitle}`,
     `**Run ID:** ${runId}`,
     `**Failure Context:**`,
     failureContext,
     ``,
     `Use get_run_status, read artifacts, and apply fixes. Write TROUBLESHOOT_REPORT.md when done.`,
-    `Include "RESOLVED" in the report if the failure was fixed, or "ESCALATED" if not.`,
+    `Use bead terminology in your notes. Include "RESOLVED" in the report if the failure was fixed, or "ESCALATED" if not.`,
   ].join("\n");
 
   const roleConfig = ROLE_CONFIGS.troubleshooter;
@@ -599,7 +599,7 @@ async function runTroubleshooterPhase(
 
   const customTools: import("@mariozechner/pi-coding-agent").ToolDefinition[] = [];
   if (agentMailClient) {
-    customTools.push(createSendMailTool(agentMailClient, `troubleshooter-${seedId}`));
+    customTools.push(createSendMailTool(agentMailClient, `troubleshooter-${beadId}`));
   }
   customTools.push(createGetRunStatusTool(store));
   customTools.push(createCloseBeadTool(pipelineProjectPath));
@@ -607,7 +607,7 @@ async function runTroubleshooterPhase(
   try {
     const result = await runWithPiSdk({
       prompt,
-      systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for task: ${seedTitle}`,
+      systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for bead: ${beadTitle}`,
       cwd: config.worktreePath,
       model: resolvedModel,
       allowedTools: roleConfig.allowedTools,
@@ -627,7 +627,7 @@ async function runTroubleshooterPhase(
       const report = rfs(pathJoin(config.worktreePath, "TROUBLESHOOT_REPORT.md"), "utf-8");
       const troubleshooterResolved = report.includes("RESOLVED");
       if (troubleshooterResolved) {
-        log(`[TROUBLESHOOTER] PIPELINE RECOVERED for ${seedId}`);
+        log(`[TROUBLESHOOTER] PIPELINE RECOVERED for ${beadId}`);
         await appendFile(logFile, `[TROUBLESHOOTER] PIPELINE RECOVERED\n`);
         return true;
       }
