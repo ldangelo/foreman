@@ -99,8 +99,8 @@ export interface FinalizeCommands {
   commitCommand: string;
   /** Command to push the branch/bookmark to the remote. */
   pushCommand: string;
-  /** Command to rebase the workspace branch onto the base branch. */
-  rebaseCommand: string;
+  /** Command to integrate the latest target-branch changes into the bead branch for finalize validation. */
+  integrateTargetCommand: string;
   /** Command to verify the branch/bookmark exists on the remote after push. */
   branchVerifyCommand: string;
   /** Command to clean up the workspace after finalization. */

@@ -244,7 +244,7 @@ describe("GitBackend.getFinalizeCommands", () => {
     expect(typeof cmds.stageCommand).toBe("string");
     expect(typeof cmds.commitCommand).toBe("string");
     expect(typeof cmds.pushCommand).toBe("string");
-    expect(typeof cmds.rebaseCommand).toBe("string");
+    expect(typeof cmds.integrateTargetCommand).toBe("string");
     expect(typeof cmds.branchVerifyCommand).toBe("string");
     expect(typeof cmds.cleanCommand).toBe("string");
   });
@@ -284,7 +284,7 @@ describe("GitBackend.getFinalizeCommands", () => {
     expect(cmds.pushCommand).toContain("origin");
   });
 
-  it("rebaseCommand references the base branch", () => {
+  it("integrateTargetCommand references the base branch", () => {
     const backend = new GitBackend("/tmp");
     const cmds = backend.getFinalizeCommands({
       seedId: "bd-xyz",
@@ -292,8 +292,8 @@ describe("GitBackend.getFinalizeCommands", () => {
       baseBranch: "develop",
       worktreePath: "/tmp",
     });
-    expect(cmds.rebaseCommand).toContain("develop");
-    expect(cmds.rebaseCommand).toContain("rebase");
+    expect(cmds.integrateTargetCommand).toContain("develop");
+    expect(cmds.integrateTargetCommand).toContain("rebase");
   });
 });
 

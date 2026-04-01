@@ -391,8 +391,8 @@ export function buildPhasePrompt(
     vcsCommitCommand?: string;
     /** Command to push the branch to remote. */
     vcsPushCommand?: string;
-    /** Command to rebase onto the base branch. */
-    vcsRebaseCommand?: string;
+    /** Command to integrate the latest target-branch changes into the bead branch. */
+    vcsIntegrateTargetCommand?: string;
     /** Command to verify the current branch name. */
     vcsBranchVerifyCommand?: string;
     /** Command to clean up the workspace. */
@@ -437,7 +437,7 @@ export function buildPhasePrompt(
     vcsStageCommand: context.vcsStageCommand ?? "git add -A",
     vcsCommitCommand: context.vcsCommitCommand ?? `git commit -m "${context.seedTitle} (${context.seedId})"`,
     vcsPushCommand: context.vcsPushCommand ?? `git push -u origin foreman/${context.seedId}`,
-    vcsRebaseCommand: context.vcsRebaseCommand ?? `git fetch origin && git rebase origin/${context.baseBranch ?? "main"}`,
+    vcsIntegrateTargetCommand: context.vcsIntegrateTargetCommand ?? `git fetch origin && git rebase origin/${context.baseBranch ?? "main"}`,
     vcsBranchVerifyCommand: context.vcsBranchVerifyCommand ?? "git rev-parse --abbrev-ref HEAD",
     vcsCleanCommand: context.vcsCleanCommand ?? `git worktree remove --force ${context.worktreePath ?? ""}`,
     vcsRestoreTrackedStateCommand: context.vcsRestoreTrackedStateCommand ?? `git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl 2>/dev/null || git restore --source=HEAD --worktree -- .beads/issues.jsonl 2>/dev/null || true`,
@@ -541,7 +541,7 @@ export function finalizePrompt(seedId: string, seedTitle: string, runId?: string
       vcsStageCommand: "git add -A",
       vcsCommitCommand: `git commit -m "${seedTitle} (${seedId})"`,
       vcsPushCommand: `git push -u origin foreman/${seedId}`,
-      vcsRebaseCommand: `git fetch origin && git rebase origin/${resolvedBase}`,
+      vcsIntegrateTargetCommand: `git fetch origin && git rebase origin/${resolvedBase}`,
       vcsBranchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       vcsCleanCommand: `git worktree remove --force ${resolvedWorktree}`,
       qaValidatedTargetRef: "",

@@ -178,7 +178,7 @@ function makeMockVcs(
       stageCommand: "git add -A",
       commitCommand: "git commit -m",
       pushCommand: "git push -u origin",
-      rebaseCommand: "git pull --rebase origin",
+      integrateTargetCommand: "git pull --rebase origin",
       branchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       cleanCommand: "git clean -fd",
       restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",

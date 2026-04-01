@@ -809,7 +809,7 @@ export class GitBackend implements VcsBackend {
       stageCommand: "git add -A",
       commitCommand: `git commit -m '${safeSeedTitle} (${seedId})'`,
       pushCommand: `git push -u origin foreman/${seedId}`,
-      rebaseCommand: `git fetch origin && git rebase origin/${baseBranch}`,
+      integrateTargetCommand: `git fetch origin && git rebase origin/${baseBranch}`,
       branchVerifyCommand: `git rev-parse --abbrev-ref HEAD`,
       cleanCommand: `git worktree remove --force ${vars.worktreePath}`,
       restoreTrackedStateCommand: buildTrackedStateRestoreCommand(worktreePath, this.projectPath),

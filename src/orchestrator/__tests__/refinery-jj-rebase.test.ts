@@ -85,7 +85,7 @@ function makeMockVcs(): VcsBackend {
       stageCommand: "",
       commitCommand: "jj describe -m",
       pushCommand: "jj git push --bookmark",
-      rebaseCommand: "jj rebase -d dev",
+      integrateTargetCommand: "jj rebase -d dev",
       branchVerifyCommand: "jj log -r @",
       cleanCommand: "jj restore",
       restoreTrackedStateCommand: "",

@@ -92,7 +92,7 @@ git checkout foreman/{{seedId}}
 ### Step 6: Integrate the latest target-branch changes into this bead branch
 Bring the latest `{{baseBranch}}` changes into this bead branch before push so Finalize verifies the same target-branch state that refinery will later land onto.
 ```
-{{vcsRebaseCommand}}
+{{vcsIntegrateTargetCommand}}
 ```
 
 **If this integration step has conflicts**, run `git rebase --abort` to clean up, then send an error and stop:

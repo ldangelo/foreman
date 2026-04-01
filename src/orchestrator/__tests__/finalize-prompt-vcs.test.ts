@@ -35,9 +35,9 @@ describe("finalize.md template: VCS placeholder variables (AC-T-026-1)", () => {
     expect(content).toContain("{{vcsPushCommand}}");
   });
 
-  it("raw template contains {{vcsRebaseCommand}} placeholder", () => {
+  it("raw template contains {{vcsIntegrateTargetCommand}} placeholder", () => {
     const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
-    expect(content).toContain("{{vcsRebaseCommand}}");
+    expect(content).toContain("{{vcsIntegrateTargetCommand}}");
   });
 
   it("raw template contains {{vcsBranchVerifyCommand}} placeholder", () => {
@@ -98,7 +98,7 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
       ...finalizeCommands.stageCommand && { vcsStageCommand: finalizeCommands.stageCommand },
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
       vcsRestoreTrackedStateCommand: finalizeCommands.restoreTrackedStateCommand,
@@ -116,7 +116,7 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
       vcsRestoreTrackedStateCommand: finalizeCommands.restoreTrackedStateCommand,
@@ -132,7 +132,7 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
       seedDescription: "desc",
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
@@ -148,7 +148,7 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
@@ -165,12 +165,12 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
     expect(prompt).toContain("git fetch origin && git rebase origin/dev");
-    expect(prompt).not.toContain("{{vcsRebaseCommand}}");
+    expect(prompt).not.toContain("{{vcsIntegrateTargetCommand}}");
   });
 
   it("renders finalize drift metadata in prompt", () => {
@@ -185,7 +185,7 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
@@ -202,7 +202,7 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
@@ -221,14 +221,14 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
     expect(prompt).not.toContain("{{vcsStageCommand}}");
     expect(prompt).not.toContain("{{vcsCommitCommand}}");
     expect(prompt).not.toContain("{{vcsPushCommand}}");
-    expect(prompt).not.toContain("{{vcsRebaseCommand}}");
+    expect(prompt).not.toContain("{{vcsIntegrateTargetCommand}}");
     expect(prompt).not.toContain("{{vcsBranchVerifyCommand}}");
     expect(prompt).not.toContain("{{vcsCleanCommand}}");
   });
@@ -257,7 +257,7 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
@@ -273,7 +273,7 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
@@ -290,12 +290,12 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
     expect(prompt).toContain("jj git fetch && jj rebase -d");
-    expect(prompt).not.toContain("{{vcsRebaseCommand}}");
+    expect(prompt).not.toContain("{{vcsIntegrateTargetCommand}}");
   });
 
   it("renders jj branch verify command in finalize prompt", () => {
@@ -306,7 +306,7 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
@@ -325,14 +325,14 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
     expect(prompt).not.toContain("{{vcsStageCommand}}");
     expect(prompt).not.toContain("{{vcsCommitCommand}}");
     expect(prompt).not.toContain("{{vcsPushCommand}}");
-    expect(prompt).not.toContain("{{vcsRebaseCommand}}");
+    expect(prompt).not.toContain("{{vcsIntegrateTargetCommand}}");
     expect(prompt).not.toContain("{{vcsBranchVerifyCommand}}");
     expect(prompt).not.toContain("{{vcsCleanCommand}}");
   });
@@ -345,7 +345,7 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
       vcsStageCommand: finalizeCommands.stageCommand, // ""
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
-      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
@@ -386,7 +386,7 @@ describe("buildPhasePrompt finalize: default git commands when VCS vars omitted"
     expect(prompt).toContain("git push");
   });
 
-  it("defaults to git rebase when vcsRebaseCommand not provided", () => {
+  it("defaults to git rebase when vcsIntegrateTargetCommand not provided", () => {
     const prompt = buildPhasePrompt("finalize", {
       seedId: "bd-def",
       seedTitle: "Default test",
@@ -407,7 +407,7 @@ describe("buildPhasePrompt finalize: default git commands when VCS vars omitted"
     expect(prompt).not.toContain("{{vcsStageCommand}}");
     expect(prompt).not.toContain("{{vcsCommitCommand}}");
     expect(prompt).not.toContain("{{vcsPushCommand}}");
-    expect(prompt).not.toContain("{{vcsRebaseCommand}}");
+    expect(prompt).not.toContain("{{vcsIntegrateTargetCommand}}");
     expect(prompt).not.toContain("{{vcsBranchVerifyCommand}}");
     expect(prompt).not.toContain("{{vcsCleanCommand}}");
   });

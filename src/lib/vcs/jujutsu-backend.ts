@@ -997,7 +997,7 @@ export class JujutsuBackend implements VcsBackend {
       stageCommand: "", // jj auto-stages
       commitCommand: `jj describe -m '${safeSeedTitle} (${seedId})'`,
       pushCommand: `jj git push --bookmark foreman/${seedId} --allow-new`,
-      rebaseCommand: `jj git fetch && jj rebase -d ${baseBranch}@origin`,
+      integrateTargetCommand: `jj git fetch && jj rebase -d ${baseBranch}@origin`,
       branchVerifyCommand: `jj bookmark list foreman/${seedId}`,
       cleanCommand: `jj workspace forget foreman-${seedId}`,
       restoreTrackedStateCommand: buildTrackedStateRestoreCommand(worktreePath, this.projectPath),

@@ -163,8 +163,8 @@ describe("default.yaml: finalize phase pre-push validation config", () => {
 describe("default/finalize.md: pre-push test validation prompt", () => {
   it("prompt contains npm test instruction after rebase step", () => {
     const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
-    // Rebase command is now a template variable {{vcsRebaseCommand}} (TRD-026)
-    const rebasePos = content.indexOf("{{vcsRebaseCommand}}");
+    // Rebase command is now a template variable {{vcsIntegrateTargetCommand}} (TRD-026)
+    const rebasePos = content.indexOf("{{vcsIntegrateTargetCommand}}");
     const npmTestPos = content.indexOf("npm test");
     expect(rebasePos).toBeGreaterThan(-1);
     expect(npmTestPos).toBeGreaterThan(-1);

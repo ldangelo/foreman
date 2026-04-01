@@ -218,7 +218,7 @@ describe("epic resume detection (TRD-009)", () => {
         stageCommand: "git add -A",
         commitCommand: "git commit",
         pushCommand: "git push",
-        rebaseCommand: "git rebase",
+        integrateTargetCommand: "git rebase",
         branchVerifyCommand: "git branch",
         cleanCommand: "git clean",
         restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",

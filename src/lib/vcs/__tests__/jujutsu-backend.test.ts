@@ -136,7 +136,7 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
     expect(cmds.pushCommand).toContain('foreman/bd-test');
   });
 
-  it("returns jj rebase command with base branch for rebaseCommand", () => {
+  it("returns jj rebase command with base branch for integrateTargetCommand", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({
       seedId: 'bd-test',
@@ -144,8 +144,8 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
       baseBranch: 'dev',
       worktreePath: '/tmp/worktrees/bd-test',
     });
-    expect(cmds.rebaseCommand).toContain('jj rebase');
-    expect(cmds.rebaseCommand).toContain('dev');
+    expect(cmds.integrateTargetCommand).toContain('jj rebase');
+    expect(cmds.integrateTargetCommand).toContain('dev');
   });
 
   it("returns jj workspace forget for cleanCommand", () => {
@@ -171,7 +171,7 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
     expect(typeof cmds.stageCommand).toBe('string');
     expect(typeof cmds.commitCommand).toBe('string');
     expect(typeof cmds.pushCommand).toBe('string');
-    expect(typeof cmds.rebaseCommand).toBe('string');
+    expect(typeof cmds.integrateTargetCommand).toBe('string');
     expect(typeof cmds.branchVerifyCommand).toBe('string');
     expect(typeof cmds.cleanCommand).toBe('string');
   });

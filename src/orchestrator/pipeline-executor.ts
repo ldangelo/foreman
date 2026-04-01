@@ -698,7 +698,7 @@ async function runPhaseSequence(
       vcsStageCommand?: string;
       vcsCommitCommand?: string;
       vcsPushCommand?: string;
-      vcsRebaseCommand?: string;
+      vcsIntegrateTargetCommand?: string;
       vcsBranchVerifyCommand?: string;
       vcsCleanCommand?: string;
       vcsRestoreTrackedStateCommand?: string;
@@ -723,7 +723,7 @@ async function runPhaseSequence(
         vcsPromptVars.vcsStageCommand = finalizeCommands.stageCommand;
         vcsPromptVars.vcsCommitCommand = finalizeCommands.commitCommand;
         vcsPromptVars.vcsPushCommand = finalizeCommands.pushCommand;
-        vcsPromptVars.vcsRebaseCommand = finalizeCommands.rebaseCommand;
+        vcsPromptVars.vcsIntegrateTargetCommand = finalizeCommands.integrateTargetCommand;
         vcsPromptVars.vcsBranchVerifyCommand = finalizeCommands.branchVerifyCommand;
         vcsPromptVars.vcsCleanCommand = finalizeCommands.cleanCommand;
         vcsPromptVars.vcsRestoreTrackedStateCommand = finalizeCommands.restoreTrackedStateCommand;

@@ -345,7 +345,7 @@ describe("verdict-triggered retry", () => {
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
         pushCommand: "jj git push --bookmark foreman/seed-verdict --allow-new",
-        rebaseCommand: "jj git fetch && jj rebase -d dev@origin",
+        integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
         branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
         cleanCommand: "jj workspace forget foreman-seed-verdict",
         restoreTrackedStateCommand: "true",

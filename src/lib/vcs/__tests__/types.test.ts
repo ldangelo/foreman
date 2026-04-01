@@ -189,7 +189,7 @@ describe('FinalizeCommands type', () => {
       stageCommand: 'git add -A',
       commitCommand: 'git commit -m "feat: implement task"',
       pushCommand: 'git push origin foreman/bd-deoi',
-      rebaseCommand: 'git rebase origin/dev',
+      integrateTargetCommand: 'git rebase origin/dev',
       branchVerifyCommand: 'git ls-remote --heads origin foreman/bd-deoi',
       cleanCommand: 'git worktree remove /tmp/worktrees/bd-deoi',
       restoreTrackedStateCommand: 'git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl',
@@ -198,7 +198,7 @@ describe('FinalizeCommands type', () => {
     expect(typeof cmds.stageCommand).toBe('string');
     expect(typeof cmds.commitCommand).toBe('string');
     expect(typeof cmds.pushCommand).toBe('string');
-    expect(typeof cmds.rebaseCommand).toBe('string');
+    expect(typeof cmds.integrateTargetCommand).toBe('string');
     expect(typeof cmds.branchVerifyCommand).toBe('string');
     expect(typeof cmds.cleanCommand).toBe('string');
     expect(typeof cmds.restoreTrackedStateCommand).toBe('string');
@@ -209,7 +209,7 @@ describe('FinalizeCommands type', () => {
       stageCommand: '',    // jj auto-stages
       commitCommand: 'jj commit -m "feat: implement task"',
       pushCommand: 'jj git push --allow-new',
-      rebaseCommand: 'jj rebase -d main',
+      integrateTargetCommand: 'jj rebase -d main',
       branchVerifyCommand: 'jj bookmark list',
       cleanCommand: 'jj workspace forget foreman-bd-deoi',
       restoreTrackedStateCommand: 'git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl',
