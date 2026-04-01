@@ -32,4 +32,11 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('Branch already matches ${completionTargetBranch} after troubleshooter recovery');
     expect(source).toContain('enqueueCloseSeed(store, seedId, "agent-worker-finalize")');
   });
+
+  it("treats non-retryable pre-existing test failures as merged when the branch already landed", () => {
+    expect(source).toContain('finalizeFailureReason === "tests_failed_pre_existing_issues"');
+    expect(source).toContain('store.updateRun(runId, { status: "merged", completed_at: now });');
+    expect(source).toContain('Pre-existing test failures but branch already matches ${completionTargetBranch}');
+    expect(source).toContain('enqueueCloseSeed(store, seedId, "agent-worker-finalize")');
+  });
 });

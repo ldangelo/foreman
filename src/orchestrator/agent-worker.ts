@@ -966,20 +966,41 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           }
         }
       } else {
-        const terminalStatus = finalizeRetryable ? "stuck" : "failed";
-        store.updateRun(runId, { status: terminalStatus, completed_at: now });
-        notifyClient.send({ type: "status", runId, status: terminalStatus, timestamp: now });
-        sendMail(agentMailClient, "foreman", "agent-error", {
-          seedId,
-          phase: "finalize",
-          error: finalizeFailureReason || "Finalize failed",
-          retryable: finalizeRetryable,
-        });
-        if (finalizeRetryable) {
-          enqueueResetSeedToOpen(store, seedId, "agent-worker-finalize");
-        } else {
-          enqueueMarkBeadFailed(store, seedId, "agent-worker-finalize");
-          log(`[PIPELINE] Deterministic finalize failure for ${seedId} — marking failed without retry`);
+        let alreadyLandedOnTarget = false;
+        if (!finalizeRetryable && finalizeFailureReason === "tests_failed_pre_existing_issues") {
+          try {
+            const completionBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
+            const completionTargetBranch = config.targetBranch ?? await completionBackend.detectDefaultBranch(worktreePath);
+            const changedAgainstTarget = await completionBackend.getChangedFiles(worktreePath, completionTargetBranch, "HEAD");
+            if (changedAgainstTarget.length === 0) {
+              alreadyLandedOnTarget = true;
+              store.updateRun(runId, { status: "merged", completed_at: now });
+              notifyClient.send({ type: "status", runId, status: "merged", timestamp: now });
+              enqueueCloseSeed(store, seedId, "agent-worker-finalize");
+              log(`[FINALIZE] Pre-existing test failures but branch already matches ${completionTargetBranch} — treating bead as merged`);
+            }
+          } catch (alreadyMergedErr: unknown) {
+            const alreadyMergedMsg = alreadyMergedErr instanceof Error ? alreadyMergedErr.message : String(alreadyMergedErr);
+            log(`[FINALIZE] Unable to verify whether pre-existing test failure run already landed on target: ${alreadyMergedMsg}`);
+          }
+        }
+
+        if (!alreadyLandedOnTarget) {
+          const terminalStatus = finalizeRetryable ? "stuck" : "failed";
+          store.updateRun(runId, { status: terminalStatus, completed_at: now });
+          notifyClient.send({ type: "status", runId, status: terminalStatus, timestamp: now });
+          sendMail(agentMailClient, "foreman", "agent-error", {
+            seedId,
+            phase: "finalize",
+            error: finalizeFailureReason || "Finalize failed",
+            retryable: finalizeRetryable,
+          });
+          if (finalizeRetryable) {
+            enqueueResetSeedToOpen(store, seedId, "agent-worker-finalize");
+          } else {
+            enqueueMarkBeadFailed(store, seedId, "agent-worker-finalize");
+            log(`[PIPELINE] Deterministic finalize failure for ${seedId} — marking failed without retry`);
+          }
         }
       }
 
