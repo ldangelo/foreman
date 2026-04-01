@@ -692,6 +692,75 @@ describe("NativeTaskStore.ready()", () => {
     const issues = await result;
     expect(Array.isArray(issues)).toBe(true);
   });
+
+  it("excludes tasks in all non-ready statuses", async () => {
+    // All 13 valid statuses from TASKS_SCHEMA CHECK constraint
+    const allStatuses = [
+      "backlog",
+      "ready",
+      "in-progress",
+      "explorer",
+      "developer",
+      "qa",
+      "reviewer",
+      "finalize",
+      "merged",
+      "conflict",
+      "failed",
+      "stuck",
+      "blocked",
+    ] as const;
+
+    // Create a task for each status
+    const tasksByStatus = new Map<string, TaskRow>();
+    for (const status of allStatuses) {
+      const task = ctx.taskStore.create({ title: `Task ${status}` });
+      tasksByStatus.set(status, task);
+    }
+
+    // Approve the backlog task so it transitions to ready
+    ctx.taskStore.approve(tasksByStatus.get("backlog")!.id);
+
+    // Claim one of the ready tasks to verify run_id IS NULL exclusion
+    const readyTask = tasksByStatus.get("ready")!;
+    ctx.taskStore.claim(readyTask.id, runId);
+
+    // Set statuses directly for terminal/phase statuses that can't be reached via API
+    const db = ctx.store.getDb();
+    const setStatus = (taskId: string, status: string) =>
+      db.prepare("UPDATE tasks SET status=? WHERE id=?").run(status, taskId);
+
+    // Set phase statuses directly (pipeline sets these, not the store API)
+    setStatus(tasksByStatus.get("in-progress")!.id, "in-progress");
+    setStatus(tasksByStatus.get("explorer")!.id, "explorer");
+    setStatus(tasksByStatus.get("developer")!.id, "developer");
+    setStatus(tasksByStatus.get("qa")!.id, "qa");
+    setStatus(tasksByStatus.get("reviewer")!.id, "reviewer");
+    setStatus(tasksByStatus.get("finalize")!.id, "finalize");
+
+    // Set terminal statuses directly (pipeline sets these)
+    setStatus(tasksByStatus.get("merged")!.id, "merged");
+    setStatus(tasksByStatus.get("conflict")!.id, "conflict");
+    setStatus(tasksByStatus.get("failed")!.id, "failed");
+    setStatus(tasksByStatus.get("stuck")!.id, "stuck");
+    setStatus(tasksByStatus.get("blocked")!.id, "blocked");
+
+    // Now ready() should only return the backlog task (now ready) since:
+    // - ready task is claimed (run_id is set)
+    // - all other tasks are in non-ready statuses
+    const ready = await ctx.taskStore.ready();
+
+    expect(ready.length).toBe(1);
+    expect(ready[0]!.status).toBe("ready");
+    expect(ready[0]!.id).toBe(tasksByStatus.get("backlog")!.id);
+
+    // Verify all excluded statuses are NOT in the result
+    const readyIds = new Set(ready.map((t) => t.id));
+    for (const [status, task] of tasksByStatus) {
+      if (status === "backlog") continue; // this one IS included
+      expect(readyIds.has(task.id)).toBe(false);
+    }
+  });
 });
 
 // ── Dependency Row Verification ───────────────────────────────────────────────
