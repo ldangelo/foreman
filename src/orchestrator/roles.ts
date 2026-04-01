@@ -569,10 +569,10 @@ export function parseVerdict(reportContent: string): Verdict {
  * Extract issues from a review report for developer feedback.
  */
 export function parseFinalizeFailureScope(reportContent: string): FinalizeFailureScope {
-  const inlineMatch = reportContent.match(/##\s*Failure Scope:\s*(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)/i);
+  const inlineMatch = reportContent.match(/##\s*Failure Scope:\s*(?:\*\*)?(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)(?:\*\*)?/i);
   if (inlineMatch) return inlineMatch[1].toLowerCase() as FinalizeFailureScope;
 
-  const sectionMatch = reportContent.match(/##\s*Failure Scope\s*\n-\s*(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)/i);
+  const sectionMatch = reportContent.match(/##\s*Failure Scope\s*\n(?:-\s*)?(?:\*\*)?(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)(?:\*\*)?/i);
   if (sectionMatch) return sectionMatch[1].toLowerCase() as FinalizeFailureScope;
 
   return "unknown";

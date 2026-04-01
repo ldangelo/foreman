@@ -264,6 +264,10 @@ describe("parseFinalizeFailureScope", () => {
     expect(parseFinalizeFailureScope("## Failure Scope: UNRELATED_FILES")).toBe("unrelated_files");
   });
 
+  it("parses section-formatted bold bullet scope", () => {
+    expect(parseFinalizeFailureScope("## Failure Scope\n- **UNRELATED_FILES**\n  - pre-existing failures")).toBe("unrelated_files");
+  });
+
   it("returns unknown when no scope is present", () => {
     expect(parseFinalizeFailureScope("no scope here")).toBe("unknown");
   });
