@@ -9,7 +9,7 @@
  * - Workspaces use `jj workspace add` / `jj workspace forget`.
  * - Branches are called "bookmarks" in jj (`jj bookmark`).
  * - Staging is automatic — `stageAll()` is a no-op.
- * - Commits use `jj describe -m` + `jj new`.
+ * - Commits use `jj describe -m` (no trailing `jj new`).
  * - Push requires `--allow-new` for first push of a new bookmark.
  * - Rebase uses `jj rebase -d <destination>`.
  *
@@ -199,6 +199,18 @@ export class JujutsuBackend implements VcsBackend {
     return this.getCurrentBranch(repoPath);
   }
 
+  private async getBookmarksAtRevision(repoPath: string, rev: string): Promise<string[]> {
+    try {
+      const bookmarks = await this.jj(
+        ["log", "--no-graph", "-r", rev, "-T", "separate(' ', bookmarks)"],
+        repoPath,
+      );
+      return bookmarks.split(" ").map((bookmark) => bookmark.trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
   /**
    * Get the name of the currently active bookmark.
    * Uses `jj log --no-graph -r @ -T 'bookmarks'` to find the current bookmark.
@@ -206,29 +218,14 @@ export class JujutsuBackend implements VcsBackend {
    * parent revision's bookmark before finally falling back to the short change ID.
    */
   async getCurrentBranch(repoPath: string): Promise<string> {
-    try {
-      const bookmarks = await this.jj(
-        ["log", "--no-graph", "-r", "@", "-T", "separate(' ', bookmarks)"],
-        repoPath,
-      );
-      if (bookmarks) {
-        // Take the first bookmark if multiple are set
-        return bookmarks.split(" ")[0];
-      }
-    } catch {
-      // fall through
+    const bookmarks = await this.getBookmarksAtRevision(repoPath, "@");
+    if (bookmarks.length > 0) {
+      return bookmarks[0];
     }
 
-    try {
-      const parentBookmarks = await this.jj(
-        ["log", "--no-graph", "-r", "@-", "-T", "separate(' ', bookmarks)"],
-        repoPath,
-      );
-      if (parentBookmarks) {
-        return parentBookmarks.split(" ")[0];
-      }
-    } catch {
-      // fall through
+    const parentBookmarks = await this.getBookmarksAtRevision(repoPath, "@-");
+    if (parentBookmarks.length > 0) {
+      return parentBookmarks[0];
     }
 
     // Fall back to short change ID
@@ -640,10 +637,27 @@ export class JujutsuBackend implements VcsBackend {
 
   /**
    * Get the current change ID (jj's equivalent of a commit hash).
-   * Returns the short (12-char) change ID for consistency with how callers
-   * typically use commit/change IDs (e.g., as labels or references).
+   * When the working copy is an unbookmarked empty child revision, prefer the
+   * parent revision's change ID so callers reason about the effective branch tip
+   * rather than the ephemeral scratch commit jj may create on top.
    */
   async getHeadId(workspacePath: string): Promise<string> {
+    const currentBookmarks = await this.getBookmarksAtRevision(workspacePath, "@");
+    if (currentBookmarks.length > 0) {
+      return this.jj(
+        ["log", "--no-graph", "-r", "@", "-T", "change_id.short()"],
+        workspacePath,
+      );
+    }
+
+    const parentBookmarks = await this.getBookmarksAtRevision(workspacePath, "@-");
+    if (parentBookmarks.length > 0) {
+      return this.jj(
+        ["log", "--no-graph", "-r", "@-", "-T", "change_id.short()"],
+        workspacePath,
+      );
+    }
+
     return this.jj(
       ["log", "--no-graph", "-r", "@", "-T", "change_id.short()"],
       workspacePath,

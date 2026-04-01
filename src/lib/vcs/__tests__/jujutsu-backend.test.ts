@@ -932,6 +932,30 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.getHeadId (AC-T-022-1)", () => {
     expect(typeof headId).toBe("string");
     expect(headId.length).toBeGreaterThan(0);
   });
+
+  it("falls back to the parent bookmarked revision for unbookmarked working-copy children", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    execFileSync("jj", ["bookmark", "create", "dev", "-r", "@"], {
+      cwd: repo,
+      stdio: "pipe",
+    });
+    const parentHead = execFileSync(
+      "jj",
+      ["log", "--no-graph", "-r", "@", "-T", "change_id.short()"],
+      { cwd: repo, stdio: "pipe", encoding: "utf8" },
+    ).trim();
+
+    execFileSync("jj", ["new", "-r", "@"], {
+      cwd: repo,
+      stdio: "pipe",
+    });
+
+    const backend = new JujutsuBackend(repo);
+    const headId = await backend.getHeadId(repo);
+    expect(headId).toBe(parentHead);
+  });
 });
 
 describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.getModifiedFiles (AC-T-022-2)", () => {
