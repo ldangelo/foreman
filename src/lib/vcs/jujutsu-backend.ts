@@ -145,12 +145,33 @@ export class JujutsuBackend implements VcsBackend {
    * Detect the default/trunk branch for the repository.
    *
    * Resolution order:
-   * 1. Look for a 'main' bookmark.
-   * 2. Look for a 'master' bookmark.
-   * 3. Fall back to the current bookmark.
+   * 1. Respect `git-town.main-branch` when configured.
+   * 2. Respect `origin/HEAD` when available.
+   * 3. Look for a `main` bookmark.
+   * 4. Look for a `master` bookmark.
+   * 5. Look for a `dev` bookmark.
+   * 6. Fall back to the current bookmark.
    */
   async detectDefaultBranch(repoPath: string): Promise<string> {
-    // 1. Check for 'main' bookmark
+    // 1. Respect git-town.main-branch config (user's explicit development trunk)
+    try {
+      const gtMain = await this.git(["config", "get", "git-town.main-branch"], repoPath);
+      if (gtMain) return gtMain;
+    } catch {
+      // git-town not configured or command unavailable — fall through
+    }
+
+    // 2. Try origin/HEAD symbolic ref from colocated git metadata
+    try {
+      const ref = await this.git(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"], repoPath);
+      if (ref) {
+        return ref.replace(/^origin\//, "");
+      }
+    } catch {
+      // origin/HEAD not set or no remote — fall through
+    }
+
+    // 3. Check for 'main' bookmark
     try {
       const out = await this.jj(["bookmark", "list", "main"], repoPath);
       if (out.includes("main")) return "main";
@@ -158,7 +179,7 @@ export class JujutsuBackend implements VcsBackend {
       // not found
     }
 
-    // 2. Check for 'master' bookmark
+    // 4. Check for 'master' bookmark
     try {
       const out = await this.jj(["bookmark", "list", "master"], repoPath);
       if (out.includes("master")) return "master";
@@ -166,14 +187,23 @@ export class JujutsuBackend implements VcsBackend {
       // not found
     }
 
-    // 3. Fall back to current branch
+    // 5. Check for 'dev' bookmark
+    try {
+      const out = await this.jj(["bookmark", "list", "dev"], repoPath);
+      if (out.includes("dev")) return "dev";
+    } catch {
+      // not found
+    }
+
+    // 6. Fall back to current branch
     return this.getCurrentBranch(repoPath);
   }
 
   /**
    * Get the name of the currently active bookmark.
    * Uses `jj log --no-graph -r @ -T 'bookmarks'` to find the current bookmark.
-   * Falls back to the short change ID if no bookmark is set.
+   * If the working copy is an unbookmarked child revision, falls back to the
+   * parent revision's bookmark before finally falling back to the short change ID.
    */
   async getCurrentBranch(repoPath: string): Promise<string> {
     try {
@@ -184,6 +214,18 @@ export class JujutsuBackend implements VcsBackend {
       if (bookmarks) {
         // Take the first bookmark if multiple are set
         return bookmarks.split(" ")[0];
+      }
+    } catch {
+      // fall through
+    }
+
+    try {
+      const parentBookmarks = await this.jj(
+        ["log", "--no-graph", "-r", "@-", "-T", "separate(' ', bookmarks)"],
+        repoPath,
+      );
+      if (parentBookmarks) {
+        return parentBookmarks.split(" ")[0];
       }
     } catch {
       // fall through

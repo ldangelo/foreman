@@ -197,6 +197,22 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend (requires jj)", () => {
   it("jj is available", () => {
     expect(JJ_AVAILABLE).toBe(true);
   });
+
+  it("getCurrentBranch falls back to the parent bookmark for unbookmarked working-copy children", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    execFileSync(
+      "jj",
+      ["bookmark", "set", "dev", "--allow-backwards", "-r", "@"],
+      { cwd: repo, stdio: "pipe" },
+    );
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    const branch = await backend.getCurrentBranch(repo);
+    expect(branch).toBe("dev");
+  });
 });
 
 // ── AC-T-017-1: getRepoRoot() ─────────────────────────────────────────────────
@@ -291,15 +307,33 @@ describe.skipIf(!JJ_AVAILABLE)(
 describe.skipIf(!JJ_AVAILABLE)(
   "JujutsuBackend.detectDefaultBranch (AC-T-017-2b)",
   () => {
-    it("falls back to current branch when no main/master bookmark exists", async () => {
+    it("falls back to current branch when no well-known bookmark exists", async () => {
       const repo = makeTempJjRepo();
       tempDirs.push(repo);
       const backend = new JujutsuBackend(repo);
 
       const defaultBranch = await backend.detectDefaultBranch(repo);
-      // No main or master bookmark → falls back to getCurrentBranch
       expect(defaultBranch).toBeTruthy();
       expect(defaultBranch.length).toBeGreaterThan(0);
+    });
+
+    it("respects git-town.main-branch when configured", async () => {
+      const repo = makeTempJjRepo();
+      tempDirs.push(repo);
+
+      execFileSync("git", ["config", "git-town.main-branch", "dev"], {
+        cwd: repo,
+        stdio: "pipe",
+      });
+      execFileSync(
+        "jj",
+        ["bookmark", "set", "dev", "--allow-backwards", "-r", "@"],
+        { cwd: repo, stdio: "pipe" },
+      );
+
+      const backend = new JujutsuBackend(repo);
+      const defaultBranch = await backend.detectDefaultBranch(repo);
+      expect(defaultBranch).toBe("dev");
     });
 
     it("returns 'main' when a main bookmark exists", async () => {
