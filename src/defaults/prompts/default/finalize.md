@@ -89,8 +89,15 @@ If the output is NOT `foreman/{{seedId}}`, check it out:
 git checkout foreman/{{seedId}}
 ```
 
-### Step 6: Integrate the latest target-branch changes into this bead branch
-Bring the latest `{{baseBranch}}` changes into this bead branch before push so Finalize verifies the same target-branch state that refinery will later land onto.
+### Step 6: Integrate the latest target-branch changes into this bead branch only when drift exists
+Bring the latest `{{baseBranch}}` changes into this bead branch **only if** the target branch moved after QA. If QA and Finalize see the same target revision, skip this step entirely.
+
+QA-validated target revision: `{{qaValidatedTargetRef}}`
+Current target revision: `{{currentTargetRef}}`
+Should integrate target drift: `{{shouldRunFinalizeValidation}}`
+
+**If `{{shouldRunFinalizeValidation}}` = `true`:**
+Run:
 ```
 {{vcsIntegrateTargetCommand}}
 ```
@@ -107,12 +114,12 @@ git fetch origin && git merge --no-edit origin/{{baseBranch}}
 ```
 If that merge also conflicts, send the same `rebase_conflict` error and stop.
 
+**If `{{shouldRunFinalizeValidation}}` = `false`:**
+- Do **not** run `{{vcsIntegrateTargetCommand}}`
+- Proceed directly to Step 7
+
 ### Step 7: Run tests only if the target branch changed after QA
 QA already validated this bead. Finalize should rerun the full test suite only when the target branch moved after QA completed.
-
-QA-validated target revision: `{{qaValidatedTargetRef}}`
-Current target revision: `{{currentTargetRef}}`
-Should rerun full validation: `{{shouldRunFinalizeValidation}}`
 
 Then write `FINALIZE_VALIDATION.md` in the worktree root:
 

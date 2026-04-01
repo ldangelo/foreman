@@ -191,7 +191,8 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
     });
     expect(prompt).toContain("QA-validated target revision: `qa-rev-123`");
     expect(prompt).toContain("Current target revision: `qa-rev-123`");
-    expect(prompt).toContain("Should rerun full validation: `false`");
+    expect(prompt).toContain("Should integrate target drift: `false`");
+    expect(prompt).toContain("Do **not** run `git fetch origin && git rebase origin/dev`");
   });
 
   it("renders git branch verify command in finalize prompt", () => {
