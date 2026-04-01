@@ -36,6 +36,16 @@ vi.mock("../../lib/vcs/git-backend.js", () => ({
   },
 }));
 
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: vi.fn().mockImplementation(async () => ({
+      name: "jujutsu",
+      getCurrentBranch: async (path: string) => mockGetCurrentBranch(path),
+      detectDefaultBranch: async (path: string) => mockDetectDefaultBranch(path),
+    })),
+  },
+}));
+
 vi.mock("../../lib/workflow-config-loader.js", () => ({
   resolveWorkflowType: vi.fn().mockReturnValue("feature"),
 }));

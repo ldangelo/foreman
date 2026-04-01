@@ -12,7 +12,7 @@ import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefa
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache } from "../lib/setup.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
-import { extractBranchLabel, isDefaultBranch, applyBranchLabel } from "../lib/branch-label.js";
+import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel } from "../lib/branch-label.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
@@ -293,9 +293,12 @@ export class Dispatcher {
     let currentBranch: string | undefined;
     let defaultBranch: string | undefined;
     try {
-      const branchBackend = new GitBackend(this.projectPath);
+      const branchBackend = await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
       currentBranch = await branchBackend.getCurrentBranch(this.projectPath);
       defaultBranch = await branchBackend.detectDefaultBranch(this.projectPath);
+      if (!isValidBranchLabel(currentBranch)) {
+        currentBranch = undefined;
+      }
     } catch {
       // Non-fatal: branch detection failure must not block dispatch
     }
