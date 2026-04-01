@@ -604,6 +604,96 @@ describe("NativeTaskStore.list()", () => {
   });
 });
 
+// ── NativeTaskStore.ready() ───────────────────────────────────────────────────
+
+describe("NativeTaskStore.ready()", () => {
+  let ctx: ReturnType<typeof setupStore>;
+  let runId: string;
+
+  beforeEach(() => {
+    ctx = setupStore();
+    // Create a project and run for FK compliance
+    const project = ctx.store.registerProject("test-proj", "/tmp/test-proj");
+    const run = ctx.store.createRun(project.id, "seed-001", "runner");
+    runId = run.id;
+  });
+  afterEach(() => teardownStore(ctx));
+
+  it("returns only tasks with status='ready' AND run_id IS NULL", async () => {
+    const t1 = ctx.taskStore.create({ title: "Ready Task" });
+    const t2 = ctx.taskStore.create({ title: "Backlog Task" });
+    const t3 = ctx.taskStore.create({ title: "Claimed Task" });
+    ctx.taskStore.approve(t1.id);
+    ctx.taskStore.approve(t3.id);
+    // Claim t3 (sets run_id)
+    ctx.taskStore.claim(t3.id, runId);
+
+    const ready = await ctx.taskStore.ready();
+
+    expect(ready.length).toBe(1);
+    expect(ready[0]!.id).toBe(t1.id);
+    expect(ready[0]!.title).toBe("Ready Task");
+  });
+
+  it("excludes tasks that are claimed (run_id set)", async () => {
+    const t1 = ctx.taskStore.create({ title: "Task 1" });
+    const t2 = ctx.taskStore.create({ title: "Task 2" });
+    ctx.taskStore.approve(t1.id);
+    ctx.taskStore.approve(t2.id);
+    ctx.taskStore.claim(t1.id, runId);
+
+    const ready = await ctx.taskStore.ready();
+
+    expect(ready.length).toBe(1);
+    expect(ready[0]!.id).toBe(t2.id);
+  });
+
+  it("returns tasks ordered by priority ASC then created_at ASC", async () => {
+    const t1 = ctx.taskStore.create({ title: "Low Priority", priority: 3 });
+    const t2 = ctx.taskStore.create({ title: "High Priority", priority: 0 });
+    const t3 = ctx.taskStore.create({ title: "Medium Priority", priority: 2 });
+    ctx.taskStore.approve(t1.id);
+    ctx.taskStore.approve(t2.id);
+    ctx.taskStore.approve(t3.id);
+
+    const ready = await ctx.taskStore.ready();
+
+    expect(ready[0]!.title).toBe("High Priority");
+    expect(ready[1]!.title).toBe("Medium Priority");
+    expect(ready[2]!.title).toBe("Low Priority");
+  });
+
+  it("returns empty array when no ready tasks exist", async () => {
+    ctx.taskStore.create({ title: "Backlog Task" });
+    const ready = await ctx.taskStore.ready();
+    expect(ready).toHaveLength(0);
+  });
+
+  it("after task is approved and claimed, it is excluded from ready()", async () => {
+    const task = ctx.taskStore.create({ title: "Will be claimed" });
+    ctx.taskStore.approve(task.id);
+
+    // Before claim
+    let ready = await ctx.taskStore.ready();
+    expect(ready.length).toBe(1);
+    expect(ready[0]!.id).toBe(task.id);
+
+    // Claim it
+    ctx.taskStore.claim(task.id, runId);
+
+    // After claim
+    ready = await ctx.taskStore.ready();
+    expect(ready).toHaveLength(0);
+  });
+
+  it("returns Promise<Issue[]> (async)", async () => {
+    const result = ctx.taskStore.ready();
+    expect(result).toBeInstanceOf(Promise);
+    const issues = await result;
+    expect(Array.isArray(issues)).toBe(true);
+  });
+});
+
 // ── Dependency Row Verification ───────────────────────────────────────────────
 
 describe("Dependency row verification", () => {

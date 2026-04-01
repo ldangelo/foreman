@@ -5,6 +5,7 @@
  * Implements methods for the full lifecycle of native tasks:
  *   - hasNativeTasks() — coexistence check (REQ-014)
  *   - list()           — query tasks with optional status filter (REQ-017)
+ *   - ready()          — query dispatchable tasks: status='ready' AND run_id IS NULL (REQ-017, REQ-020)
  *   - get()            — fetch a single task row by ID
  *   - claim()          — atomically claim a task for a run (REQ-020)
  *   - updatePhase()    — update phase column (no-op when taskId is null)
@@ -225,6 +226,26 @@ export class NativeTaskStore {
     sql += " ORDER BY priority ASC, created_at ASC";
 
     const rows = this.db.prepare(sql).all(...params) as TaskRow[];
+    return rows.map(rowToIssue);
+  }
+
+  /**
+   * Return tasks that are ready to be dispatched (status='ready' and not yet claimed).
+   *
+   * Satisfies REQ-017 (list dispatchable tasks) and REQ-020 (claim mechanism).
+   * Only returns tasks where run_id IS NULL — tasks already claimed by an active
+   * run are excluded.
+   *
+   * Ordering: priority ASC, created_at ASC (consistent with list()).
+   */
+  async ready(): Promise<Issue[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM tasks
+         WHERE status = 'ready' AND run_id IS NULL
+         ORDER BY priority ASC, created_at ASC`,
+      )
+      .all() as TaskRow[];
     return rows.map(rowToIssue);
   }
 
