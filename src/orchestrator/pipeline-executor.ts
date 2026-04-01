@@ -21,6 +21,8 @@ import {
   parseVerdict,
   extractIssues,
   parseFinalizeFailureScope,
+  parseFinalizeIntegrationStatus,
+  parseFinalizeValidationStatus,
   qaReportHasTestEvidence,
 } from "./roles.js";
 import { rotateReport } from "./agent-worker-finalize.js";
@@ -742,6 +744,8 @@ async function runPhaseSequence(
           }
         }
         const shouldRunFinalizeValidation = !qaValidatedTargetRef || !currentTargetRef || qaValidatedTargetRef !== currentTargetRef;
+        progress.currentTargetRef = currentTargetRef || undefined;
+        store.updateRunProgress(runId, progress);
         vcsPromptVars.qaValidatedTargetRef = qaValidatedTargetRef ?? "";
         vcsPromptVars.currentTargetRef = currentTargetRef;
         vcsPromptVars.shouldRunFinalizeValidation = shouldRunFinalizeValidation ? "true" : "false";
@@ -962,6 +966,37 @@ async function runPhaseSequence(
         verdict = "fail";
         feedbackContext = "QA report invalid: missing explicit `npm test` command/output evidence with pass/fail counts.";
         ctx.log(`[QA] FAIL — report missing npm test evidence`);
+      }
+
+      if (phaseName === "finalize" && report) {
+        const expectedSkippedValidation = !!progress.qaValidatedTargetRef && !!progress.qaValidatedTargetBranch && progress.qaValidatedTargetRef === progress.currentTargetRef;
+        const validationStatus = parseFinalizeValidationStatus(report);
+        const integrationStatus = parseFinalizeIntegrationStatus(report);
+        if (expectedSkippedValidation) {
+          if (integrationStatus !== "skipped") {
+            verdict = "fail";
+            feedbackContext = "Finalize integration contract violated: target branch did not change after QA, so FINALIZE_VALIDATION.md must mark Target Integration as SKIPPED.";
+            ctx.log("[FINALIZE] FAIL — expected skipped target integration because target branch was unchanged after QA");
+          } else if (validationStatus !== "skipped") {
+            verdict = "fail";
+            feedbackContext = "Finalize validation contract violated: target branch did not change after QA, so FINALIZE_VALIDATION.md must mark Test Validation as SKIPPED.";
+            ctx.log("[FINALIZE] FAIL — expected skipped validation because target branch was unchanged after QA");
+          }
+        } else {
+          if (integrationStatus === "skipped") {
+            verdict = "fail";
+            feedbackContext = "Finalize integration contract violated: target branch changed after QA, so FINALIZE_VALIDATION.md must not skip target integration.";
+            ctx.log("[FINALIZE] FAIL — target integration was skipped even though target branch drifted after QA");
+          } else if (integrationStatus !== "success") {
+            verdict = "fail";
+            feedbackContext = "Finalize integration contract violated: target branch changed after QA, so FINALIZE_VALIDATION.md must record Target Integration as SUCCESS before verdict handling can continue.";
+            ctx.log("[FINALIZE] FAIL — target integration did not record SUCCESS after target drift");
+          } else if (validationStatus === "skipped") {
+            verdict = "fail";
+            feedbackContext = "Finalize validation contract violated: target branch changed after QA, so FINALIZE_VALIDATION.md must not skip test validation.";
+            ctx.log("[FINALIZE] FAIL — validation was skipped even though target branch drifted after QA");
+          }
+        }
       }
 
       if (phaseName === "qa") {

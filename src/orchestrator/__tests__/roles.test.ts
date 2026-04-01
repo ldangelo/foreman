@@ -13,6 +13,8 @@ import {
   buildPhasePrompt,
   parseVerdict,
   parseFinalizeFailureScope,
+  parseFinalizeIntegrationStatus,
+  parseFinalizeValidationStatus,
   qaReportHasTestEvidence,
   extractIssues,
 } from "../roles.js";
@@ -270,6 +272,34 @@ describe("parseFinalizeFailureScope", () => {
 
   it("returns unknown when no scope is present", () => {
     expect(parseFinalizeFailureScope("no scope here")).toBe("unknown");
+  });
+});
+
+describe("parseFinalizeIntegrationStatus", () => {
+  it("parses SUCCESS integration status", () => {
+    expect(parseFinalizeIntegrationStatus("## Target Integration\n- Status: SUCCESS")).toBe("success");
+  });
+
+  it("parses SKIPPED integration status", () => {
+    expect(parseFinalizeIntegrationStatus("## Target Integration\n- Status: SKIPPED")).toBe("skipped");
+  });
+
+  it("returns unknown when integration status is absent", () => {
+    expect(parseFinalizeIntegrationStatus("no integration status here")).toBe("unknown");
+  });
+});
+
+describe("parseFinalizeValidationStatus", () => {
+  it("parses PASS validation status", () => {
+    expect(parseFinalizeValidationStatus("## Test Validation\n- Status: PASS")).toBe("pass");
+  });
+
+  it("parses SKIPPED validation status", () => {
+    expect(parseFinalizeValidationStatus("## Test Validation\n- Status: SKIPPED")).toBe("skipped");
+  });
+
+  it("returns unknown when validation status is absent", () => {
+    expect(parseFinalizeValidationStatus("no validation status here")).toBe("unknown");
   });
 });
 

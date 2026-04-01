@@ -119,6 +119,8 @@ export interface RunProgress {
   qaValidatedTargetRef?: string;
   /** Workspace HEAD revision/hash resolved when QA passed. */
   qaValidatedHeadRef?: string;
+  /** Current target branch revision/hash resolved during finalize preparation. */
+  currentTargetRef?: string;
   /** Epic mode: total number of child tasks. */
   epicTaskCount?: number;
   /** Epic mode: number of tasks completed so far. */

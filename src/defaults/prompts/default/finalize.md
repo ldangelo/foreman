@@ -131,7 +131,7 @@ Then write `FINALIZE_VALIDATION.md` in the worktree root:
 ## Timestamp: <ISO timestamp>
 
 ## Target Integration
-- Status: SUCCESS
+- Status: SUCCESS | SKIPPED | FAIL
 - Target: origin/{{baseBranch}}
 - QA Validated Target Ref: {{qaValidatedTargetRef}}
 - Current Target Ref: {{currentTargetRef}}
@@ -149,6 +149,7 @@ Then write `FINALIZE_VALIDATION.md` in the worktree root:
 
 **If `{{shouldRunFinalizeValidation}}` = `false`:**
 - Do **not** rerun `npm test`
+- Write `## Target Integration` with `- Status: SKIPPED`
 - Write `## Test Validation` with `- Status: SKIPPED`
 - Write `## Failure Scope` as `- SKIPPED`
 - Explain that QA already passed and the target branch did not move after QA
@@ -164,10 +165,12 @@ npm test -- --reporter=dot 2>&1
 Capture the full output and exit code. The `--reporter=dot` flag reduces per-test output to a single dot per passing test, keeping the agent context concise. Failures still print full details.
 
 **If tests PASS (exit code 0):**
+- Write `## Target Integration` with `- Status: SUCCESS`
 - Write `## Verdict: PASS` in `FINALIZE_VALIDATION.md`
 - Continue to Step 8 (push)
 
 **If tests FAIL (non-zero exit code):**
+- Write `## Target Integration` with `- Status: SUCCESS`
 - Write `## Verdict: FAIL` in `FINALIZE_VALIDATION.md`
 - Include test failure details in the `## Test Validation` section
 - Classify the failures in `## Failure Scope`:

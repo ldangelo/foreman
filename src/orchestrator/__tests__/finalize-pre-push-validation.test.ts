@@ -161,15 +161,13 @@ describe("default.yaml: finalize phase pre-push validation config", () => {
 // ── Structural tests: finalize.md prompt ─────────────────────────────────────
 
 describe("default/finalize.md: pre-push test validation prompt", () => {
-  it("prompt contains npm test instruction after rebase step", () => {
+  it("prompt contains npm test instruction after target integration step", () => {
     const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
-    // Rebase command is now a template variable {{vcsIntegrateTargetCommand}} (TRD-026)
-    const rebasePos = content.indexOf("{{vcsIntegrateTargetCommand}}");
+    const integratePos = content.indexOf("{{vcsIntegrateTargetCommand}}");
     const npmTestPos = content.indexOf("npm test");
-    expect(rebasePos).toBeGreaterThan(-1);
+    expect(integratePos).toBeGreaterThan(-1);
     expect(npmTestPos).toBeGreaterThan(-1);
-    // npm test must appear AFTER the rebase instruction
-    expect(npmTestPos).toBeGreaterThan(rebasePos);
+    expect(npmTestPos).toBeGreaterThan(integratePos);
   });
 
   it("prompt instructs agent to write FINALIZE_VALIDATION.md", () => {
@@ -181,6 +179,16 @@ describe("default/finalize.md: pre-push test validation prompt", () => {
     const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
     expect(content).toContain("## Verdict: PASS");
     expect(content).toContain("## Verdict: FAIL");
+  });
+
+  it("prompt instructs agent to skip integration and tests when target did not drift after QA", () => {
+    const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
+    expect(content).toContain("Should integrate target drift");
+    expect(content).toContain("Do **not** run `{{vcsIntegrateTargetCommand}}`");
+    expect(content).toContain("Do **not** rerun `npm test`");
+    expect(content).toContain("## Target Integration");
+    expect(content).toContain("- Status: SUCCESS | SKIPPED | FAIL");
+    expect(content).toContain("Write `## Target Integration` with `- Status: SKIPPED`");
   });
 
   it("prompt instructs agent NOT to push when tests fail", () => {
@@ -421,7 +429,7 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
       } else if (role === "finalize") {
         writeFileSync(
           join(tmpDir, "FINALIZE_VALIDATION.md"),
-          "# Finalize Validation\n## Verdict: PASS\n",
+          "# Finalize Validation\n\n## Target Integration\n- Status: SUCCESS\n\n## Test Validation\n- Status: PASS\n\n## Verdict: PASS\n",
         );
       }
       return { success: true, costUsd: 0.01, turns: 5, tokensIn: 100, tokensOut: 50 } as PhaseResult;

@@ -566,6 +566,8 @@ export function sentinelPrompt(branch: string, testCommand: string, opts?: Promp
 
 export type Verdict = "pass" | "fail" | "unknown";
 export type FinalizeFailureScope = "modified_files" | "unrelated_files" | "unknown";
+export type FinalizeValidationStatus = "pass" | "fail" | "skipped" | "unknown";
+export type FinalizeIntegrationStatus = "success" | "fail" | "skipped" | "unknown";
 
 /**
  * Parse a report file for a PASS/FAIL verdict.
@@ -586,6 +588,32 @@ export function parseFinalizeFailureScope(reportContent: string): FinalizeFailur
 
   const sectionMatch = reportContent.match(/##\s*Failure Scope\s*\n(?:-\s*)?(?:\*\*)?(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)(?:\*\*)?/i);
   if (sectionMatch) return sectionMatch[1].toLowerCase() as FinalizeFailureScope;
+
+  return "unknown";
+}
+
+export function parseFinalizeValidationStatus(reportContent: string): FinalizeValidationStatus {
+  const inlineMatch = reportContent.match(/##\s*Test Validation:\s*(?:\*\*)?(PASS|FAIL|SKIPPED)(?:\*\*)?/i);
+  if (inlineMatch) return inlineMatch[1].toLowerCase() as FinalizeValidationStatus;
+
+  const sectionMatch = reportContent.match(/##\s*Test Validation\s*\n(?:-\s*Status:\s*)?(?:\*\*)?(PASS|FAIL|SKIPPED)(?:\*\*)?/i);
+  if (sectionMatch) return sectionMatch[1].toLowerCase() as FinalizeValidationStatus;
+
+  const bulletMatch = reportContent.match(/##\s*Test Validation[\s\S]*?-\s*Status:\s*(PASS|FAIL|SKIPPED)/i);
+  if (bulletMatch) return bulletMatch[1].toLowerCase() as FinalizeValidationStatus;
+
+  return "unknown";
+}
+
+export function parseFinalizeIntegrationStatus(reportContent: string): FinalizeIntegrationStatus {
+  const inlineMatch = reportContent.match(/##\s*Target Integration:\s*(?:\*\*)?(SUCCESS|FAIL|SKIPPED)(?:\*\*)?/i);
+  if (inlineMatch) return inlineMatch[1].toLowerCase() as FinalizeIntegrationStatus;
+
+  const sectionMatch = reportContent.match(/##\s*Target Integration\s*\n(?:-\s*Status:\s*)?(?:\*\*)?(SUCCESS|FAIL|SKIPPED)(?:\*\*)?/i);
+  if (sectionMatch) return sectionMatch[1].toLowerCase() as FinalizeIntegrationStatus;
+
+  const bulletMatch = reportContent.match(/##\s*Target Integration[\s\S]*?-\s*Status:\s*(SUCCESS|FAIL|SKIPPED)/i);
+  if (bulletMatch) return bulletMatch[1].toLowerCase() as FinalizeIntegrationStatus;
 
   return "unknown";
 }
