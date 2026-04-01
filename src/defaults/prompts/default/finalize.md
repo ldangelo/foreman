@@ -89,33 +89,30 @@ If the output is NOT `foreman/{{seedId}}`, check it out:
 git checkout foreman/{{seedId}}
 ```
 
-### Step 6: Rebase onto target branch
-Always rebase before pushing so the branch is up-to-date with the target branch. This ensures the refinery can fast-forward merge without conflicts.
+### Step 6: Integrate the latest target-branch changes into this bead branch
+Bring the latest `{{baseBranch}}` changes into this bead branch before push so Finalize verifies the same target-branch state that refinery will later land onto.
 ```
 {{vcsRebaseCommand}}
 ```
 
-**If the rebase has conflicts**, run `git rebase --abort` to clean up, then send an error and stop:
+**If this integration step has conflicts**, run `git rebase --abort` to clean up, then send an error and stop:
 ```
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"rebase_conflict","retryable":false}'
 ```
 
 **Special case: Jujutsu immutable commit protection**
-If the rebase fails because the target branch is immutable/protected in jj, fall back to a merge-based update instead of retrying developer work:
+If the integration step fails because the target branch is immutable/protected in jj, fall back to a merge-based update instead of retrying developer work:
 ```
 git fetch origin && git merge --no-edit origin/{{baseBranch}}
 ```
 If that merge also conflicts, send the same `rebase_conflict` error and stop.
 
-### Step 7: Run tests after rebase (pre-push validation)
-After the rebase succeeds, run the full test suite to catch any merge-induced failures before pushing.
+### Step 7: Run tests only if the target branch changed after QA
+QA already validated this bead. Finalize should rerun the full test suite only when the target branch moved after QA completed.
 
-Run:
-```
-npm test -- --reporter=dot 2>&1
-```
-
-Capture the full output and exit code. The `--reporter=dot` flag reduces per-test output to a single dot per passing test, keeping the agent context concise. Failures still print full details.
+QA-validated target revision: `{{qaValidatedTargetRef}}`
+Current target revision: `{{currentTargetRef}}`
+Should rerun full validation: `{{shouldRunFinalizeValidation}}`
 
 Then write `FINALIZE_VALIDATION.md` in the worktree root:
 
@@ -126,20 +123,38 @@ Then write `FINALIZE_VALIDATION.md` in the worktree root:
 ## Run: {{runId}}
 ## Timestamp: <ISO timestamp>
 
-## Rebase
+## Target Integration
 - Status: SUCCESS
 - Target: origin/{{baseBranch}}
+- QA Validated Target Ref: {{qaValidatedTargetRef}}
+- Current Target Ref: {{currentTargetRef}}
 
 ## Test Validation
-- Status: PASS | FAIL
+- Status: PASS | FAIL | SKIPPED
 - Output:
-<include first 3000 characters of test output here>
+<include first 3000 characters of test output here, or explain why validation was skipped>
 
 ## Failure Scope
-- MODIFIED_FILES | UNRELATED_FILES | UNKNOWN
+- MODIFIED_FILES | UNRELATED_FILES | UNKNOWN | SKIPPED
 
 ## Verdict: PASS | FAIL
 ```
+
+**If `{{shouldRunFinalizeValidation}}` = `false`:**
+- Do **not** rerun `npm test`
+- Write `## Test Validation` with `- Status: SKIPPED`
+- Write `## Failure Scope` as `- SKIPPED`
+- Explain that QA already passed and the target branch did not move after QA
+- Write `## Verdict: PASS`
+- Continue to Step 8 (push)
+
+**If `{{shouldRunFinalizeValidation}}` = `true`:**
+Run:
+```
+npm test -- --reporter=dot 2>&1
+```
+
+Capture the full output and exit code. The `--reporter=dot` flag reduces per-test output to a single dot per passing test, keeping the agent context concise. Failures still print full details.
 
 **If tests PASS (exit code 0):**
 - Write `## Verdict: PASS` in `FINALIZE_VALIDATION.md`

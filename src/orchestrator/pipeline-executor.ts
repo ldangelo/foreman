@@ -702,6 +702,9 @@ async function runPhaseSequence(
       vcsBranchVerifyCommand?: string;
       vcsCleanCommand?: string;
       vcsRestoreTrackedStateCommand?: string;
+      qaValidatedTargetRef?: string;
+      currentTargetRef?: string;
+      shouldRunFinalizeValidation?: string;
       vcsBackendName?: string;
       vcsBranchPrefix?: string;
     } = {};
@@ -724,6 +727,24 @@ async function runPhaseSequence(
         vcsPromptVars.vcsBranchVerifyCommand = finalizeCommands.branchVerifyCommand;
         vcsPromptVars.vcsCleanCommand = finalizeCommands.cleanCommand;
         vcsPromptVars.vcsRestoreTrackedStateCommand = finalizeCommands.restoreTrackedStateCommand;
+
+        const qaValidatedTargetRef = progress.qaValidatedTargetRef;
+        let currentTargetRef = "";
+        if (qaValidatedTargetRef) {
+          const targetCandidates = [`origin/${baseBranch}`, baseBranch];
+          for (const candidate of targetCandidates) {
+            try {
+              currentTargetRef = await vcsBackend.resolveRef(worktreePath, candidate);
+              break;
+            } catch {
+              // Try the next candidate.
+            }
+          }
+        }
+        const shouldRunFinalizeValidation = !qaValidatedTargetRef || !currentTargetRef || qaValidatedTargetRef !== currentTargetRef;
+        vcsPromptVars.qaValidatedTargetRef = qaValidatedTargetRef ?? "";
+        vcsPromptVars.currentTargetRef = currentTargetRef;
+        vcsPromptVars.shouldRunFinalizeValidation = shouldRunFinalizeValidation ? "true" : "false";
 
         try {
           execSync(finalizeCommands.restoreTrackedStateCommand, {
@@ -945,6 +966,27 @@ async function runPhaseSequence(
 
       if (phaseName === "qa") {
         qaVerdictForLog = verdict as "pass" | "fail" | "unknown";
+        if (verdict === "pass" && config.vcsBackend) {
+          const qaTargetBranch = config.targetBranch ?? await config.vcsBackend.detectDefaultBranch(worktreePath);
+          const targetCandidates = [`origin/${qaTargetBranch}`, qaTargetBranch];
+          let qaTargetRef = "";
+          for (const candidate of targetCandidates) {
+            try {
+              qaTargetRef = await config.vcsBackend.resolveRef(worktreePath, candidate);
+              break;
+            } catch {
+              // Try local fallback if remote ref is absent.
+            }
+          }
+          try {
+            progress.qaValidatedHeadRef = await config.vcsBackend.getHeadId(worktreePath);
+          } catch {
+            progress.qaValidatedHeadRef = undefined;
+          }
+          progress.qaValidatedTargetBranch = qaTargetBranch;
+          progress.qaValidatedTargetRef = qaTargetRef || undefined;
+          store.updateRunProgress(runId, progress);
+        }
       }
 
       if (verdict === "fail" && phase.retryWith) {

@@ -45,6 +45,13 @@ describe("finalize.md template: VCS placeholder variables (AC-T-026-1)", () => {
     expect(content).toContain("{{vcsBranchVerifyCommand}}");
   });
 
+  it("raw template contains finalize drift placeholders", () => {
+    const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
+    expect(content).toContain("{{qaValidatedTargetRef}}");
+    expect(content).toContain("{{currentTargetRef}}");
+    expect(content).toContain("{{shouldRunFinalizeValidation}}");
+  });
+
   it("raw template contains {{vcsRestoreTrackedStateCommand}} placeholder", () => {
     const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
     expect(content).toContain("{{vcsRestoreTrackedStateCommand}}");
@@ -164,6 +171,27 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
     });
     expect(prompt).toContain("git fetch origin && git rebase origin/dev");
     expect(prompt).not.toContain("{{vcsRebaseCommand}}");
+  });
+
+  it("renders finalize drift metadata in prompt", () => {
+    const prompt = buildPhasePrompt("finalize", {
+      seedId: "bd-test",
+      seedTitle: "Fix authentication",
+      seedDescription: "desc",
+      baseBranch: "dev",
+      qaValidatedTargetRef: "qa-rev-123",
+      currentTargetRef: "qa-rev-123",
+      shouldRunFinalizeValidation: "false",
+      vcsStageCommand: finalizeCommands.stageCommand,
+      vcsCommitCommand: finalizeCommands.commitCommand,
+      vcsPushCommand: finalizeCommands.pushCommand,
+      vcsRebaseCommand: finalizeCommands.rebaseCommand,
+      vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
+      vcsCleanCommand: finalizeCommands.cleanCommand,
+    });
+    expect(prompt).toContain("QA-validated target revision: `qa-rev-123`");
+    expect(prompt).toContain("Current target revision: `qa-rev-123`");
+    expect(prompt).toContain("Should rerun full validation: `false`");
   });
 
   it("renders git branch verify command in finalize prompt", () => {

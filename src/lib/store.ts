@@ -113,6 +113,12 @@ export interface RunProgress {
   currentPhase?: string;        // Pipeline phase: "explorer" | "developer" | "qa" | "reviewer" | "finalize"
   costByPhase?: Record<string, number>;  // e.g. { explorer: 0.10, developer: 0.50 }
   agentByPhase?: Record<string, string>; // e.g. { explorer: "claude-haiku-4-5", developer: "claude-sonnet-4-6" }
+  /** Target branch name QA validated against. */
+  qaValidatedTargetBranch?: string;
+  /** Target branch revision/hash resolved when QA passed. */
+  qaValidatedTargetRef?: string;
+  /** Workspace HEAD revision/hash resolved when QA passed. */
+  qaValidatedHeadRef?: string;
   /** Epic mode: total number of child tasks. */
   epicTaskCount?: number;
   /** Epic mode: number of tasks completed so far. */

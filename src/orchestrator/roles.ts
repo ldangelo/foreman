@@ -399,6 +399,12 @@ export function buildPhasePrompt(
     vcsCleanCommand?: string;
     /** Command to restore tracked shared-state files before commit. */
     vcsRestoreTrackedStateCommand?: string;
+    /** Target branch revision/hash recorded when QA passed. */
+    qaValidatedTargetRef?: string;
+    /** Current target branch revision/hash seen during finalize. */
+    currentTargetRef?: string;
+    /** Whether finalize should rerun the full test suite. */
+    shouldRunFinalizeValidation?: string;
     // ── VCS context variables (TRD-027: reviewer phase) ──────────────────
     /** VCS backend name (e.g. 'git' or 'jujutsu'). */
     vcsBackendName?: string;
@@ -435,6 +441,9 @@ export function buildPhasePrompt(
     vcsBranchVerifyCommand: context.vcsBranchVerifyCommand ?? "git rev-parse --abbrev-ref HEAD",
     vcsCleanCommand: context.vcsCleanCommand ?? `git worktree remove --force ${context.worktreePath ?? ""}`,
     vcsRestoreTrackedStateCommand: context.vcsRestoreTrackedStateCommand ?? `git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl 2>/dev/null || git restore --source=HEAD --worktree -- .beads/issues.jsonl 2>/dev/null || true`,
+    qaValidatedTargetRef: context.qaValidatedTargetRef ?? "",
+    currentTargetRef: context.currentTargetRef ?? "",
+    shouldRunFinalizeValidation: context.shouldRunFinalizeValidation ?? "true",
     // VCS context variables (TRD-027)
     vcsBackendName: context.vcsBackendName ?? "git",
     vcsBranchPrefix: context.vcsBranchPrefix ?? "foreman/",
@@ -535,6 +544,9 @@ export function finalizePrompt(seedId: string, seedTitle: string, runId?: string
       vcsRebaseCommand: `git fetch origin && git rebase origin/${resolvedBase}`,
       vcsBranchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       vcsCleanCommand: `git worktree remove --force ${resolvedWorktree}`,
+      qaValidatedTargetRef: "",
+      currentTargetRef: "",
+      shouldRunFinalizeValidation: "true",
     },
     "finalize-prompt.md",
     opts,

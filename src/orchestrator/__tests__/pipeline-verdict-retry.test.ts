@@ -72,9 +72,13 @@ describe("verdict-triggered retry", () => {
     // Create stub prompt files so prompt-loader doesn't throw
     const promptDir = join(tmpDir, ".foreman", "prompts", "default");
     mkdirSync(promptDir, { recursive: true });
-    for (const phase of ["developer", "qa", "reviewer", "finalize", "explorer"]) {
+    for (const phase of ["developer", "qa", "reviewer", "explorer"]) {
       writeFileSync(join(promptDir, `${phase}.md`), `# ${phase} stub\n`);
     }
+    writeFileSync(
+      join(promptDir, "finalize.md"),
+      "# finalize stub\nqa={{qaValidatedTargetRef}}\ncurrent={{currentTargetRef}}\nrerun={{shouldRunFinalizeValidation}}\n",
+    );
   });
 
   afterEach(() => {
@@ -312,5 +316,64 @@ describe("verdict-triggered retry", () => {
     ]);
     expect(qaCount).toBe(3); // qa runs 3x: initial fail, retry pass, re-runs after reviewer fail
     expect(reviewerCount).toBe(2);
+  });
+
+  it("records QA target revision and skips finalize rerun when target is unchanged", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const prompts: Record<string, string> = {};
+    const log = vi.fn();
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string, prompt: string) => {
+      prompts[phaseName] = prompt;
+      if (phaseName === "qa") {
+        writeFileSync(
+          join(tmpDir, "QA_REPORT.md"),
+          "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npm test -- --reporter=dot 2>&1`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n",
+        );
+      }
+      return successResult();
+    });
+
+    const vcsBackend = {
+      name: "jujutsu",
+      detectDefaultBranch: vi.fn().mockResolvedValue("dev"),
+      resolveRef: vi.fn().mockImplementation(async (_repoPath: string, ref: string) => {
+        if (ref === "origin/dev" || ref === "dev") return "rev-dev-123";
+        throw new Error(`unknown ref ${ref}`);
+      }),
+      getHeadId: vi.fn().mockResolvedValue("head-bead-456"),
+      getFinalizeCommands: vi.fn().mockReturnValue({
+        stageCommand: "",
+        commitCommand: "jj describe -m 'msg'",
+        pushCommand: "jj git push --bookmark foreman/seed-verdict --allow-new",
+        rebaseCommand: "jj git fetch && jj rebase -d dev@origin",
+        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
+        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        restoreTrackedStateCommand: "true",
+      }),
+    };
+
+    const phases = [
+      { name: "developer", artifact: "DEVELOPER_REPORT.md" },
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true },
+      { name: "finalize", artifact: "FINALIZE_VALIDATION.md" },
+    ];
+
+    const args = makeBasePipelineArgs(tmpDir, phases, runPhase, log) as any;
+    args.config.targetBranch = "dev";
+    args.config.vcsBackend = vcsBackend;
+
+    await executePipeline(args);
+
+    expect(prompts.finalize).toContain("qa=rev-dev-123");
+    expect(prompts.finalize).toContain("current=rev-dev-123");
+    expect(prompts.finalize).toContain("rerun=false");
+    expect(args.store.updateRunProgress).toHaveBeenCalledWith(
+      "run-verdict-001",
+      expect.objectContaining({
+        qaValidatedTargetBranch: "dev",
+        qaValidatedTargetRef: "rev-dev-123",
+        qaValidatedHeadRef: "head-bead-456",
+      }),
+    );
   });
 });
