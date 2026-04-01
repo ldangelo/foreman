@@ -172,6 +172,24 @@ describe("Dispatcher — branch label auto-labeling", () => {
     expect(branchLabelCalls).toHaveLength(0);
   });
 
+  it("does NOT add branch label when current branch is detached HEAD", async () => {
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("HEAD");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("dev");
+
+    const seed = makeIssue("seed-001");
+    const taskClient = makeTaskClient([seed]);
+    const store = makeStore();
+    const dispatcher = new Dispatcher(taskClient, store, "/tmp");
+
+    await dispatcher.dispatch({ dryRun: true });
+
+    const updateCalls = vi.mocked(taskClient.update).mock.calls;
+    const branchLabelCalls = updateCalls.filter(([, opts]) =>
+      opts.labels?.some((l: string) => l.startsWith("branch:")),
+    );
+    expect(branchLabelCalls).toHaveLength(0);
+  });
+
   it("does NOT re-label a bead that already has a branch: label", async () => {
     const seed = makeIssue("seed-001");
     // Bead already has branch:another-branch label

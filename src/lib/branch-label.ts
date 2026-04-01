@@ -18,12 +18,22 @@
  *
  * If multiple branch: labels exist (shouldn't happen), returns the first one.
  */
+export function isValidBranchLabel(branch: string | undefined): branch is string {
+  if (!branch) return false;
+  const trimmed = branch.trim();
+  if (!trimmed) return false;
+  // Detached HEAD is not a real merge target and should never be persisted
+  // as a branch: label or used by refinery as a target branch.
+  if (trimmed === "HEAD") return false;
+  return true;
+}
+
 export function extractBranchLabel(labels: string[] | undefined): string | undefined {
   if (!labels || labels.length === 0) return undefined;
   const label = labels.find((l) => l.startsWith("branch:"));
   if (!label) return undefined;
   const branch = label.slice("branch:".length).trim();
-  return branch || undefined;
+  return isValidBranchLabel(branch) ? branch : undefined;
 }
 
 /**
@@ -52,6 +62,7 @@ export function applyBranchLabel(
   branchName: string,
 ): string[] {
   const filtered = (existingLabels ?? []).filter((l) => !l.startsWith("branch:"));
+  if (!isValidBranchLabel(branchName)) return filtered;
   // br enforces a 50-character limit per label. Skip the label entirely if it
   // would exceed the limit — a truncated branch name would cause the refinery
   // to target a non-existent branch. The explicit targetBranch threading in

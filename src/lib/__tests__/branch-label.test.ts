@@ -3,7 +3,25 @@ import {
   extractBranchLabel,
   isDefaultBranch,
   applyBranchLabel,
+  isValidBranchLabel,
 } from "../branch-label.js";
+
+describe("isValidBranchLabel", () => {
+  it("returns false for undefined and empty values", () => {
+    expect(isValidBranchLabel(undefined)).toBe(false);
+    expect(isValidBranchLabel("")).toBe(false);
+    expect(isValidBranchLabel("   ")).toBe(false);
+  });
+
+  it("returns false for detached HEAD", () => {
+    expect(isValidBranchLabel("HEAD")).toBe(false);
+  });
+
+  it("returns true for real branch names", () => {
+    expect(isValidBranchLabel("installer")).toBe(true);
+    expect(isValidBranchLabel("feature/my-feature")).toBe(true);
+  });
+});
 
 describe("extractBranchLabel", () => {
   it("returns undefined when labels is undefined", () => {
@@ -38,6 +56,10 @@ describe("extractBranchLabel", () => {
 
   it("returns undefined for branch: with empty value", () => {
     expect(extractBranchLabel(["branch:"])).toBeUndefined();
+  });
+
+  it("returns undefined for branch:HEAD", () => {
+    expect(extractBranchLabel(["branch:HEAD"])).toBeUndefined();
   });
 });
 
@@ -98,5 +120,9 @@ describe("applyBranchLabel", () => {
     const branchLabels = result.filter((l) => l.startsWith("branch:"));
     expect(branchLabels).toHaveLength(1);
     expect(branchLabels[0]).toBe("branch:installer");
+  });
+
+  it("drops invalid branch labels like HEAD", () => {
+    expect(applyBranchLabel(["workflow:smoke", "branch:old"], "HEAD")).toEqual(["workflow:smoke"]);
   });
 });

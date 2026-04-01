@@ -190,6 +190,19 @@ describe("Refinery — branch label targeting", () => {
     expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp", "develop");
   });
 
+  it("ignores invalid branch label HEAD and falls back to default target", async () => {
+    const run = makeRun();
+    const { store, seeds } = makeMocks(["branch:HEAD"]);
+    store.getRunsByStatus = vi.fn().mockReturnValue([run]);
+
+    const vcs = makeMockVcs();
+    const refinery = new Refinery(store as never, seeds as never, "/tmp", vcs);
+    await refinery.mergeCompleted({ targetBranch: "dev", runTests: false });
+
+    expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp", "dev");
+    expect(vcs.mergeWithoutCommit).toHaveBeenCalledWith("/tmp", "foreman/seed-abc", "dev");
+  });
+
   it("each run can target a different branch when multiple runs are merged", async () => {
     const run1 = makeRun({ id: "run-1", seed_id: "seed-aaa" });
     const run2 = makeRun({ id: "run-2", seed_id: "seed-bbb" });
