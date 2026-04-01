@@ -176,6 +176,11 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
     expect(typeof cmds.cleanCommand).toBe('string');
   });
 
+  it('isAncestor returns false on resolution failure', async () => {
+    const b = new JujutsuBackend('/tmp');
+    await expect(b.isAncestor('/tmp', 'missing', 'HEAD')).resolves.toBe(false);
+  });
+
   it("branchVerifyCommand uses jj bookmark list (positional arg, no --name flag)", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({

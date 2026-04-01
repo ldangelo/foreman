@@ -316,6 +316,12 @@ export interface VcsBackend {
    */
   getUntrackedFiles(workspacePath: string): Promise<string[]>;
 
+  /**
+   * Return true when `ancestorRef` is contained in the history of `descendantRef`.
+   * Used by finalize runtime enforcement to verify target drift was actually integrated.
+   */
+  isAncestor(repoPath: string, ancestorRef: string, descendantRef: string): Promise<boolean>;
+
   // ── Finalize Support ─────────────────────────────────────────────────
 
   /**

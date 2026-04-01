@@ -603,6 +603,15 @@ export class GitBackend implements VcsBackend {
     }
   }
 
+  async isAncestor(repoPath: string, ancestorRef: string, descendantRef: string): Promise<boolean> {
+    try {
+      await this.git(["merge-base", "--is-ancestor", ancestorRef, descendantRef], repoPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * List files modified (staged or unstaged) in the workspace.
    */

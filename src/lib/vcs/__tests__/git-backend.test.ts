@@ -295,6 +295,14 @@ describe("GitBackend.getFinalizeCommands", () => {
     expect(cmds.integrateTargetCommand).toContain("develop");
     expect(cmds.integrateTargetCommand).toContain("rebase");
   });
+
+  it("isAncestor returns true when ancestor is reachable from descendant", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    await expect(backend.isAncestor(repo, head, "HEAD")).resolves.toBe(true);
+  });
 });
 
 // ── GitBackend.checkoutBranch ─────────────────────────────────────────────────

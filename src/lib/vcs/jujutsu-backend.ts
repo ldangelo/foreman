@@ -662,6 +662,19 @@ export class JujutsuBackend implements VcsBackend {
     );
   }
 
+  async isAncestor(repoPath: string, ancestorRef: string, descendantRef: string): Promise<boolean> {
+    try {
+      const ancestorCommit = await this.resolveRef(repoPath, ancestorRef);
+      const reachable = await this.jj(
+        ["log", "--no-graph", "-r", `${ancestorRef}::${descendantRef}`, "-T", "commit_id"],
+        repoPath,
+      );
+      return reachable.split("\n").map((line) => line.trim()).includes(ancestorCommit.trim());
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Fetch updates from origin via `jj git fetch`.
    */

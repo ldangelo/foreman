@@ -347,6 +347,7 @@ describe("verdict-triggered retry", () => {
         throw new Error(`unknown ref ${ref}`);
       }),
       getHeadId: vi.fn().mockResolvedValue("head-bead-456"),
+      isAncestor: vi.fn().mockResolvedValue(true),
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
@@ -418,6 +419,7 @@ describe("verdict-triggered retry", () => {
         throw new Error(`unknown ref ${ref}`);
       }),
       getHeadId: vi.fn().mockResolvedValue("head-bead-456"),
+      isAncestor: vi.fn().mockResolvedValue(true),
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
@@ -474,6 +476,7 @@ describe("verdict-triggered retry", () => {
         return resolveCount === 1 ? "rev-dev-qa" : "rev-dev-finalize";
       }),
       getHeadId: vi.fn().mockResolvedValue("head-bead-456"),
+      isAncestor: vi.fn().mockResolvedValue(false),
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
@@ -498,5 +501,61 @@ describe("verdict-triggered retry", () => {
     await executePipeline(args);
 
     expect(log).toHaveBeenCalledWith(expect.stringContaining("target integration was skipped even though target branch drifted after QA"));
+  });
+
+  it("fails finalize when drifted target revision is not actually contained in finalized head", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const log = vi.fn();
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      if (phaseName === "qa") {
+        writeFileSync(
+          join(tmpDir, "QA_REPORT.md"),
+          "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npm test -- --reporter=dot 2>&1`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n",
+        );
+      }
+      if (phaseName === "finalize") {
+        writeFileSync(
+          join(tmpDir, "FINALIZE_VALIDATION.md"),
+          "# Finalize Validation\n\n## Target Integration\n- Status: SUCCESS\n\n## Test Validation\n- Status: PASS\n- Output: looked good\n\n## Failure Scope\n- UNKNOWN\n\n## Verdict: PASS\n",
+        );
+      }
+      return successResult();
+    });
+
+    let resolveCount = 0;
+    const vcsBackend = {
+      name: "jujutsu",
+      detectDefaultBranch: vi.fn().mockResolvedValue("dev"),
+      resolveRef: vi.fn().mockImplementation(async (_repoPath: string, ref: string) => {
+        if (ref !== "origin/dev" && ref !== "dev") throw new Error(`unknown ref ${ref}`);
+        resolveCount += 1;
+        return resolveCount === 1 ? "rev-dev-qa" : "rev-dev-finalize";
+      }),
+      getHeadId: vi.fn().mockResolvedValue("head-bead-456"),
+      isAncestor: vi.fn().mockResolvedValue(false),
+      getFinalizeCommands: vi.fn().mockReturnValue({
+        stageCommand: "",
+        commitCommand: "jj describe -m 'msg'",
+        pushCommand: "jj git push --bookmark foreman/seed-verdict --allow-new",
+        integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
+        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
+        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        restoreTrackedStateCommand: "true",
+      }),
+    };
+
+    const phases = [
+      { name: "developer", artifact: "DEVELOPER_REPORT.md" },
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true },
+      { name: "finalize", artifact: "FINALIZE_VALIDATION.md", verdict: true, retryWith: "developer", retryOnFail: 1 },
+    ];
+
+    const args = makeBasePipelineArgs(tmpDir, phases, runPhase, log) as any;
+    args.config.targetBranch = "dev";
+    args.config.vcsBackend = vcsBackend;
+
+    await executePipeline(args);
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("finalized branch does not contain the drifted target revision"));
   });
 });

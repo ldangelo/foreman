@@ -991,6 +991,20 @@ async function runPhaseSequence(
             verdict = "fail";
             feedbackContext = "Finalize integration contract violated: target branch changed after QA, so FINALIZE_VALIDATION.md must record Target Integration as SUCCESS before verdict handling can continue.";
             ctx.log("[FINALIZE] FAIL — target integration did not record SUCCESS after target drift");
+          } else if (config.vcsBackend && progress.currentTargetRef) {
+            const finalizedHead = await config.vcsBackend.getHeadId(worktreePath).catch(() => "");
+            const containsTargetRef = finalizedHead
+              ? await config.vcsBackend.isAncestor(worktreePath, progress.currentTargetRef, finalizedHead).catch(() => false)
+              : false;
+            if (!containsTargetRef) {
+              verdict = "fail";
+              feedbackContext = "Finalize integration contract violated: target branch drifted after QA, but the finalized branch does not actually contain the current target revision.";
+              ctx.log("[FINALIZE] FAIL — finalized branch does not contain the drifted target revision");
+            } else if (validationStatus === "skipped") {
+              verdict = "fail";
+              feedbackContext = "Finalize validation contract violated: target branch changed after QA, so FINALIZE_VALIDATION.md must not skip test validation.";
+              ctx.log("[FINALIZE] FAIL — validation was skipped even though target branch drifted after QA");
+            }
           } else if (validationStatus === "skipped") {
             verdict = "fail";
             feedbackContext = "Finalize validation contract violated: target branch changed after QA, so FINALIZE_VALIDATION.md must not skip test validation.";
