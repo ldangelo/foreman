@@ -866,7 +866,14 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       }
 
       // ── Troubleshooter: attempt recovery on failure ──────────────────────
-      const troubleshooterEnabled = !finalizeSucceeded && !!workflowConfig.onFailure;
+      const shouldSkipTroubleshooter =
+        !finalizeSucceeded &&
+        !finalizeRetryable &&
+        finalizeFailureReason === "tests_failed_pre_existing_issues";
+      if (shouldSkipTroubleshooter) {
+        log("[TROUBLESHOOTER] Skipping for non-retryable pre-existing finalize test failures");
+      }
+      const troubleshooterEnabled = !finalizeSucceeded && !!workflowConfig.onFailure && !shouldSkipTroubleshooter;
       let troubleshooterResolved = false;
       if (troubleshooterEnabled) {
         const failureContext = `Pipeline failed at finalize phase. finalizeRetryable=${String(finalizeRetryable)}`;

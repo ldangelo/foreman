@@ -39,4 +39,11 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('Pre-existing test failures but branch already matches ${completionTargetBranch}');
     expect(source).toContain('enqueueCloseSeed(store, seedId, "agent-worker-finalize")');
   });
+
+  it("skips troubleshooter for non-retryable pre-existing finalize test failures", () => {
+    expect(source).toContain('const shouldSkipTroubleshooter =');
+    expect(source).toContain('finalizeFailureReason === "tests_failed_pre_existing_issues"');
+    expect(source).toContain('Skipping for non-retryable pre-existing finalize test failures');
+    expect(source).toContain('!!workflowConfig.onFailure && !shouldSkipTroubleshooter');
+  });
 });
