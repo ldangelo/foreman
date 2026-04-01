@@ -25,4 +25,11 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('No finalize mail found — preserving pipeline success=');
     expect(source).not.toContain('No finalize mail found — assuming success');
   });
+
+  it("skips branch-ready when troubleshooter recovery already landed the branch on target", () => {
+    expect(source).toContain('if (troubleshooterResolved)');
+    expect(source).toContain('skipMergeQueue = true;');
+    expect(source).toContain('Branch already matches ${completionTargetBranch} after troubleshooter recovery');
+    expect(source).toContain('enqueueCloseSeed(store, seedId, "agent-worker-finalize")');
+  });
 });

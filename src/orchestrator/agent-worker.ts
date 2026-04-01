@@ -26,7 +26,7 @@ import {
   getDisallowedTools,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { enqueueResetSeedToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
+import { enqueueResetSeedToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead, enqueueCloseSeed } from "./task-backend-ops.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
@@ -893,58 +893,77 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         store.updateRun(runId, { status: "completed", completed_at: now });
         notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
 
-        try {
-          const enqueueStore = ForemanStore.forProject(pipelineProjectPath);
-          // Pre-compute modified files via VcsBackend (async) before calling
-          // enqueueToMergeQueue which expects a synchronous getFilesModified callback.
-          let enqueueFiles: string[] = [];
+        let skipMergeQueue = false;
+        if (troubleshooterResolved) {
           try {
-            const enqueueBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
-            const enqueueDefaultBranch = await enqueueBackend.detectDefaultBranch(worktreePath);
-            enqueueFiles = await enqueueBackend.getChangedFiles(worktreePath, enqueueDefaultBranch, "HEAD");
-          } catch {
-            // Non-fatal — proceed with empty file list
-          }
-          const enqueueResult = enqueueToMergeQueue({
-            db: enqueueStore.getDb(),
-            seedId,
-            runId,
-            worktreePath,
-            getFilesModified: () => enqueueFiles,
-          });
-          enqueueStore.close();
-          if (enqueueResult.success) {
-            log(`[FINALIZE] Enqueued to merge queue`);
-            // Guard: Only send branch-ready after successful finalize push (double-check).
-            // Primary guard is at function entry, this is defense-in-depth.
-            sendMail(agentMailClient, "refinery", "branch-ready", {
-              seedId, runId, branch: `foreman/${seedId}`, worktreePath,
-            });
-
-            // Trigger autoMerge immediately so the branch is merged even if
-            // `foreman run` is no longer active (fixes: bd-0qv2).
-            try {
-              const mergeStore = ForemanStore.forProject(pipelineProjectPath);
-              const mergeTaskClient = new BeadsRustClient(pipelineProjectPath);
-              log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}${config.targetBranch ? ` → ${config.targetBranch}` : ""}`);
-              const mergeResult = await autoMerge({
-                store: mergeStore,
-                taskClient: mergeTaskClient,
-                projectPath: pipelineProjectPath,
-                targetBranch: config.targetBranch,
-              });
-              mergeStore.close();
-              log(`[FINALIZE] autoMerge result: merged=${mergeResult.merged} conflicts=${mergeResult.conflicts} failed=${mergeResult.failed}`);
-            } catch (mergeErr: unknown) {
-              const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-              log(`[FINALIZE] autoMerge failed (non-fatal): ${mergeMsg}`);
+            const completionBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
+            const completionTargetBranch = config.targetBranch ?? await completionBackend.detectDefaultBranch(worktreePath);
+            const changedAgainstTarget = await completionBackend.getChangedFiles(worktreePath, completionTargetBranch, "HEAD");
+            if (changedAgainstTarget.length === 0) {
+              skipMergeQueue = true;
+              log(`[FINALIZE] Branch already matches ${completionTargetBranch} after troubleshooter recovery — skipping branch-ready/merge queue`);
+              enqueueCloseSeed(store, seedId, "agent-worker-finalize");
             }
-          } else {
-            log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error ?? "(unknown)"}`);
+          } catch (alreadyMergedErr: unknown) {
+            const alreadyMergedMsg = alreadyMergedErr instanceof Error ? alreadyMergedErr.message : String(alreadyMergedErr);
+            log(`[FINALIZE] Unable to verify post-troubleshooter merge state (continuing with merge queue): ${alreadyMergedMsg}`);
           }
-        } catch (enqErr: unknown) {
-          const enqMsg = enqErr instanceof Error ? enqErr.message : String(enqErr);
-          log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqMsg}`);
+        }
+
+        if (!skipMergeQueue) {
+          try {
+            const enqueueStore = ForemanStore.forProject(pipelineProjectPath);
+            // Pre-compute modified files via VcsBackend (async) before calling
+            // enqueueToMergeQueue which expects a synchronous getFilesModified callback.
+            let enqueueFiles: string[] = [];
+            try {
+              const enqueueBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
+              const enqueueDefaultBranch = await enqueueBackend.detectDefaultBranch(worktreePath);
+              enqueueFiles = await enqueueBackend.getChangedFiles(worktreePath, enqueueDefaultBranch, "HEAD");
+            } catch {
+              // Non-fatal — proceed with empty file list
+            }
+            const enqueueResult = enqueueToMergeQueue({
+              db: enqueueStore.getDb(),
+              seedId,
+              runId,
+              worktreePath,
+              getFilesModified: () => enqueueFiles,
+            });
+            enqueueStore.close();
+            if (enqueueResult.success) {
+              log(`[FINALIZE] Enqueued to merge queue`);
+              // Guard: Only send branch-ready after successful finalize push (double-check).
+              // Primary guard is at function entry, this is defense-in-depth.
+              sendMail(agentMailClient, "refinery", "branch-ready", {
+                seedId, runId, branch: `foreman/${seedId}`, worktreePath,
+              });
+
+              // Trigger autoMerge immediately so the branch is merged even if
+              // `foreman run` is no longer active (fixes: bd-0qv2).
+              try {
+                const mergeStore = ForemanStore.forProject(pipelineProjectPath);
+                const mergeTaskClient = new BeadsRustClient(pipelineProjectPath);
+                log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}${config.targetBranch ? ` → ${config.targetBranch}` : ""}`);
+                const mergeResult = await autoMerge({
+                  store: mergeStore,
+                  taskClient: mergeTaskClient,
+                  projectPath: pipelineProjectPath,
+                  targetBranch: config.targetBranch,
+                });
+                mergeStore.close();
+                log(`[FINALIZE] autoMerge result: merged=${mergeResult.merged} conflicts=${mergeResult.conflicts} failed=${mergeResult.failed}`);
+              } catch (mergeErr: unknown) {
+                const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+                log(`[FINALIZE] autoMerge failed (non-fatal): ${mergeMsg}`);
+              }
+            } else {
+              log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error ?? "(unknown)"}`);
+            }
+          } catch (enqErr: unknown) {
+            const enqMsg = enqErr instanceof Error ? enqErr.message : String(enqErr);
+            log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqMsg}`);
+          }
         }
       } else {
         const terminalStatus = finalizeRetryable ? "stuck" : "failed";
