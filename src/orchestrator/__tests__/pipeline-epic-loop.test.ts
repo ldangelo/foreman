@@ -75,6 +75,14 @@ function successResult() {
   return { success: true, costUsd: 0.01, turns: 5, tokensIn: 100, tokensOut: 50 };
 }
 
+function qaPassReport(note = "All good."): string {
+  return `# QA\n\n## Command\nnpm test -- --reporter=dot 2>&1\n\n## Raw Summary\n12 passed, 0 failed\n\n## Verdict: PASS\n${note}\n`;
+}
+
+function qaFailReport(note = "Test broken."): string {
+  return `# QA\n\n## Command\nnpm test -- --reporter=dot 2>&1\n\n## Raw Summary\n10 passed, 2 failed\n\n## Verdict: FAIL\n${note}\n`;
+}
+
 function makeEpicTasks(count: number): EpicTask[] {
   return Array.from({ length: count }, (_, i) => ({
     seedId: `task-${i + 1}`,
@@ -111,7 +119,7 @@ describe("epic task loop (TRD-005)", () => {
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       phaseOrder.push(phaseName);
       if (phaseName === "qa") {
-        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\nAll good.\n");
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport("All good."));
       }
       return successResult();
     });
@@ -140,10 +148,10 @@ describe("epic task loop (TRD-005)", () => {
         qaCallCount++;
         if (qaCallCount === 1) {
           // First QA: FAIL
-          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: FAIL\nTest broken.\n");
+          writeFileSync(join(tmpDir, "QA_REPORT.md"), qaFailReport("Test broken."));
         } else {
           // Subsequent QA: PASS
-          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\nFixed.\n");
+          writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport("Fixed."));
         }
       }
       return successResult();
@@ -169,10 +177,10 @@ describe("epic task loop (TRD-005)", () => {
         qaCallCount++;
         if (qaCallCount <= 3) {
           // First task QA always FAILs (retryOnFail=2, so 3 attempts)
-          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: FAIL\nStill broken.\n");
+          writeFileSync(join(tmpDir, "QA_REPORT.md"), qaFailReport("Still broken."));
         } else {
           // Second task QA passes
-          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\nFixed.\n");
+          writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport("Fixed."));
         }
       }
       return successResult();
@@ -201,7 +209,7 @@ describe("epic task loop (TRD-005)", () => {
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       phaseOrder.push(phaseName);
       if (phaseName === "qa") {
-        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n");
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport());
       }
       return successResult();
     });
@@ -224,7 +232,7 @@ describe("epic task loop (TRD-005)", () => {
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       phaseOrder.push(phaseName);
       if (phaseName === "qa") {
-        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n");
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport());
       }
       return successResult();
     });
@@ -258,7 +266,7 @@ describe("epic task loop (TRD-005)", () => {
 
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       if (phaseName === "qa") {
-        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n");
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport());
       }
       return successResult();
     });
@@ -284,7 +292,7 @@ describe("epic task loop (TRD-005)", () => {
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       phaseOrder.push(phaseName);
       if (phaseName === "qa") {
-        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: FAIL\nBroken.\n");
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), qaFailReport("Broken."));
       }
       return successResult();
     });
@@ -308,7 +316,7 @@ describe("epic task loop (TRD-005)", () => {
 
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       if (phaseName === "qa") {
-        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n");
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport());
       }
       return successResult();
     });

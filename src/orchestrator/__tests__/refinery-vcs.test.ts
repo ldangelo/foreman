@@ -3,11 +3,11 @@
  *
  * Acceptance criteria:
  *   AC-T-012-1: Given a mock VcsBackend, when Refinery.mergeCompleted() runs
- *               a clean squash merge, then `git merge --squash` is invoked via
- *               gitSpecial and the seed is closed.
+ *               a clean squash merge, then `vcs.mergeWithoutCommit()` is invoked
+ *               and the seed is closed.
  *   AC-T-012-2: Given a squash merge returning conflicts, when refinery processes,
  *               then the conflict resolution cascade is triggered.
- *   AC-T-012-3: grep refinery.ts for execFileAsync("git") -- zero matches.
+ *   AC-T-012-3: refinery.ts no longer imports or calls mergeWorktree().
  *
  * @module src/orchestrator/__tests__/refinery-vcs.test.ts
  */
@@ -150,8 +150,7 @@ function makeMocks(vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typ
   };
   const vcs = makeMockVcs(vcsOverrides);
 
-  // Set up execFile to succeed by default (for gitSpecial calls that use execFile).
-  // git log returns a commit hash so the "no unique commits" guard passes.
+  // Set up execFile to succeed by default for helper shell calls like gh.
   (execFile as any).mockImplementation(
     (_cmd: string, args: string[], _opts: any, callback: Function) => {
       if (Array.isArray(args) && args[0] === "log") {
@@ -182,13 +181,11 @@ describe("AC-T-012-1: Clean squash merge invokes git merge --squash and closes t
 
     // checkoutBranch should be called to switch to target before squash merge
     expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp/project", "main");
-
-    // git merge --squash should be called via gitSpecial (execFile)
-    const calls: any[][] = (execFile as any).mock.calls;
-    const squashCall = calls.find(
-      (c) => c[0] === "git" && Array.isArray(c[1]) && c[1].includes("--squash") && c[1].includes("foreman/seed-001"),
+    expect(vcs.mergeWithoutCommit).toHaveBeenCalledWith(
+      "/tmp/project",
+      "foreman/seed-001",
+      "main",
     );
-    expect(squashCall).toBeDefined();
   });
 
   it("closes the seed via enqueueCloseSeed after a successful merge", async () => {
@@ -222,7 +219,7 @@ describe("AC-T-012-1: Clean squash merge invokes git merge --squash and closes t
   });
 
   it("does NOT call enqueueCloseSeed when squash merge has conflicts", async () => {
-    const { store, refinery } = makeMocks();
+    const { store, refinery, vcs } = makeMocks();
     const run = makeRun({ seed_id: "seed-003" });
     store.getRunsByStatus.mockReturnValue([run]);
 
@@ -233,18 +230,15 @@ describe("AC-T-012-1: Clean squash merge invokes git merge --squash and closes t
           callback(new Error("gh not available"), null);
         } else if (Array.isArray(args) && args[0] === "log") {
           callback(null, { stdout: "abc1234 commit\n", stderr: "" });
-        } else if (cmd === "git" && Array.isArray(args) && args.includes("--squash")) {
-          const err = new Error("CONFLICT (content): Merge conflict in src/main.ts") as any;
-          err.stdout = "";
-          err.stderr = "CONFLICT (content): Merge conflict in src/main.ts";
-          callback(err);
-        } else if (cmd === "git" && Array.isArray(args) && args.includes("--diff-filter=U")) {
-          callback(null, { stdout: "src/main.ts\n", stderr: "" });
         } else {
           callback(null, { stdout: "", stderr: "" });
         }
       },
     );
+    (vcs as any).mergeWithoutCommit = vi
+      .fn()
+      .mockRejectedValue(new Error("CONFLICT (content): Merge conflict in src/main.ts"));
+    (vcs as any).getConflictingFiles = vi.fn().mockResolvedValue(["src/main.ts"]);
 
     await refinery.mergeCompleted({ runTests: false });
 
@@ -272,7 +266,7 @@ describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts
   });
 
   it("triggers conflict cascade when squash merge returns code conflicts", async () => {
-    const { store, refinery } = makeMocks();
+    const { store, refinery, vcs } = makeMocks();
     const run = makeRun({ seed_id: "seed-conflict" });
     store.getRunsByStatus.mockReturnValue([run]);
 
@@ -283,18 +277,17 @@ describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts
           callback(new Error("gh not available"), null);
         } else if (Array.isArray(args) && args[0] === "log") {
           callback(null, { stdout: "abc1234 commit\n", stderr: "" });
-        } else if (cmd === "git" && Array.isArray(args) && args.includes("--squash")) {
-          const err = new Error("CONFLICT (content): Merge conflict") as any;
-          err.stdout = "";
-          err.stderr = "CONFLICT (content): Merge conflict";
-          callback(err);
-        } else if (cmd === "git" && Array.isArray(args) && args.includes("--diff-filter=U")) {
-          callback(null, { stdout: "src/main.ts\nsrc/lib/utils.ts\n", stderr: "" });
         } else {
           callback(null, { stdout: "", stderr: "" });
         }
       },
     );
+    (vcs as any).mergeWithoutCommit = vi
+      .fn()
+      .mockRejectedValue(new Error("CONFLICT (content): Merge conflict"));
+    (vcs as any).getConflictingFiles = vi
+      .fn()
+      .mockResolvedValue(["src/main.ts", "src/lib/utils.ts"]);
 
     const report = await refinery.mergeCompleted({ runTests: false });
 
@@ -377,6 +370,18 @@ describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts
     (vcs as any).mergeWithoutCommit = vi.fn().mockRejectedValue(new Error("CONFLICT: merge conflict"));
     const run = makeRun({ seed_id: "seed-files" });
     store.getRunsByStatus.mockReturnValue([run]);
+
+    (execFile as any).mockImplementation(
+      (cmd: string, args: string[], _opts: any, callback: Function) => {
+        if (cmd === "gh") {
+          callback(new Error("gh not available"), null);
+        } else if (Array.isArray(args) && args[0] === "log") {
+          callback(null, { stdout: "abc1234 commit\n", stderr: "" });
+        } else {
+          callback(null, { stdout: "", stderr: "" });
+        }
+      },
+    );
 
     const report = await refinery.mergeCompleted({ runTests: false });
 

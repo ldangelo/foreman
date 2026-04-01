@@ -80,6 +80,10 @@ function successResult() {
   return { success: true, costUsd: 0.01, turns: 5, tokensIn: 100, tokensOut: 50 };
 }
 
+function qaPassReport(note = "All good."): string {
+  return `# QA\n\n## Command\nnpm test -- --reporter=dot 2>&1\n\n## Raw Summary\n12 passed, 0 failed\n\n## Verdict: PASS\n${note}\n`;
+}
+
 function makeEpicTasks(count: number): EpicTask[] {
   return Array.from({ length: count }, (_, i) => ({
     seedId: `task-${i + 1}`,
@@ -202,7 +206,7 @@ describe("epic resume detection (TRD-009)", () => {
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       phaseOrder.push(phaseName);
       if (phaseName === "qa") {
-        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\nAll good.\n");
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport("All good."));
       }
       return successResult();
     });
@@ -253,7 +257,7 @@ describe("epic resume detection (TRD-009)", () => {
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       phaseOrder.push(phaseName);
       if (phaseName === "qa") {
-        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n");
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport());
       }
       return successResult();
     });
@@ -290,7 +294,7 @@ describe("epic resume detection (TRD-009)", () => {
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       phaseOrder.push(phaseName);
       if (phaseName === "qa") {
-        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n");
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport());
       }
       return successResult();
     });
@@ -321,7 +325,7 @@ describe("epic resume detection (TRD-009)", () => {
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       phaseOrder.push(phaseName);
       if (phaseName === "qa") {
-        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n");
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport());
       }
       return successResult();
     });
