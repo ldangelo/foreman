@@ -67,11 +67,9 @@ git log origin/{{baseBranch}}..HEAD --oneline 2>/dev/null || git log {{baseBranc
 - Bead title is `{{seedTitle}}`
 
 **If the bead type is `test` OR the title contains "verify", "validate", or "test" (case-insensitive):**
-No changes is the correct and expected outcome for a verification bead. Treat this as success — send phase-complete mail and continue to Step 5:
-```
-/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"finalize","seedId":"{{seedId}}","status":"complete","note":"nothing_to_commit_verification_bead"}'
-```
-Then proceed to Step 5 (Verify branch).
+No changes is the correct and expected outcome for a verification bead. Do **not**
+send `phase-complete` yet. Continue locally to Step 5 (Verify branch) and only
+let finalize report success after all remaining finalize steps complete.
 
 **Otherwise (non-verification bead with no commits at all):**
 Send this mail and stop immediately:

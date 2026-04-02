@@ -16,7 +16,7 @@ import { request as httpRequest } from "node:http";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
-import type { EpicTask } from "./pipeline-executor.js";
+import type { WorkerConfig } from "./worker-config.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import { NativeTaskStore } from "../lib/task-store.js";
@@ -180,57 +180,6 @@ function releaseFiles(
 // handler can report the correct phase in its Agent Mail message.
 let currentPhase = "startup";
 
-// ── Config ───────────────────────────────────────────────────────────────────
-
-interface WorkerConfig {
-  runId: string;
-  projectId: string;
-  seedId: string;
-  seedTitle: string;
-  seedDescription?: string;
-  seedComments?: string;
-  model: string;
-  worktreePath: string;
-  /** Project root directory (contains .beads/). Used as cwd for br commands. */
-  projectPath?: string;
-  prompt: string;
-  env: Record<string, string>;
-  resume?: string;  // SDK session ID to resume
-  pipeline?: boolean;  // Run as lead pipeline (explorer → developer → qa → reviewer)
-  skipExplore?: boolean;
-  skipReview?: boolean;
-  /**
-   * Bead type field (e.g. "feature", "bug", "task", "smoke").
-   * Used to resolve the workflow name when no `workflow:<name>` label is set.
-   */
-  seedType?: string;
-  /**
-   * Labels from the bead. Used to resolve `workflow:<name>` overrides.
-   * e.g. ["phase:explorer", "workflow:smoke"]
-   */
-  seedLabels?: string[];
-  /**
-   * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
-   * Forwarded to the pipeline executor to resolve per-priority models from YAML.
-   */
-  seedPriority?: string;
-  /**
-   * Override target branch for auto-merge after finalize.
-   * When set, merges into this branch instead of detectDefaultBranch().
-   */
-  targetBranch?: string;
-  /**
-   * Ordered list of child tasks for epic execution mode (TRD-2026-007).
-   * When set, the worker runs the epic pipeline path.
-   */
-  epicTasks?: EpicTask[];
-  /**
-   * Parent epic bead ID (TRD-2026-007).
-   * When set, this run is an epic execution.
-   */
-  epicId?: string;
-}
-
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -278,8 +227,11 @@ async function main(): Promise<void> {
   log(`Worker started for ${seedId} [${model}] pid=${process.pid} mode=${mode}`);
   currentPhase = "init";
 
-  // Open store connection (project-local database)
-  const store = ForemanStore.forProject(storeProjectPath);
+  // Prefer the explicit DB path from the dispatcher so the worker and parent
+  // stay on the same project-local store even if workspace inference changes.
+  const store = config.dbPath
+    ? new ForemanStore(config.dbPath)
+    : ForemanStore.forProject(storeProjectPath);
 
   // Apply worker env vars.
   // NOTE: `ROLE_CONFIGS` in roles.ts is materialised at module load time,
@@ -783,7 +735,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       if (agentMailClient) {
         const foremanMsgs = await agentMailClient.fetchInbox("foreman");
         const finalizeSender = `finalize-${seedId}`;
-        const finalizeMsg = foremanMsgs.find(
+        const finalizeMsg = [...foremanMsgs].reverse().find(
           (m) => (m.subject === "phase-complete" || m.subject === "agent-error") &&
                   (m.from === finalizeSender || m.from === "finalize"),
         );
@@ -866,12 +818,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       }
 
       // ── Troubleshooter: attempt recovery on failure ──────────────────────
-      const shouldSkipTroubleshooter =
-        !finalizeSucceeded &&
-        !finalizeRetryable &&
-        finalizeFailureReason === "tests_failed_pre_existing_issues";
+      const shouldSkipTroubleshooter = !finalizeSucceeded && !finalizeRetryable;
       if (shouldSkipTroubleshooter) {
-        log("[TROUBLESHOOTER] Skipping for non-retryable pre-existing finalize test failures");
+        log(`[TROUBLESHOOTER] Skipping for non-retryable finalize failure: ${finalizeFailureReason}`);
       }
       const troubleshooterEnabled = !finalizeSucceeded && !!workflowConfig.onFailure && !shouldSkipTroubleshooter;
       let troubleshooterResolved = false;

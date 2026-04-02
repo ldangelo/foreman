@@ -110,6 +110,39 @@ describe("agent-worker.ts", () => {
     // (e.g., store init failure) — that's acceptable for this test
   });
 
+  it("uses explicit dbPath from config when provided", () => {
+    const configPath = join(tmpDir, "test-config.json");
+    const customDbPath = join(tmpDir, "custom-store.db");
+    const worktreePath = join(tmpDir, "worktrees", "bd-test");
+    writeFileSync(configPath, JSON.stringify({
+      runId: "test-run-db-path",
+      projectId: "test-project",
+      seedId: "test-seed-db-path",
+      seedTitle: "Test DB Path",
+      model: "claude-sonnet-4-6",
+      worktreePath,
+      dbPath: customDbPath,
+      prompt: "test",
+      env: {},
+    }));
+
+    try {
+      execFileSync(TSX_BIN, [WORKER_SCRIPT, configPath], {
+        timeout: 15_000,
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          HOME: tmpDir,
+          ANTHROPIC_API_KEY: "sk-ant-invalid-test-key",
+        },
+      });
+    } catch {
+      // Expected to fail after startup, but the configured store path should be created.
+    }
+
+    expect(existsSync(customDbPath)).toBe(true);
+  });
+
   describe("seed reset to open on failure — source regression tests", () => {
     /**
      * These tests verify by source inspection that resetSeedToOpen() is called

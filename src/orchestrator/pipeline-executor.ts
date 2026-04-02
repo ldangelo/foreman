@@ -197,6 +197,45 @@ function readReport(worktreePath: string, filename: string): string | null {
   try { return readFileSync(p, "utf-8"); } catch { return null; }
 }
 
+async function readLatestPhaseOutcomeMail(
+  agentMailClient: AnyMailClient | null,
+  phaseName: string,
+  seedId: string,
+): Promise<{ retryable: boolean; reason: string } | null> {
+  if (!agentMailClient) return null;
+  try {
+    const phaseSender = `${phaseName}-${seedId}`;
+    const foremanMsgs = await agentMailClient.fetchInbox("foreman");
+    const latestPhaseMsg = [...foremanMsgs].reverse().find(
+      (m) => (m.subject === "phase-complete" || m.subject === "agent-error")
+        && (m.from === phaseSender || m.from === phaseName),
+    );
+    if (!latestPhaseMsg) return null;
+
+    const body = (() => {
+      try {
+        return JSON.parse(latestPhaseMsg.body ?? "{}") as Record<string, unknown>;
+      } catch {
+        return {} as Record<string, unknown>;
+      }
+    })();
+
+    const retryable = body["retryable"] !== false;
+    let reason = latestPhaseMsg.subject;
+    if (latestPhaseMsg.subject === "agent-error") {
+      reason = typeof body["error"] === "string" ? body["error"] : "unknown phase error";
+    } else if (typeof body["note"] === "string") {
+      reason = body["note"];
+    } else if (typeof body["status"] === "string") {
+      reason = body["status"];
+    }
+
+    return { retryable, reason };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Detect if an error is a rate limit (429) error.
  * Returns true if the error indicates a rate limit, false otherwise.
@@ -696,7 +735,7 @@ async function runPhaseSequence(
     // Compute VCS-specific prompt variables for finalize and reviewer phases (TRD-026, TRD-027).
     const vcsBackend = config.vcsBackend;
     const baseBranch = config.targetBranch ?? "main";
-    let vcsPromptVars: {
+    const vcsPromptVars: {
       vcsStageCommand?: string;
       vcsCommitCommand?: string;
       vcsPushCommand?: string;
@@ -1016,22 +1055,38 @@ async function runPhaseSequence(
       if (phaseName === "qa") {
         qaVerdictForLog = verdict as "pass" | "fail" | "unknown";
         if (verdict === "pass" && config.vcsBackend) {
-          const qaTargetBranch = config.targetBranch ?? await config.vcsBackend.detectDefaultBranch(worktreePath);
-          const targetCandidates = [`origin/${qaTargetBranch}`, qaTargetBranch];
+          const detectDefaultBranch = (config.vcsBackend as Partial<VcsBackend>).detectDefaultBranch;
+          const resolveRef = (config.vcsBackend as Partial<VcsBackend>).resolveRef;
+          const getHeadId = (config.vcsBackend as Partial<VcsBackend>).getHeadId;
+
+          const qaTargetBranch = config.targetBranch
+            ?? (typeof detectDefaultBranch === "function"
+              ? await detectDefaultBranch.call(config.vcsBackend, worktreePath)
+              : "main");
+
           let qaTargetRef = "";
-          for (const candidate of targetCandidates) {
-            try {
-              qaTargetRef = await config.vcsBackend.resolveRef(worktreePath, candidate);
-              break;
-            } catch {
-              // Try local fallback if remote ref is absent.
+          if (typeof resolveRef === "function") {
+            const targetCandidates = [`origin/${qaTargetBranch}`, qaTargetBranch];
+            for (const candidate of targetCandidates) {
+              try {
+                qaTargetRef = await resolveRef.call(config.vcsBackend, worktreePath, candidate);
+                break;
+              } catch {
+                // Try local fallback if remote ref is absent.
+              }
             }
           }
-          try {
-            progress.qaValidatedHeadRef = await config.vcsBackend.getHeadId(worktreePath);
-          } catch {
+
+          if (typeof getHeadId === "function") {
+            try {
+              progress.qaValidatedHeadRef = await getHeadId.call(config.vcsBackend, worktreePath);
+            } catch {
+              progress.qaValidatedHeadRef = undefined;
+            }
+          } else {
             progress.qaValidatedHeadRef = undefined;
           }
+
           progress.qaValidatedTargetBranch = qaTargetBranch;
           progress.qaValidatedTargetRef = qaTargetRef || undefined;
           store.updateRunProgress(runId, progress);
@@ -1043,6 +1098,9 @@ async function runPhaseSequence(
         const maxRetries = phase.retryOnFail ?? 0;
         const retryCountKey = phaseName;
         const currentRetries = retryCounts[retryCountKey] ?? 0;
+        const latestPhaseOutcome = phaseName === "finalize"
+          ? await readLatestPhaseOutcomeMail(agentMailClient, phaseName, seedId)
+          : null;
         const finalizeFailureScope = phaseName === "finalize" && report
           ? parseFinalizeFailureScope(report)
           : "unknown";
@@ -1051,6 +1109,12 @@ async function runPhaseSequence(
           ctx.log(`[FINALIZE] FAIL — unrelated/pre-existing test failures detected, skipping developer retry`);
           await appendFile(logFile, `\n[PIPELINE] finalize failed due to unrelated/pre-existing test failures — no developer retry\n`);
           return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+        }
+
+        if (phaseName === "finalize" && latestPhaseOutcome?.retryable === false) {
+          ctx.log(`[FINALIZE] FAIL — ${latestPhaseOutcome.reason} marked retryable=false; skipping developer retry`);
+          await appendFile(logFile, `\n[PIPELINE] finalize failed with retryable=false (${latestPhaseOutcome.reason}) — no developer retry\n`);
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, retriesExhausted: true };
         }
 
         if (currentRetries < maxRetries) {

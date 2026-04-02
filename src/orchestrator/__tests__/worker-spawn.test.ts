@@ -61,8 +61,10 @@ describe("Dispatcher worker spawning", () => {
       seedTitle: "Test Task",
       model: "claude-sonnet-4-6",
       worktreePath: "/tmp/wt/bd-test",
+      dbPath: "/tmp/project/.foreman/foreman.db",
       prompt: "Read AGENTS.md and implement the task.",
       env: { PATH: "/usr/bin", HOME: "/home/test" },
+      taskId: "task-789",
     };
 
     const json = JSON.stringify(config);
@@ -74,6 +76,8 @@ describe("Dispatcher worker spawning", () => {
     expect(parsed.seedTitle).toBe("Test Task");
     expect(parsed.model).toBe("claude-sonnet-4-6");
     expect(parsed.worktreePath).toBe("/tmp/wt/bd-test");
+    expect(parsed.dbPath).toBe("/tmp/project/.foreman/foreman.db");
+    expect(parsed.taskId).toBe("task-789");
     expect(parsed.prompt).toContain("AGENTS.md");
     expect(parsed.env).toBeDefined();
     expect(parsed.resume).toBeUndefined();

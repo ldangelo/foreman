@@ -93,9 +93,11 @@ describe("finalize.md — nothing_to_commit verification bead logic (bd-w8sj)", 
     expect(prompt).toContain("nothing to commit");
   });
 
-  it("instructs agent to send phase-complete (not agent-error) for verification beads", () => {
-    expect(prompt).toContain("phase-complete");
-    expect(prompt).toContain("nothing_to_commit_verification_bead");
+  it("instructs verification beads to continue without sending early success mail", () => {
+    expect(prompt).toContain("Do **not**");
+    expect(prompt).toContain("send `phase-complete` yet");
+    expect(prompt).toContain("Continue locally to Step 5");
+    expect(prompt).not.toContain("nothing_to_commit_verification_bead");
   });
 
   it("checks seedType for test type", () => {
@@ -111,10 +113,7 @@ describe("finalize.md — nothing_to_commit verification bead logic (bd-w8sj)", 
 
   it("still sends agent-error for non-verification beads with nothing to commit", () => {
     expect(prompt).toContain("nothing_to_commit");
-    // Should have both: nothing_to_commit_verification_bead (success) and nothing_to_commit (error)
-    const successNote = prompt.indexOf("nothing_to_commit_verification_bead");
     const errorNote = prompt.indexOf('"nothing_to_commit"');
-    expect(successNote).toBeGreaterThan(-1);
     expect(errorNote).toBeGreaterThan(-1);
   });
 });

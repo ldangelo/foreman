@@ -20,6 +20,7 @@ import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
 
 const execFileAsync = promisify(execFile);
+type ConfiguredVcsBackend = "git" | "jujutsu" | "auto";
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -44,6 +45,15 @@ function extractPid(sessionKey: string | null): number | null {
  */
 function isSDKBasedRun(sessionKey: string | null): boolean {
   return sessionKey?.startsWith("foreman:sdk:") ?? false;
+}
+
+function resolveConfiguredVcsBackend(projectPath: string): ConfiguredVcsBackend {
+  try {
+    const config = loadProjectConfig(projectPath);
+    return config?.vcs?.backend ?? "auto";
+  } catch {
+    return "auto";
+  }
 }
 
 // ── Doctor class ─────────────────────────────────────────────────────────
@@ -145,17 +155,7 @@ export class Doctor {
   async checkJujutsuBinary(): Promise<CheckResult> {
     const JJ_INSTALL_URL = "https://github.com/jj-vcs/jj";
     const checkName = "jj (Jujutsu) binary";
-
-    // Determine configured backend
-    let backend: "git" | "jujutsu" | "auto" = "auto";
-    try {
-      const config = loadProjectConfig(this.projectPath);
-      if (config?.vcs?.backend) {
-        backend = config.vcs.backend;
-      }
-    } catch {
-      // Config parse error — treat as auto
-    }
+    const backend = resolveConfiguredVcsBackend(this.projectPath);
 
     // If explicitly using git, jj is not needed
     if (backend === "git") {
@@ -208,17 +208,7 @@ export class Doctor {
    */
   async checkJujutsuColocated(): Promise<CheckResult> {
     const checkName = "jj colocated mode";
-
-    // Only check when backend is explicitly jujutsu
-    let backend: "git" | "jujutsu" | "auto" = "auto";
-    try {
-      const config = loadProjectConfig(this.projectPath);
-      if (config?.vcs?.backend) {
-        backend = config.vcs.backend;
-      }
-    } catch {
-      // Config parse error — skip
-    }
+    const backend = resolveConfiguredVcsBackend(this.projectPath);
 
     if (backend !== "jujutsu") {
       return {

@@ -22,6 +22,7 @@ import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
 import { getTaskOrder } from "./task-ordering.js";
 import type { EpicTask } from "./pipeline-executor.js";
+import type { WorkerConfig } from "./worker-config.js";
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import { getWorkspacePath } from "../lib/workspace-paths.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
@@ -36,6 +37,7 @@ import type {
   ModelSelection,
   PlanStepDispatched,
 } from "./types.js";
+export type { WorkerConfig } from "./worker-config.js";
 
 // ── Task store resolution (REQ-014 / REQ-017) ────────────────────────────
 
@@ -292,8 +294,9 @@ export class Dispatcher {
     // Done once per dispatch() call using VcsBackend (TRD-015: migrate from git.js shims).
     let currentBranch: string | undefined;
     let defaultBranch: string | undefined;
+    let branchBackend: VcsBackend | undefined;
     try {
-      const branchBackend = await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
+      branchBackend = await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
       currentBranch = await branchBackend.getCurrentBranch(this.projectPath);
       defaultBranch = await branchBackend.detectDefaultBranch(this.projectPath);
       if (!isValidBranchLabel(currentBranch)) {
@@ -628,7 +631,9 @@ export class Dispatcher {
         // without re-detecting.
         let vcsBackend: VcsBackend | undefined;
         try {
-          vcsBackend = await VcsBackendFactory.create({ backend: vcsBackendName }, this.projectPath);
+          vcsBackend = branchBackend?.name === vcsBackendName
+            ? branchBackend
+            : await VcsBackendFactory.create({ backend: vcsBackendName }, this.projectPath);
           log(`[foreman] Created VcsBackend: ${vcsBackend.name}`);
         } catch (vcsErr: unknown) {
           const vcsMsg = vcsErr instanceof Error ? vcsErr.message : String(vcsErr);
@@ -1424,72 +1429,10 @@ export async function resolveBaseBranch(
 
 // ── Worker Config (must match agent-worker.ts interface) ────────────────
 
-export interface WorkerConfig {
-  runId: string;
-  projectId: string;
-  seedId: string;
-  seedTitle: string;
-  seedDescription?: string;
-  seedComments?: string;
-  model: string;
-  worktreePath: string;
-  /** Project root directory (contains .beads/). Used as cwd for br commands. */
-  projectPath?: string;
-  prompt: string;
-  env: Record<string, string>;
-  resume?: string;
-  pipeline?: boolean;
-  skipExplore?: boolean;
-  skipReview?: boolean;
-  /** Absolute path to the SQLite DB file (e.g. .foreman/foreman.db) */
-  dbPath?: string;
-  /**
-   * Resolved workflow type (e.g. "smoke", "feature", "bug").
-   * Derived from label-based override or bead type field.
-   * Used for prompt-loader workflow scoping and spawn strategy selection.
-   */
-  seedType?: string;
-  /**
-   * Labels from the bead. Forwarded to agent-worker so it can resolve
-   * `workflow:<name>` label overrides.
-   */
-  seedLabels?: string[];
-  /**
-   * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
-   * Forwarded to the pipeline executor to resolve per-priority models from YAML.
-   */
-  seedPriority?: string;
-  /**
-   * Override target branch for auto-merge after finalize.
-   * When set, the agent worker merges into this branch instead of detectDefaultBranch().
-   */
-  targetBranch?: string;
-  /**
-   * Optional task ID from native task store (NativeTaskStore.claim()).
-   * When present, pipeline will call taskStore.updatePhase(taskId, phaseName)
-   * at each phase transition for phase-level visibility (REQ-012).
-   * Null/undefined in beads fallback mode — no-op via optional chaining.
-   */
-  taskId?: string | null;
-  /**
-   * Ordered list of child tasks for epic execution mode (TRD-2026-007).
-   * When set, the worker runs the epic pipeline: taskPhases per child task,
-   * then finalPhases once at the end.
-   */
-  epicTasks?: EpicTask[];
-  /**
-   * Parent epic bead ID (TRD-2026-007).
-   * When set, this run is an epic execution — the worker executes all
-   * epicTasks within a single worktree.
-   */
-  epicId?: string;
-}
-
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────
 
 /** Result returned by a SpawnStrategy */
-export interface SpawnResult {
-}
+export type SpawnResult = Record<string, never>;
 
 /** Strategy interface for spawning worker processes */
 export interface SpawnStrategy {

@@ -196,6 +196,10 @@ export interface NativeTask {
   updated_at: string;
   approved_at: string | null;
   closed_at: string | null;
+  /** Attached project name/id for cross-project aggregation (not a DB column). */
+  projectName?: string;
+  projectId?: string;
+  projectPath?: string;
 }
 
 // ── Merge Agent interfaces ───────────────────────────────────────────────
@@ -234,32 +238,6 @@ export interface SentinelRunRow {
   failure_count: number;
   started_at: string;
   completed_at: string | null;
-}
-
-// ── Native Task interface ────────────────────────────────────────────────
-
-/**
- * A task row from the native `tasks` table (PRD-2026-006 REQ-003).
- * Used by the dashboard "Needs Human" panel and phase-visibility views.
- */
-export interface NativeTask {
-  id: string;
-  title: string;
-  description: string | null;
-  type: string;
-  priority: number;   // 0=P0 (critical) … 4=P4 (backlog)
-  status: string;
-  run_id: string | null;
-  branch: string | null;
-  external_id: string | null;
-  created_at: string;
-  updated_at: string;
-  approved_at: string | null;
-  closed_at: string | null;
-  /** Attached project name/id for cross-project aggregation (not a DB column). */
-  projectName?: string;
-  projectId?: string;
-  projectPath?: string;
 }
 
 // ── Error classes ───────────────────────────────────────────────────────

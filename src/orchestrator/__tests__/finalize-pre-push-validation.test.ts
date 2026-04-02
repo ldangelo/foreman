@@ -419,6 +419,70 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
     expect(onPipelineComplete).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
   });
 
+  it("does not retry developer when finalize mail marks failure as retryable=false", async () => {
+    const phaseOrder: string[] = [];
+
+    const runPhase: RunPhaseFn = vi.fn(async (role: string) => {
+      phaseOrder.push(role);
+      if (role === "developer") {
+        writeFileSync(join(tmpDir, "DEVELOPER_REPORT.md"), "# Developer Report\n");
+      } else if (role === "finalize") {
+        writeFileSync(
+          join(tmpDir, "FINALIZE_VALIDATION.md"),
+          [
+            "# Finalize Validation",
+            "## Target Integration",
+            "- Status: FAIL",
+            "",
+            "## Test Validation",
+            "- Status: FAIL",
+            "- Output: rebase conflict while integrating target drift",
+            "",
+            "## Failure Scope",
+            "- MODIFIED_FILES",
+            "",
+            "## Verdict: FAIL",
+          ].join("\n"),
+        );
+      }
+      return { success: true, costUsd: 0.01, turns: 5, tokensIn: 100, tokensOut: 50 } as PhaseResult;
+    });
+
+    const sendMailText = vi.fn();
+    const agentMailClient = {
+      fetchInbox: vi.fn().mockResolvedValue([
+        {
+          id: "m1",
+          from: "finalize-bd-test",
+          to: "foreman",
+          subject: "agent-error",
+          body: JSON.stringify({
+            phase: "finalize",
+            seedId: "bd-test",
+            error: "rebase_conflict",
+            retryable: false,
+          }),
+          receivedAt: new Date().toISOString(),
+          acknowledged: false,
+        },
+      ]),
+    };
+
+    const onPipelineComplete = vi.fn().mockResolvedValue(undefined);
+    const ctx = makePipelineContext(tmpDir, runPhase, {
+      workflowConfig: makeTestWorkflow(1),
+      agentMailClient: agentMailClient as never,
+      sendMailText,
+      onPipelineComplete,
+    });
+
+    await executePipeline(ctx);
+
+    expect(phaseOrder).toEqual(["developer", "finalize"]);
+    expect(sendMailText).not.toHaveBeenCalled();
+    expect(onPipelineComplete).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
+  });
+
   it("proceeds to onPipelineComplete when finalize writes ## Verdict: PASS", async () => {
     const phaseOrder: string[] = [];
 

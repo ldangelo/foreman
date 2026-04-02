@@ -12,6 +12,10 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('const status = typeof body["status"] === "string" ? body["status"] : "complete"');
   });
 
+  it("prefers the latest finalize mail when multiple finalize messages exist", () => {
+    expect(source).toContain("[...foremanMsgs].reverse().find(");
+  });
+
   it("only treats finalize phase-complete as success when status is complete/completed", () => {
     expect(source).toContain('finalizeSucceeded = status === "complete" || status === "completed"');
   });
@@ -42,8 +46,8 @@ describe("agent-worker finalize mail status handling", () => {
 
   it("skips troubleshooter for non-retryable pre-existing finalize test failures", () => {
     expect(source).toContain('const shouldSkipTroubleshooter =');
-    expect(source).toContain('finalizeFailureReason === "tests_failed_pre_existing_issues"');
-    expect(source).toContain('Skipping for non-retryable pre-existing finalize test failures');
+    expect(source).toContain('const shouldSkipTroubleshooter = !finalizeSucceeded && !finalizeRetryable;');
+    expect(source).toContain('Skipping for non-retryable finalize failure: ${finalizeFailureReason}');
     expect(source).toContain('!!workflowConfig.onFailure && !shouldSkipTroubleshooter');
   });
 });
