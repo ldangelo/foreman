@@ -1,7 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { createServer as createNetServer } from "node:net";
 import { NotificationBus } from "../notification-bus.js";
 import { NotificationServer } from "../notification-server.js";
 import type { WorkerNotification } from "../types.js";
+
+const LOOPBACK_AVAILABLE = await new Promise<boolean>((resolve) => {
+  const probe = createNetServer();
+  probe.once("error", () => resolve(false));
+  probe.listen(0, "127.0.0.1", () => {
+    probe.close(() => resolve(true));
+  });
+});
 
 async function postJson(url: string, body: unknown): Promise<{ status: number; json: unknown }> {
   const resp = await fetch(url, {
@@ -13,7 +22,7 @@ async function postJson(url: string, body: unknown): Promise<{ status: number; j
   return { status: resp.status, json };
 }
 
-describe("NotificationServer", () => {
+describe.skipIf(!LOOPBACK_AVAILABLE)("NotificationServer", () => {
   let bus: NotificationBus;
   let server: NotificationServer;
 

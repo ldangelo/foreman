@@ -10,68 +10,35 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import {
   mkdtempSync,
   mkdirSync,
   rmSync,
   writeFileSync,
-  existsSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import path from "node:path";
-
-const execFileAsync = promisify(execFile);
+import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-function findTsx(): string {
-  const candidates = [
-    path.resolve(__dirname, "../../../node_modules/.bin/tsx"),
-    path.resolve(__dirname, "../../../../../node_modules/.bin/tsx"),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
-  }
-  return candidates[0];
-}
-
-const TSX = findTsx();
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
-
-interface ExecResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
 
 async function runCli(
   args: string[],
   registryPath: string,
   cwd?: string,
 ): Promise<ExecResult> {
-  try {
-    const { stdout, stderr } = await execFileAsync(TSX, [CLI, ...args], {
-      cwd: cwd ?? tmpdir(),
-      timeout: 15_000,
-      env: {
-        ...process.env,
-        NO_COLOR: "1",
-        // Override the registry path via a special env var (see below)
-        FOREMAN_REGISTRY_PATH: registryPath,
-      },
-    });
-    return { stdout, stderr, exitCode: 0 };
-  } catch (err: unknown) {
-    const e = err as { stdout?: string; stderr?: string; code?: number };
-    return {
-      stdout: e.stdout ?? "",
-      stderr: e.stderr ?? "",
-      exitCode: e.code ?? 1,
-    };
-  }
+  return runTsxModule(CLI, args, {
+    cwd: cwd ?? tmpdir(),
+    timeout: 15_000,
+    env: {
+      ...process.env,
+      // Override the registry path via a special env var (see below)
+      FOREMAN_REGISTRY_PATH: registryPath,
+    },
+  });
 }
 
 function mkTmpProjectDir(base: string, name: string): string {

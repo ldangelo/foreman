@@ -1,25 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { mkdtempSync, rmSync, realpathSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
-
-const execFileAsync = promisify(execFile);
-
-function findTsx(): string {
-  const candidates = [
-    path.resolve(__dirname, "../../../node_modules/.bin/tsx"),
-    path.resolve(__dirname, "../../../../../node_modules/.bin/tsx"),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
-  }
-  return candidates[0];
-}
-
-const TSX = findTsx();
+import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 /** Per-subprocess timeout (ms). Generous to reduce flakiness under load. */
@@ -28,27 +12,8 @@ const SUBPROCESS_TIMEOUT_MS = 25_000;
 /** Per-test timeout (ms): allows up to 2 attempts × subprocess timeout + margin. */
 const TEST_TIMEOUT_MS = 30_000;
 
-interface ExecResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  try {
-    const { stdout, stderr } = await execFileAsync(TSX, [CLI, ...args], {
-      cwd,
-      timeout: SUBPROCESS_TIMEOUT_MS,
-      env: { ...process.env, NO_COLOR: "1" },
-    });
-    return { stdout, stderr, exitCode: 0 };
-  } catch (err: any) {
-    return {
-      stdout: err.stdout ?? "",
-      stderr: err.stderr ?? "",
-      exitCode: err.code ?? 1,
-    };
-  }
+  return runTsxModule(CLI, args, { cwd, timeout: SUBPROCESS_TIMEOUT_MS });
 }
 
 /**

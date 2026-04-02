@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "no
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { execTsxModuleSync } from "../../test-support/tsx-subprocess.js";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
-const TSX_BIN = join(PROJECT_ROOT, "node_modules", ".bin", "tsx");
 const WORKER_SCRIPT = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
 
 describe("agent-worker.ts", () => {
@@ -21,9 +21,8 @@ describe("agent-worker.ts", () => {
 
   it("exits with error when no config file argument given", () => {
     try {
-      execFileSync(TSX_BIN, [WORKER_SCRIPT], {
+      execTsxModuleSync(WORKER_SCRIPT, [], {
         timeout: 10_000,
-        encoding: "utf-8",
         env: { ...process.env, HOME: tmpDir },
       });
       expect.unreachable("Should have exited with error");
@@ -44,6 +43,8 @@ describe("agent-worker.ts", () => {
       seedTitle: "Test Seed",
       model: "claude-sonnet-4-6",
       worktreePath: tmpDir,
+      projectPath: tmpDir,
+      dbPath: join(tmpDir, ".foreman", "foreman.db"),
       prompt: "echo hello",
       env: {},
     }));
@@ -51,9 +52,8 @@ describe("agent-worker.ts", () => {
     expect(existsSync(configPath)).toBe(true);
 
     try {
-      execFileSync(TSX_BIN, [WORKER_SCRIPT, configPath], {
+      execTsxModuleSync(WORKER_SCRIPT, [configPath], {
         timeout: 15_000,
-        encoding: "utf-8",
         env: {
           ...process.env,
           HOME: tmpDir,
@@ -78,14 +78,15 @@ describe("agent-worker.ts", () => {
       seedTitle: "Test Logging",
       model: "claude-sonnet-4-6",
       worktreePath: tmpDir,
+      projectPath: tmpDir,
+      dbPath: join(tmpDir, ".foreman", "foreman.db"),
       prompt: "test",
       env: {},
     }));
 
     try {
-      execFileSync(TSX_BIN, [WORKER_SCRIPT, configPath], {
+      execTsxModuleSync(WORKER_SCRIPT, [configPath], {
         timeout: 15_000,
-        encoding: "utf-8",
         env: {
           ...process.env,
           HOME: tmpDir,

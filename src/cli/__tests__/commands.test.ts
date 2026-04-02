@@ -1,51 +1,14 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { execFile, execFileSync } from "node:child_process";
-import { promisify } from "node:util";
-import { mkdtempSync, rmSync, realpathSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
-
-const execFileAsync = promisify(execFile);
-
-// Resolve tsx binary: prefer the worktree's own node_modules, fall back to the
-// main repo's node_modules (worktrees share source but may not have their own
-// node_modules populated).
-function findTsx(): string {
-  const candidates = [
-    path.resolve(__dirname, "../../../node_modules/.bin/tsx"),
-    path.resolve(__dirname, "../../../../../node_modules/.bin/tsx"),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
-  }
-  return candidates[0]; // best-effort fallback
-}
-
-const TSX = findTsx();
+import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
-interface ExecResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  try {
-    const { stdout, stderr } = await execFileAsync(TSX, [CLI, ...args], {
-      cwd,
-      timeout: 10_000,
-      env: { ...process.env, NO_COLOR: "1" },
-    });
-    return { stdout, stderr, exitCode: 0 };
-  } catch (err: any) {
-    return {
-      stdout: err.stdout ?? "",
-      stderr: err.stderr ?? "",
-      exitCode: err.code ?? 1,
-    };
-  }
+  return runTsxModule(CLI, args, { cwd, timeout: 10_000 });
 }
 
 describe("CLI smoke tests", () => {

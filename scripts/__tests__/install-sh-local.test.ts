@@ -31,6 +31,7 @@ import {
 } from "node:fs";
 import { spawnSync, spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
@@ -56,6 +57,13 @@ function detectLocalPlatform(): { os: string; arch: string; platform: string } {
 }
 
 const LOCAL_PLATFORM = detectLocalPlatform();
+const LOOPBACK_AVAILABLE = await new Promise<boolean>((resolve) => {
+  const probe = createNetServer();
+  probe.once("error", () => resolve(false));
+  probe.listen(0, "127.0.0.1", () => {
+    probe.close(() => resolve(true));
+  });
+});
 
 // ── Mock binary builder ───────────────────────────────────────────────────────
 
@@ -307,7 +315,7 @@ let archiveInfo: { archivePath: string; sha256: string; assetName: string };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe(`install.sh local integration tests (${LOCAL_PLATFORM.platform})`, () => {
+describe.skipIf(!LOOPBACK_AVAILABLE)(`install.sh local integration tests (${LOCAL_PLATFORM.platform})`, () => {
   beforeAll(async () => {
     tmpDir = mkdtempSync(path.join(tmpdir(), "foreman-install-local-test-"));
     console.log(`\n[local-test] Temp dir: ${tmpDir}`);
@@ -792,7 +800,7 @@ describe(`install.sh local integration tests (${LOCAL_PLATFORM.platform})`, () =
 
 // ── macOS-specific tests ─────────────────────────────────────────────────────
 
-describe("install.sh macOS-specific behavior", () => {
+describe.skipIf(!LOOPBACK_AVAILABLE)("install.sh macOS-specific behavior", () => {
   const IS_MACOS = process.platform === "darwin";
 
   if (!IS_MACOS) {

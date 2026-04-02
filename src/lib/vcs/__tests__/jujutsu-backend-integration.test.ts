@@ -21,7 +21,7 @@
  * @module src/lib/vcs/__tests__/jujutsu-backend-integration.test
  */
 
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import {
   mkdtempSync,
   writeFileSync,
@@ -51,16 +51,28 @@ function isJjAvailable(): boolean {
 }
 
 const JJ_AVAILABLE = isJjAvailable();
+const ORIGINAL_HOME = process.env.HOME;
+const ORIGINAL_XDG_CONFIG_HOME = process.env.XDG_CONFIG_HOME;
+let jjHomeDir: string;
 
 // ── Cleanup ───────────────────────────────────────────────────────────────────
 
 const tempDirs: string[] = [];
+
+beforeEach(() => {
+  jjHomeDir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-jj-home-")));
+  tempDirs.push(jjHomeDir);
+  process.env.HOME = jjHomeDir;
+  process.env.XDG_CONFIG_HOME = join(jjHomeDir, ".config");
+});
 
 afterEach(() => {
   for (const dir of tempDirs) {
     rmSync(dir, { recursive: true, force: true });
   }
   tempDirs.length = 0;
+  process.env.HOME = ORIGINAL_HOME;
+  process.env.XDG_CONFIG_HOME = ORIGINAL_XDG_CONFIG_HOME;
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -127,6 +139,14 @@ function makeRemoteAndLocal(): { remoteDir: string; localDir: string } {
   });
   // Colocate jj on top of the git clone
   execFileSync("jj", ["git", "init", "--colocate"], {
+    cwd: localDir,
+    stdio: "pipe",
+  });
+  execFileSync("jj", ["config", "set", "--repo", "user.name", "Test Agent"], {
+    cwd: localDir,
+    stdio: "pipe",
+  });
+  execFileSync("jj", ["config", "set", "--repo", "user.email", "test@test.com"], {
     cwd: localDir,
     stdio: "pipe",
   });

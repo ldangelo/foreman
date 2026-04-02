@@ -1504,14 +1504,14 @@ export interface SpawnStrategy {
 /**
  * Resolve common paths needed by both spawn strategies.
  */
-function resolveWorkerPaths(): { tsxBin: string; workerScript: string; logDir: string } {
+function resolveWorkerPaths(homeDir?: string): { tsxBin: string; workerScript: string; logDir: string } {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
   const projectRoot = join(__dirname, "..", "..");
   return {
     tsxBin: join(projectRoot, "node_modules", ".bin", "tsx"),
     workerScript: join(__dirname, "agent-worker.js"),
-    logDir: join(process.env.HOME ?? "/tmp", ".foreman", "logs"),
+    logDir: join(homeDir ?? process.env.HOME ?? "/tmp", ".foreman", "logs"),
   };
 }
 
@@ -1521,10 +1521,11 @@ function resolveWorkerPaths(): { tsxBin: string; workerScript: string; logDir: s
  */
 export class DetachedSpawnStrategy implements SpawnStrategy {
   async spawn(config: WorkerConfig): Promise<SpawnResult> {
-    const { tsxBin, workerScript, logDir } = resolveWorkerPaths();
+    const homeDir = config.env.HOME ?? process.env.HOME ?? "/tmp";
+    const { tsxBin, workerScript, logDir } = resolveWorkerPaths(homeDir);
 
     // Write config to temp file (worker reads + deletes it)
-    const configDir = join(process.env.HOME ?? "/tmp", ".foreman", "tmp");
+    const configDir = join(homeDir, ".foreman", "tmp");
     await mkdir(configDir, { recursive: true });
     const configPath = join(configDir, `worker-${config.runId}.json`);
     await writeFile(configPath, JSON.stringify(config), "utf-8");
