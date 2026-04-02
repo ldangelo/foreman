@@ -27,6 +27,7 @@ vi.mock("../../lib/git.js", () => ({
 vi.mock("../task-backend-ops.js", () => ({
   enqueueResetSeedToOpen: vi.fn(),
   enqueueCloseSeed: vi.fn(),
+  enqueueSetBeadStatus: vi.fn(),
 }));
 
 // Imports after mocks
@@ -55,6 +56,9 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 }
 
 function makeMocks(stackedRuns: Run[] = []) {
+  const mockDb = {
+    prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+  };
   const store = {
     getRunsByStatus: vi.fn(() => [] as Run[]),
     getRunsByStatuses: vi.fn(() => [] as Run[]),
@@ -62,6 +66,7 @@ function makeMocks(stackedRuns: Run[] = []) {
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     getRunsByBaseBranch: vi.fn(() => stackedRuns),
+    getDb: vi.fn(() => mockDb),
   };
   const seeds = {
     getGraph: vi.fn(async () => ({ edges: [] })),

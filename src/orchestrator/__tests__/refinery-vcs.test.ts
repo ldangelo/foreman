@@ -38,6 +38,7 @@ vi.mock("../task-backend-ops.js", () => ({
   enqueueCloseSeed: vi.fn(),
   enqueueResetSeedToOpen: vi.fn(),
   enqueueAddNotesToBead: vi.fn(),
+  enqueueSetBeadStatus: vi.fn(),
 }));
 
 vi.mock("../../lib/archive-reports.js", () => ({
@@ -134,6 +135,9 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 }
 
 function makeMocks(vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typeof vi.fn>>> = {}) {
+  const mockDb = {
+    prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+  };
   const store = {
     getRunsByStatus: vi.fn(() => [] as Run[]),
     getRunsByStatuses: vi.fn(() => [] as Run[]),
@@ -142,6 +146,7 @@ function makeMocks(vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typ
     logEvent: vi.fn(),
     getRunsByBaseBranch: vi.fn(() => [] as Run[]),
     sendMessage: vi.fn(),
+    getDb: vi.fn(() => mockDb),
   };
   const seeds = {
     getGraph: vi.fn(async () => ({ edges: [] })),
@@ -434,7 +439,8 @@ describe("AC-T-012-3: refinery.ts no longer imports or calls mergeWorktree", () 
     expect(refinery).toBeInstanceOf(Refinery);
 
     // The constructor with all 4 args should work
-    const store = { getRunsByStatus: vi.fn(() => []), getRunsByStatuses: vi.fn(() => []), getRun: vi.fn(), updateRun: vi.fn(), logEvent: vi.fn(), getRunsByBaseBranch: vi.fn(() => []), sendMessage: vi.fn() };
+    const mockDb = { prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })) };
+    const store = { getRunsByStatus: vi.fn(() => []), getRunsByStatuses: vi.fn(() => []), getRun: vi.fn(), updateRun: vi.fn(), logEvent: vi.fn(), getRunsByBaseBranch: vi.fn(() => []), sendMessage: vi.fn(), getDb: vi.fn(() => mockDb) };
     const seeds = { getGraph: vi.fn(), show: vi.fn(), update: vi.fn() };
     const vcs = makeMockVcs();
     const r = new Refinery(store as any, seeds as any, "/tmp", vcs);

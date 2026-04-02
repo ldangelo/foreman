@@ -23,6 +23,7 @@ vi.mock("../task-backend-ops.js", () => ({
   enqueueCloseSeed: vi.fn(),
   enqueueResetSeedToOpen: vi.fn(),
   enqueueAddNotesToBead: vi.fn(),
+  enqueueSetBeadStatus: vi.fn(),
 }));
 
 // Import mocked modules AFTER vi.mock declarations
@@ -111,6 +112,9 @@ function makeMocks(vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typ
     },
   );
 
+  const mockDb = {
+    prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+  };
   const store = {
     getRunsByStatus: vi.fn(() => [] as Run[]),
     getRunsByStatuses: vi.fn(() => [] as Run[]),
@@ -119,6 +123,7 @@ function makeMocks(vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typ
     logEvent: vi.fn(),
     getRunsByBaseBranch: vi.fn(() => [] as Run[]),
     sendMessage: vi.fn(),
+    getDb: vi.fn(() => mockDb),
   };
   const seeds = {
     getGraph: vi.fn(async () => ({ edges: [] })),

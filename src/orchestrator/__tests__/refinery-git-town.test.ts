@@ -48,11 +48,15 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 }
 
 function makeMocks() {
+  const mockDb = {
+    prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+  };
   const store = {
     getRunsByStatus: vi.fn(() => [] as Run[]),
     getRun: vi.fn(() => null as Run | null),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
+    getDb: vi.fn(() => mockDb),
   };
   const seeds = {
     getGraph: vi.fn(async () => ({ edges: [] })),
@@ -64,11 +68,15 @@ function makeMocks() {
 
 // Typed helper to avoid the `any` escape hatch on makeMocks
 function createTestRefinery() {
+  const mockDb = {
+    prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+  };
   const store = {
     getRunsByStatus: vi.fn().mockReturnValue([] as Run[]),
     getRun: vi.fn().mockReturnValue(null as Run | null),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
+    getDb: vi.fn(() => mockDb),
   };
   const seeds = {
     getGraph: vi.fn(async () => ({ edges: [] })),

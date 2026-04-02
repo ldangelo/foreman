@@ -13,11 +13,15 @@ import { Refinery } from "../refinery.js";
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeMocks() {
+  const mockDb = {
+    prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+  };
   const store = {
     getRunsByStatus: vi.fn(() => []),
     getRun: vi.fn(() => null),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
+    getDb: vi.fn(() => mockDb),
   };
   const seeds = {
     getGraph: vi.fn(async () => ({ edges: [] })),

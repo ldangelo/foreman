@@ -21,6 +21,7 @@ vi.mock("../task-backend-ops.js", () => ({
   enqueueResetSeedToOpen: vi.fn().mockResolvedValue(undefined),
   enqueueCloseSeed: vi.fn().mockResolvedValue(undefined),
   enqueueAddNotesToBead: vi.fn().mockResolvedValue(undefined),
+  enqueueSetBeadStatus: vi.fn(),
 }));
 
 vi.mock("../../lib/archive-reports.js", () => ({
@@ -113,6 +114,9 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
 }
 
 function makeMocks(seedLabels: string[] = []) {
+  const mockDb = {
+    prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+  };
   const store = {
     getRunsByStatus: vi.fn().mockReturnValue([] as Run[]),
     getRunsByStatuses: vi.fn().mockReturnValue([] as Run[]),
@@ -121,6 +125,7 @@ function makeMocks(seedLabels: string[] = []) {
     logEvent: vi.fn(),
     getRunsByBaseBranch: vi.fn().mockReturnValue([] as Run[]),
     sendMessage: vi.fn(),
+    getDb: vi.fn(() => mockDb),
   };
   const seeds = {
     getGraph: vi.fn().mockResolvedValue({ edges: [] }),

@@ -14,8 +14,10 @@ import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
 import { enqueueCloseSeed, enqueueResetSeedToOpen, enqueueAddNotesToBead } from "./task-backend-ops.js";
+import { syncBeadStatusAfterMerge } from "./auto-merge.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
+import { NativeTaskStore } from "../lib/task-store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -90,6 +92,7 @@ export interface IRefineryTaskClient {
 export class Refinery {
   private conflictResolver: ConflictResolver;
   private vcsBackend: VcsBackend;
+  private taskStore: NativeTaskStore;
 
   constructor(
     private store: ForemanStore,
@@ -101,6 +104,7 @@ export class Refinery {
     // provide an explicit VcsBackend (e.g. CLI commands, existing tests).
     this.vcsBackend = vcsBackend ?? new GitBackend(projectPath);
     this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG);
+    this.taskStore = new NativeTaskStore(this.store.getDb());
   }
 
   /**
@@ -216,6 +220,39 @@ export class Refinery {
       }));
     } catch {
       // Non-fatal — mail is optional infrastructure
+    }
+  }
+
+  /**
+   * Close the native task (if any) linked to this run after a successful merge.
+   *
+   * Implements REQ-018: updateStatus(taskId, 'merged') on success, with fallback
+   * to syncBeadStatusAfterMerge when taskId is null (beads-only mode).
+   *
+   * Non-fatal — failures are silently ignored so they don't block the merge flow.
+   */
+  private closeNativeTaskPostMerge(runId: string, seedId: string): void {
+    try {
+      const row = this.store.getDb()
+        .prepare("SELECT id FROM tasks WHERE run_id = ?")
+        .get(runId) as { id: string } | undefined;
+
+      if (row) {
+        this.taskStore.updateStatus(row.id, "merged");
+      } else {
+        // No native task — fall back to beads-only sync.
+        // Note: syncBeadStatusAfterMerge does not actually use taskClient (only
+        // enqueues bead status updates via store), so we cast to ITaskClient.
+        syncBeadStatusAfterMerge(
+          this.store,
+          this.seeds as unknown as import("../lib/task-client.js").ITaskClient,
+          runId,
+          seedId,
+          this.projectPath,
+        );
+      }
+    } catch {
+      // Non-fatal — native task closure must not block the merge
     }
   }
 
@@ -812,6 +849,9 @@ export class Refinery {
         // projectPath (repo root) is where .beads/ lives; not the worktree dir.
         enqueueCloseSeed(this.store, run.seed_id, "refinery");
 
+        // Close native task post-merge (REQ-018) — updateStatus('merged') or fallback
+        this.closeNativeTaskPostMerge(run.id, run.seed_id);
+
         // Send bead-closed mail so inbox shows bead lifecycle completion
         this.sendMail(run.id, "bead-closed", {
           seedId: run.seed_id,
@@ -978,6 +1018,9 @@ export class Refinery {
 
     // Close the bead after successful conflict-resolution merge.
     enqueueCloseSeed(this.store, run.seed_id, "refinery");
+
+    // Close native task post-merge (REQ-018) — updateStatus('merged') or fallback
+    this.closeNativeTaskPostMerge(run.id, run.seed_id);
 
     return true;
   }

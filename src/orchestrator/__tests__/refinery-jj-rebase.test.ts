@@ -10,6 +10,7 @@ vi.mock("../task-backend-ops.js", () => ({
   enqueueCloseSeed: vi.fn(),
   enqueueResetSeedToOpen: vi.fn(),
   enqueueAddNotesToBead: vi.fn(),
+  enqueueSetBeadStatus: vi.fn(),
 }));
 
 vi.mock("../../lib/archive-reports.js", () => ({
@@ -108,6 +109,9 @@ describe("Refinery jj rebase path", () => {
   });
 
   it("rebases jj runs in the run worktree instead of raw git rebase in the repo root", async () => {
+    const mockDb = {
+      prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+    };
     const store = {
       getRunsByStatus: vi.fn(() => [makeRun()]),
       getRunsByStatuses: vi.fn(() => []),
@@ -116,6 +120,7 @@ describe("Refinery jj rebase path", () => {
       logEvent: vi.fn(),
       getRunsByBaseBranch: vi.fn(() => []),
       sendMessage: vi.fn(),
+      getDb: vi.fn(() => mockDb),
     };
     const seeds = {
       getGraph: vi.fn(async () => ({ edges: [] })),
