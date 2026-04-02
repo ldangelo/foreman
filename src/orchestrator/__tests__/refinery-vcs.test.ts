@@ -302,7 +302,7 @@ describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts
     expect(report.conflicts[0].conflictFiles).toContain("src/main.ts");
   });
 
-  it("calls enqueueResetSeedToOpen when conflicts are detected", async () => {
+  it("does not auto-reopen seeds when conflicts are detected", async () => {
     const conflictFiles = ["src/main.ts", "src/index.ts"];
     const { store, refinery, vcs } = makeMocks();
     // Override after makeMocks to ensure our mock is used
@@ -313,12 +313,8 @@ describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts
 
     await refinery.mergeCompleted({ runTests: false });
 
-    // AC-T-012-2: conflict cascade triggers seed reset so it can be retried
-    expect(enqueueResetSeedToOpen).toHaveBeenCalledWith(
-      expect.anything(),
-      "seed-reset",
-      "refinery",
-    );
+    // AC-T-012-2: conflict cascade now leaves the bead blocked until an explicit human retry/reset.
+    expect(enqueueResetSeedToOpen).not.toHaveBeenCalled();
   });
 
   it("attempts gh pr create as part of conflict cascade", async () => {

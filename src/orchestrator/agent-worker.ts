@@ -783,85 +783,92 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       if (agentMailClient) {
         const foremanMsgs = await agentMailClient.fetchInbox("foreman");
         const finalizeSender = `finalize-${seedId}`;
-        const finalizeMsg = foremanMsgs.find(
+        const finalizeMsgs = foremanMsgs.filter(
           (m) => (m.subject === "phase-complete" || m.subject === "agent-error") &&
                   (m.from === finalizeSender || m.from === "finalize"),
         );
-        if (finalizeMsg?.subject === "phase-complete") {
-          const body = (() => { try { return JSON.parse(finalizeMsg.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
+        const nonRetryableError = finalizeMsgs.find((m) => {
+          if (m.subject !== "agent-error") return false;
+          try {
+            const body = JSON.parse(m.body ?? "{}") as Record<string, unknown>;
+            return body["retryable"] === false;
+          } catch {
+            return false;
+          }
+        });
+        const finalizePhaseComplete = finalizeMsgs.find((m) => m.subject === "phase-complete");
+
+        if (nonRetryableError) {
+          const body = (() => { try { return JSON.parse(nonRetryableError.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
+          finalizeRetryable = false;
+          finalizeSucceeded = false;
+          finalizeFailureReason = typeof body["error"] === "string"
+            ? body["error"]
+            : "finalize_non_retryable_error";
+          log(`[FINALIZE] non-retryable agent-error mail received — error: ${finalizeFailureReason}`);
+        } else if (finalizePhaseComplete?.subject === "phase-complete") {
+          const body = (() => { try { return JSON.parse(finalizePhaseComplete.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
           const status = typeof body["status"] === "string" ? body["status"] : "complete";
           finalizeRetryable = body["retryable"] !== false;
-          finalizeSucceeded = status === "complete" || status === "completed";
+          finalizeSucceeded = status === "complete" || status === "completed" || status === "success";
           if (!finalizeSucceeded) {
             finalizeFailureReason = typeof body["note"] === "string"
               ? body["note"]
               : "finalize_phase_reported_failed_status";
           }
           log(`[FINALIZE] phase-complete mail received — status=${status}, retryable=${String(finalizeRetryable)}`);
-        } else if (finalizeMsg?.subject === "agent-error") {
-          const body = (() => { try { return JSON.parse(finalizeMsg.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
-          finalizeRetryable = body["retryable"] !== false;
-          const errorDetail = typeof body["error"] === "string" ? body["error"] : "unknown finalize error";
-          finalizeFailureReason = errorDetail;
-          log(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
+        } else {
+          const finalizeAgentError = finalizeMsgs.find((m) => m.subject === "agent-error");
+          if (finalizeAgentError?.subject === "agent-error") {
+            const body = (() => { try { return JSON.parse(finalizeAgentError.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
+            finalizeRetryable = body["retryable"] !== false;
+            const errorDetail = typeof body["error"] === "string" ? body["error"] : "unknown finalize error";
+            finalizeFailureReason = errorDetail;
+            log(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
 
-          // Special case: "nothing to commit" may be normal when a worktree is
-          // reused from a previous run (commits already exist). Check if the
-          // branch has commits ahead of the target — if so, the work is done.
-          // Also handle verification/test beads which genuinely have no changes.
-          if (errorDetail === "nothing_to_commit") {
-            const beadType = config.seedType ?? "";
-            const beadTitle = config.seedTitle ?? "";
-            const isVerificationBead = beadType === "test" ||
-              /verify|validate|test/i.test(beadTitle);
+            if (errorDetail === "nothing_to_commit") {
+              const beadType = config.seedType ?? "";
+              const beadTitle = config.seedTitle ?? "";
+              const isVerificationBead = beadType === "test" ||
+                /verify|validate|test/i.test(beadTitle);
 
-            // Check if branch has commits ahead of target (reused worktree scenario).
-            // Try multiple refs: the remote target branch may not exist if it hasn't
-            // been pushed yet. Fall back to the local branch, then origin/dev.
-            let hasCommitsAhead = false;
-            {
-              const candidates: string[] = [];
-              if (config.targetBranch) {
-                candidates.push(`origin/${config.targetBranch}`, config.targetBranch);
-              }
-              candidates.push("origin/dev", "origin/main");
-              const aheadBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
-              for (const ref of candidates) {
-                try {
-                  // Use VcsBackend.getChangedFiles() as a proxy for checking if
-                  // HEAD has any commits ahead of the given ref. Three-dot
-                  // semantics are used for consistency with the rest of the VCS layer.
-                  const changedFiles = await aheadBackend.getChangedFiles(worktreePath, ref, "HEAD");
-                  hasCommitsAhead = changedFiles.length > 0;
-                  break; // First valid ref wins
-                } catch {
-                  // Ref doesn't exist or git failed — try next
+              let hasCommitsAhead = false;
+              {
+                const candidates: string[] = [];
+                if (config.targetBranch) {
+                  candidates.push(`origin/${config.targetBranch}`, config.targetBranch);
+                }
+                candidates.push("origin/dev", "origin/main");
+                const aheadBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
+                for (const ref of candidates) {
+                  try {
+                    const changedFiles = await aheadBackend.getChangedFiles(worktreePath, ref, "HEAD");
+                    hasCommitsAhead = changedFiles.length > 0;
+                    break;
+                  } catch {
+                    // Ref doesn't exist or git failed — try next
+                  }
                 }
               }
-            }
 
-            if (hasCommitsAhead) {
-              finalizeSucceeded = true;
-              log(`[FINALIZE] nothing_to_commit but branch has prior commits — treating as success (reused worktree)`);
-            } else if (isVerificationBead) {
-              finalizeSucceeded = true;
-              log(`[FINALIZE] nothing_to_commit on verification bead (type="${beadType}", title="${beadTitle}") — treating as success`);
-            } else {
-              // The pipeline passed developer + QA + reviewer — all phases
-              // succeeded. If finalize finds nothing to commit and no commits
-              // ahead, the work was already merged into the target branch
-              // (e.g. from a previous run). The developer report confirms it.
-              // Treat as success rather than getting stuck in a reset loop.
-              finalizeSucceeded = true;
-              log(`[FINALIZE] nothing_to_commit and no commits ahead — work already on target branch, treating as success`);
+              if (hasCommitsAhead) {
+                finalizeSucceeded = true;
+                log(`[FINALIZE] nothing_to_commit but branch has prior commits — treating as success (reused worktree)`);
+              } else if (isVerificationBead) {
+                finalizeSucceeded = true;
+                log(`[FINALIZE] nothing_to_commit on verification bead (type="${beadType}", title="${beadTitle}") — treating as success`);
+              } else {
+                finalizeSucceeded = true;
+                log(`[FINALIZE] nothing_to_commit and no commits ahead — work already on target branch, treating as success`);
+              }
             }
+          } else {
+            // No finalize-specific mail — preserve the pipeline success result.
+            // A finalize FAIL verdict may not emit phase-complete or agent-error
+            // mail, so assuming success here can incorrectly enqueue failed runs
+            // to the merge queue and send branch-ready.
+            log(`[FINALIZE] No finalize mail found — preserving pipeline success=${String(finalizeSucceeded)}`);
           }
-        } else {
-          // No finalize-specific mail — preserve the pipeline success result.
-          // A finalize FAIL verdict may not emit phase-complete or agent-error
-          // mail, so assuming success here can incorrectly enqueue failed runs
-          // to the merge queue and send branch-ready.
-          log(`[FINALIZE] No finalize mail found — preserving pipeline success=${String(finalizeSucceeded)}`);
         }
       }
 

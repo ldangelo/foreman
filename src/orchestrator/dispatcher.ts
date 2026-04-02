@@ -247,6 +247,18 @@ export class Dispatcher {
 
     // Filter to a specific seed if requested
     if (opts?.seedId) {
+      if (this.hasMergedOutcomeWithoutLaterReset(opts.seedId, projectId)) {
+        return {
+          dispatched: [],
+          skipped: [{
+            seedId: opts.seedId,
+            title: opts.seedId,
+            reason: "Latest authoritative run already merged — use foreman reset/retry to rerun explicitly",
+          }],
+          resumed: [],
+          activeAgents: activeRuns.length,
+        };
+      }
       let target = readySeeds.find((b) => b.id === opts.seedId);
       // If not in br ready (possibly due to stale blocked cache — beads_rust#204),
       // fetch directly and force-dispatch if it's open/in_progress.
@@ -312,6 +324,15 @@ export class Dispatcher {
     const completedSeedIds = new Set(completedRuns.map((r) => r.seed_id));
 
     for (const seed of readySeeds) {
+      if (this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
+        skipped.push({
+          seedId: seed.id,
+          title: seed.title,
+          reason: "Latest authoritative run already merged — explicit reset/retry required",
+        });
+        continue;
+      }
+
       if (activeSeedIds.has(seed.id)) {
         skipped.push({
           seedId: seed.id,
@@ -574,6 +595,14 @@ export class Dispatcher {
             seedId: seed.id,
             title: seed.title,
             reason: "Another run was created concurrently (race guard)",
+          });
+          continue;
+        }
+        if (this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
+          skipped.push({
+            seedId: seed.id,
+            title: seed.title,
+            reason: "Another run merged before dispatch could create a new run (merged guard)",
           });
           continue;
         }
@@ -1227,6 +1256,23 @@ export class Dispatcher {
     }
 
     return { inBackoff: false };
+  }
+
+  /**
+   * Once a bead has a merged/PR-created run, it must not be dispatched again
+   * unless a later explicit reset exists. This protects against stale bead
+   * status or delayed queue writes causing accidental redispatch after merge.
+   */
+  private hasMergedOutcomeWithoutLaterReset(
+    seedId: string,
+    projectId: string,
+  ): boolean {
+    const runs = this.store.getRunsForSeed(seedId, projectId);
+    for (const run of runs) {
+      if (run.status === "reset") return false;
+      if (run.status === "merged" || run.status === "pr-created") return true;
+    }
+    return false;
   }
 
   /**

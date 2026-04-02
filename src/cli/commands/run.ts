@@ -11,7 +11,7 @@ import { ForemanStore } from "../../lib/store.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
-import { extractBranchLabel } from "../../lib/branch-label.js";
+import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk, type WatchResult } from "../watch-ui.js";
@@ -102,7 +102,7 @@ export async function checkBranchMismatch(
 
   let currentBranch: string;
   try {
-    currentBranch = await vcs.getCurrentBranch(projectPath);
+    currentBranch = normalizeBranchLabel(await vcs.getCurrentBranch(projectPath)) ?? "";
   } catch {
     // Cannot determine current branch — skip mismatch check
     return false;
@@ -123,7 +123,7 @@ export async function checkBranchMismatch(
   for (const bead of inProgressBeads) {
     try {
       const detail = await taskClient.show(bead.id) as unknown as { labels?: string[] };
-      const targetBranch = extractBranchLabel(detail.labels);
+      const targetBranch = normalizeBranchLabel(extractBranchLabel(detail.labels));
       if (targetBranch && targetBranch !== currentBranch) {
         const ids = mismatchByBranch.get(targetBranch) ?? [];
         ids.push(bead.id);
@@ -377,9 +377,9 @@ export const runCommand = new Command("run")
       let targetBranch: string | undefined;
       if (!dryRun) {
         try {
-          const cb = await startupVcs.getCurrentBranch(projectPath);
-          const db = await startupVcs.detectDefaultBranch(projectPath);
-          if (cb !== db) {
+          const cb = normalizeBranchLabel(await startupVcs.getCurrentBranch(projectPath));
+          const db = normalizeBranchLabel(await startupVcs.detectDefaultBranch(projectPath));
+          if (cb && db && cb !== db) {
             const question = chalk.yellow(
               `\nYou are on branch ${chalk.green(cb)}, ` +
               `which differs from the default branch ${chalk.cyan(db)}.\n` +

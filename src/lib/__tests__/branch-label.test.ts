@@ -4,7 +4,15 @@ import {
   isDefaultBranch,
   applyBranchLabel,
   isValidBranchLabel,
+  normalizeBranchLabel,
 } from "../branch-label.js";
+
+describe("normalizeBranchLabel", () => {
+  it("strips trailing jujutsu display markers", () => {
+    expect(normalizeBranchLabel("dev*")).toBe("dev");
+    expect(normalizeBranchLabel("feature/test***")).toBe("feature/test");
+  });
+});
 
 describe("isValidBranchLabel", () => {
   it("returns false for undefined and empty values", () => {
@@ -20,6 +28,7 @@ describe("isValidBranchLabel", () => {
   it("returns true for real branch names", () => {
     expect(isValidBranchLabel("installer")).toBe(true);
     expect(isValidBranchLabel("feature/my-feature")).toBe(true);
+    expect(isValidBranchLabel("dev*")).toBe(true);
   });
 });
 
@@ -61,6 +70,10 @@ describe("extractBranchLabel", () => {
   it("returns undefined for branch:HEAD", () => {
     expect(extractBranchLabel(["branch:HEAD"])).toBeUndefined();
   });
+
+  it("normalizes decorated jujutsu branch labels", () => {
+    expect(extractBranchLabel(["branch:dev*"])).toBe("dev");
+  });
 });
 
 describe("isDefaultBranch", () => {
@@ -74,6 +87,10 @@ describe("isDefaultBranch", () => {
 
   it("returns true for 'dev'", () => {
     expect(isDefaultBranch("dev", "main")).toBe(true);
+  });
+
+  it("treats decorated current branch names as the same default branch", () => {
+    expect(isDefaultBranch("dev*", "dev")).toBe(true);
   });
 
   it("returns true for 'develop'", () => {

@@ -12,8 +12,15 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('const status = typeof body["status"] === "string" ? body["status"] : "complete"');
   });
 
-  it("only treats finalize phase-complete as success when status is complete/completed", () => {
-    expect(source).toContain('finalizeSucceeded = status === "complete" || status === "completed"');
+  it("treats finalize phase-complete success/completed values as success", () => {
+    expect(source).toContain('finalizeSucceeded = status === "complete" || status === "completed" || status === "success"');
+  });
+
+  it("prefers non-retryable finalize agent errors over later phase-complete mail", () => {
+    expect(source).toContain('const nonRetryableError = finalizeMsgs.find');
+    expect(source).toContain('if (nonRetryableError)');
+    expect(source).toContain('finalizeSucceeded = false;');
+    expect(source).toContain('non-retryable agent-error mail received');
   });
 
   it("marks deterministic finalize failures as failed without retry", () => {

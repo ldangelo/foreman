@@ -334,6 +334,158 @@ describe("Dispatcher — BvClient ordering", () => {
   });
 });
 
+describe("Dispatcher — merged bead redispatch guard", () => {
+  function makeIssue(id: string, priority = "P2"): Issue {
+    return {
+      id,
+      title: `Task ${id}`,
+      status: "open",
+      priority,
+      type: "task",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  it("skips a ready bead when a merged run exists without a later reset", async () => {
+    const issue = makeIssue("bd-merged");
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([
+        {
+          id: "run-merged",
+          project_id: "proj-1",
+          seed_id: "bd-merged",
+          agent_type: "claude",
+          session_key: null,
+          worktree_path: null,
+          status: "merged",
+          started_at: null,
+          completed_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          progress: null,
+          base_branch: null,
+        },
+      ]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      getReadyTasks: vi.fn().mockReturnValue([]),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    expect(result.dispatched).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].reason).toContain("already merged");
+  });
+
+  it("allows dispatch after an explicit later reset", async () => {
+    const issue = makeIssue("bd-reset");
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([
+        {
+          id: "run-reset",
+          project_id: "proj-1",
+          seed_id: "bd-reset",
+          agent_type: "claude",
+          session_key: null,
+          worktree_path: null,
+          status: "reset",
+          started_at: null,
+          completed_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          progress: null,
+          base_branch: null,
+        },
+        {
+          id: "run-merged",
+          project_id: "proj-1",
+          seed_id: "bd-reset",
+          agent_type: "claude",
+          session_key: null,
+          worktree_path: null,
+          status: "merged",
+          started_at: null,
+          completed_at: new Date().toISOString(),
+          created_at: new Date(Date.now() - 1000).toISOString(),
+          progress: null,
+          base_branch: null,
+        },
+      ]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      getReadyTasks: vi.fn().mockReturnValue([]),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.dispatched).toHaveLength(1);
+  });
+
+  it("skips a ready bead when a pr-created run exists without a later reset", async () => {
+    const issue = makeIssue("bd-pr");
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([
+        {
+          id: "run-pr",
+          project_id: "proj-1",
+          seed_id: "bd-pr",
+          agent_type: "claude",
+          session_key: null,
+          worktree_path: null,
+          status: "pr-created",
+          started_at: null,
+          completed_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          progress: null,
+          base_branch: null,
+        },
+      ]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      getReadyTasks: vi.fn().mockReturnValue([]),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    expect(result.dispatched).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].reason).toContain("already merged");
+  });
+});
+
 describe("Dispatcher.resumeRuns — seed in_progress marking", () => {
   function makeRun(overrides?: Partial<{
     id: string;
