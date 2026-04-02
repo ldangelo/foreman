@@ -270,6 +270,14 @@ describe("parseFinalizeFailureScope", () => {
     expect(parseFinalizeFailureScope("## Failure Scope\n- **UNRELATED_FILES**\n  - pre-existing failures")).toBe("unrelated_files");
   });
 
+  it("parses failure scope analysis classification", () => {
+    expect(parseFinalizeFailureScope("## Failure Scope Analysis\n\n### Classification: UNRELATED_FILES\n\nDetails here")).toBe("unrelated_files");
+  });
+
+  it("parses standalone classification fallback", () => {
+    expect(parseFinalizeFailureScope("Classification: MODIFIED_FILES")).toBe("modified_files");
+  });
+
   it("returns unknown when no scope is present", () => {
     expect(parseFinalizeFailureScope("no scope here")).toBe("unknown");
   });

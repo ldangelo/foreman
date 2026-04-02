@@ -447,6 +447,61 @@ describe("verdict-triggered retry", () => {
     expect(phaseOrder).toEqual(["developer", "qa", "finalize", "developer", "qa", "finalize"]);
   });
 
+  it("does not retry finalize when no-drift contract fails but failure scope is classified as unrelated via analysis section", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const log = vi.fn();
+    const phaseOrder: string[] = [];
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "qa") {
+        writeFileSync(
+          join(tmpDir, "QA_REPORT.md"),
+          "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npm test -- --reporter=dot 2>&1`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n",
+        );
+      }
+      if (phaseName === "finalize") {
+        writeFileSync(
+          join(tmpDir, "FINALIZE_VALIDATION.md"),
+          "# Finalize Validation\n\n## Rebase\n- Status: SUCCESS\n- Note: Skipped rebase (already in place)\n\n## Test Validation\n- Status: FAIL\n- Output: unrelated test failures\n\n## Failure Scope Analysis\n\n### Classification: UNRELATED_FILES\n\n## Verdict: FAIL\n",
+        );
+      }
+      return successResult();
+    });
+
+    const vcsBackend = {
+      name: "jujutsu",
+      detectDefaultBranch: vi.fn().mockResolvedValue("dev"),
+      resolveRef: vi.fn().mockResolvedValue("rev-dev-same"),
+      getHeadId: vi.fn().mockResolvedValue("head-bead-123"),
+      isAncestor: vi.fn().mockResolvedValue(true),
+      getFinalizeCommands: vi.fn().mockReturnValue({
+        stageCommand: "",
+        commitCommand: "jj describe -m 'msg'",
+        pushCommand: "jj git push --bookmark foreman/seed-verdict --allow-new",
+        integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
+        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
+        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        restoreTrackedStateCommand: "true",
+      }),
+    };
+
+    const phases = [
+      { name: "developer", artifact: "DEVELOPER_REPORT.md" },
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true },
+      { name: "finalize", artifact: "FINALIZE_VALIDATION.md", verdict: true, retryWith: "developer", retryOnFail: 1 },
+    ];
+
+    const args = makeBasePipelineArgs(tmpDir, phases, runPhase, log) as any;
+    args.config.targetBranch = "dev";
+    args.config.vcsBackend = vcsBackend;
+
+    await executePipeline(args);
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("expected skipped target integration because target branch was unchanged after QA"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("unrelated/pre-existing test failures detected, skipping developer retry"));
+    expect(phaseOrder).toEqual(["developer", "qa", "finalize"]);
+  });
+
   it("fails finalize when target drifted but integration was marked skipped", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
     const log = vi.fn();

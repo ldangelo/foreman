@@ -589,6 +589,12 @@ export function parseFinalizeFailureScope(reportContent: string): FinalizeFailur
   const sectionMatch = reportContent.match(/##\s*Failure Scope\s*\n(?:-\s*)?(?:\*\*)?(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)(?:\*\*)?/i);
   if (sectionMatch) return sectionMatch[1].toLowerCase() as FinalizeFailureScope;
 
+  const analysisMatch = reportContent.match(/##\s*Failure Scope Analysis[\s\S]*?(?:###\s*)?Classification:\s*(?:\*\*)?(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)(?:\*\*)?/i);
+  if (analysisMatch) return analysisMatch[1].toLowerCase() as FinalizeFailureScope;
+
+  const fallbackMatch = reportContent.match(/Classification:\s*(?:\*\*)?(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)(?:\*\*)?/i);
+  if (fallbackMatch) return fallbackMatch[1].toLowerCase() as FinalizeFailureScope;
+
   return "unknown";
 }
 
