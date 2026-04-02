@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -68,6 +69,115 @@ async function promptYesNo(question: string): Promise<boolean> {
       resolve(normalised === "" || normalised === "y" || normalised === "yes");
     });
   });
+}
+
+const FOREMAN_OWNED_BRANCH = "foreman";
+
+export function isIgnorableControllerPath(path: string): boolean {
+  return path === ".beads/issues.jsonl"
+    || path.startsWith(".omx/")
+    || path.startsWith(".foreman/")
+    || path.startsWith("SessionLogs/")
+    || path === "SESSION_LOG.md"
+    || path === "RUN_LOG.md"
+    || path.startsWith("storage.sqlite3");
+}
+
+function withCommonBinaryPath(): NodeJS.ProcessEnv {
+  const home = process.env.HOME ?? "/home/nobody";
+  return {
+    ...process.env,
+    PATH: `${home}/.local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`,
+  };
+}
+
+async function isAnonymousJujutsuRevision(
+  vcs: VcsBackend,
+  projectPath: string,
+  branch: string | undefined,
+): Promise<boolean> {
+  if (!branch || vcs.name !== "jujutsu" || typeof (vcs as Partial<VcsBackend>).branchExists !== "function") {
+    return false;
+  }
+  return !(await vcs.branchExists(projectPath, branch).catch(() => false));
+}
+
+export interface OwnedBranchResolution {
+  currentBranch: string;
+  defaultBranch: string;
+  targetBranch?: string;
+  usedOwnedBranch: boolean;
+}
+
+export async function resolveOwnedControllerBranch(
+  vcs: VcsBackend,
+  projectPath: string,
+): Promise<OwnedBranchResolution> {
+  const maybeVcs = vcs as Partial<VcsBackend>;
+  if (
+    typeof maybeVcs.getCurrentBranch !== "function" ||
+    typeof maybeVcs.detectDefaultBranch !== "function" ||
+    typeof maybeVcs.branchExists !== "function" ||
+    typeof maybeVcs.getModifiedFiles !== "function" ||
+    typeof maybeVcs.getUntrackedFiles !== "function"
+  ) {
+    return {
+      currentBranch: "",
+      defaultBranch: "",
+      usedOwnedBranch: false,
+    };
+  }
+
+  const currentBranch = normalizeBranchLabel(await vcs.getCurrentBranch(projectPath)) ?? "";
+  const defaultBranch = normalizeBranchLabel(await vcs.detectDefaultBranch(projectPath)) ?? "";
+  const currentIsAnonymousRevision = await isAnonymousJujutsuRevision(vcs, projectPath, currentBranch);
+
+  const shouldUseOwnedBranch =
+    vcs.name === "jujutsu" &&
+    (currentIsAnonymousRevision || currentBranch === defaultBranch);
+
+  if (!shouldUseOwnedBranch) {
+    return {
+      currentBranch,
+      defaultBranch,
+      usedOwnedBranch: false,
+    };
+  }
+
+  const dirtyTracked = (await vcs.getModifiedFiles(projectPath))
+    .filter((path) => !isIgnorableControllerPath(path));
+  const dirtyUntracked = (await vcs.getUntrackedFiles(projectPath))
+    .filter((path) => !isIgnorableControllerPath(path));
+  const dirtyPaths = [...dirtyTracked, ...dirtyUntracked];
+  if (dirtyPaths.length > 0) {
+    throw new Error(
+      `Foreman-owned branch requires a clean controller checkout. Dirty paths: ${dirtyPaths.slice(0, 8).join(", ")}`,
+    );
+  }
+
+  const branchExists = await vcs.branchExists(projectPath, FOREMAN_OWNED_BRANCH).catch(() => false);
+  if (!branchExists) {
+    execFileSync("jj", ["bookmark", "create", FOREMAN_OWNED_BRANCH, "-r", defaultBranch], {
+      cwd: projectPath,
+      stdio: "pipe",
+      env: withCommonBinaryPath(),
+    });
+  }
+
+  if (currentBranch !== FOREMAN_OWNED_BRANCH) {
+    execFileSync("jj", ["new", FOREMAN_OWNED_BRANCH], {
+      cwd: projectPath,
+      stdio: "pipe",
+      env: withCommonBinaryPath(),
+    });
+  }
+
+  return {
+    currentBranch: FOREMAN_OWNED_BRANCH,
+    defaultBranch,
+    targetBranch: defaultBranch,
+    usedOwnedBranch: true,
+  };
 }
 
 /**
@@ -377,8 +487,17 @@ export const runCommand = new Command("run")
       let targetBranch: string | undefined;
       if (!dryRun) {
         try {
-          const cb = normalizeBranchLabel(await startupVcs.getCurrentBranch(projectPath));
-          const db = normalizeBranchLabel(await startupVcs.detectDefaultBranch(projectPath));
+          const controller = await resolveOwnedControllerBranch(startupVcs, projectPath);
+          if (controller.usedOwnedBranch) {
+            targetBranch = controller.targetBranch;
+            console.log(
+              chalk.dim(
+                `[startup] Using Foreman-owned branch ${FOREMAN_OWNED_BRANCH} (target: ${controller.defaultBranch})`,
+              ),
+            );
+          }
+          const cb = targetBranch ? undefined : normalizeBranchLabel(await startupVcs.getCurrentBranch(projectPath));
+          const db = targetBranch ? undefined : normalizeBranchLabel(await startupVcs.detectDefaultBranch(projectPath));
           if (cb && db && cb !== db) {
             const question = chalk.yellow(
               `\nYou are on branch ${chalk.green(cb)}, ` +

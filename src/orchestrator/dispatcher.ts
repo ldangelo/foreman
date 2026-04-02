@@ -12,7 +12,7 @@ import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefa
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache } from "../lib/setup.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
-import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel } from "../lib/branch-label.js";
+import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
@@ -300,6 +300,16 @@ export class Dispatcher {
     const dispatched: DispatchedTask[] = [];
     const skipped: SkippedTask[] = [];
 
+    const resolveUsableBranchLabel = async (branch: string | undefined): Promise<string | undefined> => {
+      const normalized = normalizeBranchLabel(branch);
+      if (!normalized || !isValidBranchLabel(normalized)) return undefined;
+      if (branchBackend?.name === "jujutsu") {
+        const exists = await branchBackend.branchExists(this.projectPath, normalized).catch(() => false);
+        if (!exists) return undefined;
+      }
+      return normalized;
+    };
+
     // Detect current branch for auto-labeling (branch:<name> label).
     // Done once per dispatch() call using VcsBackend (TRD-015: migrate from git.js shims).
     let currentBranch: string | undefined;
@@ -307,11 +317,8 @@ export class Dispatcher {
     let branchBackend: VcsBackend | undefined;
     try {
       branchBackend = await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
-      currentBranch = await branchBackend.getCurrentBranch(this.projectPath);
-      defaultBranch = await branchBackend.detectDefaultBranch(this.projectPath);
-      if (!isValidBranchLabel(currentBranch)) {
-        currentBranch = undefined;
-      }
+      currentBranch = await resolveUsableBranchLabel(await branchBackend.getCurrentBranch(this.projectPath));
+      defaultBranch = normalizeBranchLabel(await branchBackend.detectDefaultBranch(this.projectPath));
     } catch {
       // Non-fatal: branch detection failure must not block dispatch
     }
@@ -521,7 +528,7 @@ export class Dispatcher {
       // Only applied when the bead doesn't already have a branch: label.
       if (currentBranch && defaultBranch) {
         const existingLabels: string[] = seedDetail?.labels ?? seed.labels ?? [];
-        const existingBranchLabel = extractBranchLabel(existingLabels);
+        const existingBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(existingLabels));
 
         if (!existingBranchLabel) {
           // Determine the branch to label with: prefer current non-default branch,
@@ -534,7 +541,7 @@ export class Dispatcher {
             // Check parent's branch: label for inheritance
             try {
               const parentDetail = await this.seeds.show(seed.parent) as unknown as { labels?: string[] };
-              const parentBranchLabel = extractBranchLabel(parentDetail.labels);
+              const parentBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(parentDetail.labels));
               if (parentBranchLabel && !isDefaultBranch(parentBranchLabel, defaultBranch)) {
                 labelBranch = parentBranchLabel;
               }
