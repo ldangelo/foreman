@@ -1001,3 +1001,156 @@ describe("Refinery.orderByDependencies()", () => {
     expect(result[1].seed_id).toBe("seed-b");
   });
 });
+
+// ── closeNativeTaskPostMerge() tests (REQ-018) ───────────────────────────────
+
+describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Helper: create mocks with a DB that returns a task row for the given runId
+  function makeMocksWithTask(runId: string, taskId: string) {
+    const mockDb = {
+      prepare: vi.fn((sql: string) => {
+        if (sql.includes("SELECT id FROM tasks WHERE run_id")) {
+          return { get: vi.fn(() => ({ id: taskId })), run: vi.fn() };
+        }
+        return { get: vi.fn(() => undefined), run: vi.fn() };
+      }),
+    };
+    const store = {
+      getRunsByStatus: vi.fn(() => [] as Run[]),
+      getRunsByStatuses: vi.fn(() => [] as Run[]),
+      getRun: vi.fn(() => null as Run | null),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+      getRunsByBaseBranch: vi.fn(() => [] as Run[]),
+      sendMessage: vi.fn(),
+      getDb: vi.fn(() => mockDb),
+    };
+    const seeds = {
+      getGraph: vi.fn(async () => ({ edges: [] })),
+      show: vi.fn(async () => null),
+      update: vi.fn(async () => undefined),
+    };
+    const vcs = makeMockVcs();
+    const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs);
+    return { store, seeds, refinery, vcs, mockDb };
+  }
+
+  // Helper: create mocks with a DB that returns undefined (no task) for the given runId
+  function makeMocksWithoutTask() {
+    const mockDb = {
+      prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+    };
+    const store = {
+      getRunsByStatus: vi.fn(() => [] as Run[]),
+      getRunsByStatuses: vi.fn(() => [] as Run[]),
+      getRun: vi.fn(() => null as Run | null),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+      getRunsByBaseBranch: vi.fn(() => [] as Run[]),
+      sendMessage: vi.fn(),
+      getDb: vi.fn(() => mockDb),
+    };
+    const seeds = {
+      getGraph: vi.fn(async () => ({ edges: [] })),
+      show: vi.fn(async () => null),
+      update: vi.fn(async () => undefined),
+    };
+    const vcs = makeMockVcs();
+    const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs);
+    return { store, seeds, refinery, vcs, mockDb };
+  }
+
+  describe("mergeCompleted()", () => {
+    it("calls taskStore.updateStatus with 'merged' when a native task exists for the run", async () => {
+      const { store, refinery } = makeMocksWithTask("run-task-1", "task-abc");
+      const run = makeRun({ id: "run-task-1", seed_id: "seed-task-1" });
+      store.getRunsByStatus.mockReturnValue([run]);
+      (removeWorktree as any).mockResolvedValue(undefined);
+
+      const taskStore = (refinery as any).taskStore;
+      const updateStatusSpy = vi.spyOn(taskStore, "updateStatus");
+
+      await refinery.mergeCompleted({ runTests: false });
+
+      expect(updateStatusSpy).toHaveBeenCalledTimes(1);
+      expect(updateStatusSpy).toHaveBeenCalledWith("task-abc", "merged");
+    });
+
+    it("does NOT throw when taskStore.updateStatus fails (non-fatal)", async () => {
+      const { store, refinery } = makeMocksWithTask("run-task-2", "task-def");
+      const run = makeRun({ id: "run-task-2", seed_id: "seed-task-2" });
+      store.getRunsByStatus.mockReturnValue([run]);
+      (removeWorktree as any).mockResolvedValue(undefined);
+
+      const taskStore = (refinery as any).taskStore;
+      vi.spyOn(taskStore, "updateStatus").mockImplementation(() => {
+        throw new Error("updateStatus failed");
+      });
+
+      // Should not throw — closeNativeTaskPostMerge is non-fatal
+      await expect(refinery.mergeCompleted({ runTests: false })).resolves.not.toThrow();
+    });
+
+    it("still calls enqueueCloseSeed when using native task fallback", async () => {
+      const { store, refinery } = makeMocksWithoutTask();
+      const run = makeRun({ seed_id: "seed-beads-only" });
+      store.getRunsByStatus.mockReturnValue([run]);
+      (removeWorktree as any).mockResolvedValue(undefined);
+
+      await refinery.mergeCompleted({ runTests: false });
+
+      // enqueueCloseSeed should still be called for the bead
+      expect(enqueueCloseSeed).toHaveBeenCalledWith(expect.anything(), "seed-beads-only", "refinery");
+    });
+  });
+
+  describe("resolveConflict()", () => {
+    it("calls taskStore.updateStatus with 'merged' when a native task exists for the run", async () => {
+      const { store, refinery } = makeMocksWithTask("run-conflict-task", "task-xyz");
+      const run = makeRun({ id: "run-conflict-task", seed_id: "seed-conflict-task", status: "conflict" });
+      store.getRun.mockReturnValue(run);
+
+      (execFile as any).mockImplementation(
+        (_cmd: string, _args: string[], _opts: any, callback: Function) => {
+          callback(null, { stdout: "", stderr: "" });
+        },
+      );
+      (removeWorktree as any).mockResolvedValue(undefined);
+
+      const taskStore = (refinery as any).taskStore;
+      const updateStatusSpy = vi.spyOn(taskStore, "updateStatus");
+
+      const result = await refinery.resolveConflict("run-conflict-task", "theirs", { runTests: false });
+
+      expect(result).toBe(true);
+      expect(updateStatusSpy).toHaveBeenCalledTimes(1);
+      expect(updateStatusSpy).toHaveBeenCalledWith("task-xyz", "merged");
+    });
+
+    it("does NOT throw when taskStore.updateStatus fails in resolveConflict (non-fatal)", async () => {
+      const { store, refinery } = makeMocksWithTask("run-conflict-task-2", "task-fail");
+      const run = makeRun({ id: "run-conflict-task-2", seed_id: "seed-conflict-task-2", status: "conflict" });
+      store.getRun.mockReturnValue(run);
+
+      (execFile as any).mockImplementation(
+        (_cmd: string, _args: string[], _opts: any, callback: Function) => {
+          callback(null, { stdout: "", stderr: "" });
+        },
+      );
+      (removeWorktree as any).mockResolvedValue(undefined);
+
+      const taskStore = (refinery as any).taskStore;
+      vi.spyOn(taskStore, "updateStatus").mockImplementation(() => {
+        throw new Error("updateStatus failed");
+      });
+
+      // Should not throw — closeNativeTaskPostMerge is non-fatal
+      await expect(refinery.resolveConflict("run-conflict-task-2", "theirs", { runTests: false }))
+        .resolves.not.toThrow();
+    });
+  });
+});
