@@ -1016,7 +1016,14 @@ async function runPhaseSequence(
       if (phaseName === "qa") {
         qaVerdictForLog = verdict as "pass" | "fail" | "unknown";
         if (verdict === "pass" && config.vcsBackend) {
-          const qaTargetBranch = config.targetBranch ?? await config.vcsBackend.detectDefaultBranch(worktreePath);
+          const detectDefaultBranch = (
+            config.vcsBackend as Partial<VcsBackend>
+          ).detectDefaultBranch;
+          const qaTargetBranch = config.targetBranch
+            ?? (typeof detectDefaultBranch === "function"
+              ? await detectDefaultBranch.call(config.vcsBackend, worktreePath)
+              : undefined)
+            ?? "main";
           const targetCandidates = [`origin/${qaTargetBranch}`, qaTargetBranch];
           let qaTargetRef = "";
           for (const candidate of targetCandidates) {

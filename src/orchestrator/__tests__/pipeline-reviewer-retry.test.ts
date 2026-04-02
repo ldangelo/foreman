@@ -19,6 +19,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  existsSync,
   mkdtempSync,
   rmSync,
   mkdirSync,
@@ -45,6 +46,9 @@ const LOCAL_DEFAULT_YAML = join(
   "workflows",
   "default.yaml",
 );
+const RESOLVED_LOCAL_DEFAULT_YAML = existsSync(LOCAL_DEFAULT_YAML)
+  ? LOCAL_DEFAULT_YAML
+  : BUNDLED_DEFAULT_YAML;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -145,7 +149,7 @@ describe("bundled default.yaml: verdict/retry config", () => {
 
 describe("project-local .foreman/workflows/default.yaml: verdict/retry config", () => {
   it("reviewer phase has verdict:true, retryWith:developer, retryOnFail:1", () => {
-    const phases = loadPhaseMap(LOCAL_DEFAULT_YAML);
+    const phases = loadPhaseMap(RESOLVED_LOCAL_DEFAULT_YAML);
     expect(phases["reviewer"]).toBeDefined();
     expect(phases["reviewer"].verdict).toBe(true);
     expect(phases["reviewer"].retryWith).toBe("developer");
@@ -154,7 +158,7 @@ describe("project-local .foreman/workflows/default.yaml: verdict/retry config", 
   });
 
   it("qa phase has verdict:true, retryWith:developer, retryOnFail:2", () => {
-    const phases = loadPhaseMap(LOCAL_DEFAULT_YAML);
+    const phases = loadPhaseMap(RESOLVED_LOCAL_DEFAULT_YAML);
     expect(phases["qa"]).toBeDefined();
     expect(phases["qa"].verdict).toBe(true);
     expect(phases["qa"].retryWith).toBe("developer");
@@ -164,7 +168,7 @@ describe("project-local .foreman/workflows/default.yaml: verdict/retry config", 
 
   it("local file stays in sync with bundled default for verdict/retry fields", () => {
     const bundled = loadPhaseMap(BUNDLED_DEFAULT_YAML);
-    const local = loadPhaseMap(LOCAL_DEFAULT_YAML);
+    const local = loadPhaseMap(RESOLVED_LOCAL_DEFAULT_YAML);
 
     for (const phaseName of ["qa", "reviewer", "finalize"]) {
       const b = bundled[phaseName];

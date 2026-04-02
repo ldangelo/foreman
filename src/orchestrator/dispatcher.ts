@@ -292,8 +292,9 @@ export class Dispatcher {
     // Done once per dispatch() call using VcsBackend (TRD-015: migrate from git.js shims).
     let currentBranch: string | undefined;
     let defaultBranch: string | undefined;
+    let branchBackend: VcsBackend | undefined;
     try {
-      const branchBackend = await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
+      branchBackend = await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
       currentBranch = await branchBackend.getCurrentBranch(this.projectPath);
       defaultBranch = await branchBackend.detectDefaultBranch(this.projectPath);
       if (!isValidBranchLabel(currentBranch)) {
@@ -628,7 +629,11 @@ export class Dispatcher {
         // without re-detecting.
         let vcsBackend: VcsBackend | undefined;
         try {
-          vcsBackend = await VcsBackendFactory.create({ backend: vcsBackendName }, this.projectPath);
+          if (branchBackend?.name === vcsBackendName) {
+            vcsBackend = branchBackend;
+          } else {
+            vcsBackend = await VcsBackendFactory.create({ backend: vcsBackendName }, this.projectPath);
+          }
           log(`[foreman] Created VcsBackend: ${vcsBackend.name}`);
         } catch (vcsErr: unknown) {
           const vcsMsg = vcsErr instanceof Error ? vcsErr.message : String(vcsErr);
