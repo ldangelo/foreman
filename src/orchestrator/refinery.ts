@@ -231,7 +231,7 @@ export class Refinery {
    *
    * Non-fatal — failures are silently ignored so they don't block the merge flow.
    */
-  private closeNativeTaskPostMerge(runId: string, seedId: string): void {
+  private async closeNativeTaskPostMerge(runId: string, seedId: string): Promise<void> {
     try {
       const row = this.store.getDb()
         .prepare("SELECT id FROM tasks WHERE run_id = ?")
@@ -243,7 +243,7 @@ export class Refinery {
         // No native task — fall back to beads-only sync.
         // Note: syncBeadStatusAfterMerge does not actually use taskClient (only
         // enqueues bead status updates via store), so we cast to ITaskClient.
-        syncBeadStatusAfterMerge(
+        await syncBeadStatusAfterMerge(
           this.store,
           this.seeds as unknown as import("../lib/task-client.js").ITaskClient,
           runId,
@@ -850,7 +850,7 @@ export class Refinery {
         enqueueCloseSeed(this.store, run.seed_id, "refinery");
 
         // Close native task post-merge (REQ-018) — updateStatus('merged') or fallback
-        this.closeNativeTaskPostMerge(run.id, run.seed_id);
+        await this.closeNativeTaskPostMerge(run.id, run.seed_id);
 
         // Send bead-closed mail so inbox shows bead lifecycle completion
         this.sendMail(run.id, "bead-closed", {
@@ -1020,7 +1020,7 @@ export class Refinery {
     enqueueCloseSeed(this.store, run.seed_id, "refinery");
 
     // Close native task post-merge (REQ-018) — updateStatus('merged') or fallback
-    this.closeNativeTaskPostMerge(run.id, run.seed_id);
+    await this.closeNativeTaskPostMerge(run.id, run.seed_id);
 
     return true;
   }

@@ -26,10 +26,16 @@ vi.mock("../task-backend-ops.js", () => ({
   enqueueSetBeadStatus: vi.fn(),
 }));
 
+// Mock auto-merge so syncBeadStatusAfterMerge can be spied on in tests.
+vi.mock("../auto-merge.js", () => ({
+  syncBeadStatusAfterMerge: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Import mocked modules AFTER vi.mock declarations
 import { execFile } from "node:child_process";
 import { removeWorktree } from "../../lib/git.js";
 import { enqueueCloseSeed, enqueueResetSeedToOpen, enqueueAddNotesToBead } from "../task-backend-ops.js";
+import { syncBeadStatusAfterMerge } from "../auto-merge.js";
 import { Refinery } from "../refinery.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1097,14 +1103,27 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
 
     it("still calls enqueueCloseSeed when using native task fallback", async () => {
       const { store, refinery } = makeMocksWithoutTask();
-      const run = makeRun({ seed_id: "seed-beads-only" });
+      const run = makeRun({ id: "run-beads-only", seed_id: "seed-beads-only" });
       store.getRunsByStatus.mockReturnValue([run]);
       (removeWorktree as any).mockResolvedValue(undefined);
+
+      // Reset spy before the call
+      (syncBeadStatusAfterMerge as any).mockClear();
 
       await refinery.mergeCompleted({ runTests: false });
 
       // enqueueCloseSeed should still be called for the bead
       expect(enqueueCloseSeed).toHaveBeenCalledWith(expect.anything(), "seed-beads-only", "refinery");
+
+      // syncBeadStatusAfterMerge should be called in the fallback path (no native task)
+      expect(syncBeadStatusAfterMerge).toHaveBeenCalledTimes(1);
+      expect(syncBeadStatusAfterMerge).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        "run-beads-only",
+        "seed-beads-only",
+        expect.anything(),
+      );
     });
   });
 
