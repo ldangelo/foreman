@@ -238,11 +238,13 @@ export class Refinery {
         .get(runId) as { id: string } | undefined;
 
       if (row) {
-        this.taskStore.updateStatus(row.id, "merged");
+        // Use close() to set status='merged' AND closed_at (REQ-018: "merged sets status+closed_at")
+        this.taskStore.close(row.id);
       } else {
         // No native task — fall back to beads-only sync.
         // Note: syncBeadStatusAfterMerge does not actually use taskClient (only
         // enqueues bead status updates via store), so we cast to ITaskClient.
+        console.warn(`[refinery] closeNativeTaskPostMerge: no task found for runId=${runId}, falling back to beads sync`);
         await syncBeadStatusAfterMerge(
           this.store,
           this.seeds as unknown as import("../lib/task-client.js").ITaskClient,
