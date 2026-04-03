@@ -11,7 +11,7 @@ import { ForemanStore } from "../../lib/store.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
-import { extractBranchLabel } from "../../lib/branch-label.js";
+import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk, type WatchResult } from "../watch-ui.js";
@@ -86,6 +86,23 @@ async function createRunVcsBackend(projectPath: string): Promise<VcsBackend> {
   const projectCfg = loadProjectConfig(projectPath);
   const vcsConfig = resolveVcsConfig(undefined, projectCfg?.vcs);
   return VcsBackendFactory.create(vcsConfig, projectPath);
+}
+
+export async function resolveExplicitTargetBranch(
+  taskClient: ITaskClient,
+  vcs: VcsBackend,
+  projectPath: string,
+  beadId?: string,
+): Promise<string | undefined> {
+  const defaultBranch = normalizeBranchLabel(await vcs.detectDefaultBranch(projectPath));
+  if (!beadId) return defaultBranch;
+
+  try {
+    const detail = await taskClient.show(beadId) as unknown as { labels?: string[] };
+    return extractBranchLabel(detail.labels) ?? defaultBranch;
+  } catch {
+    return defaultBranch;
+  }
 }
 
 export async function checkBranchMismatch(
@@ -355,49 +372,22 @@ export const runCommand = new Command("run")
         }
       }
 
-      // ── Branch mismatch check ───────────────────────────────────────────────
-      // Before dispatching, check if any in-progress beads target a different
-      // branch than the current one. If so, prompt the user to switch branches.
-      // Skip in dry-run mode since no actual dispatch happens.
-      if (!dryRun && !resume && !resumeFailed) {
-        const shouldAbort = await checkBranchMismatch(taskClient, projectPath);
-        if (shouldAbort) {
-          stopSentinel();
-          store.close();
-          await notifyServer.stop().catch(() => { /* ignore */ });
-          process.exit(1);
-        }
-      }
-
-      // ── Target branch confirmation ──────────────────────────────────────────
-      // When the current branch differs from the detected default branch (e.g.
-      // working on a feature branch instead of dev/main), confirm with the user
-      // that agent worktrees and merges should target the current branch.
-      // The confirmed targetBranch is threaded through to autoMerge and workers.
+      // ── Target branch resolution ────────────────────────────────────────────
+      // Controller branch is orchestration state only. Merge target is resolved
+      // explicitly from bead metadata (single-bead run) or the repo default
+      // branch. Never derive merge target from the current controller branch.
       let targetBranch: string | undefined;
       if (!dryRun) {
         try {
-          const cb = await startupVcs.getCurrentBranch(projectPath);
-          const db = await startupVcs.detectDefaultBranch(projectPath);
-          if (cb !== db) {
-            const question = chalk.yellow(
-              `\nYou are on branch ${chalk.green(cb)}, ` +
-              `which differs from the default branch ${chalk.cyan(db)}.\n` +
-              `Agent work will be branched from and merged into ${chalk.green(cb)}.\n` +
-              `Continue? [Y/n] `,
-            );
-            const confirmed = await promptYesNo(question);
-            if (!confirmed) {
-              console.log(
-                chalk.dim(`Aborted. Switch to ${db} or the desired target branch and re-run.`),
-              );
-              stopSentinel();
-              store.close();
-              await notifyServer.stop().catch(() => { /* ignore */ });
-              process.exit(1);
-            }
-            targetBranch = cb;
-            console.log(chalk.green(`Target branch: ${cb}`));
+          targetBranch = await resolveExplicitTargetBranch(
+            taskClient,
+            startupVcs,
+            projectPath,
+            beadFilter,
+          );
+          if (targetBranch) {
+            const scope = beadFilter ? ` for ${beadFilter}` : "";
+            console.log(chalk.dim(`[startup] Target branch resolved to ${targetBranch}${scope}`));
           }
         } catch {
           // Non-fatal: if branch detection fails, fall back to default behavior

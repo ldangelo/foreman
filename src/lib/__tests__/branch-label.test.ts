@@ -4,7 +4,16 @@ import {
   isDefaultBranch,
   applyBranchLabel,
   isValidBranchLabel,
+  normalizeBranchLabel,
 } from "../branch-label.js";
+
+describe("normalizeBranchLabel", () => {
+  it("strips jj display markers and remote suffixes", () => {
+    expect(normalizeBranchLabel("dev*")).toBe("dev");
+    expect(normalizeBranchLabel("dev@origin")).toBe("dev");
+    expect(normalizeBranchLabel(" feature/test@origin* ")).toBe("feature/test");
+  });
+});
 
 describe("isValidBranchLabel", () => {
   it("returns false for undefined and empty values", () => {
@@ -15,6 +24,11 @@ describe("isValidBranchLabel", () => {
 
   it("returns false for detached HEAD", () => {
     expect(isValidBranchLabel("HEAD")).toBe(false);
+  });
+
+  it("returns true for normalized jj branch names", () => {
+    expect(isValidBranchLabel("dev*")).toBe(true);
+    expect(isValidBranchLabel("dev@origin")).toBe(true);
   });
 
   it("returns true for real branch names", () => {
@@ -44,6 +58,11 @@ describe("extractBranchLabel", () => {
     expect(extractBranchLabel(["branch:feature/my-feature"])).toBe("feature/my-feature");
   });
 
+  it("normalizes decorated branch labels", () => {
+    expect(extractBranchLabel(["branch:dev*"])).toBe("dev");
+    expect(extractBranchLabel(["branch:dev@origin"])).toBe("dev");
+  });
+
   it("returns first branch: label when multiple exist", () => {
     expect(extractBranchLabel(["branch:main", "branch:installer"])).toBe("main");
   });
@@ -66,6 +85,11 @@ describe("extractBranchLabel", () => {
 describe("isDefaultBranch", () => {
   it("returns true for exact match with default branch", () => {
     expect(isDefaultBranch("main", "main")).toBe(true);
+  });
+
+  it("returns true when only jj decoration differs", () => {
+    expect(isDefaultBranch("dev*", "dev")).toBe(true);
+    expect(isDefaultBranch("dev@origin", "dev")).toBe(true);
   });
 
   it("returns true for 'master'", () => {

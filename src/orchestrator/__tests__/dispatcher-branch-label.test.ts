@@ -126,18 +126,18 @@ function makeTaskClient(issues: Issue[], detailLabels?: Record<string, string[]>
 describe("Dispatcher — branch label auto-labeling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Reset to default values (non-default branch)
+    // Reset to default values
     mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
   });
 
-  it("adds branch:installer label when on non-default branch", async () => {
+  it("adds branch:installer label when explicit targetBranch is non-default", async () => {
     const seed = makeIssue("seed-001");
     const taskClient = makeTaskClient([seed]);
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
 
-    await dispatcher.dispatch({ dryRun: true });
+    await dispatcher.dispatch({ dryRun: true, targetBranch: "installer" });
 
     // update() should have been called with branch:installer label
     expect(taskClient.update).toHaveBeenCalledWith("seed-001", {
@@ -145,10 +145,7 @@ describe("Dispatcher — branch label auto-labeling", () => {
     });
   });
 
-  it("does NOT add branch label when on default branch (main)", async () => {
-    mockGetCurrentBranch = vi.fn().mockResolvedValue("main");
-    mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
-
+  it("does NOT add branch label when targetBranch is omitted and controller branch is non-default", async () => {
     const seed = makeIssue("seed-001");
     const taskClient = makeTaskClient([seed]);
     const store = makeStore();
@@ -164,8 +161,7 @@ describe("Dispatcher — branch label auto-labeling", () => {
     expect(branchLabelCalls).toHaveLength(0);
   });
 
-  it("does NOT add branch label when on dev branch (known default)", async () => {
-    mockGetCurrentBranch = vi.fn().mockResolvedValue("dev");
+  it("does NOT add branch label when explicit targetBranch is the default branch", async () => {
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("dev");
 
     const seed = makeIssue("seed-001");
@@ -173,7 +169,7 @@ describe("Dispatcher — branch label auto-labeling", () => {
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
 
-    await dispatcher.dispatch({ dryRun: true });
+    await dispatcher.dispatch({ dryRun: true, targetBranch: "dev" });
 
     const updateCalls = vi.mocked(taskClient.update).mock.calls;
     const branchLabelCalls = updateCalls.filter(([, opts]) =>
@@ -266,7 +262,7 @@ describe("Dispatcher — branch label auto-labeling", () => {
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
 
-    await dispatcher.dispatch({ dryRun: true });
+    await dispatcher.dispatch({ dryRun: true, targetBranch: "installer" });
 
     expect(taskClient.update).toHaveBeenCalledWith("seed-001", {
       labels: expect.arrayContaining(["workflow:smoke", "branch:installer"]),

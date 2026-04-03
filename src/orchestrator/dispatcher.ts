@@ -288,18 +288,13 @@ export class Dispatcher {
     const dispatched: DispatchedTask[] = [];
     const skipped: SkippedTask[] = [];
 
-    // Detect current branch for auto-labeling (branch:<name> label).
-    // Done once per dispatch() call using VcsBackend (TRD-015: migrate from git.js shims).
-    let currentBranch: string | undefined;
+    // Detect default branch once so explicit run target resolution and parent
+    // inheritance can avoid using controller branch state as a merge target.
     let defaultBranch: string | undefined;
     let branchBackend: VcsBackend | undefined;
     try {
       branchBackend = await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
-      currentBranch = await branchBackend.getCurrentBranch(this.projectPath);
       defaultBranch = await branchBackend.detectDefaultBranch(this.projectPath);
-      if (!isValidBranchLabel(currentBranch)) {
-        currentBranch = undefined;
-      }
     } catch {
       // Non-fatal: branch detection failure must not block dispatch
     }
@@ -498,17 +493,17 @@ export class Dispatcher {
       // inherits that label (even when the current branch is the default).
       //
       // Only applied when the bead doesn't already have a branch: label.
-      if (currentBranch && defaultBranch) {
+      if (defaultBranch) {
         const existingLabels: string[] = seedDetail?.labels ?? seed.labels ?? [];
         const existingBranchLabel = extractBranchLabel(existingLabels);
 
         if (!existingBranchLabel) {
-          // Determine the branch to label with: prefer current non-default branch,
-          // then check parent for inheritance.
+          // Determine the branch to label with: prefer an explicit run target
+          // only when it is itself non-default, then check parent inheritance.
           let labelBranch: string | undefined;
 
-          if (!isDefaultBranch(currentBranch, defaultBranch)) {
-            labelBranch = currentBranch;
+          if (opts?.targetBranch && !isDefaultBranch(opts.targetBranch, defaultBranch)) {
+            labelBranch = opts.targetBranch;
           } else if (seed.parent) {
             // Check parent's branch: label for inheritance
             try {
@@ -541,6 +536,11 @@ export class Dispatcher {
           }
         }
       }
+
+      const effectiveTargetBranch =
+        extractBranchLabel(seedDetail?.labels ?? seed.labels ?? []) ??
+        opts?.targetBranch ??
+        defaultBranch;
 
       const seedInfo = seedToInfo(seed, seedDetail, beadComments);
       const runtime: RuntimeSelection = "claude-code";
@@ -757,7 +757,7 @@ export class Dispatcher {
           },
           opts?.notifyUrl,
           vcsBackend,
-          opts?.targetBranch,
+          effectiveTargetBranch,
           epicTasksForSeed,
           epicIdForSeed,
         );
