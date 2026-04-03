@@ -2,8 +2,10 @@
 //
 // Dual-write execution engine: creates task hierarchies in both
 // seeds (sd) and beads_rust (br) from a parsed SlingPlan.
+// TRD-012: Also creates native tasks via NativeTaskStore (REQ-009).
 
 import type { BeadsRustClient, BrIssue } from "../lib/beads-rust.js";
+import { NativeTaskStore } from "../lib/task-store.js";
 import type {
   SlingPlan,
   SlingOptions,
@@ -66,7 +68,7 @@ function truncateTitle(title: string): { title: string; truncated: boolean } {
 export type ProgressCallback = (
   created: number,
   total: number,
-  tracker: "sd" | "br",
+  tracker: "sd" | "br" | "native",
 ) => void;
 
 // ── Existing epic detection ──────────────────────────────────────────────
@@ -445,7 +447,296 @@ async function executeForBeadsRust(
   return result;
 }
 
+// ── TRD-012: Native task creation via NativeTaskStore (REQ-009) ────────────────────
+
+/**
+ * Create task hierarchy in the native SQLite task store via NativeTaskStore.
+ *
+ * Implements REQ-009: "foreman sling trd <trd-file> shall create tasks in the
+ * native task store instead of calling the br binary."
+ *
+ * Key differences from br path:
+ * - Tasks are created in 'backlog' status (not 'ready') — requires approval (REQ-005)
+ * - No parent field — hierarchy tracked via task_dependencies table (REQ-004)
+ * - Estimates stored as-is (hours), not converted to minutes
+ * - No 'kind:' labels — type field used instead
+ */
+async function executeForNative(
+  nativeTaskStore: NativeTaskStore,
+  ctx: ExecuteContext,
+): Promise<TrackerResult> {
+  const { plan, parallel, options } = ctx;
+  const result: TrackerResult = { created: 0, skipped: 0, failed: 0, epicId: null, errors: [] };
+  const trdIdToNativeId = new Map<string, string>();
+
+  // Count total items for progress
+  const totalTasks = plan.sprints.reduce(
+    (sum, s) => sum + s.stories.reduce((ss, st) => ss + st.tasks.length, 0),
+    0,
+  );
+  const totalItems = 1 + plan.sprints.length +
+    plan.sprints.reduce((sum, s) => sum + s.stories.length, 0) + totalTasks;
+
+  let created = 0;
+
+  try {
+    // Epic — created in backlog status
+    // Native tasks don't have an "epic" concept, so we create it as a task
+    // with type='epic' for semantic clarity
+    const epicTask = nativeTaskStore.create({
+      title: plan.epic.title,
+      description: plan.epic.description +
+        (plan.epic.qualityNotes && !options.noQuality
+          ? `\n\n## Quality Requirements\n${plan.epic.qualityNotes}`
+          : ""),
+      type: "epic",
+      priority: 0, // P0 / critical
+    });
+    trdIdToNativeId.set(plan.epic.documentId, epicTask.id);
+    result.created++;
+    created++;
+    ctx.onProgress?.(created, totalItems, "native");
+
+    // Sprints
+    for (let si = 0; si < plan.sprints.length; si++) {
+      const sprint = plan.sprints[si];
+
+      let sprintDescription = sprint.goal;
+      if (sprint.summary) {
+        sprintDescription += `\n\nFocus: ${sprint.summary.focus}\n` +
+          `Estimated Hours: ${sprint.summary.estimatedHours}\n` +
+          `Deliverables: ${sprint.summary.deliverables}`;
+      }
+
+      const sprintTask = nativeTaskStore.create({
+        title: sprint.title,
+        description: sprintDescription,
+        type: "sprint",
+        priority: parsePriorityToNumber(sprint.priority),
+      });
+      trdIdToNativeId.set(`sprint-${si}`, sprintTask.id);
+      result.created++;
+      created++;
+      ctx.onProgress?.(created, totalItems, "native");
+
+      // Stories
+      for (const story of sprint.stories) {
+        let storyDescription = "";
+        if (story.acceptanceCriteria) {
+          storyDescription += `## Acceptance Criteria\n${story.acceptanceCriteria}`;
+        }
+
+        const storyTask = nativeTaskStore.create({
+          title: story.title,
+          description: storyDescription || undefined,
+          type: "story",
+          priority: parsePriorityToNumber(sprint.priority),
+        });
+        trdIdToNativeId.set(`story-${si}-${story.title}`, storyTask.id);
+        result.created++;
+        created++;
+        ctx.onProgress?.(created, totalItems, "native");
+
+        // Tasks
+        for (const task of story.tasks) {
+          if (options.skipCompleted && task.status === "completed") {
+            result.skipped++;
+            continue;
+          }
+
+          try {
+            const kind = inferTaskKind(task.title);
+            let taskDescription = task.title;
+            if (task.files.length > 0) {
+              taskDescription += `\n\nFiles: ${task.files.map((f) => `\`${f}\``).join(", ")}`;
+            }
+
+            const nativeTask = nativeTaskStore.create({
+              title: truncateTitle(task.title).title,
+              description: taskDescription,
+              type: toTrackerType(kind),
+              priority: parsePriorityToNumber(sprint.priority),
+            });
+            trdIdToNativeId.set(task.trdId, nativeTask.id);
+            result.created++;
+            created++;
+
+            if (options.closeCompleted && task.status === "completed") {
+              // Native tasks use close() which sets status='merged'
+              nativeTaskStore.close(nativeTask.id, "Completed in TRD");
+            }
+          } catch (err: unknown) {
+            result.failed++;
+            result.errors.push(
+              `SLING-006: Failed to create native task ${task.trdId}: ${(err as Error).message}`,
+            );
+          }
+          ctx.onProgress?.(created, totalItems, "native");
+        }
+      }
+    }
+
+    // Wire task-level dependencies using NativeTaskStore.addDependency()
+    const depErrors = await wireDependenciesNative(nativeTaskStore, plan, trdIdToNativeId, options);
+    result.errors.push(...depErrors);
+
+    // Wire container-level blocking deps (sprint→sprint, story→story)
+    const containerDepErrors = await wireContainerDepsNative(
+      nativeTaskStore, plan, trdIdToNativeId,
+    );
+    result.errors.push(...containerDepErrors);
+  } catch (err: unknown) {
+    result.errors.push(`SLING-006: Unexpected native error: ${(err as Error).message}`);
+  }
+
+  return result;
+}
+
+/**
+ * Parse priority string (critical/high/medium/low) to numeric (0-4).
+ */
+function parsePriorityToNumber(priority: Priority): number {
+  switch (priority) {
+    case "critical": return 0;
+    case "high": return 1;
+    case "medium": return 2;
+    case "low": return 3;
+    default: return 2;
+  }
+}
+
 // ── Dependency wiring ────────────────────────────────────────────────────
+
+async function wireDependenciesNative(
+  taskStore: NativeTaskStore,
+  plan: SlingPlan,
+  trdIdToNativeId: Map<string, string>,
+  options: SlingOptions,
+): Promise<string[]> {
+  const depErrors: string[] = [];
+
+  for (const sprint of plan.sprints) {
+    for (const story of sprint.stories) {
+      for (const task of story.tasks) {
+        if (options.skipCompleted && task.status === "completed") continue;
+
+        for (const depTrdId of task.dependencies) {
+          const depNativeId = trdIdToNativeId.get(depTrdId);
+          const taskNativeId = trdIdToNativeId.get(task.trdId);
+
+          if (!taskNativeId) continue; // Task was skipped or failed
+          if (!depNativeId) {
+            if (options.skipCompleted) continue;
+            const msg = `SLING-007: Dependency target ${depTrdId} not found for ${task.trdId}`;
+            depErrors.push(msg);
+            continue;
+          }
+
+          try {
+            // In NativeTaskStore, fromId is the BLOCKED task, toId is the BLOCKER
+            // so task depends on depTrdId: task → depTrdId
+            taskStore.addDependency(taskNativeId, depNativeId, "blocks");
+          } catch (err: unknown) {
+            const msg = `SLING-007: Failed to wire dep ${task.trdId} -> ${depTrdId}: ${(err as Error).message}`;
+            depErrors.push(msg);
+          }
+        }
+      }
+    }
+  }
+
+  return depErrors;
+}
+
+/**
+ * Wire sprint→sprint and story→story blocking deps inferred from cross-boundary task dependencies.
+ */
+async function wireContainerDepsNative(
+  taskStore: NativeTaskStore,
+  plan: SlingPlan,
+  trdIdToNativeId: Map<string, string>,
+): Promise<string[]> {
+  const depErrors: string[] = [];
+  const sprintDeps = new Set<string>(); // "sprintNativeId|depSprintNativeId"
+  const storyDeps = new Set<string>();  // "storyNativeId|depStoryNativeId"
+
+  for (let si = 0; si < plan.sprints.length; si++) {
+    const sprint = plan.sprints[si];
+    const sprintNativeId = trdIdToNativeId.get(`sprint-${si}`);
+    if (!sprintNativeId) continue;
+
+    for (const story of sprint.stories) {
+      const storyNativeId = trdIdToNativeId.get(`story-${si}-${story.title}`);
+      if (!storyNativeId) continue;
+
+      for (const task of story.tasks) {
+        const taskNativeId = trdIdToNativeId.get(task.trdId);
+        if (!taskNativeId) continue;
+
+        for (const depTrdId of task.dependencies) {
+          // Find the sprint/story that contains the dependency
+          let depSprintIndex = -1;
+          let depStoryTitle = "";
+          let found = false;
+
+          for (let di = 0; di < plan.sprints.length; di++) {
+            for (const ds of plan.sprints[di].stories) {
+              const depTask = ds.tasks.find((t) => t.trdId === depTrdId);
+              if (depTask) {
+                depSprintIndex = di;
+                depStoryTitle = ds.title;
+                found = true;
+                break;
+              }
+            }
+            if (found) break;
+          }
+
+          if (!found || depSprintIndex < 0) continue;
+
+          const depSprintNativeId = trdIdToNativeId.get(`sprint-${depSprintIndex}`);
+          const depStoryNativeId = trdIdToNativeId.get(`story-${depSprintIndex}-${depStoryTitle}`);
+          if (!depSprintNativeId || !depStoryNativeId) continue;
+
+          // Cross-sprint dep
+          if (si !== depSprintIndex) {
+            sprintDeps.add(`${sprintNativeId}|${depSprintNativeId}`);
+          }
+          // Cross-story dep
+          if (storyNativeId !== depStoryNativeId) {
+            storyDeps.add(`${storyNativeId}|${depStoryNativeId}`);
+          }
+        }
+      }
+    }
+  }
+
+  // Wire sprint blocking deps
+  for (const pair of sprintDeps) {
+    const [sprintId, depSprintId] = pair.split("|");
+    try {
+      taskStore.addDependency(sprintId, depSprintId, "blocks");
+    } catch (err: unknown) {
+      depErrors.push(
+        `SLING-007: Failed to wire sprint dep ${sprintId} -> ${depSprintId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  // Wire story blocking deps
+  for (const pair of storyDeps) {
+    const [storyId, depStoryId] = pair.split("|");
+    try {
+      taskStore.addDependency(storyId, depStoryId, "blocks");
+    } catch (err: unknown) {
+      depErrors.push(
+        `SLING-007: Failed to wire story dep ${storyId} -> ${depStoryId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  return depErrors;
+}
 
 async function wireContainerDepsSd(
   client: BeadsRustClient,
@@ -662,6 +953,17 @@ async function wireContainerDepsBr(
 
 // ── Public API ───────────────────────────────────────────────────────────
 
+/**
+ * Execute the sling plan, creating tasks in seeds, beads_rust, and/or native store.
+ *
+ * @param plan - Parsed TRD plan
+ * @param parallel - Sprint parallelization info
+ * @param options - Sling options (dryRun, skipCompleted, etc.)
+ * @param seeds - seeds client (optional, skip with brOnly)
+ * @param beadsRust - beads_rust client (optional, skip with sdOnly)
+ * @param onProgress - Progress callback (optional)
+ * @param nativeTaskStore - NativeTaskStore instance for native task creation (TRD-012 / REQ-009)
+ */
 export async function execute(
   plan: SlingPlan,
   parallel: ParallelResult,
@@ -669,8 +971,9 @@ export async function execute(
   seeds: BeadsRustClient | null,
   beadsRust: BeadsRustClient | null,
   onProgress?: ProgressCallback,
+  nativeTaskStore?: NativeTaskStore | null,
 ): Promise<SlingResult> {
-  const result: SlingResult = { sd: null, br: null, depErrors: [] };
+  const result: SlingResult = { sd: null, br: null, native: null, depErrors: [] };
   const ctx: ExecuteContext = { plan, parallel, options, onProgress };
 
   // Detect existing epics
@@ -689,9 +992,17 @@ export async function execute(
     result.br = await executeForBeadsRust(beadsRust, ctx, existing.brEpicId);
   }
 
+  // Execute for native task store (TRD-012 / REQ-009)
+  // Native replaces the br path - skip if sdOnly (using sd only) or brOnly (using br only)
+  // In default mode (no flags), native runs instead of br
+  if (nativeTaskStore && !options.sdOnly && !options.brOnly) {
+    result.native = await executeForNative(nativeTaskStore, ctx);
+  }
+
   // Collect dep errors
   if (result.sd) result.depErrors.push(...result.sd.errors.filter((e) => e.includes("SLING-007")));
   if (result.br) result.depErrors.push(...result.br.errors.filter((e) => e.includes("SLING-007")));
+  if (result.native) result.depErrors.push(...result.native.errors.filter((e) => e.includes("SLING-007")));
 
   return result;
 }

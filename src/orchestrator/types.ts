@@ -229,6 +229,8 @@ export interface TrackerResult {
 export interface SlingResult {
   sd: TrackerResult | null;
   br: TrackerResult | null;
+  /** Native SQLite task store path (TRD-012 / REQ-009) */
+  native: TrackerResult | null;
   depErrors: string[];
 }
 

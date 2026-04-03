@@ -159,6 +159,9 @@ function printSummary(result: SlingResult): void {
   if (result.br) {
     parts.push(`br: ${result.br.created} created, ${result.br.skipped} skipped, ${result.br.failed} failed`);
   }
+  if (result.native) {
+    parts.push(`native: ${result.native.created} created, ${result.native.skipped} skipped, ${result.native.failed} failed`);
+  }
   console.log(chalk.bold(`\nSummary: ${parts.join(" | ")}`));
 
   if (result.depErrors.length > 0) {
@@ -174,6 +177,7 @@ function printSummary(result: SlingResult): void {
   const allErrors = [
     ...(result.sd?.errors ?? []),
     ...(result.br?.errors ?? []),
+    ...(result.native?.errors ?? []),
   ].filter((e) => !e.includes("SLING-007"));
   if (allErrors.length > 0) {
     console.log(chalk.red(`\nErrors (${allErrors.length}):`));
@@ -188,14 +192,16 @@ function printSummary(result: SlingResult): void {
 function createProgressSpinner() {
   let sdCount = 0;
   let brCount = 0;
+  let nativeCount = 0;
 
   return {
-    update(created: number, total: number, tracker: "sd" | "br") {
+    update(created: number, total: number, tracker: "sd" | "br" | "native") {
       if (tracker === "sd") sdCount = created;
-      else brCount = created;
+      else if (tracker === "br") brCount = created;
+      else nativeCount = created;
 
-      const totalCreated = sdCount + brCount;
-      const line = `Creating tasks... ${totalCreated} (sd: ${sdCount}, br: ${brCount})`;
+      const totalCreated = sdCount + brCount + nativeCount;
+      const line = `Creating tasks... ${totalCreated} (sd: ${sdCount}, br: ${brCount}, native: ${nativeCount})`;
       if (process.stdout.isTTY) {
         createInterface({ input: process.stdin, output: process.stdout });
         process.stdout.write(`\r${chalk.dim(line)}`);
