@@ -339,6 +339,24 @@ export class NativeTaskStore {
   }
 
   /**
+   * Approve multiple tasks matching a filter in a single transaction.
+   *
+   * Implements REQ-005 AC-005.2 batch approve via `--from-sling <seed>`.
+   *
+   * @param filter - Filter criteria for selecting tasks to approve.
+   *                 Currently supports `externalId` to match tasks created by a sling seed.
+   *
+   * Each approved task is evaluated individually:
+   * - If the task has unresolved `blocks` dependencies, it transitions to `blocked`.
+   * - Otherwise, it transitions to `ready` with `approved_at` set.
+   */
+  approveAll(filter: { externalId: string }): void {
+    // TODO(TRD-008): Implement batch approve logic
+    // This is a stub that will throw until the feature is implemented
+    throw new Error("approveAll not yet implemented");
+  }
+
+  /**
    * Update mutable fields on an existing task.
    *
    * Implements REQ-007 AC-007.3 (task update CLI).

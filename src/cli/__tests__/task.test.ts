@@ -204,17 +204,133 @@ describe("task approve — NativeTaskStore.approve()", () => {
     expect(ctx.taskStore.get(task.id)?.approved_at).toBeTruthy();
   });
 
-  it("throws for non-backlog tasks", () => {
-    const task = ctx.taskStore.create({ title: "Already Ready" });
-    ctx.taskStore.approve(task.id);
-    // Approving again should throw (not in backlog)
-    expect(() => ctx.taskStore.approve(task.id)).toThrow();
-  });
-
   it("throws TaskNotFoundError for unknown ID", () => {
     expect(() =>
       ctx.taskStore.approve("00000000-0000-0000-0000-000000000000"),
     ).toThrow(TaskNotFoundError);
+  });
+
+  // ── REQ-005 AC-005.3: non-backlog no-op ─────────────────────────────────
+
+  it("approve on non-backlog task is a no-op (PRD AC-005.3)", () => {
+    // Approving a ready task should NOT throw — it should be a silent no-op
+    const task = ctx.taskStore.create({ title: "Ready Task" });
+    ctx.taskStore.approve(task.id); // now ready
+    // Re-approving should not throw per PRD AC-005.3
+    expect(() => ctx.taskStore.approve(task.id)).not.toThrow();
+    // Status should remain ready (no change)
+    expect(ctx.taskStore.get(task.id)?.status).toBe("ready");
+  });
+
+  it("approve on in-progress task is a no-op (PRD AC-005.3)", () => {
+    const task = ctx.taskStore.create({ title: "In Progress Task" });
+    ctx.taskStore.approve(task.id); // ready
+    ctx.taskStore.update(task.id, { status: "in-progress" });
+    // Approving an in-progress task should not throw
+    expect(() => ctx.taskStore.approve(task.id)).not.toThrow();
+    expect(ctx.taskStore.get(task.id)?.status).toBe("in-progress");
+  });
+
+  it("approve on blocked task is a no-op (PRD AC-005.3)", () => {
+    const task = ctx.taskStore.create({ title: "Blocked Task" });
+    ctx.taskStore.update(task.id, { status: "blocked" });
+    // Approving a blocked task should not throw
+    expect(() => ctx.taskStore.approve(task.id)).not.toThrow();
+    expect(ctx.taskStore.get(task.id)?.status).toBe("blocked");
+  });
+
+  // ── REQ-005 AC-005.2: blocked transition with unresolved deps ───────────
+
+  it("approve with unresolved blocks dependency transitions to blocked (PRD AC-005.2)", () => {
+    // Create a blocker task that is NOT resolved (still in backlog)
+    const blocker = ctx.taskStore.create({ title: "Blocker Task" });
+    // Create a task that depends on the blocker
+    const task = ctx.taskStore.create({ title: "Dependent Task" });
+    ctx.taskStore.addDependency(task.id, blocker.id, "blocks");
+
+    // Approving should transition to 'blocked' (not 'ready') because blocker is unresolved
+    ctx.taskStore.approve(task.id);
+    expect(ctx.taskStore.get(task.id)?.status).toBe("blocked");
+  });
+
+  it("approve with resolved blocks dependency transitions to ready (PRD AC-005.2)", () => {
+    // Create a blocker task that IS resolved (closed)
+    const blocker = ctx.taskStore.create({ title: "Resolved Blocker" });
+    ctx.taskStore.close(blocker.id);
+
+    // Create a task that depends on the resolved blocker
+    const task = ctx.taskStore.create({ title: "Dependent Task" });
+    ctx.taskStore.addDependency(task.id, blocker.id, "blocks");
+
+    // Approving should transition to 'ready' because blocker is resolved
+    ctx.taskStore.approve(task.id);
+    expect(ctx.taskStore.get(task.id)?.status).toBe("ready");
+  });
+
+  it("approve with multiple unresolved blockers transitions to blocked (PRD AC-005.2)", () => {
+    const blocker1 = ctx.taskStore.create({ title: "Blocker 1" });
+    const blocker2 = ctx.taskStore.create({ title: "Blocker 2" });
+    const task = ctx.taskStore.create({ title: "Multi-blocked Task" });
+
+    ctx.taskStore.addDependency(task.id, blocker1.id, "blocks");
+    ctx.taskStore.addDependency(task.id, blocker2.id, "blocks");
+
+    ctx.taskStore.approve(task.id);
+    expect(ctx.taskStore.get(task.id)?.status).toBe("blocked");
+  });
+
+  it("approve with one resolved and one unresolved blocker transitions to blocked (PRD AC-005.2)", () => {
+    const resolvedBlocker = ctx.taskStore.create({ title: "Resolved Blocker" });
+    ctx.taskStore.close(resolvedBlocker.id);
+
+    const unresolvedBlocker = ctx.taskStore.create({ title: "Unresolved Blocker" });
+
+    const task = ctx.taskStore.create({ title: "Partial Blocked Task" });
+    ctx.taskStore.addDependency(task.id, resolvedBlocker.id, "blocks");
+    ctx.taskStore.addDependency(task.id, unresolvedBlocker.id, "blocks");
+
+    // Should still be blocked because one blocker is unresolved
+    ctx.taskStore.approve(task.id);
+    expect(ctx.taskStore.get(task.id)?.status).toBe("blocked");
+  });
+
+  // ── REQ-005 batch approve (TRD-008 AC) ─────────────────────────────────
+  // NOTE: The `approveAll()` method does not exist yet in NativeTaskStore.
+  // These tests verify the expected API per TRD-008 AC and will fail until implemented.
+  // The external_id column has UNIQUE constraint, so batch approve by external_id
+  // may require a different design (e.g., source/run_id field) to allow multiple
+  // tasks from the same sling seed.
+
+  it("approveAll method exists on NativeTaskStore", () => {
+    // Verify the approveAll method exists (will fail until implemented)
+    expect(typeof ctx.taskStore.approveAll).toBe("function");
+  });
+
+  it("approveAll is a no-op when no tasks match filter", () => {
+    // Should not throw when no tasks match
+    expect(() => ctx.taskStore.approveAll({ externalId: "nonexistent-seed" })).not.toThrow();
+  });
+
+  it("approveAll with single matching task transitions it to ready", () => {
+    // Create a single task with externalId
+    const task = ctx.taskStore.create({ title: "Single Task", externalId: "unique-seed-123" });
+
+    // approveAll should transition the task to ready
+    ctx.taskStore.approveAll({ externalId: "unique-seed-123" });
+
+    expect(ctx.taskStore.get(task.id)?.status).toBe("ready");
+    expect(ctx.taskStore.get(task.id)?.approved_at).toBeTruthy();
+  });
+
+  it("approveAll with unresolved deps transitions matched task to blocked", () => {
+    const blocker = ctx.taskStore.create({ title: "Blocker" });
+    const task = ctx.taskStore.create({ title: "Blocked Task", externalId: "blocked-seed" });
+
+    ctx.taskStore.addDependency(task.id, blocker.id, "blocks");
+
+    ctx.taskStore.approveAll({ externalId: "blocked-seed" });
+
+    expect(ctx.taskStore.get(task.id)?.status).toBe("blocked");
   });
 });
 

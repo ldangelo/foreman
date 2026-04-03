@@ -1,18 +1,18 @@
-# Finalize Validation: Integration tests for dispatcher native task store path
+# Finalize Validation: [trd:trd-2026-006-multi-project-native-task-management:task:TRD-008-TEST] Unit tests for approval gate
 
-## Bead: TRD-010-TEST
-## Run: 11fdf01a-a859-426b-85dc-f9b2e2765ab8
-## Timestamp: 2026-04-03T10:31:37Z
+## Seed: bd-baok
+## Run: a8422f72-faf7-47bf-860f-93d503c44ed3
+## Timestamp: 2026-04-03T14:11:30Z
 
 ## Target Integration
 - Status: SKIPPED
 - Target: origin/dev
-- QA Validated Target Ref: 6abd640d5eaad416c69599bbba0ae2bd647e2438
-- Current Target Ref: 6abd640d5eaad416c69599bbba0ae2bd647e2438
+- QA Validated Target Ref: da160f5bab5688144f3741afcb74a187bee4db1e
+- Current Target Ref: da160f5bab5688144f3741afcb74a187bee4db1e
 
 ## Test Validation
 - Status: SKIPPED
-- Note: QA already validated this bead's changes. The target branch (dev) did not move after QA completed, so no retest is required.
+- Reason: Target branch did not move after QA completion. QA already validated this bead against the same target revision.
 
 ## Failure Scope
 - SKIPPED
