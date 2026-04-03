@@ -30,6 +30,7 @@ import {
   type TaskRow,
   type DependencyRow,
 } from "../../lib/task-store.js";
+import { ProjectRegistry, ProjectNotFoundError } from "../../lib/project-registry.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -123,7 +124,33 @@ function getTaskStore(projectPath: string): { store: ForemanStore; taskStore: Na
 }
 
 function resolveProjectPath(opts: { project?: string }): string {
-  return opts.project ?? process.cwd();
+  if (!opts.project) {
+    return process.cwd();
+  }
+
+  const registry = new ProjectRegistry();
+
+  try {
+    return registry.resolve(opts.project);
+  } catch (err) {
+    if (err instanceof ProjectNotFoundError) {
+      // Check if it looks like an absolute path — if so, warn and proceed
+      if (opts.project.startsWith("/")) {
+        console.warn(
+          chalk.yellow(`Path not in registry -- operating directly.`),
+        );
+        return opts.project;
+      }
+      // Unknown name (not a path) — exit with error per AC-016.1
+      console.error(
+        chalk.red(
+          `Project '${opts.project}' not found. Run 'foreman project list' to see registered projects.`,
+        ),
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
 }
 
 // ── foreman task create ───────────────────────────────────────────────────────
