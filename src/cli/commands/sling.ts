@@ -6,7 +6,8 @@ import { createInterface } from "node:readline";
 import { parseTrd } from "../../orchestrator/trd-parser.js";
 import { analyzeParallel } from "../../orchestrator/sprint-parallel.js";
 import { execute } from "../../orchestrator/sling-executor.js";
-import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { ForemanStore } from "../../lib/store.js";
+import { NativeTaskStore } from "../../lib/task-store.js";
 import type { SlingPlan, SlingOptions, SlingResult, ParallelResult } from "../../orchestrator/types.js";
 
 // ── TRD-021: --sd-only deprecation helper (exported for testing) ─────────
@@ -153,6 +154,9 @@ function printSlingPlan(plan: SlingPlan, parallel: ParallelResult): void {
 
 function printSummary(result: SlingResult): void {
   const parts: string[] = [];
+  if (result.native) {
+    parts.push(`native: ${result.native.created} created, ${result.native.skipped} skipped, ${result.native.failed} failed`);
+  }
   if (result.sd) {
     parts.push(`sd: ${result.sd.created} created, ${result.sd.skipped} skipped, ${result.sd.failed} failed`);
   }
@@ -172,6 +176,7 @@ function printSummary(result: SlingResult): void {
   }
 
   const allErrors = [
+    ...(result.native?.errors ?? []),
     ...(result.sd?.errors ?? []),
     ...(result.br?.errors ?? []),
   ].filter((e) => !e.includes("SLING-007"));
@@ -186,16 +191,18 @@ function printSummary(result: SlingResult): void {
 // ── Progress spinner ─────────────────────────────────────────────────────
 
 function createProgressSpinner() {
+  let nativeCount = 0;
   let sdCount = 0;
   let brCount = 0;
 
   return {
-    update(created: number, total: number, tracker: "sd" | "br") {
-      if (tracker === "sd") sdCount = created;
+    update(created: number, total: number, tracker: "sd" | "br" | "native") {
+      if (tracker === "native") nativeCount = created;
+      else if (tracker === "sd") sdCount = created;
       else brCount = created;
 
-      const totalCreated = sdCount + brCount;
-      const line = `Creating tasks... ${totalCreated} (sd: ${sdCount}, br: ${brCount})`;
+      const totalCreated = nativeCount + sdCount + brCount;
+      const line = `Creating tasks... ${totalCreated} (native: ${nativeCount}, sd: ${sdCount}, br: ${brCount})`;
       if (process.stdout.isTTY) {
         createInterface({ input: process.stdin, output: process.stdout });
         process.stdout.write(`\r${chalk.dim(line)}`);
@@ -319,24 +326,32 @@ const trdSubcommand = new Command("trd")
       noQuality: opts.quality === false,
     };
 
-    // Detect available trackers
+    // Create native task store (primary path)
+    let nativeTaskStore: NativeTaskStore | null = null;
+    try {
+      const store = ForemanStore.forProject(process.cwd());
+      nativeTaskStore = new NativeTaskStore(store.getDb());
+      slingOptions.nativeTaskStore = nativeTaskStore;
+    } catch (err: unknown) {
+      console.error(chalk.red(`SLING-005: Failed to initialize native task store: ${(err as Error).message}`));
+      process.exitCode = 1;
+      return;
+    }
+
+    // Detect available trackers (beadsRust is optional with native)
     const seeds = null;
-    let beadsRust: BeadsRustClient | null = null;
+    let beadsRust = null;
 
     if (!slingOptions.sdOnly) {
       try {
+        // Dynamic import to avoid hard dependency on beads_rust when using native only
+        const { BeadsRustClient } = await import("../../lib/beads-rust.js");
         beadsRust = new BeadsRustClient(process.cwd());
         await beadsRust.ensureBrInstalled();
       } catch {
         console.warn(chalk.yellow("SLING-004: br CLI not available — skipping beads_rust creation"));
         beadsRust = null;
       }
-    }
-
-    if (!beadsRust) {
-      console.error(chalk.red("SLING-005: br CLI not available. Cannot create tasks."));
-      process.exitCode = 1;
-      return;
     }
 
     // Execute

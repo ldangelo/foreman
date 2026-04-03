@@ -216,6 +216,8 @@ export interface SlingOptions {
   noRisks: boolean;
   noQuality: boolean;
   priorityMap?: Record<string, string>;
+  /** Native task store (SQLite); replaces beads_rust when native tasks are preferred */
+  nativeTaskStore?: import("../lib/task-store.js").NativeTaskStore;
 }
 
 export interface TrackerResult {
@@ -228,7 +230,10 @@ export interface TrackerResult {
 
 export interface SlingResult {
   sd: TrackerResult | null;
+  /** @deprecated Use native instead — beads_rust path is being phased out */
   br: TrackerResult | null;
+  /** Native SQLite task store results */
+  native: TrackerResult | null;
   depErrors: string[];
 }
 

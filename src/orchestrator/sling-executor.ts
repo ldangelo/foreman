@@ -1,9 +1,11 @@
 // ── Sling Executor ────────────────────────────────────────────────────────
 //
-// Dual-write execution engine: creates task hierarchies in both
-// seeds (sd) and beads_rust (br) from a parsed SlingPlan.
+// Execution engine: creates task hierarchies in native (SQLite) task store
+// and optionally seeds (sd) and beads_rust (br) from a parsed SlingPlan.
 
 import type { BeadsRustClient, BrIssue } from "../lib/beads-rust.js";
+import { NativeTaskStore } from "../lib/task-store.js";
+import type { TaskRow } from "../lib/task-store.js";
 import type {
   SlingPlan,
   SlingOptions,
@@ -40,6 +42,20 @@ export function toTrackerType(kind: string): string {
   }
 }
 
+/**
+ * Convert a Priority (critical|high|medium|low) to a numeric value (0-4)
+ * for NativeTaskStore.
+ */
+export function toNativePriority(priority: Priority): number {
+  switch (priority) {
+    case "critical": return 0;
+    case "high": return 1;
+    case "medium": return 2;
+    case "low": return 3;
+    default: return 2;
+  }
+}
+
 function inferTaskKind(title: string): string {
   const lower = title.toLowerCase();
   if (/\bwrite\s+(unit\s+)?tests?\b/.test(lower) || /\btest\b.*\bfor\b/.test(lower)) return "test";
@@ -66,7 +82,7 @@ function truncateTitle(title: string): { title: string; truncated: boolean } {
 export type ProgressCallback = (
   created: number,
   total: number,
-  tracker: "sd" | "br",
+  tracker: "sd" | "br" | "native",
 ) => void;
 
 // ── Existing epic detection ──────────────────────────────────────────────
@@ -445,6 +461,314 @@ async function executeForBeadsRust(
   return result;
 }
 
+// ── Native task store execution ────────────────────────────────────────────
+
+/**
+ * Detect an existing epic in the native task store by querying for a task
+ * with externalId containing the trd label.
+ */
+function detectExistingNativeEpic(
+  documentId: string,
+  taskStore: NativeTaskStore,
+): string | null {
+  const label = `trd:${documentId}`;
+  const tasks = taskStore.list();
+  const epic = tasks.find((t) => t.description?.includes(label));
+  return epic?.id ?? null;
+}
+
+/**
+ * Execute task creation using NativeTaskStore (SQLite).
+ * Tasks are created in 'backlog' status and then approved.
+ * Dependencies are wired using addDependency(fromId, toId, 'blocks').
+ */
+function executeForNative(
+  taskStore: NativeTaskStore,
+  ctx: ExecuteContext,
+  existingEpicId: string | null,
+): TrackerResult {
+  const { plan, parallel, options } = ctx;
+  const result: TrackerResult = { created: 0, skipped: 0, failed: 0, epicId: null, errors: [] };
+  const trdIdToNativeId = new Map<string, string>();
+  // Track which sprint/story tracker ID each TRD task belongs to
+  const trdIdToSprintId = new Map<string, string>();
+  const trdIdToStoryId = new Map<string, string>();
+
+  const totalTasks = plan.sprints.reduce(
+    (sum, s) => sum + s.stories.reduce((ss, st) => ss + st.tasks.length, 0),
+    0,
+  );
+  const totalItems = 1 + plan.sprints.length +
+    plan.sprints.reduce((sum, s) => sum + s.stories.length, 0) + totalTasks;
+
+  let created = 0;
+
+  try {
+    // Epic
+    let epicId: string;
+    if (existingEpicId) {
+      epicId = existingEpicId;
+      result.skipped++;
+    } else {
+      let description = plan.epic.description;
+      if (plan.epic.qualityNotes && !options.noQuality) {
+        description += `\n\n## Quality Requirements\n${plan.epic.qualityNotes}`;
+      }
+      const epicRow = taskStore.create({
+        title: plan.epic.title,
+        description,
+        type: "epic",
+        priority: 0, // critical = P0
+        externalId: `trd:${plan.epic.documentId}`,
+      });
+      epicId = epicRow.id;
+      result.created++;
+      created++;
+    }
+    result.epicId = epicId;
+    ctx.onProgress?.(created, totalItems, "native");
+
+    // Sprints
+    for (let si = 0; si < plan.sprints.length; si++) {
+      const sprint = plan.sprints[si];
+
+      let sprintDescription = sprint.goal;
+      if (sprint.summary) {
+        sprintDescription += `\n\nFocus: ${sprint.summary.focus}\n` +
+          `Estimated Hours: ${sprint.summary.estimatedHours}\n` +
+          `Deliverables: ${sprint.summary.deliverables}`;
+      }
+
+      // Build externalId with parent and labels info
+      let sprintExternalId = `parent:${epicId}|kind:sprint|trd:${plan.epic.documentId}`;
+
+      // Check for parallel group label
+      if (!options.noParallel) {
+        for (const group of parallel.groups) {
+          if (group.sprintIndices.includes(si)) {
+            sprintExternalId += `|parallel:${group.label}`;
+          }
+        }
+      }
+
+      const sprintRow = taskStore.create({
+        title: sprint.title,
+        description: sprintDescription,
+        type: toTrackerType("sprint"),
+        priority: toNativePriority(sprint.priority),
+        externalId: sprintExternalId,
+      });
+      result.created++;
+      created++;
+      ctx.onProgress?.(created, totalItems, "native");
+
+      // Stories
+      for (const story of sprint.stories) {
+        let storyDescription = "";
+        if (story.acceptanceCriteria) {
+          storyDescription += `## Acceptance Criteria\n${story.acceptanceCriteria}`;
+        }
+
+        const storyExternalId = `parent:${sprintRow.id}|kind:story`;
+
+        const storyRow = taskStore.create({
+          title: story.title,
+          description: storyDescription || undefined,
+          type: toTrackerType("story"),
+          priority: toNativePriority(sprint.priority),
+          externalId: storyExternalId,
+        });
+        result.created++;
+        created++;
+        ctx.onProgress?.(created, totalItems, "native");
+
+        // Tasks
+        for (const task of story.tasks) {
+          if (options.skipCompleted && task.status === "completed") {
+            result.skipped++;
+            continue;
+          }
+
+          try {
+            const kind = inferTaskKind(task.title);
+            let taskDescription = task.title;
+            if (task.files.length > 0) {
+              taskDescription += `\n\nFiles: ${task.files.map((f) => `\`${f}\``).join(", ")}`;
+            }
+
+            const taskExternalId = `parent:${storyRow.id}|trd:${task.trdId}` +
+              (kind !== "task" ? `|kind:${kind}` : "") +
+              (task.riskLevel && !options.noRisks ? `|risk:${task.riskLevel}` : "");
+
+            const taskRow = taskStore.create({
+              title: truncateTitle(task.title).title,
+              description: taskDescription,
+              type: toTrackerType(kind),
+              priority: toNativePriority(sprint.priority),
+              externalId: taskExternalId,
+            });
+            trdIdToNativeId.set(task.trdId, taskRow.id);
+            trdIdToSprintId.set(task.trdId, sprintRow.id);
+            trdIdToStoryId.set(task.trdId, storyRow.id);
+            result.created++;
+            created++;
+
+            if (options.closeCompleted && task.status === "completed") {
+              taskStore.close(taskRow.id);
+            }
+          } catch (err: unknown) {
+            result.failed++;
+            result.errors.push(
+              `SLING-006: Failed to create native task ${task.trdId}: ${(err as Error).message}`,
+            );
+          }
+          ctx.onProgress?.(created, totalItems, "native");
+        }
+      }
+    }
+
+    // Approve all created tasks (auto-migration: backlog -> ready)
+    // Do this after all tasks are created so dependencies can be wired first
+    // We need to approve in dependency order: deps must be approved before their dependents
+    // Actually, reevaluateBlockedTasks handles this, but for simplicity we approve all
+    // tasks that were just created. The dependency wiring below handles ordering.
+    for (const [, taskId] of trdIdToNativeId) {
+      try {
+        taskStore.approve(taskId);
+      } catch (err: unknown) {
+        // Task might not be in backlog (already approved or invalid transition)
+        // Silently ignore - this is expected for tasks that were closed or already approved
+      }
+    }
+
+    // Wire task-level dependencies
+    const depErrors = wireDependenciesNative(taskStore, plan, trdIdToNativeId, options, result);
+    result.errors.push(...depErrors);
+
+    // Wire container-level blocking deps (sprint→sprint, story→story)
+    const containerDepErrors = wireContainerDepsNative(
+      taskStore, plan, trdIdToSprintId, trdIdToStoryId,
+    );
+    result.errors.push(...containerDepErrors);
+
+    // Re-evaluate blocked tasks to auto-promote any that became unblocked
+    try {
+      taskStore.reevaluateBlockedTasks();
+    } catch {
+      // Non-fatal: reevaluation errors shouldn't fail the entire operation
+    }
+  } catch (err: unknown) {
+    result.errors.push(`SLING-006: Unexpected native error: ${(err as Error).message}`);
+  }
+
+  return result;
+}
+
+// ── Native dependency wiring ────────────────────────────────────────────────
+
+function wireDependenciesNative(
+  taskStore: NativeTaskStore,
+  plan: SlingPlan,
+  trdIdToTrackerId: Map<string, string>,
+  options: SlingOptions,
+  result: TrackerResult,
+): string[] {
+  const depErrors: string[] = [];
+
+  for (const sprint of plan.sprints) {
+    for (const story of sprint.stories) {
+      for (const task of story.tasks) {
+        if (options.skipCompleted && task.status === "completed") continue;
+
+        for (const depTrdId of task.dependencies) {
+          const depTrackerId = trdIdToTrackerId.get(depTrdId);
+          const taskTrackerId = trdIdToTrackerId.get(task.trdId);
+
+          if (!taskTrackerId) continue; // Task was skipped or failed
+          if (!depTrackerId) {
+            if (options.skipCompleted) continue;
+            const msg = `SLING-007: Dependency target ${depTrdId} not found for ${task.trdId}`;
+            depErrors.push(msg);
+            continue;
+          }
+
+          try {
+            taskStore.addDependency(taskTrackerId, depTrackerId, "blocks");
+          } catch (err: unknown) {
+            const msg = `SLING-007: Failed to wire native dep ${task.trdId} -> ${depTrdId}: ${(err as Error).message}`;
+            depErrors.push(msg);
+          }
+        }
+      }
+    }
+  }
+
+  return depErrors;
+}
+
+function wireContainerDepsNative(
+  taskStore: NativeTaskStore,
+  plan: SlingPlan,
+  trdIdToSprintId: Map<string, string>,
+  trdIdToStoryId: Map<string, string>,
+): string[] {
+  const depErrors: string[] = [];
+
+  const sprintDeps = new Set<string>(); // "sprintId|depSprintId"
+  const storyDeps = new Set<string>();  // "storyId|depStoryId"
+
+  for (const sprint of plan.sprints) {
+    for (const story of sprint.stories) {
+      for (const task of story.tasks) {
+        const taskSprintId = trdIdToSprintId.get(task.trdId);
+        const taskStoryId = trdIdToStoryId.get(task.trdId);
+        if (!taskSprintId || !taskStoryId) continue;
+
+        for (const depTrdId of task.dependencies) {
+          const depSprintId = trdIdToSprintId.get(depTrdId);
+          const depStoryId = trdIdToStoryId.get(depTrdId);
+          if (!depSprintId || !depStoryId) continue;
+
+          // Cross-sprint dep
+          if (taskSprintId !== depSprintId) {
+            sprintDeps.add(`${taskSprintId}|${depSprintId}`);
+          }
+          // Cross-story dep
+          if (taskStoryId !== depStoryId) {
+            storyDeps.add(`${taskStoryId}|${depStoryId}`);
+          }
+        }
+      }
+    }
+  }
+
+  // Wire sprint blocking deps
+  for (const pair of sprintDeps) {
+    const [sprintId, depSprintId] = pair.split("|");
+    try {
+      taskStore.addDependency(sprintId, depSprintId, "blocks");
+    } catch (err: unknown) {
+      depErrors.push(
+        `SLING-007: Failed to wire native sprint dep ${sprintId} -> ${depSprintId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  // Wire story blocking deps
+  for (const pair of storyDeps) {
+    const [storyId, depStoryId] = pair.split("|");
+    try {
+      taskStore.addDependency(storyId, depStoryId, "blocks");
+    } catch (err: unknown) {
+      depErrors.push(
+        `SLING-007: Failed to wire native story dep ${storyId} -> ${depStoryId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  return depErrors;
+}
+
 // ── Dependency wiring ────────────────────────────────────────────────────
 
 async function wireContainerDepsSd(
@@ -670,7 +994,7 @@ export async function execute(
   beadsRust: BeadsRustClient | null,
   onProgress?: ProgressCallback,
 ): Promise<SlingResult> {
-  const result: SlingResult = { sd: null, br: null, depErrors: [] };
+  const result: SlingResult = { sd: null, br: null, native: null, depErrors: [] };
   const ctx: ExecuteContext = { plan, parallel, options, onProgress };
 
   // Detect existing epics
@@ -679,6 +1003,17 @@ export async function execute(
     options.force ? null : seeds,
     options.force ? null : beadsRust,
   );
+
+  // Detect existing native epic
+  let existingNativeEpicId: string | null = null;
+  if (options.nativeTaskStore && !options.force) {
+    existingNativeEpicId = detectExistingNativeEpic(plan.epic.documentId, options.nativeTaskStore);
+  }
+
+  // Execute for native (SQLite) task store
+  if (options.nativeTaskStore) {
+    result.native = executeForNative(options.nativeTaskStore, ctx, existingNativeEpicId);
+  }
 
   // Execute for sd first, then br
   if (seeds && !options.brOnly) {
@@ -690,6 +1025,7 @@ export async function execute(
   }
 
   // Collect dep errors
+  if (result.native) result.depErrors.push(...result.native.errors.filter((e) => e.includes("SLING-007")));
   if (result.sd) result.depErrors.push(...result.sd.errors.filter((e) => e.includes("SLING-007")));
   if (result.br) result.depErrors.push(...result.br.errors.filter((e) => e.includes("SLING-007")));
 

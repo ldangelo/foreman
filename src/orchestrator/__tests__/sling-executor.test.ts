@@ -432,3 +432,229 @@ describe("execute", () => {
     expect(result.sd!.errors[0]).toContain("SLING-006");
   });
 });
+
+// ── Native task store execution ────────────────────────────────────────────
+
+interface MockTaskRow {
+  id: string;
+  title: string;
+  description: string | null;
+  type: string;
+  priority: number;
+  status: string;
+  externalId: string | null;
+}
+
+function createMockNativeTaskStore() {
+  let idCounter = 0;
+  const tasks = new Map<string, MockTaskRow>();
+
+  return {
+    create: vi.fn().mockImplementation((opts: {
+      title: string;
+      description?: string;
+      type: string;
+      priority: number;
+      externalId?: string;
+    }) => {
+      const id = `native-${++idCounter}`;
+      const row: MockTaskRow = {
+        id,
+        title: opts.title,
+        description: opts.description ?? null,
+        type: opts.type,
+        priority: opts.priority,
+        status: "backlog",
+        externalId: opts.externalId ?? null,
+      };
+      tasks.set(id, row);
+      return row;
+    }),
+    list: vi.fn().mockReturnValue(Array.from(tasks.values())),
+    get: vi.fn().mockImplementation((id: string) => tasks.get(id) ?? null),
+    approve: vi.fn().mockImplementation((id: string) => {
+      const task = tasks.get(id);
+      if (task) task.status = "ready";
+    }),
+    close: vi.fn().mockImplementation((id: string) => {
+      const task = tasks.get(id);
+      if (task) task.status = "closed";
+    }),
+    addDependency: vi.fn().mockReturnValue(undefined),
+    reevaluateBlockedTasks: vi.fn().mockReturnValue(undefined),
+    _tasks: tasks,
+  };
+}
+
+describe("execute with native task store", () => {
+  it("creates hierarchy in native task store", async () => {
+    const nativeStore = createMockNativeTaskStore();
+    const plan = makeTestPlan();
+    const options = { ...DEFAULT_OPTIONS, nativeTaskStore: nativeStore as any };
+
+    const result = await execute(plan, EMPTY_PARALLEL, options, null, null);
+
+    // native: 1 epic + 2 sprints + 2 stories + 3 tasks = 8
+    expect(result.native!.created).toBe(8);
+    expect(result.native!.epicId).toBeDefined();
+  });
+
+  it("wires task dependencies in native store", async () => {
+    const nativeStore = createMockNativeTaskStore();
+    const plan = makeTestPlan();
+    const options = { ...DEFAULT_OPTIONS, nativeTaskStore: nativeStore as any };
+
+    await execute(plan, EMPTY_PARALLEL, options, null, null);
+
+    // TP-T002 depends on TP-T001 (task-level: 1)
+    // TP-T003 depends on TP-T001 (task-level: 1)
+    // Sprint 2 depends on Sprint 1, Story 2.1 depends on Story 1.1 (container-level: 2)
+    expect(nativeStore.addDependency).toHaveBeenCalledTimes(4);
+  });
+
+  it("includes parallel label in sprint externalId when in parallel group", async () => {
+    const nativeStore = createMockNativeTaskStore();
+    const plan = makeTestPlan();
+    const parallel: ParallelResult = {
+      groups: [{ label: "A", sprintIndices: [0, 1] }],
+      warnings: [],
+    };
+    const options = { ...DEFAULT_OPTIONS, nativeTaskStore: nativeStore as any };
+
+    await execute(plan, parallel, options, null, null);
+
+    // Check that sprint externalIds include parallel label
+    const createCalls = nativeStore.create.mock.calls;
+    // Filter by externalId containing "kind:sprint" (sprints and stories both have type "feature")
+    const sprintCalls = createCalls.filter(
+      (c: unknown[]) => (c[0] as { externalId?: string })?.externalId?.includes("kind:sprint"),
+    );
+    expect(sprintCalls.length).toBe(2);
+    for (const call of sprintCalls) {
+      const opts = call[0] as { externalId?: string };
+      expect(opts.externalId).toContain("parallel:A");
+    }
+  });
+
+  it("approves tasks after creation", async () => {
+    const nativeStore = createMockNativeTaskStore();
+    const plan = makeTestPlan();
+    const options = { ...DEFAULT_OPTIONS, nativeTaskStore: nativeStore as any };
+
+    await execute(plan, EMPTY_PARALLEL, options, null, null);
+
+    // All created tasks (except epic) should be approved
+    // Epic + 2 sprints + 2 stories + 3 tasks = 8 total
+    // But epic is also approved (approve is called for all trdIdToNativeId entries)
+    expect(nativeStore.approve).toHaveBeenCalled();
+  });
+
+  it("skips completed tasks with --skip-completed", async () => {
+    const nativeStore = createMockNativeTaskStore();
+    const plan = makeTestPlan();
+    const options = { ...DEFAULT_OPTIONS, skipCompleted: true, nativeTaskStore: nativeStore as any };
+
+    const result = await execute(plan, EMPTY_PARALLEL, options, null, null);
+
+    // TP-T003 is completed, should be skipped
+    expect(result.native!.skipped).toBe(1);
+    expect(result.native!.created).toBe(7); // 8 - 1 skipped task
+  });
+
+  it("closes completed tasks with --close-completed", async () => {
+    const nativeStore = createMockNativeTaskStore();
+    const plan = makeTestPlan();
+    const options = { ...DEFAULT_OPTIONS, closeCompleted: true, nativeTaskStore: nativeStore as any };
+
+    await execute(plan, EMPTY_PARALLEL, options, null, null);
+
+    // TP-T003 should be created then closed
+    expect(nativeStore.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("adds quality notes to epic description when enabled", async () => {
+    const nativeStore = createMockNativeTaskStore();
+    const plan = makeTestPlan();
+    const options = { ...DEFAULT_OPTIONS, nativeTaskStore: nativeStore as any };
+
+    await execute(plan, EMPTY_PARALLEL, options, null, null);
+
+    const epicCall = nativeStore.create.mock.calls.find(
+      (c: unknown[]) => (c[0] as { title?: string })?.title === "TRD: Test Epic",
+    );
+    expect(epicCall).toBeDefined();
+    const opts = epicCall![0] as { description?: string };
+    expect(opts.description).toContain("Quality notes here");
+  });
+
+  it("skips quality notes with --no-quality", async () => {
+    const nativeStore = createMockNativeTaskStore();
+    const plan = makeTestPlan();
+    const options = { ...DEFAULT_OPTIONS, noQuality: true, nativeTaskStore: nativeStore as any };
+
+    await execute(plan, EMPTY_PARALLEL, options, null, null);
+
+    const epicCall = nativeStore.create.mock.calls.find(
+      (c: unknown[]) => (c[0] as { title?: string })?.title === "TRD: Test Epic",
+    );
+    expect(epicCall).toBeDefined();
+    const opts = epicCall![0] as { description?: string };
+    expect(opts.description).not.toContain("Quality notes here");
+  });
+
+  it("handles task creation failure gracefully", async () => {
+    const nativeStore = createMockNativeTaskStore();
+    let callCount = 0;
+    nativeStore.create.mockImplementation((opts: {
+      title: string;
+      description?: string;
+      type: string;
+      priority: number;
+      externalId?: string;
+    }) => {
+      callCount++;
+      // Fail on the 5th create (which should be a task)
+      if (callCount === 5) throw new Error("Connection timeout");
+      const id = `native-${callCount}`;
+      const row: MockTaskRow = {
+        id,
+        title: opts.title,
+        description: opts.description ?? null,
+        type: opts.type,
+        priority: opts.priority,
+        status: "backlog",
+        externalId: opts.externalId ?? null,
+      };
+      nativeStore._tasks.set(id, row);
+      return row;
+    });
+    const plan = makeTestPlan();
+    const options = { ...DEFAULT_OPTIONS, nativeTaskStore: nativeStore as any };
+
+    const result = await execute(plan, EMPTY_PARALLEL, options, null, null);
+
+    expect(result.native!.failed).toBe(1);
+    expect(result.native!.errors.length).toBeGreaterThan(0);
+    expect(result.native!.errors[0]).toContain("SLING-006");
+  });
+
+  it("wires cross-sprint dependencies as sprint blocking", async () => {
+    const nativeStore = createMockNativeTaskStore();
+    const plan = makeTestPlan();
+    const options = { ...DEFAULT_OPTIONS, nativeTaskStore: nativeStore as any };
+
+    await execute(plan, EMPTY_PARALLEL, options, null, null);
+
+    // Check that addDependency was called with sprint IDs
+    const sprintDepCalls = nativeStore.addDependency.mock.calls.filter(
+      (call: unknown[]) => {
+        const firstArg = call[0] as string;
+        return firstArg.startsWith("native-") && call[2] === "blocks";
+      },
+    );
+    // Sprint 2 depends on Sprint 1 (via TP-T003 -> TP-T001)
+    // Story 2.1 depends on Story 1.1 (via TP-T003 -> TP-T001)
+    // That's 2 container-level dependencies + 2 task-level = 4 total
+    expect(nativeStore.addDependency).toHaveBeenCalled();
+  });
+});
