@@ -76,7 +76,8 @@ export async function retryAction(
   const beadNeedsReset =
     bead.status === "completed" ||
     bead.status === "closed" ||
-    bead.status === "in_progress";
+    bead.status === "in_progress" ||
+    bead.status === "blocked";
 
   const runNeedsReset =
     latestRun !== null &&
@@ -84,6 +85,14 @@ export async function retryAction(
       latestRun.status === "running" ||
       latestRun.status === "pending" ||
       latestRun.status === "failed");
+
+  const runNeedsExplicitReset =
+    latestRun !== null &&
+    (latestRun.status === "completed" ||
+      latestRun.status === "merged" ||
+      latestRun.status === "pr-created" ||
+      latestRun.status === "conflict" ||
+      latestRun.status === "test-failed");
 
   // 5. Apply resets
   if (!dryRun) {
@@ -116,6 +125,20 @@ export async function retryAction(
         { reason: "foreman retry", beadId, previousRunId: latestRun.id },
         latestRun.id,
       );
+    } else if (runNeedsExplicitReset && latestRun) {
+      console.log(
+        `  ${chalk.yellow("reset")} run ${latestRun.id}: ${latestRun.status} → reset`,
+      );
+      store.updateRun(latestRun.id, {
+        status: "reset",
+        completed_at: new Date().toISOString(),
+      });
+      store.logEvent(
+        project.id,
+        "restart",
+        { reason: "foreman retry", beadId, previousRunId: latestRun.id },
+        latestRun.id,
+      );
     } else if (latestRun) {
       // Run exists but doesn't need resetting (already completed/merged/etc.)
       console.log(
@@ -135,6 +158,13 @@ export async function retryAction(
       console.log(
         chalk.dim(
           `  Would reset run ${latestRun.id}: ${latestRun.status} → failed`,
+        ),
+      );
+    }
+    if (runNeedsExplicitReset && latestRun) {
+      console.log(
+        chalk.dim(
+          `  Would reset run ${latestRun.id}: ${latestRun.status} → reset`,
         ),
       );
     }

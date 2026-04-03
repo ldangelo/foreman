@@ -231,23 +231,14 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         mq.updateStatus(currentEntry.id, "failed", { error: "Test failures" });
         failedCount += report.testFailures.length;
 
-        // Check if this seed has exceeded the post-merge test retry limit.
-        //
-        // refinery.mergeCompleted() already called resetSeedToOpen() which returns
-        // the bead to "open" status so the dispatcher re-dispatches it. If the seed
-        // has failed post-merge tests too many times (typically due to pre-existing
-        // failures on the dev branch that are unrelated to the feature branch), we
-        // override that "open" reset with a permanent failure to break the cycle.
-        //
-        // The current failure was already recorded by refinery (run status = "test-failed")
-        // so the count includes it.
+        // Count repeated post-merge test failures for diagnostics. Retries are
+        // now explicit/human-driven rather than automatic reopen-to-open.
         const testFailedRunsForSeed = store.getRunsByStatuses(["test-failed"], project.id)
           .filter((r: { seed_id: string }) => r.seed_id === currentEntry.seed_id);
         const totalTestFailCount = testFailedRunsForSeed.length;
 
         if (totalTestFailCount >= RETRY_CONFIG.maxRetries) {
-          // Retry limit exhausted — permanently mark the bead as failed to prevent
-          // infinite re-dispatch. The operator must manually re-open if appropriate.
+          // Retry limit exhausted — permanently mark the bead as failed.
           enqueueMarkBeadFailed(store, currentEntry.seed_id, "auto-merge");
           mergeFailureReason = [
             `Post-merge tests failed ${totalTestFailCount} time(s) — retry limit (${RETRY_CONFIG.maxRetries}) exhausted.`,
@@ -259,12 +250,12 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
             ` test-failed attempts (limit: ${RETRY_CONFIG.maxRetries}). Preventing infinite re-dispatch.`,
           );
         } else {
-          // Still within retry limit — build a note explaining the transient failure.
+          // Still below the retry limit, but require an explicit human retry.
           const firstFailure = report.testFailures[0];
           const errorSummary = firstFailure.error?.slice(0, 800) ?? "no details";
           mergeFailureReason = [
             `Post-merge tests failed (attempt ${totalTestFailCount}/${RETRY_CONFIG.maxRetries}).`,
-            `Will retry after the developer addresses the failures.`,
+            `Manual retry required after investigating the failure.`,
             `\nFirst failure:\n${errorSummary}`,
           ].join(" ");
         }

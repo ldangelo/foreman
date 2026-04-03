@@ -137,6 +137,15 @@ describe("checkBranchMismatch", () => {
     expect(createInterface).not.toHaveBeenCalled();
   });
 
+  it("does not prompt when the current branch is a decorated jujutsu name matching the target", async () => {
+    mockGetCurrentBranch.mockResolvedValue("dev*");
+    const beads = [makeIssue("seed-001")];
+    const taskClient = makeTaskClient(beads, { "seed-001": ["branch:dev"] });
+    const result = await checkBranchMismatch(taskClient, "/tmp");
+    expect(result).toBe(false);
+    expect(createInterface).not.toHaveBeenCalled();
+  });
+
   it("prompts when branch: label differs from current branch", async () => {
     const beads = [makeIssue("seed-001")];
     const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });

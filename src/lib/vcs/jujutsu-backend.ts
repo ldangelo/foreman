@@ -38,6 +38,7 @@ import {
   getWorkspacePath,
   getWorkspaceRoot,
 } from "../workspace-paths.js";
+import { normalizeBranchLabel } from "../branch-label.js";
 import type { VcsBackend } from "./interface.js";
 
 const execFileAsync = promisify(execFile);
@@ -205,7 +206,10 @@ export class JujutsuBackend implements VcsBackend {
         ["log", "--no-graph", "-r", rev, "-T", "separate(' ', bookmarks)"],
         repoPath,
       );
-      return bookmarks.split(" ").map((bookmark) => bookmark.trim()).filter(Boolean);
+      return bookmarks
+        .split(" ")
+        .map((bookmark) => normalizeBranchLabel(bookmark))
+        .filter((bookmark): bookmark is string => Boolean(bookmark));
     } catch {
       return [];
     }

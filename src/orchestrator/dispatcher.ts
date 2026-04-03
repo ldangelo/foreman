@@ -12,7 +12,7 @@ import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefa
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache } from "../lib/setup.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
-import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel } from "../lib/branch-label.js";
+import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
@@ -247,6 +247,18 @@ export class Dispatcher {
 
     // Filter to a specific seed if requested
     if (opts?.seedId) {
+      if (this.hasMergedOutcomeWithoutLaterReset(opts.seedId, projectId)) {
+        return {
+          dispatched: [],
+          skipped: [{
+            seedId: opts.seedId,
+            title: opts.seedId,
+            reason: "Latest authoritative run already merged — use foreman reset/retry to rerun explicitly",
+          }],
+          resumed: [],
+          activeAgents: activeRuns.length,
+        };
+      }
       let target = readySeeds.find((b) => b.id === opts.seedId);
       // If not in br ready (possibly due to stale blocked cache — beads_rust#204),
       // fetch directly and force-dispatch if it's open/in_progress.
@@ -288,6 +300,16 @@ export class Dispatcher {
     const dispatched: DispatchedTask[] = [];
     const skipped: SkippedTask[] = [];
 
+    const resolveUsableBranchLabel = async (branch: string | undefined): Promise<string | undefined> => {
+      const normalized = normalizeBranchLabel(branch);
+      if (!normalized || !isValidBranchLabel(normalized)) return undefined;
+      if (branchBackend?.name === "jujutsu") {
+        const exists = await branchBackend.branchExists(this.projectPath, normalized).catch(() => false);
+        if (!exists) return undefined;
+      }
+      return normalized;
+    };
+
     // Detect current branch for auto-labeling (branch:<name> label).
     // Done once per dispatch() call using VcsBackend (TRD-015: migrate from git.js shims).
     let currentBranch: string | undefined;
@@ -295,11 +317,8 @@ export class Dispatcher {
     let branchBackend: VcsBackend | undefined;
     try {
       branchBackend = await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
-      currentBranch = await branchBackend.getCurrentBranch(this.projectPath);
-      defaultBranch = await branchBackend.detectDefaultBranch(this.projectPath);
-      if (!isValidBranchLabel(currentBranch)) {
-        currentBranch = undefined;
-      }
+      currentBranch = await resolveUsableBranchLabel(await branchBackend.getCurrentBranch(this.projectPath));
+      defaultBranch = normalizeBranchLabel(await branchBackend.detectDefaultBranch(this.projectPath));
     } catch {
       // Non-fatal: branch detection failure must not block dispatch
     }
@@ -312,6 +331,15 @@ export class Dispatcher {
     const completedSeedIds = new Set(completedRuns.map((r) => r.seed_id));
 
     for (const seed of readySeeds) {
+      if (this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
+        skipped.push({
+          seedId: seed.id,
+          title: seed.title,
+          reason: "Latest authoritative run already merged — explicit reset/retry required",
+        });
+        continue;
+      }
+
       if (activeSeedIds.has(seed.id)) {
         skipped.push({
           seedId: seed.id,
@@ -500,7 +528,7 @@ export class Dispatcher {
       // Only applied when the bead doesn't already have a branch: label.
       if (currentBranch && defaultBranch) {
         const existingLabels: string[] = seedDetail?.labels ?? seed.labels ?? [];
-        const existingBranchLabel = extractBranchLabel(existingLabels);
+        const existingBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(existingLabels));
 
         if (!existingBranchLabel) {
           // Determine the branch to label with: prefer current non-default branch,
@@ -513,7 +541,7 @@ export class Dispatcher {
             // Check parent's branch: label for inheritance
             try {
               const parentDetail = await this.seeds.show(seed.parent) as unknown as { labels?: string[] };
-              const parentBranchLabel = extractBranchLabel(parentDetail.labels);
+              const parentBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(parentDetail.labels));
               if (parentBranchLabel && !isDefaultBranch(parentBranchLabel, defaultBranch)) {
                 labelBranch = parentBranchLabel;
               }
@@ -574,6 +602,14 @@ export class Dispatcher {
             seedId: seed.id,
             title: seed.title,
             reason: "Another run was created concurrently (race guard)",
+          });
+          continue;
+        }
+        if (this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
+          skipped.push({
+            seedId: seed.id,
+            title: seed.title,
+            reason: "Another run merged before dispatch could create a new run (merged guard)",
           });
           continue;
         }
@@ -1227,6 +1263,23 @@ export class Dispatcher {
     }
 
     return { inBackoff: false };
+  }
+
+  /**
+   * Once a bead has a merged/PR-created run, it must not be dispatched again
+   * unless a later explicit reset exists. This protects against stale bead
+   * status or delayed queue writes causing accidental redispatch after merge.
+   */
+  private hasMergedOutcomeWithoutLaterReset(
+    seedId: string,
+    projectId: string,
+  ): boolean {
+    const runs = this.store.getRunsForSeed(seedId, projectId);
+    for (const run of runs) {
+      if (run.status === "reset") return false;
+      if (run.status === "merged" || run.status === "pr-created") return true;
+    }
+    return false;
   }
 
   /**

@@ -265,8 +265,8 @@ describe("Refinery.resolveConflict()", () => {
       expect.anything(), run.seed_id, expect.stringContaining("Merge failed"), "refinery",
     );
 
-    // resetSeedToOpen must be called so the seed reappears in the ready queue
-    expect(enqueueResetSeedToOpen).toHaveBeenCalledWith(expect.anything(), run.seed_id, "refinery");
+    // Merge conflicts remain blocked until an explicit human retry/reset.
+    expect(enqueueResetSeedToOpen).not.toHaveBeenCalled();
   });
 
   it("theirs strategy uses provided targetBranch in git checkout", async () => {
@@ -345,8 +345,8 @@ describe("Refinery.resolveConflict()", () => {
       expect.anything(), run.seed_id, expect.stringContaining("tests failed"), "refinery",
     );
 
-    // resetSeedToOpen must be called so the seed reappears in the ready queue
-    expect(enqueueResetSeedToOpen).toHaveBeenCalledWith(expect.anything(), run.seed_id, "refinery");
+    // Test failures remain blocked until an explicit human retry/reset.
+    expect(enqueueResetSeedToOpen).not.toHaveBeenCalled();
   });
 
   it("theirs strategy marks run as merged when tests pass after merge", async () => {
@@ -563,7 +563,7 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.conflicts).toHaveLength(1);
     expect(report.conflicts[0].conflictFiles).toContain("src/main.ts");
     // resetSeedToOpen must be called so the seed reappears in the ready queue
-    expect(enqueueResetSeedToOpen).toHaveBeenCalledWith(expect.anything(), run.seed_id, "refinery");
+    expect(enqueueResetSeedToOpen).not.toHaveBeenCalled();
   });
 
   it("adds failure note when code-conflict PR creation fails", async () => {
@@ -597,7 +597,7 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.conflicts).toHaveLength(1);
     // Must add a note explaining what happened before the reset
     expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
-      expect.anything(), run.seed_id, expect.stringContaining("branch reset to open for retry"), "refinery",
+      expect.anything(), run.seed_id, expect.stringContaining("manual retry required"), "refinery",
     );
   });
 
@@ -643,7 +643,7 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.conflicts).toHaveLength(1);
     // Must add a note explaining what happened before the reset
     expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
-      expect.anything(), run.seed_id, expect.stringContaining("branch reset to open for retry"), "refinery",
+      expect.anything(), run.seed_id, expect.stringContaining("manual retry required"), "refinery",
     );
   });
 
