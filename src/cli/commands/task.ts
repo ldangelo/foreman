@@ -4,8 +4,10 @@
  * Sub-commands:
  *   foreman task create --title <text> [--description <text>] [--type <type>]
  *                        [--priority <level>]
- *   foreman task list [--status <status>]
+ *   foreman task list [--status <status>] [--all]
  *   foreman task show <id>
+ *   foreman task update <id> [--title <text>] [--description <text>]
+ *                           [--priority <level>] [--status <status>] [--force]
  *   foreman task approve <id>
  *   foreman task close <id>
  *   foreman task dep add <from-id> <to-id> [--type blocks|parent-child]
@@ -70,6 +72,7 @@ function statusChalk(status: string): string {
     case "finalize":
       return chalk.cyan(status);
     case "merged":
+    case "closed":
       return chalk.dim(status);
     case "blocked":
     case "conflict":
@@ -203,8 +206,9 @@ const createCommand = new Command("create")
 const listCommand = new Command("list")
   .description("List tasks in the native task store")
   .option("--status <status>", "Filter by status (e.g. ready, backlog, in-progress)")
+  .option("--all", "Include closed and merged tasks (excluded by default)")
   .option("--project <path>", "Project path (default: current directory)")
-  .action((opts: { status?: string; project?: string }) => {
+  .action((opts: { status?: string; all?: boolean; project?: string }) => {
     const projectPath = resolveProjectPath(opts);
 
     try {
@@ -220,9 +224,18 @@ const listCommand = new Command("list")
       const db = store.getDb();
       let sql = "SELECT * FROM tasks";
       const params: string[] = [];
+      const conditions: string[] = [];
+
       if (opts.status) {
-        sql += " WHERE status = ?";
+        conditions.push("status = ?");
         params.push(opts.status);
+      } else if (!opts.all) {
+        // By default, exclude closed/merged tasks
+        conditions.push("status NOT IN ('closed', 'merged')");
+      }
+
+      if (conditions.length > 0) {
+        sql += " WHERE " + conditions.join(" AND ");
       }
       sql += " ORDER BY priority ASC, created_at ASC";
 
@@ -241,7 +254,11 @@ const listCommand = new Command("list")
         return;
       }
 
-      const label = opts.status ? `Tasks (status: ${opts.status})` : `All Tasks`;
+      const label = opts.status
+        ? `Tasks (status: ${opts.status})`
+        : opts.all
+          ? `All Tasks`
+          : `Active Tasks`;
       console.log(chalk.bold(`\n  ${label} (${rows.length})\n`));
       printTaskTable(rows);
       console.log();
@@ -382,6 +399,99 @@ const approveCommand = new Command("approve")
       process.exit(1);
     }
   });
+
+// ── foreman task update ───────────────────────────────────────────────────────
+
+const updateCommand = new Command("update")
+  .description("Update fields on an existing task")
+  .argument("<id>", "Task ID")
+  .option("--title <text>", "New task title")
+  .option("--description <text>", "New task description (use --no-description to clear)")
+  .option("--no-description", "Clear the description field")
+  .option("--priority <level>", "New priority: 0-4 or critical/high/medium/low/backlog")
+  .option("--status <status>", "New status (e.g. backlog, ready, in-progress)")
+  .option("--force", "Allow backward status transitions (e.g. merged → backlog)")
+  .option("--project <path>", "Project path (default: current directory)")
+  .action(
+    (id: string, opts: {
+      title?: string;
+      description?: string;
+      noDescription?: boolean;
+      priority?: string;
+      status?: string;
+      force?: boolean;
+      project?: string;
+    }) => {
+      const projectPath = resolveProjectPath(opts);
+
+      const updateOpts: {
+        title?: string;
+        description?: string | null;
+        priority?: number;
+        status?: string;
+        force?: boolean;
+      } = {};
+
+      if (opts.title !== undefined) {
+        updateOpts.title = opts.title;
+      }
+      if (opts.noDescription) {
+        updateOpts.description = null;
+      } else if (opts.description !== undefined) {
+        updateOpts.description = opts.description;
+      }
+      if (opts.priority !== undefined) {
+        try {
+          updateOpts.priority = parsePriority(opts.priority);
+        } catch {
+          console.error(
+            chalk.red(
+              `Error: Invalid priority '${opts.priority}'. Use 0-4 or: critical, high, medium, low, backlog`,
+            ),
+          );
+          process.exit(1);
+        }
+      }
+      if (opts.status !== undefined) {
+        updateOpts.status = opts.status;
+      }
+      if (opts.force) {
+        updateOpts.force = true;
+      }
+
+      try {
+        const { taskStore } = getTaskStore(projectPath);
+        const task = taskStore.update(id, updateOpts);
+
+        console.log(chalk.green(`✓ Task '${id.slice(0, 8)}' updated.`));
+        console.log(`  Title:    ${task.title}`);
+        console.log(`  Type:     ${task.type}`);
+        console.log(`  Priority: ${priorityLabel(task.priority)}`);
+        console.log(`  Status:   ${statusChalk(task.status)}`);
+        if (task.description) {
+          console.log(`  Description: ${task.description}`);
+        }
+      } catch (err) {
+        if (err instanceof TaskNotFoundError) {
+          console.error(chalk.red(`Error: Task '${id}' not found.`));
+          process.exit(1);
+        }
+        if (err instanceof InvalidStatusTransitionError) {
+          console.error(
+            chalk.red(
+              `Error: Task '${id.slice(0, 8)}' cannot transition from '${err.fromStatus}' to '${err.toStatus}'.`,
+            ),
+          );
+          console.error(
+            chalk.dim("  Use --force to override this check."),
+          );
+          process.exit(1);
+        }
+        console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
+        process.exit(1);
+      }
+    },
+  );
 
 // ── foreman task close ────────────────────────────────────────────────────────
 
@@ -537,5 +647,6 @@ export const taskCommand = new Command("task")
   .addCommand(listCommand)
   .addCommand(showCommand)
   .addCommand(approveCommand)
+  .addCommand(updateCommand)
   .addCommand(closeCommand)
   .addCommand(depCommand);

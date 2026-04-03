@@ -24,6 +24,7 @@ import {
   parsePriority,
   priorityLabel,
   TaskNotFoundError,
+  InvalidStatusTransitionError,
   CircularDependencyError,
   type TaskRow,
 } from "../../lib/task-store.js";
@@ -217,6 +218,81 @@ describe("task approve — NativeTaskStore.approve()", () => {
   });
 });
 
+// ── foreman task update ────────────────────────────────────────────────────────
+
+describe("task update — NativeTaskStore.update()", () => {
+  let ctx: ReturnType<typeof setupStore>;
+
+  beforeEach(() => {
+    ctx = setupStore();
+  });
+  afterEach(() => teardownStore(ctx));
+
+  it("updates title", () => {
+    const task = ctx.taskStore.create({ title: "Original Title" });
+    const updated = ctx.taskStore.update(task.id, { title: "New Title" });
+    expect(updated.title).toBe("New Title");
+  });
+
+  it("updates description", () => {
+    const task = ctx.taskStore.create({ title: "With Desc" });
+    const updated = ctx.taskStore.update(task.id, { description: "New description" });
+    expect(updated.description).toBe("New description");
+  });
+
+  it("clears description when set to null", () => {
+    const task = ctx.taskStore.create({ title: "With Desc", description: "Old" });
+    const updated = ctx.taskStore.update(task.id, { description: null });
+    expect(updated.description).toBeNull();
+  });
+
+  it("updates priority", () => {
+    const task = ctx.taskStore.create({ title: "Pri Task", priority: 2 });
+    const updated = ctx.taskStore.update(task.id, { priority: 0 });
+    expect(updated.priority).toBe(0);
+  });
+
+  it("updates status forward without --force", () => {
+    const task = ctx.taskStore.create({ title: "Status Task" });
+    ctx.taskStore.approve(task.id);
+    const updated = ctx.taskStore.update(task.id, { status: "in-progress" });
+    expect(updated.status).toBe("in-progress");
+  });
+
+  it("throws InvalidStatusTransitionError for backward transition without --force", () => {
+    const task = ctx.taskStore.create({ title: "Backward Test" });
+    ctx.taskStore.approve(task.id); // ready
+    expect(() => ctx.taskStore.update(task.id, { status: "backlog" })).toThrow(
+      InvalidStatusTransitionError,
+    );
+  });
+
+  it("allows backward transition with --force", () => {
+    const task = ctx.taskStore.create({ title: "Force Test" });
+    ctx.taskStore.approve(task.id); // ready
+    const updated = ctx.taskStore.update(task.id, { status: "backlog", force: true });
+    expect(updated.status).toBe("backlog");
+  });
+
+  it("throws TaskNotFoundError for unknown ID", () => {
+    expect(() =>
+      ctx.taskStore.update("00000000-0000-0000-0000-000000000000", { title: "Nope" }),
+    ).toThrow(TaskNotFoundError);
+  });
+
+  it("returns updated task row", () => {
+    const task = ctx.taskStore.create({ title: "Full Update" });
+    const updated = ctx.taskStore.update(task.id, {
+      title: "Updated Title",
+      description: "Updated desc",
+      priority: 1,
+    });
+    expect(updated.title).toBe("Updated Title");
+    expect(updated.description).toBe("Updated desc");
+    expect(updated.priority).toBe(1);
+  });
+});
+
 // ── foreman task close ────────────────────────────────────────────────────────
 
 describe("task close — NativeTaskStore.close()", () => {
@@ -227,10 +303,10 @@ describe("task close — NativeTaskStore.close()", () => {
   });
   afterEach(() => teardownStore(ctx));
 
-  it("sets status to merged", () => {
+  it("sets status to closed", () => {
     const task = ctx.taskStore.create({ title: "Close Test" });
     ctx.taskStore.close(task.id);
-    expect(ctx.taskStore.get(task.id)?.status).toBe("merged");
+    expect(ctx.taskStore.get(task.id)?.status).toBe("closed");
   });
 
   it("sets closed_at timestamp", () => {
@@ -387,6 +463,7 @@ describe("taskCommand export", () => {
     expect(names).toContain("list");
     expect(names).toContain("show");
     expect(names).toContain("approve");
+    expect(names).toContain("update");
     expect(names).toContain("close");
     expect(names).toContain("dep");
   });

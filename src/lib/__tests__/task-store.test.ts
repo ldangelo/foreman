@@ -277,11 +277,11 @@ describe("NativeTaskStore.close()", () => {
   });
   afterEach(() => teardownStore(ctx));
 
-  it("sets task status to merged", () => {
+  it("sets task status to closed", () => {
     const task = ctx.taskStore.create({ title: "Close Me" });
     ctx.taskStore.close(task.id);
     const updated = ctx.taskStore.get(task.id);
-    expect(updated?.status).toBe("merged");
+    expect(updated?.status).toBe("closed");
     expect(updated?.closed_at).toBeTruthy();
   });
 
