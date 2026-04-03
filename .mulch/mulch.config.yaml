@@ -4,6 +4,7 @@ domains:
   - pipeline-executor
   - orchestrator
   - cli
+  - dispatcher
 governance:
   max_entries: 100
   warn_entries: 150
