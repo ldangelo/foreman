@@ -22,7 +22,11 @@ export function normalizeBranchLabel(branch: string | undefined): string | undef
   if (!branch) return undefined;
   const trimmed = branch.trim();
   if (!trimmed) return undefined;
-  return trimmed.replace(/\*+$/, "").trim() || undefined;
+  // Strip JJ bookmark decoration (*) and remote-tracking (@origin) suffixes
+  let normalized = trimmed.replace(/\*+$/, "").trim();
+  normalized = normalized.replace(/@origin$/, "").trim();
+  normalized = normalized.replace(/\*+$/, "").trim();
+  return normalized || undefined;
 }
 
 export function isValidBranchLabel(branch: string | undefined): branch is string {

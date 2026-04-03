@@ -12,6 +12,12 @@ describe("normalizeBranchLabel", () => {
     expect(normalizeBranchLabel("dev*")).toBe("dev");
     expect(normalizeBranchLabel("feature/test***")).toBe("feature/test");
   });
+
+  it("strips @origin remote-tracking suffix", () => {
+    expect(normalizeBranchLabel("dev@origin")).toBe("dev");
+    expect(normalizeBranchLabel("feature/test@origin")).toBe("feature/test");
+    expect(normalizeBranchLabel("dev*@origin")).toBe("dev");
+  });
 });
 
 describe("isValidBranchLabel", () => {
