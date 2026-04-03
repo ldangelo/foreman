@@ -328,6 +328,40 @@ describe("task close — NativeTaskStore.close()", () => {
     const ready = ctx.taskStore.list({ status: "ready" });
     expect(ready.every((t) => t.id !== task.id)).toBe(true);
   });
+
+  it("cascades: unblocks dependent tasks when blocker is closed (AC-008.1)", () => {
+    // B blocks A — A is in 'blocked' status
+    const blocker = ctx.taskStore.create({ title: "Blocker" });
+    const blocked = ctx.taskStore.create({ title: "Blocked" });
+    ctx.taskStore.addDependency(blocked.id, blocker.id, "blocks");
+    // Manually set blocked task to 'blocked' (dispatcher does this on creation)
+    ctx.store.getDb()
+      .prepare("UPDATE tasks SET status = 'blocked' WHERE id = ?")
+      .run(blocked.id);
+    // Approve and close the blocker
+    ctx.taskStore.approve(blocker.id);
+    ctx.taskStore.close(blocker.id);
+    // After close(), cascade should have unblocked A → ready
+    const updated = ctx.taskStore.get(blocked.id);
+    expect(updated?.status).toBe("ready");
+  });
+
+  it("cascades: does NOT unblock if another blocker is still open", () => {
+    const blockerB = ctx.taskStore.create({ title: "Blocker B" });
+    const blockerC = ctx.taskStore.create({ title: "Blocker C" });
+    const blocked = ctx.taskStore.create({ title: "Blocked" });
+    ctx.taskStore.addDependency(blocked.id, blockerB.id, "blocks");
+    ctx.taskStore.addDependency(blocked.id, blockerC.id, "blocks");
+    ctx.store.getDb()
+      .prepare("UPDATE tasks SET status = 'blocked' WHERE id = ?")
+      .run(blocked.id);
+    // Close only B; C is still open
+    ctx.taskStore.approve(blockerB.id);
+    ctx.taskStore.close(blockerB.id);
+    // Blocked should still be blocked
+    const updated = ctx.taskStore.get(blocked.id);
+    expect(updated?.status).toBe("blocked");
+  });
 });
 
 // ── foreman task dep add ──────────────────────────────────────────────────────

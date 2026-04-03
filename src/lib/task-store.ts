@@ -423,9 +423,13 @@ export class NativeTaskStore {
   }
 
   /**
-   * Close a task by setting its status to 'merged' (completed state).
+   * Close a task by setting its status to 'closed' (completed state).
    *
    * Implements REQ-008 (task closure). After closing, the task is no longer active.
+   *
+   * Per AC-008.1: if the task has tasks that depend on it via `blocks` relationships,
+   * those dependent tasks' blocked state is re-evaluated so they can transition
+   * to `ready` if all their blockers are now closed/merged.
    *
    * @param id     - Task ID to close.
    * @param reason - Optional reason for closing (ignored in current implementation;
@@ -453,6 +457,9 @@ export class NativeTaskStore {
     });
 
     tx();
+
+    // Cascade: re-evaluate blocked dependents after closing (AC-008.1)
+    this.reevaluateBlockedTasks();
   }
 
   /**
