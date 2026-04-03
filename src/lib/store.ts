@@ -448,7 +448,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   CHECK (status IN (
     'backlog', 'ready', 'in-progress',
     'explorer', 'developer', 'qa', 'reviewer', 'finalize',
-    'merged', 'conflict', 'failed', 'stuck', 'blocked'
+    'merged', 'closed', 'conflict', 'failed', 'stuck', 'blocked'
   ))
 );
 
