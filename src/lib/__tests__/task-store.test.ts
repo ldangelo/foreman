@@ -516,6 +516,17 @@ describe("NativeTaskStore.updatePhase()", () => {
   it("is a no-op when taskId is undefined", () => {
     expect(() => ctx.taskStore.updatePhase(undefined, "developer")).not.toThrow();
   });
+
+  it("accepts all five pipeline phase names as valid statuses", () => {
+    const task = ctx.taskStore.create({ title: "Phase Validity Test" });
+    const phaseNames = ["explorer", "developer", "qa", "reviewer", "finalize"] as const;
+
+    for (const phase of phaseNames) {
+      ctx.taskStore.updatePhase(task.id, phase);
+      const updated = ctx.taskStore.get(task.id);
+      expect(updated?.status).toBe(phase);
+    }
+  });
 });
 
 // ── NativeTaskStore.claim() ───────────────────────────────────────────────────
