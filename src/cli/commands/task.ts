@@ -360,39 +360,80 @@ const showCommand = new Command("show")
 
 const approveCommand = new Command("approve")
   .description("Approve a backlog task, making it ready for dispatch")
-  .argument("<id>", "Task ID")
+  .argument("[id]", "Task ID (required unless --all --from-sling is used)")
+  .option("--all", "Approve multiple tasks")
+  .option("--from-sling <seed>", "Batch approve tasks created by a Sling run")
   .option("--project <path>", "Project path (default: current directory)")
-  .action((id: string, opts: { project?: string }) => {
+  .action((id: string | undefined, opts: { id?: string; all?: boolean; fromSling?: string; project?: string }) => {
     const projectPath = resolveProjectPath(opts);
+
+    // Handle batch approval via --all --from-sling
+    if (opts.all && opts.fromSling) {
+      try {
+        const { taskStore } = getTaskStore(projectPath);
+        const result = taskStore.approveFromSling(opts.fromSling);
+
+        if (result.approved.length > 0) {
+          console.log(chalk.green(`✓ Approved and ready: ${result.approved.length}`));
+          for (const taskId of result.approved) {
+            console.log(chalk.green(`  ✓ Task '${taskId.slice(0, 8)}' approved and ready for dispatch.`));
+          }
+        }
+
+        if (result.blocked.length > 0) {
+          console.log(chalk.yellow(`⚠ Blocked: ${result.blocked.length}`));
+          for (const taskId of result.blocked) {
+            console.log(chalk.yellow(`  ⚠ Task '${taskId.slice(0, 8)}' approved but blocked on unresolved dependencies.`));
+          }
+        }
+
+        if (result.skipped.length > 0) {
+          console.log(chalk.dim(`— Skipped (not in backlog): ${result.skipped.length}`));
+          for (const taskId of result.skipped) {
+            console.log(chalk.dim(`  — Task '${taskId.slice(0, 8)}' is not in backlog status — no change.`));
+          }
+        }
+
+        if (result.approved.length === 0 && result.blocked.length === 0 && result.skipped.length === 0) {
+          console.log(chalk.dim(`No tasks found for seed '${opts.fromSling}'.`));
+        }
+      } catch (err) {
+        console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
+        process.exit(1);
+      }
+      return;
+    }
+
+    // Single task approval
+    if (!id) {
+      console.error(chalk.red("Error: Task ID is required. Use --all --from-sling for batch approval."));
+      process.exit(1);
+    }
 
     try {
       const { taskStore } = getTaskStore(projectPath);
-      taskStore.approve(id);
+      const result = taskStore.approve(id);
 
-      // Check what status it transitioned to
-      const task = taskStore.get(id);
-      if (task?.status === "ready") {
+      if (result.status === "ready") {
+        // AC-005.2: transitioned to ready
         console.log(
           chalk.green(`✓ Task '${id.slice(0, 8)}' approved and ready for dispatch.`),
         );
-      } else {
-        console.log(chalk.green(`✓ Task '${id.slice(0, 8)}' approved.`));
-        if (task?.status) {
-          console.log(chalk.dim(`  Status: ${task.status}`));
-        }
+      } else if (result.status === "blocked") {
+        // AC-005.2: transitioned to blocked
+        const blockingList = result.blockingIds?.map((b) => b.slice(0, 8)).join(", ") ?? "unknown";
+        console.log(
+          chalk.yellow(`⚠ Task '${id.slice(0, 8)}' approved but blocked on: ${blockingList}.`),
+        );
+      } else if (result.status === "no-change") {
+        // AC-005.3: non-backlog, no error, exit 0
+        console.log(
+          chalk.dim(`Task '${id.slice(0, 8)}' is already in status '${result.currentStatus}' — no change.`),
+        );
       }
     } catch (err) {
       if (err instanceof TaskNotFoundError) {
         console.error(chalk.red(`Error: Task '${id}' not found.`));
-        process.exit(1);
-      }
-      if (err instanceof InvalidStatusTransitionError) {
-        console.error(
-          chalk.red(
-            `Error: Task '${id.slice(0, 8)}' cannot be approved — it is currently '${err.fromStatus}'.`,
-          ),
-        );
-        console.error(chalk.dim("  Only 'backlog' tasks can be approved."));
         process.exit(1);
       }
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));

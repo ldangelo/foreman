@@ -148,6 +148,25 @@ export class InvalidStatusTransitionError extends Error {
   }
 }
 
+// ── Approve result types ──────────────────────────────────────────────────────
+
+/** Result of a single approve() call. */
+export interface ApproveResult {
+  /** The final status after approval: 'ready', 'blocked', or 'no-change'. */
+  status: "ready" | "blocked" | "no-change";
+  /** IDs of unresolved blockers (only set when status === 'blocked'). */
+  blockingIds?: string[];
+  /** Current status of the task (only set when status === 'no-change'). */
+  currentStatus?: string;
+}
+
+/** Result of a batch approveFromSling() call. */
+export interface BatchApproveResult {
+  approved: string[];
+  blocked: string[];
+  skipped: string[];
+}
+
 /**
  * Thrown when attempting to add a dependency that would create a cycle.
  */
@@ -304,15 +323,19 @@ export class NativeTaskStore {
   }
 
   /**
-   * Approve a task: transition from 'backlog' → 'ready'.
+   * Approve a task: transition from 'backlog' → 'ready' or 'backlog' → 'blocked'.
    *
    * Implements REQ-005 (approval gate). Only backlog tasks can be approved.
-   * After approval, the task becomes visible to the dispatcher.
+   * After approval, the task becomes visible to the dispatcher (if ready) or
+   * remains blocked until its dependencies are resolved.
    *
+   * If the task has unresolved 'blocks' dependencies (blocker status NOT IN
+   * ('merged', 'closed')), transitions to 'blocked' instead of 'ready'.
+   *
+   * @returns {ApproveResult} The result of the approval attempt.
    * @throws {TaskNotFoundError} If the task ID does not exist.
-   * @throws {InvalidStatusTransitionError} If the task is not in 'backlog' status.
    */
-  approve(id: string): void {
+  approve(id: string): ApproveResult {
     const now = new Date().toISOString();
 
     const tx = this.db.transaction(() => {
@@ -325,17 +348,96 @@ export class NativeTaskStore {
       }
 
       if (row.status !== "backlog") {
-        throw new InvalidStatusTransitionError(id, row.status, "ready");
+        // AC-005.3: non-backlog tasks are a no-op, not an error
+        return {
+          status: "no-change" as const,
+          currentStatus: row.status,
+        };
       }
 
+      // Check for unresolved blockers
+      const unresolvedBlockers = this.db
+        .prepare(
+          `SELECT td.to_task_id
+           FROM task_dependencies td
+           JOIN tasks blocker ON blocker.id = td.to_task_id
+           WHERE td.from_task_id = ?
+             AND td.type = 'blocks'
+             AND blocker.status NOT IN ('merged', 'closed')`,
+        )
+        .all(id) as Array<{ to_task_id: string }>;
+
+      if (unresolvedBlockers.length > 0) {
+        // Transition to blocked
+        const blockerIds = unresolvedBlockers.map((b) => b.to_task_id);
+        this.db
+          .prepare(
+            "UPDATE tasks SET status = 'blocked', approved_at = ?, updated_at = ? WHERE id = ?",
+          )
+          .run(now, now, id);
+        return {
+          status: "blocked" as const,
+          blockingIds: blockerIds,
+        };
+      }
+
+      // No unresolved blockers → transition to ready
       this.db
         .prepare(
           "UPDATE tasks SET status = 'ready', approved_at = ?, updated_at = ? WHERE id = ?",
         )
         .run(now, now, id);
+      return { status: "ready" as const };
     });
 
-    tx();
+    return tx();
+  }
+
+  /**
+   * Batch approve tasks that were created by a Sling run.
+   *
+   * Finds all tasks where `external_id` starts with `<seedId>:` or equals `seedId`,
+   * then approves each one in a single transaction.
+   *
+   * @param seedId - The Sling seed ID to filter by (e.g. "bd-abc123")
+   * @returns {BatchApproveResult} Summary of approval results.
+   */
+  approveFromSling(seedId: string): BatchApproveResult {
+    const tx = this.db.transaction(() => {
+      // Find all tasks with matching external_id
+      const tasks = this.db
+        .prepare(
+          `SELECT id, status FROM tasks
+           WHERE external_id = ? OR external_id LIKE ?`,
+        )
+        .all(seedId, `${seedId}:%`) as Array<{ id: string; status: string }>;
+
+      const result: BatchApproveResult = {
+        approved: [],
+        blocked: [],
+        skipped: [],
+      };
+
+      for (const task of tasks) {
+        if (task.status !== "backlog") {
+          result.skipped.push(task.id);
+          continue;
+        }
+
+        const approveResult = this.approve(task.id);
+        if (approveResult.status === "ready") {
+          result.approved.push(task.id);
+        } else if (approveResult.status === "blocked") {
+          result.blocked.push(task.id);
+        } else {
+          result.skipped.push(task.id);
+        }
+      }
+
+      return result;
+    });
+
+    return tx();
   }
 
   /**

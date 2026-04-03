@@ -248,11 +248,27 @@ describe("NativeTaskStore.approve()", () => {
     ).toThrow(TaskNotFoundError);
   });
 
-  it("throws for non-backlog tasks", () => {
+  it("returns no-change for non-backlog tasks (AC-005.3)", () => {
     const task = ctx.taskStore.create({ title: "Already Ready" });
     ctx.taskStore.approve(task.id);
-    // Try to approve again
-    expect(() => ctx.taskStore.approve(task.id)).toThrow();
+    // Try to approve again — should return no-change, not throw
+    const result = ctx.taskStore.approve(task.id);
+    expect(result.status).toBe("no-change");
+    expect(result.currentStatus).toBe("ready");
+  });
+
+  it("returns no-change for already blocked task", () => {
+    const taskA = ctx.taskStore.create({ title: "Task A" });
+    const taskB = ctx.taskStore.create({ title: "Task B" });
+    // A blocks B
+    ctx.taskStore.addDependency(taskB.id, taskA.id, "blocks");
+    // Manually set B to blocked
+    ctx.store.getDb().prepare("UPDATE tasks SET status='blocked' WHERE id=?").run(taskB.id);
+    // Approve A (now B is blocked by A which is still backlog)
+    // Now try to approve B — it's blocked, not backlog
+    const result = ctx.taskStore.approve(taskB.id);
+    expect(result.status).toBe("no-change");
+    expect(result.currentStatus).toBe("blocked");
   });
 
   it("sets approved_at timestamp on approval", () => {
@@ -264,6 +280,134 @@ describe("NativeTaskStore.approve()", () => {
     expect(updated?.approved_at).toBeTruthy();
     expect(updated?.approved_at! >= before).toBe(true);
     expect(updated?.approved_at! <= after).toBe(true);
+  });
+
+  it("transitions to blocked when unresolved blockers exist (AC-005.2)", () => {
+    const taskA = ctx.taskStore.create({ title: "Blocker A" });
+    const taskB = ctx.taskStore.create({ title: "Blocked B" });
+    // A blocks B (but A is not yet merged/closed)
+    ctx.taskStore.addDependency(taskB.id, taskA.id, "blocks");
+    // Approve B — should transition to blocked since A is unresolved
+    const result = ctx.taskStore.approve(taskB.id);
+    expect(result.status).toBe("blocked");
+    expect(result.blockingIds).toContain(taskA.id);
+    const updated = ctx.taskStore.get(taskB.id);
+    expect(updated?.status).toBe("blocked");
+  });
+
+  it("transitions to ready when no unresolved blockers (AC-005.2)", () => {
+    const taskA = ctx.taskStore.create({ title: "Blocker A" });
+    const taskB = ctx.taskStore.create({ title: "Freed B" });
+    // A blocks B
+    ctx.taskStore.addDependency(taskB.id, taskA.id, "blocks");
+    // Close A (merged/closed status clears the blocker)
+    ctx.taskStore.close(taskA.id);
+    // Now approve B — should transition to ready since A is closed
+    const result = ctx.taskStore.approve(taskB.id);
+    expect(result.status).toBe("ready");
+    const updated = ctx.taskStore.get(taskB.id);
+    expect(updated?.status).toBe("ready");
+  });
+
+  it("only 'blocks' type dependencies cause blocked transition", () => {
+    const taskA = ctx.taskStore.create({ title: "Parent A" });
+    const taskB = ctx.taskStore.create({ title: "Child B" });
+    // A parent-child B (not blocks)
+    ctx.taskStore.addDependency(taskB.id, taskA.id, "parent-child");
+    // Approve B — should transition to ready since it's parent-child, not blocks
+    const result = ctx.taskStore.approve(taskB.id);
+    expect(result.status).toBe("ready");
+  });
+});
+
+// ── NativeTaskStore.approveFromSling() ───────────────────────────────────────
+
+describe("NativeTaskStore.approveFromSling()", () => {
+  let ctx: ReturnType<typeof setupStore>;
+
+  beforeEach(() => {
+    ctx = setupStore();
+  });
+  afterEach(() => teardownStore(ctx));
+
+  it("approves all backlog tasks with matching external_id", () => {
+    const seedId = "bd-sling-001";
+    const t1 = ctx.taskStore.create({ title: "Sling Task 1", externalId: `${seedId}:1` });
+    const t2 = ctx.taskStore.create({ title: "Sling Task 2", externalId: `${seedId}:2` });
+    const t3 = ctx.taskStore.create({ title: "Sling Task 3", externalId: `${seedId}:3` });
+    const t4 = ctx.taskStore.create({ title: "Other Task", externalId: "bd-other" });
+
+    const result = ctx.taskStore.approveFromSling(seedId);
+
+    expect(result.approved).toHaveLength(3);
+    expect(result.approved).toContain(t1.id);
+    expect(result.approved).toContain(t2.id);
+    expect(result.approved).toContain(t3.id);
+    expect(result.blocked).toHaveLength(0);
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("approves tasks with exact external_id match", () => {
+    const seedId = "bd-single";
+    const t1 = ctx.taskStore.create({ title: "Exact Match", externalId: seedId });
+
+    const result = ctx.taskStore.approveFromSling(seedId);
+
+    expect(result.approved).toHaveLength(1);
+    expect(result.approved).toContain(t1.id);
+  });
+
+  it("skips non-backlog tasks in batch", () => {
+    const seedId = "bd-mixed";
+    const t1 = ctx.taskStore.create({ title: "Backlog Task", externalId: `${seedId}:1` });
+    const t2 = ctx.taskStore.create({ title: "Already Ready", externalId: `${seedId}:2` });
+    ctx.taskStore.approve(t2.id); // t2 is already ready
+
+    const result = ctx.taskStore.approveFromSling(seedId);
+
+    expect(result.approved).toHaveLength(1);
+    expect(result.approved).toContain(t1.id);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped).toContain(t2.id);
+  });
+
+  it("handles tasks with unresolved blockers in batch", () => {
+    const seedId = "bd-blocked-batch";
+    // Blocker has a DIFFERENT external_id (not part of the batch)
+    const blocker = ctx.taskStore.create({ title: "Blocker", externalId: "bd-other-blocker" });
+    const t1 = ctx.taskStore.create({ title: "Blocked Task", externalId: `${seedId}:1` });
+    // t1 is blocked by blocker (which is still backlog)
+    ctx.taskStore.addDependency(t1.id, blocker.id, "blocks");
+
+    const result = ctx.taskStore.approveFromSling(seedId);
+
+    // t1 should be blocked (not approved) since blocker is still backlog
+    expect(result.approved).toHaveLength(0);
+    // t1 is blocked
+    expect(result.blocked).toHaveLength(1);
+    expect(result.blocked).toContain(t1.id);
+  });
+
+  it("returns empty result when no tasks match seed", () => {
+    const result = ctx.taskStore.approveFromSling("nonexistent-seed");
+    expect(result.approved).toHaveLength(0);
+    expect(result.blocked).toHaveLength(0);
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("is atomic: all or nothing within transaction", () => {
+    const seedId = "bd-atomic";
+    const t1 = ctx.taskStore.create({ title: "Task 1", externalId: `${seedId}:1` });
+    const t2 = ctx.taskStore.create({ title: "Task 2", externalId: `${seedId}:2` });
+    // Add a blocker dependency so t2 will be blocked
+    const blocker = ctx.taskStore.create({ title: "Blocker" });
+    ctx.taskStore.addDependency(t2.id, blocker.id, "blocks");
+
+    const result = ctx.taskStore.approveFromSling(seedId);
+
+    // t1 should be approved, t2 should be blocked
+    expect(result.approved).toContain(t1.id);
+    expect(result.blocked).toContain(t2.id);
   });
 });
 

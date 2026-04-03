@@ -204,17 +204,28 @@ describe("task approve — NativeTaskStore.approve()", () => {
     expect(ctx.taskStore.get(task.id)?.approved_at).toBeTruthy();
   });
 
-  it("throws for non-backlog tasks", () => {
+  it("returns no-change for non-backlog tasks (AC-005.3)", () => {
     const task = ctx.taskStore.create({ title: "Already Ready" });
     ctx.taskStore.approve(task.id);
-    // Approving again should throw (not in backlog)
-    expect(() => ctx.taskStore.approve(task.id)).toThrow();
+    // Approving again should return no-change, not throw
+    const result = ctx.taskStore.approve(task.id);
+    expect(result.status).toBe("no-change");
+    expect(result.currentStatus).toBe("ready");
   });
 
   it("throws TaskNotFoundError for unknown ID", () => {
     expect(() =>
       ctx.taskStore.approve("00000000-0000-0000-0000-000000000000"),
     ).toThrow(TaskNotFoundError);
+  });
+
+  it("returns blocked status when unresolved blockers exist (AC-005.2)", () => {
+    const taskA = ctx.taskStore.create({ title: "Blocker A" });
+    const taskB = ctx.taskStore.create({ title: "Blocked B" });
+    ctx.taskStore.addDependency(taskB.id, taskA.id, "blocks");
+    const result = ctx.taskStore.approve(taskB.id);
+    expect(result.status).toBe("blocked");
+    expect(result.blockingIds).toContain(taskA.id);
   });
 });
 
