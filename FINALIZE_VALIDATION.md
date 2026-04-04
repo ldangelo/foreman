@@ -1,18 +1,19 @@
-# Finalize Validation: Integration tests for dispatcher native task store path
+# Finalize Validation: [trd:trd-2026-006-multi-project-native-task-management:task:TRD-009-TEST] Unit tests for --project flag resolution
 
-## Bead: TRD-010-TEST
-## Run: 11fdf01a-a859-426b-85dc-f9b2e2765ab8
-## Timestamp: 2026-04-03T10:31:37Z
+## Seed: bd-gvnx
+## Run: 2d4ac356-1ca6-4457-b2c7-0d0cdd52f92a
+## Timestamp: 2026-04-04T09:40:50Z
 
 ## Target Integration
 - Status: SKIPPED
 - Target: origin/dev
-- QA Validated Target Ref: 6abd640d5eaad416c69599bbba0ae2bd647e2438
-- Current Target Ref: 6abd640d5eaad416c69599bbba0ae2bd647e2438
+- QA Validated Target Ref: 1bb1545091be1ab344442ba132ce10e5e4c430d9
+- Current Target Ref: 1bb1545091be1ab344442ba132ce10e5e4c430d9
+- Note: QA already validated this bead against the target branch. The target branch did not move after QA completed, so rerunning tests is not required.
 
 ## Test Validation
 - Status: SKIPPED
-- Note: QA already validated this bead's changes. The target branch (dev) did not move after QA completed, so no retest is required.
+- Reason: QA validated this bead already. Target branch ref is unchanged (1bb15450). Tests will be run only if target drift is detected.
 
 ## Failure Scope
 - SKIPPED
