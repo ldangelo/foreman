@@ -197,4 +197,92 @@ describe("foreman task --project flag resolution", () => {
     expect(result.exitCode).toBe(0);
     expect(output).toMatch(/Tasks|No tasks/);
   });
+
+  // ── Edge cases ──────────────────────────────────────────────────────────────
+
+  it("task list --project '' (empty string) falls back to current directory", async () => {
+    const tmpBase = makeTempDir();
+    const projectDir = mkProject(tmpBase, "my-project");
+
+    // Initialize git repo
+    execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
+
+    // Empty string project name should behave like no --project flag
+    const result = await run(["task", "list", "--project", ""], projectDir);
+
+    // Should succeed (falls back to current directory)
+    const output = result.stdout + result.stderr;
+    expect(result.exitCode).toBe(0);
+    expect(output).toMatch(/Tasks|No tasks/);
+  });
+
+  it("task list --project <relative-path> exits with error (not a registered name)", async () => {
+    const tmpBase = makeTempDir();
+    const projectDir = mkProject(tmpBase, "my-project");
+
+    // Initialize git repo
+    execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
+
+    // Set HOME to temp dir with empty registry
+    const registryDir = join(tmpBase, ".foreman");
+    mkdirSync(registryDir, { recursive: true });
+    writeFileSync(
+      join(registryDir, "projects.json"),
+      JSON.stringify({ version: 1, projects: [] }, null, 2) + "\n",
+      "utf-8",
+    );
+
+    const env = {
+      ...process.env,
+      HOME: tmpBase,
+    };
+
+    // Relative paths should be treated as unknown names → exit with error
+    const result = await run(["task", "list", "--project", "../relative-path"], projectDir, env);
+
+    expect(result.exitCode).toBe(1);
+    const output = result.stdout + result.stderr;
+    expect(output).toMatch(/not found/i);
+    expect(output).toContain("foreman project list");
+  });
+
+  it("task list --project <absolute-path-string> (not a real path) warns and exits gracefully", async () => {
+    const tmpBase = makeTempDir();
+    const projectDir = mkProject(tmpBase, "my-project");
+
+    // Initialize git repo
+    execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
+
+    // Set HOME to temp dir with empty registry
+    const registryDir = join(tmpBase, ".foreman");
+    mkdirSync(registryDir, { recursive: true });
+    writeFileSync(
+      join(registryDir, "projects.json"),
+      JSON.stringify({ version: 1, projects: [] }, null, 2) + "\n",
+      "utf-8",
+    );
+
+    const env = {
+      ...process.env,
+      HOME: tmpBase,
+    };
+
+    // An absolute path string that's not a real directory and not in registry
+    // should warn about not being in registry but proceed (will fail later on actual file ops)
+    const fakeAbsolutePath = "/tmp/foreman-test-nonexistent-project-12345";
+    const result = await run(["task", "list", "--project", fakeAbsolutePath], projectDir, env);
+
+    // Should warn about not being in registry
+    const output = result.stdout + result.stderr;
+    expect(output).toContain("not in registry");
+  });
 });
