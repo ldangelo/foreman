@@ -135,13 +135,56 @@ For each ready task from bd ready --json:
   )
 ```
 
-### 5. Monitor
+### 6. Monitor
+
+### 5. Inbox
 
 ```bash
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts monitor
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts monitor --recover  # auto-recover stuck agents
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts monitor --timeout 20  # stuck after 20 min
+# View messages for latest run
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox
+
+# Filter by agent role
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --agent explorer
+
+# Filter by run ID
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --run <run-id>
+
+# Filter by bead ID
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --bead bd-001
+
+# Watch mode (live updates)
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --watch
+
+# Show only unread messages
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --unread
+
+# Watch all runs across the project
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --all --watch
+
+# Mark messages as read
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --ack
 ```
+
+The inbox shows inter-agent messages within pipeline runs — communications between explorer, developer, reviewer, and foreman agents.
+
+### 6. Mail (Send Inter-Agent Messages)
+
+```bash
+# Send a message between agents within a run
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts mail send \
+  --run-id <run-id> \
+  --from explorer \
+  --to developer \
+  --subject phase-complete \
+  --body '{"phase":"exploration"}'
+```
+
+Agent roles: `explorer`, `developer`, `reviewer`, `qa`, `foreman`
+
+Subjects: `phase-started`, `phase-complete`, `agent-error`, `blocker-detected`, `handoff`
+
+**Tip**: Set `FOREMAN_RUN_ID` env var to avoid passing `--run-id` on every call.
+
 
 ### 6. Merge
 
