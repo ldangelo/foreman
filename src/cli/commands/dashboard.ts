@@ -475,7 +475,14 @@ export function renderProjectHeader(project: Project, activeCount: number, metri
  * @param maxRows - Maximum rows to display (default: 10).
  */
 export function renderNeedsHumanPanel(tasks: NativeTask[], maxRows = 10): string {
-  if (tasks.length === 0) return "";
+  if (tasks.length === 0) {
+    return (
+      chalk.bold.red("⚠  NEEDS HUMAN ATTENTION:") + "\n" +
+      THICK_RULE + "\n" +
+      chalk.dim("  No tasks need attention.\n") +
+      "\n"
+    );
+  }
 
   const lines: string[] = [];
   lines.push(chalk.bold.red("⚠  NEEDS HUMAN ATTENTION:"));
@@ -971,6 +978,93 @@ export const dashboardCommand = new Command("dashboard")
     process.on("SIGINT", onSigint);
     process.stdout.write("\x1b[?25l"); // hide cursor
 
+    // ── Needs Human keyboard state (REQ-011.3) ────────────────────────────
+    let needsHumanTasks: NativeTask[] = [];
+    let selectedTaskIndex = -1;
+    let stdinRawMode = false;
+    let sleepResolve: (() => void) | null = null;
+
+    /**
+     * Keyboard handler for Needs Human panel interaction.
+     * - `a` — approve selected backlog task
+     * - `r` — retry selected failed/stuck/conflict task
+     * - ↑/k — move selection up
+     * - ↓/j — move selection down
+     * - any other key — deselect
+     */
+    const handleNeedsHumanKey = (chunk: Buffer) => {
+      const key = chunk.toString();
+      const tasks = needsHumanTasks;
+
+      if (key === "\u001B[A" || key === "k") {
+        // Arrow up or k — move selection up
+        if (tasks.length > 0) {
+          selectedTaskIndex = selectedTaskIndex <= 0 ? tasks.length - 1 : selectedTaskIndex - 1;
+          wakeAndRender();
+        }
+      } else if (key === "\u001B[B" || key === "j") {
+        // Arrow down or j — move selection down
+        if (tasks.length > 0) {
+          selectedTaskIndex = selectedTaskIndex >= tasks.length - 1 ? 0 : selectedTaskIndex + 1;
+          wakeAndRender();
+        }
+      } else if (key === "a" || key === "A") {
+        // Approve selected backlog task
+        if (selectedTaskIndex >= 0 && selectedTaskIndex < tasks.length) {
+          const task = tasks[selectedTaskIndex];
+          if (task.status === "backlog" && task.projectPath) {
+            approveTask(task.id, task.projectPath);
+            selectedTaskIndex = -1; // deselect after action
+            wakeAndRender();
+          }
+        }
+      } else if (key === "r" || key === "R") {
+        // Retry selected failed/stuck/conflict task
+        if (selectedTaskIndex >= 0 && selectedTaskIndex < tasks.length) {
+          const task = tasks[selectedTaskIndex];
+          if (
+            (task.status === "failed" || task.status === "stuck" || task.status === "conflict") &&
+            task.projectPath
+          ) {
+            retryTask(task.id, task.projectPath);
+            selectedTaskIndex = -1; // deselect after action
+            wakeAndRender();
+          }
+        }
+      } else if (key === "\r" || key === "\n") {
+        // Enter — show task detail (deselect for now)
+        selectedTaskIndex = -1;
+        wakeAndRender();
+      } else if (key.length === 1) {
+        // Any other printable key — deselect
+        if (selectedTaskIndex !== -1) {
+          selectedTaskIndex = -1;
+          wakeAndRender();
+        }
+      }
+    };
+
+    /** Wake the poll sleep and re-render immediately. */
+    const wakeAndRender = () => {
+      if (sleepResolve) {
+        sleepResolve();
+        sleepResolve = null;
+      }
+    };
+
+    // Set up raw mode stdin for keyboard handling
+    if (process.stdin.isTTY) {
+      try {
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.setEncoding("utf8");
+        process.stdin.on("data", handleNeedsHumanKey);
+        stdinRawMode = true;
+      } catch {
+        // stdin may not support raw mode; continue without keyboard handling
+      }
+    }
+
     try {
       while (!detached) {
         // Re-read project list each iteration in case new projects registered
@@ -981,13 +1075,31 @@ export const dashboardCommand = new Command("dashboard")
 
         const snapshots = await readProjectSnapshot(filtered, eventsLimit);
         const state = aggregateSnapshots(snapshots);
+
+        // Update Needs Human task list for keyboard handling (REQ-011.3)
+        needsHumanTasks = state.needsHumanTasks ?? [];
+
+        // Clamp selection to valid range
+        if (selectedTaskIndex >= needsHumanTasks.length) {
+          selectedTaskIndex = needsHumanTasks.length > 0 ? needsHumanTasks.length - 1 : -1;
+        }
+
         const display = renderDashboard(state);
         process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
-        await new Promise<void>((r) => setTimeout(r, intervalMs));
+        await new Promise<void>((resolve) => {
+          sleepResolve = resolve;
+          setTimeout(resolve, intervalMs);
+        });
+        sleepResolve = null;
       }
     } finally {
       process.stdout.write("\x1b[?25h"); // restore cursor on any exit
       process.removeListener("SIGINT", onSigint);
+      if (stdinRawMode) {
+        try {
+          process.stdin.setRawMode(false);
+        } catch { /* ignore */ }
+      }
       store.close();
     }
   });

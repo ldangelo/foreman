@@ -560,8 +560,10 @@ describe("NeedsHumanStatus", () => {
 // ── renderNeedsHumanPanel() ───────────────────────────────────────────────
 
 describe("renderNeedsHumanPanel", () => {
-  it("returns empty string when no tasks", () => {
-    expect(renderNeedsHumanPanel([])).toBe("");
+  it("shows 'No tasks need attention.' when no tasks (REQ-011.2)", () => {
+    const output = renderNeedsHumanPanel([]);
+    expect(output).toContain("NEEDS HUMAN ATTENTION");
+    expect(output).toContain("No tasks need attention.");
   });
 
   it("shows NEEDS HUMAN ATTENTION header when tasks exist", () => {
