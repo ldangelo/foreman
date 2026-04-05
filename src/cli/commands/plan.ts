@@ -1,13 +1,14 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { ForemanStore } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { PlanStepDefinition } from "../../orchestrator/types.js";
+import { resolveProjectPathFromOption } from "./project-task-support.js";
 
 // ── Client factory (TRD-016) ──────────────────────────────────────────────
 
@@ -50,6 +51,7 @@ export const planCommand = new Command("plan")
     "AI runtime to use (claude-code | codex)",
     "claude-code",
   )
+  .option("--project <path>", "Project path or registered name (default: current directory)")
   .option("--dry-run", "Show the pipeline steps without executing")
   .action(
     async (
@@ -59,16 +61,22 @@ export const planCommand = new Command("plan")
         fromPrd?: string;
         outputDir: string;
         runtime: string;
+        project?: string;
         dryRun?: boolean;
       },
     ) => {
-      const outputDir = resolve(opts.outputDir);
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      const projectPath = await vcs.getRepoRoot(process.cwd());
+      const resolvedProjectPath = resolveProjectPathFromOption(opts.project);
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, resolvedProjectPath);
+      const projectPath = await vcs.getRepoRoot(resolvedProjectPath);
+      const outputDir = isAbsolute(opts.outputDir)
+        ? resolve(opts.outputDir)
+        : resolve(projectPath, opts.outputDir);
 
       // Determine input
       let productDescription: string;
-      const resolvedPath = resolve(description);
+      const resolvedPath = isAbsolute(description)
+        ? resolve(description)
+        : resolve(projectPath, description);
       if (existsSync(resolvedPath)) {
         productDescription = readFileSync(resolvedPath, "utf-8");
         console.log(chalk.dim(`Reading description from: ${resolvedPath}`));
@@ -96,7 +104,9 @@ export const planCommand = new Command("plan")
 
         // Validate --from-prd path
         if (opts.fromPrd) {
-          const prdPath = resolve(opts.fromPrd);
+          const prdPath = isAbsolute(opts.fromPrd)
+            ? resolve(opts.fromPrd)
+            : resolve(projectPath, opts.fromPrd);
           if (!existsSync(prdPath)) {
             console.error(chalk.red(`PRD file not found: ${prdPath}`));
             process.exitCode = 1;

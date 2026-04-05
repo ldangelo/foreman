@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
-import { mkdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { mkdirSync, existsSync, realpathSync } from "node:fs";
+import { join, dirname, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,15 @@ function resolveBundledNativeBinding(): string | undefined {
     // Swallow — fileURLToPath / import.meta.url unavailable in some edge cases
   }
   return undefined;
+}
+
+function normalizeProjectPath(path: string): string {
+  const resolved = resolvePath(path);
+  try {
+    return realpathSync.native?.(resolved) ?? realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 // ── Interfaces ──────────────────────────────────────────────────────────
@@ -718,7 +727,7 @@ export class ForemanStore {
     const project: Project = {
       id: randomUUID(),
       name,
-      path,
+      path: normalizeProjectPath(path),
       status: "active",
       created_at: now,
       updated_at: now,
@@ -740,10 +749,11 @@ export class ForemanStore {
   }
 
   getProjectByPath(path: string): Project | null {
+    const normalized = normalizeProjectPath(path);
     return (
       (this.db
         .prepare("SELECT * FROM projects WHERE path = ?")
-        .get(path) as Project | undefined) ?? null
+        .get(normalized) as Project | undefined) ?? null
     );
   }
 
