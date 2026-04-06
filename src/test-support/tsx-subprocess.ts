@@ -1,7 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, join, parse } from "node:path";
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
