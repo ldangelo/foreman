@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runWithPiSdk, type PiRunOptions, type PiRunResult } from "./pi-sdk-runner.js";
 import type { AgentRole } from "./types.js";
@@ -53,9 +54,7 @@ function normalizeModulePath(modulePath: string, projectRoot: string): string {
     return modulePath;
   }
   if (modulePath.startsWith(".") || modulePath.startsWith("/")) {
-    const resolvedPath = modulePath.startsWith("/")
-      ? modulePath
-      : new URL(modulePath, pathToFileURL(`${projectRoot}/`)).pathname;
+    const resolvedPath = modulePath.startsWith("/") ? modulePath : resolve(projectRoot, modulePath);
     return pathToFileURL(resolvedPath).href;
   }
   return modulePath;
