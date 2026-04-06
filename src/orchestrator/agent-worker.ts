@@ -17,6 +17,7 @@ import { runWithPiSdk } from "./pi-sdk-runner.js";
 import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
 import type { EpicTask } from "./pipeline-executor.js";
+import { createConfiguredPhaseRunner, type PhaseRunner, type PhaseRunnerConfig } from "./phase-runner.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import { NativeTaskStore } from "../lib/task-store.js";
@@ -229,6 +230,12 @@ interface WorkerConfig {
    * When set, this run is an epic execution.
    */
   epicId?: string;
+  /**
+   * Optional explicit phase-runner override for tests/harnesses.
+   * When present, only per-phase execution is swapped; the rest of the worker
+   * still runs through the real detached pipeline path.
+   */
+  phaseRunner?: PhaseRunnerConfig;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
