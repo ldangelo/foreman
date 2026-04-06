@@ -68,7 +68,7 @@ describe("deterministic smoke e2e merge scenarios", () => {
           };
         },
         async getGraph() {
-          return { edges: [] };
+          return { nodes: [], edges: [] };
         },
         async update() {
           return undefined;
