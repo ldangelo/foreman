@@ -59,6 +59,26 @@ export interface ExecResult {
   exitCode: number;
 }
 
+function toExecResultError(err: unknown): ExecResult {
+  if (typeof err === "object" && err !== null) {
+    const execErr = err as {
+      stdout?: string;
+      stderr?: string;
+      code?: number | string;
+      status?: number;
+    };
+    return {
+      stdout: execErr.stdout ?? "",
+      stderr: execErr.stderr ?? "",
+      exitCode: typeof execErr.code === "number"
+        ? execErr.code
+        : execErr.status ?? 1,
+    };
+  }
+
+  return { stdout: "", stderr: "", exitCode: 1 };
+}
+
 function buildEnv(extraEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return {
     ...process.env,
@@ -88,12 +108,8 @@ export async function runTsxModule(
       },
     );
     return { stdout, stderr, exitCode: 0 };
-  } catch (err: any) {
-    return {
-      stdout: err.stdout ?? "",
-      stderr: err.stderr ?? "",
-      exitCode: err.code ?? err.status ?? 1,
-    };
+  } catch (err: unknown) {
+    return toExecResultError(err);
   }
 }
 
