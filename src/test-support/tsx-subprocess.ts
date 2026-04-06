@@ -5,53 +5,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-function findNodeModuleUpwards(startDir: string): string | null {
-  let current = startDir;
-  while (true) {
-    const candidate = join(current, "node_modules", "tsx", "dist", "loader.mjs");
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-    const parent = dirname(current);
-    if (parent === current || current === parse(current).root) {
-      return null;
-    }
-    current = parent;
-  }
-}
-
-function resolveTsxLoader(): string {
-  const candidates = [
-    findNodeModuleUpwards(__dirname),
-    findNodeModuleUpwards(process.cwd()),
-  ].filter((candidate): candidate is string => Boolean(candidate));
-
-  try {
-    const gitCommonDir = execFileSync(
-      "git",
-      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-      { cwd: __dirname, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
-    ).trim();
-    if (gitCommonDir) {
-      candidates.push(join(dirname(gitCommonDir), "node_modules", "tsx", "dist", "loader.mjs"));
-    }
-  } catch {
-    // Not a git checkout or git unavailable — fall back to upward scans only.
-  }
-
-  for (const candidate of new Set(candidates)) {
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  throw new Error(`Unable to locate tsx loader from ${__dirname}`);
-}
-
-const TSX_LOADER = resolveTsxLoader();
+const require = createRequire(import.meta.url);
+const TSX_LOADER = require.resolve("tsx");
 
 export interface ExecResult {
   stdout: string;
@@ -109,7 +64,12 @@ export async function runTsxModule(
     );
     return { stdout, stderr, exitCode: 0 };
   } catch (err: unknown) {
-    return toExecResultError(err);
+    const error = err as { stdout?: string; stderr?: string; code?: number; status?: number };
+    return {
+      stdout: error.stdout ?? "",
+      stderr: error.stderr ?? "",
+      exitCode: error.code ?? error.status ?? 1,
+    };
   }
 }
 
