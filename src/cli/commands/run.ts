@@ -7,6 +7,7 @@ import chalk from "chalk";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
+import { NativeTaskClient } from "../../lib/native-task-client.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
@@ -39,20 +40,56 @@ export interface TaskClientResult {
   bvClient: BvClient | null;
 }
 
+export type RunRuntimeMode = "default" | "test";
+
+interface CreateTaskClientsOptions {
+  runtimeMode?: RunRuntimeMode;
+  store?: Pick<ForemanStore, "hasNativeTasks" | "getDb">;
+}
+
 /**
  * Instantiate the br task-tracking client(s).
  *
  * TRD-024: sd backend removed. Always returns a BeadsRustClient after verifying
  * the binary exists, plus a BvClient for graph-aware triage.
  *
- * Throws if the br binary cannot be found.
+ * In test runtime mode, when native tasks exist, returns a NativeTaskClient
+ * and skips beads_rust startup entirely.
  */
-export async function createTaskClients(projectPath: string): Promise<TaskClientResult> {
+export async function createTaskClients(
+  projectPath: string,
+  opts: CreateTaskClientsOptions = {},
+): Promise<TaskClientResult> {
+  if (opts.runtimeMode === "test" && opts.store?.hasNativeTasks()) {
+    return {
+      taskClient: new NativeTaskClient(opts.store.getDb()),
+      bvClient: null,
+    };
+  }
+
   const brClient = new BeadsRustClient(projectPath);
   // Verify binary exists before proceeding; throws with a friendly message if not
   await brClient.ensureBrInstalled();
   const bvClient = new BvClient(projectPath);
   return { taskClient: brClient, bvClient };
+}
+
+export function resolveRunRuntimeMode(
+  value: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): RunRuntimeMode {
+  const raw = (value ?? env.FOREMAN_RUNTIME_MODE ?? "default").trim().toLowerCase();
+  if (raw === "default" || raw === "test") return raw;
+  throw new Error(`Invalid runtime mode '${raw}'. Use 'default' or 'test'.`);
+}
+
+function validateRunRuntimeMode(mode: RunRuntimeMode): void {
+  if (mode !== "test") return;
+  if (!process.env.FOREMAN_PHASE_RUNNER_MODULE?.trim()) {
+    throw new Error(
+      "Test runtime requires FOREMAN_PHASE_RUNNER_MODULE so detached workers can use the configured phase runner.",
+    );
+  }
 }
 
 // ── Branch Mismatch Detection ────────────────────────────────────────────────
@@ -297,6 +334,7 @@ export const runCommand = new Command("run")
   .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
   .option("--stagger <duration>", "Stagger delay between dispatches to prevent thundering herd (e.g. '30s', '1m')")
+  .option("--runtime-mode <mode>", "Runtime mode: default|test")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts) => {
@@ -312,6 +350,7 @@ export const runCommand = new Command("run")
     const skipReview = opts.skipReview as boolean | undefined;
     const beadFilter = opts.bead as string | undefined;
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
+    const runtimeMode = resolveRunRuntimeMode(opts.runtimeMode as string | undefined);
 
     // P1: Parse stagger delay for preventing thundering herd on Haiku quotas
     // Accept formats like "30s", "1m", "2m30s"
@@ -347,11 +386,13 @@ export const runCommand = new Command("run")
     try {
       const projectPath = await resolveRepoRootProjectPath(opts);
       const startupVcs = await createRunVcsBackend(projectPath);
+      const store = ForemanStore.forProject(projectPath);
 
       // ── Pi Extensions check ──────────────────────────────────────────────────
       // If Pi is available, the extensions package must be built before dispatch.
       // Skipped in dry-run mode since no real agent work will happen.
-      if (!dryRun && isPiAvailable()) {
+      validateRunRuntimeMode(runtimeMode);
+      if (!dryRun && runtimeMode !== "test" && isPiAvailable()) {
         const extDist = join(projectPath, "packages/foreman-pi-extensions/dist/index.js");
         if (!existsSync(extDist)) {
           console.error(chalk.red("\nError: Pi extensions package has not been built.\n"));
@@ -364,15 +405,15 @@ export const runCommand = new Command("run")
       let taskClient: ITaskClient;
       let bvClient: BvClient | null = null;
       try {
-        const clients = await createTaskClients(projectPath);
+        const clients = await createTaskClients(projectPath, { runtimeMode, store });
         taskClient = clients.taskClient;
         bvClient = clients.bvClient;
       } catch (clientErr: unknown) {
         const message = clientErr instanceof Error ? clientErr.message : String(clientErr);
         console.error(chalk.red(`Error initialising task backend: ${message}`));
+        store.close();
         process.exit(1);
       }
-      const store = ForemanStore.forProject(projectPath);
       const project = store.getProjectByPath(projectPath);
       const dispatcher = new Dispatcher(taskClient, store, projectPath, bvClient);
 
@@ -448,7 +489,7 @@ export const runCommand = new Command("run")
       // ── Startup Bead Sync ────────────────────────────────────────────────
       // Reconcile br seed statuses against SQLite run statuses before dispatching.
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
-      if (!dryRun && project) {
+      if (!dryRun && project && runtimeMode !== "test") {
         try {
           const syncResult = await syncBeadStatusOnStartup(store, taskClient, project.id, { projectPath });
           if (syncResult.synced > 0 || syncResult.mismatches.length > 0) {
@@ -472,7 +513,7 @@ export const runCommand = new Command("run")
       // Before dispatching, check if any in-progress beads target a different
       // branch than the current one. If so, prompt the user to switch branches.
       // Skip in dry-run mode since no actual dispatch happens.
-      if (!dryRun && !resume && !resumeFailed) {
+      if (!dryRun && !resume && !resumeFailed && runtimeMode !== "test") {
         const shouldAbort = await checkBranchMismatch(taskClient, projectPath);
         if (shouldAbort) {
           stopSentinel();

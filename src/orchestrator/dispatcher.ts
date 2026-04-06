@@ -1656,7 +1656,7 @@ function buildWorkerEnv(
     }
   }
   const home = process.env.HOME ?? "/home/nobody";
-  env.PATH = `${home}/.local/bin:/opt/homebrew/bin:${env.PATH ?? ""}`;
+  env.PATH = `${home}/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:${env.PATH ?? ""}`;
 
   if (notifyUrl) {
     env.FOREMAN_NOTIFY_URL = notifyUrl;
