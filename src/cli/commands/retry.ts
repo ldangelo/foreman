@@ -2,8 +2,8 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { ForemanStore } from "../../lib/store.js";
-import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 
@@ -227,11 +227,12 @@ export const retryCommand = new Command("retry")
   .option("--dispatch", "Dispatch the bead immediately after resetting")
   .option("--model <model>", "Override agent model for dispatch")
   .option("--dry-run", "Show what would happen without making changes")
-  .action(async (beadId: string, opts: RetryOpts) => {
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action(async (beadId: string, opts: RetryOpts & { project?: string; projectPath?: string }) => {
     let projectPath: string;
     try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      projectPath = await vcs.getRepoRoot(process.cwd());
+      projectPath = await resolveRepoRootProjectPath(opts);
     } catch {
       console.error(
         chalk.red(

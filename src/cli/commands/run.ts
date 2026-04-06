@@ -7,15 +7,16 @@ import chalk from "chalk";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
-import type { ITaskClient } from "../../lib/task-client.js";
+import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
-import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js";
-import { watchRunsInk, type WatchResult } from "../watch-ui.js";
+import type { ModelSelection } from "../../orchestrator/types.js";
+import { watchRunsInk } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
@@ -218,7 +219,7 @@ export async function checkBranchMismatch(
     return false;
   }
 
-  let inProgressBeads: import("../../lib/task-client.js").Issue[];
+  let inProgressBeads: Issue[];
   try {
     inProgressBeads = await taskClient.list({ status: "in_progress" });
   } catch {
@@ -296,6 +297,8 @@ export const runCommand = new Command("run")
   .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
   .option("--stagger <duration>", "Stagger delay between dispatches to prevent thundering herd (e.g. '30s', '1m')")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -342,8 +345,8 @@ export const runCommand = new Command("run")
     }
 
     try {
-      const startupVcs = await createRunVcsBackend(process.cwd());
-      const projectPath = await startupVcs.getRepoRoot(process.cwd());
+      const projectPath = await resolveRepoRootProjectPath(opts);
+      const startupVcs = await createRunVcsBackend(projectPath);
 
       // ── Pi Extensions check ──────────────────────────────────────────────────
       // If Pi is available, the extensions package must be built before dispatch.

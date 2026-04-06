@@ -30,7 +30,7 @@ import {
   type TaskRow,
   type DependencyRow,
 } from "../../lib/task-store.js";
-import { ProjectRegistry, ProjectNotFoundError } from "../../lib/project-registry.js";
+import { resolveProjectPathFromOptions } from "./project-task-support.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -123,36 +123,6 @@ function getTaskStore(projectPath: string): { store: ForemanStore; taskStore: Na
   return { store, taskStore };
 }
 
-function resolveProjectPath(opts: { project?: string }): string {
-  if (!opts.project) {
-    return process.cwd();
-  }
-
-  const registry = new ProjectRegistry();
-
-  try {
-    return registry.resolve(opts.project);
-  } catch (err) {
-    if (err instanceof ProjectNotFoundError) {
-      // Check if it looks like an absolute path — if so, warn and proceed
-      if (opts.project.startsWith("/")) {
-        console.warn(
-          chalk.yellow(`Path not in registry -- operating directly.`),
-        );
-        return opts.project;
-      }
-      // Unknown name (not a path) — exit with error per AC-016.1
-      console.error(
-        chalk.red(
-          `Project '${opts.project}' not found. Run 'foreman project list' to see registered projects.`,
-        ),
-      );
-      process.exit(1);
-    }
-    throw err;
-  }
-}
-
 // ── foreman task create ───────────────────────────────────────────────────────
 
 const createCommand = new Command("create")
@@ -169,7 +139,8 @@ const createCommand = new Command("create")
     "Priority: 0-4 or critical/high/medium/low/backlog (default: medium)",
     "medium",
   )
-  .option("--project <path>", "Project path (default: current directory)")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
     (opts: {
       title: string;
@@ -177,8 +148,9 @@ const createCommand = new Command("create")
       type: string;
       priority: string;
       project?: string;
+      projectPath?: string;
     }) => {
-      const projectPath = resolveProjectPath(opts);
+      const projectPath = resolveProjectPathFromOptions(opts);
 
       let priority: number;
       try {
@@ -234,9 +206,10 @@ const listCommand = new Command("list")
   .description("List tasks in the native task store")
   .option("--status <status>", "Filter by status (e.g. ready, backlog, in-progress)")
   .option("--all", "Include closed and merged tasks (excluded by default)")
-  .option("--project <path>", "Project path (default: current directory)")
-  .action((opts: { status?: string; all?: boolean; project?: string }) => {
-    const projectPath = resolveProjectPath(opts);
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action((opts: { status?: string; all?: boolean; project?: string; projectPath?: string }) => {
+    const projectPath = resolveProjectPathFromOptions(opts);
 
     try {
       const { store, taskStore } = getTaskStore(projectPath);
@@ -300,9 +273,10 @@ const listCommand = new Command("list")
 const showCommand = new Command("show")
   .description("Show details of a specific task")
   .argument("<id>", "Task ID (or short prefix)")
-  .option("--project <path>", "Project path (default: current directory)")
-  .action((id: string, opts: { project?: string }) => {
-    const projectPath = resolveProjectPath(opts);
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action((id: string, opts: { project?: string; projectPath?: string }) => {
+    const projectPath = resolveProjectPathFromOptions(opts);
 
     try {
       const { store, taskStore } = getTaskStore(projectPath);
@@ -324,7 +298,7 @@ const showCommand = new Command("show")
           );
           process.exit(1);
         }
-        task = rows[0]!;
+        task = rows[0];
       } else {
         task = taskStore.get(id);
         if (!task) {
@@ -388,9 +362,10 @@ const showCommand = new Command("show")
 const approveCommand = new Command("approve")
   .description("Approve a backlog task, making it ready for dispatch")
   .argument("<id>", "Task ID")
-  .option("--project <path>", "Project path (default: current directory)")
-  .action((id: string, opts: { project?: string }) => {
-    const projectPath = resolveProjectPath(opts);
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action((id: string, opts: { project?: string; projectPath?: string }) => {
+    const projectPath = resolveProjectPathFromOptions(opts);
 
     try {
       const { taskStore } = getTaskStore(projectPath);
@@ -438,7 +413,8 @@ const updateCommand = new Command("update")
   .option("--priority <level>", "New priority: 0-4 or critical/high/medium/low/backlog")
   .option("--status <status>", "New status (e.g. backlog, ready, in-progress)")
   .option("--force", "Allow backward status transitions (e.g. merged → backlog)")
-  .option("--project <path>", "Project path (default: current directory)")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
     (id: string, opts: {
       title?: string;
@@ -448,8 +424,9 @@ const updateCommand = new Command("update")
       status?: string;
       force?: boolean;
       project?: string;
+      projectPath?: string;
     }) => {
-      const projectPath = resolveProjectPath(opts);
+      const projectPath = resolveProjectPathFromOptions(opts);
 
       const updateOpts: {
         title?: string;
@@ -525,9 +502,10 @@ const updateCommand = new Command("update")
 const closeCommand = new Command("close")
   .description("Close a task (mark as merged)")
   .argument("<id>", "Task ID")
-  .option("--project <path>", "Project path (default: current directory)")
-  .action((id: string, opts: { project?: string }) => {
-    const projectPath = resolveProjectPath(opts);
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action((id: string, opts: { project?: string; projectPath?: string }) => {
+    const projectPath = resolveProjectPathFromOptions(opts);
 
     try {
       const { taskStore } = getTaskStore(projectPath);
@@ -555,10 +533,11 @@ const depAddCommand = new Command("add")
     "Dependency type: blocks (default) or parent-child",
     "blocks",
   )
-  .option("--project <path>", "Project path (default: current directory)")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
-    (fromId: string, toId: string, opts: { type: string; project?: string }) => {
-      const projectPath = resolveProjectPath(opts);
+    (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
+      const projectPath = resolveProjectPathFromOptions(opts);
 
       if (opts.type !== "blocks" && opts.type !== "parent-child") {
         console.error(
@@ -596,9 +575,10 @@ const depAddCommand = new Command("add")
 const depListCommand = new Command("list")
   .description("List dependencies for a task")
   .argument("<id>", "Task ID")
-  .option("--project <path>", "Project path (default: current directory)")
-  .action((id: string, opts: { project?: string }) => {
-    const projectPath = resolveProjectPath(opts);
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action((id: string, opts: { project?: string; projectPath?: string }) => {
+    const projectPath = resolveProjectPathFromOptions(opts);
 
     try {
       const { taskStore } = getTaskStore(projectPath);
@@ -640,10 +620,11 @@ const depRemoveCommand = new Command("remove")
     "Dependency type: blocks (default) or parent-child",
     "blocks",
   )
-  .option("--project <path>", "Project path (default: current directory)")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
-    (fromId: string, toId: string, opts: { type: string; project?: string }) => {
-      const projectPath = resolveProjectPath(opts);
+    (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
+      const projectPath = resolveProjectPathFromOptions(opts);
 
       try {
         const { taskStore } = getTaskStore(projectPath);

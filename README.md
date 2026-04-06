@@ -363,6 +363,7 @@ Dispatch AI coding agents to ready tasks. Enters a watch loop that auto-merges c
 
 ```bash
 foreman run                              # Dispatch to all ready tasks
+foreman run --project my-project         # Dispatch without cd into a registered project
 foreman run --bead bd-abc               # Dispatch one specific task
 foreman run --max-agents 3               # Limit concurrent agents
 foreman run --model claude-opus-4-6      # Override model for all agents
@@ -377,12 +378,15 @@ Each agent gets:
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
-Show current task and agent status.
+Show current task and agent status, or aggregate across projects from the dashboard/status surfaces.
 
 ```bash
 foreman status
+foreman status --project my-project      # Inspect a registered project without cd
 foreman status --watch                   # Live-updating display
 ```
+
+Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `--project <name-or-path>`. Registered names resolve through `~/.foreman/projects.json`; absolute paths still work for direct one-off targeting.
 
 ### `foreman merge`
 Merge completed work branches back to main. Runs automatically in the `foreman run` loop.
@@ -432,9 +436,20 @@ Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open.
 
 ```bash
 foreman reset                           # Reset failed/stuck runs
+foreman reset --project my-project      # Reset runs in a registered project without cd
 foreman reset --all                     # Reset ALL active runs
 foreman reset --detect-stuck            # Detect stuck runs first, then reset
 foreman reset --detect-stuck --timeout 20  # Stuck after 20 minutes
+```
+
+### `foreman retry`
+Retry a bead in place, optionally dispatching it again immediately.
+
+```bash
+foreman retry bd-abc                    # Reset one bead to open
+foreman retry bd-abc --project my-project # Retry inside a registered project without cd
+foreman retry bd-abc --dispatch         # Reset and dispatch immediately
+foreman retry bd-abc --dry-run          # Preview the retry flow
 ```
 
 ### `foreman pr`

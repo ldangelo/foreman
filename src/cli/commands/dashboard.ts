@@ -475,7 +475,14 @@ export function renderProjectHeader(project: Project, activeCount: number, metri
  * @param maxRows - Maximum rows to display (default: 10).
  */
 export function renderNeedsHumanPanel(tasks: NativeTask[], maxRows = 10): string {
-  if (tasks.length === 0) return "";
+  if (tasks.length === 0) {
+    return (
+      chalk.bold.red("⚠  NEEDS HUMAN ATTENTION:") + "\n" +
+      THICK_RULE + "\n" +
+      chalk.dim("  No tasks need attention.\n") +
+      "\n"
+    );
+  }
 
   const lines: string[] = [];
   lines.push(chalk.bold.red("⚠  NEEDS HUMAN ATTENTION:"));
@@ -971,6 +978,74 @@ export const dashboardCommand = new Command("dashboard")
     process.on("SIGINT", onSigint);
     process.stdout.write("\x1b[?25l"); // hide cursor
 
+    let needsHumanTasks: NativeTask[] = [];
+    let selectedTaskIndex = -1;
+    let stdinRawMode = false;
+    let sleepResolve: (() => void) | null = null;
+
+    const wakeAndRender = () => {
+      if (sleepResolve) {
+        sleepResolve();
+        sleepResolve = null;
+      }
+    };
+
+    const handleNeedsHumanKey = (chunk: string | Buffer) => {
+      const key = chunk.toString();
+      const tasks = needsHumanTasks;
+
+      if (key === "\u001B[A" || key === "k") {
+        if (tasks.length > 0) {
+          selectedTaskIndex = selectedTaskIndex <= 0 ? tasks.length - 1 : selectedTaskIndex - 1;
+          wakeAndRender();
+        }
+      } else if (key === "\u001B[B" || key === "j") {
+        if (tasks.length > 0) {
+          selectedTaskIndex = selectedTaskIndex >= tasks.length - 1 ? 0 : selectedTaskIndex + 1;
+          wakeAndRender();
+        }
+      } else if (key === "a" || key === "A") {
+        if (selectedTaskIndex >= 0 && selectedTaskIndex < tasks.length) {
+          const task = tasks[selectedTaskIndex];
+          if (task.status === "backlog" && task.projectPath) {
+            approveTask(task.id, task.projectPath);
+            selectedTaskIndex = -1;
+            wakeAndRender();
+          }
+        }
+      } else if (key === "r" || key === "R") {
+        if (selectedTaskIndex >= 0 && selectedTaskIndex < tasks.length) {
+          const task = tasks[selectedTaskIndex];
+          if (
+            (task.status === "failed" || task.status === "stuck" || task.status === "conflict") &&
+            task.projectPath
+          ) {
+            retryTask(task.id, task.projectPath);
+            selectedTaskIndex = -1;
+            wakeAndRender();
+          }
+        }
+      } else if (key === "\r" || key === "\n") {
+        selectedTaskIndex = -1;
+        wakeAndRender();
+      } else if (key.length === 1 && selectedTaskIndex !== -1) {
+        selectedTaskIndex = -1;
+        wakeAndRender();
+      }
+    };
+
+    if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+      try {
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.setEncoding("utf8");
+        process.stdin.on("data", handleNeedsHumanKey);
+        stdinRawMode = true;
+      } catch {
+        // Continue without keyboard handling when raw mode is unavailable.
+      }
+    }
+
     try {
       while (!detached) {
         // Re-read project list each iteration in case new projects registered
@@ -981,13 +1056,29 @@ export const dashboardCommand = new Command("dashboard")
 
         const snapshots = await readProjectSnapshot(filtered, eventsLimit);
         const state = aggregateSnapshots(snapshots);
+        needsHumanTasks = state.needsHumanTasks ?? [];
+        if (selectedTaskIndex >= needsHumanTasks.length) {
+          selectedTaskIndex = needsHumanTasks.length > 0 ? needsHumanTasks.length - 1 : -1;
+        }
         const display = renderDashboard(state);
         process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
-        await new Promise<void>((r) => setTimeout(r, intervalMs));
+        await new Promise<void>((resolve) => {
+          sleepResolve = resolve;
+          setTimeout(resolve, intervalMs);
+        });
+        sleepResolve = null;
       }
     } finally {
       process.stdout.write("\x1b[?25h"); // restore cursor on any exit
       process.removeListener("SIGINT", onSigint);
+      if (stdinRawMode) {
+        process.stdin.off("data", handleNeedsHumanKey);
+        try {
+          process.stdin.setRawMode(false);
+        } catch {
+          // ignore restore failures
+        }
+      }
       store.close();
     }
   });

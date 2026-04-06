@@ -4,8 +4,6 @@ import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ForemanStore } from "../../../lib/store.js";
-import { NativeTaskStore } from "../../../lib/task-store.js";
 import { runTsxModule, type ExecResult } from "../../../test-support/tsx-subprocess.js";
 
 const CLI = path.resolve(__dirname, "../../index.ts");
@@ -37,13 +35,23 @@ describe("foreman sling trd --project", () => {
     execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
     execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: dir, stdio: "ignore" });
-    const store = ForemanStore.forProject(dir);
-    try {
-      store.registerProject(name, dir);
-    } finally {
-      store.close();
-    }
     return dir;
+  }
+
+  function writeRegistry(baseDir: string, projectName: string, projectPath: string): void {
+    mkdirSync(join(baseDir, ".foreman"), { recursive: true });
+    writeFileSync(
+      join(baseDir, ".foreman", "projects.json"),
+      JSON.stringify({
+        version: 1,
+        projects: [{
+          name: projectName,
+          path: projectPath,
+          addedAt: new Date().toISOString(),
+        }],
+      }, null, 2) + "\n",
+      "utf-8",
+    );
   }
 
   afterEach(() => {
@@ -53,39 +61,86 @@ describe("foreman sling trd --project", () => {
     tempDirs.length = 0;
   });
 
-  it("resolves a registered project and creates native tasks there", async () => {
+  it("resolves a registered project and reads the TRD from that project", async () => {
     const tmpBase = makeTempDir();
     const targetProject = mkProject(tmpBase, "registered-target");
-
-    mkdirSync(join(tmpBase, ".foreman"), { recursive: true });
-    writeFileSync(
-      join(tmpBase, ".foreman", "projects.json"),
-      JSON.stringify({
-        version: 1,
-        projects: [{
-          name: "registered-target",
-          path: targetProject,
-          addedAt: new Date().toISOString(),
-        }],
-      }, null, 2) + "\n",
-      "utf-8",
-    );
+    writeRegistry(tmpBase, "registered-target", targetProject);
 
     const result = await run(
-      ["sling", "trd", "docs/TRD/sling-trd.md", "--project", "registered-target", "--auto"],
+      ["sling", "trd", "docs/TRD/sling-trd.md", "--project", "registered-target", "--json"],
       tmpBase,
       { ...process.env, HOME: tmpBase },
     );
 
     expect(result.exitCode).toBe(0);
+    expect(result.stdout + result.stderr).toContain("registered-target/docs/TRD/sling-trd.md");
+  });
 
-    const store = ForemanStore.forProject(targetProject);
-    const taskStore = new NativeTaskStore(store.getDb());
-    try {
-      expect(taskStore.hasNativeTasks()).toBe(true);
-      expect(taskStore.list().length).toBeGreaterThan(0);
-    } finally {
-      store.close();
-    }
+  it("reads the TRD from an explicit --project-path target", async () => {
+    const tmpBase = makeTempDir();
+    const targetProject = mkProject(tmpBase, "explicit-target");
+
+    const result = await run(
+      ["sling", "trd", "docs/TRD/sling-trd.md", "--project-path", targetProject, "--json"],
+      tmpBase,
+      { ...process.env, HOME: tmpBase },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout + result.stderr).toContain("explicit-target/docs/TRD/sling-trd.md");
+  });
+
+  it("rejects relative --project-path values", async () => {
+    const tmpBase = makeTempDir();
+    const targetProject = mkProject(tmpBase, "relative-target");
+    writeRegistry(tmpBase, "relative-target", targetProject);
+
+    const result = await run(
+      ["sling", "trd", "docs/TRD/sling-trd.md", "--project-path", "relative-target", "--json"],
+      tmpBase,
+      { ...process.env, HOME: tmpBase },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout + result.stderr).toContain("--project-path must be an absolute path");
+  });
+
+  it("warns but still accepts legacy absolute paths under --project", async () => {
+    const tmpBase = makeTempDir();
+    const targetProject = mkProject(tmpBase, "legacy-target");
+
+    const result = await run(
+      ["sling", "trd", "docs/TRD/sling-trd.md", "--project", targetProject, "--json"],
+      tmpBase,
+      { ...process.env, HOME: tmpBase },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout + result.stderr).toContain("deprecated; use `--project-path` instead");
+    expect(result.stdout + result.stderr).toContain("legacy-target/docs/TRD/sling-trd.md");
+  });
+
+  it("rejects combining --project with --project-path", async () => {
+    const tmpBase = makeTempDir();
+    const targetProject = mkProject(tmpBase, "combined-target");
+    writeRegistry(tmpBase, "combined-target", targetProject);
+
+    const result = await run(
+      [
+        "sling",
+        "trd",
+        "docs/TRD/sling-trd.md",
+        "--project",
+        "combined-target",
+        "--project-path",
+        targetProject,
+        "--json",
+      ],
+      tmpBase,
+      { ...process.env, HOME: tmpBase },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout + result.stderr).toContain("--project and --project-path cannot be used together");
   });
 });

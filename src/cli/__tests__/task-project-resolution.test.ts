@@ -17,7 +17,8 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import chalk from "chalk";
-import { ProjectRegistry, ProjectNotFoundError } from "../../lib/project-registry.js";
+import { ProjectRegistry } from "../../lib/project-registry.js";
+import { resolveProjectPath } from "../../lib/project-path.js";
 import { ForemanStore } from "../../lib/store.js";
 import { NativeTaskStore } from "../../lib/task-store.js";
 
@@ -62,46 +63,19 @@ function buildRegistry(tmpBase: string, projects: Array<{ name: string; path: st
   return registryPath;
 }
 
-/**
- * Mirror implementation of resolveProjectPath from task.ts for testing.
- * This tests the actual logic in isolation without importing internal functions.
- */
-function resolveProjectPath(opts: { project?: string }, registry: ProjectRegistry): string {
-  if (!opts.project) {
-    return process.cwd();
-  }
-
-  try {
-    return registry.resolve(opts.project);
-  } catch (err) {
-    if (err instanceof ProjectNotFoundError) {
-      if (opts.project.startsWith("/")) {
-        console.warn(
-          chalk.yellow(`Path not in registry -- operating directly.`),
-        );
-        return opts.project;
-      }
-      console.error(
-        chalk.red(
-          `Project '${opts.project}' not found. Run 'foreman project list' to see registered projects.`,
-        ),
-      );
-      process.exit(1);
-    }
-    throw err;
-  }
-}
-
 // ── resolveProjectPath test suite ─────────────────────────────────────────────
 
 describe("resolveProjectPath (--project flag resolution)", () => {
   let tmpBase: string;
+  let originalHome: string | undefined;
   let originalExit: typeof process.exit;
   let originalError: typeof console.error;
   let originalWarn: typeof console.warn;
 
   beforeEach(() => {
     tmpBase = mkTmpDir();
+    originalHome = process.env.HOME;
+    process.env.HOME = tmpBase;
     originalExit = process.exit;
     originalError = console.error;
     originalWarn = console.warn;
@@ -122,6 +96,11 @@ describe("resolveProjectPath (--project flag resolution)", () => {
     process.exit = originalExit;
     console.error = originalError;
     console.warn = originalWarn;
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
     rmSync(tmpBase, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
@@ -129,16 +108,14 @@ describe("resolveProjectPath (--project flag resolution)", () => {
   // ── AC-016.4 ─────────────────────────────────────────────────────────────────
 
   it("AC-016.4: no --project flag returns process.cwd()", () => {
-    const registryPath = buildRegistry(tmpBase, []);
-    const registry = new ProjectRegistry(registryPath);
-
-    const cwd = "/fake/cwd";
+    const cwd = tmpBase;
+    buildRegistry(tmpBase, []);
     vi.stubGlobal("process", {
       ...process,
       cwd: () => cwd,
     });
 
-    const result = resolveProjectPath({}, registry);
+    const result = resolveProjectPath({});
     expect(result).toBe(cwd);
   });
 
@@ -146,12 +123,10 @@ describe("resolveProjectPath (--project flag resolution)", () => {
 
   it("AC-016.1: --project <registered-name> resolves via ProjectRegistry.resolve()", () => {
     const projectDir = mkProjectDir(tmpBase, "my-app");
-    const registryPath = buildRegistry(tmpBase, [
+    buildRegistry(tmpBase, [
       { name: "my-app", path: resolve(projectDir) },
     ]);
-    const registry = new ProjectRegistry(registryPath);
-
-    const result = resolveProjectPath({ project: "my-app" }, registry);
+    const result = resolveProjectPath({ project: "my-app" });
     expect(result).toBe(resolve(projectDir));
   });
 
@@ -161,24 +136,19 @@ describe("resolveProjectPath (--project flag resolution)", () => {
     const unregisteredPath = join(tmpBase, "unregistered-project");
     mkdirSync(join(unregisteredPath, ".foreman"), { recursive: true });
 
-    // Empty registry
-    const registryPath = buildRegistry(tmpBase, []);
-    const registry = new ProjectRegistry(registryPath);
-
-    const result = resolveProjectPath({ project: unregisteredPath }, registry);
+    buildRegistry(tmpBase, []);
+    const result = resolveProjectPath({ project: unregisteredPath });
     expect(result).toBe(unregisteredPath);
     expect(console.warn).toHaveBeenCalledWith(
-      chalk.yellow(`Path not in registry -- operating directly.`),
+      chalk.yellow("`--project` with an absolute path is deprecated; use `--project-path` instead."),
     );
   });
 
   // ── AC-016.3 ─────────────────────────────────────────────────────────────────
 
   it("AC-016.3: --project <unknown-name> exits with error code 1", () => {
-    const registryPath = buildRegistry(tmpBase, []);
-    const registry = new ProjectRegistry(registryPath);
-
-    expect(() => resolveProjectPath({ project: "unknown-project" }, registry)).toThrow(
+    buildRegistry(tmpBase, []);
+    expect(() => resolveProjectPath({ project: "unknown-project" })).toThrow(
       "process.exit called with code: 1",
     );
     expect(console.error).toHaveBeenCalledWith(
@@ -204,11 +174,9 @@ describe("resolveProjectPath (--project flag resolution)", () => {
   });
 
   it("relative path (not in registry, not absolute) exits with code 1", () => {
-    const registryPath = buildRegistry(tmpBase, []);
-    const registry = new ProjectRegistry(registryPath);
-
+    buildRegistry(tmpBase, []);
     // Relative path without registry entry should trigger error exit
-    expect(() => resolveProjectPath({ project: "relative/path" }, registry)).toThrow(
+    expect(() => resolveProjectPath({ project: "relative/path" })).toThrow(
       "process.exit called with code: 1",
     );
   });
@@ -218,15 +186,13 @@ describe("resolveProjectPath (--project flag resolution)", () => {
     const projectB = mkProjectDir(tmpBase, "project-b");
     const projectC = mkProjectDir(tmpBase, "project-c");
 
-    const registryPath = buildRegistry(tmpBase, [
+    buildRegistry(tmpBase, [
       { name: "proj-a", path: resolve(projectA) },
       { name: "proj-b", path: resolve(projectB) },
       { name: "proj-c", path: resolve(projectC) },
     ]);
-    const registry = new ProjectRegistry(registryPath);
-
-    expect(resolveProjectPath({ project: "proj-b" }, registry)).toBe(resolve(projectB));
-    expect(resolveProjectPath({ project: "proj-c" }, registry)).toBe(resolve(projectC));
+    expect(resolveProjectPath({ project: "proj-b" })).toBe(resolve(projectB));
+    expect(resolveProjectPath({ project: "proj-c" })).toBe(resolve(projectC));
   });
 });
 

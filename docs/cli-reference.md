@@ -2,6 +2,8 @@
 
 Complete reference for all `foreman` commands, options, and usage examples.
 
+Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `--project <name-or-path>`. Registered names resolve through `~/.foreman/projects.json`; absolute paths are accepted directly for one-off targeting.
+
 ## Global Usage
 
 ```bash
@@ -39,6 +41,7 @@ Dispatch ready beads to AI agents. Runs in a continuous loop by default — disp
 
 ```bash
 foreman run                       # Dispatch all ready beads (up to max-agents)
+foreman run --project my-project   # Dispatch against a registered project without cd
 foreman run --bead bd-abc1        # Dispatch a specific bead
 foreman run --dry-run             # Preview what would be dispatched
 foreman run --max-agents 3        # Limit concurrent agents to 3
@@ -65,6 +68,7 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 | `--skip-review` | — | Skip the reviewer phase |
 | `--no-auto-dispatch` | — | Disable auto-dispatch when capacity is available |
 | `--telemetry` | — | Enable OpenTelemetry tracing (requires OTEL_* env vars) |
+| `--project <name-or-path>` | — | Target a registered project name or absolute project path |
 
 ---
 
@@ -76,6 +80,7 @@ Show project status: bead counts, active agents, cost breakdown, and tool usage.
 
 ```bash
 foreman status                    # Snapshot of current state
+foreman status --project my-project # Status for a registered project without cd
 foreman status -w                 # Live refresh every 10 seconds
 foreman status -w 5               # Live refresh every 5 seconds
 foreman status --live             # Full dashboard TUI
@@ -87,6 +92,8 @@ foreman status --json             # Machine-readable output
 | `-w, --watch [seconds]` | `10` | Auto-refresh interval |
 | `--live` | — | Enable full dashboard TUI (Ink-based) |
 | `--json` | — | Output as JSON |
+| `--project <name-or-path>` | — | Show status for a registered project name or absolute project path |
+| `--all` | — | Aggregate status across all registered projects |
 
 **Example output:**
 
@@ -116,7 +123,7 @@ Active Agents
 
 ### `foreman dashboard`
 
-Live observability dashboard with real-time TUI. Shows all projects, agents, and recent events.
+Live observability dashboard with real-time TUI. Shows all projects, agents, recent events, and the top-priority Needs Human panel.
 
 ```bash
 foreman dashboard                 # Full dashboard
@@ -128,7 +135,7 @@ foreman dashboard --interval 5000 # Poll every 5 seconds
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--interval <ms>` | `3000` | Polling interval in milliseconds |
-| `--project <id>` | — | Filter to specific project |
+| `--project <id>` | — | Filter to a specific registered project in the dashboard view |
 | `--no-watch` | — | Single snapshot, then exit |
 | `--events <n>` | `8` | Recent events to show per project |
 | `--simple` | — | Compact single-project view |
@@ -239,6 +246,7 @@ Reset failed or stuck runs. Cleans up worktrees, deletes branches, and resets be
 
 ```bash
 foreman reset                     # Reset all failed/stuck runs
+foreman reset --project my-project # Reset runs in a registered project without cd
 foreman reset --bead bd-abc1      # Reset a specific bead
 foreman reset --all               # Reset ALL active runs (nuclear option)
 foreman reset --detect-stuck      # Find and reset stuck agents
@@ -252,6 +260,7 @@ foreman reset --dry-run           # Preview what would be reset
 | `--detect-stuck` | — | Run stuck detection first |
 | `--timeout <minutes>` | `15` | Stuck detection timeout |
 | `--dry-run` | — | Preview changes |
+| `--project <name-or-path>` | — | Target a registered project name or absolute project path |
 
 ### `foreman retry`
 
@@ -259,6 +268,7 @@ Reset a bead and optionally re-dispatch it immediately.
 
 ```bash
 foreman retry bd-abc1             # Reset bead to open
+foreman retry bd-abc1 --project my-project  # Retry inside a registered project without cd
 foreman retry bd-abc1 --dispatch  # Reset and dispatch immediately
 foreman retry bd-abc1 --model anthropic/claude-opus-4-6  # Override model
 foreman retry bd-abc1 --dry-run   # Preview
@@ -269,6 +279,7 @@ foreman retry bd-abc1 --dry-run   # Preview
 | `--dispatch` | Dispatch immediately after reset |
 | `--model <model>` | Override the agent model |
 | `--dry-run` | Show what would happen |
+| `--project <name-or-path>` | Target a registered project name or absolute project path |
 
 ### `foreman stop`
 

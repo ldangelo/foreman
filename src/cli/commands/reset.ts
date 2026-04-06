@@ -2,6 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
@@ -498,6 +499,8 @@ export const resetCommand = new Command("reset")
     String(PIPELINE_LIMITS.stuckDetectionMinutes),
   )
   .option("--dry-run", "Show what would be reset without doing it")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts, cmd) => {
     const dryRun = opts.dryRun as boolean | undefined;
     const all = opts.all as boolean | undefined;
@@ -518,8 +521,7 @@ export const resetCommand = new Command("reset")
     }
 
     try {
-      const startupVcs = await VcsBackendFactory.create({ backend: 'auto' }, process.cwd());
-      const projectPath = await startupVcs.getRepoRoot(process.cwd());
+      const projectPath = await resolveRepoRootProjectPath(opts);
       const vcs = await VcsBackendFactory.create({ backend: 'auto' }, projectPath);
       // Save current branch so we can restore it after worktree/branch cleanup,
       // which can change HEAD as a side effect of git worktree remove / branch -D.

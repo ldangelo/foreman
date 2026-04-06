@@ -5,7 +5,7 @@
  *   - AC-016.1: --project <registered-name> resolves via ProjectRegistry.resolve()
  *   - AC-016.2: --project <unknown-name> exits with error
  *   - No flag → returns process.cwd()
- *   - Absolute path not in registry → warns and proceeds
+ *   - Absolute path under --project → warns and proceeds during compatibility window
  *
  * Uses runTsxModule to invoke the CLI and capture output/exit code.
  */
@@ -140,7 +140,7 @@ describe("foreman task --project flag resolution", () => {
 
   // ── Absolute path not in registry: warn and proceed ─────────────────────────
 
-  it("task list --project <absolute-path> (not in registry) warns and proceeds", async () => {
+  it("task list --project <absolute-path> warns and proceeds during the compatibility window", async () => {
     const tmpBase = makeTempDir();
     const projectDir = mkProject(tmpBase, "my-project");
 
@@ -172,7 +172,8 @@ describe("foreman task --project flag resolution", () => {
 
     // Should NOT exit with error (warns but proceeds)
     const output = result.stdout + result.stderr;
-    expect(output).toContain("not in registry");
+    expect(output).toContain("--project");
+    expect(output).toContain("--project-path");
     // Should still output task list or "No tasks"
     expect(output).toMatch(/Tasks|No tasks/);
   });
@@ -252,7 +253,7 @@ describe("foreman task --project flag resolution", () => {
     expect(output).toContain("foreman project list");
   });
 
-  it("task list --project <absolute-path-string> (not a real path) warns and exits gracefully", async () => {
+  it("task list --project <absolute-path-string> (not a real path) exits with an accessibility error", async () => {
     const tmpBase = makeTempDir();
     const projectDir = mkProject(tmpBase, "my-project");
 
@@ -276,13 +277,12 @@ describe("foreman task --project flag resolution", () => {
       HOME: tmpBase,
     };
 
-    // An absolute path string that's not a real directory and not in registry
-    // should warn about not being in registry but proceed (will fail later on actual file ops)
-    const fakeAbsolutePath = "/tmp/foreman-test-nonexistent-project-12345";
+    // An absolute path string that's not a real directory should fail fast.
+    const fakeAbsolutePath = join(tmpBase, "definitely-missing-project");
     const result = await run(["task", "list", "--project", fakeAbsolutePath], projectDir, env);
 
-    // Should warn about not being in registry
+    expect(result.exitCode).toBe(1);
     const output = result.stdout + result.stderr;
-    expect(output).toContain("not in registry");
+    expect(output).toContain("does not exist or is not accessible");
   });
 });
