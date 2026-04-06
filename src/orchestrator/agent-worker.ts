@@ -460,6 +460,11 @@ interface PhaseResult {
   error?: string;
 }
 
+interface PhaseRunnerState {
+  runner: PhaseRunner;
+  workflowName?: string;
+}
+
 /**
  * Run a single pipeline phase as a separate SDK session.
  */
@@ -472,6 +477,7 @@ async function runPhase(
   store: ForemanStore,
   notifyClient: NotificationClient,
   agentMailClient?: AnyMailClient | null,
+  phaseRunnerState?: PhaseRunnerState,
 ): Promise<PhaseResult> {
   const roleConfig = ROLE_CONFIGS[role];
   // Use the model resolved by the pipeline executor (from workflow YAML + bead priority).
@@ -492,7 +498,28 @@ async function runPhase(
   }
 
   try {
-    const phaseResult = await runWithPiSdk({
+    const phaseRunner = phaseRunnerState?.runner ?? createConfiguredPhaseRunner(undefined, config.projectPath ?? config.worktreePath);
+    const phaseResult = await (await phaseRunner)({
+      metadata: {
+        phaseName: role,
+        role,
+        mode: "pipeline",
+        runId: config.runId,
+        projectId: config.projectId,
+        seedId: config.seedId,
+        seedTitle: config.seedTitle,
+        seedDescription: config.seedDescription,
+        seedComments: config.seedComments,
+        seedType: config.seedType,
+        seedLabels: config.seedLabels,
+        seedPriority: config.seedPriority,
+        worktreePath: config.worktreePath,
+        projectPath: config.projectPath,
+        workflowName: phaseRunnerState?.workflowName,
+        targetBranch: config.targetBranch,
+        taskId: config.taskId,
+      },
+      pi: {
       prompt,
       systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
       cwd: config.worktreePath,
@@ -523,6 +550,7 @@ async function runPhase(
           progress: { ...progress },
           timestamp: new Date().toISOString(),
         });
+      },
       },
     });
 
