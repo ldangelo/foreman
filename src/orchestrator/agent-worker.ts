@@ -17,7 +17,7 @@ import { runWithPiSdk } from "./pi-sdk-runner.js";
 import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
 import type { EpicTask } from "./pipeline-executor.js";
-import { createConfiguredPhaseRunner, type PhaseRunner, type PhaseRunnerConfig } from "./phase-runner.js";
+import { createConfiguredPhaseRunner, createDefaultPhaseRunner, type PhaseRunner, type PhaseRunnerConfig } from "./phase-runner.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import { NativeTaskStore } from "../lib/task-store.js";
@@ -220,6 +220,11 @@ interface WorkerConfig {
    * When set, merges into this branch instead of detectDefaultBranch().
    */
   targetBranch?: string;
+  /**
+   * Optional native task ID used for task-store phase visibility.
+   * Null/undefined in beads fallback mode.
+   */
+  taskId?: string | null;
   /**
    * Ordered list of child tasks for epic execution mode (TRD-2026-007).
    * When set, the worker runs the epic pipeline path.
@@ -498,8 +503,8 @@ async function runPhase(
   }
 
   try {
-    const phaseRunner = phaseRunnerState?.runner ?? createConfiguredPhaseRunner(undefined, config.projectPath ?? config.worktreePath);
-    const phaseResult = await (await phaseRunner)({
+    const phaseRunner = phaseRunnerState?.runner ?? createDefaultPhaseRunner();
+    const phaseResult = await phaseRunner({
       metadata: {
         phaseName: role,
         role,
@@ -520,37 +525,37 @@ async function runPhase(
         taskId: config.taskId,
       },
       pi: {
-      prompt,
-      systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
-      cwd: config.worktreePath,
-      model: resolvedModel,
-      allowedTools: roleConfig.allowedTools,
-      customTools,
-      logFile,
-      onToolCall: (name, input) => {
-        progress.toolCalls++;
-        progress.toolBreakdown[name] = (progress.toolBreakdown[name] ?? 0) + 1;
-        progress.lastToolCall = name;
-        progress.lastActivity = new Date().toISOString();
+        prompt,
+        systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
+        cwd: config.worktreePath,
+        model: resolvedModel,
+        allowedTools: roleConfig.allowedTools,
+        customTools,
+        logFile,
+        onToolCall: (name, input) => {
+          progress.toolCalls++;
+          progress.toolBreakdown[name] = (progress.toolBreakdown[name] ?? 0) + 1;
+          progress.lastToolCall = name;
+          progress.lastActivity = new Date().toISOString();
 
-        if ((name === "write" || name === "edit" || name === "Write" || name === "Edit") && (input?.path || input?.file_path)) {
-          const filePath = String(input.path ?? input.file_path);
-          if (!progress.filesChanged.includes(filePath)) {
-            progress.filesChanged.push(filePath);
+          if ((name === "write" || name === "edit" || name === "Write" || name === "Edit") && (input?.path || input?.file_path)) {
+            const filePath = String(input.path ?? input.file_path);
+            if (!progress.filesChanged.includes(filePath)) {
+              progress.filesChanged.push(filePath);
+            }
           }
-        }
-      },
-      onTurnEnd: (turn) => {
-        progress.turns = turn;
-        progress.lastActivity = new Date().toISOString();
-        store.updateRunProgress(config.runId, progress);
-        notifyClient.send({
-          type: "progress",
-          runId: config.runId,
-          progress: { ...progress },
-          timestamp: new Date().toISOString(),
-        });
-      },
+        },
+        onTurnEnd: (turn) => {
+          progress.turns = turn;
+          progress.lastActivity = new Date().toISOString();
+          store.updateRunProgress(config.runId, progress);
+          notifyClient.send({
+            type: "progress",
+            runId: config.runId,
+            progress: { ...progress },
+            timestamp: new Date().toISOString(),
+          });
+        },
       },
     });
 
@@ -609,6 +614,7 @@ async function runTroubleshooterPhase(
   agentMailClient: AnyMailClient | null,
   failureContext: string,
   pipelineProjectPath: string,
+  phaseRunnerState?: PhaseRunnerState,
 ): Promise<boolean> {
   const onFailure = workflowConfig.onFailure;
   if (!onFailure) return false;
@@ -640,16 +646,38 @@ async function runTroubleshooterPhase(
   customTools.push(createCloseBeadTool(pipelineProjectPath));
 
   try {
-    const result = await runWithPiSdk({
-      prompt,
-      systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for bead: ${beadTitle}`,
-      cwd: config.worktreePath,
-      model: resolvedModel,
-      allowedTools: roleConfig.allowedTools,
-      customTools,
-      logFile,
-      onToolCall: () => { /* no-op */ },
-      onTurnEnd: () => { /* no-op */ },
+    const phaseRunner = phaseRunnerState?.runner ?? createDefaultPhaseRunner();
+    const result = await phaseRunner({
+      metadata: {
+        phaseName: "troubleshooter",
+        role: "troubleshooter",
+        mode: "troubleshooter",
+        runId: config.runId,
+        projectId: config.projectId,
+        seedId: config.seedId,
+        seedTitle: config.seedTitle,
+        seedDescription: config.seedDescription,
+        seedComments: config.seedComments,
+        seedType: config.seedType,
+        seedLabels: config.seedLabels,
+        seedPriority: config.seedPriority,
+        worktreePath: config.worktreePath,
+        projectPath: config.projectPath,
+        workflowName: phaseRunnerState?.workflowName,
+        targetBranch: config.targetBranch,
+        taskId: config.taskId,
+      },
+      pi: {
+        prompt,
+        systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for bead: ${beadTitle}`,
+        cwd: config.worktreePath,
+        model: resolvedModel,
+        allowedTools: roleConfig.allowedTools,
+        customTools,
+        logFile,
+        onToolCall: () => { /* no-op */ },
+        onTurnEnd: () => { /* no-op */ },
+      },
     });
 
     log(`[TROUBLESHOOTER] Completed (${result.turns} turns, $${result.costUsd.toFixed(4)})`);
@@ -693,6 +721,10 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     log(`[PIPELINE] Failed to load workflow config '${resolvedWorkflow}': ${msg}`);
     throw err;
   }
+  const phaseRunnerState: PhaseRunnerState = {
+    runner: await createConfiguredPhaseRunner(config.phaseRunner, pipelineProjectPath),
+    workflowName: resolvedWorkflow,
+  };
 
   // Create a NativeTaskStore from the same DB for phase-level visibility (REQ-012).
   // updatePhase() is called after each successful phase transition.
@@ -733,7 +765,18 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     agentMailClient,
     taskStore,
     epicTasks: config.epicTasks,
-    runPhase,
+    runPhase: (role, prompt, phaseConfig, progress, phaseLogFile, phaseStore, phaseNotifyClient, phaseAgentMailClient) =>
+      runPhase(
+        role,
+        prompt,
+        phaseConfig,
+        progress,
+        phaseLogFile,
+        phaseStore,
+        phaseNotifyClient,
+        phaseAgentMailClient,
+        phaseRunnerState,
+      ),
     registerAgent,
     sendMail,
     sendMailText,
@@ -928,6 +971,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           agentMailClient,
           failureContext,
           pipelineProjectPath,
+          phaseRunnerState,
         );
         if (troubleshooterResolved) {
           // Troubleshooter resolved the issue — treat as success
