@@ -79,7 +79,8 @@ export async function createConfiguredPhaseRunner(
     );
   }
 
-  const runner = await (factory as PhaseRunnerModule["createPhaseRunner"])!({
+  const createRunner = factory as NonNullable<PhaseRunnerModule["createPhaseRunner"]>;
+  const runner = await createRunner({
     projectRoot,
     config,
   });
