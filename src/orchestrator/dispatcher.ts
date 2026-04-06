@@ -22,6 +22,7 @@ import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
 import { getTaskOrder } from "./task-ordering.js";
 import type { EpicTask } from "./pipeline-executor.js";
+import type { PhaseRunnerConfig } from "./phase-runner.js";
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import { getWorkspacePath } from "../lib/workspace-paths.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
@@ -1136,6 +1137,7 @@ export class Dispatcher {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, vcsBackend);
+    const phaseRunner = resolvePhaseRunnerConfigFromEnv();
     const sessionKey = `foreman:sdk:${model}:${runId}`;
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
@@ -1166,6 +1168,7 @@ export class Dispatcher {
       targetBranch,
       epicTasks,
       epicId,
+      phaseRunner,
     });
 
     return { sessionKey };
@@ -1189,6 +1192,7 @@ export class Dispatcher {
     const resumePrompt = this.buildResumePrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
+    const phaseRunner = resolvePhaseRunnerConfigFromEnv();
     const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;
 
     log(`Resuming worker for ${seed.id} [${model}] session=${sdkSessionId}`);
@@ -1204,6 +1208,7 @@ export class Dispatcher {
       env,
       resume: sdkSessionId,
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
+      phaseRunner,
     });
 
     return { sessionKey };
@@ -1541,6 +1546,11 @@ export interface WorkerConfig {
    * epicTasks within a single worktree.
    */
   epicId?: string;
+  /**
+   * Optional explicit phase-runner override for tests/harnesses.
+   * Keeps the detached worker path intact while swapping only phase execution.
+   */
+  phaseRunner?: PhaseRunnerConfig;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────
@@ -1670,6 +1680,16 @@ function buildWorkerEnv(
   }
 
   return env;
+}
+
+function resolvePhaseRunnerConfigFromEnv(): PhaseRunnerConfig | undefined {
+  const modulePath = process.env.FOREMAN_PHASE_RUNNER_MODULE?.trim();
+  if (!modulePath) return undefined;
+  return {
+    modulePath,
+    exportName: process.env.FOREMAN_PHASE_RUNNER_EXPORT?.trim() || undefined,
+    optionsPath: process.env.FOREMAN_PHASE_RUNNER_OPTIONS_PATH?.trim() || undefined,
+  };
 }
 
 function log(msg: string): void {
