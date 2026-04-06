@@ -154,6 +154,7 @@ describe("agent-worker.ts", () => {
  */
 describe("agent-worker.ts: Pi RPC integration regression tests", () => {
   const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
+  const PHASE_RUNNER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "phase-runner.ts");
 
   it("agent-worker.ts source file exists", () => {
     expect(existsSync(WORKER_SRC)).toBe(true);
@@ -167,10 +168,14 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(source).not.toContain("from \"@anthropic-ai/claude-agent-sdk\"");
   });
 
-  it("pipeline runPhase() uses runWithPiSdk for phase execution", () => {
+  it("pipeline runPhase() resolves the phase-runner seam instead of hardcoding a smoke bypass", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
-    const pipelineMatch = source.match(/runWithPiSdk\(\{/);
-    expect(pipelineMatch).not.toBeNull();
+    expect(source).toContain("createConfiguredPhaseRunner(");
+  });
+
+  it("default phase-runner delegates to runWithPiSdk", () => {
+    const source = readFileSync(PHASE_RUNNER_SRC, "utf-8");
+    expect(source).toContain("runWithPiSdk(pi)");
   });
 
 });
