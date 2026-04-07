@@ -760,9 +760,9 @@ export class Dispatcher {
         }
 
         // 1. Resolve base branch (may stack on a dependency branch)
-        const baseBranch = await resolveBaseBranch(seed.id, this.projectPath, this.store);
+        const baseBranch = await resolveBaseBranch(dispatchSeed.id, this.projectPath, this.store);
         if (baseBranch) {
-          log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
+          log(`[foreman] Stacking ${dispatchSeed.id} on ${baseBranch}`);
         }
 
         // 1a. Load workflow config to get setup steps + cache config for worktree initialization
@@ -826,7 +826,7 @@ export class Dispatcher {
         const workspaceBackend = vcsBackend ?? new GitBackend(this.projectPath);
         const workspaceResult = await workspaceBackend.createWorkspace(
           this.projectPath,
-          seed.id,
+          dispatchPlan.worktreeSeedId,
           baseBranch,
         );
         const worktreePath = workspaceResult.workspacePath;
@@ -846,7 +846,7 @@ export class Dispatcher {
         // 4. Record run in store (include base_branch for stacking awareness)
         const run = this.store.createRun(
           projectId,
-          seed.id,
+          dispatchSeed.id,
           model,
           worktreePath,
           { baseBranch: baseBranch ?? null },
@@ -854,8 +854,8 @@ export class Dispatcher {
 
         // 5. Log dispatch event
         this.store.logEvent(projectId, "dispatch", {
-          seedId: seed.id,
-          title: seed.title,
+          seedId: dispatchSeed.id,
+          title: dispatchSeed.title,
           model,
           worktreePath,
           branchName,
@@ -864,8 +864,8 @@ export class Dispatcher {
         // 5a. Send worktree-created mail so inbox shows worktree lifecycle event
         try {
           this.store.sendMessage(run.id, "foreman", "foreman", "worktree-created", JSON.stringify({
-            seedId: seed.id,
-            title: seed.title,
+            seedId: dispatchSeed.id,
+            title: dispatchSeed.title,
             worktreePath,
             branchName,
             model,
@@ -879,13 +879,13 @@ export class Dispatcher {
         if (usingNativeStore) {
           // Atomic claim: UPDATE tasks SET status='in-progress', run_id=? WHERE id=? AND status='ready'
           // REQ-017 AC-017.2: claim + run_id linkage in one transaction (prevents double-dispatch).
-          const claimed = this.store.claimTask(seed.id, run.id);
+          const claimed = this.store.claimTask(dispatchSeed.id, run.id);
           if (!claimed) {
             // Another dispatcher instance claimed this task between our getReadyTasks() query
             // and now — skip it and clean up the run we just created.
             skipped.push({
-              seedId: seed.id,
-              title: seed.title,
+              seedId: dispatchSeed.id,
+              title: dispatchSeed.title,
               reason: "Already claimed by another dispatcher (atomic claim failed)",
             });
             // Best-effort cleanup: mark run as failed so it doesn't appear as active
@@ -900,18 +900,18 @@ export class Dispatcher {
           // Non-fatal: br may reject the claim due to stale blocked cache (beads_rust#204).
           // The agent can still run — the status update is cosmetic.
           try {
-            await this.seeds.update(seed.id, { status: "in_progress" });
+            await this.seeds.update(dispatchSeed.id, { status: "in_progress" });
           } catch (claimErr: unknown) {
             const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
-            console.error(`[dispatch] Warning: br claim failed for ${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+            console.error(`[dispatch] Warning: br claim failed for ${dispatchSeed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
           }
         }
 
         // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
         try {
           this.store.sendMessage(run.id, "foreman", "foreman", "bead-claimed", JSON.stringify({
-            seedId: seed.id,
-            title: seed.title,
+            seedId: dispatchSeed.id,
+            title: dispatchSeed.title,
             model,
             runId: run.id,
             timestamp: new Date().toISOString(),
@@ -922,8 +922,8 @@ export class Dispatcher {
 
         // 7. Spawn the coding agent
         // Extract epic context if this seed was marked as an epic dispatch
-        const epicTasksForSeed = groupedTasksForSeed;
-        const epicIdForSeed = epicTasksForSeed ? seed.id : undefined;
+        const epicTasksForSeed = (dispatchSeed as unknown as Record<string, unknown>).__epicTasks as EpicTask[] | undefined;
+        const epicIdForSeed = epicTasksForSeed ? dispatchSeed.id : undefined;
 
         const { sessionKey } = await this.spawnAgent(
           model,
@@ -951,14 +951,15 @@ export class Dispatcher {
         });
 
         dispatched.push({
-          seedId: seed.id,
-          title: seed.title,
+          seedId: dispatchSeed.id,
+          title: dispatchSeed.title,
           runtime,
           model,
           worktreePath,
           runId: run.id,
           branchName,
         });
+        scheduledWorktreePaths.add(plannedWorktreePath);
 
         // P1: Apply stagger delay between dispatches to prevent thundering herd on Haiku quotas
         if (opts?.staggerMs && opts?.staggerMs > 0 && dispatched.length < readySeeds.length) {
@@ -969,8 +970,8 @@ export class Dispatcher {
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
+          seedId: dispatchSeed.id,
+          title: dispatchSeed.title,
           reason: `Dispatch failed: ${message}`,
         });
       }
