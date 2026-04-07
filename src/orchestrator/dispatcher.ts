@@ -14,6 +14,7 @@ import { installDependencies, runSetupWithCache } from "../lib/setup.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
+import type { BrIssueDetail } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
@@ -111,135 +112,93 @@ export class Dispatcher {
     private bvClient?: BvClient | null,
   ) {}
 
-  private getNativeTaskById(taskId: string): NativeTask | null {
-    try {
-      return (
-        this.store
-          .getDb()
-          .prepare("SELECT * FROM tasks WHERE id = ? LIMIT 1")
-          .get(taskId) as NativeTask | undefined
-      ) ?? null;
-    } catch {
-      return null;
-    }
+  private isActionableGroupedChildType(type: string | undefined): boolean {
+    return type === "task" || type === "bug" || type === "chore";
   }
 
-  private getNativeParentTaskId(taskId: string): string | null {
-    try {
-      const row = this.store
-        .getDb()
-        .prepare(
-          `SELECT to_task_id
-             FROM task_dependencies
-            WHERE from_task_id = ?
-              AND type = 'parent-child'
-            ORDER BY to_task_id
-            LIMIT 1`,
-        )
-        .get(taskId) as Pick<NativeDependencyRow, "to_task_id"> | undefined;
-      return row?.to_task_id ?? null;
-    } catch {
-      return null;
-    }
+  private isStoryContainer(detail: { type?: string | null; labels?: string[] | null }): boolean {
+    if (detail.type === "story") return true;
+    const labels = detail.labels ?? [];
+    return labels.includes("kind:story");
   }
 
-  private resolveNativeStoryParent(taskId: string): NativeTask | null {
-    const visited = new Set<string>();
-    let currentId: string | null = taskId;
+  private async collapseReadyStoryChildren(readySeeds: Issue[]): Promise<Issue[]> {
+    const storyGroups = new Map<string, EpicTask[]>();
+    const parentDetails = new Map<string, BrIssueDetail>();
+    const seedById = new Map(readySeeds.map((seed) => [seed.id, seed]));
 
-    while (currentId && !visited.has(currentId)) {
-      visited.add(currentId);
-      const parentId = this.getNativeParentTaskId(currentId);
-      if (!parentId) return null;
+    for (const seed of readySeeds) {
+      if (!this.isActionableGroupedChildType(seed.type) || !seed.parent) continue;
 
-      const parentTask = this.getNativeTaskById(parentId);
-      if (!parentTask) return null;
-      if (parentTask.type === "story") return parentTask;
-
-      currentId = parentTask.id;
-    }
-
-    return null;
-  }
-
-  private async resolveStoryParentIssue(parentId: string): Promise<Issue | null> {
-    if (this.storyParentCache.has(parentId)) {
-      return this.storyParentCache.get(parentId) ?? null;
-    }
-
-    try {
-      const detail = await this.seeds.show(parentId) as Partial<Issue>;
-      if (detail.type !== "story") {
-        this.storyParentCache.set(parentId, null);
-        return null;
+      let parentDetail = parentDetails.get(seed.parent);
+      if (!parentDetail) {
+        try {
+          parentDetail = await this.seeds.show(seed.parent) as BrIssueDetail;
+          parentDetails.set(seed.parent, parentDetail);
+        } catch {
+          continue;
+        }
       }
 
-      const issue: Issue = {
-        id: parentId,
-        title: detail.title ?? parentId,
-        type: detail.type,
-        priority: detail.priority ?? "P2",
-        status: detail.status ?? "open",
-        assignee: detail.assignee ?? null,
-        parent: detail.parent ?? null,
-        created_at: detail.created_at ?? new Date(0).toISOString(),
-        updated_at: detail.updated_at ?? detail.created_at ?? new Date(0).toISOString(),
-        description: detail.description ?? undefined,
-        labels: detail.labels,
+      if (!this.isStoryContainer(parentDetail)) continue;
+
+      const groupedTasks = storyGroups.get(seed.parent) ?? [];
+      groupedTasks.push({
+        seedId: seed.id,
+        seedTitle: seed.title,
+        seedDescription: seed.description ?? undefined,
+      });
+      storyGroups.set(seed.parent, groupedTasks);
+    }
+
+    if (storyGroups.size === 0) return readySeeds;
+
+    const insertedParents = new Set<string>();
+    const collapsed: Issue[] = [];
+
+    const buildStoryParentSeed = (parentId: string): Issue => {
+      const parentDetail = parentDetails.get(parentId)!;
+      const baseSeed = seedById.get(parentId);
+      const storySeed: Issue = {
+        id: parentDetail.id,
+        title: parentDetail.title,
+        type: "story",
+        priority: parentDetail.priority ?? baseSeed?.priority ?? "P2",
+        status: parentDetail.status,
+        assignee: parentDetail.assignee,
+        parent: parentDetail.parent,
+        created_at: parentDetail.created_at,
+        updated_at: parentDetail.updated_at,
+        description: parentDetail.description ?? baseSeed?.description ?? null,
+        labels: parentDetail.labels ?? baseSeed?.labels ?? [],
       };
-      this.storyParentCache.set(parentId, issue);
-      return issue;
-    } catch {
-      this.storyParentCache.set(parentId, null);
-      return null;
-    }
-  }
+      (storySeed as unknown as Record<string, unknown>).__epicTasks = storyGroups.get(parentId);
+      (storySeed as unknown as Record<string, unknown>).__groupedParentType = "story";
+      return storySeed;
+    };
 
-  private async buildDispatchSeedPlan(
-    seed: Issue,
-    usingNativeStore: boolean,
-  ): Promise<DispatchSeedPlan> {
-    if (usingNativeStore) {
-      const nativeStoryParent = this.resolveNativeStoryParent(seed.id);
-      if (nativeStoryParent) {
-        return {
-          seed,
-          worktreeSeedId: nativeStoryParent.id,
-          groupingParentId: nativeStoryParent.id,
-        };
+    for (const seed of readySeeds) {
+      if (storyGroups.has(seed.id)) {
+        if (!insertedParents.has(seed.id)) {
+          collapsed.push(buildStoryParentSeed(seed.id));
+          insertedParents.add(seed.id);
+        }
+        continue;
       }
-      return { seed, worktreeSeedId: seed.id };
-    }
 
-    if (!seed.parent) {
-      return { seed, worktreeSeedId: seed.id };
-    }
-
-    const storyParent = await this.resolveStoryParentIssue(seed.parent);
-    if (!storyParent) {
-      return { seed, worktreeSeedId: seed.id };
-    }
-
-    try {
-      const orderedTasks = await getTaskOrder(
-        storyParent.id,
-        this.seeds as unknown as BeadsRustClient,
-        this.projectPath,
-      );
-      if (orderedTasks.length > 0) {
-        return {
-          seed: storyParent,
-          worktreeSeedId: storyParent.id,
-          groupedTasks: orderedTasks,
-          groupingParentId: storyParent.id,
-        };
+      const parentId = seed.parent;
+      if (parentId && storyGroups.has(parentId)) {
+        if (!insertedParents.has(parentId)) {
+          collapsed.push(buildStoryParentSeed(parentId));
+          insertedParents.add(parentId);
+        }
+        continue;
       }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[dispatch] Story ${storyParent.id} grouping unavailable — falling back to per-task dispatch (${msg.slice(0, 200)})`);
+
+      collapsed.push(seed);
     }
 
-    return { seed, worktreeSeedId: storyParent.id, groupingParentId: storyParent.id };
+    return collapsed;
   }
 
   /**
@@ -443,6 +402,10 @@ export class Dispatcher {
       readySeeds = [target];
     }
 
+    if (!usingNativeStore && !opts?.seedId) {
+      readySeeds = await this.collapseReadyStoryChildren(readySeeds);
+    }
+
     const dispatched: DispatchedTask[] = [];
     const skipped: SkippedTask[] = [];
 
@@ -536,7 +499,9 @@ export class Dispatcher {
       // Feature beads are organizational containers — never dispatch agents for
       // them. Instead, check if all children are closed and auto-close the
       // container bead when they are.
-      if (dispatchSeed.type === "feature") {
+      const groupedTasksForSeed = (seed as unknown as Record<string, unknown>).__epicTasks as EpicTask[] | undefined;
+
+      if (seed.type === "feature" && !groupedTasksForSeed) {
         try {
           const detail = await this.seeds.show(dispatchSeed.id);
           // br show --json returns `dependents` (the tasks this container blocks), not `children`.
@@ -957,7 +922,7 @@ export class Dispatcher {
 
         // 7. Spawn the coding agent
         // Extract epic context if this seed was marked as an epic dispatch
-        const epicTasksForSeed = (seed as unknown as Record<string, unknown>).__epicTasks as EpicTask[] | undefined;
+        const epicTasksForSeed = groupedTasksForSeed;
         const epicIdForSeed = epicTasksForSeed ? seed.id : undefined;
 
         const { sessionKey } = await this.spawnAgent(
