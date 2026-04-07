@@ -1142,7 +1142,8 @@ export class Dispatcher {
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
     const isEpic = epicTasks && epicTasks.length > 0;
-    log(`Spawning ${isEpic ? "epic runner" : usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}${isEpic ? ` (${epicTasks.length} tasks)` : ""}`);
+    const groupedParentType = isEpic ? (seed.type ?? "grouped") : undefined;
+    log(`Spawning ${isEpic ? `${groupedParentType} runner` : usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}${isEpic ? ` (${epicTasks.length} tasks)` : ""}`);
 
     const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
 
@@ -1168,6 +1169,9 @@ export class Dispatcher {
       targetBranch,
       epicTasks,
       epicId,
+      groupedTasks: epicTasks,
+      groupedParentId: epicId,
+      groupedParentType,
       phaseRunner,
     });
 
@@ -1541,11 +1545,18 @@ export interface WorkerConfig {
    */
   epicTasks?: EpicTask[];
   /**
+   * Generic grouped-parent child task list. Populated alongside epicTasks so
+   * story-scoped runners can reuse the same worker/pipeline path.
+   */
+  groupedTasks?: EpicTask[];
+  /**
    * Parent epic bead ID (TRD-2026-007).
    * When set, this run is an epic execution — the worker executes all
    * epicTasks within a single worktree.
    */
   epicId?: string;
+  groupedParentId?: string;
+  groupedParentType?: string;
   /**
    * Optional explicit phase-runner override for tests/harnesses.
    * Keeps the detached worker path intact while swapping only phase execution.
