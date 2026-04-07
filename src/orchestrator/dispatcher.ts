@@ -85,10 +85,24 @@ export function nativeTaskToIssue(task: NativeTask): Issue {
   };
 }
 
+interface DispatchSeedPlan {
+  seed: Issue;
+  worktreeSeedId: string;
+  groupedTasks?: EpicTask[];
+  groupingParentId?: string;
+}
+
+interface NativeDependencyRow {
+  from_task_id: string;
+  to_task_id: string;
+  type: "blocks" | "parent-child";
+}
+
 // ── Dispatcher ──────────────────────────────────────────────────────────
 
 export class Dispatcher {
   private bvFallbackWarned = false;
+  private storyParentCache = new Map<string, Issue | null>();
 
   constructor(
     private seeds: ITaskClient,
@@ -96,6 +110,137 @@ export class Dispatcher {
     private projectPath: string,
     private bvClient?: BvClient | null,
   ) {}
+
+  private getNativeTaskById(taskId: string): NativeTask | null {
+    try {
+      return (
+        this.store
+          .getDb()
+          .prepare("SELECT * FROM tasks WHERE id = ? LIMIT 1")
+          .get(taskId) as NativeTask | undefined
+      ) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private getNativeParentTaskId(taskId: string): string | null {
+    try {
+      const row = this.store
+        .getDb()
+        .prepare(
+          `SELECT to_task_id
+             FROM task_dependencies
+            WHERE from_task_id = ?
+              AND type = 'parent-child'
+            ORDER BY to_task_id
+            LIMIT 1`,
+        )
+        .get(taskId) as Pick<NativeDependencyRow, "to_task_id"> | undefined;
+      return row?.to_task_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveNativeStoryParent(taskId: string): NativeTask | null {
+    const visited = new Set<string>();
+    let currentId: string | null = taskId;
+
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const parentId = this.getNativeParentTaskId(currentId);
+      if (!parentId) return null;
+
+      const parentTask = this.getNativeTaskById(parentId);
+      if (!parentTask) return null;
+      if (parentTask.type === "story") return parentTask;
+
+      currentId = parentTask.id;
+    }
+
+    return null;
+  }
+
+  private async resolveStoryParentIssue(parentId: string): Promise<Issue | null> {
+    if (this.storyParentCache.has(parentId)) {
+      return this.storyParentCache.get(parentId) ?? null;
+    }
+
+    try {
+      const detail = await this.seeds.show(parentId) as Partial<Issue>;
+      if (detail.type !== "story") {
+        this.storyParentCache.set(parentId, null);
+        return null;
+      }
+
+      const issue: Issue = {
+        id: parentId,
+        title: detail.title ?? parentId,
+        type: detail.type,
+        priority: detail.priority ?? "P2",
+        status: detail.status ?? "open",
+        assignee: detail.assignee ?? null,
+        parent: detail.parent ?? null,
+        created_at: detail.created_at ?? new Date(0).toISOString(),
+        updated_at: detail.updated_at ?? detail.created_at ?? new Date(0).toISOString(),
+        description: detail.description ?? undefined,
+        labels: detail.labels,
+      };
+      this.storyParentCache.set(parentId, issue);
+      return issue;
+    } catch {
+      this.storyParentCache.set(parentId, null);
+      return null;
+    }
+  }
+
+  private async buildDispatchSeedPlan(
+    seed: Issue,
+    usingNativeStore: boolean,
+  ): Promise<DispatchSeedPlan> {
+    if (usingNativeStore) {
+      const nativeStoryParent = this.resolveNativeStoryParent(seed.id);
+      if (nativeStoryParent) {
+        return {
+          seed,
+          worktreeSeedId: nativeStoryParent.id,
+          groupingParentId: nativeStoryParent.id,
+        };
+      }
+      return { seed, worktreeSeedId: seed.id };
+    }
+
+    if (!seed.parent) {
+      return { seed, worktreeSeedId: seed.id };
+    }
+
+    const storyParent = await this.resolveStoryParentIssue(seed.parent);
+    if (!storyParent) {
+      return { seed, worktreeSeedId: seed.id };
+    }
+
+    try {
+      const orderedTasks = await getTaskOrder(
+        storyParent.id,
+        this.seeds as unknown as BeadsRustClient,
+        this.projectPath,
+      );
+      if (orderedTasks.length > 0) {
+        return {
+          seed: storyParent,
+          worktreeSeedId: storyParent.id,
+          groupedTasks: orderedTasks,
+          groupingParentId: storyParent.id,
+        };
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[dispatch] Story ${storyParent.id} grouping unavailable — falling back to per-task dispatch (${msg.slice(0, 200)})`);
+    }
+
+    return { seed, worktreeSeedId: storyParent.id, groupingParentId: storyParent.id };
+  }
 
   /**
    * Query ready seeds, create worktrees, write TASK.md, and record runs.
