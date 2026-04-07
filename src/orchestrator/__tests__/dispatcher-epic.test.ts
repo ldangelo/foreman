@@ -328,6 +328,55 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     expect(spawnSpy).not.toHaveBeenCalled();
   });
 
+  it("collapses ready story children into a single story runner", async () => {
+    const storyParent = {
+      id: "story-1",
+      title: "Story 1",
+      type: "feature",
+      priority: "P1",
+      status: "open",
+      assignee: null,
+      parent: "epic-1",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      description: "Story container",
+      labels: ["kind:story"],
+    };
+    const task1 = { ...makeIssue("task-1", "task"), parent: "story-1" };
+    const task2 = { ...makeIssue("task-2", "bug"), parent: "story-1" };
+
+    const seedsClient = makeSeedsClient({
+      ready: vi.fn().mockResolvedValue([task1, task2]),
+      show: vi.fn().mockImplementation(async (id: string) => {
+        if (id === "story-1") return storyParent;
+        throw new Error(`unexpected show(${id})`);
+      }),
+    });
+    const store = makeStore();
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project");
+
+    const spawnSpy = vi.spyOn(
+      dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> },
+      "spawnAgent",
+    ).mockResolvedValue({ sessionKey: "story-key" });
+
+    const result = await dispatcher.dispatch({ pipeline: true });
+
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.dispatched[0].seedId).toBe("story-1");
+    expect(spawnSpy).toHaveBeenCalledOnce();
+
+    const callArgs = spawnSpy.mock.calls[0];
+    const seedInfo = callArgs[2] as { id: string; type: string };
+    const groupedTasks = callArgs[9] as EpicTask[];
+    const groupedParentId = callArgs[10] as string;
+
+    expect(seedInfo.id).toBe("story-1");
+    expect(seedInfo.type).toBe("story");
+    expect(groupedParentId).toBe("story-1");
+    expect(groupedTasks.map((task) => task.seedId)).toEqual(["task-1", "task-2"]);
+  });
+
   it("epic with no actionable child tasks auto-closes", async () => {
     // Override getTaskOrder to return empty for this test
     const { getTaskOrder } = await import("../task-ordering.js");
