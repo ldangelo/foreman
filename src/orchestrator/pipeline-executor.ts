@@ -292,6 +292,31 @@ interface PhaseSequenceResult {
   retriesExhausted?: boolean;
 }
 
+interface GroupedRunInfo {
+  tasks: GroupedTask[];
+  label: string;
+  parentId?: string;
+}
+
+function resolveGroupedRunInfo(
+  ctx: Pick<PipelineContext, "config" | "workflowConfig" | "epicTasks" | "groupedTasks">,
+): GroupedRunInfo | null {
+  const tasks = ctx.groupedTasks ?? ctx.epicTasks ?? ctx.config.groupedTasks ?? ctx.config.epicTasks;
+  if (!tasks || tasks.length === 0) return null;
+
+  const rawLabel =
+    ctx.config.groupedParentType ??
+    ctx.config.seedType ??
+    ctx.workflowConfig.name ??
+    "grouped";
+
+  return {
+    tasks,
+    label: rawLabel.trim().toUpperCase(),
+    parentId: ctx.config.groupedParentId ?? ctx.config.epicId,
+  };
+}
+
 // ── Generic Pipeline Executor ───────────────────────────────────────────────
 
 /**
@@ -299,7 +324,8 @@ interface PhaseSequenceResult {
  *
  * Two modes:
  * - **Single-task mode** (default): iterates all `phases` in order for one task.
- * - **Epic mode**: when `ctx.epicTasks` is set AND workflow has `taskPhases`,
+ * - **Grouped-parent mode**: when grouped child tasks are present AND workflow
+ *   has `taskPhases`,
  *   iterates child tasks running only `taskPhases` per task (with per-task commits),
  *   then runs `finalPhases` once at the end.
  *
@@ -315,12 +341,12 @@ interface PhaseSequenceResult {
  *  9. If verdict phase: parse PASS/FAIL, handle retryWith loop
  */
 export async function executePipeline(ctx: PipelineContext): Promise<void> {
-  const { config, workflowConfig } = ctx;
-  const epicTasks = ctx.epicTasks;
-  const isEpicMode = epicTasks && epicTasks.length > 0 && workflowConfig.taskPhases;
+  const { workflowConfig } = ctx;
+  const groupedRun = resolveGroupedRunInfo(ctx);
+  const isGroupedMode = groupedRun && workflowConfig.taskPhases;
 
-  if (isEpicMode) {
-    await executeEpicPipeline(ctx);
+  if (isGroupedMode) {
+    await executeGroupedParentPipeline(ctx, groupedRun);
   } else {
     await executeSingleTaskPipeline(ctx);
   }
@@ -329,7 +355,7 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
 // ── Resume detection ────────────────────────────────────────────────────────
 
 /**
- * Parse `git log --oneline` output from an epic worktree and extract
+ * Parse `git log --oneline` output from a grouped-parent worktree and extract
  * the bead/seed IDs of tasks that have already been committed.
  *
  * Commit messages follow the format: `<title> (<beadId>)`
@@ -375,19 +401,24 @@ function detectCompletedTasks(worktreePath: string): Set<string> {
   }
 }
 
-// ── Epic mode executor ──────────────────────────────────────────────────────
+// ── Grouped-parent mode executor ────────────────────────────────────────────
 
 /**
- * Epic mode: iterate child tasks, running taskPhases per task with commits
+ * Grouped-parent mode: iterate child tasks, running taskPhases per task with commits
  * between, then finalPhases once at the end.
  *
  * Resume support (TRD-009): on re-dispatch, parses git log to find
  * already-committed task bead IDs and skips them.
  */
-async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
+async function executeGroupedParentPipeline(
+  ctx: PipelineContext,
+  groupedRun: GroupedRunInfo,
+): Promise<void> {
   const { config, workflowConfig, store, logFile } = ctx;
   const { runId, seedId, worktreePath } = config;
-  let epicTasks = ctx.epicTasks!;
+  let groupedTasks = groupedRun.tasks;
+  const groupLabel = groupedRun.label;
+  const groupPrefix = `[${groupLabel}]`;
   const taskPhaseNames = workflowConfig.taskPhases!;
   const finalPhaseNames = workflowConfig.finalPhases ?? [];
 
@@ -401,25 +432,25 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
     .filter((p): p is typeof allPhases[number] => p !== undefined);
 
   // ── Resume detection (TRD-009) ──────────────────────────────────────
-  const totalTaskCount = epicTasks.length;
+  const totalTaskCount = groupedTasks.length;
   const resumedTaskIds = detectCompletedTasks(worktreePath);
 
   if (resumedTaskIds.size > 0) {
-    const remainingTasks = epicTasks.filter((t) => !resumedTaskIds.has(t.seedId));
+    const remainingTasks = groupedTasks.filter((t) => !resumedTaskIds.has(t.seedId));
     const skippedCount = totalTaskCount - remainingTasks.length;
 
     if (skippedCount > 0) {
-      ctx.log(`[EPIC] Resuming from task ${skippedCount + 1} of ${totalTaskCount} (${skippedCount} completed)`);
-      await appendFile(logFile, `\n[EPIC] Resume: ${skippedCount} tasks already committed, skipping to task ${skippedCount + 1}\n`);
-      epicTasks = remainingTasks;
+      ctx.log(`${groupPrefix} Resuming from task ${skippedCount + 1} of ${totalTaskCount} (${skippedCount} completed)`);
+      await appendFile(logFile, `\n${groupPrefix} Resume: ${skippedCount} tasks already committed, skipping to task ${skippedCount + 1}\n`);
+      groupedTasks = remainingTasks;
     }
   }
 
   const taskPhaseStr = taskPhaseNames.join(" → ");
   const finalPhaseStr = finalPhaseNames.length > 0 ? ` | final: ${finalPhaseNames.join(" → ")}` : "";
-  ctx.log(`[EPIC] Starting epic pipeline for ${seedId} — ${epicTasks.length} tasks`);
-  ctx.log(`[EPIC] Per-task phases: ${taskPhaseStr}${finalPhaseStr}`);
-  await appendFile(logFile, `\n[EPIC] Epic pipeline: ${epicTasks.length} tasks, taskPhases: ${taskPhaseStr}${finalPhaseStr}\n`);
+  ctx.log(`${groupPrefix} Starting grouped pipeline for ${seedId} — ${groupedTasks.length} tasks`);
+  ctx.log(`${groupPrefix} Per-task phases: ${taskPhaseStr}${finalPhaseStr}`);
+  await appendFile(logFile, `\n${groupPrefix} Grouped pipeline: ${groupedTasks.length} tasks, taskPhases: ${taskPhaseStr}${finalPhaseStr}\n`);
 
   const allPhaseRecords: PhaseRecord[] = [];
   const allRetryCounts: Record<string, number> = {};
@@ -434,7 +465,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
     lastToolCall: null,
     lastActivity: new Date().toISOString(),
     currentPhase: "epic-init",
-    epicTaskCount: epicTasks.length,
+    epicTaskCount: groupedTasks.length,
     epicTasksCompleted: 0,
     epicCostByTask: {},
   };
@@ -446,18 +477,22 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
   // ── Outer task loop ──────────────────────────────────────────────────
   let activeBugBeadId: string | undefined;
 
-  for (let taskIdx = 0; taskIdx < epicTasks.length; taskIdx++) {
-    const task = epicTasks[taskIdx];
-    ctx.log(`[EPIC] Task ${taskIdx + 1}/${epicTasks.length}: ${task.seedId} — ${task.seedTitle}`);
-    await appendFile(logFile, `\n[EPIC] === Task ${taskIdx + 1}/${epicTasks.length}: ${task.seedId} ===\n`);
+  const onTaskStatusChange = ctx.onGroupedTaskStatusChange ?? ctx.onTaskStatusChange;
+  const onTaskQaFailure = ctx.onGroupedTaskQaFailure ?? ctx.onTaskQaFailure;
+  const onTaskQaPass = ctx.onGroupedTaskQaPass ?? ctx.onTaskQaPass;
+
+  for (let taskIdx = 0; taskIdx < groupedTasks.length; taskIdx++) {
+    const task = groupedTasks[taskIdx];
+    ctx.log(`${groupPrefix} Task ${taskIdx + 1}/${groupedTasks.length}: ${task.seedId} — ${task.seedTitle}`);
+    await appendFile(logFile, `\n${groupPrefix} === Task ${taskIdx + 1}/${groupedTasks.length}: ${task.seedId} ===\n`);
 
     // TRD-012: Update epic progress in RunProgress
     totalProgress.epicCurrentTaskId = task.seedId;
     store.updateRunProgress(runId, totalProgress);
 
     // TRD-011: Mark task bead as in_progress
-    if (ctx.onTaskStatusChange) {
-      await ctx.onTaskStatusChange(task.seedId, "in_progress").catch(() => {});
+    if (onTaskStatusChange) {
+      await onTaskStatusChange(task.seedId, "in_progress").catch(() => {});
     }
 
     // Build a task-specific config overlay (use task's seedId/title/description for prompts)
@@ -465,7 +500,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
       ...config,
       // Keep the epic's seedId for run tracking, but pass task info for prompts
       seedDescription: task.seedDescription ?? config.seedDescription,
-      seedComments: `Epic task ${taskIdx + 1}/${epicTasks.length}: ${task.seedTitle}\n` +
+      seedComments: `${groupLabel} task ${taskIdx + 1}/${groupedTasks.length}: ${task.seedTitle}\n` +
         (completedTaskIds.length > 0
           ? `Previously completed: ${completedTaskIds.join(", ")}\n`
           : "") +
@@ -479,6 +514,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
       config: taskConfig,
       workflowConfig: taskWorkflowConfig,
       epicTasks: undefined, // prevent recursion
+      groupedTasks: undefined,
     };
 
     // Run the task phases (developer → QA with retry).
@@ -497,8 +533,8 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
       completedTaskIds.push(task.seedId);
 
       // TRD-010: Close bug bead if QA passed after retry
-      if (activeBugBeadId && ctx.onTaskQaPass) {
-        await ctx.onTaskQaPass(activeBugBeadId).catch(() => {});
+      if (activeBugBeadId && onTaskQaPass) {
+        await onTaskQaPass(activeBugBeadId).catch(() => {});
         activeBugBeadId = undefined;
       }
 
@@ -506,17 +542,17 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
       if (config.vcsBackend) {
         try {
           await config.vcsBackend.commit(worktreePath, `${task.seedTitle} (${task.seedId})`);
-          ctx.log(`[EPIC] Committed task ${task.seedId}`);
+          ctx.log(`${groupPrefix} Committed task ${task.seedId}`);
         } catch (err: unknown) {
           // Non-fatal: commit may fail if no changes (e.g. test-only task)
           const msg = err instanceof Error ? err.message : String(err);
-          ctx.log(`[EPIC] Commit for ${task.seedId} skipped: ${msg}`);
+          ctx.log(`${groupPrefix} Commit for ${task.seedId} skipped: ${msg}`);
         }
       }
 
       // TRD-011: Mark task bead as completed
-      if (ctx.onTaskStatusChange) {
-        await ctx.onTaskStatusChange(task.seedId, "completed").catch(() => {});
+      if (onTaskStatusChange) {
+        await onTaskStatusChange(task.seedId, "completed").catch(() => {});
       }
 
       // TRD-012: Update epic progress
@@ -525,35 +561,35 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
       totalProgress.epicCostByTask[task.seedId] = result.progress.costUsd - (totalProgress.costUsd - result.progress.costUsd);
       store.updateRunProgress(runId, totalProgress);
 
-      ctx.log(`[EPIC] Task ${task.seedId} PASSED (${completedCount}/${epicTasks.length} done)`);
-      await appendFile(logFile, `\n[EPIC] Task ${task.seedId} PASSED\n`);
+      ctx.log(`${groupPrefix} Task ${task.seedId} PASSED (${completedCount}/${groupedTasks.length} done)`);
+      await appendFile(logFile, `\n${groupPrefix} Task ${task.seedId} PASSED\n`);
     } else {
       failedCount++;
 
       // TRD-010: Create bug bead on QA failure
-      if (result.retriesExhausted && ctx.onTaskQaFailure && config.epicId) {
-        activeBugBeadId = await ctx.onTaskQaFailure(task.seedId, task.seedTitle, config.epicId).catch(() => undefined);
+      if (result.retriesExhausted && onTaskQaFailure && groupedRun.parentId) {
+        activeBugBeadId = await onTaskQaFailure(task.seedId, task.seedTitle, groupedRun.parentId).catch(() => undefined);
         if (activeBugBeadId) {
-          ctx.log(`[EPIC] Created bug bead ${activeBugBeadId} for QA failure on ${task.seedId}`);
+          ctx.log(`${groupPrefix} Created bug bead ${activeBugBeadId} for QA failure on ${task.seedId}`);
         }
       }
 
       // TRD-011: Mark task bead as failed
-      if (ctx.onTaskStatusChange) {
-        await ctx.onTaskStatusChange(task.seedId, "failed").catch(() => {});
+      if (onTaskStatusChange) {
+        await onTaskStatusChange(task.seedId, "failed").catch(() => {});
       }
 
-      ctx.log(`[EPIC] Task ${task.seedId} FAILED${result.retriesExhausted ? " (retries exhausted)" : ""}`);
-      await appendFile(logFile, `\n[EPIC] Task ${task.seedId} FAILED\n`);
+      ctx.log(`${groupPrefix} Task ${task.seedId} FAILED${result.retriesExhausted ? " (retries exhausted)" : ""}`);
+      await appendFile(logFile, `\n${groupPrefix} Task ${task.seedId} FAILED\n`);
 
       // Apply onError strategy
       if (workflowConfig.onError === "stop") {
-        ctx.log(`[EPIC] onError=stop — halting epic after task ${task.seedId} failure`);
-        await appendFile(logFile, `\n[EPIC] Halted (onError=stop)\n`);
+        ctx.log(`${groupPrefix} onError=stop — halting grouped run after task ${task.seedId} failure`);
+        await appendFile(logFile, `\n${groupPrefix} Halted (onError=stop)\n`);
         await ctx.markStuck(
           store, runId, config.projectId, seedId, config.seedTitle,
-          totalProgress, "epic-task-failed",
-          `Task ${task.seedId} failed — epic halted (onError=stop)`,
+          totalProgress, "grouped-task-failed",
+          `Task ${task.seedId} failed — grouped run halted (onError=stop)`,
           ctx.notifyClient, config.projectPath,
         );
         return;
@@ -562,19 +598,20 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
     }
   }
 
-  ctx.log(`[EPIC] Task loop complete: ${completedCount} passed, ${failedCount} failed`);
-  await appendFile(logFile, `\n[EPIC] Task loop complete: ${completedCount}/${epicTasks.length} passed\n`);
+  ctx.log(`${groupPrefix} Task loop complete: ${completedCount} passed, ${failedCount} failed`);
+  await appendFile(logFile, `\n${groupPrefix} Task loop complete: ${completedCount}/${groupedTasks.length} passed\n`);
 
   // ── Final phases (finalize) — run once after all tasks ─────────────
   if (finalPhases.length > 0 && completedCount > 0) {
-    ctx.log(`[EPIC] Running final phases: ${finalPhaseNames.join(" → ")}`);
-    await appendFile(logFile, `\n[EPIC] === Final phases ===\n`);
+    ctx.log(`${groupPrefix} Running final phases: ${finalPhaseNames.join(" → ")}`);
+    await appendFile(logFile, `\n${groupPrefix} === Final phases ===\n`);
 
     const finalWorkflowConfig = { ...workflowConfig, phases: finalPhases };
     const finalCtx: PipelineContext = {
       ...ctx,
       workflowConfig: finalWorkflowConfig,
       epicTasks: undefined,
+      groupedTasks: undefined,
     };
 
     const finalResult = await runPhaseSequence(finalCtx, finalPhases, totalProgress);
@@ -585,7 +622,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
     }
 
     if (!finalResult.success) {
-      ctx.log(`[EPIC] Final phases failed`);
+      ctx.log(`${groupPrefix} Final phases failed`);
       return; // markStuck already called inside runPhaseSequence
     }
   }
