@@ -61,8 +61,8 @@ export interface PhaseResult {
   error?: string;
 }
 
-/** A child task within an epic pipeline run. */
-export interface EpicTask {
+/** A child task within a grouped parent pipeline run. */
+export interface GroupedTask {
   /** Bead/seed ID of the child task. */
   seedId: string;
   /** Title of the child task bead. */
@@ -70,6 +70,12 @@ export interface EpicTask {
   /** Description of the child task bead. */
   seedDescription?: string;
 }
+
+/**
+ * Backward-compatible alias for the original epic-runner task shape.
+ * Story/grouped-parent execution reuses the same task payload.
+ */
+export type EpicTask = GroupedTask;
 
 export interface PipelineRunConfig {
   runId: string;
@@ -111,6 +117,22 @@ export interface PipelineRunConfig {
    * Used to link child task results back to the parent epic.
    */
   epicId?: string;
+  /**
+   * Ordered list of child tasks for grouped parent execution.
+   * Superset of the legacy epicTasks field so story-scoped runners can reuse
+   * the same pipeline path without changing the task payload shape.
+   */
+  groupedTasks?: GroupedTask[];
+  /**
+   * Parent container ID for grouped execution.
+   * Defaults to epicId for legacy epic runs.
+   */
+  groupedParentId?: string;
+  /**
+   * Parent container type for grouped execution logs/telemetry.
+   * Examples: "epic", "story".
+   */
+  groupedParentType?: string;
 }
 
 export interface PipelineContext {
@@ -133,6 +155,11 @@ export interface PipelineContext {
    * instead of running all phases in sequence for a single task.
    */
   epicTasks?: EpicTask[];
+  /**
+   * Grouped-parent mode: ordered list of child tasks to execute.
+   * Preferred generic entrypoint; epicTasks remains as a compatibility alias.
+   */
+  groupedTasks?: GroupedTask[];
   /** The runPhase function from agent-worker.ts */
   runPhase: RunPhaseFn;
   /** Register an agent identity for mail */
@@ -158,14 +185,21 @@ export interface PipelineContext {
    */
   onTaskStatusChange?: (taskSeedId: string, status: "in_progress" | "completed" | "failed") => Promise<void>;
   /**
+   * Grouped-parent callback aliases for story/other parent containers.
+   * Falls back to the epic-named callbacks when omitted.
+   */
+  onGroupedTaskStatusChange?: (taskSeedId: string, status: "in_progress" | "completed" | "failed") => Promise<void>;
+  /**
    * Epic mode callback: create a bug bead when QA fails on a task.
    * Returns the created bug bead ID, or undefined if creation fails.
    */
   onTaskQaFailure?: (taskSeedId: string, taskTitle: string, epicId: string) => Promise<string | undefined>;
+  onGroupedTaskQaFailure?: (taskSeedId: string, taskTitle: string, parentId: string) => Promise<string | undefined>;
   /**
    * Epic mode callback: close a bug bead when QA passes after retry.
    */
   onTaskQaPass?: (bugBeadId: string) => Promise<void>;
+  onGroupedTaskQaPass?: (bugBeadId: string) => Promise<void>;
   /**
    * Called when a rate limit (429) is detected.
    * Used for alerting (P1) and per-model rate limit tracking (P2).
