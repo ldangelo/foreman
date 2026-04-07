@@ -13,7 +13,7 @@
  *   - create()         — create a new task in backlog status (REQ-006)
  *   - update()         — update task fields (title, description, priority, status) (REQ-007)
  *   - approve()        — transition backlog → ready (REQ-005)
- *   - close()          — mark task as closed (REQ-008)
+ *   - close()          — mark task as merged (REQ-008)
  *   - addDependency()  — add a task dependency with cycle detection (REQ-004, REQ-021.3)
  *   - getDependencies()— retrieve dependencies in either direction
  *   - removeDependency()— remove a dependency edge
@@ -452,7 +452,7 @@ export class NativeTaskStore {
 
       this.db
         .prepare(
-          "UPDATE tasks SET status = 'closed', closed_at = ?, updated_at = ? WHERE id = ?",
+          "UPDATE tasks SET status = 'merged', closed_at = ?, updated_at = ? WHERE id = ?",
         )
         .run(now, now, id);
     });

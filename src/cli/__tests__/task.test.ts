@@ -309,10 +309,10 @@ describe("task close — NativeTaskStore.close()", () => {
   });
   afterEach(() => teardownStore(ctx));
 
-  it("sets status to closed", () => {
+  it("sets status to merged", () => {
     const task = ctx.taskStore.create({ title: "Close Test" });
     ctx.taskStore.close(task.id);
-    expect(ctx.taskStore.get(task.id)?.status).toBe("closed");
+    expect(ctx.taskStore.get(task.id)?.status).toBe("merged");
   });
 
   it("sets closed_at timestamp", () => {
