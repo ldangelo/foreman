@@ -122,6 +122,7 @@ export interface PipelineRunConfig {
    * Superset of the legacy epicTasks field so story-scoped runners can reuse
    * the same pipeline path without changing the task payload shape.
    */
+  epicTasks?: EpicTask[];
   groupedTasks?: GroupedTask[];
   /**
    * Parent container ID for grouped execution.

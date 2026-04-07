@@ -238,11 +238,12 @@ describe("epic task loop (TRD-005)", () => {
     });
 
     const args = makeEpicPipelineArgs(tmpDir, runPhase, log, []);
-    args.groupedTasks = makeEpicTasks(2);
-    args.config.groupedParentId = "story-1";
-    args.config.groupedParentType = "story";
-    delete (args as Record<string, unknown>).epicTasks;
-    await executePipeline(args as never);
+    const groupedArgs = args as Record<string, any>;
+    groupedArgs.groupedTasks = makeEpicTasks(2);
+    groupedArgs.config.groupedParentId = "story-1";
+    groupedArgs.config.groupedParentType = "story";
+    delete groupedArgs.epicTasks;
+    await executePipeline(groupedArgs as never);
 
     expect(phaseOrder).toEqual([
       "developer", "qa",
