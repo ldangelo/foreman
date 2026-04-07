@@ -499,7 +499,7 @@ export class Dispatcher {
       // Feature beads are organizational containers — never dispatch agents for
       // them. Instead, check if all children are closed and auto-close the
       // container bead when they are.
-      const groupedTasksForSeed = (seed as unknown as Record<string, unknown>).__epicTasks as EpicTask[] | undefined;
+      let groupedTasksForSeed = (seed as unknown as Record<string, unknown>).__epicTasks as EpicTask[] | undefined;
 
       if (seed.type === "feature" && !groupedTasksForSeed) {
         try {
@@ -602,7 +602,8 @@ export class Dispatcher {
           // Store epicTasks for use by the dispatch logic below.
           // We set a marker on the seed object so the dispatch code further down
           // can include epicTasks in the worker config.
-          (dispatchSeed as unknown as Record<string, unknown>).__epicTasks = epicTasks;
+          (seed as unknown as Record<string, unknown>).__epicTasks = epicTasks;
+          groupedTasksForSeed = epicTasks;
           // Fall through to normal dispatch logic (worktree creation, spawn, etc.)
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
