@@ -114,6 +114,7 @@ export interface CreateTaskOptions {
 export interface UpdateTaskOptions {
   title?: string;
   description?: string | null;
+  type?: string;
   priority?: number;
   status?: string;
   force?: boolean;
@@ -373,6 +374,10 @@ export class NativeTaskStore {
       if (opts.description !== undefined) {
         sets.push("description = ?");
         values.push(opts.description);
+      }
+      if (opts.type !== undefined) {
+        sets.push("type = ?");
+        values.push(opts.type);
       }
       if (opts.priority !== undefined) {
         sets.push("priority = ?");

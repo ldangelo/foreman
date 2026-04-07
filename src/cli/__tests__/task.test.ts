@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
@@ -252,6 +252,12 @@ describe("task update — NativeTaskStore.update()", () => {
     expect(updated.priority).toBe(0);
   });
 
+  it("updates type", () => {
+    const task = ctx.taskStore.create({ title: "Type Task", type: "feature" });
+    const updated = ctx.taskStore.update(task.id, { type: "story" });
+    expect(updated.type).toBe("story");
+  });
+
   it("updates status forward without --force", () => {
     const task = ctx.taskStore.create({ title: "Status Task" });
     ctx.taskStore.approve(task.id);
@@ -460,6 +466,7 @@ describe("taskCommand export", () => {
     const { taskCommand } = await import("../commands/task.js");
     const names = taskCommand.commands.map((c) => c.name());
     expect(names).toContain("create");
+    expect(names).toContain("import");
     expect(names).toContain("list");
     expect(names).toContain("show");
     expect(names).toContain("approve");
@@ -476,5 +483,106 @@ describe("taskCommand export", () => {
     expect(depSubNames).toContain("add");
     expect(depSubNames).toContain("list");
     expect(depSubNames).toContain("remove");
+  });
+});
+
+describe("task import — importTasksFromBeads()", () => {
+  let ctx: ReturnType<typeof setupStore>;
+
+  beforeEach(() => {
+    ctx = setupStore();
+    mkdirSync(join(ctx.tmpDir, ".beads"), { recursive: true });
+  });
+
+  afterEach(() => teardownStore(ctx));
+
+  it("imports beads issues into native tasks and preserves dependency types", async () => {
+    writeFileSync(
+      join(ctx.tmpDir, ".beads", "issues.jsonl"),
+      [
+        JSON.stringify({
+          id: "bd-story",
+          title: "Story",
+          issue_type: "feature",
+          labels: ["kind:story"],
+          status: "open",
+        }),
+        JSON.stringify({
+          id: "bd-task",
+          title: "Task",
+          issue_type: "task",
+          status: "in_progress",
+          dependencies: [{ depends_on_id: "bd-story", type: "parent-child" }],
+        }),
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const { importTasksFromBeads } = await import("../commands/task.js");
+    const result = importTasksFromBeads(ctx.tmpDir, ctx.taskStore);
+
+    expect(result.imported).toBe(2);
+    expect(result.updated).toBe(0);
+    const imported = ctx.taskStore.list();
+    expect(imported).toHaveLength(2);
+    const story = imported.find((task) => task.title === "Story");
+    const task = imported.find((t) => t.title === "Task");
+    expect(story).toBeTruthy();
+    expect(task).toBeTruthy();
+    expect(ctx.taskStore.get(story!.id)?.external_id).toBe("bd-story");
+    expect(ctx.taskStore.get(task!.id)?.status).toBe("ready");
+    expect(ctx.taskStore.get(task!.id)?.type).toBe("task");
+    expect(ctx.taskStore.get(story!.id)?.type).toBe("story");
+    expect(ctx.taskStore.getDependencies(task!.id, "outgoing")).toEqual([
+      expect.objectContaining({
+        from_task_id: task!.id,
+        to_task_id: story!.id,
+        type: "parent-child",
+      }),
+    ]);
+  });
+
+  it("supports dry-run without creating tasks", async () => {
+    writeFileSync(
+      join(ctx.tmpDir, ".beads", "issues.jsonl"),
+      JSON.stringify({ id: "bd-one", title: "One", issue_type: "task", status: "open" }),
+      "utf-8",
+    );
+
+    const { importTasksFromBeads } = await import("../commands/task.js");
+    const result = importTasksFromBeads(ctx.tmpDir, ctx.taskStore, { dryRun: true });
+
+    expect(result.imported).toBe(1);
+    expect(result.updated).toBe(0);
+    expect(ctx.taskStore.list()).toHaveLength(0);
+  });
+
+  it("reconciles an existing imported feature into a native story", async () => {
+    writeFileSync(
+      join(ctx.tmpDir, ".beads", "issues.jsonl"),
+      JSON.stringify({
+        id: "bd-existing-story",
+        title: "Existing Story",
+        issue_type: "feature",
+        labels: ["kind:story"],
+        status: "open",
+      }),
+      "utf-8",
+    );
+
+    const existing = ctx.taskStore.create({
+      title: "Existing Story",
+      type: "feature",
+      externalId: "bd-existing-story",
+    });
+    expect(ctx.taskStore.get(existing.id)?.type).toBe("feature");
+
+    const { importTasksFromBeads } = await import("../commands/task.js");
+    const result = importTasksFromBeads(ctx.tmpDir, ctx.taskStore);
+
+    expect(result.imported).toBe(0);
+    expect(result.updated).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(ctx.taskStore.get(existing.id)?.type).toBe("story");
   });
 });
