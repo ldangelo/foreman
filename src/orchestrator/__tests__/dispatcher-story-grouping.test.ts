@@ -23,6 +23,12 @@ vi.mock("../../lib/vcs/index.js", () => ({
   },
 }));
 
+vi.mock("../../lib/beads-rust.js", () => ({
+  BeadsRustClient: vi.fn().mockImplementation(() => ({
+    show: vi.fn().mockResolvedValue({ dependencies: [] }),
+  })),
+}));
+
 const { Dispatcher } = await import("../dispatcher.js");
 
 type Detail = {
@@ -125,6 +131,8 @@ describe("Dispatcher — story-scoped worktree grouping", () => {
       title: "Story 1",
     });
     expect(new Set(result.dispatched.map((item) => item.worktreePath)).size).toBe(1);
+    expect(result.dispatched.map((item) => item.seedId)).not.toContain(task1.id);
+    expect(result.dispatched.map((item) => item.seedId)).not.toContain(task2.id);
     expect(getTaskOrderMock).toHaveBeenCalledTimes(1);
     expect(getTaskOrderMock).toHaveBeenCalledWith(storyId, expect.anything(), "/tmp");
   });
@@ -182,6 +190,9 @@ describe("Dispatcher — story-scoped worktree grouping", () => {
     expect(result.dispatched).toHaveLength(2);
     expect(new Set(result.dispatched.map((item) => item.seedId))).toEqual(new Set([story1Id, story2Id]));
     expect(new Set(result.dispatched.map((item) => item.worktreePath)).size).toBe(2);
+    expect(result.dispatched.map((item) => item.seedId)).not.toEqual(
+      expect.arrayContaining(issues.map((issue) => issue.id)),
+    );
     expect(getTaskOrderMock).toHaveBeenCalledTimes(2);
   });
 
