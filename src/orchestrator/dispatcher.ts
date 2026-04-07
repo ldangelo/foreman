@@ -122,6 +122,10 @@ export class Dispatcher {
     return labels.includes("kind:story");
   }
 
+  /**
+   * Replace ready child tasks that share the same story parent with one
+   * synthetic story seed carrying the ordered ready child snapshot.
+   */
   private async collapseReadyStoryChildren(readySeeds: Issue[]): Promise<Issue[]> {
     const storyGroups = new Map<string, EpicTask[]>();
     const parentDetails = new Map<string, BrIssueDetail>();
