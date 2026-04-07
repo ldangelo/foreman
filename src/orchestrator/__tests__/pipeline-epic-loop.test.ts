@@ -224,6 +224,34 @@ describe("epic task loop (TRD-005)", () => {
     expect(phaseOrder).toEqual(["developer", "qa", "finalize"]);
   });
 
+  it("groupedTasks alias runs the grouped-parent loop without legacy epic fields", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "qa") {
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport());
+      }
+      return successResult();
+    });
+
+    const args = makeEpicPipelineArgs(tmpDir, runPhase, log, []);
+    args.groupedTasks = makeEpicTasks(2);
+    args.config.groupedParentId = "story-1";
+    args.config.groupedParentType = "story";
+    delete (args as Record<string, unknown>).epicTasks;
+    await executePipeline(args as never);
+
+    expect(phaseOrder).toEqual([
+      "developer", "qa",
+      "developer", "qa",
+      "finalize",
+    ]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("[STORY] Starting grouped pipeline"));
+  });
+
   it("finalize runs once after all tasks", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
     const phaseOrder: string[] = [];
