@@ -471,34 +471,62 @@ export class Dispatcher {
 
     // Skip seeds that already have an active run
     const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
+    const activeWorktreePaths = new Set(
+      activeRuns
+        .map((r) => r.worktree_path)
+        .filter((path): path is string => Boolean(path)),
+    );
 
     // Also skip seeds that have a completed-but-unmerged run (prevent duplicate runs)
     const completedRuns = this.store.getRunsByStatus("completed", projectId);
     const completedSeedIds = new Set(completedRuns.map((r) => r.seed_id));
+    const completedWorktreePaths = new Set(
+      completedRuns
+        .map((r) => r.worktree_path)
+        .filter((path): path is string => Boolean(path)),
+    );
+    const scheduledWorktreePaths = new Set<string>();
 
     for (const seed of readySeeds) {
-      if (this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
+      const dispatchPlan = await this.buildDispatchSeedPlan(seed, usingNativeStore);
+      const dispatchSeed = dispatchPlan.seed;
+      const plannedWorktreePath = getWorkspacePath(this.projectPath, dispatchPlan.worktreeSeedId);
+
+      if (this.hasMergedOutcomeWithoutLaterReset(dispatchSeed.id, projectId)) {
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
+          seedId: dispatchSeed.id,
+          title: dispatchSeed.title,
           reason: "Latest authoritative run already merged — explicit reset/retry required",
         });
         continue;
       }
 
-      if (activeSeedIds.has(seed.id)) {
+      if (scheduledWorktreePaths.has(plannedWorktreePath)) {
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
-          reason: "Already has an active run",
+          seedId: dispatchSeed.id,
+          title: dispatchSeed.title,
+          reason: dispatchPlan.groupingParentId
+            ? `Story ${dispatchPlan.groupingParentId} already scheduled in this dispatch cycle`
+            : "Already scheduled in this dispatch cycle",
         });
         continue;
       }
 
-      if (completedSeedIds.has(seed.id)) {
+      if (activeSeedIds.has(dispatchSeed.id) || activeWorktreePaths.has(plannedWorktreePath)) {
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
+          seedId: dispatchSeed.id,
+          title: dispatchSeed.title,
+          reason: dispatchPlan.groupingParentId
+            ? `Story ${dispatchPlan.groupingParentId} already has an active worktree`
+            : "Already has an active run",
+        });
+        continue;
+      }
+
+      if (completedSeedIds.has(dispatchSeed.id) || completedWorktreePaths.has(plannedWorktreePath)) {
+        skipped.push({
+          seedId: dispatchSeed.id,
+          title: dispatchSeed.title,
           reason: "Has completed run awaiting merge — run 'foreman merge' or wait for auto-merge",
         });
         continue;
@@ -508,9 +536,9 @@ export class Dispatcher {
       // Feature beads are organizational containers — never dispatch agents for
       // them. Instead, check if all children are closed and auto-close the
       // container bead when they are.
-      if (seed.type === "feature") {
+      if (dispatchSeed.type === "feature") {
         try {
-          const detail = await this.seeds.show(seed.id);
+          const detail = await this.seeds.show(dispatchSeed.id);
           // br show --json returns `dependents` (the tasks this container blocks), not `children`.
           // Use dependents to determine whether all downstream work is complete.
           const brDetail = detail as import("../lib/beads-rust.js").BrIssueDetail;
@@ -518,12 +546,12 @@ export class Dispatcher {
 
           if (dependents.length === 0) {
             // No dependents — close the container directly
-            await this.seeds.close(seed.id, "Auto-closed: no dependent tasks (empty container)");
-            log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — no dependent tasks`);
+            await this.seeds.close(dispatchSeed.id, "Auto-closed: no dependent tasks (empty container)");
+            log(`[dispatch] Auto-closed ${dispatchSeed.id} (type: ${dispatchSeed.type}) — no dependent tasks`);
             skipped.push({
-              seedId: seed.id,
-              title: seed.title,
-              reason: `Type '${seed.type}' auto-closed — no dependent tasks`,
+              seedId: dispatchSeed.id,
+              title: dispatchSeed.title,
+              reason: `Type '${dispatchSeed.type}' auto-closed — no dependent tasks`,
             });
           } else {
             const openDeps = dependents.filter(
@@ -531,30 +559,30 @@ export class Dispatcher {
             );
 
             if (openDeps.length === 0) {
-              await this.seeds.close(seed.id, "Auto-closed: all dependent tasks completed");
-              log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — all ${dependents.length} dependent tasks completed`);
+              await this.seeds.close(dispatchSeed.id, "Auto-closed: all dependent tasks completed");
+              log(`[dispatch] Auto-closed ${dispatchSeed.id} (type: ${dispatchSeed.type}) — all ${dependents.length} dependent tasks completed`);
               skipped.push({
-                seedId: seed.id,
-                title: seed.title,
-                reason: `Type '${seed.type}' auto-closed — all ${dependents.length} dependent tasks completed`,
+                seedId: dispatchSeed.id,
+                title: dispatchSeed.title,
+                reason: `Type '${dispatchSeed.type}' auto-closed — all ${dependents.length} dependent tasks completed`,
               });
             } else {
-              log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`);
+              log(`[dispatch] Skipping ${dispatchSeed.id} (type: ${dispatchSeed.type}) — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`);
               skipped.push({
-                seedId: seed.id,
-                title: seed.title,
-                reason: `Type '${seed.type}' is an organizational container — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`,
+                seedId: dispatchSeed.id,
+                title: dispatchSeed.title,
+                reason: `Type '${dispatchSeed.type}' is an organizational container — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`,
               });
             }
           }
         } catch (err: unknown) {
           // If we can't inspect the container, skip it rather than crashing
           const msg = err instanceof Error ? err.message : String(err);
-          log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — failed to check dependents: ${msg}`);
+          log(`[dispatch] Skipping ${dispatchSeed.id} (type: ${dispatchSeed.type}) — failed to check dependents: ${msg}`);
           skipped.push({
-            seedId: seed.id,
-            title: seed.title,
-            reason: `Type '${seed.type}' is an organizational container — skipped (error checking dependents)`,
+            seedId: dispatchSeed.id,
+            title: dispatchSeed.title,
+            reason: `Type '${dispatchSeed.type}' is an organizational container — skipped (error checking dependents)`,
           });
         }
         continue;
@@ -564,19 +592,19 @@ export class Dispatcher {
       // Epic beads with children are dispatched as a single epic runner that
       // executes all child tasks sequentially within one worktree.
       // Epic beads with 0 children are auto-closed.
-      if (seed.type === "epic") {
+      if (dispatchSeed.type === "epic") {
         try {
-          const detail = await this.seeds.show(seed.id);
+          const detail = await this.seeds.show(dispatchSeed.id);
           const detailWithChildren = detail as { children?: string[]; status: string };
           const childIds = detailWithChildren.children ?? [];
 
           if (childIds.length === 0) {
             // No children — auto-close the epic
-            await this.seeds.close(seed.id, "Auto-closed: no children (empty epic)");
-            log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no children`);
+            await this.seeds.close(dispatchSeed.id, "Auto-closed: no children (empty epic)");
+            log(`[dispatch] Auto-closed ${dispatchSeed.id} (type: epic) — no children`);
             skipped.push({
-              seedId: seed.id,
-              title: seed.title,
+              seedId: dispatchSeed.id,
+              title: dispatchSeed.title,
               reason: "Type 'epic' auto-closed — no children",
             });
             continue;
@@ -586,7 +614,7 @@ export class Dispatcher {
           // getTaskOrder returns only actionable child types (task, bug, chore).
           const brClient = this.seeds as unknown as BeadsRustClient;
           const epicTasks: EpicTask[] = await getTaskOrder(
-            seed.id,
+            dispatchSeed.id,
             brClient,
             this.projectPath,
           );
@@ -594,41 +622,46 @@ export class Dispatcher {
           if (epicTasks.length === 0) {
             // All children are non-actionable types (e.g. all feature/story containers)
             // or all children are already closed. Auto-close.
-            await this.seeds.close(seed.id, "Auto-closed: no actionable child tasks");
-            log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no actionable child tasks`);
+            await this.seeds.close(dispatchSeed.id, "Auto-closed: no actionable child tasks");
+            log(`[dispatch] Auto-closed ${dispatchSeed.id} (type: epic) — no actionable child tasks`);
             skipped.push({
-              seedId: seed.id,
-              title: seed.title,
+              seedId: dispatchSeed.id,
+              title: dispatchSeed.title,
               reason: "Type 'epic' auto-closed — no actionable child tasks",
             });
             continue;
           }
 
-          log(`[dispatch] Epic ${seed.id} has ${epicTasks.length} ordered tasks — dispatching epic runner`);
+          log(`[dispatch] Epic ${dispatchSeed.id} has ${epicTasks.length} ordered tasks — dispatching epic runner`);
 
           // Store epicTasks for use by the dispatch logic below.
           // We set a marker on the seed object so the dispatch code further down
           // can include epicTasks in the worker config.
-          (seed as unknown as Record<string, unknown>).__epicTasks = epicTasks;
+          (dispatchSeed as unknown as Record<string, unknown>).__epicTasks = epicTasks;
           // Fall through to normal dispatch logic (worktree creation, spawn, etc.)
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
-          log(`[dispatch] Failed to prepare epic ${seed.id}: ${msg}`);
+          log(`[dispatch] Failed to prepare epic ${dispatchSeed.id}: ${msg}`);
           skipped.push({
-            seedId: seed.id,
-            title: seed.title,
+            seedId: dispatchSeed.id,
+            title: dispatchSeed.title,
             reason: `Epic dispatch failed: ${msg}`,
           });
           continue;
         }
       }
 
+      if (dispatchPlan.groupedTasks && dispatchSeed.type === "story") {
+        log(`[dispatch] Story ${dispatchSeed.id} has ${dispatchPlan.groupedTasks.length} ordered tasks — dispatching grouped runner`);
+        (dispatchSeed as unknown as Record<string, unknown>).__epicTasks = dispatchPlan.groupedTasks;
+      }
+
       // Skip seeds that are in exponential backoff after recent stuck runs
-      const backoffResult = this.checkStuckBackoff(seed.id, projectId);
+      const backoffResult = this.checkStuckBackoff(dispatchSeed.id, projectId);
       if (backoffResult.inBackoff) {
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
+          seedId: dispatchSeed.id,
+          title: dispatchSeed.title,
           reason: backoffResult.reason ?? "In backoff period after recent stuck runs",
         });
         continue;
@@ -636,8 +669,8 @@ export class Dispatcher {
 
       if (dispatched.length >= available) {
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
+          seedId: dispatchSeed.id,
+          title: dispatchSeed.title,
           reason: `Agent limit reached (${maxAgents})`,
         });
         continue;
@@ -646,20 +679,20 @@ export class Dispatcher {
       // Fetch full issue details (description, notes/comments, labels) for agent context
       let seedDetail: { description?: string | null; notes?: string | null; labels?: string[] } | undefined;
       try {
-        seedDetail = await this.seeds.show(seed.id);
+        seedDetail = await this.seeds.show(dispatchSeed.id);
       } catch {
         // Non-fatal: if show() fails, proceed without detail context
-        log(`Warning: failed to fetch details for seed ${seed.id}`);
+        log(`Warning: failed to fetch details for seed ${dispatchSeed.id}`);
       }
 
       // Fetch bead comments (design notes, reviewer feedback, etc.) for agent context
       let beadComments: string | null = null;
       if (this.seeds.comments) {
         try {
-          beadComments = await this.seeds.comments(seed.id);
+          beadComments = await this.seeds.comments(dispatchSeed.id);
         } catch {
           // Non-fatal: proceed without comments if fetch fails
-          log(`Warning: failed to fetch comments for seed ${seed.id}`);
+          log(`Warning: failed to fetch comments for seed ${dispatchSeed.id}`);
         }
       }
 
@@ -673,7 +706,7 @@ export class Dispatcher {
       //
       // Only applied when the bead doesn't already have a branch: label.
       if (currentBranch && defaultBranch) {
-        const existingLabels: string[] = seedDetail?.labels ?? seed.labels ?? [];
+        const existingLabels: string[] = seedDetail?.labels ?? dispatchSeed.labels ?? [];
         const existingBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(existingLabels));
 
         if (!existingBranchLabel) {
@@ -683,10 +716,10 @@ export class Dispatcher {
 
           if (!isDefaultBranch(currentBranch, defaultBranch)) {
             labelBranch = currentBranch;
-          } else if (seed.parent) {
+          } else if (dispatchSeed.parent) {
             // Check parent's branch: label for inheritance
             try {
-              const parentDetail = await this.seeds.show(seed.parent) as unknown as { labels?: string[] };
+              const parentDetail = await this.seeds.show(dispatchSeed.parent) as unknown as { labels?: string[] };
               const parentBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(parentDetail.labels));
               if (parentBranchLabel && !isDefaultBranch(parentBranchLabel, defaultBranch)) {
                 labelBranch = parentBranchLabel;
@@ -699,8 +732,8 @@ export class Dispatcher {
           if (labelBranch) {
             const updatedLabels = applyBranchLabel(existingLabels, labelBranch);
             try {
-              await this.seeds.update(seed.id, { labels: updatedLabels });
-              log(`[foreman] Auto-labeled ${seed.id} with branch:${labelBranch}`);
+              await this.seeds.update(dispatchSeed.id, { labels: updatedLabels });
+              log(`[foreman] Auto-labeled ${dispatchSeed.id} with branch:${labelBranch}`);
               // Update seedDetail.labels so seedToInfo() sees the updated labels
               if (seedDetail) {
                 seedDetail = { ...seedDetail, labels: updatedLabels };
@@ -710,13 +743,13 @@ export class Dispatcher {
             } catch (labelErr: unknown) {
               // Non-fatal: label failure must not block dispatch
               const msg = labelErr instanceof Error ? labelErr.message : String(labelErr);
-              log(`Warning: failed to add branch label to ${seed.id}: ${msg}`);
+              log(`Warning: failed to add branch label to ${dispatchSeed.id}: ${msg}`);
             }
           }
         }
       }
 
-      const seedInfo = seedToInfo(seed, seedDetail, beadComments);
+      const seedInfo = seedToInfo(dispatchSeed, seedDetail, beadComments);
       const runtime: RuntimeSelection = "claude-code";
       // Pipeline model is now resolved per-phase from the workflow YAML + bead priority.
       // Use opts.model if provided (e.g. --model flag), otherwise fall back to the
@@ -726,14 +759,15 @@ export class Dispatcher {
 
       if (opts?.dryRun) {
         dispatched.push({
-          seedId: seed.id,
-          title: seed.title,
+          seedId: dispatchSeed.id,
+          title: dispatchSeed.title,
           runtime,
           model,
-          worktreePath: getWorkspacePath(this.projectPath, seed.id),
+          worktreePath: plannedWorktreePath,
           runId: "(dry-run)",
-          branchName: `foreman/${seed.id}`,
+          branchName: `foreman/${dispatchPlan.worktreeSeedId}`,
         });
+        scheduledWorktreePaths.add(plannedWorktreePath);
         continue;
       }
 
@@ -743,18 +777,18 @@ export class Dispatcher {
         // point — a concurrent dispatch cycle may have already created a pending
         // run for this seed between our getActiveRuns() call and now.  This
         // just-in-time check prevents duplicate runs in that race window.
-        if (this.store.hasActiveOrPendingRun(seed.id, projectId)) {
+        if (this.store.hasActiveOrPendingRun(dispatchSeed.id, projectId)) {
           skipped.push({
-            seedId: seed.id,
-            title: seed.title,
+            seedId: dispatchSeed.id,
+            title: dispatchSeed.title,
             reason: "Another run was created concurrently (race guard)",
           });
           continue;
         }
-        if (this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
+        if (this.hasMergedOutcomeWithoutLaterReset(dispatchSeed.id, projectId)) {
           skipped.push({
-            seedId: seed.id,
-            title: seed.title,
+            seedId: dispatchSeed.id,
+            title: dispatchSeed.title,
             reason: "Another run merged before dispatch could create a new run (merged guard)",
           });
           continue;
