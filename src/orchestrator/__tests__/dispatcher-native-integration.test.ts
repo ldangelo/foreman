@@ -48,9 +48,10 @@ vi.mock("../../lib/setup.js", () => ({
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("node:fs/promises")>();
+  const orig = await importOriginal();
+  const fsPromises = orig as typeof import("node:fs/promises");
   return {
-    ...orig,
+    ...fsPromises,
     writeFile: vi.fn().mockResolvedValue(undefined),
     mkdir: vi.fn().mockResolvedValue(undefined),
     open: vi.fn().mockResolvedValue({ fd: 3, close: vi.fn() }),
