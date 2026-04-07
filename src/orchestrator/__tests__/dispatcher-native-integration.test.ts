@@ -521,3 +521,77 @@ describe("Dispatcher — Native task priority ordering (integration)", () => {
     expect(ready[1]!.id).toBe(second.id);
   });
 });
+
+// ── Integration: Native story grouping parity ────────────────────────────
+
+describe("Dispatcher — Native story-scoped grouping (integration)", () => {
+  let ctx: StoreContext;
+
+  beforeEach(() => {
+    ctx = setupStore();
+  });
+  afterEach(() => {
+    teardownStore(ctx);
+    delete process.env.FOREMAN_TASK_STORE;
+  });
+
+  it("dispatches one grouped worktree when multiple ready native tasks share a story parent", async () => {
+    await withEnvVar("FOREMAN_TASK_STORE", "native", async () => {
+      const story = ctx.taskStore.create({ title: "Story 1", type: "feature" });
+      const task1 = ctx.taskStore.create({ title: "Task 1" });
+      const task2 = ctx.taskStore.create({ title: "Task 2" });
+
+      ctx.taskStore.addDependency(task1.id, story.id, "parent-child");
+      ctx.taskStore.addDependency(task2.id, story.id, "parent-child");
+      ctx.taskStore.approve(task1.id);
+      ctx.taskStore.approve(task2.id);
+
+      const beadsClient = makeMockBeadsClient([]);
+      const dispatcher = new Dispatcher(beadsClient, ctx.store, "/tmp");
+
+      const result = await dispatcher.dispatch({ dryRun: true });
+
+      expect(result.dispatched).toHaveLength(1);
+      expect(result.dispatched[0]).toMatchObject({
+        seedId: story.id,
+        title: story.title,
+      });
+      expect(result.dispatched.map((item) => item.seedId)).not.toContain(task1.id);
+      expect(result.dispatched.map((item) => item.seedId)).not.toContain(task2.id);
+    });
+  });
+
+  it("dispatches separate grouped worktrees for independent native stories", async () => {
+    await withEnvVar("FOREMAN_TASK_STORE", "native", async () => {
+      const story1 = ctx.taskStore.create({ title: "Story 1", type: "feature" });
+      const story2 = ctx.taskStore.create({ title: "Story 2", type: "feature" });
+      const task1 = ctx.taskStore.create({ title: "Story 1 / Task 1" });
+      const task2 = ctx.taskStore.create({ title: "Story 1 / Task 2" });
+      const task3 = ctx.taskStore.create({ title: "Story 2 / Task 1" });
+      const task4 = ctx.taskStore.create({ title: "Story 2 / Task 2" });
+
+      ctx.taskStore.addDependency(task1.id, story1.id, "parent-child");
+      ctx.taskStore.addDependency(task2.id, story1.id, "parent-child");
+      ctx.taskStore.addDependency(task3.id, story2.id, "parent-child");
+      ctx.taskStore.addDependency(task4.id, story2.id, "parent-child");
+      ctx.taskStore.approve(task1.id);
+      ctx.taskStore.approve(task2.id);
+      ctx.taskStore.approve(task3.id);
+      ctx.taskStore.approve(task4.id);
+
+      const beadsClient = makeMockBeadsClient([]);
+      const dispatcher = new Dispatcher(beadsClient, ctx.store, "/tmp");
+
+      const result = await dispatcher.dispatch({ dryRun: true });
+
+      expect(result.dispatched).toHaveLength(2);
+      expect(new Set(result.dispatched.map((item) => item.seedId))).toEqual(
+        new Set([story1.id, story2.id]),
+      );
+      expect(new Set(result.dispatched.map((item) => item.worktreePath)).size).toBe(2);
+      expect(result.dispatched.map((item) => item.seedId)).not.toEqual(
+        expect.arrayContaining([task1.id, task2.id, task3.id, task4.id]),
+      );
+    });
+  });
+});
