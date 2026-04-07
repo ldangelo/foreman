@@ -16,7 +16,7 @@ import { request as httpRequest } from "node:http";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
-import type { EpicTask } from "./pipeline-executor.js";
+import type { EpicTask, GroupedTask } from "./pipeline-executor.js";
 import { createConfiguredPhaseRunner, createDefaultPhaseRunner, type PhaseRunner, type PhaseRunnerConfig } from "./phase-runner.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
@@ -231,10 +231,17 @@ interface WorkerConfig {
    */
   epicTasks?: EpicTask[];
   /**
+   * Generic grouped-parent child task list.
+   * Story/grouped-parent dispatch reuses the same pipeline path as epic mode.
+   */
+  groupedTasks?: GroupedTask[];
+  /**
    * Parent epic bead ID (TRD-2026-007).
    * When set, this run is an epic execution.
    */
   epicId?: string;
+  groupedParentId?: string;
+  groupedParentType?: string;
   /**
    * Optional explicit phase-runner override for tests/harnesses.
    * When present, only per-phase execution is swapped; the rest of the worker
@@ -765,6 +772,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     agentMailClient,
     taskStore,
     epicTasks: config.epicTasks,
+    groupedTasks: config.groupedTasks ?? config.epicTasks,
     runPhase: (role, prompt, phaseConfig, progress, phaseLogFile, phaseStore, phaseNotifyClient, phaseAgentMailClient) =>
       runPhase(
         role,
@@ -786,39 +794,42 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     log,
     promptOpts: { projectRoot: pipelineProjectPath, workflow: resolvedWorkflow },
 
-    // Epic mode: sync child task bead status into br as the pipeline progresses.
-    async onTaskStatusChange(taskSeedId, status) {
+    // Grouped-parent mode: sync child task bead status into br as the pipeline progresses.
+    async onGroupedTaskStatusChange(taskSeedId, status) {
       const seeds = new BeadsRustClient(pipelineProjectPath);
+      const groupedLabel = (config.groupedParentType ?? config.seedType ?? "grouped").toUpperCase();
       if (status === "in_progress") {
         await seeds.update(taskSeedId, { status: "in_progress" });
-        log(`[EPIC] br update ${taskSeedId} → in_progress`);
+        log(`[${groupedLabel}] br update ${taskSeedId} → in_progress`);
       } else if (status === "completed") {
-        await seeds.close(taskSeedId, "Completed via epic pipeline");
-        log(`[EPIC] br close ${taskSeedId} (completed)`);
+        await seeds.close(taskSeedId, `Completed via ${groupedLabel.toLowerCase()} pipeline`);
+        log(`[${groupedLabel}] br close ${taskSeedId} (completed)`);
       } else if (status === "failed") {
         await seeds.update(taskSeedId, { status: "failed" });
-        log(`[EPIC] br update ${taskSeedId} → failed`);
+        log(`[${groupedLabel}] br update ${taskSeedId} → failed`);
       }
     },
 
-    // Epic mode: create a bug bead when QA fails on a child task.
-    async onTaskQaFailure(taskSeedId, taskTitle, epicId) {
+    // Grouped-parent mode: create a bug bead when QA fails on a child task.
+    async onGroupedTaskQaFailure(taskSeedId, taskTitle, parentId) {
       const seeds = new BeadsRustClient(pipelineProjectPath);
+      const groupedLabel = (config.groupedParentType ?? config.seedType ?? "grouped").toUpperCase();
       const bug = await seeds.create(`QA failure: ${taskTitle}`, {
         type: "bug",
         priority: "1",
-        parent: epicId,
-        description: `QA failed for task ${taskSeedId} (${taskTitle}) during epic pipeline run.`,
+        parent: parentId,
+        description: `QA failed for task ${taskSeedId} (${taskTitle}) during ${groupedLabel.toLowerCase()} pipeline run.`,
       });
-      log(`[EPIC] Created bug bead ${bug.id} for QA failure on ${taskSeedId}`);
+      log(`[${groupedLabel}] Created bug bead ${bug.id} for QA failure on ${taskSeedId}`);
       return bug.id;
     },
 
-    // Epic mode: close a bug bead when QA passes on retry.
-    async onTaskQaPass(bugBeadId) {
+    // Grouped-parent mode: close a bug bead when QA passes on retry.
+    async onGroupedTaskQaPass(bugBeadId) {
       const seeds = new BeadsRustClient(pipelineProjectPath);
       await seeds.close(bugBeadId, "QA passed on retry");
-      log(`[EPIC] Closed bug bead ${bugBeadId} (QA passed on retry)`);
+      const groupedLabel = (config.groupedParentType ?? config.seedType ?? "grouped").toUpperCase();
+      log(`[${groupedLabel}] Closed bug bead ${bugBeadId} (QA passed on retry)`);
     },
 
     // P1: Rate limit alert callback - log rate limit events for alerting
