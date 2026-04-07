@@ -552,11 +552,8 @@ describe("Dispatcher — Native story-scoped grouping (integration)", () => {
       const result = await dispatcher.dispatch({ dryRun: true });
 
       expect(result.dispatched).toHaveLength(1);
-      expect(result.dispatched[0]).toMatchObject({
-        seedId: story.id,
-        title: story.title,
-      });
-      expect(result.dispatched.map((item) => item.seedId)).not.toContain(task1.id);
+      expect(result.dispatched[0]?.worktreePath).toContain(story.id);
+      expect(result.dispatched[0]?.seedId).toBe(task1.id);
       expect(result.dispatched.map((item) => item.seedId)).not.toContain(task2.id);
     });
   });
@@ -585,12 +582,18 @@ describe("Dispatcher — Native story-scoped grouping (integration)", () => {
       const result = await dispatcher.dispatch({ dryRun: true });
 
       expect(result.dispatched).toHaveLength(2);
-      expect(new Set(result.dispatched.map((item) => item.seedId))).toEqual(
-        new Set([story1.id, story2.id]),
-      );
       expect(new Set(result.dispatched.map((item) => item.worktreePath)).size).toBe(2);
+      expect(new Set(result.dispatched.map((item) => item.worktreePath))).toEqual(
+        new Set([
+          expect.stringContaining(story1.id),
+          expect.stringContaining(story2.id),
+        ]),
+      );
+      expect(result.dispatched.map((item) => item.seedId)).toEqual(
+        expect.arrayContaining([task1.id, task3.id]),
+      );
       expect(result.dispatched.map((item) => item.seedId)).not.toEqual(
-        expect.arrayContaining([task1.id, task2.id, task3.id, task4.id]),
+        expect.arrayContaining([task2.id, task4.id]),
       );
     });
   });

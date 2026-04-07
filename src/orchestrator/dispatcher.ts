@@ -122,6 +122,76 @@ export class Dispatcher {
     return labels.includes("kind:story");
   }
 
+  private getNativeTaskById(taskId: string): NativeTask | null {
+    return this.store.getDb()
+      .prepare("SELECT * FROM tasks WHERE id = ?")
+      .get(taskId) as NativeTask | undefined ?? null;
+  }
+
+  private getNativeParentTaskId(taskId: string): string | null {
+    const parent = this.store.getDb()
+      .prepare(
+        `SELECT to_task_id
+         FROM task_dependencies
+         WHERE from_task_id = ? AND type = 'parent-child'
+         LIMIT 1`,
+      )
+      .get(taskId) as { to_task_id: string } | undefined;
+    return parent?.to_task_id ?? null;
+  }
+
+  private resolveNativeStoryParent(taskId: string): NativeTask | null {
+    const visited = new Set<string>();
+    let currentId: string | null = taskId;
+
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const parentId = this.getNativeParentTaskId(currentId);
+      if (!parentId) return null;
+
+      const parentTask = this.getNativeTaskById(parentId);
+      if (!parentTask) return null;
+      if (parentTask.type === "story" || parentTask.type === "feature") return parentTask;
+
+      currentId = parentTask.id;
+    }
+
+    return null;
+  }
+
+  private async buildDispatchSeedPlan(seed: Issue, usingNativeStore: boolean): Promise<DispatchSeedPlan> {
+    const groupedTasks = (seed as unknown as Record<string, unknown>).__epicTasks as EpicTask[] | undefined;
+
+    if (usingNativeStore) {
+      const nativeStoryParent = this.resolveNativeStoryParent(seed.id);
+      if (nativeStoryParent) {
+        return {
+          seed,
+          worktreeSeedId: nativeStoryParent.id,
+          groupingParentId: nativeStoryParent.id,
+        };
+      }
+      return {
+        seed,
+        worktreeSeedId: seed.id,
+      };
+    }
+
+    if (groupedTasks) {
+      return {
+        seed,
+        worktreeSeedId: seed.id,
+        groupedTasks,
+        groupingParentId: seed.id,
+      };
+    }
+
+    return {
+      seed,
+      worktreeSeedId: seed.id,
+    };
+  }
+
   /**
    * Replace ready child tasks that share the same story parent with one
    * synthetic story seed carrying the ordered ready child snapshot.
@@ -163,16 +233,17 @@ export class Dispatcher {
     const buildStoryParentSeed = (parentId: string): Issue => {
       const parentDetail = parentDetails.get(parentId)!;
       const baseSeed = seedById.get(parentId);
+      const nowIso = new Date().toISOString();
       const storySeed: Issue = {
-        id: parentDetail.id,
-        title: parentDetail.title,
+        id: parentDetail.id ?? parentId,
+        title: parentDetail.title ?? baseSeed?.title ?? parentId,
         type: "story",
         priority: parentDetail.priority ?? baseSeed?.priority ?? "P2",
         status: parentDetail.status,
         assignee: parentDetail.assignee,
         parent: parentDetail.parent,
-        created_at: parentDetail.created_at,
-        updated_at: parentDetail.updated_at,
+        created_at: parentDetail.created_at ?? baseSeed?.created_at ?? nowIso,
+        updated_at: parentDetail.updated_at ?? baseSeed?.updated_at ?? nowIso,
         description: parentDetail.description ?? baseSeed?.description ?? null,
         labels: parentDetail.labels ?? baseSeed?.labels ?? [],
       };

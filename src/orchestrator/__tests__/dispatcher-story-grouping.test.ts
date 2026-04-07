@@ -105,11 +105,6 @@ describe("Dispatcher — story-scoped worktree grouping", () => {
     const task1 = makeIssue({ id: "task-1", title: "Task 1", type: "task", parent: storyId });
     const task2 = makeIssue({ id: "task-2", title: "Task 2", type: "task", parent: storyId });
 
-    getTaskOrderMock.mockResolvedValue([
-      { seedId: task1.id, seedTitle: task1.title },
-      { seedId: task2.id, seedTitle: task2.title },
-    ]);
-
     const beadsClient = makeMockBeadsClient([task1, task2], {
       [storyId]: {
         status: "open",
@@ -133,8 +128,7 @@ describe("Dispatcher — story-scoped worktree grouping", () => {
     expect(new Set(result.dispatched.map((item) => item.worktreePath)).size).toBe(1);
     expect(result.dispatched.map((item) => item.seedId)).not.toContain(task1.id);
     expect(result.dispatched.map((item) => item.seedId)).not.toContain(task2.id);
-    expect(getTaskOrderMock).toHaveBeenCalledTimes(1);
-    expect(getTaskOrderMock).toHaveBeenCalledWith(storyId, expect.anything(), "/tmp");
+    expect(getTaskOrderMock).not.toHaveBeenCalled();
   });
 
   it("dispatches different stories in parallel while keeping one worktree per story", async () => {
@@ -146,22 +140,6 @@ describe("Dispatcher — story-scoped worktree grouping", () => {
       makeIssue({ id: "task-3", title: "Story 2 / Task 1", type: "task", parent: story2Id }),
       makeIssue({ id: "task-4", title: "Story 2 / Task 2", type: "task", parent: story2Id }),
     ];
-
-    getTaskOrderMock.mockImplementation(async (parentId: string) => {
-      if (parentId === story1Id) {
-        return [
-          { seedId: "task-1", seedTitle: "Story 1 / Task 1" },
-          { seedId: "task-2", seedTitle: "Story 1 / Task 2" },
-        ];
-      }
-      if (parentId === story2Id) {
-        return [
-          { seedId: "task-3", seedTitle: "Story 2 / Task 1" },
-          { seedId: "task-4", seedTitle: "Story 2 / Task 2" },
-        ];
-      }
-      return [];
-    });
 
     const beadsClient = makeMockBeadsClient(issues, {
       [story1Id]: {
@@ -193,7 +171,7 @@ describe("Dispatcher — story-scoped worktree grouping", () => {
     expect(result.dispatched.map((item) => item.seedId)).not.toEqual(
       expect.arrayContaining(issues.map((issue) => issue.id)),
     );
-    expect(getTaskOrderMock).toHaveBeenCalledTimes(2);
+    expect(getTaskOrderMock).not.toHaveBeenCalled();
   });
 
   it("keeps ungrouped ready tasks on per-task worktrees", async () => {
