@@ -10,11 +10,20 @@ import type { BeadsRustClient, BrIssueDetail } from "../lib/beads-rust.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export interface OrderedTask {
+export interface GroupedTask {
   seedId: string;
   seedTitle: string;
   seedDescription?: string;
 }
+
+export type OrderedTask = GroupedTask;
+
+export interface GroupedParentTaskOrderOptions {
+  actionableChildTypes?: readonly string[];
+  useBv?: boolean;
+}
+
+const DEFAULT_ACTIONABLE_CHILD_TYPES = ["task", "bug", "chore"] as const;
 
 export class CircularDependencyError extends Error {
   constructor(public readonly cycle: string[]) {
@@ -26,26 +35,29 @@ export class CircularDependencyError extends Error {
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Get ordered list of child tasks for an epic bead.
+ * Get ordered list of actionable child tasks for a grouped parent container.
  *
  * Tries bv --robot-next first for graph-aware ordering.
  * Falls back to topological sort of br dependencies with priority as tiebreaker.
  *
- * @param epicId      - The parent epic bead ID.
+ * @param parentId    - The parent bead ID.
  * @param brClient    - BeadsRustClient for querying bead details.
  * @param projectPath - Project root for bv invocation.
- * @param useBv       - Whether to attempt bv ordering (default: true).
+ * @param options     - Ordering options, including child type filtering.
  * @returns Ordered list of child tasks.
  */
-export async function getTaskOrder(
-  epicId: string,
+export async function getGroupedParentTaskOrder(
+  parentId: string,
   brClient: BeadsRustClient,
   projectPath: string,
-  useBv: boolean = true,
-): Promise<OrderedTask[]> {
-  // Get all children of the epic
-  const epicDetail = await brClient.show(epicId) as BrIssueDetail;
-  const childIds = epicDetail.children ?? [];
+  options: GroupedParentTaskOrderOptions = {},
+): Promise<GroupedTask[]> {
+  const actionableChildTypes = new Set(options.actionableChildTypes ?? DEFAULT_ACTIONABLE_CHILD_TYPES);
+  const useBv = options.useBv ?? true;
+
+  // Get all children of the grouped parent
+  const parentDetail = await brClient.show(parentId) as BrIssueDetail;
+  const childIds = parentDetail.children ?? [];
 
   if (childIds.length === 0) {
     return [];
@@ -56,8 +68,7 @@ export async function getTaskOrder(
   for (const childId of childIds) {
     try {
       const detail = await brClient.show(childId) as BrIssueDetail;
-      // Only include task-type children (skip feature/story containers)
-      if (detail.type === "task" || detail.type === "bug" || detail.type === "chore") {
+      if (actionableChildTypes.has(detail.type)) {
         childDetails.set(childId, detail);
       }
     } catch {
@@ -79,6 +90,21 @@ export async function getTaskOrder(
 
   // Fallback: topological sort
   return topologicalSort(childDetails);
+}
+
+/**
+ * Backward-compatible wrapper for epic child ordering.
+ *
+ * Existing epic execution paths call this helper directly. Story/grouped-parent
+ * dispatch can use getGroupedParentTaskOrder() with the same ordering behavior.
+ */
+export async function getTaskOrder(
+  epicId: string,
+  brClient: BeadsRustClient,
+  projectPath: string,
+  useBv: boolean = true,
+): Promise<GroupedTask[]> {
+  return getGroupedParentTaskOrder(epicId, brClient, projectPath, { useBv });
 }
 
 // ── BV ordering ─────────────────────────────────────────────────────────────
