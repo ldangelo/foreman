@@ -56,7 +56,7 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--bead <id>` | — | Dispatch only this specific bead (must be ready) |
+| `--bead <id>` | — | Dispatch only this specific bead (must be approved and ready) |
 | `--max-agents <n>` | `5` | Maximum concurrent agents |
 | `--model <model>` | — | Force a specific model for all phases |
 | `--dry-run` | — | Show what would be dispatched without doing it |
@@ -69,6 +69,8 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 | `--no-auto-dispatch` | — | Disable auto-dispatch when capacity is available |
 | `--telemetry` | — | Enable OpenTelemetry tracing (requires OTEL_* env vars) |
 | `--project <name-or-path>` | — | Target a registered project name or absolute project path |
+
+> **Approval gate:** Beads with the `foreman:backlog` label are skipped by the dispatcher. Use `foreman task approve <bead-id>` before dispatching.
 
 ---
 
@@ -466,7 +468,7 @@ foreman sling trd docs/TRD.md --br-only  # Write to beads_rust only
 
 ### `foreman bead`
 
-Create beads from natural language descriptions using AI parsing.
+Create beads from natural language descriptions using AI parsing. Newly created beads start in the approval backlog — use `foreman task approve <bead-id>` before `foreman run` can dispatch them.
 
 ```bash
 foreman bead "Fix the login timeout bug"
@@ -485,6 +487,48 @@ foreman bead "..." --no-llm       # Skip AI parsing (manual fields required)
 | `--dry-run` | — | Preview without creating |
 | `--no-llm` | — | Skip LLM parsing |
 | `--model <model>` | — | Claude model for AI parsing |
+
+> **Approval required:** Beads created via `foreman bead` start with the `foreman:backlog` label and must be approved with `foreman task approve <bead-id>` before `foreman run` can dispatch them.
+
+---
+
+## Task Management
+
+### `foreman task`
+
+Beads-first task helpers. The primary operator path for day-to-day task tracking remains `br` / `.beads/` via beads_rust. `foreman task` exposes helper commands for the approval flow and transitional native-task import.
+
+### `foreman task approve`
+
+Approve a backlog bead so `foreman run` can dispatch it. Beads created via `foreman bead`, `foreman sling trd`, or direct `br create` start with the `foreman:backlog` label and are skipped by the dispatcher until approved.
+
+```bash
+foreman task approve bd-abc1              # Approve a bead for dispatch
+foreman task approve bd-abc1 --project my-project  # Approve against a registered project
+foreman task approve bd-abc1 --no-recursive  # Approve only this bead, not its children
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--project <name>` | current directory | Registered project name |
+| `--project-path <absolute-path>` | — | Absolute project path |
+| `--no-recursive` | — | Do not approve child beads recursively |
+
+### `foreman task import`
+
+Transitional migration helper that imports `.beads/` data into the native-task SQLite prototype store. This exists only to support older experiments migrating from beads-first to native-task tables. **Do not use for new projects.**
+
+```bash
+foreman task import --from-beads           # Import beads into native-task store
+foreman task import --from-beads --dry-run  # Preview without writing
+```
+
+| Option | Description |
+|--------|-------------|
+| `--from-beads` | Import from `.beads/issues.jsonl` or `.beads/beads.jsonl` |
+| `--dry-run` | Preview without writing tasks |
+| `--project <name>` | Registered project name |
+| `--project-path <absolute-path>` | Absolute project path |
 
 ---
 

@@ -17,6 +17,17 @@ Multi-project engineering control plane. Foreman decomposes planning artifacts a
 
 - `foreman task` now exposes a beads-first approval helper: use `foreman task approve <bead-id>` to release newly created backlog beads for dispatch, while `foreman task import --from-beads` remains the transitional native-task migration helper.
 
+### Approval flow
+
+Beads created via `foreman bead`, `foreman sling trd`, or direct `br create` start behind an approval gate — they receive the `foreman:backlog` label and do not appear in `br ready`. The dispatcher explicitly skips backlog-labeled beads.
+
+1. **Create** — a bead is created (via `foreman bead`, `foreman sling trd`, or `br create`)
+2. **Backlog** — the bead has the `foreman:backlog` label; `br ready` excludes it
+3. **Approve** — operator runs `foreman task approve <bead-id>` to remove the `foreman:backlog` label
+4. **Ready** — the bead now appears in `br ready` and the dispatcher will pick it up on the next `foreman run`
+
+Check backlog state with `foreman status` (Backlog count) or `foreman dashboard` (approval backlog panel).
+
 ### Current state in this checkout
 - Foreman is still beads-first for day-to-day task tracking: `br` / `.beads/` remain the primary operator path.
 - Foreman-created beads start in backlog via the `foreman:backlog` label and must be explicitly approved before `foreman run` can dispatch them.
@@ -368,10 +379,12 @@ foreman init --name "my-project"
 ### `foreman run`
 Schedule work through the control plane. In the current checkout, `run` still dispatches project-local execution and can target a registered project explicitly while broader scheduler work catches up.
 
+> **Note:** Beads must be approved before `foreman run` can dispatch them. Unapproved beads carry the `foreman:backlog` label and are skipped by the dispatcher. Use `foreman task approve <bead-id>` to release a backlog bead, then run `foreman run` again.
+
 ```bash
-foreman run                              # Current checkout: dispatch ready work in the current project
+foreman run                              # Dispatch ready (approved) beads in the current project
 foreman run --project my-project         # Dispatch a registered project without cd
-foreman run --bead bd-abc                # Dispatch one specific task
+foreman run --bead bd-abc                 # Dispatch one specific bead
 foreman run --max-agents 3               # Limit concurrent agents
 foreman run --model claude-opus-4-6      # Override model for all agents
 foreman run --dry-run                    # Preview without dispatching
@@ -384,7 +397,7 @@ Each dispatched execution gets:
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
-Show current task and agent status, or aggregate across registered projects from the status/dashboard surfaces.
+Show current task and agent status, or aggregate across registered projects from the status/dashboard surfaces. The Backlog count reflects beads with the `foreman:backlog` label — approve them with `foreman task approve` before `foreman run` can dispatch them.
 
 ```bash
 foreman status
