@@ -26,7 +26,15 @@ vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
 }));
 
+vi.mock("../task-backend-ops.js", () => ({
+  enqueueSetBeadStatus: vi.fn(),
+  enqueueCloseSeed: vi.fn(),
+  enqueueResetSeedToOpen: vi.fn(),
+  enqueueAddNotesToBead: vi.fn(),
+}));
+
 import { execFile } from "node:child_process";
+import { enqueueSetBeadStatus } from "../task-backend-ops.js";
 import { Refinery } from "../refinery.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -164,6 +172,24 @@ describe("MQ-T058d: PR creation strategy decision", () => {
       await refinery.createPRs();
 
       expect(store.updateRun).toHaveBeenCalledWith("run-99", { status: "pr-created" });
+    });
+
+    it("syncs the bead to closed after creating a PR", async () => {
+      const { store, refinery } = createTestRefinery();
+      const run = makeRun({ id: "run-100", seed_id: "seed-pr-sync" });
+      store.getRunsByStatus.mockReturnValue([run]);
+      store.getRun.mockReturnValue({ ...run, status: "pr-created" });
+
+      mockExecFileForPR();
+
+      await refinery.createPRs();
+
+      expect(enqueueSetBeadStatus).toHaveBeenCalledWith(
+        expect.anything(),
+        "seed-pr-sync",
+        "closed",
+        "auto-merge",
+      );
     });
 
     it("logs pr-created event with PR URL", async () => {

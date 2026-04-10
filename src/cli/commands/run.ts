@@ -14,6 +14,7 @@ import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
+import { isIgnorableControllerPath } from "../../lib/controller-runtime-paths.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk } from "../watch-ui.js";
@@ -74,15 +75,7 @@ async function promptYesNo(question: string): Promise<boolean> {
 
 const FOREMAN_OWNED_BRANCH = "foreman";
 
-export function isIgnorableControllerPath(path: string): boolean {
-  return path === ".beads/issues.jsonl"
-    || path.startsWith(".omx/")
-    || path.startsWith(".foreman/")
-    || path.startsWith("SessionLogs/")
-    || path === "SESSION_LOG.md"
-    || path === "RUN_LOG.md"
-    || path.startsWith("storage.sqlite3");
-}
+export { isIgnorableControllerPath };
 
 function withCommonBinaryPath(): NodeJS.ProcessEnv {
   const home = process.env.HOME ?? "/home/nobody";

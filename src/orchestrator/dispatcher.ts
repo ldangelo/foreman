@@ -620,6 +620,11 @@ export class Dispatcher {
           log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
         }
 
+        // When dispatch is launched from a non-default controller branch, new workspaces
+        // must branch from that target branch instead of implicitly inheriting the default
+        // merge target. Otherwise the resulting PR stacks the controller branch history.
+        const workspaceBaseBranch = baseBranch ?? opts?.targetBranch;
+
         // 1a. Load workflow config to get setup steps + cache config for worktree initialization
         const resolvedWorkflow = resolveWorkflowName(seedInfo.type ?? "feature", seedInfo.labels);
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
@@ -682,7 +687,7 @@ export class Dispatcher {
         const workspaceResult = await workspaceBackend.createWorkspace(
           this.projectPath,
           seed.id,
-          baseBranch,
+          workspaceBaseBranch,
         );
         const worktreePath = workspaceResult.workspacePath;
         const branchName = workspaceResult.branchName;
@@ -704,7 +709,7 @@ export class Dispatcher {
           seed.id,
           model,
           worktreePath,
-          { baseBranch: baseBranch ?? null },
+          { baseBranch: workspaceBaseBranch ?? null },
         );
 
         // 5. Log dispatch event

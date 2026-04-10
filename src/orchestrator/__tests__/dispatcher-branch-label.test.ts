@@ -165,6 +165,23 @@ describe("Dispatcher — branch label auto-labeling", () => {
     expect(branchLabelCalls).toHaveLength(0);
   });
 
+  it("encodes slash branch labels before bead update", async () => {
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("feature/my-feature");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
+
+    const seed = makeIssue("seed-001");
+    const taskClient = makeTaskClient([seed]);
+    const store = makeStore();
+    const dispatcher = new Dispatcher(taskClient, store, "/tmp");
+
+    await dispatcher.dispatch({ dryRun: true });
+
+    expect(taskClient.update).toHaveBeenCalledWith("seed-001", {
+      labels: ["branch:benc-666561747572652f6d792d66656174757265"],
+    });
+  });
+
+
   it("does NOT add branch label when on dev branch (known default)", async () => {
     mockGetCurrentBranch = vi.fn().mockResolvedValue("dev");
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("dev");

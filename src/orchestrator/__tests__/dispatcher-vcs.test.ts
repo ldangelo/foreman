@@ -438,4 +438,36 @@ describe("Dispatcher — uses VcsBackend.createWorkspace() instead of createWork
       undefined, // baseBranch
     );
   });
+
+  it("uses targetBranch as the workspace base when dispatch targets a controller branch", async () => {
+    const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
+    vi.mocked(loadWorkflowConfig).mockReturnValue({
+      name: "default",
+      phases: [],
+      vcs: { backend: "git" },
+    } as unknown as ReturnType<typeof loadWorkflowConfig>);
+
+    const gitBackend = makeGitBackend();
+    vi.mocked(VcsBackendFactory.create).mockResolvedValue(gitBackend);
+
+    const store = makeStore();
+    const seeds = makeSeeds();
+    const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
+    vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
+
+    await dispatcher.dispatch({ dryRun: false, targetBranch: "feature/bd-7w5o-product-truth-reset" });
+
+    expect(gitBackend.createWorkspace).toHaveBeenCalledWith(
+      "/tmp/project",
+      "test-seed",
+      "feature/bd-7w5o-product-truth-reset",
+    );
+    expect(store.createRun).toHaveBeenCalledWith(
+      "proj-001",
+      "test-seed",
+      expect.any(String),
+      "/tmp/worktrees/test-seed",
+      { baseBranch: "feature/bd-7w5o-product-truth-reset" },
+    );
+  });
 });

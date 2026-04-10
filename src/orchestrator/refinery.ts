@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import type { ForemanStore } from "../lib/store.js";
 import type { BeadGraph } from "../lib/beads.js";
@@ -17,6 +17,7 @@ import { enqueueCloseSeed, enqueueResetSeedToOpen, enqueueAddNotesToBead } from 
 import { syncBeadStatusAfterMerge } from "./auto-merge.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
+import { CONTROLLER_TRACKED_STATE_PATHS, isIgnorableControllerPath } from "../lib/controller-runtime-paths.js";
 import { NativeTaskStore } from "../lib/task-store.js";
 
 const execFileAsync = promisify(execFile);
@@ -45,6 +46,94 @@ async function gitSpecial(args: string[], cwd: string): Promise<string> {
   });
   return stdout.trim();
 }
+
+type ControllerStateSnapshot = {
+  path: string;
+  content: Buffer | null;
+};
+
+function snapshotControllerState(projectPath: string, paths: readonly string[]): ControllerStateSnapshot[] {
+  return paths.map((path) => {
+    const absPath = join(projectPath, path);
+    return {
+      path,
+      content: existsSync(absPath) ? readFileSync(absPath) : null,
+    };
+  });
+}
+
+function restoreControllerStateSnapshots(
+  projectPath: string,
+  snapshots: readonly ControllerStateSnapshot[],
+): void {
+  for (const snapshot of snapshots) {
+    const absPath = join(projectPath, snapshot.path);
+    if (snapshot.content === null) {
+      try {
+        rmSync(absPath, { recursive: true, force: true });
+      } catch {
+        // best effort — runtime state restoration must not mask merge errors
+      }
+      continue;
+    }
+
+    try {
+      mkdirSync(dirname(absPath), { recursive: true });
+      writeFileSync(absPath, snapshot.content);
+    } catch {
+      // best effort — runtime state restoration must not mask merge errors
+    }
+  }
+}
+
+async function restoreTrackedControllerStateToHead(
+  projectPath: string,
+  paths: readonly string[],
+): Promise<void> {
+  if (paths.length === 0) return;
+
+  try {
+    await gitSpecial(["restore", "--source=HEAD", "--staged", "--worktree", "--", ...paths], projectPath);
+    return;
+  } catch {
+    // Some repos may have no staged state for these paths; fall back to worktree-only restore.
+  }
+
+  try {
+    await gitSpecial(["restore", "--source=HEAD", "--worktree", "--", ...paths], projectPath);
+  } catch {
+    // best effort — the follow-up status/rebase step will surface any remaining dirtiness
+  }
+}
+
+async function prepareControllerStateForRootRebase(
+  projectPath: string,
+  vcsBackend: VcsBackend,
+): Promise<ControllerStateSnapshot[]> {
+  const modifiedPaths = new Set(await vcsBackend.getModifiedFiles(projectPath));
+  const untrackedPaths = new Set(await vcsBackend.getUntrackedFiles(projectPath));
+  const controllerPaths = [...new Set(
+    [...modifiedPaths, ...untrackedPaths].filter((path) => isIgnorableControllerPath(path)),
+  )];
+
+  if (controllerPaths.length === 0) return [];
+
+  const snapshots = snapshotControllerState(projectPath, controllerPaths);
+  const trackedControllerPaths = CONTROLLER_TRACKED_STATE_PATHS.filter((path) => modifiedPaths.has(path));
+  await restoreTrackedControllerStateToHead(projectPath, trackedControllerPaths);
+
+  for (const path of controllerPaths) {
+    if (!untrackedPaths.has(path)) continue;
+    try {
+      rmSync(join(projectPath, path), { recursive: true, force: true });
+    } catch {
+      // best effort — runtime state cleanup must not mask merge errors
+    }
+  }
+
+  return snapshots;
+}
+
 
 async function gh(args: string[], cwd: string): Promise<string> {
   const { stdout } = await execFileAsync("gh", args, {
@@ -367,6 +456,7 @@ export class Refinery {
         { seedId: run.seed_id, branchName, baseBranch, prUrl, conflictNote },
         run.id,
       );
+      await this.closeNativeTaskPostMerge(run.id, run.seed_id);
       return { runId: run.id, seedId: run.seed_id, branchName, prUrl };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -602,6 +692,7 @@ export class Refinery {
             ? (run.worktree_path ?? this.projectPath)
             : this.projectPath;
           let stashedBeforeRebase = false;
+          let controllerStateSnapshots: ControllerStateSnapshot[] = [];
 
           try {
             if (this.vcsBackend.name === "jujutsu") {
@@ -619,9 +710,21 @@ export class Refinery {
               const rebaseResult = await this.vcsBackend.rebase(rebaseWorkspacePath, targetBranch);
               rebaseOk = rebaseResult.success;
             } else {
+              // Controller runtime paths like .beads/issues.jsonl are real local state, not
+              // branch content. Preserve them out-of-band so root rebases do not stash/pop
+              // them and manufacture conflicts.
+              try {
+                controllerStateSnapshots = await prepareControllerStateForRootRebase(
+                  this.projectPath,
+                  this.vcsBackend,
+                );
+              } catch {
+                controllerStateSnapshots = [];
+              }
+
               // Ensure working directory is clean before rebase — a previous partial rebase
-              // may have left patches applied but not committed. Stash any uncommitted changes
-              // so git rebase doesn't refuse to run.
+              // may have left patches applied but not committed. Stash any remaining
+              // non-controller changes so git rebase doesn't refuse to run.
               try {
                 const dirty = await this.vcsBackend.status(this.projectPath);
                 if (dirty.trim()) {
@@ -655,6 +758,10 @@ export class Refinery {
 
             if (stashedBeforeRebase) {
               try { await gitSpecial(["stash", "pop"], this.projectPath); } catch { /* best effort — may be empty */ }
+            }
+
+            if (controllerStateSnapshots.length > 0) {
+              restoreControllerStateSnapshots(this.projectPath, controllerStateSnapshots);
             }
           }
 
@@ -1116,6 +1223,7 @@ export class Refinery {
           { seedId: run.seed_id, branchName, baseBranch, prUrl, draft },
           run.id,
         );
+        await this.closeNativeTaskPostMerge(run.id, run.seed_id);
         created.push({
           runId: run.id,
           seedId: run.seed_id,

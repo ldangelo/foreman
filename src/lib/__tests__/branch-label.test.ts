@@ -59,6 +59,11 @@ describe("extractBranchLabel", () => {
     expect(extractBranchLabel(["branch:feature/my-feature"])).toBe("feature/my-feature");
   });
 
+  it("decodes encoded branch labels with slashes", () => {
+    expect(extractBranchLabel(["branch:benc-666561747572652f6d792d66656174757265"])).toBe("feature/my-feature");
+  });
+
+
   it("returns first branch: label when multiple exist", () => {
     expect(extractBranchLabel(["branch:main", "branch:installer"])).toBe("main");
   });
@@ -144,6 +149,11 @@ describe("applyBranchLabel", () => {
     expect(branchLabels).toHaveLength(1);
     expect(branchLabels[0]).toBe("branch:installer");
   });
+
+  it("encodes branch labels with slashes for beads compatibility", () => {
+    expect(applyBranchLabel([], "feature/my-feature")).toEqual(["branch:benc-666561747572652f6d792d66656174757265"]);
+  });
+
 
   it("drops invalid branch labels like HEAD", () => {
     expect(applyBranchLabel(["workflow:smoke", "branch:old"], "HEAD")).toEqual(["workflow:smoke"]);

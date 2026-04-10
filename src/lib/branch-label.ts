@@ -18,6 +18,27 @@
  *
  * If multiple branch: labels exist (shouldn't happen), returns the first one.
  */
+const ENCODED_BRANCH_LABEL_PREFIX = "benc-";
+const LABEL_SAFE_BRANCH_VALUE = /^[A-Za-z0-9:_-]+$/;
+
+function encodeBranchLabelValue(branch: string): string {
+  const normalized = normalizeBranchLabel(branch) ?? branch;
+  if (LABEL_SAFE_BRANCH_VALUE.test(normalized)) return normalized;
+  return `${ENCODED_BRANCH_LABEL_PREFIX}${Buffer.from(normalized, "utf8").toString("hex")}`;
+}
+
+function decodeBranchLabelValue(value: string): string {
+  if (!value.startsWith(ENCODED_BRANCH_LABEL_PREFIX)) return value;
+  const hex = value.slice(ENCODED_BRANCH_LABEL_PREFIX.length);
+  if (hex.length === 0 || hex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(hex)) return value;
+  try {
+    return Buffer.from(hex, "hex").toString("utf8");
+  } catch {
+    return value;
+  }
+}
+
+
 export function normalizeBranchLabel(branch: string | undefined): string | undefined {
   if (!branch) return undefined;
   const trimmed = branch.trim();
@@ -42,7 +63,7 @@ export function extractBranchLabel(labels: string[] | undefined): string | undef
   if (!labels || labels.length === 0) return undefined;
   const label = labels.find((l) => l.startsWith("branch:"));
   if (!label) return undefined;
-  const branch = normalizeBranchLabel(label.slice("branch:".length));
+  const branch = normalizeBranchLabel(decodeBranchLabelValue(label.slice("branch:".length)));
   return isValidBranchLabel(branch) ? branch : undefined;
 }
 
@@ -76,11 +97,12 @@ export function applyBranchLabel(
   const filtered = (existingLabels ?? []).filter((l) => !l.startsWith("branch:"));
   const normalizedBranch = normalizeBranchLabel(branchName);
   if (!isValidBranchLabel(normalizedBranch)) return filtered;
+  const encodedBranch = encodeBranchLabelValue(normalizedBranch);
   // br enforces a 50-character limit per label. Skip the label entirely if it
   // would exceed the limit — a truncated branch name would cause the refinery
   // to target a non-existent branch. The explicit targetBranch threading in
   // dispatch/auto-merge handles merge targeting for long branch names.
-  const label = `branch:${normalizedBranch}`;
+  const label = `branch:${encodedBranch}`;
   if (label.length > 50) return filtered;
   return [...filtered, label];
 }

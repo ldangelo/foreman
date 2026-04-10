@@ -14,7 +14,7 @@ vi.mock("node:child_process", () => ({
   execFile: mockExecFile,
 }));
 
-import { BeadsRustClient, unwrapBrResponse } from "../beads-rust.js";
+import { BeadsRustClient, FOREMAN_BACKLOG_LABEL, unwrapBrResponse } from "../beads-rust.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -468,6 +468,92 @@ describe("BeadsRustClient.ready", () => {
     expect(result).toEqual([]);
   });
 
+  it("filters out backlog-labeled issues from the ready queue", async () => {
+    mockExecFile.mockImplementation(
+      (_cmd: string, args: string[], _opts: unknown, callback: Function) => {
+        if (args[0] === "ready") {
+          callback(null, {
+            stdout: JSON.stringify({ issues: [
+              { id: "beads-1", title: "Queued task", type: "task", priority: "P1", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+              { id: "beads-2", title: "Approved task", type: "task", priority: "P2", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+            ] }),
+            stderr: "",
+          });
+          return;
+        }
+        if (args[0] === "list" && args.includes(FOREMAN_BACKLOG_LABEL)) {
+          callback(null, {
+            stdout: JSON.stringify({ issues: [
+              { id: "beads-1", title: "Queued task", type: "task", priority: "P1", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+            ] }),
+            stderr: "",
+          });
+          return;
+        }
+        callback(null, { stdout: JSON.stringify({ issues: [] }), stderr: "" });
+      },
+    );
+
+    const client = new BeadsRustClient("/tmp/mock-project");
+    const result = await client.ready();
+    expect(result.map((issue) => issue.id)).toEqual(["beads-2"]);
+  });
+
+  it("approve removes the backlog label recursively for parent-child descendants", async () => {
+    mockExecFile.mockImplementation(
+      (_cmd: string, args: string[], _opts: unknown, callback: Function) => {
+        if (args[0] === "show" && args[1] === "epic-1") {
+          callback(null, { stdout: JSON.stringify([{
+            id: "epic-1", title: "Epic", type: "epic", priority: "P0", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+            description: null, notes: null, labels: [FOREMAN_BACKLOG_LABEL], estimate_minutes: null, dependencies: [],
+            dependents: [{ id: "task-1", title: "Task 1", status: "open", priority: 1, dependency_type: "parent-child" }],
+          }]), stderr: "" });
+          return;
+        }
+        if (args[0] === "show" && args[1] === "task-1") {
+          callback(null, { stdout: JSON.stringify([{
+            id: "task-1", title: "Task 1", type: "task", priority: "P1", status: "open", assignee: null, parent: "epic-1", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+            description: null, notes: null, labels: [FOREMAN_BACKLOG_LABEL], estimate_minutes: null, dependencies: [], dependents: [],
+          }]), stderr: "" });
+          return;
+        }
+        callback(null, { stdout: JSON.stringify({}), stderr: "" });
+      },
+    );
+
+    const client = new BeadsRustClient("/tmp/mock-project");
+    const result = await client.approve("epic-1", { recursive: true });
+    expect(result.approved).toEqual(["epic-1", "task-1"]);
+
+    const removeCalls = mockExecFile.mock.calls.filter(
+      (call: unknown[]) => (call[1] as string[])?.includes("--remove-label"),
+    );
+    expect(removeCalls).toHaveLength(2);
+    for (const call of removeCalls) {
+      expect((call[1] as string[])).toContain(FOREMAN_BACKLOG_LABEL);
+    }
+  });
+
+  it("approve tolerates missing dependents array on recursive show results", async () => {
+    mockExecFile.mockImplementation(
+      (_cmd: string, args: string[], _opts: unknown, callback: Function) => {
+        if (args[0] === "show" && args[1] === "bd-i9gm") {
+          callback(null, { stdout: JSON.stringify([{
+            id: "bd-i9gm", title: "Doc task", type: "task", priority: "P2", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+            description: null, notes: null, labels: [FOREMAN_BACKLOG_LABEL], estimate_minutes: null, dependencies: [],
+          }]), stderr: "" });
+          return;
+        }
+        callback(null, { stdout: JSON.stringify({}), stderr: "" });
+      },
+    );
+
+    const client = new BeadsRustClient("/tmp/mock-project");
+    const result = await client.approve("bd-i9gm", { recursive: true });
+
+    expect(result.approved).toEqual(["bd-i9gm"]);
+    expect(result.skipped).toEqual([]);
+  });
   it("throws when br binary is not found", async () => {
     const { access: mockAccess } = await import("node:fs/promises");
     (mockAccess as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("ENOENT"));

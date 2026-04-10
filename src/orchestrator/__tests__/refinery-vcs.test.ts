@@ -13,7 +13,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Run } from "../../lib/store.js";
 import type { VcsBackend } from "../../lib/vcs/index.js";
@@ -47,7 +48,7 @@ vi.mock("../../lib/archive-reports.js", () => ({
 }));
 
 import { execFile } from "node:child_process";
-import { enqueueCloseSeed, enqueueResetSeedToOpen } from "../task-backend-ops.js";
+import { enqueueCloseSeed, enqueueResetSeedToOpen, enqueueSetBeadStatus } from "../task-backend-ops.js";
 import { Refinery } from "../refinery.js";
 
 // ── VcsBackend Mock Factory ───────────────────────────────────────────────────
@@ -134,7 +135,10 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   };
 }
 
-function makeMocks(vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typeof vi.fn>>> = {}) {
+function makeMocks(
+  vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typeof vi.fn>>> = {},
+  projectPath = "/tmp/project",
+) {
   const mockDb = {
     prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
   };
@@ -166,7 +170,7 @@ function makeMocks(vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typ
     },
   );
 
-  const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs);
+  const refinery = new Refinery(store as any, seeds as any, projectPath, vcs);
   return { store, seeds, refinery, vcs };
 }
 
@@ -263,6 +267,59 @@ describe("AC-T-012-1: Clean squash merge invokes git merge --squash and closes t
   });
 });
 
+describe("controller runtime state preservation during git root rebases", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("restores .beads/issues.jsonl after rebase preparation without stashing it", async () => {
+    const projectPath = mkdtempSync(join(tmpdir(), "foreman-refinery-controller-"));
+    try {
+      const beadsPath = join(projectPath, ".beads", "issues.jsonl");
+      mkdirSync(join(projectPath, ".beads"), { recursive: true });
+      writeFileSync(beadsPath, '{"id":"bd-1","status":"in_progress"}\n');
+
+      const { store, refinery } = makeMocks({
+        getModifiedFiles: vi.fn().mockResolvedValue([".beads/issues.jsonl"]),
+        getUntrackedFiles: vi.fn().mockResolvedValue([]),
+        status: vi.fn().mockResolvedValue(""),
+      }, projectPath);
+      const run = makeRun({ seed_id: "seed-controller-state", worktree_path: null });
+      store.getRunsByStatus.mockReturnValue([run]);
+
+      (execFile as any).mockImplementation(
+        (cmd: string, args: string[], _opts: any, callback: Function) => {
+          if (cmd === "git" && Array.isArray(args) && args[0] === "restore" && args.includes(".beads/issues.jsonl")) {
+            writeFileSync(beadsPath, '{"id":"bd-1","status":"head"}\n');
+            callback(null, { stdout: "", stderr: "" });
+            return;
+          }
+
+          if (Array.isArray(args) && args[0] === "log") {
+            callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
+            return;
+          }
+
+          callback(null, { stdout: "", stderr: "" });
+        },
+      );
+
+      await refinery.mergeCompleted({ runTests: false });
+
+      const gitCalls = (execFile as any).mock.calls
+        .filter((call: unknown[]) => call[0] === "git")
+        .map((call: unknown[]) => call[1] as string[]);
+
+      expect(gitCalls.some((args: string[]) => args[0] === "restore" && args.includes(".beads/issues.jsonl"))).toBe(true);
+      expect(gitCalls.some((args: string[]) => args[0] === "stash" && args.includes("foreman-rebase-pre-stash"))).toBe(false);
+      expect(readFileSync(beadsPath, "utf8")).toBe('{"id":"bd-1","status":"in_progress"}\n');
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+});
+
+
 // ── AC-T-012-2: Conflict Cascade Triggered ────────────────────────────────────
 
 describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts", () => {
@@ -344,6 +401,25 @@ describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts
     // AC-T-012-2: conflict cascade should trigger PR creation
     expect(report.prsCreated).toHaveLength(1);
     expect(report.prsCreated[0].prUrl).toBe(prUrl);
+  });
+
+  it("syncs the bead to closed after creating a conflict PR", async () => {
+    const conflictFiles = ["src/main.ts"];
+    const { store, refinery, vcs } = makeMocks();
+    (vcs as any).getConflictingFiles = vi.fn().mockResolvedValue(conflictFiles);
+    (vcs as any).mergeWithoutCommit = vi.fn().mockRejectedValue(new Error("CONFLICT: merge conflict"));
+    const run = makeRun({ id: "run-pr-sync", seed_id: "seed-pr-sync", status: "completed" });
+    store.getRunsByStatus.mockReturnValue([run]);
+    store.getRun.mockReturnValue({ ...run, status: "pr-created" });
+
+    await refinery.mergeCompleted({ runTests: false });
+
+    expect(enqueueSetBeadStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      "seed-pr-sync",
+      "closed",
+      "auto-merge",
+    );
   });
 
   it("does not close seed on conflict -- only closes on successful merge", async () => {
