@@ -10,6 +10,7 @@ import type { Run } from "../lib/store.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
+import { getSdkRunHealth, isSdkBasedRun } from "../lib/run-health.js";
 import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { findMissingPrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
@@ -36,15 +37,6 @@ function extractPid(sessionKey: string | null): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
-/**
- * Returns true if the run was spawned as a Pi-based agent worker.
- * Pi workers use session_key format: "foreman:sdk:<model>:<runId>[:<suffix>]"
- * These workers do not have a PID in the session_key, so PID-based liveness
- * checks do not apply — liveness is detected by stale timeouts.
- */
-function isSDKBasedRun(sessionKey: string | null): boolean {
-  return sessionKey?.startsWith("foreman:sdk:") ?? false;
-}
 
 // ── Doctor class ─────────────────────────────────────────────────────────
 
@@ -736,13 +728,23 @@ export class Doctor {
 
       if (activeRun) {
         if (activeRun.status === "running") {
-          if (isSDKBasedRun(activeRun.session_key)) {
-            // Pi-based workers don't have a PID — liveness is checked via stale timeouts.
-            results.push({
-              name: `worktree: ${seedId}`,
-              status: "pass",
-              message: `Active run (${activeRun.status}) for seed ${seedId} — SDK-based worker`,
-            });
+          if (isSdkBasedRun(activeRun.session_key)) {
+            const progress = this.store.getRunProgress(activeRun.id);
+            const sdkHealth = getSdkRunHealth(activeRun, progress);
+            if (sdkHealth.isStale) {
+              const lastSeen = sdkHealth.lastActivityAt ?? "unknown";
+              results.push({
+                name: `worktree: ${seedId}`,
+                status: "warn",
+                message: `Stale SDK run: status=running but last activity is stale (last seen ${lastSeen}, threshold ${sdkHealth.staleThresholdHours}h). Run 'foreman doctor --fix' to clean up.`,
+              });
+            } else {
+              results.push({
+                name: `worktree: ${seedId}`,
+                status: "pass",
+                message: `Active run (${activeRun.status}) for seed ${seedId} — SDK-based worker`,
+              });
+            }
           } else {
             // For traditional PID-based runs, verify the process is actually alive
             const pid = extractPid(activeRun.session_key);
@@ -894,14 +896,47 @@ export class Doctor {
 
     const results: CheckResult[] = [];
     for (const run of runningRuns) {
+      const progress = this.store.getRunProgress(run.id);
+
       // Pi-based workers do not store a PID in session_key.
-      // Liveness is detected only by stale timeouts, not PID checks.
-      if (isSDKBasedRun(run.session_key)) {
-        results.push({
-          name: `run: ${run.seed_id} [${run.agent_type}]`,
-          status: "pass",
-          message: `Pi-based worker — liveness checked via timeout, not PID`,
-        });
+      // Liveness is determined by recent activity, not PID checks.
+      if (isSdkBasedRun(run.session_key)) {
+        const sdkHealth = getSdkRunHealth(run, progress);
+        if (!sdkHealth.isStale) {
+          results.push({
+            name: `run: ${run.seed_id} [${run.agent_type}]`,
+            status: "pass",
+            message: `Pi-based worker — recent activity is within the ${sdkHealth.staleThresholdHours}h stale threshold`,
+          });
+          continue;
+        }
+
+        const staleMessage = `Stale SDK run: status=running but last activity is stale${sdkHealth.lastActivityAt ? ` (${sdkHealth.lastActivityAt})` : ""}.`;
+        if (dryRun) {
+          results.push({
+            name: `run: ${run.seed_id} [${run.agent_type}]`,
+            status: "warn",
+            message: `${staleMessage} Would mark stuck (dry-run).`,
+          });
+        } else if (fix) {
+          this.store.updateRun(run.id, {
+            status: "stuck",
+            completed_at: new Date().toISOString(),
+          });
+          this.store.logEvent(run.project_id, "stuck", { reason: "foreman doctor --fix stale sdk run" }, run.id);
+          results.push({
+            name: `run: ${run.seed_id} [${run.agent_type}]`,
+            status: "fixed",
+            message: staleMessage,
+            fixApplied: "Marked as stuck",
+          });
+        } else {
+          results.push({
+            name: `run: ${run.seed_id} [${run.agent_type}]`,
+            status: "warn",
+            message: `${staleMessage} Use --fix to mark stuck.`,
+          });
+        }
         continue;
       }
 
@@ -1825,22 +1860,22 @@ export class Doctor {
   }
 
   /**
-   * Check for run records in the legacy global store (~/.foreman/foreman.db) that
-   * are absent from the project-local store (.foreman/foreman.db).  This can occur
-   * when a run completed before the bd-sjd migration to project-local stores was
-   * fully rolled out.
+   * Check for run records in the legacy migration-era global store (`~/.foreman/foreman.db`)
+   * that are absent from project-local stores (`.foreman/foreman.db`). This path exists
+   * only to recover historical data written before project-local storage fully replaced the
+   * old global run store; it is not the active authority for project registration.
    *
    * With --fix the orphaned records (and their associated costs/events) are copied
-   * into the project-local store so that 'foreman merge' can see them.
+   * into the project-local store so that `foreman merge` can see them.
    */
   async checkOrphanedGlobalStoreRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
     const checkName = "orphaned global-store runs";
     const globalDbPath = join(homedir(), ".foreman", "foreman.db");
 
-    // If the global store doesn't exist there is nothing to migrate.
+    // If the legacy migration store doesn't exist there is nothing to reconcile.
     if (!existsSync(globalDbPath)) {
-      return { name: checkName, status: "pass", message: "No legacy global store found" };
+      return { name: checkName, status: "pass", message: "No legacy migration store found" };
     }
 
     let globalStore: ForemanStore | null = null;
@@ -1849,10 +1884,10 @@ export class Doctor {
       const globalDb = globalStore.getDb();
       const projects = globalStore.listProjects();
 
-      // Collect orphaned runs: completed or pr-created runs in the global store
-      // whose project-local store already exists on disk (meaning the project
-      // migrated to project-local storage but this particular run record was
-      // written before the migration).
+      // Collect orphaned runs from the legacy migration store: completed or
+      // pr-created runs whose project-local store already exists on disk
+      // (meaning project-local storage has taken over, but this specific run
+      // record was written before the migration was fully rolled out).
       const orphaned: Array<{
         run: Run;
         projectPath: string;
@@ -1867,7 +1902,7 @@ export class Doctor {
           continue;
         }
 
-        // Query global store for completed/pr-created runs for this project.
+        // Query the legacy migration store for completed/pr-created runs for this project.
         const globalRuns = (globalDb
           .prepare(
             "SELECT * FROM runs WHERE project_id = ? AND status IN ('completed', 'pr-created') ORDER BY created_at ASC"
@@ -1910,7 +1945,7 @@ export class Doctor {
         };
       }
 
-      const summary = `${orphaned.length} orphaned run(s) found in legacy global store across ${new Set(orphaned.map((o) => o.projectPath)).size} project(s)`;
+      const summary = `${orphaned.length} orphaned run(s) found in legacy migration store across ${new Set(orphaned.map((o) => o.projectPath)).size} project(s)`;
 
       if (dryRun) {
         const details = orphaned
@@ -2065,19 +2100,19 @@ export class Doctor {
           name: checkName,
           status: "warn",
           message: `Migrated ${migratedCount}/${orphaned.length} run(s); ${errors.length} error(s): ${errors.slice(0, 3).join("; ")}`,
-          fixApplied: migratedCount > 0 ? `Migrated ${migratedCount} run(s) from global store to project-local stores` : undefined,
+          fixApplied: migratedCount > 0 ? `Migrated ${migratedCount} run(s) from legacy migration store to project-local stores` : undefined,
         };
       }
 
       return {
         name: checkName,
         status: "fixed",
-        message: `Migrated ${migratedCount} run(s) from legacy global store to project-local stores`,
-        fixApplied: `Migrated ${migratedCount} run(s) from global store to project-local stores`,
+        message: `Migrated ${migratedCount} run(s) from legacy migration store to project-local stores`,
+        fixApplied: `Migrated ${migratedCount} run(s) from legacy migration store to project-local stores`,
       };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { name: checkName, status: "warn", message: `Could not check global store: ${msg}` };
+      return { name: checkName, status: "warn", message: `Could not check legacy migration store: ${msg}` };
     } finally {
       globalStore?.close();
     }

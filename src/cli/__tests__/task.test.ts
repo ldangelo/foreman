@@ -462,27 +462,11 @@ describe("taskCommand export", () => {
     expect(taskCommand.name()).toBe("task");
   });
 
-  it("taskCommand has expected subcommands", async () => {
+  it("taskCommand exposes beads-first approval and transitional import helpers", async () => {
     const { taskCommand } = await import("../commands/task.js");
     const names = taskCommand.commands.map((c) => c.name());
-    expect(names).toContain("create");
-    expect(names).toContain("import");
-    expect(names).toContain("list");
-    expect(names).toContain("show");
-    expect(names).toContain("approve");
-    expect(names).toContain("update");
-    expect(names).toContain("close");
-    expect(names).toContain("dep");
-  });
-
-  it("dep subcommand has add/list/remove", async () => {
-    const { taskCommand } = await import("../commands/task.js");
-    const depCmd = taskCommand.commands.find((c) => c.name() === "dep");
-    expect(depCmd).toBeDefined();
-    const depSubNames = depCmd!.commands.map((c) => c.name());
-    expect(depSubNames).toContain("add");
-    expect(depSubNames).toContain("list");
-    expect(depSubNames).toContain("remove");
+    expect(names).toEqual(["approve", "import"]);
+    expect(taskCommand.description()).toContain("Beads-first task helpers");
   });
 });
 

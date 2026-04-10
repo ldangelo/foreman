@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { existsSync } from "node:fs";
 import { workerAgentMd } from "../templates.js";
-import type { SeedInfo, ModelSelection } from "../types.js";
+import type { TaskInfo, ModelSelection } from "../types.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const fakeSeed: SeedInfo = {
+const fakeSeed: TaskInfo = {
   id: "seeds-abc123",
   title: "Implement auth module",
   description: "Add JWT-based authentication",
@@ -70,7 +70,7 @@ describe("workerAgentMd", () => {
   });
 
   it("includes Additional Context section when seed.comments is present", () => {
-    const seedWithComments: SeedInfo = {
+    const seedWithComments: TaskInfo = {
       ...fakeSeed,
       comments: "Please also add rate limiting to the auth endpoints.",
     };
@@ -85,7 +85,7 @@ describe("workerAgentMd", () => {
   });
 
   it("does NOT include Additional Context section when seed.comments is null", () => {
-    const seedWithNullComments: SeedInfo = {
+    const seedWithNullComments: TaskInfo = {
       ...fakeSeed,
       comments: null,
     };

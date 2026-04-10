@@ -5,7 +5,9 @@ import { homedir } from "node:os";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Metrics, Run, RunProgress } from "../../lib/store.js";
-import { renderAgentCard, formatSuccessRate } from "../watch-ui.js";
+import { formatPriorityLabel, normalizePriority } from "../../lib/priority.js";
+import { getSdkRunHealth, type SdkRunHealth } from "../../lib/run-health.js";
+import { elapsed, renderAgentCard, formatSuccessRate } from "../watch-ui.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { BrIssue } from "../../lib/beads-rust.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
@@ -73,9 +75,232 @@ export function getStatusBackend(): TaskBackend {
 export interface StatusCounts {
   total: number;
   ready: number;
+  backlog: number;
   inProgress: number;
   completed: number;
   blocked: number;
+}
+
+export interface StatusQueueItem {
+  id: string;
+  title: string;
+  type: string;
+  priority: string;
+  status: string;
+  parent: string | null;
+  updatedAt: string;
+}
+
+export interface StatusQueueSummary {
+  backlog: StatusQueueItem[];
+  blocked: StatusQueueItem[];
+  warnings: string[];
+}
+
+interface StatusIssueSnapshot {
+  openIssues: BrIssue[];
+  closedIssues: BrIssue[];
+  readyIssues: Issue[];
+  backlogIssues: BrIssue[];
+  warnings: string[];
+}
+interface AggregatedQueueWarning {
+  name: string;
+  path: string;
+  warnings: string[];
+}
+
+
+interface AggregatedProjectSummary {
+  name: string;
+  path: string;
+  tasks: StatusCounts & { failed: number; stuck: number; queue: StatusQueueSummary };
+  agents: { active: number };
+  costs: { totalCost: number };
+}
+
+interface SkippedStatusProject {
+  name: string;
+  path: string;
+  reason: string;
+}
+
+interface AggregatedProjectStatus {
+  summary: AggregatedProjectSummary;
+  counts: StatusCounts;
+  failed: number;
+  stuck: number;
+  activeAgents: number;
+  totalCost: number;
+}
+
+interface ActiveRunEntry {
+  run: Run;
+  progress: RunProgress | null;
+}
+
+interface StaleSdkRunEntry extends ActiveRunEntry {
+  health: SdkRunHealth;
+}
+
+interface ClassifiedActiveRuns {
+  active: ActiveRunEntry[];
+  staleSdk: StaleSdkRunEntry[];
+}
+
+function classifyActiveRuns(store: ForemanStore, runs: Run[]): ClassifiedActiveRuns {
+  const active: ActiveRunEntry[] = [];
+  const staleSdk: StaleSdkRunEntry[] = [];
+
+  for (const run of runs) {
+    const progress = store.getRunProgress(run.id);
+    const health = getSdkRunHealth(run, progress);
+    if (health.isStale) {
+      staleSdk.push({ run, progress, health });
+      continue;
+    }
+
+    active.push({ run, progress });
+  }
+
+  return { active, staleSdk };
+}
+
+function describeStaleSdkRun(entry: StaleSdkRunEntry): string {
+  const lastSeen = entry.health.lastActivityAt
+    ? `${elapsed(entry.health.lastActivityAt)} ago`
+    : "unknown last activity";
+
+  return `${entry.run.seed_id} is recorded as running, but SDK activity is stale (${lastSeen}; threshold ${entry.health.staleThresholdHours}h).`;
+}
+
+function serializeStaleSdkRun(entry: StaleSdkRunEntry): Omit<Run, "progress"> & {
+  progress: RunProgress | null;
+  staleReason: string;
+  lastActivityAt: string | null;
+  staleThresholdHours: number;
+} {
+  return {
+    ...entry.run,
+    progress: entry.progress,
+    staleReason: describeStaleSdkRun(entry),
+    lastActivityAt: entry.health.lastActivityAt,
+    staleThresholdHours: entry.health.staleThresholdHours,
+  };
+}
+
+
+function collectStatusJsonWarnings(opts: { json?: boolean; watch?: boolean | string; live?: boolean }): string[] {
+  if (!opts.json) return [];
+
+  const warnings: string[] = [];
+
+  if (opts.live) {
+    warnings.push("--live is ignored when --json is used; status returns a single snapshot.");
+  }
+
+  if (opts.watch !== undefined) {
+    warnings.push("--watch is ignored when --json is used; status returns a single snapshot.");
+  }
+
+  for (const warning of warnings) {
+    console.warn(`Warning: ${warning}`);
+  }
+
+  return warnings;
+}
+
+
+function parseQueuePriority(priority: string | number): number {
+  return normalizePriority(priority);
+}
+
+function sortQueueIssues(issues: BrIssue[]): BrIssue[] {
+  return [...issues].sort((a, b) => {
+    const priorityDelta = parseQueuePriority(a.priority) - parseQueuePriority(b.priority);
+    if (priorityDelta !== 0) return priorityDelta;
+
+    const ageDelta = new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime();
+    if (ageDelta !== 0) return ageDelta;
+
+    return a.id.localeCompare(b.id);
+  });
+}
+
+function toStatusQueueItem(issue: BrIssue): StatusQueueItem {
+  return {
+    id: issue.id,
+    title: issue.title,
+    type: issue.type,
+    priority: formatPriorityLabel(issue.priority),
+    status: issue.status,
+    parent: issue.parent,
+    updatedAt: issue.updated_at,
+  };
+}
+
+async function fetchStatusIssueSnapshot(projectPath: string): Promise<StatusIssueSnapshot> {
+  const brClient = new BeadsRustClient(projectPath);
+  const warnings: string[] = [];
+
+  let openIssues: BrIssue[] = [];
+  try {
+    openIssues = await brClient.list();
+  } catch (error) {
+    warnings.push(`open issues unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  let closedIssues: BrIssue[] = [];
+  try {
+    closedIssues = await brClient.list({ status: "closed" });
+  } catch (error) {
+    warnings.push(`closed issues unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  let readyIssues: Issue[] = [];
+  try {
+    readyIssues = await brClient.ready();
+  } catch (error) {
+    warnings.push(`ready queue unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  let backlogIssues: BrIssue[] = [];
+  try {
+    backlogIssues = await brClient.listBacklog();
+  } catch (error) {
+    warnings.push(`backlog queue unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return { openIssues, closedIssues, readyIssues, backlogIssues, warnings };
+}
+
+function buildStatusCounts(snapshot: StatusIssueSnapshot): StatusCounts {
+  const inProgress = snapshot.openIssues.filter((i) => i.status === "in_progress").length;
+  const completed = snapshot.closedIssues.length;
+  const ready = snapshot.readyIssues.length;
+  const backlog = snapshot.backlogIssues.length;
+  const readyIds = new Set(snapshot.readyIssues.map((i) => i.id));
+  const backlogIds = new Set(snapshot.backlogIssues.map((i) => i.id));
+  const blocked = snapshot.openIssues.filter(
+    (i) => i.status !== "in_progress" && !readyIds.has(i.id) && !backlogIds.has(i.id),
+  ).length;
+  const total = snapshot.openIssues.length + completed;
+
+  return { total, ready, backlog, inProgress, completed, blocked };
+}
+
+function buildStatusQueueSummary(snapshot: StatusIssueSnapshot): StatusQueueSummary {
+  const readyIds = new Set(snapshot.readyIssues.map((i) => i.id));
+  const backlogIds = new Set(snapshot.backlogIssues.map((i) => i.id));
+  const blockedIssues = snapshot.openIssues.filter(
+    (issue) => issue.status !== "in_progress" && !readyIds.has(issue.id) && !backlogIds.has(issue.id),
+  );
+
+  return {
+    backlog: sortQueueIssues(snapshot.backlogIssues).map(toStatusQueueItem),
+    blocked: sortQueueIssues(blockedIssues).map(toStatusQueueItem),
+    warnings: snapshot.warnings,
+  };
 }
 
 /**
@@ -84,43 +309,60 @@ export interface StatusCounts {
  * TRD-024: sd backend removed. Always uses BeadsRustClient (br CLI).
  */
 export async function fetchStatusCounts(projectPath: string): Promise<StatusCounts> {
-  const brClient = new BeadsRustClient(projectPath);
+  const snapshot = await fetchStatusIssueSnapshot(projectPath);
+  return buildStatusCounts(snapshot);
+}
 
-  // Fetch open issues (all non-closed)
-  let openIssues: BrIssue[] = [];
+export async function fetchStatusQueueSummary(projectPath: string): Promise<StatusQueueSummary> {
+  const snapshot = await fetchStatusIssueSnapshot(projectPath);
+  return buildStatusQueueSummary(snapshot);
+}
+
+async function fetchAggregatedProjectStatus(name: string, projectPath: string): Promise<AggregatedProjectStatus> {
+  const snapshot = await fetchStatusIssueSnapshot(projectPath);
+  const counts = buildStatusCounts(snapshot);
+  const queue = buildStatusQueueSummary(snapshot);
+
+  const store = ForemanStore.forProject(projectPath);
   try {
-    openIssues = await brClient.list();
-  } catch { /* br not initialized or binary missing — return zeros */ }
+    const project = store.getProjectByPath(projectPath);
 
-  // Fetch closed issues separately (br list excludes closed by default)
-  let closedIssues: BrIssue[] = [];
-  try {
-    closedIssues = await brClient.list({ status: "closed" });
-  } catch { /* no closed issues */ }
+    let failed = 0;
+    let stuck = 0;
+    let activeAgentCount = 0;
+    let projectCost = 0;
 
-  // Fetch ready issues (open + unblocked)
-  let readyIssues: Issue[] = [];
-  try {
-    readyIssues = await brClient.ready();
-  } catch { /* br ready may fail */ }
+    if (project) {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      failed = store.getRunsByStatusSince("failed", since, project.id).length;
+      stuck = store.getRunsByStatusSince("stuck", since, project.id).length;
+      activeAgentCount = classifyActiveRuns(store, store.getActiveRuns(project.id)).active.length;
+      projectCost = store.getMetrics(project.id).totalCost;
+    }
 
-  const inProgress = openIssues.filter((i) => i.status === "in_progress").length;
-  const completed = closedIssues.length;
-  const ready = readyIssues.length;
-  // blocked = open issues that are not ready and not in_progress
-  const readyIds = new Set(readyIssues.map((i) => i.id));
-  const blocked = openIssues.filter(
-    (i) => i.status !== "in_progress" && !readyIds.has(i.id),
-  ).length;
-  const total = openIssues.length + completed;
-
-  return { total, ready, inProgress, completed, blocked };
+    return {
+      summary: {
+        name,
+        path: projectPath,
+        tasks: { ...counts, failed, stuck, queue },
+        agents: { active: activeAgentCount },
+        costs: { totalCost: projectCost },
+      },
+      counts,
+      failed,
+      stuck,
+      activeAgents: activeAgentCount,
+      totalCost: projectCost,
+    };
+  } finally {
+    store.close();
+  }
 }
 
 // ── Internal render helper ────────────────────────────────────────────────
 
 async function renderStatus(projectPath: string): Promise<void> {
-  let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+  let counts: StatusCounts = { total: 0, ready: 0, backlog: 0, inProgress: 0, completed: 0, blocked: 0 };
   try {
     counts = await fetchStatusCounts(projectPath);
   } catch (err) {
@@ -128,11 +370,12 @@ async function renderStatus(projectPath: string): Promise<void> {
     process.exit(1);
   }
 
-  const { total, ready, inProgress, completed, blocked } = counts;
+  const { total, ready, backlog, inProgress, completed, blocked } = counts;
 
   console.log(chalk.bold("Tasks"));
   console.log(`  Total:       ${chalk.white(total)}`);
   console.log(`  Ready:       ${chalk.green(ready)}`);
+  if (backlog > 0) console.log(`  Backlog:     ${chalk.dim(backlog)}`);
   console.log(`  In Progress: ${chalk.yellow(inProgress)}`);
   console.log(`  Completed:   ${chalk.cyan(completed)}`);
   console.log(`  Blocked:     ${chalk.red(blocked)}`);
@@ -157,13 +400,12 @@ async function renderStatus(projectPath: string): Promise<void> {
   console.log(chalk.bold("Active Agents"));
 
   if (project) {
-    const activeRuns = store.getActiveRuns(project.id);
-    if (activeRuns.length === 0) {
+    const activeRuns = classifyActiveRuns(store, store.getActiveRuns(project.id));
+    if (activeRuns.active.length === 0) {
       console.log(chalk.dim("  (no agents running)"));
     } else {
-      for (let i = 0; i < activeRuns.length; i++) {
-        const run = activeRuns[i];
-        const progress = store.getRunProgress(run.id);
+      for (let i = 0; i < activeRuns.active.length; i++) {
+        const { run, progress } = activeRuns.active[i];
 
         // Fetch run history to show attempt count and previous outcome
         const allRuns = store.getRunsForSeed(run.seed_id, project.id);
@@ -181,9 +423,23 @@ async function renderStatus(projectPath: string): Promise<void> {
         }
         // Separate cards with a blank line, but don't add a trailing blank
         // after the last card (avoids a dangling empty line in single-agent output).
-        if (i < activeRuns.length - 1) console.log();
+        if (i < activeRuns.active.length - 1) console.log();
       }
     }
+
+    if (activeRuns.staleSdk.length > 0) {
+      console.log();
+      console.log(chalk.bold("Stale Active Runs"));
+      for (let i = 0; i < activeRuns.staleSdk.length; i++) {
+        const { run, progress } = activeRuns.staleSdk[i];
+        const staleRun: Run = { ...run, status: "stuck", completed_at: run.completed_at ?? new Date().toISOString() };
+        console.log(renderAgentCard(staleRun, progress, true));
+        console.log(`  ${chalk.yellow("Stale     ")} ${chalk.yellow(describeStaleSdkRun(activeRuns.staleSdk[i]))}`);
+        console.log(`  ${chalk.dim("Recovery  ")} ${chalk.dim("Run 'foreman doctor --fix' to reconcile this stale SDK run.")}`);
+        if (i < activeRuns.staleSdk.length - 1) console.log();
+      }
+    }
+
 
     // Cost summary
     const metrics = store.getMetrics(project.id);
@@ -231,73 +487,119 @@ async function renderStatus(projectPath: string): Promise<void> {
 
 /**
  * Render a compact task-count header for use in the live dashboard view.
- * Shows br task counts (ready, in-progress, blocked, completed) as a
+ * Shows br task counts (ready, backlog, in-progress, blocked, completed) as a
  * one-line summary suitable for prepending to the dashboard display.
  */
 export function renderLiveStatusHeader(counts: StatusCounts): string {
-  const { total, ready, inProgress, completed, blocked } = counts;
+  const { total, ready, backlog, inProgress, completed, blocked } = counts;
   const parts: string[] = [
     chalk.bold("Tasks:"),
     `total ${chalk.white(total)}`,
     `ready ${chalk.green(ready)}`,
+  ];
+  if (backlog > 0) parts.push(`backlog ${chalk.dim(backlog)}`);
+  parts.push(
     `in-progress ${chalk.yellow(inProgress)}`,
     `completed ${chalk.cyan(completed)}`,
-  ];
+  );
   if (blocked > 0) parts.push(`blocked ${chalk.red(blocked)}`);
   return parts.join("  ");
 }
 
 export const statusCommand = new Command("status")
-  .description("Show project status from beads_rust (br) + sqlite")
+  .description("Show control-plane status across registered projects or one scoped project")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
   .option("--live", "Enable full dashboard TUI with event stream (implies --watch; use instead of 'foreman dashboard')")
   .option("--json", "Output status as JSON")
-  .option("--all", "Show status across all registered projects")
-  .option("--project <name>", "Registered project name (default: current directory)")
-  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .option("--all", "Show control-plane summary across all registered projects")
+  .option("--project <name>", "Scope status to one registered project")
+  .option("--project-path <absolute-path>", "Scope status to one explicit project path (advanced/script usage)")
   .action(async (opts: { watch?: boolean | string; json?: boolean; live?: boolean; project?: string; projectPath?: string; all?: boolean }) => {
+    const jsonWarnings = collectStatusJsonWarnings(opts);
+
     if (opts.all) {
       const registry = new ProjectRegistry();
       const projects = registry.list();
 
       if (projects.length === 0) {
-        console.log(chalk.yellow("No registered projects found. Run 'foreman project add' to register projects."));
+        if (opts.json) {
+          console.log(JSON.stringify({
+            projects: [],
+            summary: null,
+            warning: "No registered projects found. Run 'foreman project add' to register projects.",
+            warnings: jsonWarnings,
+          }, null, 2));
+        } else {
+          console.log(chalk.yellow("No registered projects found. Run 'foreman project add' to register projects."));
+        }
         return;
       }
 
-      const aggregated: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+      const aggregated: StatusCounts = { total: 0, ready: 0, backlog: 0, inProgress: 0, completed: 0, blocked: 0 };
       let totalFailed = 0;
       let totalStuck = 0;
       let totalActiveAgents = 0;
       let totalCost = 0;
+      const projectSummaries: AggregatedProjectSummary[] = [];
+      const skippedProjects: SkippedStatusProject[] = [];
+      const queueWarnings: AggregatedQueueWarning[] = [];
 
       for (const proj of projects) {
         try {
-          const counts = await fetchStatusCounts(proj.path);
-          aggregated.total += counts.total;
-          aggregated.ready += counts.ready;
-          aggregated.inProgress += counts.inProgress;
-          aggregated.completed += counts.completed;
-          aggregated.blocked += counts.blocked;
-
-          const store = ForemanStore.forProject(proj.path);
-          const project = store.getProjectByPath(proj.path);
-          if (project) {
-            const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-            totalFailed += store.getRunsByStatusSince("failed", since, project.id).length;
-            totalStuck += store.getRunsByStatusSince("stuck", since, project.id).length;
-            totalActiveAgents += store.getActiveRuns(project.id).length;
-            totalCost += store.getMetrics(project.id).totalCost;
+          const projectStatus = await fetchAggregatedProjectStatus(proj.name, proj.path);
+          aggregated.total += projectStatus.counts.total;
+          aggregated.ready += projectStatus.counts.ready;
+          aggregated.backlog += projectStatus.counts.backlog;
+          aggregated.inProgress += projectStatus.counts.inProgress;
+          aggregated.completed += projectStatus.counts.completed;
+          aggregated.blocked += projectStatus.counts.blocked;
+          totalFailed += projectStatus.failed;
+          totalStuck += projectStatus.stuck;
+          totalActiveAgents += projectStatus.activeAgents;
+          totalCost += projectStatus.totalCost;
+          projectSummaries.push(projectStatus.summary);
+          if (projectStatus.summary.tasks.queue.warnings.length > 0) {
+            queueWarnings.push({
+              name: projectStatus.summary.name,
+              path: projectStatus.summary.path,
+              warnings: [...projectStatus.summary.tasks.queue.warnings],
+            });
           }
-          store.close();
-        } catch {
-          // Ignore stale/inaccessible projects in aggregated status.
+        } catch (error) {
+          skippedProjects.push({
+            name: proj.name,
+            path: proj.path,
+            reason: error instanceof Error ? error.message : String(error),
+          });
         }
+      }
+
+      if (opts.json) {
+        console.log(JSON.stringify({
+          projects: projectSummaries,
+          skippedProjects,
+          queueWarnings,
+          warnings: jsonWarnings,
+          summary: {
+            tasks: aggregated,
+            failed: totalFailed,
+            stuck: totalStuck,
+            activeAgents: totalActiveAgents,
+            totalCost,
+            projects: {
+              totalRegistered: projects.length,
+              reported: projectSummaries.length,
+              skipped: skippedProjects.length,
+            },
+          },
+        }, null, 2));
+        return;
       }
 
       console.log(chalk.bold("Tasks (All Projects)"));
       console.log(`  Total:       ${chalk.white(aggregated.total)}`);
       console.log(`  Ready:       ${chalk.green(aggregated.ready)}`);
+      if (aggregated.backlog > 0) console.log(`  Backlog:     ${chalk.dim(aggregated.backlog)}`);
       console.log(`  In Progress: ${chalk.yellow(aggregated.inProgress)}`);
       console.log(`  Completed:   ${chalk.cyan(aggregated.completed)}`);
       console.log(`  Blocked:     ${chalk.red(aggregated.blocked)}`);
@@ -307,19 +609,33 @@ export const statusCommand = new Command("status")
       if (totalStuck > 0) console.log(`  Stuck (24h):  ${chalk.red(totalStuck)}`);
       console.log(`  Active Agents: ${chalk.yellow(totalActiveAgents)}`);
       if (totalCost > 0) console.log(`  Total Cost:   ${chalk.yellow(`$${totalCost.toFixed(2)}`)}`);
+      if (skippedProjects.length > 0) console.log(`  Skipped:      ${chalk.yellow(skippedProjects.length)}`);
       console.log();
-      console.log(chalk.dim(`Projects: ${projects.map((p) => p.name).join(", ")}`));
+      if (projectSummaries.length > 0) {
+        console.log(chalk.dim(`Projects: ${projectSummaries.map((p) => p.name).join(", ")}`));
+      }
+      if (skippedProjects.length > 0) {
+        console.log(chalk.yellow(`Skipped Projects: ${skippedProjects.map((p) => p.name).join(", ")}`));
+      }
+      if (queueWarnings.length > 0) {
+        console.log(chalk.yellow("Queue Warnings:"));
+        for (const entry of queueWarnings) {
+          console.log(chalk.yellow(`  ${entry.name}:`));
+          for (const warning of entry.warnings) {
+            console.log(chalk.dim(`    ${warning}`));
+          }
+        }
+      }
       return;
     }
 
-    const projectPath = await resolveRepoRootProjectPath(opts);
+    const projectPath = await resolveRepoRootProjectPath(opts, Boolean(opts.json));
     if (opts.json) {
       // JSON output path — gather data and serialize
       try {
-        let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
-        try {
-          counts = await fetchStatusCounts(projectPath);
-        } catch { /* return zeros on error */ }
+        const snapshot = await fetchStatusIssueSnapshot(projectPath);
+        const counts = buildStatusCounts(snapshot);
+        const queue = buildStatusQueueSummary(snapshot);
 
         const store = ForemanStore.forProject(projectPath);
         const project = store.getProjectByPath(projectPath);
@@ -327,6 +643,7 @@ export const statusCommand = new Command("status")
         let failed = 0;
         let stuck = 0;
         let activeRuns: Array<{ run: Run; progress: RunProgress | null }> = [];
+        let staleRuns: Array<ReturnType<typeof serializeStaleSdkRun>> = [];
         let metrics: Metrics = { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] };
         let successRateData: { rate: number | null; merged: number; failed: number } = { rate: null, merged: 0, failed: 0 };
 
@@ -334,23 +651,26 @@ export const statusCommand = new Command("status")
           const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
           failed = store.getRunsByStatusSince("failed", since, project.id).length;
           stuck = store.getRunsByStatusSince("stuck", since, project.id).length;
-          const runs = store.getActiveRuns(project.id);
-          activeRuns = runs.map((run) => ({ run, progress: store.getRunProgress(run.id) }));
+          const classifiedRuns = classifyActiveRuns(store, store.getActiveRuns(project.id));
+          activeRuns = classifiedRuns.active;
+          staleRuns = classifiedRuns.staleSdk.map(serializeStaleSdkRun);
           metrics = store.getMetrics(project.id);
           successRateData = store.getSuccessRate(project.id);
+          jsonWarnings.push(...classifiedRuns.staleSdk.map(describeStaleSdkRun));
         }
-
         store.close();
 
         const output = {
           tasks: {
             total: counts.total,
             ready: counts.ready,
+            backlog: counts.backlog,
             inProgress: counts.inProgress,
             completed: counts.completed,
             blocked: counts.blocked,
             failed,
             stuck,
+            queue,
           },
           successRate: {
             rate: successRateData.rate,
@@ -359,6 +679,7 @@ export const statusCommand = new Command("status")
           },
           agents: {
             active: activeRuns.map(({ run, progress }) => ({ ...run, progress })),
+            stale: staleRuns,
           },
           costs: {
             totalCost: metrics.totalCost,
@@ -366,6 +687,7 @@ export const statusCommand = new Command("status")
             byPhase: metrics.costByPhase ?? {},
             byModel: metrics.agentCostBreakdown ?? {},
           },
+          warnings: jsonWarnings,
         };
 
         console.log(JSON.stringify(output, null, 2));
@@ -400,7 +722,7 @@ export const statusCommand = new Command("status")
         while (!detached) {
           const store = ForemanStore.forProject(projectPath);
 
-          let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+          let counts: StatusCounts = { total: 0, ready: 0, backlog: 0, inProgress: 0, completed: 0, blocked: 0 };
           try {
             counts = await fetchStatusCounts(projectPath);
           } catch { /* br not available — show zero counts */ }

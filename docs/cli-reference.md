@@ -76,24 +76,38 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 
 ### `foreman status`
 
-Show project status: bead counts, active agents, cost breakdown, and tool usage.
+Show project status: beads-first queue counts, active agents, cost breakdown, and machine-readable queue state.
 
 ```bash
-foreman status                    # Snapshot of current state
-foreman status --project my-project # Status for a registered project without cd
-foreman status -w                 # Live refresh every 10 seconds
-foreman status -w 5               # Live refresh every 5 seconds
-foreman status --live             # Full dashboard TUI
-foreman status --json             # Machine-readable output
+foreman status                       # Snapshot of current project state
+foreman status --project my-project  # Status for a registered project without cd
+foreman status -w                    # Live refresh every 10 seconds
+foreman status -w 5                  # Live refresh every 5 seconds
+foreman status --live                # Full dashboard TUI
+foreman status --json                # Single-project machine-readable output
+foreman status --all                 # Aggregate human-readable status across projects
+foreman status --all --json          # Aggregate machine-readable status across projects
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `-w, --watch [seconds]` | `10` | Auto-refresh interval |
 | `--live` | — | Enable full dashboard TUI (Ink-based) |
-| `--json` | — | Output as JSON |
+| `--json` | — | Output as JSON; single-project output includes `tasks.queue`, aggregated output includes `projects[]`, `skippedProjects`, `queueWarnings`, and `summary` |
 | `--project <name-or-path>` | — | Show status for a registered project name or absolute project path |
 | `--all` | — | Aggregate status across all registered projects |
+
+**JSON highlights:**
+
+- `foreman status --json` returns scalar task counts plus `tasks.queue.backlog`, `tasks.queue.blocked`, and `tasks.queue.warnings`.
+- `foreman status --all --json` returns one entry per successfully reported registered project under `projects[]`, each with the same beads-first queue detail.
+- Aggregated JSON also includes `skippedProjects` for registered projects that could not be reported and `queueWarnings` for warning-bearing reported projects, both with project attribution.
+- `summary.projects` reports `{ totalRegistered, reported, skipped }` so automation can detect partial visibility without diffing arrays.
+- When `--json` is combined with human-only refresh flags such as `--watch` or `--live`, status returns a single JSON snapshot and includes a top-level `warnings` array describing the ignored flags.
+
+**Human-readable aggregated status:**
+
+- `foreman status --all` prints the same aggregate counts plus concise `Skipped Projects:` and `Queue Warnings:` sections when those conditions exist.
 
 **Example output:**
 
@@ -103,6 +117,7 @@ Project Status
 Tasks
   Total:       65
   Ready:       3
+  Backlog:     2
   In Progress: 2
   Completed:   50
   Blocked:     4
@@ -123,7 +138,7 @@ Active Agents
 
 ### `foreman dashboard`
 
-Live observability dashboard with real-time TUI. Shows all projects, agents, recent events, and the top-priority Needs Human panel.
+Live observability dashboard with real-time TUI. Shows all projects, agents, recent events, per-project task queues, and the approval backlog panel.
 
 ```bash
 foreman dashboard                 # Full dashboard

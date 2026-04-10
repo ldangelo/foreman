@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runWithPiSdk, type PiRunOptions, type PiRunResult } from "./pi-sdk-runner.js";
-import type { AgentRole } from "./types.js";
+import type { AgentRole } from "./execution-engine.js";
 
 export interface PhaseRunnerConfig {
   modulePath: string;

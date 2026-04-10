@@ -56,6 +56,25 @@ export interface BrComment {
   created_at: string;
 }
 
+export const FOREMAN_BACKLOG_LABEL = "foreman:backlog";
+
+function withBacklogLabel(labels: string[] | undefined, backlog: boolean | undefined): string[] | undefined {
+  if (!backlog) return labels;
+  const next = [...(labels ?? [])];
+  if (!next.includes(FOREMAN_BACKLOG_LABEL)) next.push(FOREMAN_BACKLOG_LABEL);
+  return next;
+}
+
+function filterApprovedReadyIssues(readyIssues: BrIssue[], backlogIssues: BrIssue[]): BrIssue[] {
+  if (backlogIssues.length === 0) return readyIssues;
+  const backlogIds = new Set(backlogIssues.map((issue) => issue.id));
+  return readyIssues.filter((issue) => !backlogIds.has(issue.id));
+}
+
+function isParentChildDependent(ref: BrDepRef): boolean {
+  return ref.dependency_type === "parent-child";
+}
+
 // ── Low-level helper ────────────────────────────────────────────────────
 
 /**
@@ -68,6 +87,9 @@ function normalizeBead(item: unknown): unknown {
   const obj = item as Record<string, unknown>;
   if ("issue_type" in obj && !("type" in obj)) {
     obj.type = obj.issue_type;
+  }
+  if ("priority" in obj && obj.priority != null) {
+    obj.priority = String(obj.priority);
   }
   return obj;
 }
@@ -164,6 +186,7 @@ export class BeadsRustClient implements ITaskClient {
       description?: string;
       labels?: string[];
       estimate?: number;
+      backlog?: boolean;
     },
   ): Promise<BrIssue> {
     await this.requireInit();
@@ -172,7 +195,8 @@ export class BeadsRustClient implements ITaskClient {
     if (opts?.priority) args.push("--priority", opts.priority);
     if (opts?.parent) args.push("--parent", opts.parent);
     if (opts?.description) args.push("--description", opts.description);
-    if (opts?.labels) args.push("--labels", opts.labels.join(","));
+    const labels = withBacklogLabel(opts?.labels, opts?.backlog);
+    if (labels && labels.length > 0) args.push("--labels", labels.join(","));
     if (opts?.estimate != null) args.push("--estimate", String(opts.estimate));
     const result = await execBr(args, this.projectPath);
     // br create returns the issue directly or { id }
@@ -240,12 +264,14 @@ export class BeadsRustClient implements ITaskClient {
     await execBr(["dep", "add", childId, parentId], this.projectPath);
   }
 
-  /** Return all open, unblocked issues (equivalent to `br ready`). Satisfies ITaskClient.ready(). */
+  /** Return open, unblocked, approved issues from br. */
   async ready(): Promise<Issue[]> {
     await this.requireInit();
     // Pass --limit 0 to get all ready issues (default is 20, which truncates the list
     // and causes lower-priority beads to be silently ignored by the dispatcher).
-    return ((await execBr(["ready", "--limit", "0"], this.projectPath)) as BrIssue[]) ?? [];
+    const readyIssues = ((await execBr(["ready", "--limit", "0"], this.projectPath)) as BrIssue[]) ?? [];
+    const backlogIssues = await this.list({ status: "open", label: FOREMAN_BACKLOG_LABEL, limit: 0 });
+    return filterApprovedReadyIssues(readyIssues, backlogIssues);
   }
 
   /** Search issues by query string. */
@@ -272,6 +298,36 @@ export class BeadsRustClient implements ITaskClient {
     return items
       .map((c) => `**${c.author}** (${c.created_at}):\n${c.text}`)
       .join("\n\n");
+  }
+
+  async listBacklog(): Promise<BrIssue[]> {
+    await this.requireInit();
+    return this.list({ status: "open", label: FOREMAN_BACKLOG_LABEL, limit: 0 });
+  }
+
+  async approve(id: string, opts?: { recursive?: boolean }): Promise<{ approved: string[]; skipped: string[] }> {
+    await this.requireInit();
+    const approved: string[] = [];
+    const skipped: string[] = [];
+
+    const visit = async (issueId: string): Promise<void> => {
+      const detail = await this.show(issueId);
+      const labels = detail.labels ?? [];
+      if (labels.includes(FOREMAN_BACKLOG_LABEL)) {
+        await execBr(["update", issueId, "--remove-label", FOREMAN_BACKLOG_LABEL], this.projectPath);
+        approved.push(issueId);
+      } else {
+        skipped.push(issueId);
+      }
+
+      if (!opts?.recursive) return;
+      for (const dependent of detail.dependents.filter(isParentChildDependent)) {
+        await visit(dependent.id);
+      }
+    };
+
+    await visit(id);
+    return { approved, skipped };
   }
 
   // ── Private helpers ─────────────────────────────────────────────────

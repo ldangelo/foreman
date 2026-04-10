@@ -8,17 +8,27 @@
 
 ---
 
+## Current-checkout note
+
+This document captures the product direction, not a claim that every roadmap surface is already shipped in the current branch.
+
+- Public day-to-day task tracking is still beads-first in this checkout: `br` / `.beads/` remain canonical.
+- `foreman task` is currently bounded to transitional `import --from-beads` behavior rather than a full replacement task CLI.
+- Treat newer PRDs (`PRD-2026-005`, `PRD-2026-006`, `PRD-2026-007`) and current code as the source of truth for recovery-era architecture details when this older document conflicts with them.
+
+---
+
 ## 1. Executive Summary
 
-Foreman is a multi-agent coding orchestration system built on OpenClaw and Beads that decomposes development work into parallelizable tasks, dispatches them to AI coding agents (Claude Code, Pi, Codex), manages git isolation per agent, and merges results back — all monitored through a real-time web dashboard.
+Foreman is a multi-project orchestration service built on OpenClaw and task-tracking backends that ingests planning artifacts, decomposes work into executable backlogs, schedules AI agents across many projects, and coordinates validation and promotion through a shared control plane. Each project supplies a subordinate execution plane that isolates work in worktrees or workspaces, runs agent pipelines, and prepares completed work for integration.
 
-Unlike Gastown or similar tools, Foreman is **runtime-agnostic** (not locked to one AI provider), **integrated with existing workflows** (OpenClaw, TaskNotes, Obsidian), and designed to be **client-deployable** as part of the Ensemble framework.
+Unlike Gastown or similar tools, Foreman is designed around a durable separation of concerns: the control plane decides what to run, where to run it, and when work is ready for approval; the execution plane handles the mechanics of implementation inside a single project. That separation is what makes the system client-deployable, multi-project, and runtime-agnostic rather than just a local agent runner.
 
 ### Key Differentiators
-- Runtime-agnostic: Claude Code, Pi, Codex, Gemini — pick per task
+- Runtime-agnostic: Claude Code, Pi, Codex, Gemini — pick per task or project
 - Built on OpenClaw (maintained platform, not a greenfield orchestrator)
-- Beads for structured work tracking (dependency graph, atomic claiming)
-- Real-time dashboard with multi-project monitoring and drill-down
+- Multi-project control plane with shared scheduling, visibility, and approval flows
+- Integration-branch validation before promotion to the default branch
 - Client-ready via Ensemble
 
 ---
@@ -26,17 +36,17 @@ Unlike Gastown or similar tools, Foreman is **runtime-agnostic** (not locked to 
 ## 2. Problem Statement
 
 ### Current Pain Points
-1. **No structured multi-agent workflow** — Spawning agents manually, no dependency tracking, no merge coordination
-2. **No visibility** — Can't see what 5+ agents are doing at a glance
-3. **No work decomposition tooling** — PRD → tasks is manual and ad-hoc
-4. **Git conflicts** — Agents working in the same directory create merge hell
-5. **No cost/time tracking per task** — Can't measure ROI of multi-agent work
-6. **Client readiness** — Nothing packaged to deploy at Fortium clients
+1. **No shared control plane** — Agents may run inside a repo, but there is no durable scheduler coordinating work across many active projects
+2. **No unified visibility** — Operators cannot see fleet-wide work, validation status, and approval backlog in one place
+3. **No planning-to-execution bridge** — PRD/TRD decomposition and executable work queues are disconnected from cross-project scheduling
+4. **Git coordination drift** — Without explicit integration-branch semantics, completed work can land on the wrong branch boundary
+5. **No cost/time tracking per task** — Can't measure ROI of multi-agent work across the fleet
+6. **Client readiness** — A project-local runner is less deployable than a true orchestration service
 
 ### Who Is This For
-- **Leo (primary)** — Run multi-agent coding workflows on personal/client projects
-- **Fortium clients** — Deploy as part of Ensemble engagements
-- **Solo developers** — Anyone running OpenClaw who wants to scale with AI agents
+- **Leo (primary)** — Run multi-project AI engineering workflows across personal and client projects
+- **Fortium clients** — Deploy Foreman as part of Ensemble engagements
+- **Solo developers / tech leads** — Coordinate several repositories without losing validation and approval truth
 
 ---
 
@@ -44,11 +54,11 @@ Unlike Gastown or similar tools, Foreman is **runtime-agnostic** (not locked to 
 
 | Goal | Success Metric |
 |---|---|
-| Decompose PRD into parallelizable tasks | PRD → Beads hierarchy in <2 minutes |
-| Dispatch agents with git isolation | N agents running on N worktrees, zero conflicts |
-| Automatic merge on completion | Worktree → main merge with test validation |
-| Real-time dashboard | See all projects, all agents, live status |
-| Cost tracking | Per-task token usage and estimated cost |
+| Decompose PRD into executable project work | PRD → TRD → task backlog in <2 minutes |
+| Schedule agents across projects with isolation | N agents running across N project workspaces with zero cross-project conflicts |
+| Validate on integration before promotion | Completed work lands on integration, passes validation, then becomes eligible for promotion |
+| Real-time multi-project dashboard | See all projects, all agents, validation state, and approval backlog live |
+| Cost tracking | Per-task and per-project token usage with estimated cost |
 | Client deployable | Install + configure in <30 minutes |
 
 ---
@@ -58,76 +68,58 @@ Unlike Gastown or similar tools, Foreman is **runtime-agnostic** (not locked to 
 ### 4.1 System Overview
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Foreman Dashboard                        │
-│              (localhost:3850 — web UI)                    │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────┐ │
-│  │Project A │ │Project B │ │Project C │ │  Metrics   │ │
-│  │ 3/5 done │ │ 1/8 done │ │ idle     │ │  $12.40    │ │
-│  └──────────┘ └──────────┘ └──────────┘ └────────────┘ │
-└────────────────────┬────────────────────────────────────┘
-                     │ REST API / WebSocket
-┌────────────────────┴────────────────────────────────────┐
-│                 Foreman Orchestrator                         │
-│              (OpenClaw Skill + CLI)                       │
-│                                                          │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐ │
-│  │ Decomposer  │  │ Dispatcher  │  │    Refinery      │ │
-│  │ PRD → Beads │  │ bd ready →  │  │ Merge + Test +   │ │
-│  │ hierarchy   │  │ worktree →  │  │ Validate         │ │
-│  │             │  │ spawn agent │  │                   │ │
-│  └─────────────┘  └─────────────┘  └─────────────────┘ │
-│                                                          │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐ │
-│  │  Monitor    │  │   Reporter  │  │   Cost Tracker   │ │
-│  │ Poll agents │  │ Summarize   │  │ Token usage per  │ │
-│  │ Detect stuck│  │ results     │  │ task/agent       │ │
-│  └─────────────┘  └─────────────┘  └─────────────────┘ │
-└────────────────────┬────────────────────────────────────┘
-                     │
-        ┌────────────┼────────────┐
-        │            │            │
-   ┌────┴────┐ ┌────┴────┐ ┌────┴────┐
-   │Worker 1 │ │Worker 2 │ │Worker 3 │
-   │Claude   │ │Pi       │ │Codex    │
-   │Code     │ │         │ │         │
-   │         │ │         │ │         │
-   │worktree/│ │worktree/│ │worktree/│
-   │bd-a1b2  │ │bd-c3d4  │ │bd-e5f6  │
-   └─────────┘ └─────────┘ └─────────┘
+┌───────────────────────────────────────────────────────────────┐
+│                    Foreman Control Plane                     │
+│   project registry • intake • scheduler • dashboard         │
+│   validation policy • approval/promotion • fleet metrics    │
+└────────────────────────────┬──────────────────────────────────┘
+                             │
+               dispatch / status / validation events
+                             │
+         ┌───────────────────┼───────────────────┐
+         │                   │                   │
+┌────────▼────────┐ ┌────────▼────────┐ ┌────────▼────────┐
+│ Project A       │ │ Project B       │ │ Project C       │
+│ execution plane │ │ execution plane │ │ execution plane │
+│ dispatcher      │ │ dispatcher      │ │ dispatcher      │
+│ workers         │ │ workers         │ │ workers         │
+│ pipeline        │ │ pipeline        │ │ pipeline        │
+│ merge/refinery  │ │ merge/refinery  │ │ merge/refinery  │
+│ → integration   │ │ → integration   │ │ → integration   │
+└─────────────────┘ └─────────────────┘ └─────────────────┘
 ```
 
 ### 4.2 Component Breakdown
 
-#### 4.2.1 Foreman CLI (`foreman`)
-A lightweight CLI wrapper that coordinates Beads + OpenClaw + Git:
+#### 4.2.1 Foreman Control Plane (`foreman`)
+The top-level CLI/service is responsible for:
 
-```bash
-foreman init                          # Initialize Foreman in a project
-foreman plan <prd.md>                 # Decompose PRD → beads
-foreman run                           # Dispatch ready tasks to agents
-foreman status                        # Show project status
-foreman merge                         # Trigger refinery for completed work
-foreman dashboard                     # Launch web dashboard
-```
+- registering and describing projects
+- ingesting PRDs, TRDs, and task backlogs
+- selecting which project/task should consume the next unit of agent capacity
+- aggregating dashboard/status signal across all active projects
+- enforcing validation and approval policy before promotion
 
-#### 4.2.2 Foreman OpenClaw Skill
-The brain — SKILL.md instructions that enable Jarvis (or any OpenClaw agent) to:
-- Parse PRDs and create bead hierarchies
-- Select appropriate runtime per task (Claude Code vs Pi vs Codex)
-- Manage worktree lifecycle
-- Monitor agent progress
-- Trigger merge and validation
+#### 4.2.2 Per-Project Execution Plane
+Each project-local execution engine is responsible for:
 
-#### 4.2.3 Foreman Dashboard
-Real-time web UI for monitoring all active projects and agents.
+- turning ready work into isolated worktrees or workspaces
+- spawning agents and running the configured workflow
+- recording run state, mail, and artifacts
+- merging completed work onto the project's integration branch
+- surfacing validation/promotion outcomes back to the control plane
 
-#### 4.2.4 Foreman State Store
-SQLite database (`~/.foreman/foreman.db`) tracking:
-- Projects (repo path, status, created_at)
-- Runs (project_id, bead_id, agent_type, session_key, worktree_path, status, started_at, completed_at)
-- Costs (run_id, tokens_in, tokens_out, estimated_cost)
-- Events (run_id, event_type, timestamp, details)
+#### 4.2.3 Dashboard
+The dashboard is a control-plane surface, not just a local project viewer. It should show active projects, queue state, validation state, approval backlog, and cost/performance metrics in one place.
+
+
+#### 4.2.4 State Stores
+- **Global control-plane state** tracks project metadata, scheduling, and fleet-level visibility.
+- **Per-project execution state** tracks runs, merge queues, artifacts, and local runtime history.
+
+### 4.3 Integration Branch Model
+
+Completed work should merge onto a project-specific integration branch first. Validation happens there. Promotion to the default branch is a distinct, auditable control-plane decision rather than an implicit side effect of worker completion.
 
 ---
 

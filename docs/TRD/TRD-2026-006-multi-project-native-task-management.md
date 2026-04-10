@@ -9,6 +9,16 @@ design_readiness_score: 4.0
 
 # TRD-2026-006: Multi-Project Native Task Management
 
+## Current-checkout note
+
+This TRD is an implementation plan for the roadmap in `PRD-2026-006`, not a statement that the current branch already ships the full native-task operator surface it describes.
+
+- Public day-to-day task tracking remains beads-first in the current checkout.
+- `foreman task` is currently restricted to beads-first helpers: `approve <bead-id>` plus transitional `import --from-beads`.
+- Newly created Foreman-managed beads start behind the `foreman:backlog` approval gate and require explicit approval before dispatch.
+- The public dashboard and status surfaces now expose beads-first approval backlog and queue state; the native-task "Needs Human" panel described later remains roadmap work, not shipped behavior.
+
+
 ## Architecture Decision
 
 ### Chosen Approach: Option C -- Extend Existing Infrastructure

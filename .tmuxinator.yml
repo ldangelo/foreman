@@ -1,0 +1,13 @@
+name: dev
+root: .
+windows:
+  - code:
+      layout: even-horizontal
+      panes:
+        - omp
+  - ops:
+      layout: main-vertical
+      panes:
+        - bv
+        - foreman status --watch
+        - ""

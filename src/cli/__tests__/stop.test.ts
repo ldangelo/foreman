@@ -384,8 +384,9 @@ describe("foreman stop", () => {
   // ── Error handling ──────────────────────────────────────────────────
 
   describe("error handling", () => {
-    it("handles run with no pid gracefully — still marks stuck", async () => {
-      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    it("treats a missing pid as an incomplete stop and reports it on stderr", async () => {
+      const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       const run = createTestRun(store, projectId, {
         seedId: "bd-notmux",
@@ -396,19 +397,21 @@ describe("foreman stop", () => {
       const { stopAction } = await import("../commands/stop.js");
       const exitCode = await stopAction(run.id, {}, store, tmpDir);
 
-      // Should succeed (no error)
-      expect(exitCode).toBe(0);
+      expect(exitCode).toBe(1);
 
-      // Run must be marked stuck even though there was no process to kill
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("stuck");
       expect(updated!.completed_at).not.toBeNull();
 
-      // A warning must be surfaced so the user knows the stop was incomplete
-      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
-      expect(output).toContain("no pid found");
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("no pid found"),
+      );
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("without sending SIGTERM"),
+      );
 
-      consoleSpy.mockRestore();
+      consoleLogSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
     });
   });
 
@@ -518,6 +521,29 @@ describe("foreman stop", () => {
 
       consoleErrSpy.mockRestore();
     });
+
+    it("exits non-zero from the CLI action when --list has no registered project", async () => {
+      const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+        throw new Error(`process.exit:${code ?? "undefined"}`);
+      }) as never);
+      const cwd = process.cwd();
+      const unregisteredDir = mkdtempSync(join(tmpdir(), "foreman-stop-unregistered-"));
+
+      try {
+        process.chdir(unregisteredDir);
+        const { stopCommand } = await import("../commands/stop.js");
+
+        await expect(
+          stopCommand.parseAsync(["stop", "--list"], { from: "user" }),
+        ).rejects.toThrow("process.exit:1");
+      } finally {
+        process.chdir(cwd);
+        rmSync(unregisteredDir, { recursive: true, force: true });
+        consoleErrSpy.mockRestore();
+        exitSpy.mockRestore();
+      }
+    });
   });
 
   // ── formatElapsed sub-minute ────────────────────────────────────────
@@ -563,7 +589,7 @@ describe("foreman stop", () => {
   // ── Stopped count accuracy ──────────────────────────────────────────
 
   describe("stopped count accuracy", () => {
-    it("counts each run once when PID is killed", async () => {
+    it("reports signalled processes in the summary", async () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
       const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
 
@@ -577,11 +603,43 @@ describe("foreman stop", () => {
       await stopAction(undefined, {}, store, tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
-      // Summary must show "Runs stopped: 1"
-      expect(output).toContain("Runs stopped: 1");
+      expect(output).toContain("Processes signalled: 1");
 
       killSpy.mockRestore();
       consoleSpy.mockRestore();
+    });
+
+    it("returns exit code 1 and reports incomplete all-run stops", async () => {
+      const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+      createTestRun(store, projectId, {
+        seedId: "bd-live",
+        status: "running",
+        sessionKey: "foreman:sdk:sonnet:r1:pid-12345:session-live",
+      });
+      createTestRun(store, projectId, {
+        seedId: "bd-missing-pid",
+        status: "running",
+        sessionKey: null,
+      });
+
+      const { stopAction } = await import("../commands/stop.js");
+      const exitCode = await stopAction(undefined, {}, store, tmpDir);
+
+      expect(exitCode).toBe(1);
+
+      const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain("Processes signalled: 1");
+      expect(output).toContain("Runs marked stuck: 2");
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Left 1 run(s) incompletely stopped"),
+      );
+
+      killSpy.mockRestore();
+      consoleLogSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
     });
   });
 });

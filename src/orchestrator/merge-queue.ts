@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { orderByCluster } from "./conflict-cluster.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
+import { getForemanBranchName } from "../lib/branch-names.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -391,7 +392,7 @@ export class MergeQueue {
         continue;
       }
 
-      const branchName = `foreman/${run.seed_id}`;
+      const branchName = getForemanBranchName(run.seed_id);
 
       // Validate branch exists via VcsBackend
       const exists = await vcs.branchExists(repoPath, branchName);
@@ -451,7 +452,7 @@ export class MergeQueue {
       }
       seenSeedIds.add(run.seed_id);
 
-      const branchName = `foreman/${run.seed_id}`;
+      const branchName = getForemanBranchName(run.seed_id);
 
       // Check if the remote branch exists (indicates push succeeded before crash)
       const remoteExists = await vcs.branchExistsOnRemote(repoPath, branchName);

@@ -35,3 +35,10 @@ export function normalizePriority(p: string | number): number {
 export function formatPriorityForBr(p: string | number): string {
   return String(normalizePriority(p));
 }
+
+/**
+ * Format a priority value as the canonical operator-facing label (returns "P0"-"P4").
+ */
+export function formatPriorityLabel(p: string | number): string {
+  return `P${normalizePriority(p)}`;
+}

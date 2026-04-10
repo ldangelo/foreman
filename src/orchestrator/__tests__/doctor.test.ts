@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Doctor } from "../doctor.js";
-import type { Run } from "../../lib/store.js";
+import type { Run, RunProgress } from "../../lib/store.js";
 import { getWorkspacePath } from "../../lib/workspace-paths.js";
 
 const {
@@ -48,12 +48,29 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   };
 }
 
+function makeProgress(overrides: Partial<RunProgress> = {}): RunProgress {
+  return {
+    toolCalls: 1,
+    toolBreakdown: {},
+    filesChanged: [],
+    turns: 1,
+    costUsd: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    lastToolCall: null,
+    lastActivity: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+
 function makeMocks(projectPath = "/tmp/project") {
   const store = {
     getProjectByPath: vi.fn(() => null as any),
     getRunsByStatus: vi.fn(() => [] as Run[]),
     getRunsForSeed: vi.fn(() => [] as Run[]),
     getActiveRuns: vi.fn(() => [] as Run[]),
+    getRunProgress: vi.fn(() => null as RunProgress | null),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
   };
@@ -238,6 +255,64 @@ describe("Doctor", () => {
       // Crucially: updateRun should NOT have been called
       expect(store.updateRun).not.toHaveBeenCalled();
     });
+
+    it("detects stale SDK-based runs from old last activity", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      const staleRun = makeRun({
+        seed_id: "bd-sdk-stale",
+        session_key: "foreman:sdk:claude-sonnet-4-6:run-stale",
+      });
+      const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      store.getRunsByStatus.mockReturnValue([staleRun]);
+      store.getRunProgress.mockReturnValue(makeProgress({ lastActivity: twoDaysAgo }));
+
+      const results = await doctor.checkZombieRuns();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("warn");
+      expect(results[0].message).toContain("Stale SDK run");
+      expect(results[0].message).toContain("Use --fix to mark stuck");
+    });
+
+    it("shows stale SDK fix plan in dry-run mode", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      const staleRun = makeRun({
+        seed_id: "bd-sdk-stale",
+        session_key: "foreman:sdk:claude-sonnet-4-6:run-stale",
+      });
+      const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      store.getRunsByStatus.mockReturnValue([staleRun]);
+      store.getRunProgress.mockReturnValue(makeProgress({ lastActivity: twoDaysAgo }));
+
+      const results = await doctor.checkZombieRuns({ dryRun: true });
+
+      expect(results[0].status).toBe("warn");
+      expect(results[0].message).toContain("Would mark stuck");
+      expect(store.updateRun).not.toHaveBeenCalled();
+    });
+
+    it("fixes stale SDK-based runs to stuck", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      const staleRun = makeRun({
+        id: "run-sdk-stale",
+        seed_id: "bd-sdk-stale",
+        session_key: "foreman:sdk:claude-sonnet-4-6:run-stale",
+      });
+      const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      store.getRunsByStatus.mockReturnValue([staleRun]);
+      store.getRunProgress.mockReturnValue(makeProgress({ lastActivity: twoDaysAgo }));
+
+      const results = await doctor.checkZombieRuns({ fix: true });
+
+      expect(results[0].status).toBe("fixed");
+      expect(results[0].fixApplied).toBe("Marked as stuck");
+      expect(store.updateRun).toHaveBeenCalledWith(staleRun.id, expect.objectContaining({ status: "stuck" }));
+      expect(store.logEvent).toHaveBeenCalledWith(staleRun.project_id, "stuck", { reason: "foreman doctor --fix stale sdk run" }, staleRun.id);
+    });
+
 
     it("does NOT fix SDK-based runs even when fix=true", async () => {
       const { store, doctor } = makeMocks();
@@ -1551,7 +1626,7 @@ describe("Doctor.checkPrompts", () => {
 // ── checkOrphanedGlobalStoreRuns ──────────────────────────────────────────
 describe("checkOrphanedGlobalStoreRuns", () => {
   // Helper: creates a ForemanStore-backed database at a given path and
-  // registers a project + completed run in it, mimicking the legacy global store.
+  // registers a project + completed run in it, mimicking the legacy migration store.
   async function setupGlobalStore(
     globalDbPath: string,
     projectPath: string
@@ -1566,7 +1641,7 @@ describe("checkOrphanedGlobalStoreRuns", () => {
     return { projectId: project.id, runId: runs[0].id };
   }
 
-  it("returns pass when no legacy global store exists", async () => {
+  it("returns pass when no legacy migration store exists", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-global-pass-"));
     try {
       // Doctor's store is the project-local store — we pass a mock.
@@ -1577,23 +1652,23 @@ describe("checkOrphanedGlobalStoreRuns", () => {
         listProjects: vi.fn(() => []),
       };
       const doctor = new Doctor(mockStore as any, tmpDir);
-      // Override homedir so the global store path points to a non-existent location.
+      // Point the legacy migration-store lookup at a non-existent location.
       const result = await doctor.checkOrphanedGlobalStoreRuns();
-      // Either "pass" (no global store found) or "pass" (no orphans)
+      // Expect a non-failing result when no legacy migration data exists.
       expect(["pass", "warn", "fixed"].includes(result.status)).toBe(true);
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it("returns pass when global store has no projects with local stores", async () => {
+  it("returns pass when legacy migration store has no projects with local stores", async () => {
     const { ForemanStore } = await import("../../lib/store.js");
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-global-noproj-"));
     const globalDir = join(tmpDir, "global-foreman");
     await mkdir(globalDir, { recursive: true });
     const globalDbPath = join(globalDir, "foreman.db");
 
-    // Create a global store with a project but NO corresponding local store on disk.
+    // Create legacy migration-store data with a project but NO corresponding local store on disk.
     const globalStore = new ForemanStore(globalDbPath);
     const project = globalStore.registerProject("ghost-project", join(tmpDir, "ghost"));
     globalStore.createRun(project.id, "seed-xyz", "developer");
@@ -1617,7 +1692,7 @@ describe("checkOrphanedGlobalStoreRuns", () => {
     const verifyStore = new FS2(globalDbPath);
     const projects = verifyStore.listProjects();
     verifyStore.close();
-    // The project exists in global store, but its local .foreman/foreman.db does not exist.
+    // The project exists in the legacy migration store, but its local .foreman/foreman.db does not exist.
     expect(projects.length).toBe(1);
     // The local store path should NOT exist on disk.
     const localDbPath = join(project.path, ".foreman", "foreman.db");
@@ -1642,7 +1717,7 @@ describe("checkOrphanedGlobalStoreRuns", () => {
       localStore.registerProject("my-project", projectDir);
       localStore.close();
 
-      // Create a global store with a completed run for the same project.
+      // Create legacy migration-store data with a completed run for the same project.
       const globalDir = join(tmpDir, ".foreman");
       await mkdir(globalDir, { recursive: true });
       const globalDbPath = join(globalDir, "foreman.db");
@@ -1652,10 +1727,10 @@ describe("checkOrphanedGlobalStoreRuns", () => {
       globalStore.updateRun(run.id, { status: "completed", completed_at: new Date().toISOString() });
       globalStore.close();
 
-      // Build a Doctor that points at our custom global store path.
+      // Build a Doctor that points at our custom legacy migration-store path.
       // We test checkOrphanedGlobalStoreRuns() by calling it with a patched
       // globalDbPath. Since we can't inject the path directly, we use a workaround:
-      // create a Doctor with the local project store and verify the global store
+      // create a Doctor with the local project store and verify the migration-store data
       // independently, then validate the migration logic via ForemanStore directly.
 
       // Verify: before migration, local store has 0 runs.
@@ -1664,7 +1739,7 @@ describe("checkOrphanedGlobalStoreRuns", () => {
       localStoreBefore.close();
       expect(runsBefore.length).toBe(0);
 
-      // Verify: global store has 1 completed run.
+      // Verify: legacy migration store has 1 completed run.
       const globalStoreCheck = new ForemanStore(globalDbPath);
       const globalRuns = globalStoreCheck.getRunsByStatus("completed", globalProject.id);
       globalStoreCheck.close();
@@ -1690,7 +1765,7 @@ describe("checkOrphanedGlobalStoreRuns", () => {
       localStore.updateRun(preExistingRun.id, { status: "completed", completed_at: new Date().toISOString() });
       localStore.close();
 
-      // Global store has the same run ID (already migrated scenario).
+      // Legacy migration store has the same run ID (already migrated scenario).
       const globalDir = join(tmpDir, ".foreman");
       await mkdir(globalDir, { recursive: true });
       const globalDbPath = join(globalDir, "foreman.db");

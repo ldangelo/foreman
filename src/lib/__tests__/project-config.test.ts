@@ -115,6 +115,27 @@ describe("loadProjectConfig", () => {
     expect(cfg!.vcs?.git?.useTown).toBe(true);
   });
 
+  it("loads branchPolicy settings from config.yaml", () => {
+    writeForemanConfig(
+      tmpDir,
+      [
+        "branchPolicy:",
+        "  defaultBranch: main",
+        "  integrationBranch: develop",
+        "  requireValidation: true",
+        "  autoPromote: false",
+      ].join("\n"),
+    );
+    const cfg = loadProjectConfig(tmpDir);
+    expect(cfg!.branchPolicy).toEqual({
+      defaultBranch: "main",
+      integrationBranch: "develop",
+      requireValidation: true,
+      autoPromote: false,
+    });
+  });
+
+
   // JSON fallback
   it("falls back to .foreman/config.json when config.yaml is absent", () => {
     writeForemanConfig(
@@ -177,6 +198,13 @@ describe("loadProjectConfig", () => {
     expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
     expect(() => loadProjectConfig(tmpDir)).toThrow(/failed to parse JSON/);
   });
+
+  it("throws ProjectConfigError for invalid branchPolicy.defaultBranch type", () => {
+    writeForemanConfig(tmpDir, "branchPolicy:\n  defaultBranch: 123");
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/branchPolicy\.defaultBranch/);
+  });
+
 });
 
 // ── resolveVcsConfig ──────────────────────────────────────────────────────────

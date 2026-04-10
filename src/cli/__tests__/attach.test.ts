@@ -92,7 +92,7 @@ describe("foreman attach", () => {
     });
 
     it("prints info before launching claude --resume", async () => {
-      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       createTestRun(store, projectId, {
         seedId: "abc-info",
@@ -111,15 +111,15 @@ describe("foreman attach", () => {
       const { attachAction } = await import("../commands/attach.js");
       await attachAction("abc-info", {}, store, tmpDir);
 
-      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      const output = consoleErrSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain("abc-info");
       expect(output).toContain("info-id");
 
-      consoleSpy.mockRestore();
+      consoleErrSpy.mockRestore();
     });
 
-    it("falls back to log file tail when no SDK session", async () => {
-      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    it("returns degraded exit code when falling back to log tailing", async () => {
+      const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const run = createTestRun(store, projectId, {
         seedId: "abc-nossdk",
         status: "running",
@@ -143,9 +143,13 @@ describe("foreman attach", () => {
         ["-f", logPath],
         expect.objectContaining({ stdio: "inherit" }),
       );
-      expect(exitCode).toBe(0);
+      expect(exitCode).toBe(2);
 
-      consoleSpy.mockRestore();
+      const output = consoleErrSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain("falling back to log tailing");
+      expect(output).toContain("does not resume the original Claude session");
+
+      consoleErrSpy.mockRestore();
     });
 
     it("returns error exit code when claude fails to launch", async () => {
@@ -208,8 +212,8 @@ describe("foreman attach", () => {
       consoleSpy.mockRestore();
     });
 
-    it("exits cleanly when AbortSignal fires", async () => {
-      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    it("returns interrupted exit code when AbortSignal fires", async () => {
+      const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       createTestRun(store, projectId, {
         seedId: "follow-sigint",
@@ -242,10 +246,13 @@ describe("foreman attach", () => {
       abortController.abort();
 
       const exitCode = await resultPromise;
-      expect(exitCode).toBe(0);
+      expect(exitCode).toBe(130);
       expect(mockChild.kill).toHaveBeenCalledWith("SIGTERM");
 
-      consoleSpy.mockRestore();
+      const output = consoleErrSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain("interrupted before the run reached a terminal state");
+
+      consoleErrSpy.mockRestore();
     });
   });
 
@@ -315,8 +322,8 @@ describe("foreman attach", () => {
       consoleSpy.mockRestore();
     });
 
-    it("prints message and returns 0 when no pid found", async () => {
-      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    it("fails when no pid is recorded for the run", async () => {
+      const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       createTestRun(store, projectId, {
         seedId: "kill-none",
@@ -327,11 +334,11 @@ describe("foreman attach", () => {
       const { attachAction } = await import("../commands/attach.js");
       const exitCode = await attachAction("kill-none", { kill: true }, store, tmpDir);
 
-      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
-      expect(output).toContain("No pid found");
-      expect(exitCode).toBe(0);
+      const output = consoleErrSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain("no pid is recorded");
+      expect(exitCode).toBe(1);
 
-      consoleSpy.mockRestore();
+      consoleErrSpy.mockRestore();
     });
   });
 
@@ -476,11 +483,26 @@ describe("foreman attach", () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
       const { listSessionsEnhanced } = await import("../commands/attach.js");
-      listSessionsEnhanced(store, tmpDir);
+      const exitCode = listSessionsEnhanced(store, tmpDir);
 
+      expect(exitCode).toBe(0);
       expect(consoleSpy).toHaveBeenCalledWith("No sessions found.");
 
       consoleSpy.mockRestore();
+    });
+
+    it("returns 1 when the directory is not a registered project", async () => {
+      const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const { listSessionsEnhanced } = await import("../commands/attach.js");
+      const exitCode = listSessionsEnhanced(store, join(tmpDir, "unregistered"));
+
+      expect(exitCode).toBe(1);
+      expect(consoleErrSpy).toHaveBeenCalledWith(
+        "No project registered for this directory. Run 'foreman init' first.",
+      );
+
+      consoleErrSpy.mockRestore();
     });
   });
 
@@ -556,7 +578,7 @@ describe("foreman attach", () => {
 
   describe("--stream mode", () => {
     it("returns 0 immediately when run is already in terminal state", async () => {
-      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       createTestRun(store, projectId, {
         seedId: "stream-done",
@@ -567,10 +589,11 @@ describe("foreman attach", () => {
       const exitCode = await attachAction("stream-done", { stream: true, _pollIntervalMs: 50 }, store, tmpDir);
 
       expect(exitCode).toBe(0);
-      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      const output = consoleErrSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain("stream-done");
+      expect(output).toContain("already completed");
 
-      consoleSpy.mockRestore();
+      consoleErrSpy.mockRestore();
     });
 
     it("prints existing messages before polling", async () => {
@@ -594,8 +617,8 @@ describe("foreman attach", () => {
       consoleSpy.mockRestore();
     });
 
-    it("stops when AbortSignal fires", async () => {
-      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    it("returns interrupted exit code when AbortSignal fires", async () => {
+      const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       createTestRun(store, projectId, {
         seedId: "stream-abort",
@@ -612,21 +635,21 @@ describe("foreman attach", () => {
         tmpDir,
       );
 
-      // Abort after a tick
       await new Promise((r) => setTimeout(r, 80));
       abortController.abort();
 
       const exitCode = await resultPromise;
-      expect(exitCode).toBe(0);
+      expect(exitCode).toBe(130);
 
-      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      const output = consoleErrSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain("stream-abort");
+      expect(output).toContain("interrupted before the run reached a terminal state");
 
-      consoleSpy.mockRestore();
+      consoleErrSpy.mockRestore();
     });
 
     it("stops when run transitions to terminal state", async () => {
-      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const run = createTestRun(store, projectId, {
         seedId: "stream-terminal",
@@ -650,10 +673,10 @@ describe("foreman attach", () => {
       clearTimeout(transitionTimeout);
 
       expect(exitCode).toBe(0);
-      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      const output = consoleErrSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain("completed");
 
-      consoleSpy.mockRestore();
+      consoleErrSpy.mockRestore();
     });
 
     it("prints new messages as they arrive", async () => {

@@ -44,20 +44,29 @@ export function applySdOnlyDeprecation(opts: { sdOnly?: boolean; brOnly?: boolea
   return true;
 }
 
+function emitSlingError(jsonOutput: boolean, message: string): void {
+  if (jsonOutput) {
+    console.error(JSON.stringify({ error: message }));
+  } else {
+    console.error(chalk.red(message));
+  }
+}
+
+
 type SlingTargetingOptions = {
   project?: string;
   projectPath?: string;
 };
 
-function resolveSlingProjectPath(opts: SlingTargetingOptions): string | null {
+function resolveSlingProjectPath(opts: SlingTargetingOptions, jsonOutput = false): string | null {
   if (opts.project && opts.projectPath) {
-    console.error(chalk.red("SLING-006: --project and --project-path cannot be used together."));
+    emitSlingError(jsonOutput, "SLING-006: --project and --project-path cannot be used together.");
     return null;
   }
 
   if (opts.projectPath) {
     if (!isAbsolute(opts.projectPath)) {
-      console.error(chalk.red("SLING-007: --project-path must be an absolute path."));
+      emitSlingError(jsonOutput, "SLING-007: --project-path must be an absolute path.");
       return null;
     }
 
@@ -254,10 +263,11 @@ const trdSubcommand = new Command("trd")
   .option("--no-risks", "Skip risk register parsing")
   .option("--no-quality", "Skip quality requirements parsing")
   .action(async (trdFile: string, opts: Record<string, boolean | string | undefined>) => {
+    const jsonOutput = opts.json === true;
     const projectPath = resolveSlingProjectPath({
       project: typeof opts.project === "string" ? opts.project : undefined,
       projectPath: typeof opts.projectPath === "string" ? opts.projectPath : undefined,
-    });
+    }, jsonOutput);
     if (!projectPath) {
       process.exitCode = 1;
       return;
@@ -266,21 +276,21 @@ const trdSubcommand = new Command("trd")
     // Read TRD file
     const resolved = isAbsolute(trdFile) ? resolve(trdFile) : resolve(projectPath, trdFile);
     if (!existsSync(resolved)) {
-      console.error(chalk.red(`SLING-001: TRD file not found: ${resolved}`));
+      emitSlingError(jsonOutput, `SLING-001: TRD file not found: ${resolved}`);
       process.exitCode = 1;
       return;
     }
 
     const content = readFileSync(resolved, "utf-8");
     const lines = content.split("\n").length;
-    console.log(chalk.dim(`Reading TRD: ${resolved} (${lines} lines)\n`));
+    if (!jsonOutput) console.log(chalk.dim(`Reading TRD: ${resolved} (${lines} lines)\n`));
 
     // Parse
     let plan: SlingPlan;
     try {
       plan = parseTrd(content);
     } catch (err: unknown) {
-      console.error(chalk.red((err as Error).message));
+      emitSlingError(jsonOutput, (err as Error).message);
       process.exitCode = 1;
       return;
     }

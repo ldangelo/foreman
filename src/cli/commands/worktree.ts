@@ -126,6 +126,16 @@ export async function cleanWorktrees(
   return { removed, errors, ...(opts.dryRun ? { wouldRemove } : {}) };
 }
 
+function emitWorktreeListError(jsonOutput: boolean, message: string): never {
+  if (jsonOutput) {
+    console.error(JSON.stringify({ error: message }));
+  } else {
+    console.error(chalk.red(`Error: ${message}`));
+  }
+  process.exit(1);
+}
+
+
 // ── CLI command ───────────────────────────────────────────────────────────────
 
 const listSubcommand = new Command("list")
@@ -169,8 +179,7 @@ const listSubcommand = new Command("list")
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(`Error: ${message}`));
-      process.exit(1);
+      emitWorktreeListError(Boolean(opts.json), message);
     }
   });
 

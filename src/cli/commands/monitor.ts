@@ -14,9 +14,13 @@ export const monitorCommand = new Command("monitor")
   .action(async (opts) => {
     const timeoutMinutes = parseInt(opts.timeout, 10);
 
-    // Warn when --json and --recover are combined — recovery is silently skipped in JSON mode
+    const jsonWarnings: string[] = [];
+
+    // Warn when --json and --recover are combined — recovery is skipped in JSON mode.
     if (opts.json && opts.recover) {
-      console.warn("Warning: --recover is ignored when --json is used; recovery actions will not be performed.");
+      const warning = "--recover is ignored when --json is used; recovery actions will not be performed.";
+      jsonWarnings.push(warning);
+      console.warn(`Warning: ${warning}`);
     }
 
     // Deprecation warning (skip when --json is used for clean automation output)
@@ -45,9 +49,9 @@ export const monitorCommand = new Command("monitor")
         stuckTimeoutMinutes: timeoutMinutes,
       });
 
-      // JSON output path — serialize MonitorReport directly
+      // JSON output path — include machine-readable warnings for ignored flags.
       if (opts.json) {
-        console.log(JSON.stringify(report, null, 2));
+        console.log(JSON.stringify({ ...report, warnings: jsonWarnings }, null, 2));
         store.close();
         return;
       }

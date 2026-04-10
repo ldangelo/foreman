@@ -164,6 +164,7 @@ async function executeForSeeds(
         priority: "P0",
         description,
         labels,
+        backlog: true,
       });
       epicId = epicSeed.id;
       result.created++;
@@ -201,6 +202,7 @@ async function executeForSeeds(
         priority: toTrackerPriority(sprint.priority),
         description: sprintDescription,
         labels: sprintLabels,
+        backlog: true,
       });
       result.created++;
       created++;
@@ -219,6 +221,7 @@ async function executeForSeeds(
           priority: toTrackerPriority(sprint.priority),
           description: storyDescription || undefined,
           labels: storyLabels,
+          backlog: true,
         });
         result.created++;
         created++;
@@ -249,6 +252,7 @@ async function executeForSeeds(
               priority: toTrackerPriority(sprint.priority),
               description: taskDescription,
               labels: taskLabels,
+              backlog: true,
             });
             trdIdToSdId.set(task.trdId, taskSeed.id);
             trdIdToSdSprintId.set(task.trdId, sprintSeed.id);
@@ -324,6 +328,7 @@ async function executeForBeadsRust(
         priority: "P0",
         description,
         labels,
+        backlog: true,
       });
       epicId = epicIssue.id;
       result.created++;
@@ -358,6 +363,7 @@ async function executeForBeadsRust(
         parent: epicId,
         description: sprintDescription,
         labels: sprintLabels,
+        backlog: true,
       });
       result.created++;
       created++;
@@ -371,6 +377,7 @@ async function executeForBeadsRust(
           priority: toTrackerPriority(sprint.priority),
           parent: sprintIssue.id,
           labels: storyLabels,
+          backlog: true,
         };
         if (story.acceptanceCriteria) {
           storyOpts!.description = `## Acceptance Criteria\n${story.acceptanceCriteria}`;
@@ -407,6 +414,7 @@ async function executeForBeadsRust(
               description: taskDescription,
               labels: taskLabels,
               estimate: task.estimateHours > 0 ? task.estimateHours * 60 : undefined,
+              backlog: true,
             });
             trdIdToBrId.set(task.trdId, taskIssue.id);
             trdIdToSprintId.set(task.trdId, sprintIssue.id);

@@ -154,6 +154,118 @@ describe("foreman status --project flag", () => {
     expect(output).toContain("project-2");
   });
 
+  it("status --all --json outputs machine-readable aggregated status", async () => {
+    const tmpBase = makeTempDir();
+    const projectDir1 = mkProject(tmpBase, "project-1");
+    const projectDir2 = mkProject(tmpBase, "project-2");
+
+    for (const dir of [projectDir1, projectDir2]) {
+      execFileSync("git", ["init", "--initial-branch", "main"], { cwd: dir, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: dir, stdio: "ignore" });
+    }
+
+    const registryDir = join(tmpBase, ".foreman");
+    setupRegistryWithProject(registryDir, projectDir1, "project-1");
+    const registryPath = join(registryDir, "projects.json");
+    const registry = JSON.parse(readFileSync(registryPath, "utf-8")) as {
+      version: number;
+      projects: Array<{ name: string; path: string; addedAt: string }>;
+    };
+    registry.projects.push({
+      name: "project-2",
+      path: projectDir2,
+      addedAt: new Date().toISOString(),
+    });
+    writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n", "utf-8");
+
+    const result = await run(["status", "--all", "--json"], tmpBase, {
+      ...process.env,
+      HOME: tmpBase,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const data = JSON.parse(result.stdout);
+    expect(Array.isArray(data.projects)).toBe(true);
+    expect(data.projects).toHaveLength(2);
+    expect(data.projects.map((p: { name: string }) => p.name)).toEqual(["project-1", "project-2"]);
+    expect(data.skippedProjects).toEqual([]);
+    expect(data.summary).toBeTruthy();
+    expect(data.summary.projects).toEqual({ totalRegistered: 2, reported: 2, skipped: 0 });
+    expect(typeof data.summary.tasks.total).toBe("number");
+    expect(typeof data.summary.activeAgents).toBe("number");
+  });
+
+  it("status --all --json reports skipped inaccessible projects explicitly", async () => {
+    const tmpBase = makeTempDir();
+    const projectDir = mkProject(tmpBase, "project-1");
+    const inaccessiblePath = join(tmpBase, "not-a-project");
+
+    execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
+    writeFileSync(inaccessiblePath, "not a directory", "utf-8");
+
+    const registryDir = join(tmpBase, ".foreman");
+    setupRegistryWithProject(registryDir, projectDir, "project-1");
+    const registryPath = join(registryDir, "projects.json");
+    const registry = JSON.parse(readFileSync(registryPath, "utf-8")) as {
+      version: number;
+      projects: Array<{ name: string; path: string; addedAt: string }>;
+    };
+    registry.projects.push({
+      name: "broken-project",
+      path: inaccessiblePath,
+      addedAt: new Date().toISOString(),
+    });
+    writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n", "utf-8");
+
+    const result = await run(["status", "--all", "--json"], tmpBase, {
+      ...process.env,
+      HOME: tmpBase,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const data = JSON.parse(result.stdout);
+    expect(data.projects.map((p: { name: string }) => p.name)).toEqual(["project-1"]);
+    expect(data.skippedProjects).toHaveLength(1);
+    expect(data.skippedProjects[0]).toMatchObject({
+      name: "broken-project",
+      path: inaccessiblePath,
+    });
+    expect(typeof data.skippedProjects[0].reason).toBe("string");
+    expect(data.skippedProjects[0].reason.length).toBeGreaterThan(0);
+    expect(data.summary.projects).toEqual({ totalRegistered: 2, reported: 1, skipped: 1 });
+    expect(data.summary.tasks.total).toBe(data.projects[0].tasks.total);
+  });
+
+  it("status --json reports ignored --watch intent in stderr and JSON warnings", async () => {
+    const tmpBase = makeTempDir();
+    const projectDir = mkProject(tmpBase, "watched-project");
+
+    execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
+
+    const result = await run(["status", "--json", "--watch"], projectDir, {
+      ...process.env,
+      HOME: tmpBase,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain("--watch is ignored when --json is used");
+
+    const data = JSON.parse(result.stdout);
+    expect(data.warnings).toEqual([
+      "--watch is ignored when --json is used; status returns a single snapshot.",
+    ]);
+  });
+
+
+
   it("status --all with no registered projects shows warning", async () => {
     const tmpBase = makeTempDir();
     const registryDir = join(tmpBase, ".foreman");
@@ -168,6 +280,29 @@ describe("foreman status --project flag", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout + result.stderr).toMatch(/No registered projects/i);
   });
+
+  it("status --all --json reports ignored --live intent in no-project JSON output", async () => {
+    const tmpBase = makeTempDir();
+    const registryDir = join(tmpBase, ".foreman");
+    mkdirSync(registryDir, { recursive: true });
+    writeFileSync(join(registryDir, "projects.json"), JSON.stringify({ version: 1, projects: [] }, null, 2) + "\n");
+
+    const result = await run(["status", "--all", "--json", "--live"], tmpBase, {
+      ...process.env,
+      HOME: tmpBase,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain("--live is ignored when --json is used");
+
+    const data = JSON.parse(result.stdout);
+    expect(data.summary).toBeNull();
+    expect(data.warning).toContain("No registered projects found");
+    expect(data.warnings).toEqual([
+      "--live is ignored when --json is used; status returns a single snapshot.",
+    ]);
+  });
+
 
 
   it("status --project-path <absolute-path> resolves project path correctly", async () => {

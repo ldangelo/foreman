@@ -16,6 +16,7 @@ import { request as httpRequest } from "node:http";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
+import { getForemanBranchName } from "../lib/branch-names.js";
 import type { EpicTask, GroupedTask } from "./pipeline-executor.js";
 import { createConfiguredPhaseRunner, createDefaultPhaseRunner, type PhaseRunner, type PhaseRunnerConfig } from "./phase-runner.js";
 import { ForemanStore } from "../lib/store.js";
@@ -28,7 +29,8 @@ import {
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import { enqueueResetSeedToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead, enqueueCloseSeed } from "./task-backend-ops.js";
-import type { AgentRole, WorkerNotification } from "./types.js";
+import type { AgentRole, WorkerConfig } from "./execution-engine.js";
+import type { WorkerNotification } from "./types.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
@@ -36,6 +38,7 @@ import { autoMerge } from "./auto-merge.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
+import { resolveProjectBranchPolicy } from "../lib/branch-policy.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -180,75 +183,6 @@ function releaseFiles(
 // Updated by main() and runPipeline() as phases progress so the fatal error
 // handler can report the correct phase in its Agent Mail message.
 let currentPhase = "startup";
-
-// ── Config ───────────────────────────────────────────────────────────────────
-
-interface WorkerConfig {
-  runId: string;
-  projectId: string;
-  seedId: string;
-  seedTitle: string;
-  seedDescription?: string;
-  seedComments?: string;
-  model: string;
-  worktreePath: string;
-  /** Project root directory (contains .beads/). Used as cwd for br commands. */
-  projectPath?: string;
-  prompt: string;
-  env: Record<string, string>;
-  resume?: string;  // SDK session ID to resume
-  pipeline?: boolean;  // Run as lead pipeline (explorer → developer → qa → reviewer)
-  skipExplore?: boolean;
-  skipReview?: boolean;
-  /**
-   * Bead type field (e.g. "feature", "bug", "task", "smoke").
-   * Used to resolve the workflow name when no `workflow:<name>` label is set.
-   */
-  seedType?: string;
-  /**
-   * Labels from the bead. Used to resolve `workflow:<name>` overrides.
-   * e.g. ["phase:explorer", "workflow:smoke"]
-   */
-  seedLabels?: string[];
-  /**
-   * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
-   * Forwarded to the pipeline executor to resolve per-priority models from YAML.
-   */
-  seedPriority?: string;
-  /**
-   * Override target branch for auto-merge after finalize.
-   * When set, merges into this branch instead of detectDefaultBranch().
-   */
-  targetBranch?: string;
-  /**
-   * Optional native task ID used for task-store phase visibility.
-   * Null/undefined in beads fallback mode.
-   */
-  taskId?: string | null;
-  /**
-   * Ordered list of child tasks for epic execution mode (TRD-2026-007).
-   * When set, the worker runs the epic pipeline path.
-   */
-  epicTasks?: EpicTask[];
-  /**
-   * Generic grouped-parent child task list.
-   * Story/grouped-parent dispatch reuses the same pipeline path as epic mode.
-   */
-  groupedTasks?: GroupedTask[];
-  /**
-   * Parent epic bead ID (TRD-2026-007).
-   * When set, this run is an epic execution.
-   */
-  epicId?: string;
-  groupedParentId?: string;
-  groupedParentType?: string;
-  /**
-   * Optional explicit phase-runner override for tests/harnesses.
-   * When present, only per-phase execution is swapped; the rest of the worker
-   * still runs through the real detached pipeline path.
-   */
-  phaseRunner?: PhaseRunnerConfig;
-}
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -752,13 +686,14 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     log(`[PIPELINE] VCS backend init failed — using prompt defaults`);
   }
 
-  // Ensure targetBranch is set so finalize rebases onto the correct branch.
-  // If not provided by the dispatcher, detect the default branch from the active backend.
+  // Ensure targetBranch is set so finalize rebases onto the integration branch.
+  // If not provided by the dispatcher, resolve it from project branch policy.
   if (!config.targetBranch && vcsBackend) {
     try {
-      config.targetBranch = await vcsBackend.detectDefaultBranch(pipelineProjectPath);
+      const branchPolicy = await resolveProjectBranchPolicy(pipelineProjectPath, vcsBackend);
+      config.targetBranch = branchPolicy.integrationBranch;
     } catch {
-      // Non-fatal: falls back to "main" in buildPhasePrompt
+      // Non-fatal: falls back to existing prompt defaults
     }
   }
 
@@ -1001,7 +936,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         if (troubleshooterResolved) {
           try {
             const completionBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
-            const completionTargetBranch = config.targetBranch ?? await completionBackend.detectDefaultBranch(worktreePath);
+            const completionTargetBranch = config.targetBranch
+              ?? (await resolveProjectBranchPolicy(worktreePath, completionBackend)).integrationBranch;
             const changedAgainstTarget = await completionBackend.getChangedFiles(worktreePath, completionTargetBranch, "HEAD");
             if (changedAgainstTarget.length === 0) {
               skipMergeQueue = true;
@@ -1022,8 +958,9 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
             let enqueueFiles: string[] = [];
             try {
               const enqueueBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
-              const enqueueDefaultBranch = await enqueueBackend.detectDefaultBranch(worktreePath);
-              enqueueFiles = await enqueueBackend.getChangedFiles(worktreePath, enqueueDefaultBranch, "HEAD");
+              const enqueueTargetBranch = config.targetBranch
+                ?? (await resolveProjectBranchPolicy(worktreePath, enqueueBackend)).integrationBranch;
+              enqueueFiles = await enqueueBackend.getChangedFiles(worktreePath, enqueueTargetBranch, "HEAD");
             } catch {
               // Non-fatal — proceed with empty file list
             }
@@ -1040,7 +977,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
               // Guard: Only send branch-ready after successful finalize push (double-check).
               // Primary guard is at function entry, this is defense-in-depth.
               sendMail(agentMailClient, "refinery", "branch-ready", {
-                seedId, runId, branch: `foreman/${seedId}`, worktreePath,
+                seedId, runId, branch: getForemanBranchName(seedId), worktreePath,
               });
 
               // Trigger autoMerge immediately so the branch is merged even if
@@ -1074,7 +1011,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         if (!finalizeRetryable && finalizeFailureReason === "tests_failed_pre_existing_issues") {
           try {
             const completionBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
-            const completionTargetBranch = config.targetBranch ?? await completionBackend.detectDefaultBranch(worktreePath);
+            const completionTargetBranch = config.targetBranch
+              ?? (await resolveProjectBranchPolicy(worktreePath, completionBackend)).integrationBranch;
             const changedAgainstTarget = await completionBackend.getChangedFiles(worktreePath, completionTargetBranch, "HEAD");
             if (changedAgainstTarget.length === 0) {
               alreadyLandedOnTarget = true;

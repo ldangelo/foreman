@@ -6,7 +6,8 @@
  * same worktree. Communication is via report files (EXPLORER_REPORT.md, etc).
  */
 
-import type { AgentRole, ModelSelection } from "./types.js";
+import type { ModelSelection } from "./types.js";
+import type { AgentRole } from "./execution-engine.js";
 
 /** Permission mode for DCG (Destructive Command Guard). */
 type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";

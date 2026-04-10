@@ -170,6 +170,7 @@ export const beadCommand = new Command("bead")
             parent: opts.parent,
             description: issue.description,
             labels: issue.labels,
+            backlog: true,
           });
           createdBeads.push({ id: bead.id, title: bead.title });
           titleToId.set(issue.title, bead.id);

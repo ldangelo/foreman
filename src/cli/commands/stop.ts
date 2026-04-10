@@ -13,9 +13,12 @@ export interface StopOpts {
 }
 
 export interface StopResult {
-  stopped: number;
+  signalled: boolean;
+  wouldSignal: boolean;
+  markedStuck: boolean;
+  wouldMarkStuck: boolean;
+  warnings: string[];
   errors: string[];
-  skipped: number;
 }
 
 // ── Core action (exported for testing) ───────────────────────────────
@@ -63,8 +66,7 @@ export async function stopAction(
     }
 
     const result = await stopRun(run, store, { dryRun, force });
-    printStopResult(run, result);
-    return result.errors.length > 0 ? 1 : 0;
+    return shouldFailStop(result, dryRun) ? 1 : 0;
   }
 
   // ── Stop all active runs ───────────────────────────────────────────
@@ -75,37 +77,47 @@ export async function stopAction(
     return 0;
   }
 
-  console.log(chalk.bold(`Stopping ${activeRuns.length} active run(s):\n`));
+  console.log(chalk.bold(`${dryRun ? "Reviewing" : "Stopping"} ${activeRuns.length} active run(s):\n`));
 
-  const stoppedRunIds = new Set<string>();
-  const allErrors: string[] = [];
+  let signalledCount = 0;
+  let wouldSignalCount = 0;
+  let markedStuckCount = 0;
+  let wouldMarkStuckCount = 0;
+  let degradedRuns = 0;
+  let failedRuns = 0;
 
   for (const run of activeRuns) {
     const result = await stopRun(run, store, { dryRun, force });
-    printStopResult(run, result);
-    if (result.stopped > 0) stoppedRunIds.add(run.id);
-    allErrors.push(...result.errors);
+    if (result.signalled) signalledCount += 1;
+    if (result.wouldSignal) wouldSignalCount += 1;
+    if (result.markedStuck) markedStuckCount += 1;
+    if (result.wouldMarkStuck) wouldMarkStuckCount += 1;
+    if (result.warnings.length > 0) degradedRuns += 1;
+    if (result.errors.length > 0) failedRuns += 1;
   }
 
   console.log(chalk.bold("\nSummary:"));
   if (dryRun) {
-    console.log(chalk.yellow(`  Would stop ${activeRuns.length} run(s)`));
+    console.log(`  Would signal processes: ${wouldSignalCount}`);
+    console.log(`  Would mark runs as stuck: ${wouldMarkStuckCount}`);
   } else {
-    console.log(`  Runs stopped: ${stoppedRunIds.size}`);
+    console.log(`  Processes signalled: ${signalledCount}`);
+    console.log(`  Runs marked stuck: ${markedStuckCount}`);
   }
 
-  if (allErrors.length > 0) {
-    console.log(chalk.red(`\n  Errors (${allErrors.length}):`));
-    for (const err of allErrors) {
-      console.log(chalk.red(`    ${err}`));
-    }
+  if (degradedRuns > 0) {
+    console.warn(chalk.yellow(`  ${dryRun ? "Would leave" : "Left"} ${degradedRuns} run(s) incompletely stopped (no live pid was signalled).`));
   }
 
-  if (!dryRun) {
-    console.log(chalk.dim("\nRuns are marked 'stuck'. Resume with: foreman run"));
+  if (failedRuns > 0) {
+    console.error(chalk.red(`  ${failedRuns} run(s) failed to stop cleanly.`));
   }
 
-  return allErrors.length > 0 ? 1 : 0;
+  if (!dryRun && markedStuckCount > 0) {
+    console.log(chalk.dim("\nRuns marked 'stuck' can be resumed with: foreman run"));
+  }
+
+  return dryRun ? 0 : (degradedRuns > 0 || failedRuns > 0 ? 1 : 0);
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────
@@ -122,49 +134,68 @@ async function stopRun(
 ): Promise<StopResult> {
   const { dryRun, force } = opts;
   const errors: string[] = [];
+  const warnings: string[] = [];
   let processKilled = false;
+  let markedStuck = false;
 
   console.log(
     `  ${chalk.cyan(run.seed_id)} ${chalk.dim(`[${run.id}]`)} status=${run.status}`,
   );
 
   const pid = extractPid(run.session_key);
+  const pidAlive = pid !== null ? isAlive(pid) : false;
   const signal = force ? "SIGKILL" : "SIGTERM";
+  const isActiveRun = run.status === "running" || run.status === "pending";
+  const wouldSignal = pid !== null && pidAlive;
 
-  // Kill process by PID if available
-  if (pid && isAlive(pid)) {
-    console.log(`    ${chalk.yellow("send")} ${signal} to pid ${pid}`);
-    if (!dryRun) {
+  if (wouldSignal) {
+    if (dryRun) {
+      console.log(`    ${chalk.yellow("would send")} ${signal} to pid ${pid}`);
+    } else {
       try {
+        console.log(`    ${chalk.yellow("send")} ${signal} to pid ${pid}`);
         process.kill(pid, signal);
         processKilled = true;
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         errors.push(`Failed to send ${signal} to pid ${pid}: ${msg}`);
-        console.log(`    ${chalk.red("error")} sending ${signal} to pid ${pid}: ${msg}`);
+        console.error(`    ${chalk.red("error")} sending ${signal} to pid ${pid}: ${msg}`);
       }
     }
-  } else if (!pid) {
-    // No pid found — warn but still mark stuck so foreman run won't re-queue as running
-    console.log(
-      `    ${chalk.yellow("warn")} no pid found — marking stuck anyway`,
-    );
+  } else if (pid !== null) {
+    const warning = `pid ${pid} is not running; ${dryRun ? "would mark" : "marking"} run as stuck without sending ${signal}`;
+    warnings.push(warning);
+    console.warn(`    ${chalk.yellow("warn")} ${warning}`);
+  } else {
+    const warning = `no pid found; ${dryRun ? "would mark" : "marking"} run as stuck without sending ${signal}`;
+    warnings.push(warning);
+    console.warn(`    ${chalk.yellow("warn")} ${warning}`);
   }
 
-  // 3. Mark run as stuck (so foreman run --resume can pick it up)
-  if (run.status === "running" || run.status === "pending") {
-    console.log(`    ${chalk.yellow("mark")} run as stuck`);
-    if (!dryRun) {
+  const wouldMarkStuck = isActiveRun && (wouldSignal || pid === null || !pidAlive);
+  if (isActiveRun && wouldMarkStuck) {
+    if (dryRun) {
+      console.log(`    ${chalk.yellow("would mark")} run as stuck`);
+    } else if (processKilled || pid === null || !pidAlive) {
+      console.log(`    ${chalk.yellow("mark")} run as stuck`);
       store.updateRun(run.id, {
         status: "stuck",
         completed_at: new Date().toISOString(),
       });
       store.logEvent(run.project_id, "stuck", { reason: "foreman stop" }, run.id);
+      markedStuck = true;
     }
   }
 
   console.log();
-  return { stopped: dryRun ? 0 : (processKilled ? 1 : 0), errors, skipped: 0 };
+  return {
+    signalled: processKilled,
+    wouldSignal,
+    markedStuck,
+    wouldMarkStuck,
+    warnings,
+    errors,
+  };
 }
 
 /**
@@ -212,12 +243,12 @@ export function listActiveRuns(store: ForemanStore, projectPath: string): void {
   console.log();
 }
 
-function printStopResult(run: Run, result: StopResult): void {
-  if (result.errors.length === 0 && result.skipped === 0) {
-    // Success output already printed by stopRun
-  } else if (result.skipped > 0) {
-    console.log(`  ${chalk.dim(run.seed_id)} — no active session to stop`);
+function shouldFailStop(result: StopResult, dryRun: boolean): boolean {
+  if (dryRun) {
+    return false;
   }
+
+  return result.warnings.length > 0 || result.errors.length > 0;
 }
 
 function findRun(store: ForemanStore, id: string, projectId: string): Run | null {
@@ -289,20 +320,15 @@ export const stopCommand = new Command("stop")
     }
 
     const store = ForemanStore.forProject(projectPath);
+    try {
+      if (!isGitRepo && !opts.list) {
+        console.error(chalk.red("Not in a git repository. Run from within a foreman project."));
+        process.exit(1);
+      }
 
-    if (opts.list) {
-      listActiveRuns(store, projectPath);
+      const exitCode = await stopAction(id, opts, store, projectPath);
+      process.exit(exitCode);
+    } finally {
       store.close();
-      return;
     }
-
-    if (!isGitRepo) {
-      console.error(chalk.red("Not in a git repository. Run from within a foreman project."));
-      store.close();
-      process.exit(1);
-    }
-
-    const exitCode = await stopAction(id, opts, store, projectPath);
-    store.close();
-    process.exit(exitCode);
   });

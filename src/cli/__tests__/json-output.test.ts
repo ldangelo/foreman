@@ -16,6 +16,7 @@ const {
   mockCreateVcsBackend,
   mockBrList,
   mockBrReady,
+  mockBrListBacklog,
   mockEnsureBrInstalled,
   MockBeadsRustClient,
   mockGetProjectByPath,
@@ -25,6 +26,8 @@ const {
   mockGetRunProgress,
   mockGetDb,
   MockForemanStore,
+  mockProjectRegistryList,
+  MockProjectRegistry,
   mockCheckAll,
   MockMonitor,
   mockReconcile,
@@ -42,10 +45,12 @@ const {
   // BeadsRustClient mocks
   const mockBrList = vi.fn().mockResolvedValue([]);
   const mockBrReady = vi.fn().mockResolvedValue([]);
+  const mockBrListBacklog = vi.fn().mockResolvedValue([]);
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
   const MockBeadsRustClient = vi.fn(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
     this.list = mockBrList;
     this.ready = mockBrReady;
+    this.listBacklog = mockBrListBacklog;
     this.ensureBrInstalled = mockEnsureBrInstalled;
   });
 
@@ -68,6 +73,11 @@ const {
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
+
+  const mockProjectRegistryList = vi.fn().mockReturnValue([]);
+  const MockProjectRegistry = vi.fn(function MockProjectRegistryImpl(this: Record<string, unknown>) {
+    this.list = mockProjectRegistryList;
+  });
 
   // Monitor mocks
   const mockCheckAll = vi.fn().mockResolvedValue({ active: [], completed: [], stuck: [], failed: [] });
@@ -93,6 +103,7 @@ const {
     mockCreateVcsBackend,
     mockBrList,
     mockBrReady,
+    mockBrListBacklog,
     mockEnsureBrInstalled,
     MockBeadsRustClient,
     mockGetProjectByPath,
@@ -102,6 +113,8 @@ const {
     mockGetRunProgress,
     mockGetDb,
     MockForemanStore,
+    mockProjectRegistryList,
+    MockProjectRegistry,
     mockCheckAll,
     MockMonitor,
     mockReconcile,
@@ -122,6 +135,10 @@ vi.mock("../../lib/beads-rust.js", () => ({
 
 vi.mock("../../lib/store.js", () => ({
   ForemanStore: MockForemanStore,
+}));
+
+vi.mock("../../lib/project-registry.js", () => ({
+  ProjectRegistry: MockProjectRegistry,
 }));
 
 vi.mock("../../orchestrator/monitor.js", () => ({
@@ -153,6 +170,8 @@ vi.mock("../../orchestrator/merge-cost-tracker.js", () => ({
 
 vi.mock("../watch-ui.js", () => ({
   renderAgentCard: vi.fn().mockReturnValue(""),
+  elapsed: vi.fn().mockReturnValue("48h 0m"),
+  formatSuccessRate: vi.fn().mockReturnValue("--"),
 }));
 
 vi.mock("../../lib/feature-flags.js", () => ({
@@ -224,16 +243,19 @@ describe("foreman status --json", () => {
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
       this.list = mockBrList;
       this.ready = mockBrReady;
+      this.listBacklog = mockBrListBacklog;
       this.ensureBrInstalled = mockEnsureBrInstalled;
     });
     mockBrList.mockResolvedValue([]);
     mockBrReady.mockResolvedValue([]);
+    mockBrListBacklog.mockResolvedValue([]);
     mockGetProjectByPath.mockReturnValue(null);
     mockGetActiveRuns.mockReturnValue([]);
     mockGetMetrics.mockReturnValue({ totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] });
     mockGetRunsByStatusSince.mockReturnValue([]);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
+    mockProjectRegistryList.mockReturnValue([]);
   });
 
   it("outputs valid JSON when --json flag is passed", async () => {
@@ -308,6 +330,62 @@ describe("foreman status --json", () => {
     expect(agents.active[0].progress.toolCalls).toBe(5);
   });
 
+  it("moves stale SDK runs out of agents.active in json output", async () => {
+    const staleRun = {
+      id: "run-stale", project_id: "proj-1", seed_id: "bd-stale", agent_type: "claude-sonnet-4-6",
+      session_key: "foreman:sdk:claude-sonnet-4-6:run-stale", worktree_path: null, status: "running", started_at: "2026-03-17T10:00:00Z",
+      completed_at: null, created_at: "2026-03-17T10:00:00Z", progress: null,
+    };
+    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const staleProgress = {
+      toolCalls: 5, toolBreakdown: {}, filesChanged: [], turns: 3,
+      costUsd: 0.05, tokensIn: 1000, tokensOut: 200,
+      lastToolCall: "Read", lastActivity: twoDaysAgo,
+    };
+
+    mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
+    mockGetActiveRuns.mockReturnValue([staleRun]);
+    mockGetRunProgress.mockReturnValue(staleProgress);
+    mockGetRunsByStatusSince.mockReturnValue([]);
+    mockGetMetrics.mockReturnValue({ totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] });
+
+    const { stdout } = await runCommand(statusCommand, ["--json"]);
+    const { agents, warnings } = JSON.parse(stdout);
+
+    expect(agents.active).toHaveLength(0);
+    expect(agents.stale).toHaveLength(1);
+    expect(agents.stale[0].seed_id).toBe("bd-stale");
+    expect(agents.stale[0].staleReason).toContain("bd-stale");
+    expect(warnings).toContain(agents.stale[0].staleReason);
+  });
+
+  it("shows stale active runs separately in human status output", async () => {
+    const staleRun = {
+      id: "run-stale", project_id: "proj-1", seed_id: "bd-stale", agent_type: "claude-sonnet-4-6",
+      session_key: "foreman:sdk:claude-sonnet-4-6:run-stale", worktree_path: null, status: "running", started_at: "2026-03-17T10:00:00Z",
+      completed_at: null, created_at: "2026-03-17T10:00:00Z", progress: null,
+    };
+    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const staleProgress = {
+      toolCalls: 5, toolBreakdown: {}, filesChanged: [], turns: 3,
+      costUsd: 0.05, tokensIn: 1000, tokensOut: 200,
+      lastToolCall: "Read", lastActivity: twoDaysAgo,
+    };
+
+    mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
+    mockGetActiveRuns.mockReturnValue([staleRun]);
+    mockGetRunProgress.mockReturnValue(staleProgress);
+    mockGetRunsByStatusSince.mockReturnValue([]);
+    mockGetMetrics.mockReturnValue({ totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] });
+
+    const { stdout } = await runCommand(statusCommand, []);
+
+    expect(stdout).toContain("Stale Active Runs");
+    expect(stdout).toContain("bd-stale is recorded as running");
+    expect(stdout).toContain("foreman doctor --fix");
+  });
+
+
   it("includes cost data when metrics are available", async () => {
     mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
     mockGetActiveRuns.mockReturnValue([]);
@@ -329,6 +407,121 @@ describe("foreman status --json", () => {
     expect(costs.byPhase).toEqual({ explorer: 0.10, developer: 0.50 });
     expect(costs.byModel).toEqual({ "claude-sonnet-4-6": 0.60 });
   });
+
+  it("includes queue details for backlog and blocked beads", async () => {
+    mockBrList.mockResolvedValue([
+      { id: "bd-2", title: "Blocked bead", type: "task", priority: "P0", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-02T00:00:00Z" },
+      { id: "bd-1", title: "Draft bead", type: "task", priority: "P1", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+    ]);
+    mockBrReady.mockResolvedValue([]);
+    mockBrListBacklog.mockResolvedValue([
+      { id: "bd-1", title: "Draft bead", type: "task", priority: "P1", status: "open", assignee: null, parent: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+    ]);
+
+    const { stdout } = await runCommand(statusCommand, ["--json"]);
+    const { tasks } = JSON.parse(stdout);
+
+    expect(tasks.queue.backlog).toEqual([
+      {
+        id: "bd-1",
+        title: "Draft bead",
+        type: "task",
+        priority: "P1",
+        status: "open",
+        parent: null,
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    ]);
+    expect(tasks.queue.blocked.map((item: { id: string }) => item.id)).toEqual(["bd-2"]);
+    expect(tasks.queue.warnings).toEqual([]);
+  });
+  it("includes attributed queue warning rollups for aggregated status json", async () => {
+    mockProjectRegistryList.mockReturnValue([
+      { name: "alpha", path: "/mock/alpha", addedAt: new Date().toISOString() },
+      { name: "beta", path: "/mock/beta", addedAt: new Date().toISOString() },
+    ]);
+    MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>, ...args: unknown[]) {
+      const projectPath = args[0] as string;
+      this.ensureBrInstalled = mockEnsureBrInstalled;
+      this.list = vi.fn(async () => []);
+      this.ready = vi.fn(async () => []);
+      this.listBacklog = vi.fn(async () => {
+        if (projectPath === "/mock/alpha") throw new Error("alpha backlog unavailable");
+        return [];
+      });
+    });
+
+    const { stdout } = await runCommand(statusCommand, ["--all", "--json"]);
+    const data = JSON.parse(stdout);
+
+    expect(data.projects.map((p: { name: string }) => p.name)).toEqual(["alpha", "beta"]);
+    expect(data.projects[0].tasks.queue.warnings).toEqual([
+      "backlog queue unavailable: alpha backlog unavailable",
+    ]);
+    expect(data.projects[1].tasks.queue.warnings).toEqual([]);
+    expect(data.queueWarnings).toEqual([
+      {
+        name: "alpha",
+        path: "/mock/alpha",
+        warnings: ["backlog queue unavailable: alpha backlog unavailable"],
+      },
+    ]);
+  });
+
+
+
+  it("shows attributed queue warning summaries in human-readable aggregated status", async () => {
+    mockProjectRegistryList.mockReturnValue([
+      { name: "alpha", path: "/mock/alpha", addedAt: new Date().toISOString() },
+      { name: "beta", path: "/mock/beta", addedAt: new Date().toISOString() },
+    ]);
+    MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>, ...args: unknown[]) {
+      const projectPath = args[0] as string;
+      this.ensureBrInstalled = mockEnsureBrInstalled;
+      this.list = vi.fn(async () => []);
+      this.ready = vi.fn(async () => []);
+      this.listBacklog = vi.fn(async () => {
+        if (projectPath === "/mock/alpha") throw new Error("alpha backlog unavailable");
+        return [];
+      });
+    });
+
+    const { stdout } = await runCommand(statusCommand, ["--all"]);
+
+    expect(stdout).toContain("Queue Warnings:");
+    expect(stdout).toContain("alpha:");
+    expect(stdout).toContain("backlog queue unavailable: alpha backlog unavailable");
+    expect(stdout).not.toContain("beta:");
+  });
+
+
+  it("includes queue warnings when backlog inspection fails", async () => {
+    mockBrListBacklog.mockRejectedValue(new Error("backlog unavailable"));
+
+    const { stdout } = await runCommand(statusCommand, ["--json"]);
+    const { tasks } = JSON.parse(stdout);
+
+    expect(tasks.queue.backlog).toEqual([]);
+    expect(tasks.queue.warnings).toContain("backlog queue unavailable: backlog unavailable");
+  });
+
+  it("emits a machine-readable error instead of zeroed task counts when status snapshot fails", async () => {
+    MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl() {
+      throw new Error("br unavailable");
+    });
+
+    let caughtError: Error | null = null;
+    try {
+      await runCommand(statusCommand, ["--json"]);
+    } catch (error) {
+      caughtError = error as Error;
+    }
+
+    expect(caughtError).toBeTruthy();
+    expect(caughtError?.message).toContain("process.exit(1) called");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
 
   it("does not output formatted text when --json flag is passed", async () => {
     const { stdout } = await runCommand(statusCommand, ["--json"]);
@@ -384,13 +577,14 @@ describe("foreman monitor --json", () => {
     expect(() => JSON.parse(stdout)).not.toThrow();
   });
 
-  it("output contains active, completed, stuck, and failed arrays", async () => {
+  it("output contains active, completed, stuck, failed, and warnings arrays", async () => {
     const { stdout } = await runCommand(monitorCommand, ["--json"]);
     const data = JSON.parse(stdout);
     expect(Array.isArray(data.active)).toBe(true);
     expect(Array.isArray(data.completed)).toBe(true);
     expect(Array.isArray(data.stuck)).toBe(true);
     expect(Array.isArray(data.failed)).toBe(true);
+    expect(data.warnings).toEqual([]);
   });
 
   it("reflects run data from monitor.checkAll()", async () => {
@@ -433,12 +627,17 @@ describe("foreman monitor --json", () => {
     expect(() => JSON.parse(stdout)).toThrow();
   });
 
-  it("emits a stderr warning (not silently skip) when --json and --recover are both passed", async () => {
+  it("includes a machine-readable warning when --json and --recover are both passed", async () => {
     mockCheckAll.mockResolvedValue({ active: [], completed: [], stuck: [
       { id: "run-1", seed_id: "bd-stuck", agent_type: "claude-sonnet-4-6", started_at: null, status: "stuck" },
     ], failed: [] });
 
-    const { stderr } = await runCommand(monitorCommand, ["--json", "--recover"]);
+    const { stdout, stderr } = await runCommand(monitorCommand, ["--json", "--recover"]);
+    const data = JSON.parse(stdout);
+
+    expect(data.warnings).toEqual([
+      "--recover is ignored when --json is used; recovery actions will not be performed.",
+    ]);
     expect(stderr).toContain("--recover is ignored when --json is used");
   });
 });

@@ -32,13 +32,23 @@ readiness_score: 4.25
 | Feasibility | 4 | Builds on existing pipeline-executor; main risk is Pi SDK session duration |
 | **Overall** | **4.25** | **PASS** |
 
+## Alignment note
+
+This PRD describes the grouped/epic execution model, but it should not define its own task backend or status vocabulary.
+
+- For future task IDs and workflow-aware statuses, defer to `PRD-2026-006`.
+- References to beads, bead IDs, and `bv --robot-next` in this document describe the current ecosystem and migration constraints, not the long-term canonical backend.
+- Shared-worktree ownership here means one shared worktree per grouped parent/epic execution, consistent with the shared-worktree scoping in `PRD-2026-005`.
+- Public task management remains beads-first in the current checkout; any future task/status terminology inherited from `PRD-2026-006` remains roadmap language until that migration actually ships.
+- If the current checkout does not yet implement epic/grouped execution end-to-end, treat this as roadmap intent rather than shipped behavior.
+
 ---
 
 ## 1. Executive Summary
 
 Foreman currently treats every bead identically: one worktree, one 5-phase pipeline (explorer → developer → QA → reviewer → finalize), one merge. This model adds massive overhead for epics with many interdependent tasks — TRD-2026-006 (40 tasks) ran for 24+ hours at ~50% success rate, burning money on worktree setup, redundant exploration, merge-time test failures, and retry loops.
 
-Epic Execution Mode introduces a second dispatch path: epics run as sequential task sessions in a single shared worktree, with a lightweight developer→QA loop per task. Tasks execute in dependency order, commits happen per-task, and push/merge happens only when the epic completes. The existing 5-phase pipeline remains for one-off tasks.
+Epic Execution Mode introduces a second dispatch path: a grouped parent (currently expressed as an epic in the beads-backed world) runs sequential task sessions in a single shared worktree, with a lightweight developer→QA loop per task. Tasks execute in dependency order, commits happen per-task, and push/merge happens only when the grouped parent completes. The existing 5-phase pipeline remains for one-off tasks.
 
 ## 2. Problem Statement
 
@@ -63,12 +73,13 @@ Epic Execution Mode introduces a second dispatch path: epics run as sequential t
 - Maintain the existing 5-phase pipeline for one-off tasks (backward compatible)
 - Support multiple epics running in parallel on separate worktrees
 - Resume from the last completed task after a crash or rate limit
-- Provide per-task progress visibility and traceability via beads
+- Provide per-task progress visibility and traceability during grouped execution.
 
 ### Non-Goals
 - Replacing the 5-phase pipeline entirely (it's appropriate for one-off, high-risk changes)
 - Cross-epic task parallelism (tasks within an epic are sequential by design)
-- Automatic TRD parsing (use `foreman sling` to create beads first, then dispatch the epic)
+- Automatic TRD parsing (use `foreman sling` to create task hierarchies first, then dispatch the grouped parent)
+- Defining a second status vocabulary separate from `PRD-2026-006`
 - Multi-agent collaboration within an epic (one agent session handles the full epic)
 
 ## 4. User Personas

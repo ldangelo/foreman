@@ -25,6 +25,7 @@ import {
   parseFinalizeValidationStatus,
   qaReportHasTestEvidence,
 } from "./roles.js";
+import { resolveProjectBranchPolicy } from "../lib/branch-policy.js";
 import { rotateReport } from "./agent-worker-finalize.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
@@ -1088,14 +1089,8 @@ async function runPhaseSequence(
       if (phaseName === "qa") {
         qaVerdictForLog = verdict as "pass" | "fail" | "unknown";
         if (verdict === "pass" && config.vcsBackend) {
-          const detectDefaultBranch = (
-            config.vcsBackend as Partial<VcsBackend>
-          ).detectDefaultBranch;
           const qaTargetBranch = config.targetBranch
-            ?? (typeof detectDefaultBranch === "function"
-              ? await detectDefaultBranch.call(config.vcsBackend, worktreePath)
-              : undefined)
-            ?? "main";
+            ?? (await resolveProjectBranchPolicy(worktreePath, config.vcsBackend)).integrationBranch;
           const targetCandidates = [`origin/${qaTargetBranch}`, qaTargetBranch];
           let qaTargetRef = "";
           for (const candidate of targetCandidates) {

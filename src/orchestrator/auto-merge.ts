@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
+import { resolveProjectBranchPolicy } from "../lib/branch-policy.js";
 import type { ForemanStore } from "../lib/store.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
@@ -110,10 +111,10 @@ export interface AutoMergeOpts {
   store: ForemanStore;
   taskClient: ITaskClient;
   projectPath: string;
-  /** Merge target branch. When omitted, auto-detected via detectDefaultBranch(). */
+  /** Override integration branch. When omitted, project branch policy is used. */
   targetBranch?: string;
-}
 
+}
 /** Result summary returned by autoMerge(). */
 export interface AutoMergeResult {
   merged: number;
@@ -145,9 +146,10 @@ export interface AutoMergeResult {
  */
 export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
   const { store, taskClient, projectPath } = opts;
+  const projectCfg = loadProjectConfig(projectPath);
   const vcs = await createAutoMergeVcsBackend(projectPath);
-  const targetBranch = opts.targetBranch ?? await vcs.detectDefaultBranch(projectPath);
-
+  const targetBranch = opts.targetBranch
+    ?? (await resolveProjectBranchPolicy(projectPath, vcs, projectCfg)).integrationBranch;
   const project = store.getProjectByPath(projectPath);
   if (!project) {
     // No project registered — skip silently (init not run yet)

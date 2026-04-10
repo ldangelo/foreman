@@ -64,7 +64,7 @@ const program = new Command();
 
 program
   .name("foreman")
-  .description("Multi-agent coding orchestrator built on beads_rust (br)")
+  .description("Multi-project control-plane orchestrator built on beads_rust (br)")
   .version(readPackageVersion());
 
 program.addCommand(initCommand);

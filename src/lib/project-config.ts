@@ -34,9 +34,40 @@ export interface DashboardConfig {
 }
 
 /**
+ * Project branch policy configuration.
+ * Distinguishes the long-lived default branch from the integration branch that
+ * Foreman validates and merges into during normal operation.
+ */
+export interface BranchPolicyConfig {
+  /**
+   * Human-owned default branch for promotion/release (for example: main).
+   * When omitted, Foreman falls back to the repository's detected default branch.
+   */
+  defaultBranch?: string;
+  /**
+   * Integration branch that agent work should branch from and merge back into
+   * before any later promotion to the default branch.
+   * When omitted, Foreman uses the resolved defaultBranch.
+   */
+  integrationBranch?: string;
+  /**
+   * Whether changes merged into the integration branch require validation before
+   * they may be promoted to the default branch. Default: true when integration
+   * and default branches differ, otherwise false.
+   */
+  requireValidation?: boolean;
+  /**
+   * Whether Foreman should automatically promote validated integration changes
+   * to the default branch. Default: false.
+   */
+  autoPromote?: boolean;
+}
+
+/**
  * Shape of `.foreman/config.yaml` (or `.foreman/config.json`).
- * Only the `vcs` section is currently defined; additional top-level keys may
- * be added in future phases without breaking this interface.
+ * Known top-level sections currently include `vcs`, `dashboard`, and
+ * `branchPolicy`; additional keys may be added in future phases without
+ * breaking this interface.
  */
 export interface ProjectConfig {
   /** VCS backend configuration for this project. */
@@ -61,6 +92,8 @@ export interface ProjectConfig {
   };
   /** Dashboard configuration (REQ-010, REQ-019). */
   dashboard?: DashboardConfig;
+  /** Explicit branch policy for integration-first orchestration. */
+  branchPolicy?: BranchPolicyConfig;
 }
 
 /** Error thrown when the project config file is present but malformed. */
@@ -173,6 +206,47 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
       dashConfig.refreshInterval = ri as number;
     }
     config.dashboard = dashConfig;
+  }
+
+  // Optional branchPolicy sub-config
+  if ("branchPolicy" in raw) {
+    const branchPolicyRaw = raw["branchPolicy"];
+    if (!isRecord(branchPolicyRaw)) {
+      throw new ProjectConfigError(filePath, "'branchPolicy' must be an object");
+    }
+    const branchPolicy: BranchPolicyConfig = {};
+
+    if ("defaultBranch" in branchPolicyRaw) {
+      const defaultBranch = branchPolicyRaw["defaultBranch"];
+      if (typeof defaultBranch !== "string" || defaultBranch.trim().length === 0) {
+        throw new ProjectConfigError(filePath, "'branchPolicy.defaultBranch' must be a non-empty string");
+      }
+      branchPolicy.defaultBranch = defaultBranch.trim();
+    }
+
+    if ("integrationBranch" in branchPolicyRaw) {
+      const integrationBranch = branchPolicyRaw["integrationBranch"];
+      if (typeof integrationBranch !== "string" || integrationBranch.trim().length === 0) {
+        throw new ProjectConfigError(filePath, "'branchPolicy.integrationBranch' must be a non-empty string");
+      }
+      branchPolicy.integrationBranch = integrationBranch.trim();
+    }
+
+    if ("requireValidation" in branchPolicyRaw) {
+      if (typeof branchPolicyRaw["requireValidation"] !== "boolean") {
+        throw new ProjectConfigError(filePath, "'branchPolicy.requireValidation' must be a boolean");
+      }
+      branchPolicy.requireValidation = branchPolicyRaw["requireValidation"] as boolean;
+    }
+
+    if ("autoPromote" in branchPolicyRaw) {
+      if (typeof branchPolicyRaw["autoPromote"] !== "boolean") {
+        throw new ProjectConfigError(filePath, "'branchPolicy.autoPromote' must be a boolean");
+      }
+      branchPolicy.autoPromote = branchPolicyRaw["autoPromote"] as boolean;
+    }
+
+    config.branchPolicy = branchPolicy;
   }
 
   return config;

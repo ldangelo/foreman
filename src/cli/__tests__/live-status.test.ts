@@ -15,6 +15,7 @@ const {
   mockCreateVcsBackend,
   mockBrList,
   mockBrReady,
+  mockBrListBacklog,
   MockBeadsRustClient,
   mockGetProjectByPath,
   mockGetActiveRuns,
@@ -37,9 +38,11 @@ const {
   // BeadsRustClient mocks
   const mockBrList = vi.fn().mockResolvedValue([]);
   const mockBrReady = vi.fn().mockResolvedValue([]);
+  const mockBrListBacklog = vi.fn().mockResolvedValue([]);
   const MockBeadsRustClient = vi.fn(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
     this.list = mockBrList;
     this.ready = mockBrReady;
+    this.listBacklog = mockBrListBacklog;
     this.ensureBrInstalled = vi.fn().mockResolvedValue(undefined);
   });
 
@@ -84,6 +87,7 @@ const {
     mockCreateVcsBackend,
     mockBrList,
     mockBrReady,
+    mockBrListBacklog,
     MockBeadsRustClient,
     mockGetProjectByPath,
     mockGetActiveRuns,
@@ -169,7 +173,7 @@ function makeDashboardState(overrides?: Partial<DashboardState>): DashboardState
 }
 
 const ZERO_COUNTS: DashboardTaskCounts = {
-  total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0,
+  total: 0, ready: 0, backlog: 0, inProgress: 0, completed: 0, blocked: 0,
 };
 
 // ── Tests: renderLiveStatusHeader() ─────────────────────────────────────────
@@ -181,9 +185,8 @@ describe("renderLiveStatusHeader()", () => {
   });
 
   it("shows total, ready, in-progress, completed counts", () => {
-    const counts = { total: 10, ready: 3, inProgress: 2, completed: 5, blocked: 0 };
+    const counts = { total: 10, ready: 3, backlog: 0, inProgress: 2, completed: 5, blocked: 0 };
     const result = renderLiveStatusHeader(counts);
-    // The output contains ANSI escape codes so we strip them for assertion
     const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
     expect(plain).toContain("total 10");
     expect(plain).toContain("ready 3");
@@ -192,8 +195,8 @@ describe("renderLiveStatusHeader()", () => {
   });
 
   it("shows blocked count only when > 0", () => {
-    const withBlocked = { total: 5, ready: 2, inProgress: 1, completed: 1, blocked: 1 };
-    const withoutBlocked = { total: 5, ready: 2, inProgress: 1, completed: 2, blocked: 0 };
+    const withBlocked = { total: 5, ready: 2, backlog: 0, inProgress: 1, completed: 1, blocked: 1 };
+    const withoutBlocked = { total: 5, ready: 2, backlog: 0, inProgress: 1, completed: 2, blocked: 0 };
 
     const resultWith = renderLiveStatusHeader(withBlocked).replace(/\x1b\[[0-9;]*m/g, "");
     const resultWithout = renderLiveStatusHeader(withoutBlocked).replace(/\x1b\[[0-9;]*m/g, "");
@@ -216,6 +219,7 @@ describe("fetchDashboardTaskCounts()", () => {
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
       this.list = mockBrList;
       this.ready = mockBrReady;
+      this.listBacklog = vi.fn().mockResolvedValue([]);
       this.ensureBrInstalled = vi.fn().mockResolvedValue(undefined);
     });
     mockBrList.mockResolvedValue([]);
@@ -224,7 +228,7 @@ describe("fetchDashboardTaskCounts()", () => {
 
   it("returns zero counts when br returns empty lists", async () => {
     const counts = await fetchDashboardTaskCounts("/mock/project");
-    expect(counts).toEqual({ total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 });
+    expect(counts).toEqual({ total: 0, ready: 0, backlog: 0, inProgress: 0, completed: 0, blocked: 0 });
   });
 
   it("correctly counts in-progress, ready, completed, and blocked issues", async () => {
@@ -244,17 +248,18 @@ describe("fetchDashboardTaskCounts()", () => {
     mockBrReady.mockResolvedValue([{ id: "2", status: "open", title: "Ready task" }]);
 
     const counts = await fetchDashboardTaskCounts("/mock/project");
-    expect(counts.total).toBe(5);       // 3 open + 2 closed
+    expect(counts.total).toBe(5);
     expect(counts.inProgress).toBe(1);
+    expect(counts.backlog).toBe(0);
     expect(counts.ready).toBe(1);
     expect(counts.completed).toBe(2);
-    expect(counts.blocked).toBe(1);     // open, not in_progress, not ready
-  });
+    expect(counts.blocked).toBe(1);
 
+  });
   it("returns zeros when br.list() throws", async () => {
     mockBrList.mockRejectedValue(new Error("br not found"));
     const counts = await fetchDashboardTaskCounts("/mock/project");
-    expect(counts).toEqual({ total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 });
+    expect(counts).toEqual({ total: 0, ready: 0, backlog: 0, inProgress: 0, completed: 0, blocked: 0 });
   });
 
   it("handles br.ready() throwing gracefully", async () => {
@@ -269,6 +274,29 @@ describe("fetchDashboardTaskCounts()", () => {
     expect(counts.total).toBe(1);
     expect(counts.ready).toBe(0);
   });
+  it("reports backlog separately from blocked", async () => {
+    const mockBacklog = vi.fn().mockResolvedValue([{ id: "1", status: "open", title: "Draft task" }]);
+    MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
+      this.list = mockBrList;
+      this.ready = mockBrReady;
+      this.listBacklog = mockBacklog;
+      this.ensureBrInstalled = vi.fn().mockResolvedValue(undefined);
+    });
+    mockBrList.mockImplementation(async (opts?: { status?: string }) => {
+      if (opts?.status === "closed") return [];
+      return [
+        { id: "1", status: "open", title: "Draft task" },
+        { id: "2", status: "open", title: "Blocked task" },
+      ];
+    });
+    mockBrReady.mockResolvedValue([]);
+
+    const counts = await fetchDashboardTaskCounts("/mock/project");
+    expect(counts.backlog).toBe(1);
+    expect(counts.blocked).toBe(1);
+  });
+
+
 });
 
 // ── Tests: renderSimpleDashboard() ───────────────────────────────────────────
@@ -283,7 +311,7 @@ describe("renderSimpleDashboard()", () => {
   });
 
   it("shows task count section with all fields", () => {
-    const counts: DashboardTaskCounts = { total: 8, ready: 3, inProgress: 2, completed: 3, blocked: 0 };
+    const counts: DashboardTaskCounts = { total: 8, ready: 3, backlog: 2, inProgress: 2, completed: 3, blocked: 0 };
     const state = makeDashboardState();
     const result = renderSimpleDashboard(state, counts);
     const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
@@ -292,14 +320,16 @@ describe("renderSimpleDashboard()", () => {
     expect(plain).toContain("8");
     expect(plain).toContain("Ready:");
     expect(plain).toContain("3");
+    expect(plain).toContain("Backlog:");
+    expect(plain).toContain("2");
     expect(plain).toContain("In Progress:");
     expect(plain).toContain("2");
     expect(plain).toContain("Completed:");
   });
 
   it("shows blocked line only when blocked > 0", () => {
-    const withBlocked: DashboardTaskCounts = { total: 5, ready: 1, inProgress: 1, completed: 2, blocked: 1 };
-    const noBlocked: DashboardTaskCounts = { total: 5, ready: 2, inProgress: 1, completed: 2, blocked: 0 };
+    const withBlocked: DashboardTaskCounts = { total: 5, ready: 1, backlog: 0, inProgress: 1, completed: 2, blocked: 1 };
+    const noBlocked: DashboardTaskCounts = { total: 5, ready: 2, backlog: 0, inProgress: 1, completed: 2, blocked: 0 };
 
     const withResult = renderSimpleDashboard(makeDashboardState(), withBlocked)
       .replace(/\x1b\[[0-9;]*m/g, "");

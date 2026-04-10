@@ -5,16 +5,18 @@ import { promisify } from "node:util";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
+import { resolveProjectBranchPolicy } from "../../lib/branch-policy.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
-import { Refinery, dryRunMerge } from "../../orchestrator/refinery.js";
+import { Refinery, dryRunMerge, type DryRunEntry } from "../../orchestrator/refinery.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { MergeQueueStatus } from "../../orchestrator/merge-queue.js";
 import type { MergedRun, ConflictRun, FailedRun, CreatedPr } from "../../orchestrator/types.js";
 import { MergeCostTracker } from "../../orchestrator/merge-cost-tracker.js";
 import { syncBeadStatusAfterMerge } from "../../orchestrator/auto-merge.js";
+import { getForemanBranchName } from "../../lib/branch-names.js";
 
 // ── Backend Client Factory (TRD-017) ──────────────────────────────────
 
@@ -52,9 +54,45 @@ function statusLabel(status: MergeQueueStatus): string {
   }
 }
 
+function emitMergeError(jsonOutput: boolean, message: string): never {
+  if (jsonOutput) {
+    console.error(JSON.stringify({ error: message }));
+  } else {
+    console.error(chalk.red(`Error: ${message}`));
+  }
+  process.exit(1);
+}
+
+interface SerializedMergedRun extends Omit<MergedRun, "resolvedTiers"> {
+  resolvedTiers?: Record<string, number>;
+}
+
+interface MergeRetryAttempt {
+  seedId: string;
+  attempt: number;
+}
+
+interface MergeResolutionRateSummary {
+  successes: number;
+  total: number;
+  rate: number;
+}
+
+function serializeMergedRun(run: MergedRun): SerializedMergedRun {
+  return {
+    ...run,
+    resolvedTiers: run.resolvedTiers ? Object.fromEntries(run.resolvedTiers) : undefined,
+  };
+}
+
+function emitMergeJsonWarning(warnings: string[], message: string): void {
+  warnings.push(message);
+  console.warn(message);
+}
+
 export const mergeCommand = new Command("merge")
-  .description("Merge completed agent work into target branch")
-  .option("--target-branch <branch>", "Branch to merge into (default: auto-detected)")
+  .description("Merge completed agent work into the integration branch")
+  .option("--target-branch <branch>", "Override integration branch target (default: project branch policy)")
   .option("--no-tests", "Skip running tests after merge")
   .option("--test-command <cmd>", "Test command to run", "npm test")
   .option("--bead <id>", "Merge a single bead by ID")
@@ -64,68 +102,57 @@ export const mergeCommand = new Command("merge")
   .option("--strategy <strategy>", "Conflict resolution strategy: theirs|abort")
   .option("--auto-retry", "Automatically retry failed/conflict entries using exponential backoff")
   .option("--stats [period]", "Show merge cost statistics (daily|weekly|monthly|all)")
-  .option("--json", "Output stats in JSON format")
+  .option("--json", "Output results as JSON")
   .action(async (opts) => {
     try {
       const startupVcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
       const projectPath = await startupVcs.getRepoRoot(process.cwd());
+      const projectCfg = loadProjectConfig(projectPath);
       const vcs = await createMergeVcsBackend(projectPath);
+      const branchPolicy = await resolveProjectBranchPolicy(projectPath, vcs, projectCfg);
 
-      // Resolve the target branch: use the explicit --target-branch flag if provided,
-      // otherwise auto-detect the repository's default branch.
       const targetBranch: string = (opts.targetBranch as string | undefined)
-        ?? await vcs.detectDefaultBranch(projectPath);
+        ?? branchPolicy.integrationBranch;
 
       const seeds = await createMergeTaskClient(projectPath);
       const store = ForemanStore.forProject(projectPath);
-      const refinery = new Refinery(store, seeds, projectPath);
+      const refinery = new Refinery(store, seeds, projectPath, vcs);
       const mq = new MergeQueue(store.getDb());
 
       const project = store.getProjectByPath(projectPath);
       if (!project) {
-        if (opts.json) {
-          console.error(JSON.stringify({ error: "No project registered. Run 'foreman init' first." }));
-        } else {
-          console.error(chalk.red("No project registered. Run 'foreman init' first."));
-        }
-        process.exit(1);
+        emitMergeError(Boolean(opts.json), "No project registered. Run 'foreman init' first.");
       }
 
       // --resolve mode: resolve a conflicting run (unchanged)
       if (opts.resolve) {
         if (!opts.strategy) {
-          console.error(chalk.red("Error: --strategy <theirs|abort> is required when using --resolve"));
           store.close();
-          process.exit(1);
+          emitMergeError(Boolean(opts.json), "--strategy <theirs|abort> is required when using --resolve");
         }
 
         const strategy = opts.strategy as string;
         if (strategy !== "theirs" && strategy !== "abort") {
-          console.error(chalk.red(`Error: Invalid strategy '${strategy}'. Must be 'theirs' or 'abort'.`));
           store.close();
-          process.exit(1);
+          emitMergeError(Boolean(opts.json), `Invalid strategy '${strategy}'. Must be 'theirs' or 'abort'.`);
         }
 
         const runId = opts.resolve as string;
         const run = store.getRun(runId);
         if (!run) {
-          console.error(chalk.red(`Error: Run '${runId}' not found.`));
           store.close();
-          process.exit(1);
+          emitMergeError(Boolean(opts.json), `Run '${runId}' not found.`);
         }
 
         if (run.status !== "conflict") {
-          console.error(
-            chalk.red(
-              `Error: Run '${runId}' is not in conflict state (current status: '${run.status}'). Only runs with status 'conflict' can be resolved.`,
-            ),
-          );
           store.close();
-          process.exit(1);
+          emitMergeError(
+            Boolean(opts.json),
+            `Run '${runId}' is not in conflict state (current status: '${run.status}'). Only runs with status 'conflict' can be resolved.`,
+          );
         }
 
-        const branchName = `foreman/${run.seed_id}`;
-        console.log(chalk.bold(`Resolving conflict for ${chalk.cyan(run.seed_id)} (${branchName}) with strategy: ${chalk.yellow(strategy)}\n`));
+        const branchName = getForemanBranchName(run.seed_id);
 
         const success = await refinery.resolveConflict(runId, strategy as "theirs" | "abort", {
           targetBranch,
@@ -133,12 +160,30 @@ export const mergeCommand = new Command("merge")
           testCommand: opts.testCommand,
         });
 
-        if (success) {
-          console.log(chalk.green.bold(`Conflict resolved -- ${run.seed_id} merged successfully.`));
-        } else if (strategy === "abort") {
-          console.log(chalk.yellow(`Merge aborted -- ${run.seed_id} marked as failed.`));
+        if (opts.json) {
+          const status = success
+            ? "merged"
+            : strategy === "abort"
+              ? "aborted"
+              : "failed";
+
+          console.log(JSON.stringify({
+            runId,
+            seedId: run.seed_id,
+            branchName,
+            strategy,
+            status,
+          }, null, 2));
         } else {
-          console.log(chalk.red(`Failed to resolve conflict for ${run.seed_id} -- marked as failed.`));
+          console.log(chalk.bold(`Resolving conflict for ${chalk.cyan(run.seed_id)} (${branchName}) with strategy: ${chalk.yellow(strategy)}\n`));
+
+          if (success) {
+            console.log(chalk.green.bold(`Conflict resolved -- ${run.seed_id} merged successfully.`));
+          } else if (strategy === "abort") {
+            console.log(chalk.yellow(`Merge aborted -- ${run.seed_id} marked as failed.`));
+          } else {
+            console.log(chalk.red(`Failed to resolve conflict for ${run.seed_id} -- marked as failed.`));
+          }
         }
 
         store.close();
@@ -188,11 +233,8 @@ export const mergeCommand = new Command("merge")
 
       // --dry-run: preview merge without modifying git state (MQ-T058)
       if (opts.dryRun) {
-        // Reconcile first to get current queue state
         const reconcileResult = await mq.reconcile(store.getDb(), projectPath);
-        if (reconcileResult.enqueued > 0) {
-          console.log(chalk.dim(`  (reconciled ${reconcileResult.enqueued} new entry/entries into queue)\n`));
-        }
+        const jsonWarnings: string[] = [];
 
         const entries = mq.list();
         const branches = entries.map((e) => ({
@@ -201,12 +243,24 @@ export const mergeCommand = new Command("merge")
         }));
 
         if (branches.length === 0) {
-          console.log(chalk.yellow("No branches in merge queue to preview."));
+          if (opts.json) {
+            emitMergeJsonWarning(jsonWarnings, "No branches in merge queue to preview.");
+            console.log(JSON.stringify({
+              targetBranch,
+              bead: opts.bead ?? null,
+              reconciled: reconcileResult.enqueued,
+              results: [] satisfies DryRunEntry[],
+              warnings: jsonWarnings,
+            }, null, 2));
+          } else {
+            if (reconcileResult.enqueued > 0) {
+              console.log(chalk.dim(`  (reconciled ${reconcileResult.enqueued} new entry/entries into queue)\n`));
+            }
+            console.log(chalk.yellow("No branches in merge queue to preview."));
+          }
           store.close();
           return;
         }
-
-        console.log(chalk.bold("Dry-run merge preview:\n"));
 
         const dryRunResults = await dryRunMerge(
           projectPath,
@@ -214,6 +268,24 @@ export const mergeCommand = new Command("merge")
           branches,
           opts.bead as string | undefined,
         );
+
+        if (opts.json) {
+          console.log(JSON.stringify({
+            targetBranch,
+            bead: opts.bead ?? null,
+            reconciled: reconcileResult.enqueued,
+            results: dryRunResults,
+            warnings: jsonWarnings,
+          }, null, 2));
+          store.close();
+          return;
+        }
+
+        if (reconcileResult.enqueued > 0) {
+          console.log(chalk.dim(`  (reconciled ${reconcileResult.enqueued} new entry/entries into queue)\n`));
+        }
+
+        console.log(chalk.bold("Dry-run merge preview:\n"));
 
         for (const entry of dryRunResults) {
           const conflictIcon = entry.hasConflicts
@@ -290,19 +362,31 @@ export const mergeCommand = new Command("merge")
 
       // ── Main merge flow (MQ-T018): queue-based ────────────────────────
 
-      console.log(chalk.bold("Running refinery on completed work...\n"));
+      const jsonWarnings: string[] = [];
+      const retried: MergeRetryAttempt[] = [];
+      let additionalReconciled = 0;
+      let resolutionRate30d: MergeResolutionRateSummary | null = null;
+
+      if (!opts.json) {
+        console.log(chalk.bold("Running refinery on completed work...\n"));
+      }
 
       // Step 1: Reconcile — ensure all completed runs are in the queue
       const reconcileResult = await mq.reconcile(store.getDb(), projectPath);
-      if (reconcileResult.enqueued > 0) {
+      if (!opts.json && reconcileResult.enqueued > 0) {
         console.log(chalk.dim(`  Reconciled ${reconcileResult.enqueued} completed run(s) into merge queue.\n`));
       }
       if (reconcileResult.failedToEnqueue.length > 0) {
-        console.log(chalk.yellow(`  Warning: ${reconcileResult.failedToEnqueue.length} completed run(s) could not be enqueued (branch missing):`));
-        for (const failed of reconcileResult.failedToEnqueue) {
-          console.log(chalk.yellow(`    - ${failed.seed_id}: ${failed.reason}`));
+        const message = `Warning: ${reconcileResult.failedToEnqueue.length} completed run(s) could not be enqueued (branch missing).`;
+        if (opts.json) {
+          emitMergeJsonWarning(jsonWarnings, message);
+        } else {
+          console.log(chalk.yellow(`  ${message}`));
+          for (const failed of reconcileResult.failedToEnqueue) {
+            console.log(chalk.yellow(`    - ${failed.seed_id}: ${failed.reason}`));
+          }
+          console.log();
         }
-        console.log();
       }
 
       // When retrying a specific seed, reset its failed/conflict entry back to
@@ -315,6 +399,8 @@ export const mergeCommand = new Command("merge")
       const merged: MergedRun[] = [];
       const conflicts: ConflictRun[] = [];
       const testFailures: FailedRun[] = [];
+      const unexpectedErrors: FailedRun[] = [];
+      const missingCompletedRuns: FailedRun[] = [];
       const prsCreated: CreatedPr[] = [];
       const skippedIds: number[] = []; // entries skipped due to --seed filter
 
@@ -327,7 +413,9 @@ export const mergeCommand = new Command("merge")
           continue;
         }
 
-        console.log(`Processing: ${chalk.cyan(entry.seed_id)} (${chalk.dim(entry.branch_name)})`);
+        if (!opts.json) {
+          console.log(`Processing: ${chalk.cyan(entry.seed_id)} (${chalk.dim(entry.branch_name)})`);
+        }
 
         // Track failure reason for immediate bead note (declared outside try for finally access)
         let mergeFailureReason: string | undefined;
@@ -347,10 +435,9 @@ export const mergeCommand = new Command("merge")
             mq.updateStatus(entry.id, "conflict", { error: "Code conflicts" });
             conflicts.push(...report.conflicts);
             prsCreated.push(...report.prsCreated);
-            // Build failure reason for bead note
             if (report.conflicts.length > 0) {
               const files = report.conflicts.flatMap((c) => c.conflictFiles).slice(0, 10);
-              mergeFailureReason = `Merge conflict detected in branch foreman/${entry.seed_id}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
+              mergeFailureReason = `Merge conflict detected in branch ${entry.branch_name}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
             } else if (report.prsCreated.length > 0) {
               const pr = report.prsCreated[0];
               mergeFailureReason = `Merge conflict: a PR was created for manual review.\nPR URL: ${pr.prUrl}\nBranch: ${pr.branchName}`;
@@ -358,19 +445,28 @@ export const mergeCommand = new Command("merge")
           } else if (report.testFailures.length > 0) {
             mq.updateStatus(entry.id, "failed", { error: "Test failures" });
             testFailures.push(...report.testFailures);
-            // Build failure reason for bead note
             const firstFailure = report.testFailures[0];
             const errorSummary = firstFailure.error?.slice(0, 800) ?? "no details";
             mergeFailureReason = `Post-merge tests failed (${report.testFailures.length} failure(s)).\nFirst failure:\n${errorSummary}`;
+          } else if (report.unexpectedErrors.length > 0) {
+            mq.updateStatus(entry.id, "failed", { error: "Unexpected merge errors" });
+            unexpectedErrors.push(...report.unexpectedErrors);
+            const firstUnexpected = report.unexpectedErrors[0];
+            mergeFailureReason = `Unexpected merge error (${report.unexpectedErrors.length} failure(s)).\nFirst failure:\n${firstUnexpected.error?.slice(0, 800) ?? "no details"}`;
           } else {
-            // No completed run found for this seed (already merged or no run)
             mq.updateStatus(entry.id, "failed", { error: "No completed run found" });
+            missingCompletedRuns.push({
+              runId: entry.run_id,
+              seedId: entry.seed_id,
+              branchName: entry.branch_name,
+              error: "No completed run found",
+            });
             mergeFailureReason = `Merge failed: no completed run found for seed ${entry.seed_id}. The run may have been deleted or not yet finalized.`;
           }
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
           mq.updateStatus(entry.id, "failed", { error: message });
-          testFailures.push({
+          unexpectedErrors.push({
             runId: entry.run_id,
             seedId: entry.seed_id,
             branchName: entry.branch_name,
@@ -378,101 +474,186 @@ export const mergeCommand = new Command("merge")
           });
           mergeFailureReason = `Unexpected error during merge: ${message.slice(0, 800)}`;
         } finally {
-          // Immediately sync bead status in br so it reflects the merge outcome
-          // without waiting for the next foreman startup reconciliation.
-          // Pass mergeFailureReason to add an explanatory note to the bead.
           await syncBeadStatusAfterMerge(store, seeds, entry.run_id, entry.seed_id, projectPath, mergeFailureReason);
         }
 
-        // If --seed filter, stop after processing the target
         if (opts.bead) {
           break;
         }
 
-        // Re-reconcile to catch agents that completed during this merge iteration.
-        // This handles the race condition where an agent finishes after the initial
-        // reconcile snapshot but before the dequeue loop exhausts the queue.
         try {
           const midLoopResult = await mq.reconcile(store.getDb(), projectPath);
-          if (midLoopResult.enqueued > 0) {
+          additionalReconciled += midLoopResult.enqueued;
+          if (!opts.json && midLoopResult.enqueued > 0) {
             console.log(chalk.dim(`  Reconciled ${midLoopResult.enqueued} additional completed run(s) into merge queue.\n`));
           }
         } catch (reconcileErr: unknown) {
           const reconcileMessage = reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr);
-          console.warn(chalk.yellow(`  Warning: mid-loop reconcile failed (${reconcileMessage}); continuing with existing queue entries.`));
+          const message = `Mid-loop reconcile failed (${reconcileMessage}); continuing with existing queue entries.`;
+          if (opts.json) {
+            emitMergeJsonWarning(jsonWarnings, message);
+          } else {
+            console.warn(chalk.yellow(`  Warning: ${message}`));
+          }
         }
 
         entry = mq.dequeue();
       }
 
-      // Reset skipped entries back to pending (for --seed filter)
       for (const id of skippedIds) {
         mq.updateStatus(id, "pending");
       }
 
-      // ── Auto-retry loop ──────────────────────────────────────────────────
       if (opts.autoRetry && !opts.bead) {
         const retryable = mq.getRetryableEntries();
-        if (retryable.length > 0) {
+        if (retryable.length > 0 && !opts.json) {
           console.log(chalk.dim(`\n  Retrying ${retryable.length} failed/conflict entry(ies)...\n`));
-          for (const retryEntry of retryable) {
-            if (mq.reEnqueue(retryEntry.id)) {
-              console.log(`Retrying: ${chalk.cyan(retryEntry.seed_id)} (attempt ${retryEntry.retry_count + 1})`);
-              const toProcess = mq.dequeue();
-              if (!toProcess) continue;
+        }
+        for (const retryEntry of retryable) {
+          if (!mq.reEnqueue(retryEntry.id)) {
+            continue;
+          }
 
-              let retryFailureReason: string | undefined;
-              try {
-                const report = await refinery.mergeCompleted({
-                  targetBranch,
-                  runTests: opts.tests,
-                  testCommand: opts.testCommand,
-                  projectId: project.id,
-                  seedId: toProcess.seed_id,
-                });
+          retried.push({
+            seedId: retryEntry.seed_id,
+            attempt: retryEntry.retry_count + 1,
+          });
 
-                if (report.merged.length > 0) {
-                  mq.updateStatus(toProcess.id, "merged", { completedAt: new Date().toISOString() });
-                  merged.push(...report.merged);
-                } else if (report.conflicts.length > 0 || report.prsCreated.length > 0) {
-                  mq.updateStatus(toProcess.id, "conflict", { error: "Code conflicts" });
-                  conflicts.push(...report.conflicts);
-                  prsCreated.push(...report.prsCreated);
-                  if (report.conflicts.length > 0) {
-                    const files = report.conflicts.flatMap((c) => c.conflictFiles).slice(0, 10);
-                    retryFailureReason = `Merge conflict (retry) in branch foreman/${toProcess.seed_id}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
-                  } else if (report.prsCreated.length > 0) {
-                    const pr = report.prsCreated[0];
-                    retryFailureReason = `Merge conflict (retry): a PR was created for manual review.\nPR URL: ${pr.prUrl}\nBranch: ${pr.branchName}`;
-                  }
-                } else if (report.testFailures.length > 0) {
-                  mq.updateStatus(toProcess.id, "failed", { error: "Test failures" });
-                  testFailures.push(...report.testFailures);
-                  const firstFailure = report.testFailures[0];
-                  retryFailureReason = `Post-merge tests failed on retry (${report.testFailures.length} failure(s)).\nFirst failure:\n${firstFailure.error?.slice(0, 800) ?? "no details"}`;
-                } else {
-                  mq.updateStatus(toProcess.id, "failed", { error: "No completed run found" });
-                  retryFailureReason = `Merge failed on retry: no completed run found for seed ${toProcess.seed_id}.`;
-                }
-              } catch (err: unknown) {
-                const message = err instanceof Error ? err.message : String(err);
-                mq.updateStatus(toProcess.id, "failed", { error: message });
-                testFailures.push({
-                  runId: toProcess.run_id,
-                  seedId: toProcess.seed_id,
-                  branchName: toProcess.branch_name,
-                  error: message,
-                });
-                retryFailureReason = `Unexpected error during merge retry: ${message.slice(0, 800)}`;
-              } finally {
-                await syncBeadStatusAfterMerge(store, seeds, toProcess.run_id, toProcess.seed_id, projectPath, retryFailureReason);
+          if (!opts.json) {
+            console.log(`Retrying: ${chalk.cyan(retryEntry.seed_id)} (attempt ${retryEntry.retry_count + 1})`);
+          }
+
+          const toProcess = mq.dequeue();
+          if (!toProcess) {
+            continue;
+          }
+
+          let retryFailureReason: string | undefined;
+          try {
+            const report = await refinery.mergeCompleted({
+              targetBranch,
+              runTests: opts.tests,
+              testCommand: opts.testCommand,
+              projectId: project.id,
+              seedId: toProcess.seed_id,
+            });
+
+            if (report.merged.length > 0) {
+              mq.updateStatus(toProcess.id, "merged", { completedAt: new Date().toISOString() });
+              merged.push(...report.merged);
+            } else if (report.conflicts.length > 0 || report.prsCreated.length > 0) {
+              mq.updateStatus(toProcess.id, "conflict", { error: "Code conflicts" });
+              conflicts.push(...report.conflicts);
+              prsCreated.push(...report.prsCreated);
+              if (report.conflicts.length > 0) {
+                const files = report.conflicts.flatMap((c) => c.conflictFiles).slice(0, 10);
+                retryFailureReason = `Merge conflict (retry) in branch ${toProcess.branch_name}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
+              } else if (report.prsCreated.length > 0) {
+                const pr = report.prsCreated[0];
+                retryFailureReason = `Merge conflict (retry): a PR was created for manual review.\nPR URL: ${pr.prUrl}\nBranch: ${pr.branchName}`;
               }
+            } else if (report.testFailures.length > 0) {
+              mq.updateStatus(toProcess.id, "failed", { error: "Test failures" });
+              testFailures.push(...report.testFailures);
+              const firstFailure = report.testFailures[0];
+              retryFailureReason = `Post-merge tests failed on retry (${report.testFailures.length} failure(s)).\nFirst failure:\n${firstFailure.error?.slice(0, 800) ?? "no details"}`;
+            } else if (report.unexpectedErrors.length > 0) {
+              mq.updateStatus(toProcess.id, "failed", { error: "Unexpected merge errors" });
+              unexpectedErrors.push(...report.unexpectedErrors);
+              const firstUnexpected = report.unexpectedErrors[0];
+              retryFailureReason = `Unexpected merge error on retry (${report.unexpectedErrors.length} failure(s)).\nFirst failure:\n${firstUnexpected.error?.slice(0, 800) ?? "no details"}`;
+            } else {
+              mq.updateStatus(toProcess.id, "failed", { error: "No completed run found" });
+              missingCompletedRuns.push({
+                runId: toProcess.run_id,
+                seedId: toProcess.seed_id,
+                branchName: toProcess.branch_name,
+                error: "No completed run found",
+              });
+              retryFailureReason = `Merge failed on retry: no completed run found for seed ${toProcess.seed_id}.`;
             }
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            mq.updateStatus(toProcess.id, "failed", { error: message });
+            unexpectedErrors.push({
+              runId: toProcess.run_id,
+              seedId: toProcess.seed_id,
+              branchName: toProcess.branch_name,
+              error: message,
+            });
+            retryFailureReason = `Unexpected error during merge retry: ${message.slice(0, 800)}`;
+          } finally {
+            await syncBeadStatusAfterMerge(store, seeds, toProcess.run_id, toProcess.seed_id, projectPath, retryFailureReason);
           }
         }
       }
 
-      // ── Display results ─────────────────────────────────────────────
+      if (merged.length > 0 || conflicts.length > 0) {
+        try {
+          const costTracker = new MergeCostTracker(store.getDb());
+          const rate = costTracker.getResolutionRate(30);
+          if (rate.total > 0) {
+            resolutionRate30d = {
+              successes: rate.successes,
+              total: rate.total,
+              rate: rate.rate,
+            };
+
+            if (!opts.json) {
+              console.log(
+                chalk.dim(`AI resolution rate: ${rate.successes}/${rate.total} conflicts (${rate.rate.toFixed(1)}%) over last 30 days\n`),
+              );
+            }
+          }
+        } catch {
+          // Cost tracking tables may not exist yet — silently skip
+        }
+      }
+
+      if (opts.json) {
+        if (
+          merged.length === 0
+          && conflicts.length === 0
+          && testFailures.length === 0
+          && unexpectedErrors.length === 0
+          && missingCompletedRuns.length === 0
+          && prsCreated.length === 0
+        ) {
+          const message = opts.bead
+            ? `No completed run found for bead ${opts.bead}.`
+            : "No completed tasks to merge.";
+          emitMergeJsonWarning(jsonWarnings, message);
+        }
+
+        console.log(JSON.stringify({
+          targetBranch,
+          bead: opts.bead ?? null,
+          autoRetryEnabled: Boolean(opts.autoRetry && !opts.bead),
+          summary: {
+            initialReconciled: reconcileResult.enqueued,
+            additionalReconciled,
+            retried: retried.length,
+            merged: merged.length,
+            conflicts: conflicts.length,
+            prsCreated: prsCreated.length,
+            testFailures: testFailures.length,
+            unexpectedErrors: unexpectedErrors.length,
+            missingCompletedRuns: missingCompletedRuns.length,
+          },
+          failedToEnqueue: reconcileResult.failedToEnqueue,
+          merged: merged.map(serializeMergedRun),
+          conflicts,
+          prsCreated,
+          testFailures,
+          unexpectedErrors,
+          missingCompletedRuns,
+          retried,
+          warnings: jsonWarnings,
+          resolutionRate30d,
+        }, null, 2));
+        store.close();
+        return;
+      }
 
       if (merged.length > 0) {
         console.log(chalk.green.bold(`\nMerged ${merged.length} task(s):\n`));
@@ -515,22 +696,32 @@ export const mergeCommand = new Command("merge")
         console.log();
       }
 
-      // Display running AI resolution rate after merge (MQ-T072)
-      if (merged.length > 0 || conflicts.length > 0) {
-        try {
-          const costTracker = new MergeCostTracker(store.getDb());
-          const rate = costTracker.getResolutionRate(30);
-          if (rate.total > 0) {
-            console.log(
-              chalk.dim(`AI resolution rate: ${rate.successes}/${rate.total} conflicts (${rate.rate.toFixed(1)}%) over last 30 days\n`),
-            );
-          }
-        } catch {
-          // Cost tracking tables may not exist yet — silently skip
+      if (unexpectedErrors.length > 0) {
+        console.log(chalk.red.bold(`Unexpected merge errors in ${unexpectedErrors.length} task(s):\n`));
+        for (const f of unexpectedErrors) {
+          console.log(`  ${chalk.cyan(f.seedId)} ${f.branchName}`);
+          console.log(`    ${chalk.dim(f.error.split("\n")[0])}`);
         }
+        console.log();
       }
 
-      if (merged.length === 0 && conflicts.length === 0 && testFailures.length === 0 && prsCreated.length === 0) {
+      if (missingCompletedRuns.length > 0) {
+        console.log(chalk.yellow.bold(`Missing completed runs in ${missingCompletedRuns.length} task(s):\n`));
+        for (const f of missingCompletedRuns) {
+          console.log(`  ${chalk.cyan(f.seedId)} ${f.branchName}`);
+          console.log(`    ${chalk.dim(f.error)}`);
+        }
+        console.log();
+      }
+
+      if (
+        merged.length === 0
+        && conflicts.length === 0
+        && testFailures.length === 0
+        && unexpectedErrors.length === 0
+        && missingCompletedRuns.length === 0
+        && prsCreated.length === 0
+      ) {
         if (opts.bead) {
           console.log(chalk.yellow(`No completed run found for bead ${opts.bead}.`));
           console.log(chalk.dim("Use 'foreman merge --list' to see beads ready to merge."));
@@ -542,11 +733,6 @@ export const mergeCommand = new Command("merge")
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      if (opts.json) {
-        console.error(JSON.stringify({ error: message }));
-      } else {
-        console.error(chalk.red(`Error: ${message}`));
-      }
-      process.exit(1);
+      emitMergeError(Boolean(opts.json), message);
     }
   });

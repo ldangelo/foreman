@@ -89,7 +89,7 @@ describe("--follow mode (log file tail)", () => {
   });
 
   it("prints log path header before following", async () => {
-    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     createTestRun(store, projectId, {
       seedId: "follow-header",
@@ -108,14 +108,15 @@ describe("--follow mode (log file tail)", () => {
     const { attachAction } = await import("../commands/attach.js");
     await attachAction("follow-header", { follow: true }, store, tmpDir);
 
-    const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    const output = consoleErrSpy.mock.calls.map((c) => String(c[0])).join("\n");
     expect(output).toContain("follow-header");
+    expect(output).toContain("Log:");
 
-    consoleSpy.mockRestore();
+    consoleErrSpy.mockRestore();
   });
 
-  it("exits cleanly when AbortSignal fires (kills child)", async () => {
-    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+  it("returns interrupted exit code when AbortSignal fires (kills child)", async () => {
+    const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     createTestRun(store, projectId, {
       seedId: "abort-follow",
@@ -150,10 +151,13 @@ describe("--follow mode (log file tail)", () => {
     controller.abort();
 
     const exitCode = await resultPromise;
-    expect(exitCode).toBe(0);
+    expect(exitCode).toBe(130);
     expect(mockChild.kill).toHaveBeenCalledWith("SIGTERM");
 
-    consoleSpy.mockRestore();
+    const output = consoleErrSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("interrupted before the run reached a terminal state");
+
+    consoleErrSpy.mockRestore();
   });
 
   it("handles error when log file does not exist", async () => {

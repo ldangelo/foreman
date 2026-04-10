@@ -10,13 +10,14 @@ import {
   type RunProgress,
   type Metrics,
   type Event,
-  type NativeTask,
 } from "../../lib/store.js";
+import { formatPriorityLabel, normalizePriority } from "../../lib/priority.js";
 import { elapsed, renderAgentCard, formatSuccessRate } from "../watch-ui.js";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import type { BrIssue } from "../../lib/beads-rust.js";
 import type { Issue } from "../../lib/task-client.js";
 import { loadDashboardConfig } from "../../lib/project-config.js";
+import { ProjectRegistry } from "../../lib/project-registry.js";
 
 // ── Task count helpers (for --simple mode) ───────────────────────────────
 
@@ -26,6 +27,7 @@ import { loadDashboardConfig } from "../../lib/project-config.js";
 export interface DashboardTaskCounts {
   total: number;
   ready: number;
+  backlog: number;
   inProgress: number;
   completed: number;
   blocked: number;
@@ -47,19 +49,37 @@ export async function fetchDashboardTaskCounts(projectPath: string): Promise<Das
   let readyIssues: Issue[] = [];
   try { readyIssues = await brClient.ready(); } catch { /* br ready failed */ }
 
+  let backlogIssues: BrIssue[] = [];
+  try { backlogIssues = await brClient.listBacklog(); } catch { /* backlog label query may fail */ }
+
   const inProgress = openIssues.filter((i) => i.status === "in_progress").length;
   const completed = closedIssues.length;
   const readyIds = new Set(readyIssues.map((i) => i.id));
+  const backlogIds = new Set(backlogIssues.map((i) => i.id));
   const ready = readyIssues.length;
+  const backlog = backlogIssues.length;
   const blocked = openIssues.filter(
-    (i) => i.status !== "in_progress" && !readyIds.has(i.id),
+    (i) => i.status !== "in_progress" && !readyIds.has(i.id) && !backlogIds.has(i.id),
   ).length;
   const total = openIssues.length + completed;
 
-  return { total, ready, inProgress, completed, blocked };
+  return { total, ready, backlog, inProgress, completed, blocked };
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────
+
+/** Backlog bead surfaced in the full dashboard for operator approval. */
+export interface DashboardBacklogBead {
+  id: string;
+  title: string;
+  priority: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+}
 
 /** Snapshot of a single project collected via READONLY DB connection. */
 export interface ProjectSnapshot {
@@ -70,8 +90,9 @@ export interface ProjectSnapshot {
   metrics: Metrics;
   events: Event[];
   successRate: { rate: number | null; merged: number; failed: number };
-  /** Tasks requiring human attention (conflict/failed/stuck/backlog). */
-  needsHumanTasks: NativeTask[];
+  taskCounts: DashboardTaskCounts;
+  backlogBeads: DashboardBacklogBead[];
+  backlogLoadError: string | null;
   /** Whether the project DB was inaccessible during snapshot. */
   offline: boolean;
 }
@@ -83,53 +104,43 @@ export interface DashboardState {
   progresses: Map<string, RunProgress | null>;
   metrics: Map<string, Metrics>;
   events: Map<string, Event[]>;
+  taskCounts?: Map<string, DashboardTaskCounts>;
   lastUpdated: Date;
   /** 24-hour success rate stats per project ID. rate=null means insufficient data. Optional for backward compat. */
   successRates?: Map<string, { rate: number | null; merged: number; failed: number }>;
-  /** Cross-project "needs human" tasks (REQ-011). */
-  needsHumanTasks?: NativeTask[];
+  /** Cross-project backlog beads awaiting operator approval. */
+  backlogBeads?: DashboardBacklogBead[];
+  /** Per-project backlog fetch failures surfaced without aborting the dashboard loop. */
+  backlogLoadErrors?: Map<string, string>;
   /** Whether each project is reachable (true = offline / DB inaccessible). */
   offlineProjects?: Set<string>;
 }
 
-// ── Needs Human statuses (REQ-011) ────────────────────────────────────────
+function parseBacklogPriority(priority: string | number): number {
+  return normalizePriority(priority);
+}
 
-/** Statuses that require human operator attention. */
-export const NEEDS_HUMAN_STATUSES = ["conflict", "failed", "stuck", "backlog"] as const;
-export type NeedsHumanStatus = typeof NEEDS_HUMAN_STATUSES[number];
+export function sortBacklogBeads(beads: DashboardBacklogBead[]): DashboardBacklogBead[] {
+  return [...beads].sort((a, b) => {
+    const priorityDelta = parseBacklogPriority(a.priority) - parseBacklogPriority(b.priority);
+    if (priorityDelta !== 0) return priorityDelta;
 
-/** Sort order for "needs human" status grouping (lower index = higher urgency). */
-const STATUS_SORT_ORDER: Record<string, number> = {
-  conflict: 0,
-  failed: 1,
-  stuck: 2,
-  backlog: 3,
-};
+    const ageDelta = new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime();
+    if (ageDelta !== 0) return ageDelta;
 
-/**
- * Sort tasks by: (1) status urgency, (2) priority (P0 first), (3) age (oldest first).
- * Satisfies REQ-011.1.
- */
-export function sortNeedsHumanTasks(tasks: NativeTask[]): NativeTask[] {
-  return [...tasks].sort((a, b) => {
-    // Primary: status urgency (conflict > failed > stuck > backlog)
-    const statusA = STATUS_SORT_ORDER[a.status] ?? 99;
-    const statusB = STATUS_SORT_ORDER[b.status] ?? 99;
-    if (statusA !== statusB) return statusA - statusB;
-
-    // Secondary: priority (P0=0 first, ascending)
-    if (a.priority !== b.priority) return a.priority - b.priority;
-
-    // Tertiary: age (oldest updated_at first)
-    return new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime();
+    return a.projectName.localeCompare(b.projectName) || a.id.localeCompare(b.id);
   });
 }
 
 // ── Project Registry ─────────────────────────────────────────────────────
 
 /**
- * A registered project entry as stored in the global project registry.
- * Used by multi-project dashboard aggregation.
+ * A registered project entry used by multi-project dashboard aggregation.
+ *
+ * `id` is a rendering/runtime key. It prefers the project-local SQLite project row
+ * when present so existing dashboard state maps continue to work. When a local
+ * project row does not yet exist, the registry path is used as a stable fallback.
+ * Registry name/path remain the operator-facing project authority.
  */
 export interface RegisteredProject {
   id: string;
@@ -138,19 +149,50 @@ export interface RegisteredProject {
 }
 
 /**
- * Read the list of all registered projects from the current project's DB.
+ * Read the list of all registered projects from the global project registry.
  *
- * Falls back to returning only the current working directory's project if the
- * DB doesn't have multiple registered projects (REQ-010 fallback).
+ * The registry is the authority for project enumeration. The local store is used
+ * only to look up execution-local compatibility metadata (the current project row ID)
+ * when it already exists in a project's SQLite database.
  *
- * @param store - ForemanStore for the current project (already open, read-write).
+ * @param store - ForemanStore for the current project (used only for local project lookup).
+ * @param registry - Optional registry override for tests.
  * @returns Array of projects to include in the multi-project dashboard.
  */
-export function readProjectRegistry(store: ForemanStore): RegisteredProject[] {
-  const projects = store.listProjects();
-  return projects.map((p) => ({ id: p.id, name: p.name, path: p.path }));
+export function readProjectRegistry(
+  store: Pick<ForemanStore, "getProjectByPath">,
+  registry: Pick<ProjectRegistry, "list"> = new ProjectRegistry(),
+): RegisteredProject[] {
+  return registry.list().map((project) => {
+    const localProject = store.getProjectByPath(project.path);
+    return {
+      id: localProject?.id ?? project.path,
+      name: project.name,
+      path: project.path,
+    };
+  });
 }
 
+export function matchesRegisteredProject(project: RegisteredProject, selector: string): boolean {
+  return project.id === selector || project.name === selector || project.path === selector;
+}
+
+async function fetchDashboardBacklogBeads(project: RegisteredProject): Promise<DashboardBacklogBead[]> {
+  const brClient = new BeadsRustClient(project.path);
+  const backlogIssues = await brClient.listBacklog();
+
+  return sortBacklogBeads(backlogIssues.map((issue) => ({
+    id: issue.id,
+    title: issue.title,
+    priority: formatPriorityLabel(issue.priority),
+    status: issue.status,
+    created_at: issue.created_at,
+    updated_at: issue.updated_at,
+    projectId: project.id,
+    projectName: project.name,
+    projectPath: project.path,
+  })));
+}
 // ── READONLY snapshot helpers ─────────────────────────────────────────────
 
 /**
@@ -160,10 +202,10 @@ export function readProjectRegistry(store: ForemanStore): RegisteredProject[] {
  * @param project    - Project metadata (id, name, path).
  * @param eventsLimit - Max events to fetch.
  */
-function readProjectDbSnapshot(
+async function readProjectDbSnapshot(
   project: RegisteredProject,
   eventsLimit: number,
-): ProjectSnapshot {
+): Promise<ProjectSnapshot> {
   const dbPath = join(project.path, ".foreman", "foreman.db");
 
   // Return offline indicator if DB file doesn't exist
@@ -174,7 +216,7 @@ function readProjectDbSnapshot(
   let db: Database.Database | null = null;
   try {
     db = ForemanStore.openReadonly(project.path);
-
+    const taskCounts = await fetchDashboardTaskCounts(project.path);
     // ── Active runs ─────────────────────────────────────────────────
     const activeRuns = (db.prepare(
       `SELECT * FROM runs WHERE project_id = ? AND status IN ('pending', 'running') ORDER BY created_at DESC`
@@ -239,22 +281,12 @@ function readProjectDbSnapshot(
     const total = merged + failed;
     const rate: number | null = total >= 3 ? merged / total : null;
 
-    // ── Needs Human tasks ───────────────────────────────────────────
-    let needsHumanTasks: NativeTask[] = [];
+    let backlogBeads: DashboardBacklogBead[] = [];
+    let backlogLoadError: string | null = null;
     try {
-      const placeholders = NEEDS_HUMAN_STATUSES.map(() => "?").join(", ");
-      needsHumanTasks = (db.prepare(
-        `SELECT * FROM tasks WHERE status IN (${placeholders})
-         ORDER BY priority ASC, updated_at ASC
-         LIMIT 200`
-      ).all(...NEEDS_HUMAN_STATUSES) as NativeTask[]).map((t) => ({
-        ...t,
-        projectName: project.name,
-        projectId: project.id,
-        projectPath: project.path,
-      }));
-    } catch {
-      // tasks table may not exist in older project DBs — not an error
+      backlogBeads = await fetchDashboardBacklogBeads(project);
+    } catch (error) {
+      backlogLoadError = error instanceof Error ? error.message : String(error);
     }
 
     return {
@@ -272,7 +304,9 @@ function readProjectDbSnapshot(
       metrics,
       events,
       successRate: { rate, merged, failed },
-      needsHumanTasks,
+      taskCounts,
+      backlogBeads,
+      backlogLoadError,
       offline: false,
     };
   } catch {
@@ -298,7 +332,9 @@ function makeOfflineSnapshot(project: RegisteredProject): ProjectSnapshot {
     metrics: { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] },
     events: [],
     successRate: { rate: null, merged: 0, failed: 0 },
-    needsHumanTasks: [],
+    taskCounts: { total: 0, ready: 0, backlog: 0, inProgress: 0, completed: 0, blocked: 0 },
+    backlogBeads: [],
+    backlogLoadError: null,
     offline: true,
   };
 }
@@ -337,8 +373,10 @@ export function aggregateSnapshots(snapshots: ProjectSnapshot[]): DashboardState
   const progresses = new Map<string, RunProgress | null>();
   const metrics = new Map<string, Metrics>();
   const events = new Map<string, Event[]>();
+  const taskCounts = new Map<string, DashboardTaskCounts>();
   const successRates = new Map<string, { rate: number | null; merged: number; failed: number }>();
-  const allNeedsHuman: NativeTask[] = [];
+  const backlogLoadErrors = new Map<string, string>();
+  const backlogBeads: DashboardBacklogBead[] = [];
   const offlineProjects = new Set<string>();
 
   for (const snap of snapshots) {
@@ -353,9 +391,11 @@ export function aggregateSnapshots(snapshots: ProjectSnapshot[]): DashboardState
     }
     metrics.set(snap.project.id, snap.metrics);
     events.set(snap.project.id, snap.events);
+    taskCounts.set(snap.project.id, snap.taskCounts);
     successRates.set(snap.project.id, snap.successRate);
-    for (const task of snap.needsHumanTasks) {
-      allNeedsHuman.push(task);
+    backlogBeads.push(...snap.backlogBeads);
+    if (snap.backlogLoadError) {
+      backlogLoadErrors.set(snap.project.id, snap.backlogLoadError);
     }
   }
 
@@ -366,9 +406,11 @@ export function aggregateSnapshots(snapshots: ProjectSnapshot[]): DashboardState
     progresses,
     metrics,
     events,
+    taskCounts,
     lastUpdated: new Date(),
     successRates,
-    needsHumanTasks: sortNeedsHumanTasks(allNeedsHuman),
+    backlogBeads: sortBacklogBeads(backlogBeads),
+    backlogLoadErrors,
     offlineProjects,
   };
 }
@@ -392,16 +434,15 @@ const EVENT_ICONS: Record<string, string> = {
 const RULE = chalk.dim("─".repeat(60));
 const THICK_RULE = chalk.dim("━".repeat(60));
 
-// ── Status color helpers ──────────────────────────────────────────────────
+// ── Backlog display helpers ────────────────────────────────────────────────
 
 type ChalkColor = (text: string) => string;
-function taskStatusColor(status: string): ChalkColor {
-  switch (status) {
-    case "conflict": return chalk.bgRed.white;
-    case "failed":   return chalk.red;
-    case "stuck":    return chalk.yellow;
-    case "backlog":  return chalk.dim;
-    default:         return chalk.white;
+function backlogPriorityColor(priority: string): ChalkColor {
+  switch (parseBacklogPriority(priority)) {
+    case 0: return chalk.bgRed.white;
+    case 1: return chalk.red;
+    case 2: return chalk.yellow;
+    default: return chalk.dim;
   }
 }
 
@@ -467,43 +508,61 @@ export function renderProjectHeader(project: Project, activeCount: number, metri
   return lines.join("\n");
 }
 
-/**
- * Render the "Needs Human" panel for tasks requiring operator attention.
- * Satisfies REQ-011.
- *
- * @param tasks   - Pre-sorted list of tasks needing human attention.
- * @param maxRows - Maximum rows to display (default: 10).
- */
-export function renderNeedsHumanPanel(tasks: NativeTask[], maxRows = 10): string {
-  if (tasks.length === 0) {
-    return (
-      chalk.bold.red("⚠  NEEDS HUMAN ATTENTION:") + "\n" +
-      THICK_RULE + "\n" +
-      chalk.dim("  No tasks need attention.\n") +
-      "\n"
-    );
-  }
 
+/**
+ * Render the backlog approval panel for beads waiting on operator release.
+ */
+export function renderBacklogPanel(
+  beads: DashboardBacklogBead[],
+  options?: {
+    maxRows?: number;
+    selectedIndex?: number;
+    notice?: string | null;
+    backlogLoadErrors?: Map<string, string>;
+  },
+): string {
+  const maxRows = options?.maxRows ?? 10;
+  const selectedIndex = options?.selectedIndex ?? -1;
+  const backlogLoadErrors = [...(options?.backlogLoadErrors ?? new Map()).entries()];
   const lines: string[] = [];
-  lines.push(chalk.bold.red("⚠  NEEDS HUMAN ATTENTION:"));
+
+  lines.push(chalk.bold.yellow("⏸  APPROVAL BACKLOG:"));
   lines.push(THICK_RULE);
 
-  const visible = tasks.slice(0, maxRows);
-  for (const task of visible) {
-    const statusLabel = taskStatusColor(task.status)(task.status.toUpperCase().padEnd(9));
-    const priorityLabel = chalk.dim(`P${task.priority}`);
-    const ageStr = chalk.dim(elapsed(task.updated_at) + " ago");
-    const projectLabel = task.projectName
-      ? chalk.dim(` [${task.projectName}]`)
-      : "";
-    const titleStr = task.title.slice(0, 55);
-    lines.push(
-      `  ${statusLabel} ${priorityLabel}  ${chalk.white(titleStr)}${projectLabel}  ${ageStr}`
-    );
+  if (beads.length === 0) {
+    lines.push(chalk.dim("  No backlog beads await approval."));
+  } else {
+    const start = selectedIndex >= maxRows
+      ? Math.min(selectedIndex - maxRows + 1, Math.max(0, beads.length - maxRows))
+      : 0;
+    const visible = beads.slice(start, start + maxRows);
+
+    for (const [index, bead] of visible.entries()) {
+      const absoluteIndex = start + index;
+      const marker = absoluteIndex === selectedIndex ? chalk.cyan("›") : " ";
+      const priorityLabel = backlogPriorityColor(bead.priority)(bead.priority.padEnd(3));
+      const projectLabel = chalk.dim(`[${bead.projectName}]`);
+      const ageLabel = chalk.dim(`${elapsed(bead.updated_at)} ago`);
+      const title = bead.title.slice(0, 52);
+      lines.push(` ${marker} ${priorityLabel}  ${chalk.white(title)} ${chalk.dim(`(${bead.id})`)} ${projectLabel}  ${ageLabel}`);
+    }
+
+    if (beads.length > maxRows) {
+      lines.push(chalk.dim(`  … showing ${start + 1}-${start + visible.length} of ${beads.length}`));
+    }
+
+    lines.push(chalk.dim("  j/k move  a approve selected backlog bead"));
   }
 
-  if (tasks.length > maxRows) {
-    lines.push(chalk.dim(`  … and ${tasks.length - maxRows} more`));
+  if (backlogLoadErrors.length > 0) {
+    lines.push(chalk.yellow("  Backlog unavailable for:"));
+    for (const [projectId, error] of backlogLoadErrors) {
+      lines.push(chalk.dim(`    ${projectId}: ${error}`));
+    }
+  }
+
+  if (options?.notice) {
+    lines.push(`  ${options.notice}`);
   }
 
   lines.push("");
@@ -523,6 +582,7 @@ export function renderProjectAgentPanel(
   metrics: Metrics,
   events: Event[],
   offline: boolean,
+  taskCounts?: DashboardTaskCounts,
 ): string {
   const lines: string[] = [];
 
@@ -535,6 +595,18 @@ export function renderProjectAgentPanel(
     lines.push(chalk.dim("  (database inaccessible)"));
     lines.push("");
     return lines.join("\n");
+  }
+  if (taskCounts) {
+    const queueSummary = [
+      `ready ${chalk.green(taskCounts.ready)}`,
+      `backlog ${chalk.dim(taskCounts.backlog)}`,
+      `in-progress ${chalk.yellow(taskCounts.inProgress)}`,
+      `blocked ${chalk.red(taskCounts.blocked)}`,
+      `completed ${chalk.cyan(taskCounts.completed)}`,
+    ].join("  ");
+    lines.push(chalk.bold("  TASK QUEUE:"));
+    lines.push(`    ${queueSummary}`);
+    lines.push("");
   }
 
   // Active agents
@@ -585,7 +657,10 @@ export function renderProjectAgentPanel(
 /**
  * Render the full dashboard display as a string.
  */
-export function renderDashboard(state: DashboardState): string {
+export function renderDashboard(
+  state: DashboardState,
+  options?: { selectedBacklogIndex?: number; backlogNotice?: string | null },
+): string {
   const lines: string[] = [];
 
   // Header
@@ -603,10 +678,14 @@ export function renderDashboard(state: DashboardState): string {
     return lines.join("\n");
   }
 
-  // "Needs Human" panel — shown at top if any tasks need attention (REQ-011)
-  const needsHuman = state.needsHumanTasks ?? [];
-  if (needsHuman.length > 0) {
-    lines.push(renderNeedsHumanPanel(needsHuman));
+  const backlogBeads = state.backlogBeads ?? [];
+  const backlogLoadErrors = state.backlogLoadErrors ?? new Map<string, string>();
+  if (backlogBeads.length > 0 || backlogLoadErrors.size > 0) {
+    lines.push(renderBacklogPanel(backlogBeads, {
+      selectedIndex: options?.selectedBacklogIndex,
+      notice: options?.backlogNotice ?? null,
+      backlogLoadErrors,
+    }));
   }
 
   // Per-project agent panels (REQ-012)
@@ -617,6 +696,7 @@ export function renderDashboard(state: DashboardState): string {
       totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [],
     };
     const events = state.events.get(project.id) ?? [];
+    const taskCounts = state.taskCounts?.get(project.id);
     const offline = state.offlineProjects?.has(project.id) ?? false;
 
     lines.push(renderProjectAgentPanel(
@@ -627,6 +707,7 @@ export function renderDashboard(state: DashboardState): string {
       projectMetrics,
       events,
       offline,
+      taskCounts,
     ));
   }
 
@@ -635,12 +716,20 @@ export function renderDashboard(state: DashboardState): string {
   let totalCost = 0;
   let totalTokens = 0;
   let totalActive = 0;
+  let totalReady = 0;
+  let totalBacklog = 0;
+  let totalBlocked = 0;
   for (const [, m] of state.metrics) {
     totalCost += m.totalCost;
     totalTokens += m.totalTokens;
   }
   for (const [, runs] of state.activeRuns) {
     totalActive += runs.length;
+  }
+  for (const [, counts] of state.taskCounts ?? new Map<string, DashboardTaskCounts>()) {
+    totalReady += counts.ready;
+    totalBacklog += counts.backlog;
+    totalBlocked += counts.blocked;
   }
 
   // Aggregate success rate across all projects using raw merged/failed counts
@@ -656,6 +745,9 @@ export function renderDashboard(state: DashboardState): string {
   lines.push(
     `${chalk.bold("TOTALS")}  ` +
     `${chalk.blue(`${totalActive} active`)}  ` +
+    `${chalk.green(`ready ${totalReady}`)}  ` +
+    `${chalk.dim(`backlog ${totalBacklog}`)}  ` +
+    `${chalk.red(`blocked ${totalBlocked}`)}  ` +
     `${chalk.yellow(`$${totalCost.toFixed(2)}`)}  ` +
     `${chalk.dim(`${(totalTokens / 1000).toFixed(1)}k tokens`)}  ` +
     `${chalk.dim("success (24h)")} ${formatSuccessRate(globalRate)}`,
@@ -683,6 +775,7 @@ export function pollDashboard(store: ForemanStore, projectId?: string, eventsLim
   const events = new Map<string, Event[]>();
   const successRates = new Map<string, { rate: number | null; merged: number; failed: number }>();
 
+  const taskCounts = new Map<string, DashboardTaskCounts>();
   for (const project of projects) {
     const active = store.getActiveRuns(project.id);
     activeRuns.set(project.id, active);
@@ -701,18 +794,12 @@ export function pollDashboard(store: ForemanStore, projectId?: string, eventsLim
     metrics.set(project.id, store.getMetrics(project.id));
     events.set(project.id, store.getEvents(project.id, eventsLimit));
     successRates.set(project.id, store.getSuccessRate(project.id));
+    taskCounts.set(project.id, { total: 0, ready: 0, backlog: 0, inProgress: 0, completed: 0, blocked: 0 });
   }
 
-  // Collect "needs human" tasks from the current store's project DBs
-  const needsHumanTasks: NativeTask[] = [];
-  for (const project of projects) {
-    try {
-      const tasks = store.listTasksByStatus([...NEEDS_HUMAN_STATUSES]);
-      for (const t of tasks) {
-        needsHumanTasks.push({ ...t, projectId: project.id, projectName: project.name });
-      }
-    } catch { /* tasks table may not exist */ }
-  }
+  // Public dashboard output is beads-first; the compact status view does not fetch
+  // backlog bead details, so keep that panel empty here.
+  const backlogBeads: DashboardBacklogBead[] = [];
 
   return {
     projects,
@@ -721,9 +808,11 @@ export function pollDashboard(store: ForemanStore, projectId?: string, eventsLim
     progresses,
     metrics,
     events,
+    taskCounts,
     lastUpdated: new Date(),
     successRates,
-    needsHumanTasks: sortNeedsHumanTasks(needsHumanTasks),
+    backlogBeads: sortBacklogBeads(backlogBeads),
+    backlogLoadErrors: new Map(),
   };
 }
 
@@ -759,6 +848,9 @@ export function renderSimpleDashboard(
   lines.push(chalk.bold("Tasks"));
   lines.push(`  Total:       ${chalk.white(counts.total)}`);
   lines.push(`  Ready:       ${chalk.green(counts.ready)}`);
+  if (counts.backlog > 0) {
+    lines.push(`  Backlog:     ${chalk.dim(counts.backlog)}`);
+  }
   lines.push(`  In Progress: ${chalk.yellow(counts.inProgress)}`);
   lines.push(`  Completed:   ${chalk.cyan(counts.completed)}`);
   if (counts.blocked > 0) {
@@ -828,51 +920,30 @@ export function renderSimpleDashboard(
 // ── Interactive actions ──────────────────────────────────────────────────
 
 /**
- * Approve a backlog task via a short-lived write connection.
- * Satisfies REQ-011.3 backend requirement.
+ * Approve a backlog bead via the beads-first backend.
  *
- * Opens a new read-write ForemanStore for the task's project, updates the
- * task status to 'ready', then immediately closes the connection.
- *
- * @param taskId     - Native task UUID.
- * @param projectPath - Path to the project that owns this task.
+ * @param beadId      - Bead ID awaiting approval.
+ * @param projectPath - Path to the project that owns this bead.
  */
-export function approveTask(taskId: string, projectPath: string): void {
-  const store = ForemanStore.forProject(projectPath);
-  try {
-    store.updateTaskStatus(taskId, "ready");
-  } finally {
-    store.close();
-  }
-}
-
-/**
- * Retry a failed/stuck/conflict task via a short-lived write connection.
- * Resets the task status to 'backlog' so it can be re-dispatched.
- * Satisfies REQ-011.3 backend requirement.
- *
- * @param taskId     - Native task UUID.
- * @param projectPath - Path to the project that owns this task.
- */
-export function retryTask(taskId: string, projectPath: string): void {
-  const store = ForemanStore.forProject(projectPath);
-  try {
-    store.updateTaskStatus(taskId, "backlog");
-  } finally {
-    store.close();
-  }
+export async function approveBacklogBead(
+  beadId: string,
+  projectPath: string,
+  opts?: { recursive?: boolean },
+): Promise<{ approved: string[]; skipped: string[] }> {
+  const client = new BeadsRustClient(projectPath);
+  return client.approve(beadId, { recursive: opts?.recursive !== false });
 }
 
 // ── Command ───────────────────────────────────────────────────────────────
 
 export const dashboardCommand = new Command("dashboard")
-  .description("Live agent observability dashboard with real-time TUI")
+  .description("Live control-plane dashboard across registered projects")
   .option("--interval <ms>", "Polling interval in milliseconds (deprecated, use --refresh)", "")
   .option("--refresh <ms>", "Refresh interval in milliseconds (default: 5000; min: 1000)", "")
-  .option("--project <id>", "Filter to specific project ID")
+  .option("--project <name-or-path>", "Scope the dashboard to one registered project by name or path (legacy local project IDs still resolve for compatibility)")
   .option("--no-watch", "Single snapshot, no polling")
   .option("--events <n>", "Number of recent events to show per project", "8")
-  .option("--simple", "Compact single-project view with task counts (like 'foreman status --watch')")
+  .option("--simple", "Compact single-project execution view with task counts")
   .action(async (opts: {
     interval: string;
     refresh: string;
@@ -881,7 +952,12 @@ export const dashboardCommand = new Command("dashboard")
     events: string;
     simple?: boolean;
   }) => {
-    const projectPath = process.cwd();
+    const cwdProjectPath = process.cwd();
+    const registry = new ProjectRegistry();
+    const registryMatch = opts.project
+      ? registry.list().find((project) => project.name === opts.project || project.path === opts.project)
+      : undefined;
+    const projectPath = registryMatch?.path ?? cwdProjectPath;
     const store = ForemanStore.forProject(projectPath);
 
     // Refresh interval: CLI --refresh > CLI --interval > config.yaml > default 5000ms
@@ -891,20 +967,25 @@ export const dashboardCommand = new Command("dashboard")
       ? Math.max(1000, parseInt(rawRefresh, 10) || configRefresh)
       : configRefresh;
 
-    const projectId = opts.project;
+    const projectSelector = opts.project;
     const watch = opts.watch !== false;
     const eventsLimit = Math.max(1, parseInt(opts.events, 10) || 8);
     const simple = opts.simple === true;
+    const registeredProjects = readProjectRegistry(store, registry);
+    const projectsToShow = projectSelector
+      ? registeredProjects.filter((project) => matchesRegisteredProject(project, projectSelector))
+      : registeredProjects;
+    const selectedProjectId = projectsToShow[0]?.id ?? projectSelector;
 
     // ── Simple (compact) mode ─────────────────────────────────────────────
     if (simple) {
       // Single-shot simple mode
       if (!watch) {
         try {
-          const state = pollDashboard(store, projectId, eventsLimit);
-          let counts: DashboardTaskCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+          const state = pollDashboard(store, selectedProjectId, eventsLimit);
+          let counts: DashboardTaskCounts = { total: 0, ready: 0, backlog: 0, inProgress: 0, completed: 0, blocked: 0 };
           try { counts = await fetchDashboardTaskCounts(projectPath); } catch { /* ignore */ }
-          console.log(renderSimpleDashboard(state, counts, projectId));
+          console.log(renderSimpleDashboard(state, counts, selectedProjectId));
         } finally {
           store.close();
         }
@@ -927,10 +1008,10 @@ export const dashboardCommand = new Command("dashboard")
 
       try {
         while (!detachedSimple) {
-          const state = pollDashboard(store, projectId, eventsLimit);
-          let counts: DashboardTaskCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+          const state = pollDashboard(store, selectedProjectId, eventsLimit);
+          let counts: DashboardTaskCounts = { total: 0, ready: 0, backlog: 0, inProgress: 0, completed: 0, blocked: 0 };
           try { counts = await fetchDashboardTaskCounts(projectPath); } catch { /* ignore */ }
-          const display = renderSimpleDashboard(state, counts, projectId);
+          const display = renderSimpleDashboard(state, counts, selectedProjectId);
           process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
           await new Promise<void>((r) => setTimeout(r, intervalMs));
         }
@@ -944,10 +1025,6 @@ export const dashboardCommand = new Command("dashboard")
 
     // ── Multi-project full dashboard mode ─────────────────────────────────
     // Use readProjectSnapshot() for concurrent READONLY reads (REQ-010, REQ-019)
-    const registeredProjects = readProjectRegistry(store);
-    const projectsToShow = projectId
-      ? registeredProjects.filter((p) => p.id === projectId)
-      : registeredProjects;
 
     // ── Single-shot full mode ─────────────────────────────────────────────
     if (!watch) {
@@ -978,8 +1055,9 @@ export const dashboardCommand = new Command("dashboard")
     process.on("SIGINT", onSigint);
     process.stdout.write("\x1b[?25l"); // hide cursor
 
-    let needsHumanTasks: NativeTask[] = [];
-    let selectedTaskIndex = -1;
+    let backlogBeads: DashboardBacklogBead[] = [];
+    let selectedBacklogIndex = -1;
+    let backlogNotice: string | null = null;
     let stdinRawMode = false;
     let sleepResolve: (() => void) | null = null;
 
@@ -990,46 +1068,43 @@ export const dashboardCommand = new Command("dashboard")
       }
     };
 
-    const handleNeedsHumanKey = (chunk: string | Buffer) => {
+    const handleBacklogKey = async (chunk: string | Buffer) => {
       const key = chunk.toString();
-      const tasks = needsHumanTasks;
+      const beads = backlogBeads;
 
       if (key === "\u001B[A" || key === "k") {
-        if (tasks.length > 0) {
-          selectedTaskIndex = selectedTaskIndex <= 0 ? tasks.length - 1 : selectedTaskIndex - 1;
+        if (beads.length > 0) {
+          selectedBacklogIndex = selectedBacklogIndex <= 0 ? beads.length - 1 : selectedBacklogIndex - 1;
           wakeAndRender();
         }
       } else if (key === "\u001B[B" || key === "j") {
-        if (tasks.length > 0) {
-          selectedTaskIndex = selectedTaskIndex >= tasks.length - 1 ? 0 : selectedTaskIndex + 1;
+        if (beads.length > 0) {
+          selectedBacklogIndex = selectedBacklogIndex >= beads.length - 1 ? 0 : selectedBacklogIndex + 1;
           wakeAndRender();
         }
       } else if (key === "a" || key === "A") {
-        if (selectedTaskIndex >= 0 && selectedTaskIndex < tasks.length) {
-          const task = tasks[selectedTaskIndex];
-          if (task.status === "backlog" && task.projectPath) {
-            approveTask(task.id, task.projectPath);
-            selectedTaskIndex = -1;
-            wakeAndRender();
+        if (selectedBacklogIndex >= 0 && selectedBacklogIndex < beads.length) {
+          const bead = beads[selectedBacklogIndex];
+          backlogNotice = chalk.dim(`Approving ${bead.id}…`);
+          wakeAndRender();
+          try {
+            const result = await approveBacklogBead(bead.id, bead.projectPath);
+            backlogNotice = result.approved.length > 0
+              ? chalk.green(`Approved ${result.approved.join(", ")} for dispatch`)
+              : chalk.yellow(`${bead.id} was already approved.`);
+          } catch (error) {
+            backlogNotice = chalk.red(
+              `Approval failed for ${bead.id}: ${error instanceof Error ? error.message : String(error)}`,
+            );
           }
-        }
-      } else if (key === "r" || key === "R") {
-        if (selectedTaskIndex >= 0 && selectedTaskIndex < tasks.length) {
-          const task = tasks[selectedTaskIndex];
-          if (
-            (task.status === "failed" || task.status === "stuck" || task.status === "conflict") &&
-            task.projectPath
-          ) {
-            retryTask(task.id, task.projectPath);
-            selectedTaskIndex = -1;
-            wakeAndRender();
-          }
+          selectedBacklogIndex = -1;
+          wakeAndRender();
         }
       } else if (key === "\r" || key === "\n") {
-        selectedTaskIndex = -1;
+        selectedBacklogIndex = -1;
         wakeAndRender();
-      } else if (key.length === 1 && selectedTaskIndex !== -1) {
-        selectedTaskIndex = -1;
+      } else if (key.length === 1 && selectedBacklogIndex !== -1) {
+        selectedBacklogIndex = -1;
         wakeAndRender();
       }
     };
@@ -1039,7 +1114,7 @@ export const dashboardCommand = new Command("dashboard")
         process.stdin.setRawMode(true);
         process.stdin.resume();
         process.stdin.setEncoding("utf8");
-        process.stdin.on("data", handleNeedsHumanKey);
+        process.stdin.on("data", handleBacklogKey);
         stdinRawMode = true;
       } catch {
         // Continue without keyboard handling when raw mode is unavailable.
@@ -1049,18 +1124,21 @@ export const dashboardCommand = new Command("dashboard")
     try {
       while (!detached) {
         // Re-read project list each iteration in case new projects registered
-        const currentProjects = readProjectRegistry(store);
-        const filtered = projectId
-          ? currentProjects.filter((p) => p.id === projectId)
+        const currentProjects = readProjectRegistry(store, registry);
+        const filtered = projectSelector
+          ? currentProjects.filter((project) => matchesRegisteredProject(project, projectSelector))
           : currentProjects;
 
         const snapshots = await readProjectSnapshot(filtered, eventsLimit);
         const state = aggregateSnapshots(snapshots);
-        needsHumanTasks = state.needsHumanTasks ?? [];
-        if (selectedTaskIndex >= needsHumanTasks.length) {
-          selectedTaskIndex = needsHumanTasks.length > 0 ? needsHumanTasks.length - 1 : -1;
+        backlogBeads = state.backlogBeads ?? [];
+        if (selectedBacklogIndex >= backlogBeads.length) {
+          selectedBacklogIndex = backlogBeads.length > 0 ? backlogBeads.length - 1 : -1;
         }
-        const display = renderDashboard(state);
+        const display = renderDashboard(state, {
+          selectedBacklogIndex,
+          backlogNotice,
+        });
         process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
         await new Promise<void>((resolve) => {
           sleepResolve = resolve;
@@ -1072,7 +1150,7 @@ export const dashboardCommand = new Command("dashboard")
       process.stdout.write("\x1b[?25h"); // restore cursor on any exit
       process.removeListener("SIGINT", onSigint);
       if (stdinRawMode) {
-        process.stdin.off("data", handleNeedsHumanKey);
+        process.stdin.off("data", handleBacklogKey);
         try {
           process.stdin.setRawMode(false);
         } catch {

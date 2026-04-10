@@ -190,8 +190,9 @@ describe("foreman retry", () => {
   // ── Open bead with no run history ────────────────────────────────────
 
   describe("open bead, no run history", () => {
-    it("succeeds without resetting status when bead is already open", async () => {
+    it("returns exit code 1 when bead is already open with no run to reset", async () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       mockShow.mockResolvedValue(makeBead({ status: "open" }));
 
@@ -204,11 +205,14 @@ describe("foreman retry", () => {
         tmpDir,
       );
 
-      expect(exitCode).toBe(0);
-      // No update needed — bead is already open
+      expect(exitCode).toBe(1);
       expect(mockUpdate).not.toHaveBeenCalled();
+      expect(consoleErrSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Retry made no changes"),
+      );
 
       consoleSpy.mockRestore();
+      consoleErrSpy.mockRestore();
     });
 
     it("does not call dispatch when --dispatch not set", async () => {
@@ -510,7 +514,7 @@ describe("foreman retry", () => {
       consoleSpy.mockRestore();
     });
 
-    it("prints dry-run notice", async () => {
+    it("prints preview-only retry wording in dry-run mode", async () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
       mockShow.mockResolvedValue(makeBead({ status: "open" }));
@@ -519,7 +523,9 @@ describe("foreman retry", () => {
       await retryAction("bd-test", { dryRun: true }, beadsClient, store, tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
-      expect(output).toContain("dry run");
+      expect(output).toContain("Previewing retry plan for bead");
+      expect(output).not.toContain("Retrying bead:");
+      expect(output).toContain("retry would make no changes");
 
       consoleSpy.mockRestore();
     });
@@ -631,8 +637,10 @@ describe("foreman retry", () => {
       consoleSpy.mockRestore();
     });
 
-    it("prints skipped task info when dispatcher skips", async () => {
+    it("returns exit code 1 and warns when dispatcher skips the retry", async () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       mockShow.mockResolvedValue(makeBead({ status: "open" }));
       mockDispatch.mockResolvedValue({
@@ -649,7 +657,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction(
+      const exitCode = await retryAction(
         "bd-test",
         { dispatch: true },
         beadsClient,
@@ -657,11 +665,17 @@ describe("foreman retry", () => {
         tmpDir,
       );
 
-      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
-      expect(output).toContain("skipped");
-      expect(output).toContain("Not found in ready beads");
+      expect(exitCode).toBe(1);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Not found in ready beads"),
+      );
+      expect(consoleErrSpy).toHaveBeenCalledWith(
+        expect.stringContaining("did not dispatch a new run"),
+      );
 
       consoleSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+      consoleErrSpy.mockRestore();
     });
 
     it("passes model override to dispatcher", async () => {
@@ -731,16 +745,16 @@ describe("foreman retry", () => {
       consoleSpy.mockRestore();
     });
 
-    it("shows 'Done' message on success", async () => {
+    it("shows reset-complete message after a successful state reset", async () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-      mockShow.mockResolvedValue(makeBead({ status: "open" }));
+      mockShow.mockResolvedValue(makeBead({ status: "completed" }));
 
       const { retryAction } = await import("../commands/retry.js");
       await retryAction("bd-test", {}, beadsClient, store, tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
-      expect(output).toContain("Done");
+      expect(output).toContain("Retry state reset complete.");
 
       consoleSpy.mockRestore();
     });

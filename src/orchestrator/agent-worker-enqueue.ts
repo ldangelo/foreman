@@ -8,6 +8,7 @@
 import type Database from "better-sqlite3";
 import { MergeQueue } from "./merge-queue.js";
 import type { MergeQueueEntry } from "./merge-queue.js";
+import { getForemanBranchName } from "../lib/branch-names.js";
 
 export interface EnqueueOptions {
   /** The database connection to use for the merge queue. */
@@ -52,7 +53,7 @@ export function enqueueToMergeQueue(options: EnqueueOptions): EnqueueResult {
 
     const mq = new MergeQueue(db);
     const entry = mq.enqueue({
-      branchName: `foreman/${seedId}`,
+      branchName: getForemanBranchName(seedId),
       seedId,
       runId,
       agentName: "pipeline",

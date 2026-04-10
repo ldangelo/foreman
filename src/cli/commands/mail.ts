@@ -14,6 +14,57 @@ import { Command } from "commander";
 import { ForemanStore } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 
+export type MailSendActionOptions = {
+  runId?: string;
+  from: string;
+  to: string;
+  subject: string;
+  body: string;
+};
+
+function writeMailSendError(message: string): number {
+  process.stderr.write(`mail send error: ${message}\n`);
+  return 1;
+}
+
+async function resolveMailProjectPath(cwd: string): Promise<string> {
+  const vcs = await VcsBackendFactory.create({ backend: "auto" }, cwd);
+  return await vcs.getMainRepoRoot(cwd);
+}
+
+export async function mailSendAction(options: MailSendActionOptions): Promise<number> {
+  const runId = options.runId?.trim() || process.env["FOREMAN_RUN_ID"]?.trim();
+  if (!runId) {
+    return writeMailSendError("--run-id is required (or set FOREMAN_RUN_ID)");
+  }
+
+  let parsedBody: string;
+  try {
+    parsedBody = JSON.stringify(JSON.parse(options.body));
+  } catch {
+    return writeMailSendError(`--body must be valid JSON (got: ${options.body})`);
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await resolveMailProjectPath(process.cwd());
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return writeMailSendError(`unable to resolve project path: ${msg}`);
+  }
+
+  const store = ForemanStore.forProject(projectPath);
+  try {
+    store.sendMessage(runId, options.from, options.to, options.subject, parsedBody);
+    return 0;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return writeMailSendError(msg);
+  } finally {
+    store.close();
+  }
+}
+
 // ── send subcommand ───────────────────────────────────────────────────────────
 
 const sendCommand = new Command("send")
@@ -23,54 +74,8 @@ const sendCommand = new Command("send")
   .requiredOption("--to <agent>", "Recipient agent role (e.g. foreman, developer)")
   .requiredOption("--subject <subject>", "Message subject (e.g. phase-started, phase-complete, agent-error)")
   .option("--body <json>", "Message body as JSON string (defaults to '{}')", "{}")
-  .action(async (options: {
-    runId?: string;
-    from: string;
-    to: string;
-    subject: string;
-    body: string;
-  }) => {
-    // Resolve run ID: flag takes priority, then env var
-    const runId = options.runId ?? process.env["FOREMAN_RUN_ID"];
-    if (!runId) {
-      process.stderr.write(
-        "mail send error: --run-id is required (or set FOREMAN_RUN_ID)\n",
-      );
-      process.exit(1);
-    }
-
-    // Validate body is valid JSON
-    let parsedBody: string;
-    try {
-      // Parse and re-stringify to normalise whitespace; also validates JSON
-      parsedBody = JSON.stringify(JSON.parse(options.body));
-    } catch {
-      process.stderr.write(
-        `mail send error: --body must be valid JSON (got: ${options.body})\n`,
-      );
-      process.exit(1);
-    }
-
-    // Resolve the project root so we can open the correct store
-    let projectPath: string;
-    try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      projectPath = await vcs.getMainRepoRoot(process.cwd());
-    } catch {
-      projectPath = process.cwd();
-    }
-
-    const store = ForemanStore.forProject(projectPath);
-    try {
-      store.sendMessage(runId, options.from, options.to, options.subject, parsedBody);
-      store.close();
-      process.exit(0);
-    } catch (err: unknown) {
-      store.close();
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`mail send error: ${msg}\n`);
-      process.exit(1);
-    }
+  .action(async (options: MailSendActionOptions) => {
+    process.exitCode = await mailSendAction(options);
   });
 
 // ── mail command (parent) ─────────────────────────────────────────────────────

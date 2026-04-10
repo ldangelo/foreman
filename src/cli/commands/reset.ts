@@ -15,6 +15,7 @@ import { deleteWorkerConfigFile } from "../../orchestrator/dispatcher.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { StateMismatch } from "../../lib/run-status.js";
 import { getWorkspaceRoot } from "../../lib/workspace-paths.js";
+import { getForemanBranchName } from "../../lib/branch-names.js";
 // Re-export for callers that import these from this module (backward compatibility).
 export { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 export type { StateMismatch } from "../../lib/run-status.js";
@@ -197,7 +198,7 @@ export async function detectAndHandleStaleBranches(
   );
 
   for (const run of latestBySeed.values()) {
-    const branchName = `foreman/${run.seed_id}`;
+    const branchName = getForemanBranchName(run.seed_id);
 
     // Skip if the merge is actively pending/in-progress — don't interrupt the refinery.
     if (activeMqSeedIds.has(run.seed_id)) {
@@ -246,8 +247,12 @@ export async function detectAndHandleStaleBranches(
           }
         }
 
-        // Mark the run as reset regardless of action.
-        store.updateRun(run.id, { status: "reset", completed_at: new Date().toISOString() });
+        // Preserve the authoritative terminal truth in SQLite: landed work becomes
+        // merged, while retryable stale work becomes reset.
+        store.updateRun(run.id, {
+          status: action === "close" ? "merged" : "reset",
+          completed_at: new Date().toISOString(),
+        });
 
         // Remove any MQ entries for this seed (conflict/failed ones).
         const seedMqEntries = mqEntries.filter((e) => e.seed_id === run.seed_id);
@@ -451,16 +456,14 @@ export interface ResetSeedResult {
 /**
  * Reset a single seed back to "open" status.
  *
- * - ALL non-open seeds are re-opened, including "closed" ones — this ensures
- *   that `foreman reset` always makes a seed retryable regardless of its
- *   previous state.
+ * Safety rule: a seed that is already "closed" is treated as landed work and is
+ * not reopened unless `force` is explicitly true.
+ *
  * - If the seed is already "open", the update is skipped (idempotent).
+ * - If the seed is "closed" and `force` is not set, returns "skipped-closed".
  * - If the seed is not found, returns "not-found" without throwing.
  * - In dry-run mode, the `show()` check still runs (read-only) but `update()`
  *   is skipped — the returned `action` accurately reflects what would happen.
- *
- * Note: The `force` parameter is retained for API compatibility but no longer
- * changes behaviour (closed seeds are always reopened).
  */
 export async function resetSeedToOpen(
   seedId: string,
@@ -468,11 +471,16 @@ export async function resetSeedToOpen(
   opts?: { dryRun?: boolean; force?: boolean },
 ): Promise<ResetSeedResult> {
   const dryRun = opts?.dryRun ?? false;
+  const force = opts?.force ?? false;
   try {
     const seedDetail = await seeds.show(seedId);
 
     if (seedDetail.status === "open") {
       return { action: "already-open", seedId, previousStatus: seedDetail.status };
+    }
+
+    if (seedDetail.status === "closed" && !force) {
+      return { action: "skipped-closed", seedId, previousStatus: seedDetail.status };
     }
 
     if (!dryRun) {
@@ -488,425 +496,444 @@ export async function resetSeedToOpen(
   }
 }
 
-export const resetCommand = new Command("reset")
-  .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
-  .option("--bead <id>", "Reset a specific bead by ID (clears all runs for that bead, including stale pending ones)")
-  .option("--all", "Reset ALL active runs, not just failed/stuck ones")
-  .option("--detect-stuck", "Run stuck detection first, adding newly-detected stuck runs to the reset list")
-  .option(
-    "--timeout <minutes>",
-    "Stuck detection timeout in minutes (used with --detect-stuck)",
-    String(PIPELINE_LIMITS.stuckDetectionMinutes),
-  )
-  .option("--dry-run", "Show what would be reset without doing it")
-  .option("--project <name>", "Registered project name (default: current directory)")
-  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action(async (opts, cmd) => {
-    const dryRun = opts.dryRun as boolean | undefined;
-    const all = opts.all as boolean | undefined;
-    const detectStuck = opts.detectStuck as boolean | undefined;
-    const beadFilter = opts.bead as string | undefined;
-    const timeoutMinutes = parseInt(opts.timeout as string, 10);
+export interface ResetActionDeps {
+  resolveProjectPath?: typeof resolveRepoRootProjectPath;
+  createVcs?: (
+    projectPath: string,
+  ) => Promise<Awaited<ReturnType<typeof VcsBackendFactory.create>>>;
+  createSeeds?: (projectPath: string) => IShowUpdateClient;
+  createStore?: (projectPath: string) => ForemanStore;
+  createMergeQueue?: (store: ForemanStore) => MergeQueue;
+  detectStuckRuns?: typeof detectStuckRuns;
+  detectAndFixMismatches?: typeof detectAndFixMismatches;
+  detectAndHandleStaleBranches?: typeof detectAndHandleStaleBranches;
+  archiveWorktreeReports?: typeof archiveWorktreeReports;
+  deleteWorkerConfigFile?: typeof deleteWorkerConfigFile;
+}
 
-    if (isNaN(timeoutMinutes)) {
-      console.error(
-        chalk.red(`Error: --timeout must be a positive integer, got "${opts.timeout as string}"`),
-      );
-      process.exit(1);
-    }
+export async function resetAction(
+  opts: Record<string, unknown>,
+  cmd: Command,
+  deps: ResetActionDeps = {},
+): Promise<number> {
+  const dryRun = opts.dryRun as boolean | undefined;
+  const all = opts.all as boolean | undefined;
+  const detectStuck = opts.detectStuck as boolean | undefined;
+  const beadFilter = opts.bead as string | undefined;
+  const forceReopenClosed = opts.forceReopenClosed as boolean | undefined;
+  const timeoutValue = opts.timeout as string;
+  const timeoutMinutes = Number.parseInt(timeoutValue, 10);
 
-    // Warn if --timeout is explicitly set but --detect-stuck is not (it would be a no-op)
-    if (!detectStuck && cmd.getOptionValueSource("timeout") === "user") {
-      console.warn(chalk.yellow("Warning: --timeout has no effect without --detect-stuck\n"));
-    }
+  if (!Number.isInteger(timeoutMinutes) || timeoutMinutes <= 0) {
+    console.error(
+      chalk.red(`Error: --timeout must be a positive integer, got "${timeoutValue}"`),
+    );
+    return 1;
+  }
 
+  if (!detectStuck && cmd.getOptionValueSource("timeout") === "user") {
+    console.error(chalk.red("Error: --timeout requires --detect-stuck."));
+    return 1;
+  }
+
+  const resolveProjectPath = deps.resolveProjectPath ?? resolveRepoRootProjectPath;
+  const createVcs = deps.createVcs ?? ((projectPath: string) => VcsBackendFactory.create({ backend: "auto" }, projectPath));
+  const createSeeds = deps.createSeeds ?? ((projectPath: string) => new BeadsRustClient(projectPath));
+  const createStore = deps.createStore ?? ((projectPath: string) => ForemanStore.forProject(projectPath));
+  const createMergeQueue = deps.createMergeQueue ?? ((store: ForemanStore) => new MergeQueue(store.getDb()));
+  const detectStuckRunsFn = deps.detectStuckRuns ?? detectStuckRuns;
+  const detectAndFixMismatchesFn = deps.detectAndFixMismatches ?? detectAndFixMismatches;
+  const detectAndHandleStaleBranchesFn = deps.detectAndHandleStaleBranches ?? detectAndHandleStaleBranches;
+  const archiveReports = deps.archiveWorktreeReports ?? archiveWorktreeReports;
+  const deleteWorkerConfig = deps.deleteWorkerConfigFile ?? deleteWorkerConfigFile;
+
+  let store: ForemanStore | undefined;
+
+  try {
+    const projectPath = await resolveProjectPath(opts);
+    const vcs = await createVcs(projectPath);
+    let originalBranch: string | undefined;
     try {
-      const projectPath = await resolveRepoRootProjectPath(opts);
-      const vcs = await VcsBackendFactory.create({ backend: 'auto' }, projectPath);
-      // Save current branch so we can restore it after worktree/branch cleanup,
-      // which can change HEAD as a side effect of git worktree remove / branch -D.
-      let originalBranch: string | undefined;
-      try { originalBranch = await vcs.getCurrentBranch(projectPath); } catch { /* ignore */ }
+      originalBranch = await vcs.getCurrentBranch(projectPath);
+    } catch {
+      // Ignore branch-detection failures; reset can still proceed.
+    }
 
-      const seeds: IShowUpdateClient = new BeadsRustClient(projectPath);
-      const store = ForemanStore.forProject(projectPath);
-      const project = store.getProjectByPath(projectPath);
+    const seeds: IShowUpdateClient = createSeeds(projectPath);
+    store = createStore(projectPath);
+    const project = store.getProjectByPath(projectPath);
 
-      if (!project) {
-        console.error(chalk.red("No project registered for this path. Run 'foreman init' first."));
-        process.exit(1);
-      }
+    if (!project) {
+      console.error(chalk.red("No project registered for this path. Run 'foreman init' first."));
+      return 1;
+    }
 
-      const mergeQueue = new MergeQueue(store.getDb());
+    const mergeQueue = createMergeQueue(store);
+    const detectionErrors: string[] = [];
+    let detectedStuckRuns: Run[] = [];
 
-      // Optional: run stuck detection first, mark newly-stuck runs in the store
-      if (detectStuck) {
-        console.log(chalk.bold("Detecting stuck runs...\n"));
-        const detectionResult = await detectStuckRuns(store, project.id, {
-          stuckTimeoutMinutes: timeoutMinutes,
-          dryRun,
-        });
+    if (detectStuck) {
+      console.log(chalk.bold("Detecting stuck runs...\n"));
+      const detectionResult = await detectStuckRunsFn(store, project.id, {
+        stuckTimeoutMinutes: timeoutMinutes,
+        dryRun,
+      });
 
-        if (detectionResult.stuck.length > 0) {
-          console.log(chalk.yellow.bold(`Found ${detectionResult.stuck.length} newly stuck run(s):`));
-          for (const run of detectionResult.stuck) {
-            const elapsed = run.started_at
-              ? Math.round((Date.now() - new Date(run.started_at).getTime()) / 60000)
-              : 0;
-            console.log(
-              `  ${chalk.yellow(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)} ${elapsed}m`,
-            );
-          }
-          console.log();
-        } else {
-          console.log(chalk.dim("  No newly stuck runs detected.\n"));
+      detectedStuckRuns = detectionResult.stuck;
+
+      if (detectionResult.stuck.length > 0) {
+        console.log(chalk.yellow.bold(`Found ${detectionResult.stuck.length} newly stuck run(s):`));
+        for (const run of detectionResult.stuck) {
+          const elapsed = run.started_at
+            ? Math.round((Date.now() - new Date(run.started_at).getTime()) / 60000)
+            : 0;
+          console.log(
+            `  ${chalk.yellow(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)} ${elapsed}m`,
+          );
         }
-
-        if (detectionResult.errors.length > 0) {
-          for (const err of detectionResult.errors) {
-            console.log(chalk.red(`  Warning: ${err}`));
-          }
-          console.log();
-        }
-      }
-
-      // Find runs to reset
-      let runs: Run[];
-
-      if (beadFilter) {
-        // --seed: get ALL runs for this seed regardless of status, so stale pending/running are included
-        runs = store.getRunsForSeed(beadFilter, project.id);
-        if (runs.length === 0) {
-          console.log(chalk.yellow(`No runs found for bead ${beadFilter}.\n`));
-        } else {
-          console.log(chalk.bold(`Resetting all ${runs.length} run(s) for bead ${beadFilter}:\n`));
-        }
+        console.log();
       } else {
-        const statuses = all
-          ? ["pending", "running", "failed", "stuck", "conflict", "test-failed"] as const
-          : ["failed", "stuck", "conflict", "test-failed"] as const;
-        runs = statuses.flatMap((s) => store.getRunsByStatus(s, project.id));
+        console.log(chalk.dim("  No newly stuck runs detected.\n"));
       }
 
-      if (dryRun) {
-        console.log(chalk.yellow("(dry run — no changes will be made)\n"));
-      }
-
-      if (!beadFilter && runs.length === 0) {
-        console.log(chalk.yellow("No active runs to reset.\n"));
-      } else if (!beadFilter) {
-        console.log(chalk.bold(`Resetting ${runs.length} run(s):\n`));
-      }
-
-      // Collect unique seed IDs to reset
-      const seedIds = new Set<string>();
-      let killed = 0;
-      let worktreesRemoved = 0;
-      let branchesDeleted = 0;
-      let runsMarkedFailed = 0;
-      let mqEntriesRemoved = 0;
-      let seedsReset = 0;
-      const errors: string[] = [];
-
-      for (const run of runs) {
-        const pid = extractPid(run.session_key);
-        const branchName = `foreman/${run.seed_id}`;
-
-        console.log(`  ${chalk.cyan(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)} status=${run.status}`);
-
-        // 1. Kill the agent process if alive
-        if (pid && isAlive(pid)) {
-          console.log(`    ${chalk.yellow("kill")} pid ${pid}`);
-          if (!dryRun) {
-            try {
-              process.kill(pid, "SIGTERM");
-              killed++;
-            } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err);
-              errors.push(`Failed to kill pid ${pid} for ${run.seed_id}: ${msg}`);
-              console.log(`    ${chalk.red("error")} killing pid ${pid}: ${msg}`);
-            }
-          }
+      if (detectionResult.errors.length > 0) {
+        detectionErrors.push(...detectionResult.errors);
+        for (const err of detectionResult.errors) {
+          console.error(chalk.red(`  Warning: ${err}`));
         }
+        console.error();
+      }
+    }
 
-        // 2. Remove the worktree
-        if (run.worktree_path) {
-          console.log(`    ${chalk.yellow("remove")} worktree ${run.worktree_path}`);
-          if (!dryRun) {
-            try {
-              await archiveWorktreeReports(projectPath, run.worktree_path, run.seed_id).catch(() => {});
-              await vcs.removeWorkspace(projectPath, run.worktree_path);
-              worktreesRemoved++;
-            } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err);
-              // Worktree/workspace may already be gone — not an error
-              if (!msg.includes("is not a working tree") && !msg.includes("doesn't exist")) {
-                errors.push(`Failed to remove worktree for ${run.seed_id}: ${msg}`);
-                console.log(`    ${chalk.red("error")} removing worktree: ${msg}`);
-              } else {
-                worktreesRemoved++;
-              }
-            }
-          }
-        }
+    let runs: Run[];
 
-        // 3. Delete the branch — switch to main first if it is currently checked out
-        console.log(`    ${chalk.yellow("delete")} branch ${branchName}`);
+    if (beadFilter) {
+      runs = store.getRunsForSeed(beadFilter, project.id);
+      const latestRun = runs[0];
+      const landedStatuses: ReadonlySet<Run["status"]> = new Set(["merged", "pr-created"]);
+
+      if (latestRun && landedStatuses.has(latestRun.status) && !forceReopenClosed) {
+        console.error(
+          chalk.red(
+            `Bead ${beadFilter} is already landed (latest run status: ${latestRun.status}). Refusing to reopen it without --force-reopen-closed.`,
+          ),
+        );
+        return 1;
+      }
+
+      if (runs.length === 0) {
+        console.log(chalk.yellow(`No runs found for bead ${beadFilter}.`));
+        console.log(chalk.dim("Nothing changed."));
+        return 0;
+      }
+
+      console.log(chalk.bold(`Resetting all ${runs.length} run(s) for bead ${beadFilter}:\n`));
+    } else {
+      const statuses = all
+        ? ["pending", "running", "failed", "stuck", "conflict", "test-failed"] as const
+        : ["failed", "stuck", "conflict", "test-failed"] as const;
+      const runsById = new Map<string, Run>();
+
+      for (const run of statuses.flatMap((status) => store!.getRunsByStatus(status, project.id))) {
+        runsById.set(run.id, run);
+      }
+      for (const run of detectedStuckRuns) {
+        runsById.set(run.id, run);
+      }
+
+      runs = [...runsById.values()];
+    }
+
+    if (dryRun) {
+      console.log(chalk.yellow("(dry run — no changes will be made)\n"));
+    }
+
+    if (!beadFilter && runs.length === 0) {
+      console.log(chalk.yellow("No active runs to reset.\n"));
+    } else if (!beadFilter) {
+      console.log(chalk.bold(`Resetting ${runs.length} run(s):\n`));
+    }
+
+    const seedIds = new Set<string>();
+    let killed = 0;
+    let worktreesRemoved = 0;
+    let branchesDeleted = 0;
+    let runsMarkedReset = 0;
+    let mqEntriesRemoved = 0;
+    let seedsReset = 0;
+    const errors: string[] = [];
+
+    for (const run of runs) {
+      const pid = extractPid(run.session_key);
+      const branchName = getForemanBranchName(run.seed_id);
+
+      console.log(`  ${chalk.cyan(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)} status=${run.status}`);
+
+      if (pid && isAlive(pid)) {
+        console.log(`    ${chalk.yellow("kill")} pid ${pid}`);
         if (!dryRun) {
-          const { execFile } = await import("node:child_process");
-          const { promisify } = await import("node:util");
           try {
-            const delResult = await vcs.deleteBranch(projectPath, branchName, { force: true });
-            if (delResult.deleted) branchesDeleted++;
+            process.kill(pid, "SIGTERM");
+            killed++;
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            if (msg.includes("used by worktree")) {
-              // Branch is HEAD of the main worktree — switch to main then retry
-              try {
-                console.log(`    ${chalk.dim("checkout")} main (branch is current HEAD)`);
-                await vcs.checkoutBranch(projectPath, "main");
-                const retryResult = await vcs.deleteBranch(projectPath, branchName, { force: true });
-                if (retryResult.deleted) branchesDeleted++;
-              } catch (retryErr: unknown) {
-                const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-                errors.push(`Failed to delete branch ${branchName}: ${retryMsg}`);
-                console.log(`    ${chalk.red("error")} deleting branch: ${retryMsg}`);
-              }
+            errors.push(`Failed to kill pid ${pid} for ${run.seed_id}: ${msg}`);
+            console.log(`    ${chalk.red("error")} killing pid ${pid}: ${msg}`);
+          }
+        }
+      }
+
+      if (run.worktree_path) {
+        console.log(`    ${chalk.yellow("remove")} worktree ${run.worktree_path}`);
+        if (!dryRun) {
+          try {
+            await archiveReports(projectPath, run.worktree_path, run.seed_id).catch(() => {});
+            await vcs.removeWorkspace(projectPath, run.worktree_path);
+            worktreesRemoved++;
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!msg.includes("is not a working tree") && !msg.includes("doesn't exist")) {
+              errors.push(`Failed to remove worktree for ${run.seed_id}: ${msg}`);
+              console.log(`    ${chalk.red("error")} removing worktree: ${msg}`);
             } else {
-              errors.push(`Failed to delete branch ${branchName}: ${msg}`);
-              console.log(`    ${chalk.red("error")} deleting branch: ${msg}`);
-            }
-          }
-
-          // 3b. Delete the remote branch to prevent stale remote tracking refs.
-          // reconcile() checks refs/remotes/origin/foreman/<seedId> to recover
-          // runs that crashed after pushing but before updating their status.
-          // If the local branch is deleted but the remote ref persists, reconcile()
-          // will falsely mark the newly re-dispatched (empty) run as "completed"
-          // and insert a merge queue entry that immediately fails with "no-commits".
-          console.log(`    ${chalk.yellow("delete")} remote branch origin/${branchName}`);
-          try {
-            await promisify(execFile)("git", ["push", "origin", "--delete", branchName], { cwd: projectPath });
-          } catch {
-            // Non-fatal: remote branch may not exist (never pushed, or already deleted)
-          }
-        }
-
-        // 4. Mark run as "reset" — keeps history/events intact but signals to
-        //    doctor that this run was intentionally cleared (not an active failure).
-        console.log(`    ${chalk.yellow("mark")} run as reset`);
-        if (!dryRun) {
-          store.updateRun(run.id, {
-            status: "reset",
-            completed_at: new Date().toISOString(),
-          });
-          runsMarkedFailed++;
-        }
-
-        // 5. Clean up orphaned worker config file (if it still exists)
-        if (!dryRun) {
-          await deleteWorkerConfigFile(run.id);
-        }
-
-        // 5b. Remove merge queue entries for this seed
-        const mqEntries = mergeQueue.list().filter((e) => e.seed_id === run.seed_id);
-        if (mqEntries.length > 0) {
-          console.log(`    ${chalk.yellow("remove")} ${mqEntries.length} merge queue entry(ies)`);
-          if (!dryRun) {
-            for (const entry of mqEntries) {
-              mergeQueue.remove(entry.id);
-              mqEntriesRemoved++;
-            }
-          }
-        }
-
-        seedIds.add(run.seed_id);
-        console.log();
-      }
-
-      // 5. Reset seeds to open (force-reopen if --seed was explicitly provided)
-      for (const seedId of seedIds) {
-        const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!beadFilter });
-        switch (result.action) {
-          case "skipped-closed":
-            // This case is no longer reachable — resetSeedToOpen now always reopens
-            // closed seeds. Kept to satisfy the exhaustive switch type check.
-            console.log(
-              `  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already closed — not reopening`,
-            );
-            break;
-          case "already-open":
-            // Bead was already open — no update was made (or would be made).
-            console.log(`  ${chalk.dim("skip")} bead ${chalk.cyan(seedId)} is already open`);
-            break;
-          case "reset":
-            console.log(`  ${chalk.yellow("reset")} bead ${chalk.cyan(seedId)} → open`);
-            seedsReset++;
-            break;
-          case "not-found":
-            console.log(`    ${chalk.dim("skip")} bead ${seedId} no longer exists`);
-            break;
-          case "error":
-            errors.push(`Failed to reset bead ${seedId}: ${result.error ?? "unknown error"}`);
-            console.log(`    ${chalk.red("error")} resetting bead: ${result.error ?? "unknown error"}`);
-            break;
-        }
-      }
-
-      // 5c. Mark all completed runs with no MQ entry as "reset" — their branches
-      //     have been removed or were never queued, so they can never be merged.
-      //     Leaving them as "completed" triggers the MQ-011 doctor warning.
-      if (!dryRun) {
-        const unqueuedCompleted = mergeQueue.missingFromQueue();
-        for (const entry of unqueuedCompleted) {
-          store.updateRun(entry.run_id, { status: "reset", completed_at: new Date().toISOString() });
-          runsMarkedFailed++;
-        }
-        if (unqueuedCompleted.length > 0) {
-          console.log(`  ${chalk.yellow("reset")} ${unqueuedCompleted.length} completed run(s) with no merge queue entry`);
-        }
-      }
-
-      // 6. Prune stale worktree entries and remote tracking refs
-      if (!dryRun) {
-        try {
-          const { execFile } = await import("node:child_process");
-          const { promisify } = await import("node:util");
-          // git worktree prune only applies to git backends — jj manages workspaces separately
-          const { GitBackend } = await import("../../lib/vcs/git-backend.js");
-          if (vcs instanceof GitBackend) {
-            await promisify(execFile)("git", ["worktree", "prune"], { cwd: projectPath });
-          }
-          // Prune stale remote tracking refs so reconcile() doesn't see deleted
-          // remote branches and falsely recover newly-dispatched empty runs.
-          await promisify(execFile)("git", ["fetch", "--prune"], { cwd: projectPath });
-        } catch {
-          // Non-critical
-        }
-      }
-
-      // 6b. Clean up orphaned worktrees — directories in .foreman-worktrees/ that either have
-      //     no SQLite run record OR only have completed/merged runs (finalize should remove them
-      //     but sometimes fails to do so)
-      if (!dryRun) {
-        const worktreesDir = getWorkspaceRoot(projectPath);
-        if (existsSync(worktreesDir)) {
-          // Paths that still have truly active runs (pending or running) — keep these.
-          // "failed" and "stuck" are terminal states: their agents have stopped, so
-          // their worktrees are safe to remove during cleanup. Including them in the
-          // "active" set was the bug: it prevented orphaned worktrees from being
-          // cleaned up when a run had no worktree_path recorded in the DB.
-          const activeStatuses = ["pending", "running"] as const;
-          const activeRuns = activeStatuses.flatMap((s) => store.getRunsByStatus(s, project.id));
-          const activeWorktreePaths = new Set(activeRuns.map((r) => r.worktree_path).filter(Boolean));
-
-          let entries: string[] = [];
-          try {
-            entries = readdirSync(worktreesDir);
-          } catch {
-            // Directory may have been removed already
-          }
-
-          for (const entry of entries) {
-            const fullPath = `${worktreesDir}/${entry}`;
-            // Skip if this worktree belongs to an active run (may still be in use)
-            if (activeWorktreePaths.has(fullPath)) continue;
-
-            console.log(`  ${chalk.yellow("orphan")} worktree ${fullPath}`);
-            try {
-              await vcs.removeWorkspace(projectPath, fullPath);
               worktreesRemoved++;
-            } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err);
-              if (!msg.includes("is not a working tree") && !msg.includes("doesn't exist")) {
-                console.log(`    ${chalk.red("error")} removing orphaned worktree: ${msg}`);
-              }
-            }
-            // Delete the corresponding branch if it exists
-            const orphanBranch = `foreman/${entry}`;
-            try {
-              const delResult = await vcs.deleteBranch(projectPath, orphanBranch, { force: true });
-              if (delResult.deleted) {
-                branchesDeleted++;
-                console.log(`    ${chalk.yellow("delete")} orphan branch ${orphanBranch}`);
-              }
-            } catch {
-              // Branch may not exist — skip silently
             }
           }
         }
       }
 
-      // 6c. Purge all remaining conflict/failed merge queue entries (catches seeds not
-      //     in this reset batch that are still clogging the queue)
+      console.log(`    ${chalk.yellow("delete")} branch ${branchName}`);
       if (!dryRun) {
-        const staleEntries = mergeQueue.list().filter(
-          (e) => e.status === "conflict" || e.status === "failed",
-        );
-        for (const entry of staleEntries) {
-          mergeQueue.remove(entry.id);
-          mqEntriesRemoved++;
+        const { execFile } = await import("node:child_process");
+        const { promisify } = await import("node:util");
+        try {
+          const delResult = await vcs.deleteBranch(projectPath, branchName, { force: true });
+          if (delResult.deleted) branchesDeleted++;
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes("used by worktree")) {
+            try {
+              console.log(`    ${chalk.dim("checkout")} main (branch is current HEAD)`);
+              await vcs.checkoutBranch(projectPath, "main");
+              const retryResult = await vcs.deleteBranch(projectPath, branchName, { force: true });
+              if (retryResult.deleted) branchesDeleted++;
+            } catch (retryErr: unknown) {
+              const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+              errors.push(`Failed to delete branch ${branchName}: ${retryMsg}`);
+              console.log(`    ${chalk.red("error")} deleting branch: ${retryMsg}`);
+            }
+          } else {
+            errors.push(`Failed to delete branch ${branchName}: ${msg}`);
+            console.log(`    ${chalk.red("error")} deleting branch: ${msg}`);
+          }
         }
-        if (staleEntries.length > 0) {
-          console.log(`  ${chalk.yellow("purged")} ${staleEntries.length} stale merge queue entry(ies)`);
+
+        console.log(`    ${chalk.yellow("delete")} remote branch origin/${branchName}`);
+        try {
+          await promisify(execFile)("git", ["push", "origin", "--delete", branchName], { cwd: projectPath });
+        } catch {
+          // Remote branch may not exist; keep reset truthful by ignoring this benign case.
         }
       }
 
-      // 7. Detect and fix seed/run state mismatches for terminal runs
-      console.log(chalk.bold("\nChecking for bead/run state mismatches..."));
-      const mismatchResult = await detectAndFixMismatches(store, seeds, project.id, seedIds, { dryRun });
+      console.log(`    ${chalk.yellow("mark")} run as reset`);
+      if (!dryRun) {
+        store.updateRun(run.id, {
+          status: "reset",
+          completed_at: new Date().toISOString(),
+        });
+        runsMarkedReset++;
+      }
 
-      if (mismatchResult.mismatches.length > 0) {
-        for (const m of mismatchResult.mismatches) {
-          const action = dryRun
-            ? chalk.yellow("(would fix)")
-            : chalk.green("fixed");
+      if (!dryRun) {
+        await deleteWorkerConfig(run.id);
+      }
+
+      const mqEntries = mergeQueue.list().filter((entry) => entry.seed_id === run.seed_id);
+      if (mqEntries.length > 0) {
+        console.log(`    ${chalk.yellow("remove")} ${mqEntries.length} merge queue entry(ies)`);
+        if (!dryRun) {
+          for (const entry of mqEntries) {
+            mergeQueue.remove(entry.id);
+            mqEntriesRemoved++;
+          }
+        }
+      }
+
+      seedIds.add(run.seed_id);
+      console.log();
+    }
+
+    for (const seedId of seedIds) {
+      const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!forceReopenClosed });
+      switch (result.action) {
+        case "skipped-closed":
           console.log(
-            `  ${chalk.yellow("mismatch")} ${chalk.cyan(m.seedId)}: ` +
-            `run=${m.runStatus}, bead=${m.actualSeedStatus} → ${m.expectedSeedStatus} ${action}`,
+            `  ${chalk.dim("skip")} bead ${chalk.cyan(seedId)} is already closed — use --force-reopen-closed to reopen landed work`,
           );
-        }
-      } else {
-        console.log(chalk.dim("  No mismatches found."));
+          break;
+        case "already-open":
+          console.log(`  ${chalk.dim("skip")} bead ${chalk.cyan(seedId)} is already open`);
+          break;
+        case "reset":
+          console.log(`  ${chalk.yellow("reset")} bead ${chalk.cyan(seedId)} → open`);
+          seedsReset++;
+          break;
+        case "not-found":
+          console.log(`    ${chalk.dim("skip")} bead ${seedId} no longer exists`);
+          break;
+        case "error":
+          errors.push(`Failed to reset bead ${seedId}: ${result.error ?? "unknown error"}`);
+          console.log(`    ${chalk.red("error")} resetting bead: ${result.error ?? "unknown error"}`);
+          break;
       }
+    }
 
-      // 8. Detect and handle stale branches for completed (review) runs.
-      //    This covers beads stuck in 'review' status from failed merge attempts.
-      console.log(chalk.bold("\nChecking for stale / already-merged review branches..."));
-      const staleResult = await detectAndHandleStaleBranches(
-        store,
-        seeds,
-        mergeQueue,
-        projectPath,
-        project.id,
-        seedIds, // skip seeds already handled by the main reset loop
-        { dryRun },
+    if (!dryRun) {
+      const unqueuedCompleted = mergeQueue.missingFromQueue();
+      for (const entry of unqueuedCompleted) {
+        store.updateRun(entry.run_id, { status: "reset", completed_at: new Date().toISOString() });
+        runsMarkedReset++;
+      }
+      if (unqueuedCompleted.length > 0) {
+        console.log(`  ${chalk.yellow("reset")} ${unqueuedCompleted.length} completed run(s) with no merge queue entry`);
+      }
+    }
+
+    if (!dryRun) {
+      try {
+        const { execFile } = await import("node:child_process");
+        const { promisify } = await import("node:util");
+        const { GitBackend } = await import("../../lib/vcs/git-backend.js");
+        if (vcs instanceof GitBackend) {
+          await promisify(execFile)("git", ["worktree", "prune"], { cwd: projectPath });
+        }
+        await promisify(execFile)("git", ["fetch", "--prune"], { cwd: projectPath });
+      } catch {
+        // Non-critical cleanup only.
+      }
+    }
+
+    if (!dryRun) {
+      const worktreesDir = getWorkspaceRoot(projectPath);
+      if (existsSync(worktreesDir)) {
+        const activeStatuses = ["pending", "running"] as const;
+        const activeRuns = activeStatuses.flatMap((status) => store!.getRunsByStatus(status, project.id));
+        const activeWorktreePaths = new Set(activeRuns.map((run) => run.worktree_path).filter(Boolean));
+
+        let entries: string[] = [];
+        try {
+          entries = readdirSync(worktreesDir);
+        } catch {
+          // Directory may already be gone.
+        }
+
+        for (const entry of entries) {
+          const fullPath = `${worktreesDir}/${entry}`;
+          if (activeWorktreePaths.has(fullPath)) continue;
+
+          console.log(`  ${chalk.yellow("orphan")} worktree ${fullPath}`);
+          try {
+            await vcs.removeWorkspace(projectPath, fullPath);
+            worktreesRemoved++;
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!msg.includes("is not a working tree") && !msg.includes("doesn't exist")) {
+              console.log(`    ${chalk.red("error")} removing orphaned worktree: ${msg}`);
+            }
+          }
+
+          const orphanBranch = getForemanBranchName(entry);
+          try {
+            const delResult = await vcs.deleteBranch(projectPath, orphanBranch, { force: true });
+            if (delResult.deleted) {
+              branchesDeleted++;
+              console.log(`    ${chalk.yellow("delete")} orphan branch ${orphanBranch}`);
+            }
+          } catch {
+            // Branch may not exist.
+          }
+        }
+      }
+    }
+
+    if (!dryRun) {
+      const staleEntries = mergeQueue.list().filter(
+        (entry) => entry.status === "conflict" || entry.status === "failed",
       );
-
-      for (const r of staleResult.results) {
-        if (r.action === "skip") continue;
-        if (r.action === "error") {
-          console.log(`  ${chalk.red("error")} ${chalk.cyan(r.seedId)}: ${r.error ?? r.reason}`);
-        } else if (r.action === "close") {
-          console.log(
-            `  ${dryRun ? chalk.yellow("(would close)") : chalk.green("close")} ` +
-            `bead ${chalk.cyan(r.seedId)} — ${r.reason}`,
-          );
-        } else {
-          console.log(
-            `  ${dryRun ? chalk.yellow("(would reset)") : chalk.yellow("reset")} ` +
-            `bead ${chalk.cyan(r.seedId)} → open — ${r.reason}`,
-          );
-        }
+      for (const entry of staleEntries) {
+        mergeQueue.remove(entry.id);
+        mqEntriesRemoved++;
       }
-
-      if (staleResult.results.filter((r) => r.action !== "skip" && r.action !== "error").length === 0) {
-        console.log(chalk.dim("  No stale review branches found."));
+      if (staleEntries.length > 0) {
+        console.log(`  ${chalk.yellow("purged")} ${staleEntries.length} stale merge queue entry(ies)`);
       }
+    }
 
-      // Summary
-      console.log(chalk.bold("\nSummary:"));
-      if (dryRun) {
+    console.log(chalk.bold("\nChecking for bead/run state mismatches..."));
+    const mismatchResult = await detectAndFixMismatchesFn(store, seeds, project.id, seedIds, { dryRun });
+
+    if (mismatchResult.mismatches.length > 0) {
+      for (const mismatch of mismatchResult.mismatches) {
+        const action = dryRun
+          ? chalk.yellow("(would fix)")
+          : chalk.green("fixed");
+        console.log(
+          `  ${chalk.yellow("mismatch")} ${chalk.cyan(mismatch.seedId)}: ` +
+          `run=${mismatch.runStatus}, bead=${mismatch.actualSeedStatus} → ${mismatch.expectedSeedStatus} ${action}`,
+        );
+      }
+    } else {
+      console.log(chalk.dim("  No mismatches found."));
+    }
+
+    console.log(chalk.bold("\nChecking for stale / already-merged review branches..."));
+    const staleResult = await detectAndHandleStaleBranchesFn(
+      store,
+      seeds,
+      mergeQueue,
+      projectPath,
+      project.id,
+      seedIds,
+      { dryRun },
+    );
+
+    for (const result of staleResult.results) {
+      if (result.action === "skip") continue;
+      if (result.action === "error") {
+        console.log(`  ${chalk.red("error")} ${chalk.cyan(result.seedId)}: ${result.error ?? result.reason}`);
+      } else if (result.action === "close") {
+        console.log(
+          `  ${dryRun ? chalk.yellow("(would close)") : chalk.green("close")} ` +
+          `bead ${chalk.cyan(result.seedId)} — ${result.reason}`,
+        );
+      } else {
+        console.log(
+          `  ${dryRun ? chalk.yellow("(would reset)") : chalk.yellow("reset")} ` +
+          `bead ${chalk.cyan(result.seedId)} → open — ${result.reason}`,
+        );
+      }
+    }
+
+    if (staleResult.results.filter((result) => result.action !== "skip" && result.action !== "error").length === 0) {
+      console.log(chalk.dim("  No stale review branches found."));
+    }
+
+    const meaningfulResetWork = dryRun
+      ? runs.length > 0 || mismatchResult.mismatches.length > 0 || staleResult.closed > 0 || staleResult.reset > 0
+      : killed > 0 ||
+        worktreesRemoved > 0 ||
+        branchesDeleted > 0 ||
+        runsMarkedReset > 0 ||
+        mqEntriesRemoved > 0 ||
+        seedsReset > 0 ||
+        mismatchResult.fixed > 0 ||
+        staleResult.closed > 0 ||
+        staleResult.reset > 0;
+
+    console.log(chalk.bold("\nSummary:"));
+    if (dryRun) {
+      if (meaningfulResetWork) {
         console.log(chalk.yellow(`  Would reset ${runs.length} runs across ${seedIds.size} beads`));
         if (mismatchResult.mismatches.length > 0) {
           console.log(chalk.yellow(`  Would fix ${mismatchResult.mismatches.length} mismatch(es)`));
@@ -918,46 +945,92 @@ export const resetCommand = new Command("reset")
           console.log(chalk.yellow(`  Would reset ${staleResult.reset} stale review bead(s) to open`));
         }
       } else {
-        console.log(`  Processes killed:   ${killed}`);
-        console.log(`  Worktrees removed:  ${worktreesRemoved}`);
-        console.log(`  Branches deleted:   ${branchesDeleted}`);
-        console.log(`  Runs marked reset:   ${runsMarkedFailed}`);
-        console.log(`  MQ entries removed:  ${mqEntriesRemoved}`);
-        console.log(`  Beads reset:        ${seedsReset}`);
-        console.log(`  Mismatches fixed:   ${mismatchResult.fixed}`);
-        console.log(`  Beads closed (merged): ${staleResult.closed}`);
-        console.log(`  Beads reset (review):  ${staleResult.reset}`);
+        console.log(chalk.dim("  No resettable runs or bead drift found."));
       }
+    } else {
+      console.log(`  Processes killed:      ${killed}`);
+      console.log(`  Worktrees removed:     ${worktreesRemoved}`);
+      console.log(`  Branches deleted:      ${branchesDeleted}`);
+      console.log(`  Runs marked reset:     ${runsMarkedReset}`);
+      console.log(`  MQ entries removed:    ${mqEntriesRemoved}`);
+      console.log(`  Beads reset:           ${seedsReset}`);
+      console.log(`  Mismatches fixed:      ${mismatchResult.fixed}`);
+      console.log(`  Beads closed (merged): ${staleResult.closed}`);
+      console.log(`  Beads reset (review):  ${staleResult.reset}`);
+      if (!meaningfulResetWork) {
+        console.log(chalk.dim("  No resettable runs or bead drift found."));
+      }
+    }
 
-      const allErrors = [...errors, ...mismatchResult.errors, ...staleResult.errors];
-      if (allErrors.length > 0) {
-        console.log(chalk.red(`\n  Errors (${allErrors.length}):`));
-        for (const err of allErrors) {
-          console.log(chalk.red(`    ${err}`));
+    let restoreBranchError: string | null = null;
+    if (originalBranch) {
+      try {
+        const currentBranch = await vcs.getCurrentBranch(projectPath);
+        if (currentBranch !== originalBranch) {
+          await vcs.checkoutBranch(projectPath, originalBranch);
+          console.log(chalk.dim(`Restored branch: ${originalBranch}`));
         }
+      } catch {
+        restoreBranchError = `Warning: could not restore branch '${originalBranch}'. Run: git checkout ${originalBranch}`;
+        console.error(chalk.yellow(restoreBranchError));
       }
+    }
 
-      // Restore the original branch — worktree removal and branch deletion can
-      // change HEAD as a side effect.
-      if (originalBranch) {
-        try {
-          const currentBranch = await vcs.getCurrentBranch(projectPath);
-          if (currentBranch !== originalBranch) {
-            await vcs.checkoutBranch(projectPath, originalBranch);
-            console.log(chalk.dim(`Restored branch: ${originalBranch}`));
-          }
-        } catch {
-          console.warn(chalk.yellow(`Warning: could not restore branch '${originalBranch}'. Run: git checkout ${originalBranch}`));
-        }
+    const allErrors = [
+      ...detectionErrors,
+      ...errors,
+      ...mismatchResult.errors,
+      ...staleResult.errors,
+      ...(restoreBranchError ? [restoreBranchError] : []),
+    ];
+
+    if (allErrors.length > 0) {
+      console.error(chalk.red(`\nErrors (${allErrors.length}):`));
+      for (const err of allErrors) {
+        console.error(chalk.red(`  ${err}`));
       }
+      if (meaningfulResetWork) {
+        console.error(chalk.yellow("Reset completed with errors; inspect failures before re-running foreman run."));
+      }
+      return 1;
+    }
 
-      console.log(chalk.dim("\nRe-run with: foreman run"));
+    if (meaningfulResetWork) {
+      if (dryRun) {
+        console.log(chalk.dim("\nRe-run without --dry-run to apply, then use: foreman run"));
+      } else {
+        console.log(chalk.dim("\nRe-run with: foreman run"));
+      }
+    }
 
-      store.close();
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(`Error: ${message}`));
-      process.exit(1);
+    return 0;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(chalk.red(`Error: ${message}`));
+    return 1;
+  } finally {
+    store?.close();
+  }
+}
+
+export const resetCommand = new Command("reset")
+  .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
+  .option("--bead <id>", "Reset a specific bead by ID (clears all runs for that bead, including stale pending ones)")
+  .option("--all", "Reset ALL active runs, not just failed/stuck ones")
+  .option("--detect-stuck", "Run stuck detection first, adding newly-detected stuck runs to the reset list")
+  .option(
+    "--timeout <minutes>",
+    "Stuck detection timeout in minutes (used with --detect-stuck)",
+    String(PIPELINE_LIMITS.stuckDetectionMinutes),
+  )
+  .option("--dry-run", "Show what would be reset without doing it")
+  .option("--force-reopen-closed", "Allow reopening a bead whose latest authoritative state is already landed/closed")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action(async (opts, cmd) => {
+    const exitCode = await resetAction(opts as Record<string, unknown>, cmd);
+    if (exitCode !== 0) {
+      process.exit(exitCode);
     }
   });
 

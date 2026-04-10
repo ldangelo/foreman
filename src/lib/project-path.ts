@@ -1,6 +1,16 @@
 import chalk from "chalk";
 import { ProjectTargetingError, resolveProjectTarget } from "./project-targeting.js";
 
+function emitProjectPathError(message: string, jsonOutput = false): never {
+  if (jsonOutput) {
+    console.error(JSON.stringify({ error: message }));
+  } else {
+    console.error(chalk.red(message));
+  }
+  process.exit(1);
+}
+
+
 /**
  * Resolve a CLI --project option into an absolute project path.
  *
@@ -11,7 +21,10 @@ import { ProjectTargetingError, resolveProjectTarget } from "./project-targeting
  * 4. explicit --project-path absolute path → use directly
  * 5. invalid/unknown input → print a helpful error and exit
  */
-export function resolveProjectPath(opts: { project?: string; projectPath?: string }): string {
+export function resolveProjectPath(
+  opts: { project?: string; projectPath?: string },
+  jsonOutput = false,
+): string {
   try {
     const result = resolveProjectTarget(opts);
     if (result.warning) {
@@ -20,10 +33,7 @@ export function resolveProjectPath(opts: { project?: string; projectPath?: strin
     return result.projectPath;
   } catch (err) {
     if (err instanceof ProjectTargetingError) {
-      console.error(
-        chalk.red(err.message),
-      );
-      process.exit(1);
+      emitProjectPathError(err.message, jsonOutput);
     }
 
     throw err;

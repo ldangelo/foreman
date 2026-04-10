@@ -18,6 +18,8 @@ import { syncBeadStatusAfterMerge } from "./auto-merge.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
 import { NativeTaskStore } from "../lib/task-store.js";
+import { getForemanBranchName } from "../lib/branch-names.js";
+import { resolveProjectBranchPolicy } from "../lib/branch-policy.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -293,7 +295,7 @@ export class Refinery {
         const activeStatuses: import("../lib/store.js").Run["status"][] = ["pending", "running", "completed"];
         if (!activeStatuses.includes(stackedRun.status)) continue;
 
-        const stackedBranch = `foreman/${stackedRun.seed_id}`;
+        const stackedBranch = getForemanBranchName(stackedRun.seed_id);
         const branchExists = await this.vcsBackend.branchExists(this.projectPath, stackedBranch);
         if (!branchExists) continue;
 
@@ -496,7 +498,7 @@ export class Refinery {
     seedId?: string;
   }): Promise<MergeReport> {
     const defaultTargetBranch = normalizeBranchLabel(
-      opts?.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath),
+      opts?.targetBranch ?? (await resolveProjectBranchPolicy(this.projectPath, this.vcsBackend)).integrationBranch,
     ) ?? "dev";
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
@@ -514,7 +516,7 @@ export class Refinery {
     const prsCreated: import("./types.js").CreatedPr[] = [];
 
     for (const run of completedRuns) {
-      const branchName = `foreman/${run.seed_id}`;
+      const branchName = getForemanBranchName(run.seed_id);
 
       // Resolve per-seed target branch: prefer branch: label on the bead,
       // fall back to the caller-supplied or auto-detected default.
@@ -911,7 +913,7 @@ export class Refinery {
     const run = this.store.getRun(runId);
     if (!run) throw new Error(`Run ${runId} not found`);
 
-    const branchName = `foreman/${run.seed_id}`;
+    const branchName = getForemanBranchName(run.seed_id);
 
     if (strategy === "abort") {
       this.store.updateRun(run.id, {
@@ -929,7 +931,8 @@ export class Refinery {
     }
 
     // strategy === 'theirs' — attempt merge with -X theirs
-    const targetBranch = opts?.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
+    const targetBranch = opts?.targetBranch
+      ?? (await resolveProjectBranchPolicy(this.projectPath, this.vcsBackend)).integrationBranch;
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
 
@@ -1044,7 +1047,8 @@ export class Refinery {
     draft?: boolean;
     projectId?: string;
   }): Promise<PrReport> {
-    const baseBranch = opts?.baseBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
+    const baseBranch = opts?.baseBranch
+      ?? (await resolveProjectBranchPolicy(this.projectPath, this.vcsBackend)).integrationBranch;
     const draft = opts?.draft ?? false;
 
     const completedRuns = this.store.getRunsByStatus("completed", opts?.projectId);
@@ -1053,7 +1057,7 @@ export class Refinery {
     const failed: FailedRun[] = [];
 
     for (const run of completedRuns) {
-      const branchName = `foreman/${run.seed_id}`;
+      const branchName = getForemanBranchName(run.seed_id);
 
       try {
         // Push branch to origin

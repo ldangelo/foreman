@@ -38,6 +38,17 @@
 16. [Release Plan](#16-release-plan)
 17. [Open Questions](#17-open-questions)
 
+## Current-checkout note
+
+This PRD describes intended behavior, not a guarantee that the current checkout already implements it. In particular, if the repository does not yet contain the loader, executor, store-status, and UI wiring for mid-pipeline rebase, the shipped default workflow must stay aligned with current code rather than enabling roadmap-only keys.
+
+## Vocabulary and scope alignment
+
+- Task/status vocabulary for future native-task work is governed by `PRD-2026-006`.
+- Shared-worktree semantics in this document are scoped only as grouped-parent/shared-branch design constraints; the broader grouped/epic execution UX is described in `PRD-2026-007`.
+- Until the implementation lands, this document should not be read as proof that `rebaseAfterPhase`, `rebaseTarget`, `rebase_conflict`, or `rebase_resolving` are live in the current checkout.
+- Public task management remains beads-first in the current checkout; any future task/status references inherited from `PRD-2026-006` are roadmap vocabulary, not evidence that native-task operator UX is already shipped.
+
 ---
 
 ## 1. Executive Summary

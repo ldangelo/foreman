@@ -18,9 +18,13 @@ export interface AttachOpts {
   _pollIntervalMs?: number;
 }
 
+const DEGRADED_ATTACH_EXIT_CODE = 2;
+const INTERRUPTED_EXIT_CODE = 130;
+
+
 /**
  * Core attach logic extracted for testability.
- * Returns the exit code (0 = success, 1 = error).
+ * Returns the exit code (0 = success, 1 = failure, 2 = degraded fallback attach, 130 = interrupted).
  * When called from the CLI command, `projectPath` is `process.cwd()`.
  */
 export async function attachAction(
@@ -29,19 +33,21 @@ export async function attachAction(
   store: ForemanStore,
   projectPath: string,
 ): Promise<number> {
-  // Look up by run ID first, then by seed ID (most recent run)
+  // Look up by run ID first. Seed lookup requires a registered local project row.
   let run = store.getRun(id);
-  if (!run) {
-    const project = store.getProjectByPath(projectPath);
-    if (project) {
-      const runs = store.getRunsForSeed(id, project.id);
-      if (runs.length > 0) {
-        run = runs[0]; // Most recent
-      }
+  const project = store.getProjectByPath(projectPath);
+  if (!run && project) {
+    const runs = store.getRunsForSeed(id, project.id);
+    if (runs.length > 0) {
+      run = runs[0]; // Most recent
     }
   }
 
   if (!run) {
+    if (!project) {
+      console.error("No project registered for this directory. Run 'foreman init' first.");
+      return 1;
+    }
     console.error(`No run found for "${id}". Use 'foreman attach --list' to see available sessions.`);
     return 1;
   }
@@ -73,11 +79,11 @@ export async function attachAction(
 /**
  * Enhanced session listing with richer columns.
  */
-export function listSessionsEnhanced(store: ForemanStore, projectPath: string): void {
+export function listSessionsEnhanced(store: ForemanStore, projectPath: string): number {
   const project = store.getProjectByPath(projectPath);
   if (!project) {
     console.error("No project registered for this directory. Run 'foreman init' first.");
-    return;
+    return 1;
   }
 
   const statuses = ["running", "stuck", "failed", "completed"] as const;
@@ -85,7 +91,7 @@ export function listSessionsEnhanced(store: ForemanStore, projectPath: string): 
 
   if (allRuns.length === 0) {
     console.log("No sessions found.");
-    return;
+    return 0;
   }
 
   // Sort by status priority then recency
@@ -146,6 +152,7 @@ export function listSessionsEnhanced(store: ForemanStore, projectPath: string): 
     );
   }
   console.log();
+  return 0;
 }
 
 // ── Internal handlers ─────────────────────────────────────────────────
@@ -154,12 +161,12 @@ async function handleDefaultAttach(run: Run): Promise<number> {
   // Try SDK session resume
   const sessionId = extractSessionId(run.session_key);
   if (sessionId) {
-    console.log(`Attaching to ${run.seed_id} [${run.agent_type}] session=${sessionId}`);
-    console.log(`  Status: ${run.status}`);
+    console.error(`Attaching to ${run.seed_id} [${run.agent_type}] session=${sessionId}`);
+    console.error(`  Status: ${run.status}`);
     if (run.worktree_path) {
-      console.log(`  Worktree: ${run.worktree_path}`);
+      console.error(`  Worktree: ${run.worktree_path}`);
     }
-    console.log();
+    console.error();
 
     return new Promise<number>((resolve) => {
       const child = spawn("claude", ["--resume", sessionId], {
@@ -179,10 +186,12 @@ async function handleDefaultAttach(run: Run): Promise<number> {
     });
   }
 
-  // Tail the log file as a fallback
+  // Tail the log file as a fallback. This is useful, but it is not a true session attach.
   const logPath = join(homedir(), ".foreman", "logs", `${run.id}.out`);
-  console.log(`No SDK session found. Tailing log file: ${logPath}`);
-  console.log("Press Ctrl+C to stop.\n");
+  console.error(`No resumable SDK session found for ${run.seed_id}; falling back to log tailing.`);
+  console.error(`  Log: ${logPath}`);
+  console.error("  This follows agent stdout only; it does not resume the original Claude session.");
+  console.error("  Press Ctrl+C to stop.\n");
 
   return new Promise<number>((resolve) => {
     const child = spawn("tail", ["-f", logPath], { stdio: "inherit" });
@@ -194,7 +203,7 @@ async function handleDefaultAttach(run: Run): Promise<number> {
     });
 
     child.on("exit", (code) => {
-      resolve(code ?? 0);
+      resolve(code === 0 ? DEGRADED_ATTACH_EXIT_CODE : (code ?? DEGRADED_ATTACH_EXIT_CODE));
     });
   });
 }
@@ -205,18 +214,22 @@ async function handleFollow(
 ): Promise<number> {
   // Tail log file
   const logPath = join(homedir(), ".foreman", "logs", `${run.id}.out`);
-  console.log(`Following log for ${run.seed_id} [${run.agent_type}] | Ctrl+C to stop`);
-  console.log(`Log: ${logPath}\n`);
+  console.error(`Following log for ${run.seed_id} [${run.agent_type}] | Ctrl+C to stop`);
+  console.error(`Log: ${logPath}\n`);
 
   return new Promise<number>((resolve) => {
+    let interrupted = false;
     const child = spawn("tail", ["-f", logPath], { stdio: "inherit" });
 
     const abortHandler = () => {
+      interrupted = true;
+      console.error("\nFollow interrupted before the run reached a terminal state.");
       child.kill("SIGTERM");
     };
 
     if (signal) {
-      signal.addEventListener("abort", abortHandler);
+      signal.addEventListener("abort", abortHandler, { once: true });
+      if (signal.aborted) abortHandler();
     }
 
     child.on("error", (err) => {
@@ -227,7 +240,7 @@ async function handleFollow(
 
     child.on("exit", (code) => {
       if (signal) signal.removeEventListener("abort", abortHandler);
-      resolve(code ?? 0);
+      resolve(interrupted ? INTERRUPTED_EXIT_CODE : (code ?? 0));
     });
   });
 }
@@ -245,12 +258,12 @@ async function handleStream(
 ): Promise<number> {
   const terminalStatuses = new Set(["completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created"]);
 
-  console.log(`Streaming agent mail for ${run.seed_id} [${run.id}] | Ctrl+C to stop`);
-  console.log(`  Status: ${run.status}`);
+  console.error(`Streaming agent mail for ${run.seed_id} [${run.id}] | Ctrl+C to stop`);
+  console.error(`  Status: ${run.status}`);
   if (run.worktree_path) {
-    console.log(`  Worktree: ${run.worktree_path}`);
+    console.error(`  Worktree: ${run.worktree_path}`);
   }
-  console.log();
+  console.error();
 
   const seenIds = new Set<string>();
 
@@ -264,17 +277,25 @@ async function handleStream(
   // If already in terminal state, we're done
   const currentRun = store.getRun(run.id);
   if (currentRun && terminalStatuses.has(currentRun.status)) {
-    console.log(`\nRun ${run.seed_id} is already ${currentRun.status}.`);
+    console.error(`\nRun ${run.seed_id} is already ${currentRun.status}.`);
     return 0;
   }
 
   return new Promise<number>((resolve) => {
     let intervalId: ReturnType<typeof setInterval> | null = null;
     let resolved = false;
+    let interrupted = false;
+
+    const abortHandler = () => {
+      interrupted = true;
+      console.error("\nStream interrupted before the run reached a terminal state.");
+      cleanup(INTERRUPTED_EXIT_CODE);
+    };
 
     const cleanup = (code: number) => {
       if (resolved) return;
       resolved = true;
+      if (signal) signal.removeEventListener("abort", abortHandler);
       if (intervalId !== null) {
         clearInterval(intervalId);
         intervalId = null;
@@ -295,7 +316,7 @@ async function handleStream(
       // Check if run has reached terminal state
       const latestRun = store.getRun(run.id);
       if (latestRun && terminalStatuses.has(latestRun.status)) {
-        console.log(`\nRun ${run.seed_id} reached terminal state: ${latestRun.status}`);
+        console.error(`\nRun ${run.seed_id} reached terminal state: ${latestRun.status}`);
         cleanup(0);
       }
     };
@@ -303,10 +324,8 @@ async function handleStream(
     intervalId = setInterval(poll, pollIntervalMs);
 
     if (signal) {
-      signal.addEventListener("abort", () => {
-        console.log("\nStream interrupted.");
-        cleanup(0);
-      });
+      signal.addEventListener("abort", abortHandler, { once: true });
+      if (signal.aborted && !interrupted) abortHandler();
     }
   });
 }
@@ -340,8 +359,8 @@ function printMessage(msg: Message): void {
 async function handleKill(run: Run, store: ForemanStore): Promise<number> {
   const pid = extractPid(run.session_key);
   if (!pid) {
-    console.log("No pid found for this run.");
-    return 0;
+    console.error(`Cannot kill run ${run.seed_id}: no pid is recorded for this run.`);
+    return 1;
   }
 
   try {
@@ -367,14 +386,20 @@ function handleWorktree(run: Run): Promise<number> {
     return Promise.resolve(1);
   }
 
-  console.log(`Opening shell in ${run.worktree_path}`);
+  const worktreePath = run.worktree_path;
+  console.error(`Opening interactive shell in ${worktreePath}`);
   const shell = process.env.SHELL ?? "/bin/bash";
 
   return new Promise<number>((resolve) => {
-    spawn(shell, [], {
-      cwd: run.worktree_path!,
-      stdio: "inherit",
-    }).on("exit", (code) => resolve(code ?? 0));
+    const child = spawn(shell, [], {
+      cwd: worktreePath,
+      stdio: "inherit" as const,
+    });
+    child.on("error", (err: Error) => {
+      console.error(`Failed to launch shell ${shell}: ${err.message}`);
+      resolve(1);
+    });
+    child.on("exit", (code: number | null) => resolve(code ?? 0));
   });
 }
 
@@ -431,9 +456,9 @@ export const attachCommand = new Command("attach")
     const store = ForemanStore.forProject(process.cwd());
 
     if (opts.list) {
-      listSessionsEnhanced(store, process.cwd());
+      const exitCode = listSessionsEnhanced(store, process.cwd());
       store.close();
-      return;
+      process.exit(exitCode);
     }
 
     if (!id) {
@@ -442,6 +467,7 @@ export const attachCommand = new Command("attach")
       console.error("       foreman attach --follow <id>");
       console.error("       foreman attach --stream <id>");
       console.error("       foreman attach --kill <id>");
+      console.error("       foreman attach --worktree <id>");
       store.close();
       process.exit(1);
     }

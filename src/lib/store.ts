@@ -43,6 +43,12 @@ function normalizeProjectPath(path: string): string {
 
 // ── Interfaces ──────────────────────────────────────────────────────────
 
+/**
+ * Per-project execution metadata stored in a project's local `.foreman/foreman.db`.
+ *
+ * These rows are not the authority for global project registration; they exist so
+ * runs, events, and other execution-local tables can reference the current project.
+ */
 export interface Project {
   id: string;
   name: string;
@@ -98,7 +104,10 @@ export type EventType =
   | "merge-queue-fallback"
   | "sentinel-start"
   | "sentinel-pass"
-  | "sentinel-fail";
+  | "sentinel-fail"
+  | "integration-validation-start"
+  | "integration-validation-pass"
+  | "integration-validation-fail";
 
 export interface Event {
   id: string;
@@ -720,7 +729,7 @@ export class ForemanStore {
       .run(newStatus, now, taskId);
   }
 
-  // ── Projects ────────────────────────────────────────────────────────
+  // ── Projects (execution-local metadata) ───────────────────────────────────
 
   registerProject(name: string, path: string): Project {
     const now = new Date().toISOString();

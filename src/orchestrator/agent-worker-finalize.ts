@@ -23,6 +23,7 @@ import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import { enqueueSetBeadStatus } from "./task-backend-ops.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
+import { getForemanBranchName } from "../lib/branch-names.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -152,7 +153,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   // Worktrees can end up in detached HEAD or on a wrong branch (e.g. after a
   // failed rebase or manual intervention), causing push to fail with
   // "src refspec does not match any".
-  const expectedBranch = `foreman/${seedId}`;
+  const expectedBranch = getForemanBranchName(seedId);
   let branchVerified = false;
   try {
     const currentBranch = await vcs.getCurrentBranch(worktreePath);

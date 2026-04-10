@@ -54,50 +54,63 @@
 18. [Release Plan](#18-release-plan)
 19. [Open Questions](#19-open-questions)
 
+## Roadmap authority note
+
+This PRD is the authoritative roadmap source for the future project registry, native-task backend, task identifier strategy, and workflow-aware status vocabulary.
+
+- Future roadmap docs should use native task IDs as the canonical identifier shape for new surfaces.
+- Future roadmap docs should use this document's task status vocabulary when describing task lifecycle behavior.
+- References to `br`, beads, or `bv` in other roadmap docs are transitional/current-state language unless explicitly justified.
+- Current implementation may still be beads-first and project-scoped; this note governs roadmap alignment, not a claim that the migration is already complete.
+- Cross-project visibility alone is not sufficient: the target product is a multi-project control plane with per-project execution planes and explicit integration-branch validation/promotion semantics.
+
+## Current-checkout recovery note
+
+The recovery chain has restored the public product boundary around current repo truth.
+
+- Foreman still presents beads_rust / `br` as the canonical day-to-day task model in this checkout.
+- `foreman task` is currently limited to beads-first helpers: `approve <bead-id>` plus transitional `import --from-beads`, not a full native-task CRUD surface.
+- Newly created Foreman-managed beads start behind the approval gate (`foreman:backlog`) and require explicit operator approval before dispatch.
+- The public dashboard and status surfaces now expose beads-first approval backlog and queue state; the native-task "Needs Human" requirements below remain roadmap work, not shipped behavior.
+
 ---
 
 ## 1. Executive Summary
 
-Foreman today is a per-project tool: each invocation operates on the project in the current working directory, with no awareness of other projects or their agent states. An operator managing 5-7 active projects must context-switch between terminal windows to check on running agents, triage failures, and approve new work -- with no aggregated signal across projects.
+Foreman today still behaves largely like a per-project execution tool: many commands operate on the current working directory, task tracking remains beads-first in practice, and project-local pipeline detail is more mature than the top-level scheduler. An operator managing many active projects must still bridge that gap manually.
 
-This PRD transforms Foreman into a **self-contained, multi-project orchestration platform** by introducing three interlocking capabilities:
+This PRD moves Foreman toward a **self-contained, multi-project control plane** by introducing four interlocking capabilities:
 
-1. **A global project registry** (`~/.foreman/projects.json`) that lets the operator register named project paths once and reference them from any directory.
-2. **A native task store** embedded in each project's existing SQLite database, replacing beads (`br`) and beads-viewer (`bv`) with workflow-aware task tracking that models the full pipeline lifecycle.
-3. **A unified cross-project dashboard** that aggregates state across all registered projects, surfaces a "needs human" priority column, and allows dispatch operations without requiring `cd`.
+1. **A global project registry** that stores project metadata and allows any control-plane surface to resolve projects from anywhere.
+2. **A native task store** embedded in each project's existing SQLite database, replacing the public beads-first task model with workflow-aware task tracking.
+3. **A unified cross-project dashboard and scheduler surface** that aggregates state across projects, exposes work needing human attention, and allocates agent capacity across the fleet.
+4. **An explicit integration-branch validation model** so completed work lands on integration first, is validated there, and only then becomes eligible for promotion to the default branch.
 
-The result is a single interface -- `foreman dashboard` -- where the operator sees everything, approves work, and intervenes on failures across all projects simultaneously.
+The result is not just `foreman dashboard` as a viewer. The result is a single control plane where the operator can see project state, schedule work, validate integration branches, and approve promotion across all active projects.
 
 ---
 
 ## 2. Problem Statement
 
-### 2.1 No Cross-Project Visibility
+### 2.1 No Cross-Project Control Plane
 
-Foreman operates exclusively within the current working directory. There is no mechanism to observe the state of multiple projects simultaneously. An operator managing 5-7 projects must:
+Foreman still leans on the current working directory as the orchestration boundary. There is no durable scheduler that can reason across all registered projects, select where capacity should go next, and keep validation state coherent across the fleet.
 
-- Maintain separate tmux windows or terminal sessions per project
-- Manually run `foreman status` in each project directory to check for failures
-- Remember which projects have agents running, which have stuck tasks, and which need human approval
+### 2.2 No Unified Visibility or Approval Backlog
 
-This context-switching overhead grows linearly with the number of active projects and introduces a class of operational failures where a stuck agent or failed merge goes unnoticed for hours because the operator is focused elsewhere.
-
-### 2.2 No "Needs Human" Aggregation
-
-There is no concept in the current system of "this task requires operator attention." Tasks either have running agents or they don't. A task in `conflict`, `failed`, or `stuck` state looks identical to a task in `backlog` from the operator's perspective -- both simply have no active agent. There is no triage surface.
+Operators cannot see multi-project validation state, approval backlog, and orchestration health in one place. Context-switching between repositories turns orchestration failures into hidden operational debt.
 
 ### 2.3 External Task Tracking Dependency
 
-Foreman currently delegates all task management to beads (`br`), an external CLI tool with its own database, status model, and conventions. This creates friction:
+Foreman currently delegates public task management to beads (`br`). That keeps the operator model split across two CLIs and prevents the control plane from owning one consistent task vocabulary, one approval model, and one validation story.
 
-- Foreman operators must learn two CLIs (`foreman` and `br`) with different conventions
-- The beads status model (`open`, `in_progress`, `closed`) does not map to pipeline phases (`explorer`, `developer`, `qa`, `reviewer`, `finalize`), causing semantic mismatch when monitoring pipeline progress
-- `foreman sling trd X` creates beads tasks via the external `br` binary -- if `br` is unavailable or misconfigured, sling fails
-- The dashboard (`foreman dashboard`) cannot display pipeline phase granularity because beads has no pipeline-aware status
+### 2.4 Branch Semantics Are Under-Specified
 
-### 2.4 Cross-Directory Operations Require `cd`
+Cross-project dispatch without explicit integration-branch semantics is incomplete. If completed work can still flow straight to a repo's default branch, the system has not restored the intended approval and validation boundary.
 
-Every `foreman run`, `foreman reset`, and `foreman retry` command requires the operator to be in the target project's directory. There is no `--project` flag or registry-name targeting. For an operator managing 7 projects, retrying a failed pipeline in project B while reviewing project A requires a directory switch.
+### 2.5 Cross-Directory Operations Still Feel Like Add-Ons
+
+`--project` flags and dashboard aggregation help, but they do not by themselves make Foreman a control plane. The operator still needs scheduler behavior, branch policy, and project metadata to be first-class rather than bolt-ons.
 
 ---
 
@@ -105,26 +118,24 @@ Every `foreman run`, `foreman reset`, and `foreman retry` command requires the o
 
 ### 3.1 Goals
 
-1. **Introduce a global project registry** at `~/.foreman/projects.json` with `foreman project add/list/remove` commands.
+1. **Introduce a global project registry** with one authoritative project metadata model.
 2. **Build a native task store** into each project's existing `.foreman/foreman.db` SQLite database with workflow-aware statuses and a dependency graph.
-3. **Replace `br` and `bv`** as the task management interface with `foreman task` subcommands and the enhanced `foreman dashboard`.
-4. **Add a "needs human" view** to the dashboard that surfaces `conflict`, `failed`, `stuck`, and awaiting-approval (`backlog`) tasks across all projects.
-5. **Enable cross-project dispatch** via `--project <name>` flags on `foreman run`, `foreman reset`, and `foreman retry`.
-6. **Provide a migration path** from `.beads/` data via `foreman task import --from-beads`.
-7. **Integrate native task creation into `foreman sling trd`** so the sling pipeline creates native tasks instead of calling `br`.
-8. **Support coexistence** -- foreman reads from the native task store if present, falls back to beads if not, so migration can be incremental.
+3. **Replace `br` and `bv` as the public task model** with `foreman task` subcommands and the enhanced control-plane dashboard.
+4. **Add a multi-project needs-human view** that surfaces `conflict`, `failed`, `stuck`, and awaiting-approval (`backlog`) tasks across all projects.
+5. **Enable true cross-project scheduling** rather than only project-targeted invocation shortcuts.
+6. **Make integration-branch validation explicit** so completed work lands on integration, is validated there, and only then becomes eligible for promotion.
+7. **Provide a migration path** from `.beads/` data via `foreman task import --from-beads`.
+8. **Support coexistence as a bounded transition**, not as a permanent public product split.
 
 ### 3.2 Non-Goals
 
-1. **Centralized task storage** -- task state remains per-project in each project's `.foreman/foreman.db`. The global registry only stores project paths and metadata.
-2. **Replacing git or VCS operations** -- this PRD does not change VCS handling (see PRD-2026-004).
-3. **Multi-user / team collaboration** -- the task store is single-operator; no concurrency or access control features.
-4. **Real-time task sync across machines** -- task state is local to each machine.
-5. **Custom workflow YAML changes** -- the pipeline phase sequence is unchanged; only status tracking is enhanced.
-6. **External integrations** (Jira, Linear, GitHub Issues) -- out of scope.
-7. **Immediate removal of `br` binary** -- beads remains available during the coexistence period.
-
----
+1. **Centralized task payload storage across projects** — task state remains per-project in each project's `.foreman/foreman.db`; the global registry stores project metadata and control-plane coordination state.
+2. **Replacing git or VCS operations wholesale** — this PRD does not change VCS abstraction goals beyond clarifying branch-policy expectations.
+3. **Multi-user / team collaboration** — the control plane remains single-operator for now.
+4. **Real-time task sync across machines** — task state is local to each machine.
+5. **Arbitrary workflow YAML redesign** — the execution workflow may remain configurable, but this PRD is about restoring the control-plane boundary.
+6. **External integrations** (Jira, Linear, GitHub Issues) — out of scope.
+7. **Permanent dual public task models** — coexistence is transitional only.
 
 ## 4. User Personas
 

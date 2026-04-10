@@ -53,6 +53,17 @@ function printSection(title: string, results: CheckResult[], jsonOutput: boolean
   }
 }
 
+function emitDoctorError(jsonOutput: boolean, message: string, summary?: { pass: number; warn: number; fail: number; fixed: number; skip: number }): never {
+  if (jsonOutput) {
+    const payload = summary ? { checks: [], summary, error: message } : { error: message };
+    console.error(JSON.stringify(payload, null, 2));
+  } else {
+    console.error(chalk.red(`Error: ${message}`));
+  }
+  process.exit(1);
+}
+
+
 // ── Command ──────────────────────────────────────────────────────────────
 
 export const doctorCommand = new Command("doctor")
@@ -93,14 +104,12 @@ export const doctorCommand = new Command("doctor")
         console.log(`  ${chalk.red("✗")} ${"git repository".padEnd(40)} ${chalk.red("fail")}`);
         console.log(`      ${chalk.dim("Not inside a git repository. Run from your project directory.")}`);
         console.log();
-      } else {
-        console.log(JSON.stringify({
-          checks: [],
-          summary: { pass: 0, warn: 0, fail: 1, fixed: 0, skip: 0 },
-          error: "Not inside a git repository",
-        }, null, 2));
+        process.exit(1);
       }
-      process.exit(1);
+
+      emitDoctorError(jsonOutput, "Not inside a git repository", {
+        pass: 0, warn: 0, fail: 1, fixed: 0, skip: 0,
+      });
     }
 
     let store: ForemanStore | null = null;
@@ -165,11 +174,6 @@ export const doctorCommand = new Command("doctor")
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (store) store.close();
-      if (!jsonOutput) {
-        console.error(chalk.red(`Error: ${msg}`));
-      } else {
-        console.log(JSON.stringify({ error: msg }, null, 2));
-      }
-      process.exit(1);
+      emitDoctorError(jsonOutput, msg);
     }
   });

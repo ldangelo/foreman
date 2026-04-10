@@ -3,19 +3,21 @@ import { VcsBackendFactory } from "../../lib/vcs/index.js";
 
 export function resolveProjectPathFromOptions(
   opts: { project?: string; projectPath?: string },
-): string {
-  return resolveProjectPath(opts);
+  jsonOutput = false,
+ ): string {
+  return resolveProjectPath(opts, jsonOutput);
 }
 
-export function resolveProjectPathFromOption(project?: string): string {
-  return resolveProjectPathFromOptions({ project });
+export function resolveProjectPathFromOption(project?: string, jsonOutput = false): string {
+  return resolveProjectPathFromOptions({ project }, jsonOutput);
 }
 
 export async function resolveRepoRootProjectPath(
   opts: { project?: string; projectPath?: string },
-): Promise<string> {
+  jsonOutput = false,
+ ): Promise<string> {
   if (opts.project || opts.projectPath) {
-    return resolveProjectPathFromOptions(opts);
+    return resolveProjectPathFromOptions(opts, jsonOutput);
   }
 
   const cwd = process.cwd();

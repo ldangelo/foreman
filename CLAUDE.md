@@ -2,8 +2,30 @@
 
 ## Project Overview
 
-Foreman is an AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to AI agents in isolated git worktrees, and merges results back. Built with TypeScript, [Pi SDK](https://pi.dev) (`@mariozechner/pi-coding-agent`) for in-process agent sessions, and [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for task tracking.
+Foreman is a multi-project engineering control plane. Its product job is to ingest planning artifacts and task backlogs, schedule work across registered projects, and coordinate validation/promotion. Each project then executes that work inside a subordinate execution plane with isolated worktrees or workspaces, workers, and merge/refinery logic.
 
+## Current State vs Roadmap
+
+### Canonical product model
+- **Control plane** — project registry, intake, cross-project scheduling, dashboard/status, validation, and promotion policy.
+- **Execution plane** — per-project dispatcher, worker pipeline, messaging, merge/refinery, and project-local runtime state.
+- **Integration branch model** — completed work should land on an integration branch, pass validation, and only then be promoted to the default branch.
+
+### Current state in this checkout
+- Task tracking is primarily `br` / `.beads/`; native task tables and project-registry work exist but are not yet the single canonical path.
+- `foreman task` is not a second native-task operator model in this checkout. It currently exposes beads-first approval (`foreman task approve <bead-id>`) plus the transitional `foreman task import --from-beads` migration helper.
+- Foreman-created beads now enter an approval backlog via `foreman:backlog`; use `foreman task approve <bead-id>` before expecting `foreman run` to dispatch them.
+
+
+- The default execution workflow is Explorer → Developer ↔ QA → Reviewer → Finalize.
+- Agent Mail is SQLite-backed in `.foreman/foreman.db`; there is no separate `mail.db`.
+- VCS abstraction exists and is important, but some orchestration code still contains backend-specific logic or fallbacks. Do not assume full abstraction purity without checking the implementation.
+- Mid-pipeline rebase and shared-worktree/grouped execution are documented roadmap items, not fully implemented end-to-end in this checkout.
+
+### How to read these docs
+- `CLAUDE.md` describes current implementation truth and the intended product boundary.
+- PRD/TRD files describe intended or planned behavior unless the code already proves otherwise.
+- When docs and code disagree, trust the code and update the docs in the same change.
 ## Quick Reference
 
 ```bash
@@ -15,21 +37,23 @@ npx tsc --noEmit       # type check only
 npx vitest run <file>  # run a single test file
 
 # CLI (after build or via tsx)
-foreman init           # Initialize project + beads
-foreman run            # Dispatch ready tasks to agents
-foreman run --bead X   # Dispatch specific task
-foreman status         # Show tasks + active agents
-foreman dashboard      # Live dashboard UI
+foreman init           # Initialize a project and register it with the control plane
+foreman run            # Current checkout: dispatch ready work in the current project
+foreman run --project X # Target a registered project without cd
+foreman status         # Show task and agent state
+foreman status --all   # Aggregate across registered projects
+foreman dashboard      # Live cross-project dashboard UI
 foreman monitor        # Check agent health
-foreman sentinel       # Background health daemon
+foreman sentinel       # Background validation/health daemon (current checkout semantics)
 foreman reset          # Clean up failed/stuck runs
 foreman retry <seed>   # Re-run a failed pipeline phase
+foreman task approve X # Release a backlog bead for dispatch
 foreman stop           # Gracefully stop all agents
 foreman doctor         # Health checks (br, Pi, DB integrity)
 foreman debug <id>     # AI-powered execution analysis (Opus)
-foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
+foreman sling trd X    # TRD -> task hierarchy (current checkout still seeds/beads-backed)
 foreman plan X         # PRD -> TRD pipeline
-foreman merge          # Merge completed branches
+foreman merge          # Reconcile completed work into the merge/integration flow
 foreman pr             # Create PRs for completed work
 foreman attach         # Attach to a running agent session
 foreman worktree       # Git worktree management
@@ -48,56 +72,47 @@ br close <id>          # Complete
 ## Architecture
 
 ```
-CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
-                      |              |
-                   SQLite         Pi SDK (in-process)
-                   (state)        createAgentSession()
-                      |              |
-                   br (beads_rust)   Pipeline Executor
-                   (task graph)      (workflow YAML-driven)
-                                     |
-                                  Refinery + autoMerge
-                                  (merge queue → dev branch)
+Foreman control plane
+  │
+  ├─ Project registry + project metadata
+  ├─ Intake: PRD / TRD / task backlog ingestion
+  ├─ Scheduler: cross-project dispatch, fairness, capacity
+  ├─ Dashboard / status / approval surfaces
+  └─ Validation + promotion policy
+       │
+       └─ per project: execution plane
+            ├─ Dispatcher / workspace setup
+            ├─ Agent workers
+            ├─ Workflow pipeline executor
+            ├─ SQLite runtime state + agent mail
+            └─ Refinery / merge queue → integration branch
 ```
 
-**Key modules:**
-- `src/cli/commands/` — 21 CLI commands (including `debug` for AI-powered analysis)
-- `src/orchestrator/pipeline-executor.ts` — generic workflow YAML-driven phase executor
-- `src/orchestrator/pi-sdk-runner.ts` — Pi SDK wrapper (`createAgentSession` + `session.prompt()`)
-- `src/orchestrator/pi-sdk-tools.ts` — custom tools for agents (native `send_mail` tool)
-- `src/orchestrator/agent-worker.ts` — detached worker process, pipeline orchestration
-- `src/orchestrator/dispatcher.ts` — task dispatch, worktree creation, model selection
-- `src/orchestrator/refinery.ts` — merge queue processing, conflict resolution
-- `src/orchestrator/auto-merge.ts` — immediate post-pipeline merge trigger
-- `src/lib/store.ts` — SQLite state (runs, progress, messages)
-- `src/lib/sqlite-mail-client.ts` — Agent Mail (SQLite-backed, no external server)
+**Key modules by boundary:**
+- `src/cli/commands/` — operator-facing control-plane and execution entrypoints
+- `src/lib/project-registry.ts` — current global project registry surface (still needs authority unification)
+- `src/orchestrator/dispatcher.ts` — current project-local dispatch and worktree setup
+- `src/orchestrator/agent-worker.ts` — detached worker process and execution orchestration
+- `src/orchestrator/pipeline-executor.ts` — workflow YAML-driven execution phases
+- `src/orchestrator/refinery.ts` / `src/orchestrator/auto-merge.ts` — merge queue and post-execution merge handling
+- `src/lib/store.ts` — SQLite execution state in the current checkout
+- `src/lib/sqlite-mail-client.ts` — Agent Mail implementation
 - `src/lib/workflow-loader.ts` — YAML workflow config parser
-- `src/orchestrator/roles.ts` — prompt generation (`buildPhasePrompt()` + per-phase functions)
 
-**Workflow YAML-driven pipeline** (see [Workflow YAML Reference](docs/workflow-yaml-reference.md)):
-- Phase sequence, models, retries, mail hooks, artifacts all defined in YAML
-- No hardcoded phase names in the executor — new phases need only YAML + prompt file
-- Per-phase model selection with priority-based overrides (P0→opus, default→sonnet, etc.)
-- Retry loops: QA⇄Developer and Reviewer⇄Developer with feedback mail
-- `send_mail` registered as a native Pi SDK tool — agents call it directly, no bash commands
-
-**Default pipeline phases:**
-1. **Explorer** (Haiku) — read-only codebase analysis → EXPLORER_REPORT.md
-2. **Developer** (Sonnet) — implementation + tests → DEVELOPER_REPORT.md
-3. **QA** (Sonnet) — test verification → QA_REPORT.md (verdict: PASS/FAIL)
-4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
-5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
-
-After finalize: autoMerge triggers immediately → refinery merges to dev → bead closed.
+**Execution pipeline details**
+- Workflow YAML still defines execution-phase order, retries, mail hooks, and artifacts inside the per-project execution plane.
+- The default execution workflow remains Explorer → Developer ↔ QA → Reviewer → Finalize.
+- Those phases are implementation detail for project-local execution, not the top-level product boundary.
+- Current code still has execution-plane-first drift: for example, `foreman run` remains project-scoped and auto-merge still needs explicit integration-branch cutover.
 
 ## VCS Backend Abstraction (PRD-2026-004)
 
-Foreman abstracts all VCS operations behind a `VcsBackend` interface so that orchestration code is decoupled from the concrete VCS tool. Two built-in implementations ship with Foreman:
+Foreman has a `VcsBackend` abstraction so orchestration code can target Git and Jujutsu through one interface where possible. Two built-in implementations ship with Foreman:
 
 - **`GitBackend`** (`src/lib/vcs/git-backend.ts`) — wraps standard git CLI commands
 - **`JujutsuBackend`** (`src/lib/vcs/jujutsu-backend.ts`) — wraps jj CLI; requires **colocated mode** (`.jj/` + `.git/` both present)
 
-**All orchestration code uses VcsBackend — no direct git/jj calls outside the backend implementations.**
+Important: this abstraction is not yet complete in practice. Some orchestration paths still use raw git-specific logic or fall back to `GitBackend` when plumbing is incomplete or a backend instance is not propagated correctly. Treat the abstraction as the intended contract, not as a proof that every current path is backend-pure.
 
 ### Key modules
 
@@ -195,11 +210,11 @@ phases:
 - **TASK.md not AGENTS.md**: Foreman writes per-task context to `TASK.md` in worktrees (not AGENTS.md, which is the project file)
 - **CLAUDECODE env var**: Must be stripped from worker spawn env to avoid nested session errors
 - **FileHandle cleanup**: Always close `fs.promises.open()` handles after spawn inherits fds (Node v25+)
-- **Worktree reuse**: `createWorktree()` handles existing worktree (rebase) and existing branch (attach)
-- **Auto-reset on failure**: `markStuck()` resets bead to open when pipeline fails (rate limits); marks failed for permanent errors
-- **Agent Mail is SQLite-backed**: Messages stored in `.foreman/foreman.db` (shared across all workers), not a separate mail.db
-- **SESSION_LOG.md excluded from commits**: Causes merge conflicts when multiple pipelines run concurrently; finalize prompt runs `git reset HEAD SESSION_LOG.md` after `git add -A`
-- **Finalize always rebases**: `git fetch origin && git rebase origin/dev` before pushing, so refinery can fast-forward merge
+- **Worktree reuse**: workspace creation handles existing worktrees/branches; some older comments still say `createWorktree()`, but current dispatcher paths should prefer backend workspace APIs.
+- **Auto-reset on failure**: `markStuck()` resets bead to open when pipeline fails (rate limits); marks failed for permanent errors.
+- **Agent Mail is SQLite-backed**: Messages stored in `.foreman/foreman.db` (shared across all workers), not a separate mail.db.
+- **SESSION_LOG.md excluded from commits**: Causes merge conflicts when multiple pipelines run concurrently; finalize prompt runs `git reset HEAD SESSION_LOG.md` after `git add -A`.
+- **Finalize rebases before push**: this is current shipped behavior. Mid-pipeline rebase is roadmap work, not something operators should assume is live without verifying the checkout.
 
 ## Debugging & Recovery
 

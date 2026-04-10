@@ -30,6 +30,18 @@
 9. [Open Questions](#9-open-questions)
 10. [Design Readiness Scorecard](#10-design-readiness-scorecard)
 
+## Current-checkout note
+
+This TRD is a design/implementation plan, not proof that the current checkout already contains the described event bus, rebase hook, workflow-loader keys, or run-status extensions.
+
+Until those pieces land together, shipped workflows and operator docs should continue to reflect current behavior rather than assuming mid-pipeline rebase is active.
+
+## Alignment note
+
+- Status and task-vocabulary work that intersects with future native-task flows should defer to `PRD-2026-006`.
+- Shared-worktree execution remains out of scope for this TRD and is only a design dependency note here; broader grouped/epic execution behavior belongs to `PRD-2026-007`.
+- Public task management remains beads-first in the current checkout; any task-vocabulary references inherited from `PRD-2026-006` remain roadmap terminology until that migration is actually implemented.
+
 ---
 
 ## 1. Executive Summary

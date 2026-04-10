@@ -117,7 +117,7 @@ vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }
 vi.mock("../watch-ui.js", () => ({
   watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args),
 }));
-vi.mock("../../orchestrator/sentinel.js", () => ({ SentinelAgent: MockSentinelAgent }));
+vi.mock("../../orchestrator/integration-validator.js", () => ({ IntegrationValidator: MockSentinelAgent }));
 vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
   isPiAvailable: vi.fn().mockReturnValue(false),
   PiRpcSpawnStrategy: vi.fn(),
@@ -292,18 +292,17 @@ describe("sentinel auto-start in foreman run", () => {
     expect(mockSentinelStop).not.toHaveBeenCalled();
   });
 
-  it("logs a warning (non-fatal) if SentinelAgent.start() throws", async () => {
+  it("logs a warning (non-fatal) if integration validator start throws", async () => {
     mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
     mockGetSentinelConfig.mockReturnValue(MOCK_SENTINEL_CONFIG);
     mockSentinelStart.mockImplementation(() => {
-      throw new Error("sentinel start failed");
+      throw new Error("validator start failed");
     });
 
-    // Should not throw; foreman run continues normally
     await expect(invokeRun(["--no-watch"])).resolves.not.toThrow();
 
     expect(console.warn).toHaveBeenCalledWith(
-      expect.stringContaining("[sentinel] Failed to auto-start"),
+      expect.stringContaining("[validator] Failed to auto-start"),
     );
   });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { SentinelAgent } from "../sentinel.js";
+import { IntegrationValidator } from "../integration-validator.js";
 import type { SentinelConfigRow } from "../../lib/store.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -16,13 +16,13 @@ function makeMocks(existingBeads: Array<{ id: string; title: string }> = []) {
     create: vi.fn(async () => ({ id: "bd-001", title: "bug" })),
     list: vi.fn(async () => existingBeads),
   };
-  const agent = new SentinelAgent(store as any, seeds as any, "proj-1", "/tmp/project");
+  const agent = new IntegrationValidator(store as any, seeds as any, "proj-1", "/tmp/project");
   return { store, seeds, agent };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
-describe("SentinelAgent", () => {
+describe("IntegrationValidator", () => {
   describe("runOnce (dry-run)", () => {
     it("records a sentinel run with passed status on dry-run", async () => {
       const { store, agent } = makeMocks();
@@ -39,12 +39,12 @@ describe("SentinelAgent", () => {
       expect(result.output).toContain("[dry-run]");
       expect(store.logEvent).toHaveBeenCalledWith(
         "proj-1",
-        "sentinel-start",
+        "integration-validation-start",
         expect.objectContaining({ branch: "main" }),
       );
       expect(store.logEvent).toHaveBeenCalledWith(
         "proj-1",
-        "sentinel-pass",
+        "integration-validation-pass",
         expect.objectContaining({ status: "passed" }),
       );
       expect(store.recordSentinelRun).toHaveBeenCalledWith(
@@ -60,7 +60,7 @@ describe("SentinelAgent", () => {
       );
     });
 
-    it("logs sentinel-fail event when status is failed", async () => {
+    it("records integration-validation pass events on successful validation", async () => {
       const { store, agent } = makeMocks();
 
       // Simulate test failure by making the command exit non-zero
@@ -194,7 +194,7 @@ describe("SentinelAgent", () => {
      * running the real test suite.
      */
     async function callCreateBugTask(
-      agent: SentinelAgent,
+      agent: IntegrationValidator,
       branch: string,
       commitHash: string | null,
       output: string,
@@ -207,7 +207,7 @@ describe("SentinelAgent", () => {
 
     it("skips bead creation when an open bead with the same title already exists", async () => {
       const shortHash = "abc12345";
-      const existingTitle = `[Sentinel] Test failures on main @ ${shortHash}`;
+      const existingTitle = `[Integration Validator] Failures on main @ ${shortHash}`;
       const { seeds, agent } = makeMocks([
         { id: "bd-existing", title: existingTitle },
       ]);
@@ -216,7 +216,7 @@ describe("SentinelAgent", () => {
 
       expect(seeds.list).toHaveBeenCalledWith({
         status: "open",
-        label: "kind:sentinel",
+        label: "kind:integration-validator",
       });
       expect(seeds.create).not.toHaveBeenCalled();
     });
@@ -228,15 +228,15 @@ describe("SentinelAgent", () => {
 
       expect(seeds.list).toHaveBeenCalledWith({
         status: "open",
-        label: "kind:sentinel",
+        label: "kind:integration-validator",
       });
       expect(seeds.create).toHaveBeenCalledOnce();
       expect(seeds.create).toHaveBeenCalledWith(
-        "[Sentinel] Test failures on main @ deadbeef",
+        "[Integration Validator] Failures on main @ deadbeef",
         expect.objectContaining({
           type: "bug",
           priority: "P0",
-          labels: ["kind:sentinel"],
+          labels: ["kind:integration-validator"],
         }),
       );
     });
@@ -244,7 +244,7 @@ describe("SentinelAgent", () => {
     it("creates a new bead when existing beads have a different commit hash", async () => {
       // Existing bead is for a DIFFERENT commit
       const { seeds, agent } = makeMocks([
-        { id: "bd-old", title: "[Sentinel] Test failures on main @ 00000000" },
+        { id: "bd-old", title: "[Integration Validator] Failures on main @ 00000000" },
       ]);
 
       await callCreateBugTask(agent, "main", "deadbeef" + "0".repeat(32), "test output");
@@ -255,7 +255,7 @@ describe("SentinelAgent", () => {
     it("creates a new bead when existing beads are for a different branch", async () => {
       // Existing bead is for a different branch
       const { seeds, agent } = makeMocks([
-        { id: "bd-other", title: "[Sentinel] Test failures on develop @ deadbeef" },
+        { id: "bd-other", title: "[Integration Validator] Failures on develop @ deadbeef" },
       ]);
 
       await callCreateBugTask(agent, "main", "deadbeef" + "0".repeat(32), "test output");
@@ -264,7 +264,7 @@ describe("SentinelAgent", () => {
     });
 
     it("handles null commit hash — skips duplicate when unknown-hash bead exists", async () => {
-      const existingTitle = "[Sentinel] Test failures on main @ unknown";
+      const existingTitle = "[Integration Validator] Failures on main @ unknown";
       const { seeds, agent } = makeMocks([
         { id: "bd-unknown", title: existingTitle },
       ]);

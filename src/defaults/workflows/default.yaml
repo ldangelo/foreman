@@ -22,8 +22,8 @@ setup:
 setupCache:
   key: package-lock.json
   path: node_modules
-rebaseAfterPhase: developer
-
+# Mid-pipeline rebase is roadmap work. Do not enable `rebaseAfterPhase` in the
+# shipped default workflow until loader/executor/store/status support lands end-to-end.
 phases:
   - name: explorer
     prompt: explorer.md

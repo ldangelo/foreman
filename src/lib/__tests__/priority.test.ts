@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizePriority, formatPriorityForBr } from "../priority.js";
+import { normalizePriority, formatPriorityForBr, formatPriorityLabel } from "../priority.js";
 
 describe("normalizePriority — P-prefixed strings", () => {
   it('converts "P0" to 0', () => {
@@ -124,5 +124,23 @@ describe("formatPriorityForBr", () => {
 
   it('formats "4" as "4"', () => {
     expect(formatPriorityForBr("4")).toBe("4");
+  });
+});
+
+describe("formatPriorityLabel", () => {
+  it('formats "P2" as "P2"', () => {
+    expect(formatPriorityLabel("P2")).toBe("P2");
+  });
+
+  it('formats numeric 3 as "P3"', () => {
+    expect(formatPriorityLabel(3)).toBe("P3");
+  });
+
+  it('formats numeric string "0" as "P0"', () => {
+    expect(formatPriorityLabel("0")).toBe("P0");
+  });
+
+  it('formats invalid "high" as "P4" (default)', () => {
+    expect(formatPriorityLabel("high")).toBe("P4");
   });
 });

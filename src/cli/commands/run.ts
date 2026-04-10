@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 
@@ -11,20 +11,23 @@ import { NativeTaskClient } from "../../lib/native-task-client.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
+import { resolveProjectBranchPolicy } from "../../lib/branch-policy.js";
+import { ProjectRegistry, type ProjectEntry } from "../../lib/project-registry.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
-import type { ModelSelection } from "../../orchestrator/types.js";
+import type { ModelSelection, DispatchResult } from "../../orchestrator/types.js";
 import { watchRunsInk } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
-import { SentinelAgent } from "../../orchestrator/sentinel.js";
+import { IntegrationValidator } from "../../orchestrator/integration-validator.js";
 import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS } from "../../lib/config.js";
 import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
 import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
+import { collectAllProjectSchedulingCandidates, planProjectDispatches } from "../../orchestrator/scheduler.js";
 import { autoMerge } from "../../orchestrator/auto-merge.js";
 export { autoMerge } from "../../orchestrator/auto-merge.js";
 export type { AutoMergeOpts, AutoMergeResult } from "../../orchestrator/auto-merge.js";
@@ -167,17 +170,20 @@ export async function resolveOwnedControllerBranch(
   }
 
   const currentBranch = normalizeBranchLabel(await vcs.getCurrentBranch(projectPath)) ?? "";
-  const defaultBranch = normalizeBranchLabel(await vcs.detectDefaultBranch(projectPath)) ?? "";
+  const branchPolicy = await resolveProjectBranchPolicy(projectPath, vcs);
+  const defaultBranch = normalizeBranchLabel(branchPolicy.defaultBranch) ?? branchPolicy.defaultBranch;
+  const integrationBranch = normalizeBranchLabel(branchPolicy.integrationBranch) ?? branchPolicy.integrationBranch;
   const currentIsAnonymousRevision = await isAnonymousJujutsuRevision(vcs, projectPath, currentBranch);
 
   const shouldUseOwnedBranch =
     vcs.name === "jujutsu" &&
-    (currentIsAnonymousRevision || currentBranch === defaultBranch);
+    (currentIsAnonymousRevision || currentBranch === defaultBranch || currentBranch === integrationBranch);
 
   if (!shouldUseOwnedBranch) {
     return {
       currentBranch,
       defaultBranch,
+      targetBranch: integrationBranch,
       usedOwnedBranch: false,
     };
   }
@@ -195,7 +201,7 @@ export async function resolveOwnedControllerBranch(
 
   const branchExists = await vcs.branchExists(projectPath, FOREMAN_OWNED_BRANCH).catch(() => false);
   if (!branchExists) {
-    execFileSync("jj", ["bookmark", "create", FOREMAN_OWNED_BRANCH, "-r", defaultBranch], {
+    execFileSync("jj", ["bookmark", "create", FOREMAN_OWNED_BRANCH, "-r", integrationBranch], {
       cwd: projectPath,
       stdio: "pipe",
       env: withCommonBinaryPath(),
@@ -213,7 +219,7 @@ export async function resolveOwnedControllerBranch(
   return {
     currentBranch: FOREMAN_OWNED_BRANCH,
     defaultBranch,
-    targetBranch: defaultBranch,
+    targetBranch: integrationBranch,
     usedOwnedBranch: true,
   };
 }
@@ -317,26 +323,228 @@ export async function checkBranchMismatch(
   return false;
 }
 
+interface ControlPlaneDispatchOptions {
+  maxAgents: number;
+  model: ModelSelection | undefined;
+  dryRun: boolean | undefined;
+  telemetry: boolean | undefined;
+  pipeline: boolean;
+  skipExplore: boolean | undefined;
+  skipReview: boolean | undefined;
+  runtimeMode: RunRuntimeMode;
+  staggerMs: number | undefined;
+}
+
+interface ControlPlaneProjectResult {
+  project: ProjectEntry;
+  targetBranch?: string;
+  result: DispatchResult;
+  schedulerReason: string;
+}
+
+function isControlPlaneRun(opts: { project?: string; projectPath?: string }): boolean {
+  return !opts.project && !opts.projectPath;
+}
+
+function printControlPlaneProjectResult(summary: ControlPlaneProjectResult): void {
+  const { project, targetBranch, result, schedulerReason } = summary;
+  console.log(chalk.bold(`\nProject: ${project.name}`));
+  console.log(chalk.dim(`  Path: ${project.path}`));
+  if (targetBranch) {
+    console.log(chalk.dim(`  Integration branch: ${targetBranch}`));
+  }
+  console.log(chalk.dim(`  Scheduler: ${schedulerReason}`));
+
+  if (result.dispatched.length > 0) {
+    console.log(chalk.green(`  Dispatched ${result.dispatched.length} task(s):`));
+    for (const task of result.dispatched) {
+      console.log(`    ${chalk.cyan(task.seedId)} ${task.title}`);
+      console.log(`      Branch: ${task.branchName}`);
+      console.log(`      Run ID: ${task.runId}`);
+    }
+  } else {
+    console.log(chalk.yellow("  No tasks dispatched."));
+  }
+
+  if (result.skipped.length > 0) {
+    console.log(chalk.dim(`  Skipped ${result.skipped.length} task(s):`));
+    for (const task of result.skipped) {
+      console.log(`    ${chalk.dim(task.seedId)} ${chalk.dim(task.title)} — ${task.reason}`);
+    }
+  }
+
+  console.log(chalk.dim(`  Active agents: ${result.activeAgents}`));
+}
+
+async function dispatchSingleProjectControlPlane(
+  project: ProjectEntry,
+  opts: ControlPlaneDispatchOptions & { grantedSlots: number; schedulerReason: string },
+): Promise<ControlPlaneProjectResult> {
+  const { grantedSlots, schedulerReason } = opts;
+  const projectPath = project.path;
+  try {
+    const startupVcs = await createRunVcsBackend(projectPath);
+    const targetBranch = (await resolveProjectBranchPolicy(projectPath, startupVcs)).integrationBranch;
+
+    validateRunRuntimeMode(opts.runtimeMode);
+    if (!opts.dryRun && opts.runtimeMode !== "test" && isPiAvailable()) {
+      const extDist = join(projectPath, "packages/foreman-pi-extensions/dist/index.js");
+      if (!existsSync(extDist)) {
+        throw new Error(
+          `Pi extensions package has not been built for ${project.name}. Build it with 'npm run build' in ${projectPath}.`,
+        );
+      }
+    }
+
+    const store = ForemanStore.forProject(projectPath);
+    try {
+      const clients = await createTaskClients(projectPath, { runtimeMode: opts.runtimeMode, store });
+      const dispatcher = new Dispatcher(clients.taskClient, store, projectPath, clients.bvClient);
+      const projectRow = store.getProjectByPath(projectPath);
+
+      if (!opts.dryRun && projectRow && opts.runtimeMode !== "test") {
+        await syncBeadStatusOnStartup(store, clients.taskClient, projectRow.id, { projectPath });
+        await autoMerge({ store, taskClient: clients.taskClient, projectPath, targetBranch });
+      }
+
+      const existingActiveAgents = projectRow
+        ? store.getActiveRuns(projectRow.id).length
+        : store.getActiveRuns().length;
+
+      const result = grantedSlots > 0 || opts.dryRun
+        ? await dispatcher.dispatch({
+            maxAgents: opts.dryRun ? opts.maxAgents : existingActiveAgents + grantedSlots,
+            model: opts.model,
+            dryRun: opts.dryRun,
+            telemetry: opts.telemetry,
+            pipeline: opts.pipeline,
+            skipExplore: opts.skipExplore,
+            skipReview: opts.skipReview,
+            targetBranch,
+            staggerMs: opts.staggerMs,
+          })
+        : {
+            dispatched: [],
+            skipped: [{
+              seedId: "scheduler",
+              title: project.name,
+              reason: schedulerReason,
+            }],
+            resumed: [],
+            activeAgents: existingActiveAgents,
+          };
+
+      return { project, targetBranch, result, schedulerReason };
+    } finally {
+      store.close();
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      project,
+      schedulerReason,
+      result: {
+        dispatched: [],
+        skipped: [{
+          seedId: "scheduler",
+          title: project.name,
+          reason: message,
+        }],
+        resumed: [],
+        activeAgents: 0,
+      },
+    };
+  }
+}
+
+async function maybeRunControlPlaneScheduler(
+  opts: { project?: string; projectPath?: string; watch: boolean; resume?: boolean; resumeFailed?: boolean; bead?: string } & ControlPlaneDispatchOptions,
+): Promise<boolean> {
+  if (!isControlPlaneRun(opts)) return false;
+
+  if (opts.resume === true || opts.resumeFailed === true) {
+    return false;
+  }
+  if (typeof opts.bead === "string" && opts.bead.length > 0) {
+    return false;
+  }
+
+  const registry = new ProjectRegistry();
+  const projects = registry.list();
+  if (projects.length === 0) {
+    return false;
+  }
+
+  const cwd = resolve(process.cwd());
+  try {
+    const cwdVcs = await VcsBackendFactory.create({ backend: "auto" }, cwd);
+    await cwdVcs.getRepoRoot(cwd);
+    return false;
+  } catch {
+    // Not inside a detectable repository — continue in control-plane mode.
+  }
+  console.log(chalk.bold(`Scheduling across ${projects.length} registered project(s)...`));
+  if (!opts.dryRun && opts.watch) {
+    console.log(
+      chalk.dim("Control-plane scheduling is one-shot. Use 'foreman status --all', 'foreman status --live', or 'foreman dashboard' to monitor agents."),
+    );
+  }
+  if (opts.dryRun) {
+    console.log(chalk.yellow("(dry run — no changes will be made)\n"));
+  }
+
+  const decisions = planProjectDispatches(
+    await collectAllProjectSchedulingCandidates(registry),
+    opts.maxAgents,
+  );
+  const summaries: ControlPlaneProjectResult[] = [];
+  for (const decision of decisions) {
+    summaries.push(await dispatchSingleProjectControlPlane(decision.project, {
+      ...opts,
+      grantedSlots: decision.grantedSlots,
+      schedulerReason: decision.reason,
+    }));
+  }
+
+  let totalDispatched = 0;
+  let totalSkipped = 0;
+  let totalActiveAgents = 0;
+  for (const summary of summaries) {
+    printControlPlaneProjectResult(summary);
+    totalDispatched += summary.result.dispatched.length;
+    totalSkipped += summary.result.skipped.length;
+    totalActiveAgents += summary.result.activeAgents;
+  }
+
+  console.log(chalk.bold("\nControl Plane Summary"));
+  console.log(`  Projects scanned: ${summaries.length}`);
+  console.log(`  Dispatched:       ${chalk.green(totalDispatched)}`);
+  console.log(`  Skipped:          ${chalk.yellow(totalSkipped)}`);
+  console.log(`  Active agents:    ${chalk.yellow(totalActiveAgents)}/${opts.maxAgents}`);
+
+  return true;
+}
+
 // ── Run Command ──────────────────────────────────────────────────────
 
 export const runCommand = new Command("run")
-  .description("Dispatch ready tasks to agents")
-  .option("--max-agents <n>", "Maximum concurrent agents", "5")
+  .description("Schedule ready work across registered projects from the control plane")
+  .option("--max-agents <n>", "Maximum concurrent agents across the scheduling pass", "5")
   .option("--model <model>", "Force a specific model (overrides FOREMAN_DEFAULT_MODEL)")
-  .option("--dry-run", "Show what would be dispatched without doing it")
-  .option("--no-watch", "Exit immediately after dispatching (don't monitor agents)")
+  .option("--dry-run", "Show what would be scheduled without dispatching agents")
+  .option("--no-watch", "Execution-plane mode only: exit immediately after dispatching scoped work")
   .option("--telemetry", "Enable OpenTelemetry tracing on spawned agents (requires OTEL_* env vars)")
-  .option("--resume", "Resume stuck/rate-limited runs from a previous dispatch")
-  .option("--resume-failed", "Also resume failed runs (not just stuck/rate-limited)")
+  .option("--resume", "Execution-plane mode only: resume stuck/rate-limited runs from a previous dispatch")
+  .option("--resume-failed", "Execution-plane mode only: also resume failed runs")
   .option("--no-pipeline", "Skip the explorer/qa/reviewer pipeline — run as single worker agent")
   .option("--skip-explore", "Skip the explorer phase in the pipeline")
   .option("--skip-review", "Skip the reviewer phase in the pipeline")
-  .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
+  .option("--bead <id>", "Execution-plane mode only: dispatch a single bead by ID")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
   .option("--stagger <duration>", "Stagger delay between dispatches to prevent thundering herd (e.g. '30s', '1m')")
   .option("--runtime-mode <mode>", "Runtime mode: default|test")
-  .option("--project <name>", "Registered project name (default: current directory)")
-  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .option("--project <name>", "Scope scheduling/execution to one registered project")
+  .option("--project-path <absolute-path>", "Scope scheduling/execution to one explicit project path (advanced/script usage)")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -365,6 +573,27 @@ export const runCommand = new Command("run")
         console.warn(chalk.yellow(`[foreman] Warning: invalid --stagger value "${opts.stagger}", ignoring (use formats like "30s", "1m")`));
       }
     }
+
+    if (await maybeRunControlPlaneScheduler({
+      project: opts.project as string | undefined,
+      projectPath: opts.projectPath as string | undefined,
+      watch,
+      resume,
+      resumeFailed,
+      bead: beadFilter,
+      maxAgents,
+      model,
+      dryRun,
+      telemetry,
+      pipeline,
+      skipExplore,
+      skipReview,
+      runtimeMode,
+      staggerMs,
+    })) {
+      return;
+    }
+
 
     // Start notification server so workers can POST status updates immediately
     // instead of waiting for the next poll cycle. Stopped in the finally block.
@@ -414,22 +643,57 @@ export const runCommand = new Command("run")
         store.close();
         process.exit(1);
       }
+      const describeQueueState = async (): Promise<string | null> => {
+        const beadsClient = taskClient as ITaskClient & { listBacklog?: () => Promise<Array<{ id: string }>>; list?: (opts?: { status?: string }) => Promise<Array<{ id: string; status: string }>>; ready?: () => Promise<Array<{ id: string }>>; };
+        if (typeof beadsClient.listBacklog !== "function" || typeof beadsClient.list !== "function" || typeof beadsClient.ready !== "function") {
+          return null;
+        }
+
+        try {
+          const [backlogIssues, openIssues, readyIssues] = await Promise.all([
+            beadsClient.listBacklog(),
+            beadsClient.list({ status: "open" }),
+            beadsClient.ready(),
+          ]);
+          const readyIds = new Set(readyIssues.map((issue) => issue.id));
+          const backlogIds = new Set(backlogIssues.map((issue) => issue.id));
+          const blockedCount = openIssues.filter(
+            (issue) => issue.status !== "in_progress" && !readyIds.has(issue.id) && !backlogIds.has(issue.id),
+          ).length;
+
+          if (backlogIssues.length > 0 && blockedCount > 0) {
+            return `${backlogIssues.length} backlog, ${blockedCount} blocked`;
+          }
+          if (backlogIssues.length > 0) {
+            return `${backlogIssues.length} backlog awaiting approval`;
+          }
+          if (blockedCount > 0) {
+            return `${blockedCount} blocked by dependencies`;
+          }
+        } catch {
+          // Queue introspection is best-effort only.
+        }
+
+        return null;
+      };
+
+
       const project = store.getProjectByPath(projectPath);
       const dispatcher = new Dispatcher(taskClient, store, projectPath, bvClient);
 
-      // ── Sentinel Auto-Start ──────────────────────────────────────────────
-      // If sentinel.enabled=1 in the DB config, start the sentinel agent
+      // ── Integration validator auto-start ─────────────────────────────────────
+      // If sentinel.enabled=1 in the DB config, start the integration validator
       // automatically alongside foreman run. Non-fatal — if anything fails,
-      // log a warning and continue without sentinel.
-      let sentinelAgent: SentinelAgent | null = null;
+      // log a warning and continue without validation monitoring.
+      let integrationValidator: IntegrationValidator | null = null;
       if (!dryRun) {
         try {
           if (project) {
             const sentinelConfig = store.getSentinelConfig(project.id);
             if (sentinelConfig && sentinelConfig.enabled === 1) {
               const brClient = new BeadsRustClient(projectPath);
-              sentinelAgent = new SentinelAgent(store, brClient, project.id, projectPath);
-              sentinelAgent.start(
+              integrationValidator = new IntegrationValidator(store, brClient, project.id, projectPath);
+              integrationValidator.start(
                 {
                   branch: sentinelConfig.branch,
                   testCommand: sentinelConfig.test_command,
@@ -447,27 +711,27 @@ export const runCommand = new Command("run")
                         : chalk.yellow("ERR");
                   const dur = `${(result.durationMs / 1000).toFixed(1)}s`;
                   const hash = result.commitHash ? chalk.dim(` [${result.commitHash.slice(0, 8)}]`) : "";
-                  console.log(`[sentinel ${now}] ${icon} ${statusLabel} ${dur}${hash}`);
+                  console.log(`[validator ${now}] ${icon} ${statusLabel} ${dur}${hash}`);
                 },
               );
               console.log(
                 chalk.dim(
-                  `[sentinel] Auto-started on branch ${sentinelConfig.branch} (every ${sentinelConfig.interval_minutes}m)`
+                  `[validator] Auto-started on integration branch ${sentinelConfig.branch} (every ${sentinelConfig.interval_minutes}m)`
                 )
               );
             }
           }
-        } catch (sentinelErr: unknown) {
-          const msg = sentinelErr instanceof Error ? sentinelErr.message : String(sentinelErr);
-          console.warn(chalk.yellow(`[sentinel] Failed to auto-start (non-fatal): ${msg}`));
+        } catch (validatorErr: unknown) {
+          const msg = validatorErr instanceof Error ? validatorErr.message : String(validatorErr);
+          console.warn(chalk.yellow(`[validator] Failed to auto-start (non-fatal): ${msg}`));
         }
       }
 
-      /** Stop the sentinel agent if it is running. Non-fatal cleanup helper. */
+      /** Stop the integration validator if it is running. Non-fatal cleanup helper. */
       const stopSentinel = (): void => {
-        if (sentinelAgent?.isRunning()) {
-          sentinelAgent.stop();
-          console.log(chalk.dim("[sentinel] Stopped."));
+        if (integrationValidator?.isRunning()) {
+          integrationValidator.stop();
+          console.log(chalk.dim("[validator] Stopped."));
         }
       };
 
@@ -523,47 +787,51 @@ export const runCommand = new Command("run")
         }
       }
 
-      // ── Target branch confirmation ──────────────────────────────────────────
-      // When the current branch differs from the detected default branch (e.g.
-      // working on a feature branch instead of dev/main), confirm with the user
-      // that agent worktrees and merges should target the current branch.
-      // The confirmed targetBranch is threaded through to autoMerge and workers.
+      // ── Integration branch resolution ─────────────────────────────────────────
+      // Agent work should target the explicit integration branch, not whichever
+      // controller branch the operator happens to have checked out.
       let targetBranch: string | undefined;
       if (!dryRun) {
         try {
+          const branchPolicy = await resolveProjectBranchPolicy(projectPath, startupVcs);
+          targetBranch = branchPolicy.integrationBranch;
+
           const controller = await resolveOwnedControllerBranch(startupVcs, projectPath);
           if (controller.usedOwnedBranch) {
-            targetBranch = controller.targetBranch;
+            targetBranch = controller.targetBranch ?? targetBranch;
             console.log(
               chalk.dim(
-                `[startup] Using Foreman-owned branch ${FOREMAN_OWNED_BRANCH} (target: ${controller.defaultBranch})`,
+                `[startup] Using Foreman-owned branch ${FOREMAN_OWNED_BRANCH} (integration target: ${targetBranch})`,
               ),
             );
-          }
-          const cb = targetBranch ? undefined : normalizeBranchLabel(await startupVcs.getCurrentBranch(projectPath));
-          const db = targetBranch ? undefined : normalizeBranchLabel(await startupVcs.detectDefaultBranch(projectPath));
-          if (cb && db && cb !== db) {
-            const question = chalk.yellow(
-              `\nYou are on branch ${chalk.green(cb)}, ` +
-              `which differs from the default branch ${chalk.cyan(db)}.\n` +
-              `Agent work will be branched from and merged into ${chalk.green(cb)}.\n` +
-              `Continue? [Y/n] `,
-            );
-            const confirmed = await promptYesNo(question);
-            if (!confirmed) {
-              console.log(
-                chalk.dim(`Aborted. Switch to ${db} or the desired target branch and re-run.`),
+          } else {
+            const currentBranch = controller.currentBranch
+              || normalizeBranchLabel(await startupVcs.getCurrentBranch(projectPath))
+              || "";
+            if (currentBranch && targetBranch && currentBranch !== targetBranch) {
+              const question = chalk.yellow(
+                `\nYou are on controller branch ${chalk.green(currentBranch)}, ` +
+                `but Foreman is configured to branch from and merge into integration branch ${chalk.cyan(targetBranch)}.\n` +
+                `Continue? [Y/n] `,
               );
-              stopSentinel();
-              store.close();
-              await notifyServer.stop().catch(() => { /* ignore */ });
-              process.exit(1);
+              const confirmed = await promptYesNo(question);
+              if (!confirmed) {
+                console.log(
+                  chalk.dim(`Aborted. Switch to ${targetBranch} or change branchPolicy.integrationBranch and re-run.`),
+                );
+                stopSentinel();
+                store.close();
+                await notifyServer.stop().catch(() => { /* ignore */ });
+                process.exit(1);
+              }
             }
-            targetBranch = cb;
-            console.log(chalk.green(`Target branch: ${cb}`));
+          }
+
+          if (targetBranch) {
+            console.log(chalk.green(`Integration branch: ${targetBranch}`));
           }
         } catch {
-          // Non-fatal: if branch detection fails, fall back to default behavior
+          // Non-fatal: if branch-policy resolution fails, fall back to existing backend defaults
         }
       }
 
@@ -780,25 +1048,28 @@ export const runCommand = new Command("run")
               const elapsedSec = Math.round(
                 (emptyPollCount * PIPELINE_TIMEOUTS.monitorPollMs) / 1000
               );
+              const queueState = await describeQueueState();
               console.log(
                 chalk.yellow(
-                  `\nNo ready beads after ${emptyPollCount} poll cycle(s) (~${elapsedSec}s). Exiting dispatch loop.`
+                  `\nNo ready beads after ${emptyPollCount} poll cycle(s) (~${elapsedSec}s). Exiting dispatch loop.${queueState ? ` (${queueState})` : ""}`
                 )
               );
               console.log(
                 chalk.dim(
                   "  • Re-run 'foreman run' once tasks become unblocked\n" +
-                  "  • Use 'br ready' to see which tasks are ready\n" +
-                  "  • Use 'foreman status' to check for stuck agents\n" +
+                  "  • Use 'foreman task approve <bead-id>' to release backlog beads for dispatch\n" +
+                  "  • Use 'br ready' to see which beads are currently dispatchable\n" +
+                  "  • Use 'foreman status' to separate ready/backlog/blocked work\n" +
                   "  • Set FOREMAN_EMPTY_POLL_CYCLES=0 to disable this limit"
                 )
               );
               break;
             }
             if (!waitingForTasksLogged) {
+              const queueState = await describeQueueState();
               console.log(
                 chalk.dim(
-                  `No ready beads — waiting for tasks to become available…`
+                  `No ready beads — waiting for tasks to become available${queueState ? ` (${queueState})` : ""}…`
                 )
               );
               waitingForTasksLogged = true;

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
-import type { SeedInfo, ModelSelection } from "./types.js";
+import type { TaskInfo, ModelSelection } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -24,7 +24,7 @@ function renderTemplate(template: string, vars: Record<string, string>): string 
  * when worktree branches are merged back to main.
  */
 export function workerAgentMd(
-  seed: SeedInfo,
+  seed: TaskInfo,
   worktreePath: string,
   model: ModelSelection,
 ): string {

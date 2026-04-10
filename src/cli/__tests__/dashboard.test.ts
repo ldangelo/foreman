@@ -1,20 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ForemanStore } from "../../lib/store.js";
-import type { Run, RunProgress, Project, Metrics, Event, NativeTask } from "../../lib/store.js";
+import type { Run, RunProgress, Project, Metrics, Event } from "../../lib/store.js";
+import { BeadsRustClient } from "../../lib/beads-rust.js";
 import {
   renderEventLine,
   renderProjectHeader,
   renderDashboard,
   pollDashboard,
-  renderNeedsHumanPanel,
+  renderBacklogPanel,
   renderProjectAgentPanel,
-  sortNeedsHumanTasks,
+  sortBacklogBeads,
+  readProjectRegistry,
+  matchesRegisteredProject,
   readProjectSnapshot,
   aggregateSnapshots,
-  approveTask,
-  retryTask,
-  NEEDS_HUMAN_STATUSES,
-  type NeedsHumanStatus,
+  approveBacklogBead,
+  type DashboardBacklogBead,
   type DashboardState,
   type ProjectSnapshot,
   type RegisteredProject,
@@ -106,6 +106,9 @@ function makeDashboardState(overrides?: Partial<DashboardState>): DashboardState
     progresses,
     metrics: metricsMap,
     events: eventsMap,
+    taskCounts: new Map([[project.id, { total: 4, ready: 1, backlog: 1, inProgress: 1, completed: 1, blocked: 1 }]]),
+    backlogBeads: [],
+    backlogLoadErrors: new Map(),
     lastUpdated: new Date(),
     ...overrides,
   };
@@ -141,6 +144,50 @@ function makeMockStore(opts: {
     getSuccessRate: vi.fn(() => ({ rate: null, merged: 0, failed: 0 })),
   };
 }
+
+describe("readProjectRegistry", () => {
+  it("uses the global registry for enumeration and local store only for project IDs", () => {
+    const store = {
+      getProjectByPath: vi.fn((path: string) => {
+        if (path === "/projects/alpha") {
+          return makeProject({ id: "proj-alpha", name: "alpha", path });
+        }
+        return null;
+      }),
+    };
+
+    const registry = {
+      list: () => [
+        { name: "alpha", path: "/projects/alpha", addedAt: "2026-04-08T00:00:00.000Z" },
+        { name: "beta", path: "/projects/beta", addedAt: "2026-04-08T00:00:00.000Z" },
+      ],
+    };
+
+    const projects = readProjectRegistry(store, registry);
+    expect(projects).toEqual([
+      { id: "proj-alpha", name: "alpha", path: "/projects/alpha" },
+      { id: "/projects/beta", name: "beta", path: "/projects/beta" },
+    ]);
+    expect(store.getProjectByPath).toHaveBeenCalledTimes(2);
+  });
+});
+
+
+describe("matchesRegisteredProject", () => {
+  const project: RegisteredProject = {
+    id: "proj-alpha",
+    name: "alpha",
+    path: "/projects/alpha",
+  };
+
+  it("matches by registry name, path, or local id", () => {
+    expect(matchesRegisteredProject(project, "alpha")).toBe(true);
+    expect(matchesRegisteredProject(project, "/projects/alpha")).toBe(true);
+    expect(matchesRegisteredProject(project, "proj-alpha")).toBe(true);
+    expect(matchesRegisteredProject(project, "beta")).toBe(false);
+  });
+});
+
 
 // ── renderEventLine() ─────────────────────────────────────────────────────
 
@@ -329,6 +376,14 @@ describe("renderDashboard", () => {
     const output = renderDashboard(state);
     expect(output).toContain("12.50"); // 5 + 7.5
   });
+  it("shows backlog and blocked totals in footer", () => {
+    const state = makeDashboardState();
+    const output = renderDashboard(state);
+    expect(output).toContain("backlog 1");
+    expect(output).toContain("blocked 1");
+  });
+
+
 });
 
 // ── pollDashboard() ────────────────────────────────────────────────────────
@@ -426,23 +481,19 @@ describe("pollDashboard", () => {
   });
 });
 
-// ── NativeTask fixture helper ─────────────────────────────────────────────
+// ── Backlog bead fixture helper ────────────────────────────────────────────
 
-function makeNativeTask(overrides?: Partial<NativeTask>): NativeTask {
+function makeBacklogBead(overrides?: Partial<DashboardBacklogBead>): DashboardBacklogBead {
   return {
-    id: "task-001",
-    title: "Fix authentication bug",
-    description: null,
-    type: "task",
-    priority: 2,
-    status: "backlog",
-    run_id: null,
-    branch: null,
-    external_id: null,
+    id: "bd-001",
+    title: "Approve authentication refactor",
+    priority: "P2",
+    status: "open",
     created_at: new Date(Date.now() - 3_600_000).toISOString(),
     updated_at: new Date(Date.now() - 1_800_000).toISOString(),
-    approved_at: null,
-    closed_at: null,
+    projectId: "proj-1",
+    projectName: "my-project",
+    projectPath: "/home/user/projects/my-project",
     ...overrides,
   };
 }
@@ -456,158 +507,97 @@ function makeProjectSnapshot(overrides?: Partial<ProjectSnapshot>): ProjectSnaps
     progresses: new Map(),
     metrics: makeMetrics(),
     events: [],
+    taskCounts: { total: 0, ready: 0, backlog: 0, inProgress: 0, completed: 0, blocked: 0 },
     successRate: { rate: null, merged: 0, failed: 0 },
-    needsHumanTasks: [],
+    backlogBeads: [],
+    backlogLoadError: null,
     offline: false,
     ...overrides,
   };
 }
 
-// ── sortNeedsHumanTasks() ─────────────────────────────────────────────────
+// ── sortBacklogBeads() ─────────────────────────────────────────────────────
 
-describe("sortNeedsHumanTasks", () => {
-  it("sorts conflict before failed before stuck before backlog", () => {
-    const tasks = [
-      makeNativeTask({ id: "t1", status: "backlog", priority: 0 }),
-      makeNativeTask({ id: "t2", status: "stuck", priority: 0 }),
-      makeNativeTask({ id: "t3", status: "conflict", priority: 0 }),
-      makeNativeTask({ id: "t4", status: "failed", priority: 0 }),
+describe("sortBacklogBeads", () => {
+  it("sorts by priority first", () => {
+    const beads = [
+      makeBacklogBead({ id: "b1", priority: "P3" }),
+      makeBacklogBead({ id: "b2", priority: "P0" }),
+      makeBacklogBead({ id: "b3", priority: "P1" }),
     ];
-    const sorted = sortNeedsHumanTasks(tasks);
-    expect(sorted.map((t) => t.status)).toEqual(["conflict", "failed", "stuck", "backlog"]);
+    const sorted = sortBacklogBeads(beads);
+    expect(sorted.map((b) => b.priority)).toEqual(["P0", "P1", "P3"]);
   });
 
-  it("sorts by priority (P0 first) within same status", () => {
-    const tasks = [
-      makeNativeTask({ id: "t1", status: "failed", priority: 3 }),
-      makeNativeTask({ id: "t2", status: "failed", priority: 0 }),
-      makeNativeTask({ id: "t3", status: "failed", priority: 1 }),
+  it("accepts numeric-like backlog priorities without throwing", () => {
+    const beads = [
+      makeBacklogBead({ id: "b1", priority: "3" }),
+      makeBacklogBead({ id: "b2", priority: "0" }),
+      makeBacklogBead({ id: "b3", priority: "1" }),
     ];
-    const sorted = sortNeedsHumanTasks(tasks);
-    expect(sorted.map((t) => t.priority)).toEqual([0, 1, 3]);
+
+    const sorted = sortBacklogBeads(beads);
+    expect(sorted.map((b) => b.priority)).toEqual(["0", "1", "3"]);
   });
 
-  it("sorts by age (oldest updated_at first) within same status and priority", () => {
+
+  it("sorts older backlog beads first within the same priority", () => {
     const old = new Date(Date.now() - 7_200_000).toISOString();
     const recent = new Date(Date.now() - 1_000).toISOString();
-    const tasks = [
-      makeNativeTask({ id: "t1", status: "stuck", priority: 1, updated_at: recent }),
-      makeNativeTask({ id: "t2", status: "stuck", priority: 1, updated_at: old }),
+    const beads = [
+      makeBacklogBead({ id: "b1", priority: "P1", updated_at: recent }),
+      makeBacklogBead({ id: "b2", priority: "P1", updated_at: old }),
     ];
-    const sorted = sortNeedsHumanTasks(tasks);
-    expect(sorted[0].id).toBe("t2"); // older first
-    expect(sorted[1].id).toBe("t1");
+    const sorted = sortBacklogBeads(beads);
+    expect(sorted.map((b) => b.id)).toEqual(["b2", "b1"]);
   });
 
-  it("returns empty array for empty input", () => {
-    expect(sortNeedsHumanTasks([])).toEqual([]);
+  it("uses project name and bead id as a stable tiebreaker", () => {
+    const timestamp = new Date(Date.now() - 1_000).toISOString();
+    const beads = [
+      makeBacklogBead({ id: "b2", projectName: "zeta", priority: "P1", updated_at: timestamp }),
+      makeBacklogBead({ id: "b1", projectName: "alpha", priority: "P1", updated_at: timestamp }),
+    ];
+    const sorted = sortBacklogBeads(beads);
+    expect(sorted.map((b) => `${b.projectName}:${b.id}`)).toEqual(["alpha:b1", "zeta:b2"]);
   });
 
   it("does not mutate the input array", () => {
-    const tasks = [
-      makeNativeTask({ id: "t1", status: "backlog", priority: 2 }),
-      makeNativeTask({ id: "t2", status: "conflict", priority: 2 }),
-    ];
-    const original = [...tasks];
-    sortNeedsHumanTasks(tasks);
-    expect(tasks).toEqual(original);
-  });
-
-  it("maintains sort stability when status, priority, and age are equal", () => {
-    const timestamp = new Date(Date.now() - 1_000).toISOString();
-    const tasks = [
-      makeNativeTask({ id: "t1", status: "conflict", priority: 0, updated_at: timestamp }),
-      makeNativeTask({ id: "t2", status: "conflict", priority: 0, updated_at: timestamp }),
-      makeNativeTask({ id: "t3", status: "conflict", priority: 0, updated_at: timestamp }),
-    ];
-    const sorted = sortNeedsHumanTasks(tasks);
-    // With equal status, priority, and age, original order should be preserved
-    expect(sorted.map((t) => t.id)).toEqual(["t1", "t2", "t3"]);
+    const beads = [makeBacklogBead({ id: "b1" }), makeBacklogBead({ id: "b2", priority: "P0" })];
+    const original = [...beads];
+    sortBacklogBeads(beads);
+    expect(beads).toEqual(original);
   });
 });
 
-// ── NEEDS_HUMAN_STATUSES constant ────────────────────────────────────────
+// ── renderBacklogPanel() ───────────────────────────────────────────────────
 
-describe("NEEDS_HUMAN_STATUSES", () => {
-  it("contains exactly conflict, failed, stuck, backlog", () => {
-    expect(NEEDS_HUMAN_STATUSES).toEqual(["conflict", "failed", "stuck", "backlog"]);
+describe("renderBacklogPanel", () => {
+  it("shows an empty-state message when no backlog beads are available", () => {
+    const output = renderBacklogPanel([]);
+    expect(output).toContain("APPROVAL BACKLOG");
+    expect(output).toContain("No backlog beads await approval.");
   });
 
-  it("is a readonly tuple of exactly 4 elements", () => {
-    expect(NEEDS_HUMAN_STATUSES.length).toBe(4);
-    // as const makes it readonly
-    expect(NEEDS_HUMAN_STATUSES).toEqual(["conflict", "failed", "stuck", "backlog"]);
-  });
-
-  it("each status is a string", () => {
-    NEEDS_HUMAN_STATUSES.forEach((status) => {
-      expect(typeof status).toBe("string");
-    });
-  });
-});
-
-// ── NeedsHumanStatus type ─────────────────────────────────────────────────
-
-describe("NeedsHumanStatus", () => {
-  it("accepts valid needs-human status values", () => {
-    const validStatuses: NeedsHumanStatus[] = ["conflict", "failed", "stuck", "backlog"];
-    validStatuses.forEach((status) => {
-      expect(NEEDS_HUMAN_STATUSES).toContain(status);
-    });
-  });
-});
-
-// ── renderNeedsHumanPanel() ───────────────────────────────────────────────
-
-describe("renderNeedsHumanPanel", () => {
-  it("shows 'No tasks need attention.' when no tasks (REQ-011.2)", () => {
-    const output = renderNeedsHumanPanel([]);
-    expect(output).toContain("NEEDS HUMAN ATTENTION");
-    expect(output).toContain("No tasks need attention.");
-  });
-
-  it("shows NEEDS HUMAN ATTENTION header when tasks exist", () => {
-    const output = renderNeedsHumanPanel([makeNativeTask()]);
-    expect(output).toContain("NEEDS HUMAN ATTENTION");
-  });
-
-  it("shows task title in output", () => {
-    const output = renderNeedsHumanPanel([makeNativeTask({ title: "My broken task" })]);
-    expect(output).toContain("My broken task");
-  });
-
-  it("shows task status in output", () => {
-    const output = renderNeedsHumanPanel([makeNativeTask({ status: "conflict" })]);
-    expect(output.toUpperCase()).toContain("CONFLICT");
-  });
-
-  it("shows priority label", () => {
-    const output = renderNeedsHumanPanel([makeNativeTask({ priority: 0 })]);
+  it("shows bead title, id, project, priority, and keyboard hint", () => {
+    const output = renderBacklogPanel([makeBacklogBead({ id: "bd-777", projectName: "api", priority: "P0" })]);
+    expect(output).toContain("Approve authentication refactor");
+    expect(output).toContain("bd-777");
+    expect(output).toContain("api");
     expect(output).toContain("P0");
+    expect(output).toContain("j/k move  a approve selected backlog bead");
   });
 
-  it("shows project name when available", () => {
-    const output = renderNeedsHumanPanel([makeNativeTask({ projectName: "my-api" })]);
-    expect(output).toContain("my-api");
-  });
-
-  it("truncates display to maxRows and shows overflow count", () => {
-    const tasks = Array.from({ length: 15 }, (_, i) =>
-      makeNativeTask({ id: `t${i}`, title: `Task ${i}` })
-    );
-    const output = renderNeedsHumanPanel(tasks, 5);
-    expect(output).toContain("10 more");
-  });
-
-  it("shows all tasks when count <= maxRows", () => {
-    const tasks = [
-      makeNativeTask({ id: "t1", title: "First task" }),
-      makeNativeTask({ id: "t2", title: "Second task" }),
-    ];
-    const output = renderNeedsHumanPanel(tasks, 10);
-    expect(output).toContain("First task");
-    expect(output).toContain("Second task");
-    expect(output).not.toContain("more");
+  it("shows overflow and backlog fetch errors together", () => {
+    const beads = Array.from({ length: 12 }, (_, index) => makeBacklogBead({ id: `bd-${index}` }));
+    const output = renderBacklogPanel(beads, {
+      maxRows: 5,
+      backlogLoadErrors: new Map([["proj-2", "br unavailable"]]),
+      notice: "Approved bd-001 for dispatch",
+    });
+    expect(output).toContain("showing 1-5 of 12");
+    expect(output).toContain("proj-2: br unavailable");
+    expect(output).toContain("Approved bd-001 for dispatch");
   });
 });
 
@@ -625,6 +615,25 @@ describe("renderProjectAgentPanel", () => {
     const output = renderProjectAgentPanel(project, [], [], new Map(), makeMetrics(), [], false);
     expect(output).toContain("my-project");
   });
+
+  it("shows task queue summary when task counts are available", () => {
+    const project = makeProject();
+    const output = renderProjectAgentPanel(
+      project,
+      [],
+      [],
+      new Map(),
+      makeMetrics(),
+      [],
+      false,
+      { total: 5, ready: 1, backlog: 2, inProgress: 1, completed: 1, blocked: 1 },
+    );
+    expect(output).toContain("TASK QUEUE");
+    expect(output).toContain("ready 1");
+    expect(output).toContain("backlog 2");
+    expect(output).toContain("blocked 1");
+  });
+
 
   it("shows 'no agents running' when active runs are empty", () => {
     const project = makeProject();
@@ -661,21 +670,34 @@ describe("aggregateSnapshots", () => {
     expect(state.offlineProjects?.has("proj-offline")).toBe(true);
   });
 
-  it("aggregates needsHumanTasks from all projects and sorts them", () => {
-    const proj1 = makeProject({ id: "proj-1" });
-    const proj2 = makeProject({ id: "proj-2" });
+  it("aggregates backlog beads across projects and preserves project association", () => {
+    const proj1 = makeProject({ id: "proj-1", name: "api" });
+    const proj2 = makeProject({ id: "proj-2", name: "worker" });
     const snap1 = makeProjectSnapshot({
       project: proj1,
-      needsHumanTasks: [makeNativeTask({ id: "t1", status: "backlog", priority: 1 })],
+      backlogBeads: [makeBacklogBead({ id: "bd-1", projectId: proj1.id, projectName: proj1.name, projectPath: proj1.path, priority: "P1" })],
     });
     const snap2 = makeProjectSnapshot({
       project: proj2,
-      needsHumanTasks: [makeNativeTask({ id: "t2", status: "conflict", priority: 2 })],
+      backlogBeads: [makeBacklogBead({ id: "bd-2", projectId: proj2.id, projectName: proj2.name, projectPath: proj2.path, priority: "P0" })],
+      backlogLoadError: "br unavailable",
     });
+
     const state = aggregateSnapshots([snap1, snap2]);
-    expect(state.needsHumanTasks).toHaveLength(2);
-    // conflict should come first
-    expect(state.needsHumanTasks![0].status).toBe("conflict");
+    expect(state.backlogBeads?.map((bead) => `${bead.projectName}:${bead.id}`)).toEqual(["worker:bd-2", "api:bd-1"]);
+    expect(state.backlogLoadErrors?.get("proj-2")).toBe("br unavailable");
+  });
+
+  it("preserves per-project task counts in aggregated state", () => {
+    const proj1 = makeProject({ id: "proj-1", name: "p1" });
+    const snap1 = makeProjectSnapshot({
+      project: proj1,
+      taskCounts: { total: 3, ready: 1, backlog: 1, inProgress: 0, completed: 1, blocked: 0 },
+    });
+    const state = aggregateSnapshots([snap1]);
+    expect(state.taskCounts?.get("proj-1")).toEqual({
+      total: 3, ready: 1, backlog: 1, inProgress: 0, completed: 1, blocked: 0,
+    });
   });
 
   it("sets lastUpdated to a recent timestamp", () => {
@@ -684,10 +706,11 @@ describe("aggregateSnapshots", () => {
     expect(state.lastUpdated.getTime()).toBeGreaterThanOrEqual(before);
   });
 
-  it("returns empty projects when snapshots is empty", () => {
+  it("returns empty projects and backlog for empty snapshots", () => {
     const state = aggregateSnapshots([]);
     expect(state.projects).toHaveLength(0);
-    expect(state.needsHumanTasks).toHaveLength(0);
+    expect(state.backlogBeads).toHaveLength(0);
+    expect(state.backlogLoadErrors?.size).toBe(0);
   });
 });
 
@@ -730,22 +753,26 @@ describe("readProjectSnapshot", () => {
   });
 });
 
-// ── renderDashboard() with needsHumanTasks ────────────────────────────────
+// ── renderDashboard() with backlog beads ────────────────────────────────────
 
-describe("renderDashboard with needsHumanTasks", () => {
-  it("shows NEEDS HUMAN ATTENTION when needsHumanTasks is non-empty", () => {
+describe("renderDashboard with backlog beads", () => {
+  it("shows approval backlog when backlog beads are present", () => {
     const state = makeDashboardState({
-      needsHumanTasks: [makeNativeTask({ status: "conflict", title: "Merge conflict in auth" })],
+      backlogBeads: [makeBacklogBead({ id: "bd-9", title: "Approve auth migration", projectName: "api" })],
     });
     const output = renderDashboard(state);
-    expect(output).toContain("NEEDS HUMAN ATTENTION");
-    expect(output).toContain("Merge conflict in auth");
+    expect(output).toContain("APPROVAL BACKLOG");
+    expect(output).toContain("Approve auth migration");
+    expect(output).toContain("api");
   });
 
-  it("does not show NEEDS HUMAN ATTENTION when there are no such tasks", () => {
-    const state = makeDashboardState({ needsHumanTasks: [] });
+  it("shows backlog fetch failures without crashing the dashboard", () => {
+    const state = makeDashboardState({
+      backlogLoadErrors: new Map([["proj-1", "br unavailable"]]),
+    });
     const output = renderDashboard(state);
-    expect(output).not.toContain("NEEDS HUMAN ATTENTION");
+    expect(output).toContain("Backlog unavailable for");
+    expect(output).toContain("proj-1: br unavailable");
   });
 
   it("shows offline indicator for offline projects", () => {
@@ -763,65 +790,38 @@ describe("renderDashboard with needsHumanTasks", () => {
   });
 });
 
-// ── approveTask() / retryTask() ───────────────────────────────────────────
+// ── approveBacklogBead() ───────────────────────────────────────────────────
 
-describe("approveTask and retryTask", () => {
-  it("approveTask calls updateTaskStatus with 'ready'", () => {
-    const mockUpdateTaskStatus = vi.fn();
-    const mockClose = vi.fn();
-    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
-      updateTaskStatus: mockUpdateTaskStatus,
-      close: mockClose,
-    } as unknown as ForemanStore);
-
-    approveTask("task-001", "/some/project");
-    expect(mockUpdateTaskStatus).toHaveBeenCalledWith("task-001", "ready");
-    expect(mockClose).toHaveBeenCalled();
+describe("approveBacklogBead", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
   });
 
-  it("retryTask calls updateTaskStatus with 'backlog'", () => {
-    const mockUpdateTaskStatus = vi.fn();
-    const mockClose = vi.fn();
-    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
-      updateTaskStatus: mockUpdateTaskStatus,
-      close: mockClose,
-    } as unknown as ForemanStore);
+  it("calls BeadsRustClient.approve with recursive approval by default", async () => {
+    const approveSpy = vi.spyOn(BeadsRustClient.prototype, "approve").mockResolvedValue({
+      approved: ["bd-001"],
+      skipped: [],
+    });
 
-    retryTask("task-001", "/some/project");
-    expect(mockUpdateTaskStatus).toHaveBeenCalledWith("task-001", "backlog");
-    expect(mockClose).toHaveBeenCalled();
+    await expect(approveBacklogBead("bd-001", "/some/project")).resolves.toEqual({
+      approved: ["bd-001"],
+      skipped: [],
+    });
+    expect(approveSpy).toHaveBeenCalledWith("bd-001", { recursive: true });
   });
 
-  it("approveTask closes the store even if updateTaskStatus throws", () => {
-    const mockClose = vi.fn();
-    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
-      updateTaskStatus: vi.fn().mockImplementation(() => { throw new Error("DB error"); }),
-      close: mockClose,
-    } as unknown as ForemanStore);
+  it("passes through an explicit non-recursive approval request", async () => {
+    const approveSpy = vi.spyOn(BeadsRustClient.prototype, "approve").mockResolvedValue({
+      approved: ["bd-002"],
+      skipped: [],
+    });
 
-    expect(() => approveTask("task-001", "/some/project")).toThrow("DB error");
-    expect(mockClose).toHaveBeenCalled();
+    await approveBacklogBead("bd-002", "/some/project", { recursive: false });
+    expect(approveSpy).toHaveBeenCalledWith("bd-002", { recursive: false });
   });
 
-  it("approveTask propagates error from updateTaskStatus for invalid taskId", () => {
-    const mockClose = vi.fn();
-    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
-      updateTaskStatus: vi.fn().mockImplementation(() => { throw new Error("no such task: nonexistent-id"); }),
-      close: mockClose,
-    } as unknown as ForemanStore);
-
-    expect(() => approveTask("nonexistent-id", "/some/project")).toThrow("no such task: nonexistent-id");
-    expect(mockClose).toHaveBeenCalled();
-  });
-
-  it("retryTask propagates error from updateTaskStatus for invalid taskId", () => {
-    const mockClose = vi.fn();
-    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
-      updateTaskStatus: vi.fn().mockImplementation(() => { throw new Error("no such task: nonexistent-id"); }),
-      close: mockClose,
-    } as unknown as ForemanStore);
-
-    expect(() => retryTask("nonexistent-id", "/some/project")).toThrow("no such task: nonexistent-id");
-    expect(mockClose).toHaveBeenCalled();
+  it("propagates backend approval failures", async () => {
+    vi.spyOn(BeadsRustClient.prototype, "approve").mockRejectedValue(new Error("br exploded"));
+    await expect(approveBacklogBead("bd-404", "/some/project")).rejects.toThrow("br exploded");
   });
 });

@@ -4,54 +4,60 @@
 
 > The foreman doesn't write the code — they manage the crew that does.
 
-Multi-agent coding orchestrator. Decomposes development work into parallelizable tasks, dispatches them to AI coding agents in isolated git worktrees, and automatically merges results back — all driven by a real-time pipeline and inter-agent messaging.
+Multi-project engineering control plane. Foreman decomposes planning artifacts and task backlogs, schedules work across registered projects, dispatches AI agents into isolated per-project execution environments, and merges completed work onto project-specific integration branches for validation and approval.
 
-## Why Foreman?
+## Product model
+- **Control plane first** — register projects, ingest PRDs/TRDs/tasks, allocate agent capacity across projects, and coordinate validation/promotion.
+- **Execution plane second** — each project supplies worktree/workspace isolation, agent workers, pipeline execution, merge/refinery behavior, and project-local runtime state.
+- **Integration before promotion** — completed work should land on a configured integration branch, pass validation, and only then be promoted to the default branch.
 
-You already have AI coding agents. What you don't have is a way to run several of them simultaneously on the same codebase without them stepping on each other. Foreman solves this:
+## Current state vs roadmap
 
-- **Work decomposition** — PRD → TRD → beads (structured, dependency-aware tasks)
-- **Git isolation** — each agent gets its own worktree (zero conflicts during development)
-- **Pipeline phases** — Explorer → Developer ↔ QA → Reviewer → Finalize
-- **Pi SDK runtime** — agents run in-process via `@mariozechner/pi-coding-agent` SDK (`createAgentSession`)
-- **Built-in messaging** — SQLite-backed inter-agent messaging with native `send_mail` tool, phase lifecycle notifications, and file reservations
-- **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
-- **Progress tracking** — every task, agent, and phase tracked in SQLite + beads_rust
+> Current repo truth: the checkout still leans execution-plane first. `foreman run` is project-scoped today, task tracking is still primarily beads-first, and the worker pipeline is more mature than the top-level multi-project scheduler.
 
+- `foreman task` now exposes a beads-first approval helper: use `foreman task approve <bead-id>` to release newly created backlog beads for dispatch, while `foreman task import --from-beads` remains the transitional native-task migration helper.
+
+### Current state in this checkout
+- Foreman is still beads-first for day-to-day task tracking: `br` / `.beads/` remain the primary operator path.
+- Foreman-created beads start in backlog via the `foreman:backlog` label and must be explicitly approved before `foreman run` can dispatch them.
+
+- Native task tables, project registry, and grouped/epic execution work exist in the codebase, but they are not the sole canonical path yet.
+- The shipped default pipeline is Explorer → Developer ↔ QA → Reviewer → Finalize.
+- Agent Mail is stored in `.foreman/foreman.db`. There is no separate `.foreman/mail.db`.
+- Mid-pipeline rebase and broader shared-worktree execution are roadmap items, not fully implemented end-to-end in this checkout.
+
+### Why Foreman?
+If you are coordinating AI agents across several repositories, the hard problem is not just launching a worker. The hard problem is keeping project state, agent capacity, branch policy, and validation truth coherent across the fleet. Foreman is meant to solve that:
+
+- **Cross-project orchestration** — one control plane for many registered projects
+- **Planning ingestion** — PRD → TRD → executable task backlog
+- **Git isolation** — each dispatched unit runs in its own worktree or workspace
+- **Execution strategies** — single-worker or pipeline-driven execution inside a project
+- **Built-in messaging** — SQLite-backed inter-agent communication and lifecycle events
+- **Integration validation** — merge completed work to integration, validate, then promote
+- **Progress tracking** — project, task, run, and validation state recorded in SQLite
 ## Architecture
-
 ```
-Foreman CLI / Dispatcher
+Foreman control plane
   │
-  ├─ per task: agent-worker.ts (detached process)
-  │    └─ Pi SDK (in-process)
-  │       createAgentSession() → session.prompt()
-  │       Tools: read, write, edit, bash, grep, find, ls, send_mail
-  │
-  ├─ Pipeline Executor (workflow YAML-driven)
-  │    Phases defined in .foreman/workflows/*.yaml
-  │    Model selection, retries, mail hooks, artifacts — all YAML config
-  │
-  ├─ Messaging (SQLite, .foreman/foreman.db — no external server)
-  │    send_mail tool: agents call directly as a native Pi SDK tool
-  │    Lifecycle: phase-started, phase-complete, agent-error
-  │    Coordination: branch-ready, merge-complete, bead-closed
-  │    File reservations: prevent concurrent worktree conflicts
-  │
-  └─ Refinery + autoMerge
-       Triggers immediately after finalize phase
-       T1/T2: TypeScript auto-merge (fast path, no LLM)
-       T3/T4: AI conflict resolution via Pi session
+  ├─ Project registry + project metadata
+  ├─ Intake: PRD / TRD / task backlog ingestion
+  ├─ Scheduler: cross-project dispatch, fairness, capacity
+  ├─ Dashboard / status / approval surfaces
+  └─ Validation + promotion policy
+       │
+       └─ per project: execution plane
+            ├─ Dispatcher / worktree setup
+            ├─ Agent workers
+            ├─ Workflow pipeline executor
+            ├─ Messaging + runtime state
+            └─ Refinery / merge queue → integration branch
 ```
 
-**Pipeline phases** (orchestrated by TypeScript, not AI):
-1. **Explorer** (Haiku, 30 turns, read-only) — codebase analysis → `EXPLORER_REPORT.md`
-2. **Developer** (Sonnet, 80 turns, read+write) — implementation + tests
-3. **QA** (Sonnet, 30 turns, read+bash) — test verification → `QA_REPORT.md`
-4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
-5. **Finalize** — git add/commit/push, br close
-
-Dev ↔ QA retries up to 2x before proceeding to Review.
+**Execution pipeline details**
+- Workflow YAML still defines execution-phase order, retries, mail hooks, and artifacts inside the per-project execution plane.
+- The default execution workflow in this checkout remains Explorer → Developer ↔ QA → Reviewer → Finalize.
+- Those phases are implementation detail for project-local execution, not the top-level product boundary.
 
 ## Dispatch Flow
 
@@ -63,7 +69,7 @@ flowchart TD
         A[User runs foreman run] --> B[Dispatcher.dispatch]
         B --> C{Check agent slots\navailable?}
         C -- No slots --> DONE[Return: skipped]
-        C -- Slots open --> D[br ready — fetch unblocked beads]
+        C -- Slots open --> D[br ready via Foreman filter\napproved + unblocked beads only]
         D --> E{bv client\navailable?}
         E -- Yes --> F[bv.robotTriage → score + sort by AI recommendation]
         E -- No --> G[Sort by priority P0→P4]
@@ -100,7 +106,7 @@ flowchart TD
     subgraph WORKER["agent-worker process (detached)"]
         W --> X[Read + delete config.json]
         X --> Y[Open SQLite store\nOpen ~/.foreman/logs/runId.log]
-        Y --> Z[Init SqliteMailClient\n.foreman/mail.db]
+        Y --> Z[Init SqliteMailClient\n.foreman/foreman.db]
         Z --> AA{pipeline mode?}
         AA -- No --> AB[Single agent via Pi RPC]
         AA -- Yes --> AC[runPipeline]
@@ -162,7 +168,7 @@ flowchart TD
     subgraph MERGE["Merge queue"]
         P5C --> MQ1[MergeQueue picks up branch]
         MQ1 --> MQ2{Conflict tier?}
-        MQ2 -- T1/T2: no conflicts --> MQ3[Auto-rebase + merge to main]
+        MQ2 -- T1/T2: no conflicts --> MQ3[Auto-rebase + merge to integration]
         MQ2 -- T3/T4: conflicts --> MQ4[AI conflict resolution via Pi session]
         MQ4 --> MQ3
         MQ3 --> MQ5[mail merge-complete to foreman]
@@ -233,22 +239,23 @@ foreman doctor              # Check dependencies (br, API key, etc.)
 ## Quick Start
 
 ```bash
-# 1. Initialize in your project
+# 1. Initialize and register a project
 cd ~/your-project
 foreman init --name my-project
 
-# 2. Create tasks (beads)
+# 2. Create task backlog items (current checkout still uses beads here)
 br create --title "Add user auth" --description "Implement JWT-based auth" --type feature --priority 1
 br create --title "Write auth tests" --type task --priority 2
 
-# 3. Dispatch agents to ready tasks
-foreman run
+# 3. Schedule work from the control plane
+foreman run --project my-project
 
-# 4. Monitor progress
-foreman status
+# 4. Inspect progress and approval state
+foreman status --project my-project
+foreman dashboard
 
-# 5. Merge completed branches (runs automatically in foreman run loop)
-foreman merge
+# 5. Reconcile completed work into the integration flow
+foreman merge --project my-project
 ```
 
 ## Messaging
@@ -359,41 +366,47 @@ foreman init --name "my-project"
 ```
 
 ### `foreman run`
-Dispatch AI coding agents to ready tasks. Enters a watch loop that auto-merges completed branches.
+Schedule work through the control plane. In the current checkout, `run` still dispatches project-local execution and can target a registered project explicitly while broader scheduler work catches up.
 
 ```bash
-foreman run                              # Dispatch to all ready tasks
-foreman run --project my-project         # Dispatch without cd into a registered project
-foreman run --bead bd-abc               # Dispatch one specific task
+foreman run                              # Current checkout: dispatch ready work in the current project
+foreman run --project my-project         # Dispatch a registered project without cd
+foreman run --bead bd-abc                # Dispatch one specific task
 foreman run --max-agents 3               # Limit concurrent agents
 foreman run --model claude-opus-4-6      # Override model for all agents
-foreman run --no-tests                   # Skip test suite in merge step
 foreman run --dry-run                    # Preview without dispatching
 ```
 
-Each agent gets:
-- Its own git worktree (branch: `foreman/<bead-id>`)
+Each dispatched execution gets:
+- Its own git worktree (current branch naming is backend-managed; most current paths still use `foreman/<bead-id>`)
 - A `TASK.md` with task instructions, phase prompts, and bead context
-- `br` CLI for status updates
+- `br` CLI for status updates in the current beads-backed flow
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
-Show current task and agent status, or aggregate across projects from the dashboard/status surfaces.
+Show current task and agent status, or aggregate across registered projects from the status/dashboard surfaces.
 
 ```bash
 foreman status
 foreman status --project my-project      # Inspect a registered project without cd
+foreman status --all                     # Aggregate across registered projects
+foreman status --all --json              # Machine-readable aggregate, including skipped/warning rollups
 foreman status --watch                   # Live-updating display
 ```
 
 Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `--project <name-or-path>`. Registered names resolve through `~/.foreman/projects.json`; absolute paths still work for direct one-off targeting.
 
+Aggregated status highlights: `foreman status --all --json` now emits `projects`, `skippedProjects`, `queueWarnings`, and `summary`, while human-readable `foreman status --all` surfaces concise `Skipped Projects:` and `Queue Warnings:` sections when relevant.
+
+When `--json` is combined with human-only refresh flags like `--watch` or `--live`, Foreman returns a single JSON snapshot and adds a top-level `warnings` array so automation can detect the ignored intent without parsing formatted output.
+
 ### `foreman merge`
-Merge completed work branches back to main. Runs automatically in the `foreman run` loop.
+Reconcile completed work into the integration flow. The intended product model is merge to integration, validate there, and only then promote; the current checkout still exposes target-branch controls while that cutover is unfinished.
 
 ```bash
-foreman merge                           # Merge all completed
-foreman merge --target-branch develop    # Merge to develop
+foreman merge                            # Merge all completed work
+foreman merge --project my-project       # Merge a registered project without cd
+foreman merge --target-branch develop    # Current checkout override for target branch
 foreman merge --no-tests                 # Skip test suite
 foreman merge --test-command "npm test"  # Custom test command
 ```
@@ -415,7 +428,7 @@ foreman plan --prd-only "Build a REST API"    # Stop after PRD
 ```
 
 ### `foreman sling trd`
-Parse a TRD and create seeds + beads task hierarchy.
+Parse a TRD and create seeds + beads task hierarchy today. Native-task creation is roadmap work under PRD-2026-006.
 
 ```bash
 foreman sling trd docs/TRD.md           # Parse and create tasks
@@ -432,7 +445,7 @@ foreman doctor --fix                    # Auto-fix recoverable issues
 ```
 
 ### `foreman reset`
-Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open.
+Reset failed/stuck runs: kill agents, remove worktrees, and reopen beads for retry. Use with care; merge-state edge cases are still being hardened.
 
 ```bash
 foreman reset                           # Reset failed/stuck runs
@@ -490,7 +503,9 @@ Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (back
 
 Foreman pipelines are configured via workflow YAML files. See the **[Workflow YAML Reference](docs/workflow-yaml-reference.md)** for complete documentation with examples for Node.js, .NET, Go, Python, and Rust.
 
-Workflows define:
+For the naming contract and migration plan covering `taskId` vs `runId` vs `beadId`, see **[Task Naming Cutover](docs/guides/task-naming-cutover.md)**.
+
+Workflows currently define only behavior that the shipped executor implements end-to-end:
 - **Setup steps** — dependency installation, build commands (stack-agnostic)
 - **Setup cache** — symlink dependency directories from a shared cache
 - **Phase sequence** — which agents run in what order
@@ -498,6 +513,7 @@ Workflows define:
 - **Retry loops** — QA/Reviewer failure → Developer retry with feedback
 - **Mail hooks** — lifecycle notifications and artifact forwarding
 
+If you add roadmap-only keys to the default shipped workflow, update the loader, executor, and status model in the same change so the config remains truthful.
 ```yaml
 # .foreman/workflows/default.yaml (project-local override)
 name: default
@@ -533,7 +549,7 @@ export FOREMAN_MAX_AGENTS=5                  # Max concurrent agents (default: 5
 | Path | Contents |
 |---|---|
 | `.beads/` | beads_rust task database (JSONL, git-tracked) |
-| `.foreman/foreman.db` | SQLite: runs, merge_queue, projects |
+| `.foreman/foreman.db` | SQLite: runs, merge_queue, projects, messages, and native-task tables when enabled |
 | `.foreman-worktrees/` | Git worktrees for active agents |
 | `~/.foreman/logs/` | Per-run agent logs |
 

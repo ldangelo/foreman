@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Dispatcher } from "../dispatcher.js";
 import { PLAN_STEP_CONFIG } from "../roles.js";
-import type { SeedInfo } from "../types.js";
+import type { TaskInfo } from "../types.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import type { BvClient, BvTriageResult } from "../../lib/bv.js";
 import type { ForemanStore } from "../../lib/store.js";
@@ -21,7 +21,7 @@ function makeDispatcher(client?: ITaskClient, bvClient?: BvClient | null) {
   return new Dispatcher(client ?? mockSeeds, mockStore, "/tmp", bvClient);
 }
 
-function makeSeed(title: string, description?: string, priority?: string): SeedInfo {
+function makeSeed(title: string, description?: string, priority?: string): TaskInfo {
   return { id: "seed-001", title, description, priority };
 }
 
@@ -779,7 +779,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
 describe("Dispatcher.generateAgentInstructions — comments propagation", () => {
   it("includes comments in agent instructions when seedInfo has comments", () => {
     const dispatcher = makeDispatcher();
-    const seed: SeedInfo = {
+    const seed: TaskInfo = {
       id: "seed-001",
       title: "Add auth module",
       description: "Implement JWT authentication",
@@ -792,7 +792,7 @@ describe("Dispatcher.generateAgentInstructions — comments propagation", () => 
 
   it("does NOT include Additional Context section when seedInfo has no comments", () => {
     const dispatcher = makeDispatcher();
-    const seed: SeedInfo = {
+    const seed: TaskInfo = {
       id: "seed-001",
       title: "Add auth module",
       description: "Implement JWT authentication",
@@ -803,7 +803,7 @@ describe("Dispatcher.generateAgentInstructions — comments propagation", () => 
 
   it("does NOT include Additional Context section when seedInfo comments is null", () => {
     const dispatcher = makeDispatcher();
-    const seed: SeedInfo = {
+    const seed: TaskInfo = {
       id: "seed-001",
       title: "Add auth module",
       comments: null,
@@ -956,7 +956,7 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
 
   it("includes bead comments in agent instructions via seedInfo.comments", async () => {
     const dispatcher = makeDispatcher();
-    const seedInfo: SeedInfo = {
+    const seedInfo: TaskInfo = {
       id: "bd-001",
       title: "Fix bug",
       priority: "P2",
@@ -972,7 +972,7 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
 
   it("combines notes from show() and comments() into one Additional Context block", async () => {
     const dispatcher = makeDispatcher();
-    const seedInfo: SeedInfo = {
+    const seedInfo: TaskInfo = {
       id: "bd-001",
       title: "Fix bug",
       priority: "P2",

@@ -13,6 +13,7 @@ import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache } from "../lib/setup.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
+import { getForemanBranchName } from "../lib/branch-names.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
 import type { BrIssueDetail } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
@@ -25,11 +26,15 @@ import { getTaskOrder } from "./task-ordering.js";
 import type { EpicTask } from "./pipeline-executor.js";
 import type { PhaseRunnerConfig } from "./phase-runner.js";
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
+import { resolveProjectBranchPolicy } from "../lib/branch-policy.js";
 import { getWorkspacePath } from "../lib/workspace-paths.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
+import { buildWorkerEnv, resolvePhaseRunnerConfigFromEnv, spawnWorkerProcess } from "./execution-engine.js";
+export type { WorkerConfig, SpawnResult, SpawnStrategy } from "./execution-engine.js";
+export { DetachedSpawnStrategy, spawnWorkerProcess, buildWorkerEnv, resolvePhaseRunnerConfigFromEnv } from "./execution-engine.js";
 import type {
-  SeedInfo,
+  TaskInfo,
   DispatchResult,
   DispatchedTask,
   SkippedTask,
@@ -441,11 +446,12 @@ export class Dispatcher {
       }
       let target = readySeeds.find((b) => b.id === opts.seedId);
       // If not in br ready (possibly due to stale blocked cache — beads_rust#204),
-      // fetch directly and force-dispatch if it's open/in_progress.
+      // fetch directly and force-dispatch only when the bead is truly actionable.
       if (!target) {
         try {
-          const bead = await this.seeds.show(opts.seedId);
-          if (bead && bead.status !== "closed" && bead.status !== "completed") {
+          const bead = await this.seeds.show(opts.seedId) as { status: string; labels?: string[] | null };
+          const labels = bead?.labels ?? [];
+          if (bead && bead.status !== "closed" && bead.status !== "completed" && !labels.includes("foreman:backlog")) {
             log(`[dispatch] ${opts.seedId} not in br ready (stale cache?) — force-dispatching`);
             target = bead as unknown as Issue;
           }
@@ -454,9 +460,12 @@ export class Dispatcher {
       if (!target) {
         let reason = "Not found and not dispatchable";
         try {
-          const bead = await this.seeds.show(opts.seedId);
+          const bead = await this.seeds.show(opts.seedId) as { status: string; labels?: string[] | null };
+          const labels = bead?.labels ?? [];
           if (!bead) {
             reason = `Bead ${opts.seedId} not found`;
+          } else if (labels.includes("foreman:backlog")) {
+            reason = `Bead ${opts.seedId} is awaiting approval (remove foreman:backlog to dispatch it)`;
           } else if (bead.status === "closed" || bead.status === "completed") {
             reason = `Bead ${opts.seedId} is closed (already completed)`;
           } else if (bead.status === "in_progress") {
@@ -806,7 +815,7 @@ export class Dispatcher {
           model,
           worktreePath: plannedWorktreePath,
           runId: "(dry-run)",
-          branchName: `foreman/${dispatchPlan.worktreeSeedId}`,
+          branchName: getForemanBranchName(dispatchPlan.worktreeSeedId),
         });
         scheduledWorktreePaths.add(plannedWorktreePath);
         continue;
@@ -837,7 +846,7 @@ export class Dispatcher {
 
         // 1. Resolve base branch (may stack on a dependency branch)
         const baseBranch = await resolveBaseBranch(dispatchSeed.id, this.projectPath, this.store);
-        if (baseBranch) {
+        if (baseBranch.startsWith("foreman/")) {
           log(`[foreman] Stacking ${dispatchSeed.id} on ${baseBranch}`);
         }
 
@@ -1195,7 +1204,7 @@ export class Dispatcher {
    */
   async dispatchPlanStep(
     projectId: string,
-    seed: SeedInfo,
+    seed: TaskInfo,
     ensembleCommand: string,
     input: string,
     outputDir: string,
@@ -1285,8 +1294,10 @@ export class Dispatcher {
    * Model selection is now handled per-phase by the workflow YAML `models` map
    * (see resolvePhaseModel in workflow-loader.ts). The TASK.md model field shows
    * the developer-phase default as informational context.
+  /**
+   * Build the TASK.md content for a seed (exposed for testing).
    */
-  generateAgentInstructions(seed: SeedInfo, worktreePath: string): string {
+  generateAgentInstructions(seed: TaskInfo, worktreePath: string): string {
     // Use developer-role default for TASK.md informational display.
     // The actual per-phase model is resolved from workflow YAML at runtime.
     const model: ModelSelection = getDefaultModel() as ModelSelection;
@@ -1341,7 +1352,7 @@ export class Dispatcher {
   private async spawnAgent(
     model: ModelSelection,
     worktreePath: string,
-    seed: SeedInfo,
+    seed: TaskInfo,
     runId: string,
     telemetry?: boolean,
     pipelineOpts?: {
@@ -1408,7 +1419,7 @@ export class Dispatcher {
   private async resumeAgent(
     model: ModelSelection,
     worktreePath: string,
-    seed: SeedInfo,
+    seed: TaskInfo,
     runId: string,
     sdkSessionId: string,
     telemetry?: boolean,
@@ -1673,28 +1684,26 @@ export class Dispatcher {
  * If any of the seed's blocking dependencies have an unmerged local branch
  * (i.e. a `foreman/<depId>` branch exists locally and its latest run is
  * "completed" but not yet "merged"), stack the new worktree on top of that
- * dependency branch instead of the default branch.
+ * dependency branch instead of the configured integration branch.
  *
  * This allows agent B to build on top of agent A's work before A is merged.
- * After A merges, the refinery will rebase B onto main.
- *
- * Returns the dependency branch name (e.g. "foreman/story-1") or undefined
- * when no stacking is needed.
+ * After A merges, the refinery will rebase B onto the integration branch.
  */
 export async function resolveBaseBranch(
   seedId: string,
   projectPath: string,
   store: Pick<ForemanStore, "getRunsForSeed">,
-): Promise<string | undefined> {
+): Promise<string> {
   const brClient = new BeadsRustClient(projectPath);
+  const depBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+  const branchPolicy = await resolveProjectBranchPolicy(projectPath, depBackend);
   try {
     const detail = await brClient.show(seedId);
     // detail.dependencies is BrDepRef[] — extract id for branch resolution
     for (const dep of detail.dependencies ?? []) {
       const depId = typeof dep === "string" ? dep : (dep as { id: string }).id;
-      const depBranch = `foreman/${depId}`;
-      // Check if this branch exists locally via VcsBackend (TRD-015: migrate from gitBranchExists shim)
-      const depBackend = new GitBackend(projectPath);
+      const depBranch = getForemanBranchName(depId);
+      // Check if this branch exists locally via the configured/auto-detected backend
       const branchExists = await depBackend.branchExists(projectPath, depBranch);
       if (!branchExists) continue;
       // Check if the dep's most recent run is "completed" (done but not yet merged)
@@ -1707,222 +1716,11 @@ export async function resolveBaseBranch(
   } catch {
     // br may not be initialized or the seed may not have dependency info — ignore
   }
-  return undefined; // Default: branch from main/current
+  return branchPolicy.integrationBranch;
 }
-
-// ── Worker Config (must match agent-worker.ts interface) ────────────────
-
-export interface WorkerConfig {
-  runId: string;
-  projectId: string;
-  seedId: string;
-  seedTitle: string;
-  seedDescription?: string;
-  seedComments?: string;
-  model: string;
-  worktreePath: string;
-  /** Project root directory (contains .beads/). Used as cwd for br commands. */
-  projectPath?: string;
-  prompt: string;
-  env: Record<string, string>;
-  resume?: string;
-  pipeline?: boolean;
-  skipExplore?: boolean;
-  skipReview?: boolean;
-  /** Absolute path to the SQLite DB file (e.g. .foreman/foreman.db) */
-  dbPath?: string;
-  /**
-   * Resolved workflow type (e.g. "smoke", "feature", "bug").
-   * Derived from label-based override or bead type field.
-   * Used for prompt-loader workflow scoping and spawn strategy selection.
-   */
-  seedType?: string;
-  /**
-   * Labels from the bead. Forwarded to agent-worker so it can resolve
-   * `workflow:<name>` label overrides.
-   */
-  seedLabels?: string[];
-  /**
-   * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
-   * Forwarded to the pipeline executor to resolve per-priority models from YAML.
-   */
-  seedPriority?: string;
-  /**
-   * Override target branch for auto-merge after finalize.
-   * When set, the agent worker merges into this branch instead of detectDefaultBranch().
-   */
-  targetBranch?: string;
-  /**
-   * Optional task ID from native task store (NativeTaskStore.claim()).
-   * When present, pipeline will call taskStore.updatePhase(taskId, phaseName)
-   * at each phase transition for phase-level visibility (REQ-012).
-   * Null/undefined in beads fallback mode — no-op via optional chaining.
-   */
-  taskId?: string | null;
-  /**
-   * Ordered list of child tasks for epic execution mode (TRD-2026-007).
-   * When set, the worker runs the epic pipeline: taskPhases per child task,
-   * then finalPhases once at the end.
-   */
-  epicTasks?: EpicTask[];
-  /**
-   * Generic grouped-parent child task list. Populated alongside epicTasks so
-   * story-scoped runners can reuse the same worker/pipeline path.
-   */
-  groupedTasks?: EpicTask[];
-  /**
-   * Parent epic bead ID (TRD-2026-007).
-   * When set, this run is an epic execution — the worker executes all
-   * epicTasks within a single worktree.
-   */
-  epicId?: string;
-  groupedParentId?: string;
-  groupedParentType?: string;
-  /**
-   * Optional explicit phase-runner override for tests/harnesses.
-   * Keeps the detached worker path intact while swapping only phase execution.
-   */
-  phaseRunner?: PhaseRunnerConfig;
-}
-
-// ── Spawn Strategy Pattern ──────────────────────────────────────────────
-
-/** Result returned by a SpawnStrategy */
-export interface SpawnResult {
-}
-
-/** Strategy interface for spawning worker processes */
-export interface SpawnStrategy {
-  spawn(config: WorkerConfig): Promise<SpawnResult>;
-}
-
-/**
- * Resolve common paths needed by both spawn strategies.
- */
-function resolveWorkerPaths(homeDir?: string): { tsxBin: string; workerScript: string; logDir: string } {
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
-  const projectRoot = join(__dirname, "..", "..");
-  return {
-    tsxBin: join(projectRoot, "node_modules", ".bin", "tsx"),
-    workerScript: join(__dirname, "agent-worker.js"),
-    logDir: join(homeDir ?? process.env.HOME ?? "/tmp", ".foreman", "logs"),
-  };
-}
-
-
-/**
- * Spawn worker as a detached child process (original behavior).
- */
-export class DetachedSpawnStrategy implements SpawnStrategy {
-  async spawn(config: WorkerConfig): Promise<SpawnResult> {
-    const homeDir = config.env.HOME ?? process.env.HOME ?? "/tmp";
-    const { tsxBin, workerScript, logDir } = resolveWorkerPaths(homeDir);
-
-    // Write config to temp file (worker reads + deletes it)
-    const configDir = join(homeDir, ".foreman", "tmp");
-    await mkdir(configDir, { recursive: true });
-    const configPath = join(configDir, `worker-${config.runId}.json`);
-    await writeFile(configPath, JSON.stringify(config), "utf-8");
-
-    await mkdir(logDir, { recursive: true });
-    const outFd = await open(join(logDir, `${config.runId}.out`), "w");
-    const errFd = await open(join(logDir, `${config.runId}.err`), "w");
-
-    // Use the fully-constructed env from config (includes ~/.local/bin prefix from buildWorkerEnv)
-    // Strip CLAUDECODE so the worker can spawn its own Claude SDK session
-    const spawnEnv: Record<string, string | undefined> = { ...config.env };
-    delete spawnEnv.CLAUDECODE;
-
-    // Spawn from the project root (where dist/ and node_modules/ live),
-    // not the worktree. The worktree path is passed in config and used by
-    // the agent for git operations. tsx resolves imports relative to the
-    // script's location, but ESM resolution still checks cwd for some paths.
-    const __filename = fileURLToPath(import.meta.url);
-    const projectRoot = join(dirname(__filename), "..", "..");
-    const child = spawn(tsxBin, [workerScript, configPath], {
-      detached: true,
-      stdio: ["ignore", outFd.fd, errFd.fd],
-      cwd: projectRoot,
-      env: spawnEnv,
-    });
-
-    child.unref();
-
-    // Close parent's file handles — child process has inherited its own copies of the fds
-    await outFd.close();
-    await errFd.close();
-
-    log(`  Worker pid=${child.pid} for ${config.seedId}`);
-    return {};
-  }
-}
-
-/**
- * Spawn agent-worker using DetachedSpawnStrategy.
- *
- * DetachedSpawnStrategy spawns agent-worker.ts, which runs the full pipeline
- * (explorer → developer → QA → reviewer → finalize) and calls runWithPi()
- * per phase with the correct phase prompt and Pi extension env vars.
- */
-export async function spawnWorkerProcess(config: WorkerConfig): Promise<SpawnResult> {
-  return new DetachedSpawnStrategy().spawn(config);
-}
-
-/**
- * Build a clean env record (string values only) for worker config.
- * Removes CLAUDECODE to allow nested Claude sessions.
- */
-function buildWorkerEnv(
-  telemetry: boolean | undefined,
-  seedId: string,
-  runId: string,
-  model: string,
-  notifyUrl?: string,
-  vcsBackend?: VcsBackend,
-): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && key !== "CLAUDECODE") {
-      env[key] = value;
-    }
-  }
-  const home = process.env.HOME ?? "/home/nobody";
-  env.PATH = `${home}/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:${env.PATH ?? ""}`;
-
-  if (notifyUrl) {
-    env.FOREMAN_NOTIFY_URL = notifyUrl;
-  }
-
-  // Pass VCS backend name to workers via env var so they can instantiate the
-  // correct backend without re-detecting (AC-020-2). The backend was already
-  // resolved and instantiated by the dispatcher; we serialize just the name.
-  if (vcsBackend?.name) {
-    env.FOREMAN_VCS_BACKEND = vcsBackend.name;
-  }
-
-  if (telemetry) {
-    env.CLAUDE_CODE_ENABLE_TELEMETRY = "1";
-    env.OTEL_RESOURCE_ATTRIBUTES = [
-      process.env.OTEL_RESOURCE_ATTRIBUTES,
-      `foreman.seed_id=${seedId}`,
-      `foreman.run_id=${runId}`,
-      `foreman.model=${model}`,
-    ].filter(Boolean).join(",");
-  }
-
-  return env;
-}
-
-function resolvePhaseRunnerConfigFromEnv(): PhaseRunnerConfig | undefined {
-  const modulePath = process.env.FOREMAN_PHASE_RUNNER_MODULE?.trim();
-  if (!modulePath) return undefined;
-  return {
-    modulePath,
-    exportName: process.env.FOREMAN_PHASE_RUNNER_EXPORT?.trim() || undefined,
-    optionsPath: process.env.FOREMAN_PHASE_RUNNER_OPTIONS_PATH?.trim() || undefined,
-  };
-}
+// ── Execution engine boundary ───────────────────────────────────────────────
+// Worker config, phase-runner env construction, and detached process spawning
+// now live in execution-engine.ts so dispatcher remains project-local orchestration.
 
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 23);
@@ -1943,7 +1741,7 @@ function seedToInfo(
   seed: Issue,
   detail?: { description?: string | null; notes?: string | null; labels?: string[] },
   beadComments?: string | null,
-): SeedInfo {
+): TaskInfo {
   // Combine notes (from br show) and comments (from br comments) into a single
   // "Additional Context" block so agents receive all annotated context.
   const notesSection = detail?.notes ?? undefined;

@@ -55,12 +55,12 @@ export async function retryAction(
   }
 
   console.log(
-    chalk.bold(`Retrying bead: ${chalk.cyan(bead.id)}`) +
-      chalk.dim(` (${bead.title})`),
+    chalk.bold(
+      `${dryRun ? "Previewing retry plan for bead" : "Retrying bead"}: ${chalk.cyan(bead.id)}`
+    ) + chalk.dim(` (${bead.title})`),
   );
   console.log(`  Status: ${chalk.yellow(bead.status)}`);
 
-  // 3. Look up run history
   const runs = store.getRunsForSeed(beadId, project.id);
   const latestRun = runs.length > 0 ? runs[0] : null;
 
@@ -72,7 +72,6 @@ export async function retryAction(
     console.log(`  Latest run: ${chalk.dim("(none)")}`);
   }
 
-  // 4. Determine what needs to be reset
   const beadNeedsReset =
     bead.status === "completed" ||
     bead.status === "closed" ||
@@ -94,14 +93,16 @@ export async function retryAction(
       latestRun.status === "conflict" ||
       latestRun.status === "test-failed");
 
-  // 5. Apply resets
+  const wouldChangeState = beadNeedsReset || runNeedsReset || runNeedsExplicitReset;
+  let changedState = false;
+
   if (!dryRun) {
-    // Reset bead status to "open" so it can be picked up again
     if (beadNeedsReset) {
       console.log(
         `  ${chalk.yellow("reset")} bead status: ${bead.status} → open`,
       );
       await beadsClient.update(beadId, { status: "open" });
+      changedState = true;
     } else if (bead.status !== "open") {
       console.log(
         `  ${chalk.dim("skip")} bead status already: ${bead.status}`,
@@ -110,7 +111,6 @@ export async function retryAction(
       console.log(`  ${chalk.dim("ok")} bead status is already "open"`);
     }
 
-    // Mark latest run as failed so it won't block a new dispatch
     if (runNeedsReset && latestRun) {
       console.log(
         `  ${chalk.yellow("reset")} run ${latestRun.id}: ${latestRun.status} → failed`,
@@ -125,6 +125,7 @@ export async function retryAction(
         { reason: "foreman retry", beadId, previousRunId: latestRun.id },
         latestRun.id,
       );
+      changedState = true;
     } else if (runNeedsExplicitReset && latestRun) {
       console.log(
         `  ${chalk.yellow("reset")} run ${latestRun.id}: ${latestRun.status} → reset`,
@@ -139,14 +140,13 @@ export async function retryAction(
         { reason: "foreman retry", beadId, previousRunId: latestRun.id },
         latestRun.id,
       );
+      changedState = true;
     } else if (latestRun) {
-      // Run exists but doesn't need resetting (already completed/merged/etc.)
       console.log(
         `  ${chalk.dim("skip")} run status "${latestRun.status}" does not need reset`,
       );
     }
   } else {
-    // Dry-run: just describe what would happen
     if (beadNeedsReset) {
       console.log(
         chalk.dim(
@@ -154,6 +154,7 @@ export async function retryAction(
         ),
       );
     }
+
     if (runNeedsReset && latestRun) {
       console.log(
         chalk.dim(
@@ -161,6 +162,7 @@ export async function retryAction(
         ),
       );
     }
+
     if (runNeedsExplicitReset && latestRun) {
       console.log(
         chalk.dim(
@@ -168,12 +170,17 @@ export async function retryAction(
         ),
       );
     }
+
+    if (!wouldChangeState && !opts.dispatch) {
+      console.log(chalk.dim("  Would not change bead or run state."));
+    }
   }
 
-  // 6. Optionally dispatch
+  let dispatchRequestedButNotStarted = false;
+
   if (opts.dispatch) {
     console.log();
-    console.log(chalk.bold("Dispatching…"));
+    console.log(chalk.bold(dryRun ? "Previewing dispatch…" : "Dispatching…"));
     const disp =
       dispatcher ?? new Dispatcher(beadsClient, store, projectPath);
     const result = await disp.dispatch({
@@ -183,36 +190,78 @@ export async function retryAction(
       dryRun,
     });
 
-    if (result.dispatched.length > 0) {
-      for (const t of result.dispatched) {
-        console.log(
-          `  ${chalk.green("dispatched")} ${t.seedId} → worktree ${t.worktreePath}`,
-        );
-      }
-    } else if (result.skipped.length > 0) {
-      for (const s of result.skipped) {
-        console.log(
-          `  ${chalk.yellow("skipped")} ${s.seedId}: ${s.reason}`,
-        );
-      }
-    } else {
+    dispatchRequestedButNotStarted =
+      result.dispatched.length === 0 && result.resumed.length === 0;
+
+    for (const task of result.dispatched) {
       console.log(
-        `  ${chalk.yellow("warn")} no tasks dispatched`,
+        `  ${chalk.green(dryRun ? "would dispatch" : "dispatched")} ${task.seedId} → worktree ${task.worktreePath}`,
       );
+    }
+
+    for (const task of result.resumed) {
+      console.log(
+        `  ${chalk.green(dryRun ? "would resume" : "resumed")} ${task.seedId} → run ${task.runId}`,
+      );
+    }
+
+    const skippedWriter = dryRun ? console.log : console.warn;
+    for (const skipped of result.skipped) {
+      skippedWriter(
+        `  ${chalk.yellow(dryRun ? "would skip" : "skipped")} ${skipped.seedId}: ${skipped.reason}`,
+      );
+    }
+
+    if (dispatchRequestedButNotStarted && result.skipped.length === 0) {
+      const message = dryRun
+        ? "  would not dispatch a new run"
+        : changedState
+          ? "  reset state, but did not dispatch a new run"
+          : "  did not dispatch a new run";
+      const writer = dryRun ? console.log : console.error;
+      writer(chalk.yellow(message));
     }
   }
 
   console.log();
   if (dryRun) {
-    console.log(chalk.yellow("Dry run complete — no changes were made."));
-  } else {
-    console.log(
-      chalk.green("Done.") +
-        (opts.dispatch
-          ? ""
-          : chalk.dim(" Use --dispatch to immediately queue a new run.")),
-    );
+    if (!wouldChangeState && !opts.dispatch) {
+      console.log(chalk.yellow("Dry run complete — retry would make no changes."));
+    } else {
+      console.log(chalk.yellow("Dry run complete — no changes were made."));
+    }
+    return 0;
   }
+
+  if (opts.dispatch) {
+    if (dispatchRequestedButNotStarted) {
+      console.error(
+        chalk.red(
+          changedState
+            ? "Retry updated state, but no new run was dispatched."
+            : "Retry made no changes and did not dispatch a new run.",
+        ),
+      );
+      return 1;
+    }
+
+    console.log(chalk.green("Retry complete — dispatched a new run."));
+    return 0;
+  }
+
+  if (!changedState) {
+    console.error(
+      chalk.red(
+        "Retry made no changes: bead is already open and the latest run does not need reset.",
+      ),
+    );
+    return 1;
+  }
+
+  console.log(
+    chalk.green("Retry state reset complete.") +
+      chalk.dim(" Use --dispatch to immediately queue a new run."),
+  );
 
   return 0;
 }
