@@ -29,6 +29,23 @@ export interface IShowUpdateClient {
   update(id: string, opts: UpdateOptions): Promise<void>;
 }
 
+export function clearPendingBeadWritesForSeed(
+  store: Pick<ForemanStore, "getPendingBeadWrites" | "markBeadWriteProcessed">,
+  seedId: string,
+): number {
+  let cleared = 0;
+  for (const entry of store.getPendingBeadWrites()) {
+    try {
+      const payload = JSON.parse(entry.payload) as { seedId?: string };
+      if (payload.seedId !== seedId) continue;
+      if (store.markBeadWriteProcessed(entry.id)) cleared++;
+    } catch {
+      // Malformed payloads are unrelated to this seed cleanup path.
+    }
+  }
+  return cleared;
+}
+
 // ── Stale-branch detection types ─────────────────────────────────────────────
 
 /**
@@ -726,6 +743,12 @@ export const resetCommand = new Command("reset")
 
       // 5. Reset seeds to open (force-reopen if --seed was explicitly provided)
       for (const seedId of seedIds) {
+        if (!dryRun) {
+          const cleared = clearPendingBeadWritesForSeed(store, seedId);
+          if (cleared > 0) {
+            console.log(`  ${chalk.yellow("clear")} ${cleared} pending bead write(s) for ${chalk.cyan(seedId)}`);
+          }
+        }
         const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!beadFilter });
         switch (result.action) {
           case "skipped-closed":

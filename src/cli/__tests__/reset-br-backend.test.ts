@@ -12,9 +12,11 @@ import {
   detectAndHandleStaleBranches,
   countCommitsAhead,
   isBranchMergedIntoTarget,
+  clearPendingBeadWritesForSeed,
 } from "../commands/reset.js";
 import type { IShowUpdateClient, ExecFileAsyncFn } from "../commands/reset.js";
-import type { ForemanStore, Run } from "../../lib/store.js";
+import { ForemanStore } from "../../lib/store.js";
+import type { Run } from "../../lib/store.js";
 import type { BrIssueDetail } from "../../lib/beads-rust.js";
 import type { UpdateOptions } from "../../lib/task-client.js";
 import type { MergeQueueEntry, MergeQueueStatus } from "../../orchestrator/merge-queue.js";
@@ -378,6 +380,60 @@ describe("resetSeedToOpen", () => {
     expect(result.action).toBe("already-open");
     expect(result.previousStatus).toBe("open");
     expect(seeds.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("clearPendingBeadWritesForSeed", () => {
+  it("marks pending writes for the target bead as processed", () => {
+    const store = {
+      getPendingBeadWrites: vi.fn(() => [
+        { id: "1", payload: JSON.stringify({ seedId: "bd-i9gm" }) },
+        { id: "2", payload: JSON.stringify({ seedId: "bd-other" }) },
+        { id: "3", payload: JSON.stringify({ seedId: "bd-i9gm", status: "closed" }) },
+      ]),
+      markBeadWriteProcessed: vi.fn(() => true),
+    };
+
+    const cleared = clearPendingBeadWritesForSeed(store as never, "bd-i9gm");
+
+    expect(cleared).toBe(2);
+    expect(store.markBeadWriteProcessed).toHaveBeenCalledTimes(2);
+    expect(store.markBeadWriteProcessed).toHaveBeenCalledWith("1");
+    expect(store.markBeadWriteProcessed).toHaveBeenCalledWith("3");
+  });
+
+  it("ignores malformed payloads and non-matching seeds", () => {
+    const store = {
+      getPendingBeadWrites: vi.fn(() => [
+        { id: "1", payload: "{not-json" },
+        { id: "2", payload: JSON.stringify({ seedId: "bd-other" }) },
+      ]),
+      markBeadWriteProcessed: vi.fn(() => true),
+    };
+
+    const cleared = clearPendingBeadWritesForSeed(store as never, "bd-i9gm");
+
+    expect(cleared).toBe(0);
+    expect(store.markBeadWriteProcessed).not.toHaveBeenCalled();
+  });
+
+  it("works with the real ForemanStore queue", () => {
+    const projectPath = "/tmp/reset-clear-pending";
+    const store = ForemanStore.forProject(projectPath);
+    try {
+      store.enqueueBeadWrite("auto-merge", "set-status", { seedId: "bd-i9gm", status: "closed" });
+      store.enqueueBeadWrite("refinery", "add-notes", { seedId: "bd-i9gm", notes: "stale note" });
+      store.enqueueBeadWrite("auto-merge", "set-status", { seedId: "bd-other", status: "review" });
+
+      const cleared = clearPendingBeadWritesForSeed(store, "bd-i9gm");
+
+      expect(cleared).toBe(2);
+      const remaining = store.getPendingBeadWrites();
+      expect(remaining).toHaveLength(1);
+      expect(JSON.parse(remaining[0].payload)).toEqual({ seedId: "bd-other", status: "review" });
+    } finally {
+      store.close();
+    }
   });
 });
 
