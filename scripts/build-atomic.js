@@ -49,72 +49,76 @@ function cleanup() {
   }
 }
 
-// ── Step 1: compile TypeScript into tmpDir ────────────────────────────────────
+let swapped = false;
+
 try {
+  // ── Step 1: compile TypeScript into tmpDir ──────────────────────────────────
   console.error('[build-atomic] Running tsc …');
   execSync(
     `npx tsc -p tsconfig.build.json --outDir ${tmpDir}`,
     { cwd: root, stdio: 'inherit' },
   );
+
+  // ── Step 2: copy static assets into tmpDir ─────────────────────────────────
+  console.error('[build-atomic] Copying assets …');
+  const filter = (s) => {
+    const name = basename(s);
+    return !name.includes('.') || name.endsWith('.md') || name.endsWith('.yaml');
+  };
+
+  const legacySrc = join(root, 'src', 'templates');
+  if (existsSync(legacySrc)) {
+    mkdirSync(join(tmpDir, 'templates'), { recursive: true });
+    cpSync(legacySrc, join(tmpDir, 'templates'), { recursive: true, filter });
+    console.error('  ✓ Copied src/templates → dist-new/templates');
+  }
+
+  const defaultsSrc = join(root, 'src', 'defaults');
+  if (existsSync(defaultsSrc)) {
+    mkdirSync(join(tmpDir, 'defaults'), { recursive: true });
+    cpSync(defaultsSrc, join(tmpDir, 'defaults'), { recursive: true, filter });
+    console.error('  ✓ Copied src/defaults → dist-new/defaults');
+  }
+
+  // ── Step 3: build workspace package into tmpDir/packages ───────────────────
+  // The workspace (foreman-pi-extensions) builds to its own dist/ in
+  // packages/foreman-pi-extensions/dist/. We don't need to move it because it
+  // is not inside the main dist/ directory — workers load it from its own path.
+  console.error('[build-atomic] Building foreman-pi-extensions …');
+  execSync('npm run build --workspace=packages/foreman-pi-extensions', {
+    cwd: root,
+    stdio: 'inherit',
+  });
+
+  // ── Step 4 (skip in dry run): atomic swap ──────────────────────────────────
+  if (dryRun) {
+    console.error('[build-atomic] --dry mode: skipping atomic swap');
+    console.error(`[build-atomic] Removing temp dir ${tmpDir}`);
+    rmSync(tmpDir, { recursive: true, force: true });
+    console.error('[build-atomic] Done (dry run).');
+    process.exit(0);
+  }
+
+  console.error('[build-atomic] Performing atomic swap …');
+
+  if (existsSync(finalDir)) {
+    renameSync(finalDir, oldBackup);
+  }
+
+  renameSync(tmpDir, finalDir);
+  swapped = true;
+
+  if (existsSync(oldBackup)) {
+    rmSync(oldBackup, { recursive: true, force: true });
+  }
+
+  console.error('[build-atomic] ✓ dist/ updated atomically — no downtime window.');
 } catch (e) {
   cleanup();
   console.error(`[build-atomic] Build failed: ${e.message}`);
   process.exit(1);
+} finally {
+  if (!swapped) {
+    cleanup();
+  }
 }
-
-// ── Step 2: copy static assets into tmpDir ────────────────────────────────────
-console.error('[build-atomic] Copying assets …');
-const filter = (s) => {
-  const name = basename(s);
-  return !name.includes('.') || name.endsWith('.md') || name.endsWith('.yaml');
-};
-
-const legacySrc = join(root, 'src', 'templates');
-if (existsSync(legacySrc)) {
-  mkdirSync(join(tmpDir, 'templates'), { recursive: true });
-  cpSync(legacySrc, join(tmpDir, 'templates'), { recursive: true, filter });
-  console.error('  ✓ Copied src/templates → dist-new/templates');
-}
-
-const defaultsSrc = join(root, 'src', 'defaults');
-if (existsSync(defaultsSrc)) {
-  mkdirSync(join(tmpDir, 'defaults'), { recursive: true });
-  cpSync(defaultsSrc, join(tmpDir, 'defaults'), { recursive: true, filter });
-  console.error('  ✓ Copied src/defaults → dist-new/defaults');
-}
-
-// ── Step 3: build workspace package into tmpDir/packages ────────────────────
-// The workspace (foreman-pi-extensions) builds to its own dist/ in
-// packages/foreman-pi-extensions/dist/. We don't need to move it because it
-// is not inside the main dist/ directory — workers load it from its own path.
-console.error('[build-atomic] Building foreman-pi-extensions …');
-execSync('npm run build --workspace=packages/foreman-pi-extensions', {
-  cwd: root,
-  stdio: 'inherit',
-});
-
-// ── Step 4 (skip in dry run): atomic swap ────────────────────────────────────
-if (dryRun) {
-  console.error('[build-atomic] --dry mode: skipping atomic swap');
-  console.error(`[build-atomic] Removing temp dir ${tmpDir}`);
-  rmSync(tmpDir, { recursive: true, force: true });
-  console.error('[build-atomic] Done (dry run).');
-  process.exit(0);
-}
-
-console.error('[build-atomic] Performing atomic swap …');
-
-// Rename old dist/ → dist-old-<ts>/ (if it exists)
-if (existsSync(finalDir)) {
-  renameSync(finalDir, oldBackup);
-}
-
-// Rename dist-new-<ts>/ → dist/
-renameSync(tmpDir, finalDir);
-
-// Remove old backup
-if (existsSync(oldBackup)) {
-  rmSync(oldBackup, { recursive: true, force: true });
-}
-
-console.error('[build-atomic] ✓ dist/ updated atomically — no downtime window.');

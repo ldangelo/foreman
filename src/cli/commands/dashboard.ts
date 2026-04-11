@@ -994,6 +994,11 @@ export const dashboardCommand = new Command("dashboard")
       const key = chunk.toString();
       const tasks = needsHumanTasks;
 
+      if (key === "\u0003") {
+        process.kill(process.pid, "SIGINT");
+        return;
+      }
+
       if (key === "\u001B[A" || key === "k") {
         if (tasks.length > 0) {
           selectedTaskIndex = selectedTaskIndex <= 0 ? tasks.length - 1 : selectedTaskIndex - 1;
