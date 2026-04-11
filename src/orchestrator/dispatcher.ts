@@ -260,6 +260,27 @@ export class Dispatcher {
         };
       }
       let target = readySeeds.find((b) => b.id === opts.seedId);
+      if (usingNativeStore && !target) {
+        const nativeMatch = this.store.getTaskByExternalId(opts.seedId);
+        if (nativeMatch) {
+          if (nativeMatch.status === "ready") {
+            target = nativeTaskToIssue(nativeMatch);
+          } else {
+            return {
+              dispatched: [],
+              skipped: [{
+                seedId: opts.seedId,
+                title: nativeMatch.title,
+                reason: `Native task for ${opts.seedId} is ${nativeMatch.status} (not ready)`
+              }],
+              resumed: [],
+              activeAgents: activeRuns.length,
+            };
+          }
+        } else {
+          usingNativeStore = false;
+        }
+      }
       // If not in br ready (possibly due to stale blocked cache — beads_rust#204),
       // fetch directly and force-dispatch if it's open/in_progress.
       if (!target) {

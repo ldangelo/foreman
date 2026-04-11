@@ -1794,6 +1794,24 @@ export class ForemanStore {
   }
 
   /**
+   * Look up a native task by external_id.
+   *
+   * Used when an explicit bead ID may correspond to a native task row in auto mode.
+   * Returns null when the tasks table is missing or no row matches.
+   */
+  getTaskByExternalId(externalId: string): NativeTask | null {
+    try {
+      return (
+        (this.db
+          .prepare("SELECT * FROM tasks WHERE external_id = ? LIMIT 1")
+          .get(externalId) as NativeTask | undefined) ?? null
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Return all tasks with status = 'ready', ordered by priority ASC then created_at ASC.
    *
    * Implements REQ-017 AC-017.1: "SELECT * FROM tasks WHERE status = 'ready'

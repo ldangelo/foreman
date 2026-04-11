@@ -133,6 +133,7 @@ function makeMockStore(opts: {
   hasNativeTasks?: boolean;
   nativeTasks?: NativeTask[];
   claimResult?: boolean;
+  externalIdTask?: NativeTask | null;
 } = {}): ForemanStore {
   return {
     getActiveRuns: vi.fn().mockReturnValue([]),
@@ -145,6 +146,7 @@ function makeMockStore(opts: {
     // Native task store methods (REQ-017)
     hasNativeTasks: vi.fn().mockReturnValue(opts.hasNativeTasks ?? false),
     getReadyTasks: vi.fn().mockReturnValue(opts.nativeTasks ?? []),
+    getTaskByExternalId: vi.fn().mockReturnValue(opts.externalIdTask ?? null),
     claimTask: vi.fn().mockReturnValue(opts.claimResult ?? true),
     // Other methods used in dispatch flow
     createRun: vi.fn().mockReturnValue({ id: "run-001", project_id: "proj-1", seed_id: "" }),
@@ -294,6 +296,34 @@ describe("Dispatcher — Native task store coexistence (AC-014.1)", () => {
     expect(store.getReadyTasks).toHaveBeenCalled();
     // Beads NOT queried
     expect(beadsClient.ready).not.toHaveBeenCalled();
+  });
+
+  it("falls back to beads for explicit bead dispatch when native tasks exist but no external_id matches", async () => {
+    const beadsIssue = makeBeadsIssue("bd-explicit");
+    const beadsClient = makeMockBeadsClient([]);
+    beadsClient.show = vi.fn().mockResolvedValue({ ...beadsIssue, status: "open" });
+
+    const store = makeMockStore({
+      hasNativeTasks: true,
+      nativeTasks: [makeNativeTask("native-ready")],
+      externalIdTask: null,
+    });
+
+    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const spawnSpy = vi
+      .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
+      .mockResolvedValue({ sessionKey: "mock-session" });
+
+    const result = await dispatcher.dispatch({ dryRun: false, seedId: "bd-explicit" });
+
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.dispatched[0]!.seedId).toBe("bd-explicit");
+    expect(store.getTaskByExternalId).toHaveBeenCalledWith("bd-explicit");
+    expect(store.claimTask).not.toHaveBeenCalled();
+    expect(beadsClient.update).toHaveBeenCalledWith("bd-explicit", { status: "in_progress" });
+    expect(spawnSpy).toHaveBeenCalled();
+
+    spawnSpy.mockRestore();
   });
 
   it("falls back to beads when hasNativeTasks() returns false (auto mode)", async () => {
