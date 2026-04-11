@@ -223,17 +223,16 @@ git push
 **Diagnosis:**
 ```bash
 # Check the worktree state
-cd ../.foreman-worktrees/<repo-name>/<bead-id>
+cd ../.foreman-worktrees/<repo-name>/<seedId>
 git status
 ```
 
 **Fix:**
 ```bash
-# Nuclear cleanup
-foreman stop
-rm -rf ../.foreman-worktrees/<repo-name>/<bead-id>
-rm -f .git/index.lock             # Remove stale lock if present
-git worktree prune
+# Use Foreman commands instead of manual rm -rf
+foreman stop <bead-id>
+foreman worktree clean --dry-run  # Preview what will be removed
+foreman worktree clean            # Remove the worktree and prune stale refs
 foreman reset --bead <bead-id>
 foreman run --bead <bead-id>      # Fresh dispatch
 ```
@@ -247,8 +246,8 @@ foreman run --bead <bead-id>      # Fresh dispatch
 **Fix:**
 ```bash
 rm -f .git/index.lock
-# Also check worktrees:
-rm -f ../.foreman-worktrees/<repo-name>/*/.git/index.lock 2>/dev/null
+# Also check worktrees (emergency only — prefer foreman worktree clean):
+rm -f ../.foreman-worktrees/<repo-name>/<seedId>/.git/index.lock 2>/dev/null
 ```
 
 ### Orphaned worktrees accumulating
