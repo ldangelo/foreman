@@ -26,6 +26,7 @@ const {
   mockGetSentinelConfig,
   mockGetRunsByStatuses,
   MockForemanStore,
+  mockStoreClose,
   mockWatchRunsInk,
   mockSentinelStart,
   mockSentinelStop,
@@ -50,8 +51,9 @@ const {
   const mockGetSentinelConfig = vi.fn().mockReturnValue(null);
   const mockGetRunsByStatuses = vi.fn().mockReturnValue([]);
 
+  const mockStoreClose = vi.fn();
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
-    this.close = vi.fn();
+    this.close = mockStoreClose;
     this.getActiveRuns = mockGetActiveRuns;
     this.getProjectByPath = mockGetProjectByPath;
     this.getSentinelConfig = mockGetSentinelConfig;
@@ -64,7 +66,7 @@ const {
   const mockWatchRunsInk = vi.fn().mockResolvedValue({ detached: false });
 
   const mockSentinelStart = vi.fn();
-  const mockSentinelStop = vi.fn();
+  const mockSentinelStop = vi.fn().mockResolvedValue(undefined);
   const mockSentinelIsRunning = vi.fn().mockReturnValue(false);
   const MockSentinelAgent = vi.fn(function (this: Record<string, unknown>) {
     this.start = mockSentinelStart;
@@ -88,6 +90,7 @@ const {
     mockGetSentinelConfig,
     mockGetRunsByStatuses,
     MockForemanStore,
+    mockStoreClose,
     mockWatchRunsInk,
     mockSentinelStart,
     mockSentinelStop,
@@ -173,7 +176,7 @@ describe("sentinel auto-start in foreman run", () => {
       this.resumeRuns = vi.fn().mockResolvedValue({ resumed: [], skipped: [], activeAgents: 0 });
     });
     MockForemanStore.mockImplementation(function (this: Record<string, unknown>) {
-      this.close = vi.fn();
+      this.close = mockStoreClose;
       this.getActiveRuns = mockGetActiveRuns;
       this.getProjectByPath = mockGetProjectByPath;
       this.getSentinelConfig = mockGetSentinelConfig;
@@ -194,7 +197,7 @@ describe("sentinel auto-start in foreman run", () => {
     mockGetRunsByStatuses.mockReturnValue([]);
 
     mockSentinelStart.mockImplementation(() => {});
-    mockSentinelStop.mockImplementation(() => {});
+    mockSentinelStop.mockResolvedValue(undefined);
     mockSentinelIsRunning.mockReturnValue(false);
     MockSentinelAgent.mockImplementation(function (this: Record<string, unknown>) {
       this.start = mockSentinelStart;
@@ -290,6 +293,41 @@ describe("sentinel auto-start in foreman run", () => {
     await invokeRun(["--no-watch"]);
 
     expect(mockSentinelStop).not.toHaveBeenCalled();
+  });
+
+  it("awaits sentinel shutdown before closing the store", async () => {
+    mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
+    mockGetSentinelConfig.mockReturnValue(MOCK_SENTINEL_CONFIG);
+    mockSentinelIsRunning.mockReturnValue(true);
+
+    const events: string[] = [];
+    let releaseStop!: () => void;
+    mockSentinelStop.mockImplementation(
+      () => new Promise<void>((resolve) => {
+        events.push("stop-called");
+        releaseStop = () => {
+          events.push("stop-resolved");
+          resolve();
+        };
+      }),
+    );
+    mockStoreClose.mockImplementation(() => {
+      events.push("store-closed");
+    });
+
+    const runPromise = invokeRun(["--no-watch"]);
+    for (let i = 0; i < 5 && events.length === 0; i++) {
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    expect(events).toEqual(["stop-called"]);
+    expect(mockStoreClose).not.toHaveBeenCalled();
+
+    releaseStop();
+    await runPromise;
+
+    expect(events).toEqual(["stop-called", "stop-resolved", "store-closed"]);
   });
 
   it("logs a warning (non-fatal) if SentinelAgent.start() throws", async () => {

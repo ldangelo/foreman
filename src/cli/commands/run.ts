@@ -418,16 +418,17 @@ export const runCommand = new Command("run")
           }
         } catch (sentinelErr: unknown) {
           const msg = sentinelErr instanceof Error ? sentinelErr.message : String(sentinelErr);
+          sentinelAgent = null;
           console.warn(chalk.yellow(`[sentinel] Failed to auto-start (non-fatal): ${msg}`));
         }
       }
 
-      /** Stop the sentinel agent if it is running. Non-fatal cleanup helper. */
-      const stopSentinel = (): void => {
-        if (sentinelAgent?.isRunning()) {
-          sentinelAgent.stop();
-          console.log(chalk.dim("[sentinel] Stopped."));
-        }
+      /** Stop the sentinel agent and wait for in-flight work to quiesce. */
+      const stopSentinel = async (): Promise<void> => {
+        if (!sentinelAgent) return;
+        await sentinelAgent.stop();
+        sentinelAgent = null;
+        console.log(chalk.dim("[sentinel] Stopped."));
       };
 
       // ── Startup worker config file cleanup ──────────────────────────────────
@@ -475,7 +476,7 @@ export const runCommand = new Command("run")
       if (!dryRun && !resume && !resumeFailed) {
         const shouldAbort = await checkBranchMismatch(taskClient, projectPath);
         if (shouldAbort) {
-          stopSentinel();
+          await stopSentinel();
           store.close();
           await notifyServer.stop().catch(() => { /* ignore */ });
           process.exit(1);
@@ -513,7 +514,7 @@ export const runCommand = new Command("run")
               console.log(
                 chalk.dim(`Aborted. Switch to ${db} or the desired target branch and re-run.`),
               );
-              stopSentinel();
+              await stopSentinel();
               store.close();
               await notifyServer.stop().catch(() => { /* ignore */ });
               process.exit(1);
@@ -592,13 +593,13 @@ export const runCommand = new Command("run")
           // Resume mode is a one-shot recovery action — no continuous auto-dispatch needed.
           const { detached } = await watchRunsInk(store, runIds, { notificationBus });
           if (detached) {
-            stopSentinel();
+            await stopSentinel();
             store.close();
             return;
           }
         }
 
-        stopSentinel();
+        await stopSentinel();
         store.close();
         return;
       }
@@ -842,7 +843,7 @@ export const runCommand = new Command("run")
         }
       }
 
-      stopSentinel();
+      await stopSentinel();
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

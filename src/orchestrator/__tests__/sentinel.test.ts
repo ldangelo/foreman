@@ -120,7 +120,7 @@ describe("SentinelAgent", () => {
       agent.stop();
     });
 
-    it("isRunning returns true after start and false after stop", () => {
+    it("isRunning returns true after start and false after stop", async () => {
       const { agent } = makeMocks();
       const opts = {
         branch: "main",
@@ -132,16 +132,57 @@ describe("SentinelAgent", () => {
       expect(agent.isRunning()).toBe(false);
       agent.start(opts);
       expect(agent.isRunning()).toBe(true);
-      agent.stop();
+      await agent.stop();
       expect(agent.isRunning()).toBe(false);
     });
 
-    it("stop is idempotent", () => {
+    it("stop is idempotent", async () => {
       const { agent } = makeMocks();
-      expect(() => {
-        agent.stop();
-        agent.stop();
-      }).not.toThrow();
+      await expect(agent.stop()).resolves.toBeUndefined();
+      await expect(agent.stop()).resolves.toBeUndefined();
+    });
+  });
+
+  describe("shutdown waits for active run", () => {
+    it("stop resolves only after an in-flight run finishes", async () => {
+      const { agent } = makeMocks();
+      const opts = {
+        branch: "main",
+        testCommand: "npm test",
+        intervalMinutes: 60,
+        failureThreshold: 2,
+        dryRun: true,
+      };
+
+      let resolveRun!: (value: import("../sentinel.js").SentinelRunResult) => void;
+      vi.spyOn(agent, "runOnce").mockImplementation(
+        () => new Promise((resolve) => {
+          resolveRun = resolve;
+        }),
+      );
+
+      agent.start(opts);
+      await Promise.resolve();
+
+      let stopped = false;
+      const stopPromise = agent.stop().then(() => {
+        stopped = true;
+      });
+      await Promise.resolve();
+
+      expect(stopped).toBe(false);
+
+      resolveRun({
+        id: "sentinel-run-1",
+        status: "passed",
+        commitHash: null,
+        output: "ok",
+        durationMs: 1,
+      });
+      await stopPromise;
+
+      expect(stopped).toBe(true);
+      expect(agent.isRunning()).toBe(false);
     });
   });
 

@@ -48,6 +48,8 @@ export class SentinelAgent {
   private running = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private consecutiveFailures = 0;
+  private activeRunPromise: Promise<void> | null = null;
+  private stopPromise: Promise<void> | null = null;
 
   constructor(
     store: ForemanStore,
@@ -160,6 +162,7 @@ export class SentinelAgent {
     }
     this.running = true;
     this.consecutiveFailures = 0;
+    this.stopPromise = null;
 
     const intervalMs = opts.intervalMinutes * 60 * 1000;
     let activeRun = false;
@@ -174,14 +177,22 @@ export class SentinelAgent {
       }
 
       activeRun = true;
-      try {
-        const result = await this.runOnce(opts);
-        onResult?.(result);
-      } catch (err) {
-        console.error("[sentinel] Unexpected error in loop:", err);
-      } finally {
-        activeRun = false;
-      }
+      let runPromise: Promise<void> | null = null;
+      runPromise = (async () => {
+        try {
+          const result = await this.runOnce(opts);
+          onResult?.(result);
+        } catch (err) {
+          console.error("[sentinel] Unexpected error in loop:", err);
+        } finally {
+          activeRun = false;
+          if (this.activeRunPromise === runPromise) {
+            this.activeRunPromise = null;
+          }
+        }
+      })();
+      this.activeRunPromise = runPromise;
+      await runPromise;
 
       if (this.running) {
         this.timer = setTimeout(() => void loop(), intervalMs);
@@ -191,17 +202,32 @@ export class SentinelAgent {
     void loop();
   }
 
-  /** Stop the sentinel loop (in-flight run completes normally). */
-  stop(): void {
+  /** Stop the sentinel loop and wait for any in-flight run to finish. */
+  async stop(): Promise<void> {
     this.running = false;
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
     }
+
+    if (this.stopPromise) {
+      await this.stopPromise;
+      return;
+    }
+
+    this.stopPromise = (async () => {
+      try {
+        await this.activeRunPromise;
+      } finally {
+        this.stopPromise = null;
+      }
+    })();
+
+    await this.stopPromise;
   }
 
   isRunning(): boolean {
-    return this.running;
+    return this.running || this.activeRunPromise !== null;
   }
 
   // ── Private helpers ──────────────────────────────────────────────────
