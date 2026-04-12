@@ -1,21 +1,10 @@
-import { defineConfig } from "vitest/config";
+import { defineVitestLaneConfig } from "./vitest.shared";
 
-export default defineConfig({
-  test: {
-    exclude: [
-      ".omx/**",
-      "**/node_modules/**",
-      "**/dist/**",
-      "**/.omx/**",
-      "**/.foreman-worktrees/**",
-      "**/.claude/worktrees/**",
-    ],
-    testTimeout: 30000,
-    hookTimeout: 30000,
-    env: {
-      // Prevent git from hanging on credential prompts during tests
-      GIT_TERMINAL_PROMPT: "0",
-      GIT_ASKPASS: "true",
-    },
-  },
+export default defineVitestLaneConfig("ci", {
+  include: ["src/**/*.test.ts"],
+  exclude: [
+    "src/integration/__tests__/**/*e2e*.test.ts",
+    "src/integration/__tests__/**/*full-run*.test.ts",
+  ],
 });
+

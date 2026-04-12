@@ -74,9 +74,9 @@ describe("smoke workflow: structural invariants", () => {
     expect(source).not.toContain("SMOKE TEST BYPASS");
   });
 
-  it("agent-worker.ts uses runWithPiSdk for phase execution (not a TypeScript bypass)", () => {
+  it("agent-worker.ts uses the explicit phase-runner seam for phase execution (not a TypeScript bypass)", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
-    expect(source).toContain("runWithPiSdk(");
+    expect(source).toContain("runPhaseSession(");
   });
 
   it("smoke defaults directory contains all five phase prompt files", () => {

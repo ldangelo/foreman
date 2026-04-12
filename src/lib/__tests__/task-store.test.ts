@@ -261,9 +261,10 @@ describe("NativeTaskStore.approve()", () => {
     ctx.taskStore.approve(task.id);
     const after = new Date().toISOString();
     const updated = ctx.taskStore.get(task.id);
-    expect(updated?.approved_at).toBeTruthy();
-    expect(updated?.approved_at! >= before).toBe(true);
-    expect(updated?.approved_at! <= after).toBe(true);
+    const approvedAt = updated?.approved_at;
+    expect(approvedAt).toBeTruthy();
+    expect(approvedAt && approvedAt >= before).toBe(true);
+    expect(approvedAt && approvedAt <= after).toBe(true);
   });
 });
 
@@ -305,9 +306,10 @@ describe("NativeTaskStore.close()", () => {
     ctx.taskStore.close(task.id);
     const after = new Date().toISOString();
     const updated = ctx.taskStore.get(task.id);
-    expect(updated?.closed_at).toBeTruthy();
-    expect(updated?.closed_at! >= before).toBe(true);
-    expect(updated?.closed_at! <= after).toBe(true);
+    const closedAt = updated?.closed_at;
+    expect(closedAt).toBeTruthy();
+    expect(closedAt && closedAt >= before).toBe(true);
+    expect(closedAt && closedAt <= after).toBe(true);
   });
 });
 
@@ -895,9 +897,10 @@ describe("NativeTaskStore.reevaluateBlockedTasks()", () => {
     // (so the task is treated as approved — matches approve() semantics)
     const updated = ctx.taskStore.get(taskA.id);
     expect(updated?.status).toBe("ready");
-    expect(updated?.approved_at).toBeTruthy();
-    expect(updated?.approved_at! >= before).toBe(true);
-    expect(updated?.approved_at! <= after).toBe(true);
+    const approvedAt = updated?.approved_at;
+    expect(approvedAt).toBeTruthy();
+    expect(approvedAt && approvedAt >= before).toBe(true);
+    expect(approvedAt && approvedAt <= after).toBe(true);
   });
 
   it("does not overwrite approved_at when task was already approved before being blocked", () => {
