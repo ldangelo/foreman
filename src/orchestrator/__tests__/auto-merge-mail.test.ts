@@ -246,6 +246,34 @@ describe("autoMerge() mail — merge-complete", () => {
     expect(mergeCompleteCalls).toHaveLength(2);
   });
 });
+describe("autoMerge() mail — merge-complete (no-op)", () => {
+  beforeEach(resetMocks);
+
+  it("sends merge-complete with noOp details when refinery reports a no-op completion", async () => {
+    mockGetProjectByPath.mockReturnValue({ id: "proj-1" });
+    mockGetRun.mockReturnValue({ id: "run-001", status: "merged" });
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry(1)).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", noOp: true, detail: "No file changes were required." }],
+      conflicts: [],
+      testFailures: [],
+      unexpectedErrors: [],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts());
+
+    const mergeCompleteCalls = mockSendMessage.mock.calls.filter(
+      (c: unknown[]) => c[3] === "merge-complete",
+    );
+    expect(mergeCompleteCalls).toHaveLength(1);
+    const body = JSON.parse(mergeCompleteCalls[0][4] as string) as Record<string, unknown>;
+    expect(body.seedId).toBe("bd-test-001");
+    expect(body.noOp).toBe(true);
+    expect(body.detail).toBe("No file changes were required.");
+  });
+});
+
 
 // ── Tests: merge-conflict mail ────────────────────────────────────────────────
 

@@ -530,21 +530,40 @@ export class Refinery {
       }
 
       try {
-        // Early guard: if the branch has no unique commits vs target, the agent committed
-        // nothing. Creating a PR would fail ("no commits between ..."). Don't reset to open
-        // (that would cause infinite redispatch to the same broken worktree). Mark as a
-        // conflict so the user can investigate.
+        // Early guard: if the branch has no unique commits vs target, the agent produced
+        // no repository changes. Treat this as a truthful no-op completion rather than a
+        // merge failure so the bead can close cleanly with an explicit note.
         const branchCommits = await gitSpecial(["log", "--oneline", `${targetBranch}..${branchName}`], this.projectPath).catch(() => "");
         if (!branchCommits.trim()) {
-          console.warn(`[Refinery] Branch ${branchName} has no commits beyond ${targetBranch} — agent may not have committed work`);
-          await this.addFailureNote(run.seed_id, `Branch ${branchName} has no unique commits beyond ${targetBranch}. The agent may not have committed its work. Manual intervention required — do not auto-reset.`);
-          this.sendMail(run.id, "merge-failed", {
+          const noOpDetail = `No file changes were required: branch ${branchName} has no unique commits beyond ${targetBranch}.`;
+          console.warn(`[Refinery] ${noOpDetail}`);
+          await this.addFailureNote(run.seed_id, noOpDetail);
+          this.store.updateRun(run.id, {
+            status: "merged",
+            completed_at: new Date().toISOString(),
+          });
+          this.store.logEvent(
+            run.project_id,
+            "merge",
+            { seedId: run.seed_id, branchName, targetBranch, noOp: true },
+            run.id,
+          );
+          this.sendMail(run.id, "merge-complete", {
             seedId: run.seed_id,
             branchName,
-            reason: "no-commits",
-            detail: `Branch ${branchName} has no unique commits beyond ${targetBranch}`,
+            targetBranch,
+            noOp: true,
+            detail: noOpDetail,
           });
-          conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
+          enqueueCloseSeed(this.store, run.seed_id, "refinery");
+          await this.closeNativeTaskPostMerge(run.id, run.seed_id);
+          this.sendMail(run.id, "bead-closed", {
+            seedId: run.seed_id,
+            branchName,
+            targetBranch,
+            noOp: true,
+          });
+          merged.push({ runId: run.id, seedId: run.seed_id, branchName, noOp: true, detail: noOpDetail });
           continue;
         }
 

@@ -532,6 +532,52 @@ describe("Refinery.mergeCompleted()", () => {
     );
   });
 
+  it("treats a branch with no unique commits as a no-op merged completion", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun();
+    store.getRunsByStatus.mockReturnValue([run]);
+    (execFile as any).mockImplementation(
+      (cmd: string, args: string[], _opts: any, callback: Function) => {
+        if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
+          callback(null, { stdout: "", stderr: "" });
+        } else {
+          callback(null, { stdout: "", stderr: "" });
+        }
+      },
+    );
+
+    const report = await refinery.mergeCompleted({ runTests: false });
+
+    expect(report.merged).toHaveLength(1);
+    expect(report.merged[0]).toEqual(
+      expect.objectContaining({
+        runId: run.id,
+        seedId: run.seed_id,
+        branchName: `foreman/${run.seed_id}`,
+        noOp: true,
+      }),
+    );
+    expect(report.conflicts).toHaveLength(0);
+    expect(store.updateRun).toHaveBeenCalledWith(
+      run.id,
+      expect.objectContaining({ status: "merged" }),
+    );
+    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
+      expect.anything(),
+      run.seed_id,
+      expect.stringContaining("No file changes were required"),
+      "refinery",
+    );
+    expect(enqueueCloseSeed).toHaveBeenCalledWith(expect.anything(), run.seed_id, "refinery");
+    expect(syncBeadStatusAfterMerge).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      run.id,
+      run.seed_id,
+      "/tmp/project",
+    );
+  });
+
   it("marks run as conflict when merge has conflicts", async () => {
     const { store, refinery } = makeMocks();
     const run = makeRun();
@@ -831,9 +877,11 @@ describe("Refinery.mergeCompleted()", () => {
     store.getRunsByStatus.mockReturnValue([run]);
     // Squash merge hits a conflict; gh not available → fallback to conflict tracking
     (execFile as any).mockImplementation(
-      (cmd: string, _args: string[], _opts: any, callback: Function) => {
+      (cmd: string, args: string[], _opts: any, callback: Function) => {
         if (cmd === "gh") {
           callback(new Error("gh not available"), { stdout: "", stderr: "" });
+        } else if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
+          callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
         } else {
           callback(null, { stdout: "", stderr: "" });
         }

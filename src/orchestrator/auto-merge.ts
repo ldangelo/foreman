@@ -194,6 +194,8 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
             seedId: mergedRun.seedId,
             branchName: mergedRun.branchName,
             targetBranch,
+            noOp: mergedRun.noOp ?? false,
+            detail: mergedRun.detail,
           });
         }
       } else if (report.conflicts.length > 0 || report.prsCreated.length > 0) {

@@ -85,6 +85,8 @@ export interface MergedRun {
   seedId: string;
   branchName: string;
   resolvedTiers?: Map<string, number>;
+  noOp?: boolean;
+  detail?: string;
 }
 
 export interface ConflictRun {
