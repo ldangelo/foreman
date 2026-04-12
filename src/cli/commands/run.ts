@@ -7,15 +7,17 @@ import chalk from "chalk";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
-import type { ITaskClient } from "../../lib/task-client.js";
+import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
+import { NativeTaskClient } from "../../lib/native-task-client.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
-import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js";
-import { watchRunsInk, type WatchResult } from "../watch-ui.js";
+import type { ModelSelection } from "../../orchestrator/types.js";
+import { watchRunsInk } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
@@ -36,6 +38,27 @@ export type { AutoMergeOpts, AutoMergeResult } from "../../orchestrator/auto-mer
 export interface TaskClientResult {
   taskClient: ITaskClient;
   bvClient: BvClient | null;
+  backendType: "beads" | "native";
+}
+
+export type RuntimeMode = "normal" | "test";
+
+export function resolveRuntimeMode(value?: string): RuntimeMode {
+  const raw = (value ?? process.env.FOREMAN_RUNTIME_MODE ?? "normal").trim().toLowerCase();
+  return raw === "test" ? "test" : "normal";
+}
+
+function shouldUseNativeTaskClient(projectPath: string, runtimeMode: RuntimeMode): boolean {
+  const forcedNative = (process.env.FOREMAN_TASK_STORE ?? "").trim().toLowerCase() === "native";
+  if (forcedNative || runtimeMode === "test") {
+    const store = ForemanStore.forProject(projectPath);
+    try {
+      return forcedNative || store.hasNativeTasks();
+    } finally {
+      store.close();
+    }
+  }
+  return false;
 }
 
 /**
@@ -46,12 +69,23 @@ export interface TaskClientResult {
  *
  * Throws if the br binary cannot be found.
  */
-export async function createTaskClients(projectPath: string): Promise<TaskClientResult> {
+export async function createTaskClients(
+  projectPath: string,
+  runtimeMode: RuntimeMode = resolveRuntimeMode(),
+): Promise<TaskClientResult> {
+  if (shouldUseNativeTaskClient(projectPath, runtimeMode)) {
+    return {
+      taskClient: new NativeTaskClient(projectPath),
+      bvClient: null,
+      backendType: "native",
+    };
+  }
+
   const brClient = new BeadsRustClient(projectPath);
   // Verify binary exists before proceeding; throws with a friendly message if not
   await brClient.ensureBrInstalled();
   const bvClient = new BvClient(projectPath);
-  return { taskClient: brClient, bvClient };
+  return { taskClient: brClient, bvClient, backendType: "beads" };
 }
 
 // ── Branch Mismatch Detection ────────────────────────────────────────────────
@@ -71,7 +105,7 @@ async function promptYesNo(question: string): Promise<boolean> {
   });
 }
 
-const FOREMAN_OWNED_BRANCH = "foreman";
+const FOREMAN_OWNED_BRANCH = "foreman-controller";
 
 export function isIgnorableControllerPath(path: string): boolean {
   return path === ".beads/issues.jsonl"
@@ -218,7 +252,7 @@ export async function checkBranchMismatch(
     return false;
   }
 
-  let inProgressBeads: import("../../lib/task-client.js").Issue[];
+  let inProgressBeads: Issue[];
   try {
     inProgressBeads = await taskClient.list({ status: "in_progress" });
   } catch {
@@ -296,6 +330,9 @@ export const runCommand = new Command("run")
   .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
   .option("--stagger <duration>", "Stagger delay between dispatches to prevent thundering herd (e.g. '30s', '1m')")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .option("--runtime-mode <mode>", "Runtime mode: normal|test (test uses deterministic phase-runner seams)")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -309,6 +346,7 @@ export const runCommand = new Command("run")
     const skipReview = opts.skipReview as boolean | undefined;
     const beadFilter = opts.bead as string | undefined;
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
+    const runtimeMode = resolveRuntimeMode(opts.runtimeMode as string | undefined);
 
     // P1: Parse stagger delay for preventing thundering herd on Haiku quotas
     // Accept formats like "30s", "1m", "2m30s"
@@ -342,13 +380,13 @@ export const runCommand = new Command("run")
     }
 
     try {
-      const startupVcs = await createRunVcsBackend(process.cwd());
-      const projectPath = await startupVcs.getRepoRoot(process.cwd());
+      const projectPath = await resolveRepoRootProjectPath(opts);
+      const startupVcs = await createRunVcsBackend(projectPath);
 
       // ── Pi Extensions check ──────────────────────────────────────────────────
       // If Pi is available, the extensions package must be built before dispatch.
       // Skipped in dry-run mode since no real agent work will happen.
-      if (!dryRun && isPiAvailable()) {
+      if (!dryRun && runtimeMode !== "test" && isPiAvailable()) {
         const extDist = join(projectPath, "packages/foreman-pi-extensions/dist/index.js");
         if (!existsSync(extDist)) {
           console.error(chalk.red("\nError: Pi extensions package has not been built.\n"));
@@ -360,10 +398,12 @@ export const runCommand = new Command("run")
 
       let taskClient: ITaskClient;
       let bvClient: BvClient | null = null;
+      let backendType: "beads" | "native" = "beads";
       try {
-        const clients = await createTaskClients(projectPath);
+        const clients = await createTaskClients(projectPath, runtimeMode);
         taskClient = clients.taskClient;
         bvClient = clients.bvClient;
+        backendType = clients.backendType;
       } catch (clientErr: unknown) {
         const message = clientErr instanceof Error ? clientErr.message : String(clientErr);
         console.error(chalk.red(`Error initialising task backend: ${message}`));
@@ -378,7 +418,7 @@ export const runCommand = new Command("run")
       // automatically alongside foreman run. Non-fatal — if anything fails,
       // log a warning and continue without sentinel.
       let sentinelAgent: SentinelAgent | null = null;
-      if (!dryRun) {
+      if (!dryRun && backendType === "beads") {
         try {
           if (project) {
             const sentinelConfig = store.getSentinelConfig(project.id);
@@ -415,16 +455,17 @@ export const runCommand = new Command("run")
           }
         } catch (sentinelErr: unknown) {
           const msg = sentinelErr instanceof Error ? sentinelErr.message : String(sentinelErr);
+          sentinelAgent = null;
           console.warn(chalk.yellow(`[sentinel] Failed to auto-start (non-fatal): ${msg}`));
         }
       }
 
-      /** Stop the sentinel agent if it is running. Non-fatal cleanup helper. */
-      const stopSentinel = (): void => {
-        if (sentinelAgent?.isRunning()) {
-          sentinelAgent.stop();
-          console.log(chalk.dim("[sentinel] Stopped."));
-        }
+      /** Stop the sentinel agent and wait for in-flight work to quiesce. */
+      const stopSentinel = async (): Promise<void> => {
+        if (!sentinelAgent) return;
+        await sentinelAgent.stop();
+        sentinelAgent = null;
+        console.log(chalk.dim("[sentinel] Stopped."));
       };
 
       // ── Startup worker config file cleanup ──────────────────────────────────
@@ -445,7 +486,7 @@ export const runCommand = new Command("run")
       // ── Startup Bead Sync ────────────────────────────────────────────────
       // Reconcile br seed statuses against SQLite run statuses before dispatching.
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
-      if (!dryRun && project) {
+      if (!dryRun && project && backendType === "beads") {
         try {
           const syncResult = await syncBeadStatusOnStartup(store, taskClient, project.id, { projectPath });
           if (syncResult.synced > 0 || syncResult.mismatches.length > 0) {
@@ -472,7 +513,7 @@ export const runCommand = new Command("run")
       if (!dryRun && !resume && !resumeFailed) {
         const shouldAbort = await checkBranchMismatch(taskClient, projectPath);
         if (shouldAbort) {
-          stopSentinel();
+          await stopSentinel();
           store.close();
           await notifyServer.stop().catch(() => { /* ignore */ });
           process.exit(1);
@@ -510,7 +551,7 @@ export const runCommand = new Command("run")
               console.log(
                 chalk.dim(`Aborted. Switch to ${db} or the desired target branch and re-run.`),
               );
-              stopSentinel();
+              await stopSentinel();
               store.close();
               await notifyServer.stop().catch(() => { /* ignore */ });
               process.exit(1);
@@ -533,11 +574,12 @@ export const runCommand = new Command("run")
             const newResult = await dispatcher.dispatch({
               maxAgents,
               model,
-              dryRun,
-              telemetry,
-              pipeline,
-              skipExplore,
-              skipReview,
+            dryRun,
+            telemetry,
+            pipeline,
+            runtimeMode,
+            skipExplore,
+            skipReview,
               seedId: beadFilter,
               notifyUrl,
               targetBranch,
@@ -559,6 +601,7 @@ export const runCommand = new Command("run")
           telemetry,
           statuses,
           notifyUrl,
+          runtimeMode,
         });
 
         if (result.resumed.length > 0) {
@@ -589,13 +632,13 @@ export const runCommand = new Command("run")
           // Resume mode is a one-shot recovery action — no continuous auto-dispatch needed.
           const { detached } = await watchRunsInk(store, runIds, { notificationBus });
           if (detached) {
-            stopSentinel();
+            await stopSentinel();
             store.close();
             return;
           }
         }
 
-        stopSentinel();
+        await stopSentinel();
         store.close();
         return;
       }
@@ -644,6 +687,7 @@ export const runCommand = new Command("run")
           dryRun,
           telemetry,
           pipeline,
+          runtimeMode,
           skipExplore,
           skipReview,
           seedId: beadFilter,
@@ -839,7 +883,7 @@ export const runCommand = new Command("run")
         }
       }
 
-      stopSentinel();
+      await stopSentinel();
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

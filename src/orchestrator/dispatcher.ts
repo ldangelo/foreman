@@ -1,5 +1,5 @@
 import { writeFile, mkdir, open, readdir, unlink } from "node:fs/promises";
-import { unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,7 @@ import type {
   ModelSelection,
   PlanStepDispatched,
 } from "./types.js";
+import type { RuntimeMode } from "../cli/commands/run.js";
 
 // ── Task store resolution (REQ-014 / REQ-017) ────────────────────────────
 
@@ -102,6 +103,7 @@ export class Dispatcher {
   async dispatch(opts?: {
     maxAgents?: number;
     runtime?: RuntimeSelection;
+    runtimeMode?: RuntimeMode;
     model?: ModelSelection;
     dryRun?: boolean;
     telemetry?: boolean;
@@ -138,10 +140,13 @@ export class Dispatcher {
     // The cache goes stale when beads are closed by the refinery, auto-close
     // logic, or manual operations outside br's normal flow.
     try {
-      execFileSync("sqlite3", [
-        join(this.projectPath, ".beads", "beads.db"),
-        "DELETE FROM blocked_issues_cache;",
-      ], { timeout: 5000 });
+      const beadsDbPath = join(this.projectPath, ".beads", "beads.db");
+      if (existsSync(beadsDbPath)) {
+        execFileSync("sqlite3", [
+          beadsDbPath,
+          "DELETE FROM blocked_issues_cache;",
+        ], { timeout: 5000 });
+      }
     } catch {
       // sqlite3 not available or .beads/beads.db missing — non-fatal
     }
@@ -688,7 +693,9 @@ export class Dispatcher {
         const branchName = workspaceResult.branchName;
 
         // Run setup steps / install dependencies (not part of VcsBackend interface)
-        if (setupSteps && setupSteps.length > 0) {
+        if (opts?.runtimeMode === "test") {
+          log(`[foreman] Skipping workflow setup/install for ${seed.id} in test runtime`);
+        } else if (setupSteps && setupSteps.length > 0) {
           await runSetupWithCache(worktreePath, this.projectPath, setupSteps, setupCache);
         } else {
           await installDependencies(worktreePath);
@@ -793,6 +800,7 @@ export class Dispatcher {
           },
           opts?.notifyUrl,
           vcsBackend,
+          opts?.runtimeMode,
           opts?.targetBranch,
           epicTasksForSeed,
           epicIdForSeed,
@@ -853,6 +861,7 @@ export class Dispatcher {
     statuses?: Array<"stuck" | "failed">;
     /** URL of the notification server (e.g. "http://127.0.0.1:PORT") */
     notifyUrl?: string;
+    runtimeMode?: RuntimeMode;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = this.resolveProjectId();
@@ -941,6 +950,7 @@ export class Dispatcher {
         sessionId,
         opts?.telemetry,
         opts?.notifyUrl,
+        opts?.runtimeMode,
       );
 
       this.store.updateRun(newRun.id, {
@@ -1129,13 +1139,14 @@ export class Dispatcher {
     },
     notifyUrl?: string,
     vcsBackend?: VcsBackend,
+    runtimeMode?: RuntimeMode,
     targetBranch?: string,
     epicTasks?: EpicTask[],
     epicId?: string,
   ): Promise<{ sessionKey: string }> {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
-    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, vcsBackend);
+    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, vcsBackend, runtimeMode);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
@@ -1185,10 +1196,11 @@ export class Dispatcher {
     sdkSessionId: string,
     telemetry?: boolean,
     notifyUrl?: string,
+    runtimeMode?: RuntimeMode,
   ): Promise<{ sessionKey: string }> {
     const resumePrompt = this.buildResumePrompt(seed.id, seed.title);
 
-    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
+    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, undefined, runtimeMode);
     const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;
 
     log(`Resuming worker for ${seed.id} [${model}] session=${sdkSessionId}`);
@@ -1299,6 +1311,14 @@ export class Dispatcher {
   async drainBeadWriterInbox(): Promise<number> {
     const pending = this.store.getPendingBeadWrites();
     if (pending.length === 0) return 0;
+    const beadsDbPath = join(this.projectPath, ".beads", "beads.db");
+    const beadsDirPath = join(this.projectPath, ".beads");
+    if (!existsSync(beadsDirPath)) {
+      for (const entry of pending) {
+        this.store.markBeadWriteProcessed(entry.id);
+      }
+      return 0;
+    }
 
     const bin = join(homedir(), ".local", "bin", "br");
     const execOpts = {
@@ -1403,7 +1423,7 @@ export class Dispatcher {
         // Using sqlite3 CLI is safer and faster than deleting the entire DB.
         try {
           execFileSync("sqlite3", [
-            join(this.projectPath, ".beads", "beads.db"),
+            beadsDbPath,
             "DELETE FROM blocked_issues_cache;",
           ], execOpts);
           console.error(`[bead-writer] Cleared blocked_issues_cache after processing ${processed}/${pending.length} entries`);
@@ -1562,8 +1582,8 @@ function resolveWorkerPaths(homeDir?: string): { tsxBin: string; workerScript: s
   const __dirname = dirname(__filename);
   const projectRoot = join(__dirname, "..", "..");
   return {
-    tsxBin: join(projectRoot, "node_modules", ".bin", "tsx"),
-    workerScript: join(__dirname, "agent-worker.js"),
+    tsxBin: process.execPath,
+    workerScript: join(__dirname, "agent-worker.ts"),
     logDir: join(homeDir ?? process.env.HOME ?? "/tmp", ".foreman", "logs"),
   };
 }
@@ -1598,7 +1618,8 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     // script's location, but ESM resolution still checks cwd for some paths.
     const __filename = fileURLToPath(import.meta.url);
     const projectRoot = join(dirname(__filename), "..", "..");
-    const child = spawn(tsxBin, [workerScript, configPath], {
+    const tsxLoader = join(projectRoot, "node_modules", "tsx", "dist", "loader.mjs");
+    const child = spawn(tsxBin, ["--import", tsxLoader, workerScript, configPath], {
       detached: true,
       stdio: ["ignore", outFd.fd, errFd.fd],
       cwd: projectRoot,
@@ -1638,6 +1659,7 @@ function buildWorkerEnv(
   model: string,
   notifyUrl?: string,
   vcsBackend?: VcsBackend,
+  runtimeMode?: RuntimeMode,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -1647,6 +1669,7 @@ function buildWorkerEnv(
   }
   const home = process.env.HOME ?? "/home/nobody";
   env.PATH = `${home}/.local/bin:/opt/homebrew/bin:${env.PATH ?? ""}`;
+  env.TSX_DISABLE_IPC = "1";
 
   if (notifyUrl) {
     env.FOREMAN_NOTIFY_URL = notifyUrl;
@@ -1657,6 +1680,10 @@ function buildWorkerEnv(
   // resolved and instantiated by the dispatcher; we serialize just the name.
   if (vcsBackend?.name) {
     env.FOREMAN_VCS_BACKEND = vcsBackend.name;
+  }
+
+  if (runtimeMode) {
+    env.FOREMAN_RUNTIME_MODE = runtimeMode;
   }
 
   if (telemetry) {
