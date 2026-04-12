@@ -66,6 +66,7 @@ describe("testing framework package scripts", () => {
     expect(scripts["test:report:e2e:full-run"]).toContain(
       ".foreman/test-reports/e2e-full-run.json",
     );
+    expect(scripts["test:report:system"]).toContain(".foreman/test-reports/system.json");
     expect(scripts["test:report:ci"]).toBe(
       "mkdir -p .foreman/test-reports && npm run test:report:unit && npm run test:report:integration && npm run test:report:e2e:smoke",
     );
@@ -94,6 +95,8 @@ describe("testing framework workflows", () => {
     expect(on).toHaveProperty("workflow_dispatch");
     expect(on).toHaveProperty("schedule");
     expect(steps.some((step) => step.run?.includes("npm run test:system"))).toBe(true);
+    expect(steps.some((step) => step.run?.includes("npm run test:report:system"))).toBe(true);
+    expect(steps.some((step) => step.uses?.startsWith("actions/upload-artifact"))).toBe(true);
     expect(steps.some((step) => step.run?.includes("npm run test:ci"))).toBe(false);
   });
 

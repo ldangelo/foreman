@@ -43,3 +43,14 @@ jobs:
 
       - name: Run system / live lane
         run: npm run test:system
+
+      - name: Generate system / live JSON report
+        run: npm run test:report:system
+
+      - name: Upload system / live report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: system-test-report
+          path: .foreman/test-reports/system.json
+          retention-days: 7

@@ -58,6 +58,7 @@ npm run test:report:unit
 npm run test:report:integration
 npm run test:report:e2e:smoke
 npm run test:report:e2e:full-run
+npm run test:report:system
 npm run test:report:ci
 ```
 
@@ -85,7 +86,7 @@ This keeps the real Foreman dispatch / worker / merge flow in play while replaci
 - PRs must keep `test:ci` green.
 - `test:e2e:full-run` remains a separate heavier lane until it proves consistently stable.
 - `.github/workflows/e2e-full-run.yml` runs the detached full-run lane on a separate manual/scheduled cadence and uploads its JSON report artifact.
-- `test:system` stays opt-in / scheduled and should not block normal feature delivery.
+- `.github/workflows/system-tests.yml` keeps the live/system lane opt-in or scheduled, uploads a JSON report artifact, and should not block normal feature delivery.
 
 ## Coverage note
 
