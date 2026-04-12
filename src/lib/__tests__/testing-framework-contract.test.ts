@@ -47,7 +47,7 @@ describe("testing framework package scripts", () => {
     expect(scripts["test:e2e:full-run"]).toBe("vitest run -c vitest.e2e.full-run.config.ts");
     expect(scripts["test:system"]).toBe("vitest run -c vitest.system.config.ts");
     expect(scripts["test:ci"]).toBe(
-      "npm run test:unit && npm run test:integration && npm run test:e2e:smoke",
+      "npm run test:unit && npm run test:integration && npm run test:e2e:smoke && npm run test:e2e:full-run",
     );
     expect(scripts["test:all"]).toBe(
       "npm run test:ci && npm run test:e2e:full-run && npm run test:system",
@@ -68,13 +68,13 @@ describe("testing framework package scripts", () => {
     );
     expect(scripts["test:report:system"]).toContain(".foreman/test-reports/system.json");
     expect(scripts["test:report:ci"]).toBe(
-      "mkdir -p .foreman/test-reports && npm run test:report:unit && npm run test:report:integration && npm run test:report:e2e:smoke",
+      "mkdir -p .foreman/test-reports && npm run test:report:unit && npm run test:report:integration && npm run test:report:e2e:smoke && npm run test:report:e2e:full-run",
     );
   });
 });
 
 describe("testing framework workflows", () => {
-  it("ci workflow uploads deterministic JSON test reports", () => {
+  it("ci workflow uploads PR-required JSON test reports", () => {
     const steps = getAllSteps(CI_WORKFLOW_PATH);
     const reportIdx = steps.findIndex((step) =>
       step.run?.includes("npm run test:report:ci"),
@@ -85,6 +85,12 @@ describe("testing framework workflows", () => {
 
     expect(reportIdx).toBeGreaterThanOrEqual(0);
     expect(uploadIdx).toBeGreaterThan(reportIdx);
+  });
+
+  it("ci workflow runs the PR-required aggregate lane", () => {
+    const steps = getAllSteps(CI_WORKFLOW_PATH);
+    expect(steps.some((step) => step.run?.includes("npm run test:ci"))).toBe(true);
+    expect(steps.some((step) => step.run?.includes("npm run test:e2e:full-run"))).toBe(false);
   });
 
   it("system workflow stays opt-in or scheduled and runs only the system lane", () => {
