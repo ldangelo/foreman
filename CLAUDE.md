@@ -140,6 +140,8 @@ vcs:
 - **Vitest** for testing, co-located in `__tests__/` subdirs
 - **No secrets in code** — use env vars
 - **Input validation at boundaries only**
+- **TDD** use test driven development for all modifications, when adding features create a test first, prove it fails and then make the tests work, afterwards refine/simplify the tests and code for maintainability.
+- **TDD** use test driven development for all modifications, when fixing bugs write a test first that exposes the bug, prove it fails and then make the tests work, afterwards refine/simplify the tests and code for maintainability.
 
 ## Workflow YAML Configuration
 
