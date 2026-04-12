@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 const ROOT = resolve(import.meta.dirname, "../../..");
 const PACKAGE_JSON_PATH = resolve(ROOT, "package.json");
 const CI_WORKFLOW_PATH = resolve(ROOT, ".github/workflows/ci.yml");
+const FULL_RUN_WORKFLOW_PATH = resolve(ROOT, ".github/workflows/e2e-full-run.yml");
 const SYSTEM_WORKFLOW_PATH = resolve(ROOT, ".github/workflows/system-tests.yml");
 
 interface PackageJsonShape {
@@ -62,6 +63,9 @@ describe("testing framework package scripts", () => {
     expect(scripts["test:report:e2e:smoke"]).toContain(
       ".foreman/test-reports/e2e-smoke.json",
     );
+    expect(scripts["test:report:e2e:full-run"]).toContain(
+      ".foreman/test-reports/e2e-full-run.json",
+    );
     expect(scripts["test:report:ci"]).toBe(
       "mkdir -p .foreman/test-reports && npm run test:report:unit && npm run test:report:integration && npm run test:report:e2e:smoke",
     );
@@ -90,6 +94,21 @@ describe("testing framework workflows", () => {
     expect(on).toHaveProperty("workflow_dispatch");
     expect(on).toHaveProperty("schedule");
     expect(steps.some((step) => step.run?.includes("npm run test:system"))).toBe(true);
+    expect(steps.some((step) => step.run?.includes("npm run test:ci"))).toBe(false);
+  });
+
+  it("full-run workflow stays opt-in or scheduled and uploads the full-run report", () => {
+    const workflow = loadWorkflow(FULL_RUN_WORKFLOW_PATH);
+    const on = workflow.on ?? {};
+    const steps = getAllSteps(FULL_RUN_WORKFLOW_PATH);
+
+    expect(on).toHaveProperty("workflow_dispatch");
+    expect(on).toHaveProperty("schedule");
+    expect(steps.some((step) => step.run?.includes("npm run test:e2e:full-run"))).toBe(true);
+    expect(
+      steps.some((step) => step.run?.includes("npm run test:report:e2e:full-run")),
+    ).toBe(true);
+    expect(steps.some((step) => step.uses?.startsWith("actions/upload-artifact"))).toBe(true);
     expect(steps.some((step) => step.run?.includes("npm run test:ci"))).toBe(false);
   });
 

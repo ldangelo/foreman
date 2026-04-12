@@ -1,0 +1,56 @@
+name: Full-Run E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 * * 3"
+
+jobs:
+  e2e-full-run:
+    name: Detached full-run e2e lane
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@foreman.dev"
+          git config --global user.name "Foreman CI"
+          git config --global init.defaultBranch main
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: npm-${{ runner.os }}-20-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-20-
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Run detached full-run e2e lane
+        run: npm run test:e2e:full-run
+
+      - name: Generate full-run e2e JSON report
+        run: npm run test:report:e2e:full-run
+
+      - name: Upload full-run e2e report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-full-run-report
+          path: .foreman/test-reports/e2e-full-run.json
+          retention-days: 7
