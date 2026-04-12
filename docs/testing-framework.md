@@ -29,11 +29,12 @@ Foreman now uses an explicit **lane-based** test contract so failures are easier
 - Not part of default PR gating
 
 ### `test:ci`
-- The deterministic PR contract
+- The PR-required contract
 - Runs:
   - `test:unit`
   - `test:integration`
   - `test:e2e:smoke`
+  - `test:e2e:full-run`
 
 ## Commands
 
@@ -51,7 +52,7 @@ npm run test:all
 
 ## Reports
 
-Deterministic lanes can emit JSON reports under `.foreman/test-reports/`:
+PR-required and auxiliary lanes can emit JSON reports under `.foreman/test-reports/`:
 
 ```bash
 npm run test:report:unit
@@ -81,11 +82,10 @@ This keeps the real Foreman dispatch / worker / merge flow in play while replaci
   - `*full-run*.test.ts`
 - Keep machine-specific validations in `scripts/__tests__/`
 
-## Promotion policy
+## PR policy
 
-- PRs must keep `test:ci` green.
-- `test:e2e:full-run` remains a separate heavier lane until it proves consistently stable.
-- `.github/workflows/e2e-full-run.yml` runs the detached full-run lane on a separate manual/scheduled cadence and uploads its JSON report artifact.
+- PRs must keep `test:ci` green, including detached full-run e2e.
+- `.github/workflows/e2e-full-run.yml` still provides a separate manual/scheduled replay path and uploads its JSON report artifact for deeper inspection.
 - `.github/workflows/system-tests.yml` keeps the live/system lane opt-in or scheduled, uploads a JSON report artifact, and should not block normal feature delivery.
 
 ## Coverage note

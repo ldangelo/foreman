@@ -49,13 +49,13 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
-      - name: Run deterministic test lanes
+      - name: Run PR-required test lanes
         run: npm run test:ci
 
       - name: Generate JSON test reports
         run: npm run test:report:ci
 
-      - name: Upload deterministic test reports
+      - name: Upload PR-required test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:

@@ -5,7 +5,7 @@
  *   1. Has valid YAML syntax (parseable)
  *   2. Contains the required structural elements (triggers, jobs, steps)
  *   3. Includes type checking via `tsc --noEmit`
- *   4. Includes deterministic test execution via `npm run test:ci`
+ *   4. Includes PR-required test execution via `npm run test:ci`
  *   5. Confirms that tsc --noEmit fails on deliberate type errors
  *   6. Confirms that npm test fails on deliberate test failures
  *
@@ -158,7 +158,7 @@ describe("CI Workflow: required steps", () => {
     expect(hasTsc).toBe(true);
   });
 
-  it("includes a deterministic test execution step (npm run test:ci)", () => {
+  it("includes a PR-required test execution step (npm run test:ci)", () => {
     const steps = getAllSteps();
     const hasDeterministicTests = steps.some((s) => s.run?.includes("npm run test:ci"));
     expect(hasDeterministicTests).toBe(true);
