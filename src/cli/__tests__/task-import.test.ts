@@ -1,17 +1,10 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ForemanStore } from "../../lib/store.js";
 import { NativeTaskStore } from "../../lib/task-store.js";
-import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
-
-const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
-
-async function run(args: string[], cwd: string): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 15_000 });
-}
+import { performBeadsImport } from "../commands/task.js";
 
 function writeBeadsJsonl(projectPath: string, records: unknown[]): void {
   mkdirSync(join(projectPath, ".beads"), { recursive: true });
@@ -81,9 +74,10 @@ describe("foreman task import --from-beads", () => {
       },
     ]);
 
-    const result = await run(["task", "import", "--from-beads"], project);
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout + result.stderr).toContain("Imported 3 tasks");
+    const result = performBeadsImport(project);
+    expect(result.imported).toBe(3);
+    expect(result.duplicateSkips).toBe(0);
+    expect(result.unsupportedStatusSkips).toBe(0);
 
     const store = ForemanStore.forProject(project);
     const taskStore = new NativeTaskStore(store.getDb());
@@ -131,10 +125,9 @@ describe("foreman task import --from-beads", () => {
       },
     ]);
 
-    const result = await run(["task", "import", "--from-beads", "--dry-run"], project);
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout + result.stderr).toContain("Dry-run preview");
-    expect(result.stdout + result.stderr).toContain("Would import 1 tasks");
+    const result = performBeadsImport(project, { dryRun: true });
+    expect(result.imported).toBe(1);
+    expect(result.preview).toHaveLength(1);
 
     const store = ForemanStore.forProject(project);
     expect(store.hasNativeTasks()).toBe(false);
@@ -161,9 +154,9 @@ describe("foreman task import --from-beads", () => {
       },
     ]);
 
-    const result = await run(["task", "import", "--from-beads"], project);
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout + result.stderr).toContain("Imported 0 tasks (1 skipped");
+    const result = performBeadsImport(project);
+    expect(result.imported).toBe(0);
+    expect(result.duplicateSkips).toBe(1);
 
     const verifyStore = ForemanStore.forProject(project);
     const count = verifyStore
