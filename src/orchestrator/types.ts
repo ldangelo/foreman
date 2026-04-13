@@ -227,8 +227,7 @@ export interface TrackerResult {
 }
 
 export interface SlingResult {
-  sd: TrackerResult | null;
-  br: TrackerResult | null;
+  native: TrackerResult;
   depErrors: string[];
 }
 
