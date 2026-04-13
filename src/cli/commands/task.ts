@@ -160,6 +160,14 @@ interface PreparedImportRecord {
   closedAt: string | null;
 }
 
+export interface TaskImportResult {
+  imported: number;
+  duplicateSkips: number;
+  unsupportedStatusSkips: number;
+  jsonlPath: string;
+  preview: PreparedImportRecord[];
+}
+
 const IMPORTABLE_BEAD_STATUS_TO_TASK_STATUS: Record<ImportedBeadStatus, string> = {
   open: "backlog",
   in_progress: "ready",
@@ -249,6 +257,137 @@ function summarizeImportPreview(records: PreparedImportRecord[]): void {
     );
   }
   console.log();
+}
+
+export function performBeadsImport(
+  projectPath: string,
+  opts: { dryRun?: boolean } = {},
+): TaskImportResult {
+  const jsonlPath = resolveBeadsImportPath(projectPath);
+  const beads = parseBeadsJsonl(jsonlPath);
+  const { store, taskStore } = getTaskStore(projectPath);
+
+  try {
+    const db = store.getDb();
+    const now = new Date().toISOString();
+    const existingRows = db.prepare("SELECT id, title, external_id FROM tasks").all() as Array<{
+      id: string;
+      title: string;
+      external_id: string | null;
+    }>;
+
+    const existingByExternalId = new Map<string, string>();
+    const existingByTitle = new Map<string, string>();
+    for (const row of existingRows) {
+      if (row.external_id) {
+        existingByExternalId.set(row.external_id, row.id);
+      }
+      if (!existingByTitle.has(row.title)) {
+        existingByTitle.set(row.title, row.id);
+      }
+    }
+
+    const beadToNativeId = new Map<string, string>();
+    const prepared: PreparedImportRecord[] = [];
+    let duplicateSkips = 0;
+    let unsupportedStatusSkips = 0;
+
+    for (const bead of beads) {
+      const mappedStatus = mapImportedBeadStatus(bead.status);
+      if (!mappedStatus) {
+        unsupportedStatusSkips += 1;
+        continue;
+      }
+
+      const existingId = existingByExternalId.get(bead.id) ?? existingByTitle.get(bead.title);
+      if (existingId) {
+        duplicateSkips += 1;
+        beadToNativeId.set(bead.id, existingId);
+        continue;
+      }
+
+      const priority = normalizeImportedBeadPriority(bead);
+      const createdAt = bead.created_at ?? now;
+      const updatedAt = bead.updated_at ?? createdAt;
+      const approvedAt = mappedStatus === "ready" ? updatedAt : null;
+      const closedAt = mappedStatus === "merged" ? bead.closed_at ?? updatedAt : null;
+      const record: PreparedImportRecord = {
+        nativeId: randomUUID(),
+        bead,
+        type: normalizeImportedBeadType(bead),
+        priority,
+        status: mappedStatus,
+        createdAt,
+        updatedAt,
+        approvedAt,
+        closedAt,
+      };
+
+      prepared.push(record);
+      beadToNativeId.set(bead.id, record.nativeId);
+    }
+
+    if (!opts.dryRun) {
+      const insertTask = db.prepare(
+        `INSERT INTO tasks
+           (id, title, description, type, priority, status, external_id, created_at, updated_at, approved_at, closed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const insertDependency = db.prepare(
+        `INSERT OR IGNORE INTO task_dependencies (from_task_id, to_task_id, type)
+         VALUES (?, ?, ?)`,
+      );
+
+      const transaction = db.transaction(() => {
+        for (const record of prepared) {
+          insertTask.run(
+            record.nativeId,
+            record.bead.title,
+            record.bead.description ?? null,
+            record.type,
+            record.priority,
+            record.status,
+            record.bead.id,
+            record.createdAt,
+            record.updatedAt,
+            record.approvedAt,
+            record.closedAt,
+          );
+        }
+
+        for (const bead of beads) {
+          const fromTaskId = beadToNativeId.get(bead.id);
+          if (!fromTaskId || !Array.isArray(bead.dependencies)) continue;
+
+          for (const dependency of bead.dependencies) {
+            const dependencyType = dependency.type === "parent-child" ? "parent-child" : "blocks";
+            const blockerId = dependency.depends_on_id
+              ? beadToNativeId.get(dependency.depends_on_id)
+              : null;
+
+            if (!blockerId) continue;
+            if (taskStore.hasCyclicDependency(fromTaskId, blockerId)) {
+              throw new CircularDependencyError(fromTaskId, blockerId);
+            }
+
+            insertDependency.run(fromTaskId, blockerId, dependencyType);
+          }
+        }
+      });
+
+      transaction();
+    }
+
+    return {
+      imported: prepared.length,
+      duplicateSkips,
+      unsupportedStatusSkips,
+      jsonlPath,
+      preview: prepared,
+    };
+  } finally {
+    store.close();
+  }
 }
 
 // ── foreman task create ───────────────────────────────────────────────────────
@@ -662,133 +801,22 @@ const importCommand = new Command("import")
     const projectPath = resolveProjectPathFromOptions(opts);
 
     try {
-      const jsonlPath = resolveBeadsImportPath(projectPath);
-      const beads = parseBeadsJsonl(jsonlPath);
-      const { store, taskStore } = getTaskStore(projectPath);
-      const db = store.getDb();
-      const now = new Date().toISOString();
-      const existingRows = db.prepare("SELECT id, title, external_id FROM tasks").all() as Array<{
-        id: string;
-        title: string;
-        external_id: string | null;
-      }>;
-
-      const existingByExternalId = new Map<string, string>();
-      const existingByTitle = new Map<string, string>();
-      for (const row of existingRows) {
-        if (row.external_id) {
-          existingByExternalId.set(row.external_id, row.id);
-        }
-        if (!existingByTitle.has(row.title)) {
-          existingByTitle.set(row.title, row.id);
-        }
-      }
-
-      const beadToNativeId = new Map<string, string>();
-      const prepared: PreparedImportRecord[] = [];
-      let duplicateSkips = 0;
-      let unsupportedStatusSkips = 0;
-
-      for (const bead of beads) {
-        const mappedStatus = mapImportedBeadStatus(bead.status);
-        if (!mappedStatus) {
-          unsupportedStatusSkips += 1;
-          continue;
-        }
-
-        const existingId = existingByExternalId.get(bead.id) ?? existingByTitle.get(bead.title);
-        if (existingId) {
-          duplicateSkips += 1;
-          beadToNativeId.set(bead.id, existingId);
-          continue;
-        }
-
-        const priority = normalizeImportedBeadPriority(bead);
-        const createdAt = bead.created_at ?? now;
-        const updatedAt = bead.updated_at ?? createdAt;
-        const approvedAt = mappedStatus === "ready" ? updatedAt : null;
-        const closedAt = mappedStatus === "merged" ? bead.closed_at ?? updatedAt : null;
-        const record: PreparedImportRecord = {
-          nativeId: randomUUID(),
-          bead,
-          type: normalizeImportedBeadType(bead),
-          priority,
-          status: mappedStatus,
-          createdAt,
-          updatedAt,
-          approvedAt,
-          closedAt,
-        };
-
-        prepared.push(record);
-        beadToNativeId.set(bead.id, record.nativeId);
-      }
-
+      const result = performBeadsImport(projectPath, { dryRun: opts.dryRun });
       if (opts.dryRun) {
-        summarizeImportPreview(prepared);
+        summarizeImportPreview(result.preview);
         console.log(
           chalk.green(
-            `Would import ${prepared.length} tasks (${duplicateSkips} skipped: already exist by external_id/title${unsupportedStatusSkips > 0 ? `, ${unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
+            `Would import ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id/title${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
           ),
         );
         return;
       }
-
-      const insertTask = db.prepare(
-        `INSERT INTO tasks
-           (id, title, description, type, priority, status, external_id, created_at, updated_at, approved_at, closed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      );
-      const insertDependency = db.prepare(
-        `INSERT OR IGNORE INTO task_dependencies (from_task_id, to_task_id, type)
-         VALUES (?, ?, ?)`,
-      );
-
-      const transaction = db.transaction(() => {
-        for (const record of prepared) {
-          insertTask.run(
-            record.nativeId,
-            record.bead.title,
-            record.bead.description ?? null,
-            record.type,
-            record.priority,
-            record.status,
-            record.bead.id,
-            record.createdAt,
-            record.updatedAt,
-            record.approvedAt,
-            record.closedAt,
-          );
-        }
-
-        for (const bead of beads) {
-          const fromTaskId = beadToNativeId.get(bead.id);
-          if (!fromTaskId || !Array.isArray(bead.dependencies)) continue;
-
-          for (const dependency of bead.dependencies) {
-            const dependencyType = dependency.type === "parent-child" ? "parent-child" : "blocks";
-            const blockerId = dependency.depends_on_id
-              ? beadToNativeId.get(dependency.depends_on_id)
-              : null;
-
-            if (!blockerId) continue;
-            if (taskStore.hasCyclicDependency(fromTaskId, blockerId)) {
-              throw new CircularDependencyError(fromTaskId, blockerId);
-            }
-
-            insertDependency.run(fromTaskId, blockerId, dependencyType);
-          }
-        }
-      });
-
-      transaction();
       console.log(
         chalk.green(
-          `Imported ${prepared.length} tasks (${duplicateSkips} skipped: already exist by external_id/title${unsupportedStatusSkips > 0 ? `, ${unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
+          `Imported ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id/title${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
         ),
       );
-      console.log(chalk.dim(`  Source: ${jsonlPath}`));
-      store.close();
+      console.log(chalk.dim(`  Source: ${result.jsonlPath}`));
     } catch (err) {
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
       process.exit(1);
