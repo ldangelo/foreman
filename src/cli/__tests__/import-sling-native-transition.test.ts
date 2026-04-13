@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
-const TSX_LOADER = require.resolve("tsx/dist/loader.mjs");
+const TSX_LOADER = require.resolve("tsx");
 
 interface ExecResult {
   stdout: string;
