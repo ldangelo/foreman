@@ -3,7 +3,7 @@
  *
  * Verifies:
  * - --sd-only prints a deprecation warning to stderr
- * - --sd-only is cleared after applySdOnlyDeprecation() (behaves as br-only write)
+ * - legacy backend flags are cleared after applySdOnlyDeprecation() (native-only write)
  * - No warning is emitted when --sd-only is not set
  */
 
@@ -74,11 +74,12 @@ describe("TRD-021: applySdOnlyDeprecation()", () => {
     expect(written).toContain("deprecated");
   });
 
-  it("warning message mentions br (beads_rust)", () => {
+  it("warning message mentions the native task store", () => {
     const opts = { sdOnly: true };
     applySdOnlyDeprecation(opts);
     const written = mockStderrWrite.mock.calls[0][0] as string;
-    expect(written).toContain("br (beads_rust)");
+    expect(written).toContain("native task store");
+    expect(written).toContain("Legacy backend flags are ignored");
   });
 
   it("clears sdOnly flag after emitting warning (no-op behavior)", () => {
@@ -87,10 +88,10 @@ describe("TRD-021: applySdOnlyDeprecation()", () => {
     expect(opts.sdOnly).toBe(false);
   });
 
-  it("sets brOnly=true to enforce br-exclusive write as promised by the message", () => {
-    const opts: { sdOnly?: boolean; brOnly?: boolean } = { sdOnly: true };
+  it("clears brOnly to keep native-only write semantics", () => {
+    const opts: { sdOnly?: boolean; brOnly?: boolean } = { sdOnly: true, brOnly: true };
     applySdOnlyDeprecation(opts);
-    expect(opts.brOnly).toBe(true);
+    expect(opts.brOnly).toBe(false);
   });
 
   it("does not emit warning twice on repeated calls", () => {
