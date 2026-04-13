@@ -22,7 +22,7 @@ Foreman now uses an explicit **lane-based** test contract so failures are easier
 ### `test:e2e:full-run`
 - Heavier detached runtime validation
 - Exercises the true `foreman run` path in explicit test runtime mode
-- Separate from PR-facing CI until it stays stable enough for promotion
+- Included in `test:ci`, with a separate manual/scheduled workflow for replay and report capture
 
 ### `test:system`
 - Homebrew, install, packaging, Docker, and other ambient-machine validations

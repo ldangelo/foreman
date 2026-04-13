@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../lib/store.js";
@@ -78,12 +78,13 @@ function initGitRepo(projectPath: string): void {
     "utf-8",
   );
   writeFileSync(join(projectPath, "README.md"), "# temp project\n", "utf-8");
+  writeFileSync(join(projectPath, "test.txt"), "base\n", "utf-8");
   execFileSync("git", ["add", "-A"], { cwd: projectPath, stdio: "pipe" });
   execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: projectPath, stdio: "pipe" });
 }
 
 export function createTempProjectHarness(): TempProjectHarness {
-  const projectPath = mkdtempSync(join(tmpdir(), "foreman-e2e-project-"));
+  const projectPath = realpathSync(mkdtempSync(join(tmpdir(), "foreman-e2e-project-")));
   mkdirSync(join(projectPath, ".foreman"), { recursive: true });
   initGitRepo(projectPath);
   installBundledPrompts(projectPath, true);
