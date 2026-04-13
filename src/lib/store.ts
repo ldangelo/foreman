@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
-import { mkdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { mkdirSync, existsSync, realpathSync } from "node:fs";
+import { join, dirname, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -234,6 +234,19 @@ export interface SentinelRunRow {
   failure_count: number;
   started_at: string;
   completed_at: string | null;
+}
+
+function normalizeProjectPath(projectPath: string): string {
+  const resolved = resolvePath(projectPath);
+  if (!existsSync(resolved)) {
+    return resolved;
+  }
+
+  try {
+    return realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 // ── Native Task interface ────────────────────────────────────────────────
@@ -715,10 +728,11 @@ export class ForemanStore {
 
   registerProject(name: string, path: string): Project {
     const now = new Date().toISOString();
+    const normalizedPath = normalizeProjectPath(path);
     const project: Project = {
       id: randomUUID(),
       name,
-      path,
+      path: normalizedPath,
       status: "active",
       created_at: now,
       updated_at: now,
@@ -740,10 +754,11 @@ export class ForemanStore {
   }
 
   getProjectByPath(path: string): Project | null {
+    const normalizedPath = normalizeProjectPath(path);
     return (
       (this.db
         .prepare("SELECT * FROM projects WHERE path = ?")
-        .get(path) as Project | undefined) ?? null
+        .get(normalizedPath) as Project | undefined) ?? null
     );
   }
 

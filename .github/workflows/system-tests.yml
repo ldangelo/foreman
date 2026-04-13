@@ -1,25 +1,18 @@
-name: CI
+name: System Tests
 
 on:
-  pull_request:
-    branches:
-      - main
-      - dev
+  workflow_dispatch:
+  schedule:
+    - cron: "0 9 * * 1"
 
 jobs:
-  test:
-    name: Test (Node ${{ matrix.node-version }})
+  system-tests:
+    name: System / live test lane
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        node-version: ["20"]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Configure git for tests
         run: |
@@ -27,20 +20,19 @@ jobs:
           git config --global user.name "Foreman CI"
           git config --global init.defaultBranch main
 
-      - name: Set up Node.js ${{ matrix.node-version }}
+      - name: Set up Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: "20"
 
       - name: Cache node_modules
         id: cache-node-modules
         uses: actions/cache@v4
         with:
           path: node_modules
-          key: npm-${{ runner.os }}-${{ matrix.node-version }}-${{ hashFiles('**/package-lock.json') }}
+          key: npm-${{ runner.os }}-20-${{ hashFiles('**/package-lock.json') }}
           restore-keys: |
-            npm-${{ runner.os }}-${{ matrix.node-version }}-
-            npm-${{ runner.os }}-
+            npm-${{ runner.os }}-20-
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -49,16 +41,16 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
-      - name: Run PR-required test lanes
-        run: npm run test:ci
+      - name: Run system / live lane
+        run: npm run test:system
 
-      - name: Generate JSON test reports
-        run: npm run test:report:ci
+      - name: Generate system / live JSON report
+        run: npm run test:report:system
 
-      - name: Upload PR-required test reports
+      - name: Upload system / live report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports-node-${{ matrix.node-version }}
-          path: .foreman/test-reports/
+          name: system-test-report
+          path: .foreman/test-reports/system.json
           retention-days: 7

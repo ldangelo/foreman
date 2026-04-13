@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -81,6 +81,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "bead-drain-test-"));
+    mkdirSync(join(tmpDir, ".beads"), { recursive: true });
     store = ForemanStore.forProject(tmpDir);
     dispatcher = makeDispatcher(store, tmpDir);
     mockExecFileSync.mockReset();

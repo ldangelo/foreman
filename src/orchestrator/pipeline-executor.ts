@@ -696,7 +696,7 @@ async function runPhaseSequence(
     // Compute VCS-specific prompt variables for finalize and reviewer phases (TRD-026, TRD-027).
     const vcsBackend = config.vcsBackend;
     const baseBranch = config.targetBranch ?? "main";
-    let vcsPromptVars: {
+    const vcsPromptVars: {
       vcsStageCommand?: string;
       vcsCommitCommand?: string;
       vcsPushCommand?: string;
