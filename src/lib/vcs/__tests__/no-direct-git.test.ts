@@ -122,7 +122,10 @@ const KNOWN_VIOLATIONS: Record<string, string> = {
 
 /** Test files are allowed to use direct git calls for test infrastructure. */
 function isTestFile(relPath: string): boolean {
-  return relPath.includes("__tests__") || relPath.endsWith(".test.ts") || relPath.endsWith(".spec.ts");
+  return relPath.includes("__tests__")
+    || relPath.endsWith(".test.ts")
+    || relPath.endsWith(".spec.ts")
+    || relPath.startsWith("test-support/");
 }
 
 /** Return true if a file is in the always-allowed list. */

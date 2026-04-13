@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../store.js";
@@ -85,6 +85,23 @@ describe("ForemanStore", () => {
       const project = store.registerProject("my-app", "/home/user/my-app");
       const fetched = store.getProjectByPath("/home/user/my-app");
       expect(fetched).toEqual(project);
+    });
+
+    it("retrieves a project when registration and lookup use different path aliases", () => {
+      const baseDir = mkdtempSync(join(tmpdir(), "foreman-project-alias-"));
+      const realProjectDir = join(baseDir, "real");
+      const aliasProjectDir = join(baseDir, "alias");
+
+      mkdirSync(realProjectDir);
+      symlinkSync(realProjectDir, aliasProjectDir);
+
+      try {
+        const project = store.registerProject("aliased-project", aliasProjectDir);
+        const fetched = store.getProjectByPath(realProjectDir);
+        expect(fetched).toEqual(project);
+      } finally {
+        rmSync(baseDir, { recursive: true, force: true });
+      }
     });
 
     it("returns null for non-existent project", () => {

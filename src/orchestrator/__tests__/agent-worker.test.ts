@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "no
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { execTsxModuleSync } from "../../test-support/tsx-subprocess.js";
+import { execTsxModuleSync, runTsxModule } from "../../test-support/tsx-subprocess.js";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 const WORKER_SCRIPT = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
@@ -19,20 +19,18 @@ describe("agent-worker.ts", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("exits with error when no config file argument given", () => {
-    try {
-      execTsxModuleSync(WORKER_SCRIPT, [], {
-        timeout: 10_000,
-        env: { ...process.env, HOME: tmpDir },
-      });
-      expect.unreachable("Should have exited with error");
-    } catch (err: any) {
-      expect(err.status).toBe(1);
-      expect(err.stderr).toContain("Usage: agent-worker <config-file>");
-    }
+  it("exits with error when no config file argument given", async () => {
+    const result = await runTsxModule(WORKER_SCRIPT, [], {
+      cwd: PROJECT_ROOT,
+      timeout: 10_000,
+      env: { ...process.env, HOME: tmpDir },
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Usage: agent-worker <config-file>");
   });
 
-  it("reads and deletes the config file on startup", () => {
+  it("reads and deletes the config file on startup", async () => {
     // Write a config file that will cause the worker to fail at SDK query
     // (no valid API key), but we can verify it reads and deletes the config
     const configPath = join(tmpDir, "test-config.json");
@@ -51,25 +49,22 @@ describe("agent-worker.ts", () => {
 
     expect(existsSync(configPath)).toBe(true);
 
-    try {
-      execTsxModuleSync(WORKER_SCRIPT, [configPath], {
-        timeout: 15_000,
-        env: {
-          ...process.env,
-          HOME: tmpDir,
-          // Ensure no valid API key so SDK fails fast
-          ANTHROPIC_API_KEY: "sk-ant-invalid-test-key",
-        },
-      });
-    } catch {
-      // Expected to fail (no valid API key / no store), but config should be deleted
-    }
+    await runTsxModule(WORKER_SCRIPT, [configPath], {
+      cwd: PROJECT_ROOT,
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        HOME: tmpDir,
+        // Ensure no valid API key so SDK fails fast
+        ANTHROPIC_API_KEY: "sk-ant-invalid-test-key",
+      },
+    });
 
     // Config file should have been deleted by the worker
     expect(existsSync(configPath)).toBe(false);
   });
 
-  it("creates log directory and log file", () => {
+  it("creates log directory and log file", async () => {
     const configPath = join(tmpDir, "test-config.json");
     writeFileSync(configPath, JSON.stringify({
       runId: "test-run-log",
@@ -84,18 +79,15 @@ describe("agent-worker.ts", () => {
       env: {},
     }));
 
-    try {
-      execTsxModuleSync(WORKER_SCRIPT, [configPath], {
-        timeout: 15_000,
-        env: {
-          ...process.env,
-          HOME: tmpDir,
-          ANTHROPIC_API_KEY: "sk-ant-invalid-test-key",
-        },
-      });
-    } catch {
-      // Expected to fail
-    }
+    await runTsxModule(WORKER_SCRIPT, [configPath], {
+      cwd: PROJECT_ROOT,
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        HOME: tmpDir,
+        ANTHROPIC_API_KEY: "sk-ant-invalid-test-key",
+      },
+    });
 
     const logDir = join(tmpDir, ".foreman", "logs");
     const logFile = join(logDir, "test-run-log.log");
@@ -159,17 +151,17 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(existsSync(WORKER_SRC)).toBe(true);
   });
 
-  it("single-agent mode uses runWithPiSdk instead of old SDK query()", () => {
+  it("single-agent mode uses runPhaseSession instead of old SDK query()", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
-    // Single-agent mode must use runWithPiSdk for Pi SDK
-    expect(source).toContain("runWithPiSdk(");
+    // Single-agent mode must use the phase-runner seam
+    expect(source).toContain("runPhaseSession(");
     // Must NOT use the old Claude Agent SDK query() call
     expect(source).not.toContain("from \"@anthropic-ai/claude-agent-sdk\"");
   });
 
-  it("pipeline runPhase() uses runWithPiSdk for phase execution", () => {
+  it("pipeline runPhase() uses runPhaseSession for phase execution", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
-    const pipelineMatch = source.match(/runWithPiSdk\(\{/);
+    const pipelineMatch = source.match(/runPhaseSession\(\{/);
     expect(pipelineMatch).not.toBeNull();
   });
 

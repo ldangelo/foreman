@@ -83,7 +83,7 @@ describe("resolveOwnedControllerBranch", () => {
     vi.clearAllMocks();
   });
 
-  it("creates the foreman bookmark and moves to a mutable child change on it", async () => {
+  it("creates the foreman-controller bookmark and moves to a mutable child change on it", async () => {
     const vcs = makeJjVcs();
 
     const result = await resolveOwnedControllerBranch(vcs, "/repo");
@@ -91,17 +91,17 @@ describe("resolveOwnedControllerBranch", () => {
     expect(mockExecFileSync).toHaveBeenNthCalledWith(
       1,
       "jj",
-      ["bookmark", "create", "foreman", "-r", "dev"],
+      ["bookmark", "create", "foreman-controller", "-r", "dev"],
       expect.objectContaining({ cwd: "/repo" }),
     );
     expect(mockExecFileSync).toHaveBeenNthCalledWith(
       2,
       "jj",
-      ["new", "foreman"],
+      ["new", "foreman-controller"],
       expect.objectContaining({ cwd: "/repo" }),
     );
     expect(result).toMatchObject({
-      currentBranch: "foreman",
+      currentBranch: "foreman-controller",
       defaultBranch: "dev",
       targetBranch: "dev",
       usedOwnedBranch: true,

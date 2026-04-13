@@ -696,7 +696,7 @@ npm link
 
 # Development commands
 npm run build          # TypeScript compile (atomic — safe while foreman is running)
-npm test               # vitest run (159 test files, ~2800 tests)
+npm test               # run the full PR-required Vitest lanes
 npm run dev            # tsx watch mode
 npx tsc --noEmit       # Type check only
 npm run bundle         # esbuild single-file bundle

@@ -684,7 +684,7 @@ export class Refinery {
         // Use squash merge so each feature branch becomes a single commit on
         // the target branch, regardless of how many commits the branch contains.
         // This prevents empty or noisy intermediate commits from polluting dev.
-        let squashMergeOk = true;
+        const squashMergeOk = true;
         try {
           await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
           await this.vcsBackend.mergeWithoutCommit(this.projectPath, branchName, targetBranch);

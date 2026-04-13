@@ -34,6 +34,10 @@ function resolveBundledNativeBinding(): string | undefined {
 
 function normalizeProjectPath(path: string): string {
   const resolved = resolvePath(path);
+  if (!existsSync(resolved)) {
+    return resolved;
+  }
+
   try {
     return realpathSync.native?.(resolved) ?? realpathSync(resolved);
   } catch {
@@ -724,10 +728,11 @@ export class ForemanStore {
 
   registerProject(name: string, path: string): Project {
     const now = new Date().toISOString();
+    const normalizedPath = normalizeProjectPath(path);
     const project: Project = {
       id: randomUUID(),
       name,
-      path: normalizeProjectPath(path),
+      path: normalizedPath,
       status: "active",
       created_at: now,
       updated_at: now,
@@ -749,11 +754,11 @@ export class ForemanStore {
   }
 
   getProjectByPath(path: string): Project | null {
-    const normalized = normalizeProjectPath(path);
+    const normalizedPath = normalizeProjectPath(path);
     return (
       (this.db
         .prepare("SELECT * FROM projects WHERE path = ?")
-        .get(normalized) as Project | undefined) ?? null
+        .get(normalizedPath) as Project | undefined) ?? null
     );
   }
 

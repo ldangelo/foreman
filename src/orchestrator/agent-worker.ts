@@ -13,7 +13,7 @@ import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { request as httpRequest } from "node:http";
-import { runWithPiSdk } from "./pi-sdk-runner.js";
+import { runPhaseSession } from "./phase-runner.js";
 import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
 import type { EpicTask } from "./pipeline-executor.js";
@@ -33,6 +33,8 @@ import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { autoMerge } from "./auto-merge.js";
 import { BeadsRustClient } from "../lib/beads-rust.js";
+import type { ITaskClient } from "../lib/task-client.js";
+import { NativeTaskClient } from "../lib/native-task-client.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
 
@@ -173,6 +175,15 @@ function releaseFiles(
     const msg = err instanceof Error ? err.message : String(err);
     log(`[agent-mail] releaseFiles failed (non-fatal): ${msg}`);
   });
+}
+
+function createRuntimeTaskClient(projectPath: string): ITaskClient {
+  const runtimeMode = process.env.FOREMAN_RUNTIME_MODE?.trim().toLowerCase();
+  const forcedNative = process.env.FOREMAN_TASK_STORE?.trim().toLowerCase() === "native";
+  if (runtimeMode === "test" || forcedNative) {
+    return new NativeTaskClient(projectPath);
+  }
+  return new BeadsRustClient(projectPath);
 }
 
 // ── Module-level phase tracker ───────────────────────────────────────────────
@@ -343,12 +354,21 @@ async function main(): Promise<void> {
 
   try {
     // Build clean env for Pi (strip CLAUDECODE, convert to string-only map)
-    const piResult = await runWithPiSdk({
+    const piResult = await runPhaseSession({
       prompt,
       systemPrompt: `You are an agent working on task: ${seedTitle}`,
       cwd: worktreePath,
       model,
       logFile,
+      context: {
+        phaseName: "worker",
+        seedId,
+        seedTitle,
+        seedType: config.seedType,
+        seedDescription: config.seedDescription,
+        worktreePath,
+        targetBranch: config.targetBranch,
+      },
       onToolCall: (name: string, input: Record<string, unknown>) => {
         progress.toolCalls++;
         progress.toolBreakdown[name] = (progress.toolBreakdown[name] ?? 0) + 1;
@@ -485,7 +505,7 @@ async function runPhase(
   }
 
   try {
-    const phaseResult = await runWithPiSdk({
+    const phaseResult = await runPhaseSession({
       prompt,
       systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
       cwd: config.worktreePath,
@@ -493,6 +513,15 @@ async function runPhase(
       allowedTools: roleConfig.allowedTools,
       customTools,
       logFile,
+      context: {
+        phaseName: role,
+        seedId: config.seedId,
+        seedTitle: config.seedTitle,
+        seedType: config.seedType,
+        seedDescription: config.seedDescription,
+        worktreePath: config.worktreePath,
+        targetBranch: config.targetBranch,
+      },
       onToolCall: (name, input) => {
         progress.toolCalls++;
         progress.toolBreakdown[name] = (progress.toolBreakdown[name] ?? 0) + 1;
@@ -605,7 +634,7 @@ async function runTroubleshooterPhase(
   customTools.push(createCloseBeadTool(pipelineProjectPath));
 
   try {
-    const result = await runWithPiSdk({
+    const result = await runPhaseSession({
       prompt,
       systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for bead: ${beadTitle}`,
       cwd: config.worktreePath,
@@ -613,6 +642,15 @@ async function runTroubleshooterPhase(
       allowedTools: roleConfig.allowedTools,
       customTools,
       logFile,
+      context: {
+        phaseName: "troubleshooter",
+        seedId: beadId,
+        seedTitle: beadTitle,
+        seedType: config.seedType,
+        seedDescription: config.seedDescription,
+        worktreePath: config.worktreePath,
+        targetBranch: config.targetBranch,
+      },
       onToolCall: () => { /* no-op */ },
       onTurnEnd: () => { /* no-op */ },
     });
@@ -957,7 +995,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
               // `foreman run` is no longer active (fixes: bd-0qv2).
               try {
                 const mergeStore = ForemanStore.forProject(pipelineProjectPath);
-                const mergeTaskClient = new BeadsRustClient(pipelineProjectPath);
+                const mergeTaskClient = createRuntimeTaskClient(pipelineProjectPath);
                 log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}${config.targetBranch ? ` → ${config.targetBranch}` : ""}`);
                 const mergeResult = await autoMerge({
                   store: mergeStore,
