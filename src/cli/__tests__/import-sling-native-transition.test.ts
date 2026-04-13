@@ -1,13 +1,46 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { execFile } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import path, { join } from "node:path";
-import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
+const TSX_LOADER = require.resolve("tsx/dist/loader.mjs");
+
+interface ExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
 
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 20_000 });
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      ["--import", TSX_LOADER, CLI, ...args],
+      {
+        cwd,
+        timeout: 20_000,
+        env: {
+          ...process.env,
+          TSX_DISABLE_IPC: "1",
+          NO_COLOR: "1",
+        },
+      },
+    );
+    return { stdout, stderr, exitCode: 0 };
+  } catch (err: any) {
+    return {
+      stdout: err.stdout ?? "",
+      stderr: err.stderr ?? "",
+      exitCode: err.code ?? err.status ?? 1,
+    };
+  }
 }
 
 describe("native-task backend transition CLI regression targets", () => {
