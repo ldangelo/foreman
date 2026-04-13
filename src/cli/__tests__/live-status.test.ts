@@ -70,7 +70,6 @@ const {
     this.getProject = vi.fn().mockReturnValue(null);
     this.close = vi.fn();
   });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
   // Dashboard function mocks (used by status --live tests)
