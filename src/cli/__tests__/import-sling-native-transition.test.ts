@@ -1,54 +1,30 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { execFile } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { describe, it, expect, afterEach } from "vitest";
+import { cpSync, existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { createRequire } from "node:module";
-import path, { join } from "node:path";
-import { promisify } from "node:util";
+import path from "node:path";
+import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
 
-const execFileAsync = promisify(execFile);
-const require = createRequire(import.meta.url);
-const TSX_LOADER = require.resolve("tsx");
-
-interface ExecResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
-const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
+const CLI = path.resolve(__dirname, "../index.ts");
+const SOURCE_TRD = resolve(process.cwd(), "docs/TRD/sling-trd.md");
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  try {
-    const { stdout, stderr } = await execFileAsync(
-      process.execPath,
-      ["--import", TSX_LOADER, CLI, ...args],
-      {
-        cwd,
-        timeout: 20_000,
-        env: {
-          ...process.env,
-          TSX_DISABLE_IPC: "1",
-          NO_COLOR: "1",
-        },
-      },
-    );
-    return { stdout, stderr, exitCode: 0 };
-  } catch (err: any) {
-    return {
-      stdout: err.stdout ?? "",
-      stderr: err.stderr ?? "",
-      exitCode: err.code ?? err.status ?? 1,
-    };
-  }
+  return runTsxModule(CLI, args, { cwd, timeout: 30_000 });
 }
 
-describe("native-task backend transition CLI regression targets", () => {
+describe("sling native task transition", () => {
   const tempDirs: string[] = [];
 
   function makeTempDir(): string {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-native-transition-")));
+    const dir = mkdtempSync(join(tmpdir(), "foreman-sling-native-transition-"));
     tempDirs.push(dir);
+    return dir;
+  }
+
+  function mkProject(baseDir: string): string {
+    const dir = join(baseDir, "native-target");
+    mkdirSync(join(dir, "docs", "TRD"), { recursive: true });
+    cpSync(SOURCE_TRD, join(dir, "docs", "TRD", "sling-trd.md"));
     return dir;
   }
 
@@ -59,35 +35,22 @@ describe("native-task backend transition CLI regression targets", () => {
     tempDirs.length = 0;
   });
 
-  it("top-level help exposes an import command for beads → native task migration", async () => {
-    const tmp = makeTempDir();
-    const result = await run(["--help"], tmp);
+  it("dry-run reports native preview messaging instead of legacy tracker targeting", async () => {
+    const tmpBase = makeTempDir();
+    const targetProject = mkProject(tmpBase);
 
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout + result.stderr).toContain("import");
-  });
-
-  it("import help exposes a dry-run migration surface", async () => {
-    const tmp = makeTempDir();
-    const result = await run(["import", "--help"], tmp);
-
-    expect(result.exitCode).toBe(0);
-    const output = result.stdout + result.stderr;
-    expect(output).toContain("--dry-run");
-    expect(output).toMatch(/external[_-]id|idempot/i);
-  });
-
-  it("sling dry-run advertises native task creation instead of sd/br tracker targets", async () => {
     const result = await run(
-      ["sling", "trd", "docs/TRD/sling-trd.md", "--dry-run", "--auto"],
-      process.cwd(),
+      ["sling", "trd", "docs/TRD/sling-trd.md", "--project-path", targetProject, "--dry-run"],
+      tmpBase,
     );
 
-    expect(result.exitCode).toBe(0);
     const output = result.stdout + result.stderr;
-    expect(output).toMatch(/native task/i);
-    expect(output).not.toContain("sd (beads)");
-    expect(output).not.toContain("br (beads_rust)");
-    expect(output).toMatch(/migrat/i);
+    expect(result.exitCode).toBe(0);
+    expect(output).toContain("Dry run — native task store preview only; no tasks created.");
+    expect(output).toContain("native backlog tasks that require explicit approval before dispatch");
+    expect(output).not.toContain("Create in sd (beads)");
+    expect(output).not.toContain("Create in br (beads_rust)");
+    expect(existsSync(join(targetProject, ".beads"))).toBe(false);
+    expect(existsSync(join(targetProject, ".foreman", "foreman.db"))).toBe(false);
   });
 });
