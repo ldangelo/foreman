@@ -4,7 +4,11 @@ import { readFileSync, existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { normalizePriority } from "../../lib/priority.js";
 import { ForemanStore } from "../../lib/store.js";
+import { NativeTaskStore, type TaskRow } from "../../lib/task-store.js";
+import { selectTaskReadBackend } from "../../lib/task-client-factory.js";
+import type { ITaskClient, Issue, UpdateOptions } from "../../lib/task-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { PlanStepDefinition } from "../../orchestrator/types.js";
@@ -12,17 +16,128 @@ import { resolveProjectPathFromOption } from "./project-task-support.js";
 
 // ── Client factory (TRD-016) ──────────────────────────────────────────────
 
-/**
- * Instantiate the br task-tracking client.
- *
- * TRD-024: sd backend removed. Always returns a BeadsRustClient.
- *
- * Exported for unit testing.
- */
+interface PlanCreateOptions {
+  type?: string;
+  priority?: string;
+  parent?: string;
+  description?: string;
+}
+
+export interface PlanTaskClient extends ITaskClient {
+  create(title: string, opts?: PlanCreateOptions): Promise<Issue>;
+  addDependency(fromId: string, toId: string): Promise<void>;
+}
+
+function taskRowToIssue(row: TaskRow): Issue {
+  return {
+    id: row.id,
+    title: row.title,
+    type: row.type,
+    priority: `P${row.priority}`,
+    status: row.status,
+    assignee: null,
+    parent: null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    description: row.description ?? null,
+    labels: [],
+  };
+}
+
+class NativePlanTaskClient implements PlanTaskClient {
+  constructor(private readonly projectPath: string) {}
+
+  private withStore<T>(fn: (taskStore: NativeTaskStore) => T): T {
+    const store = ForemanStore.forProject(this.projectPath);
+    try {
+      return fn(new NativeTaskStore(store.getDb()));
+    } finally {
+      store.close();
+    }
+  }
+
+  async create(title: string, opts?: PlanCreateOptions): Promise<Issue> {
+    return this.withStore((taskStore) => {
+      const row = taskStore.create({
+        title,
+        description: opts?.description,
+        type: opts?.type,
+        priority: opts?.priority ? normalizePriority(opts.priority) : 2,
+      });
+      taskStore.approve(row.id);
+      if (opts?.parent) {
+        taskStore.addDependency(row.id, opts.parent, "parent-child");
+      }
+      return taskRowToIssue(taskStore.get(row.id) ?? row);
+    });
+  }
+
+  async addDependency(fromId: string, toId: string): Promise<void> {
+    this.withStore((taskStore) => {
+      taskStore.addDependency(fromId, toId, "blocks");
+      const blocker = taskStore.get(toId);
+      if (!blocker || !["merged", "closed"].includes(blocker.status)) {
+        taskStore.update(fromId, { status: "blocked", force: true });
+      } else {
+        taskStore.reevaluateBlockedTasks();
+      }
+    });
+  }
+
+  async list(opts?: { status?: string; type?: string }): Promise<Issue[]> {
+    return this.withStore((taskStore) =>
+      taskStore
+        .list(opts?.status ? { status: opts.status } : undefined)
+        .filter((issue) => !opts?.type || issue.type === opts.type),
+    );
+  }
+
+  async ready(): Promise<Issue[]> {
+    return this.withStore((taskStore) => taskStore.ready());
+  }
+
+  async show(id: string): Promise<{ status: string; description?: string | null; notes?: string | null }> {
+    return this.withStore((taskStore) => {
+      const row = taskStore.get(id);
+      if (!row) {
+        throw new Error(`Native task '${id}' not found`);
+      }
+      return {
+        status: row.status,
+        description: row.description ?? null,
+        notes: null,
+      };
+    });
+  }
+
+  async update(id: string, opts: UpdateOptions): Promise<void> {
+    this.withStore((taskStore) => {
+      taskStore.update(id, {
+        ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.description !== undefined ? { description: opts.description ?? null } : {}),
+        ...(opts.status !== undefined
+          ? { status: opts.status === "in_progress" ? "in-progress" : opts.status }
+          : {}),
+        ...(opts.claim ? { status: "in-progress" } : {}),
+        force: true,
+      });
+    });
+  }
+
+  async close(id: string, reason?: string): Promise<void> {
+    this.withStore((taskStore) => {
+      taskStore.close(id, reason);
+      taskStore.reevaluateBlockedTasks();
+    });
+  }
+}
+
 export function createPlanClient(
   projectPath: string,
-): BeadsRustClient {
-  return new BeadsRustClient(projectPath);
+): PlanTaskClient {
+  return selectTaskReadBackend(projectPath) === "native"
+    ? new NativePlanTaskClient(projectPath)
+    : new BeadsRustClient(projectPath);
 }
 
 export const planCommand = new Command("plan")
@@ -84,7 +199,7 @@ export const planCommand = new Command("plan")
         productDescription = description;
       }
 
-      // Initialize BeadsRust client
+      // Initialize planning task client
       const store = ForemanStore.forProject(projectPath);
       const seeds = createPlanClient(projectPath);
       const dispatcher = new Dispatcher(seeds, store, projectPath);
@@ -146,7 +261,11 @@ export const planCommand = new Command("plan")
               "\nWhen run without --dry-run, Foreman will:",
             ),
           );
-          console.log(chalk.dim("  1. Create an epic bead with child beads (sequential dependencies)"));
+          console.log(
+            chalk.dim(
+              "  1. Create an epic planning task with child planning tasks (native-first, beads fallback)",
+            ),
+          );
           console.log(chalk.dim("  2. Dispatch each step via Claude Code + Ensemble"));
           console.log(chalk.dim("  3. Track progress in SQLite"));
           console.log(chalk.dim("  4. Suggest 'foreman sling trd <output-dir>/TRD.md' on completion"));
@@ -161,7 +280,7 @@ export const planCommand = new Command("plan")
           description: `Planning pipeline for: ${productDescription.slice(0, 200)}`,
         });
         console.log(
-          chalk.dim(`\nEpic bead: ${epic.id} — ${epicTitle}`),
+          chalk.dim(`\nEpic task: ${epic.id} — ${epicTitle}`),
         );
 
         // Create child seeds with sequential dependencies
@@ -183,7 +302,7 @@ export const planCommand = new Command("plan")
           seedIds.push(child.id);
           console.log(
             chalk.dim(
-              `  Bead ${child.id}: ${step.name}${i > 0 ? ` (depends on ${seedIds[i - 1]})` : " (ready)"}`,
+              `  Task ${child.id}: ${step.name}${i > 0 ? ` (depends on ${seedIds[i - 1]})` : " (ready)"}`,
             ),
           );
         }

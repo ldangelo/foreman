@@ -1,52 +1,78 @@
-/**
- * Tests for TRD-016: Backend selection in plan.ts based on FOREMAN_TASK_BACKEND.
- *
- * Verifies:
- * - When FOREMAN_TASK_BACKEND='br': BeadsRustClient is used for issue creation
- */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-
-// ── Hoisted mocks ──────────────────────────────────────────────────────────
 const {
-  mockGetTaskBackend,
+  mockSelectTaskReadBackend,
   MockBeadsRustClient,
-  MockDispatcher,
-  MockForemanStore,
-  mockGetProjectByPath,
+  mockForemanStoreForProject,
+  MockNativeTaskStore,
+  mockTaskStoreCreate,
+  mockTaskStoreApprove,
+  mockTaskStoreAddDependency,
+  mockTaskStoreUpdate,
+  mockTaskStoreGet,
+  mockTaskStoreReady,
+  mockTaskStoreReevaluateBlockedTasks,
+  mockStoreClose,
+  mockStoreGetDb,
 } = vi.hoisted(() => {
-  const mockGetTaskBackend = vi.fn().mockReturnValue("br");
+  const mockSelectTaskReadBackend = vi.fn();
 
   const MockBeadsRustClient = vi.fn(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
-    this.create = vi.fn().mockResolvedValue({ id: "br-001", title: "Epic" });
-    this.close = vi.fn().mockResolvedValue(undefined);
-    this.addDependency = vi.fn().mockResolvedValue(undefined);
-    this.ready = vi.fn().mockResolvedValue([]);
-    this.ensureBrInstalled = vi.fn().mockResolvedValue(undefined);
-    this.isInitialized = vi.fn().mockResolvedValue(true);
+    this.create = vi.fn();
+    this.addDependency = vi.fn();
+    this.ready = vi.fn();
+    this.close = vi.fn();
+    this.list = vi.fn();
+    this.show = vi.fn();
+    this.update = vi.fn();
   });
 
-  const mockGetProjectByPath = vi.fn().mockReturnValue({ id: "proj-001", path: "/mock/project" });
-  const MockForemanStore = vi.fn(function MockForemanStoreImpl(this: Record<string, unknown>) {
-    this.getProjectByPath = mockGetProjectByPath;
+  const mockTaskStoreCreate = vi.fn();
+  const mockTaskStoreApprove = vi.fn();
+  const mockTaskStoreAddDependency = vi.fn();
+  const mockTaskStoreUpdate = vi.fn();
+  const mockTaskStoreGet = vi.fn();
+  const mockTaskStoreReady = vi.fn();
+  const mockTaskStoreReevaluateBlockedTasks = vi.fn();
+
+  const MockNativeTaskStore = vi.fn(function MockNativeTaskStoreImpl(this: Record<string, unknown>) {
+    this.create = mockTaskStoreCreate;
+    this.approve = mockTaskStoreApprove;
+    this.addDependency = mockTaskStoreAddDependency;
+    this.update = mockTaskStoreUpdate;
+    this.get = mockTaskStoreGet;
+    this.ready = mockTaskStoreReady;
+    this.reevaluateBlockedTasks = mockTaskStoreReevaluateBlockedTasks;
+    this.list = vi.fn().mockReturnValue([]);
     this.close = vi.fn();
   });
 
-  const MockDispatcher = vi.fn(function MockDispatcherImpl(this: Record<string, unknown>) {
-    this.dispatchPlanStep = vi.fn().mockResolvedValue({ runId: "run-001" });
+  const mockStoreClose = vi.fn();
+  const mockStoreGetDb = vi.fn().mockReturnValue({});
+  const mockForemanStoreForProject = vi.fn().mockReturnValue({
+    getDb: mockStoreGetDb,
+    close: mockStoreClose,
   });
 
   return {
-    mockGetTaskBackend,
+    mockSelectTaskReadBackend,
     MockBeadsRustClient,
-    MockDispatcher,
-    MockForemanStore,
-    mockGetProjectByPath,
+    mockForemanStoreForProject,
+    MockNativeTaskStore,
+    mockTaskStoreCreate,
+    mockTaskStoreApprove,
+    mockTaskStoreAddDependency,
+    mockTaskStoreUpdate,
+    mockTaskStoreGet,
+    mockTaskStoreReady,
+    mockTaskStoreReevaluateBlockedTasks,
+    mockStoreClose,
+    mockStoreGetDb,
   };
 });
 
-vi.mock("../../lib/feature-flags.js", () => ({
-  getTaskBackend: () => mockGetTaskBackend(),
+vi.mock("../../lib/task-client-factory.js", () => ({
+  selectTaskReadBackend: mockSelectTaskReadBackend,
 }));
 
 vi.mock("../../lib/beads-rust.js", () => ({
@@ -54,77 +80,147 @@ vi.mock("../../lib/beads-rust.js", () => ({
 }));
 
 vi.mock("../../lib/store.js", () => ({
-  ForemanStore: MockForemanStore,
+  ForemanStore: {
+    forProject: mockForemanStoreForProject,
+  },
 }));
 
-vi.mock("../../orchestrator/dispatcher.js", () => ({
-  Dispatcher: MockDispatcher,
+vi.mock("../../lib/task-store.js", () => ({
+  NativeTaskStore: MockNativeTaskStore,
 }));
 
-// ── Module under test ──────────────────────────────────────────────────────
 import { createPlanClient } from "../commands/plan.js";
-
-// ── Helpers ────────────────────────────────────────────────────────────────
 
 const PROJECT_PATH = "/mock/project";
 
-describe("TRD-016: plan.ts backend selection via FOREMAN_TASK_BACKEND", () => {
+describe("createPlanClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSelectTaskReadBackend.mockReturnValue("beads");
 
-    // Restore mock implementations after clearAllMocks resets call tracking
-    MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
-      this.create = vi.fn().mockResolvedValue({ id: "br-001", title: "Epic" });
-      this.close = vi.fn().mockResolvedValue(undefined);
-      this.addDependency = vi.fn().mockResolvedValue(undefined);
-      this.ready = vi.fn().mockResolvedValue([]);
-      this.ensureBrInstalled = vi.fn().mockResolvedValue(undefined);
-      this.isInitialized = vi.fn().mockResolvedValue(true);
+    mockForemanStoreForProject.mockReturnValue({
+      getDb: mockStoreGetDb,
+      close: mockStoreClose,
     });
 
-    MockForemanStore.mockImplementation(function MockForemanStoreImpl(this: Record<string, unknown>) {
-      this.getProjectByPath = mockGetProjectByPath;
-      this.close = vi.fn();
+    mockTaskStoreCreate.mockReturnValue({
+      id: "native-001",
+      title: "Plan epic",
+      type: "epic",
+      priority: 1,
+      status: "backlog",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      approved_at: null,
+      closed_at: null,
+      description: "desc",
     });
-    mockGetProjectByPath.mockReturnValue({ id: "proj-001", path: "/mock/project" });
-
-    MockDispatcher.mockImplementation(function MockDispatcherImpl(this: Record<string, unknown>) {
-      this.dispatchPlanStep = vi.fn().mockResolvedValue({ runId: "run-001" });
+    mockTaskStoreGet.mockReturnValue({
+      id: "native-001",
+      title: "Plan epic",
+      type: "epic",
+      priority: 1,
+      status: "ready",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      approved_at: "2026-01-01T00:00:00Z",
+      closed_at: null,
+      description: "desc",
     });
+    mockTaskStoreReady.mockResolvedValue([]);
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  // ── br backend ──────────────────────────────────────────────────────────
+  it("uses the beads client when the shared helper selects beads", () => {
+    mockSelectTaskReadBackend.mockReturnValue("beads");
 
-  describe("when FOREMAN_TASK_BACKEND='br'", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("br");
-    });
+    const client = createPlanClient(PROJECT_PATH);
 
-    it("returns a BeadsRustClient instance", () => {
-      const client = createPlanClient(PROJECT_PATH);
-
-      expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(MockBeadsRustClient).toHaveBeenCalledTimes(1);
-      expect(client).toBeDefined();
-    });
-
-    it("returned client has a create method (BeadsRustClient API)", () => {
-      const client = createPlanClient(PROJECT_PATH);
-
-      expect(typeof (client as unknown as Record<string, unknown>).create).toBe("function");
-    });
-
-    it("returned client has close and addDependency methods", () => {
-      const client = createPlanClient(PROJECT_PATH);
-
-      const c = client as unknown as Record<string, unknown>;
-      expect(typeof c.close).toBe("function");
-      expect(typeof c.addDependency).toBe("function");
-    });
+    expect(mockSelectTaskReadBackend).toHaveBeenCalledWith(PROJECT_PATH);
+    expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
+    expect(client).toBeDefined();
   });
 
+  it("returns a native-backed planning client when the shared helper selects native", async () => {
+    mockSelectTaskReadBackend.mockReturnValue("native");
+
+    const client = createPlanClient(PROJECT_PATH);
+    const created = await client.create("Plan epic", {
+      type: "epic",
+      priority: "P1",
+      parent: "parent-123",
+      description: "desc",
+    });
+
+    expect(MockBeadsRustClient).not.toHaveBeenCalled();
+    expect(mockForemanStoreForProject).toHaveBeenCalledWith(PROJECT_PATH);
+    expect(MockNativeTaskStore).toHaveBeenCalled();
+    expect(mockTaskStoreCreate).toHaveBeenCalledWith({
+      title: "Plan epic",
+      description: "desc",
+      type: "epic",
+      priority: 1,
+    });
+    expect(mockTaskStoreApprove).toHaveBeenCalledWith("native-001");
+    expect(mockTaskStoreAddDependency).toHaveBeenCalledWith(
+      "native-001",
+      "parent-123",
+      "parent-child",
+    );
+    expect(created.id).toBe("native-001");
+    expect(created.priority).toBe("P1");
+  });
+
+  it("marks dependents blocked on native backends until their blocker closes", async () => {
+    mockSelectTaskReadBackend.mockReturnValue("native");
+    mockTaskStoreGet.mockImplementation((id: string) =>
+      id === "blocker-1"
+        ? {
+            id,
+            title: "Blocker",
+            type: "task",
+            priority: 1,
+            status: "ready",
+            run_id: null,
+            branch: null,
+            external_id: null,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            approved_at: null,
+            closed_at: null,
+            description: null,
+          }
+        : null,
+    );
+
+    const client = createPlanClient(PROJECT_PATH);
+    await client.addDependency("child-1", "blocker-1");
+
+    expect(mockTaskStoreAddDependency).toHaveBeenCalledWith("child-1", "blocker-1", "blocks");
+    expect(mockTaskStoreUpdate).toHaveBeenCalledWith("child-1", {
+      status: "blocked",
+      force: true,
+    });
+    expect(mockTaskStoreReevaluateBlockedTasks).not.toHaveBeenCalled();
+  });
+
+  it("re-evaluates blocked tasks when a native planning task closes", async () => {
+    mockSelectTaskReadBackend.mockReturnValue("native");
+    const client = createPlanClient(PROJECT_PATH);
+
+    await client.close("native-001", "Completed");
+
+    expect(MockNativeTaskStore).toHaveBeenCalled();
+    expect(mockTaskStoreReevaluateBlockedTasks).toHaveBeenCalled();
+    expect(mockStoreClose).toHaveBeenCalled();
+  });
 });
