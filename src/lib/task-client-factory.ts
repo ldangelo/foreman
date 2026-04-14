@@ -45,19 +45,21 @@ export function resolveTaskStoreMode(raw = process.env.FOREMAN_TASK_STORE): Task
   return "auto";
 }
 
+export function projectHasNativeTasks(projectPath: string): boolean {
+  const store = ForemanStore.forProject(projectPath);
+  try {
+    return typeof store.hasNativeTasks === "function" && store.hasNativeTasks();
+  } finally {
+    store.close();
+  }
+}
+
 export function selectTaskReadBackend(projectPath: string): TaskClientBackend {
   const taskStoreMode = resolveTaskStoreMode();
   if (taskStoreMode === "native") return "native";
   if (taskStoreMode === "beads") return "beads";
 
-  const store = ForemanStore.forProject(projectPath);
-  try {
-    return typeof store.hasNativeTasks === "function" && store.hasNativeTasks()
-      ? "native"
-      : "beads";
-  } finally {
-    store.close();
-  }
+  return projectHasNativeTasks(projectPath) ? "native" : "beads";
 }
 
 export async function createTaskClient(
