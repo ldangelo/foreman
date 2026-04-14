@@ -41,7 +41,7 @@ describe("sling native task transition", () => {
 
     const result = await run(
       ["sling", "trd", "docs/TRD/sling-trd.md", "--project-path", targetProject, "--dry-run"],
-      tmpBase,
+      process.cwd(),
     );
 
     const output = result.stdout + result.stderr;
