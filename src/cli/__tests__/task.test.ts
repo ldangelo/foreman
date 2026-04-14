@@ -462,6 +462,7 @@ describe("taskCommand export", () => {
     expect(names).toContain("create");
     expect(names).toContain("list");
     expect(names).toContain("show");
+    expect(names).toContain("import");
     expect(names).toContain("approve");
     expect(names).toContain("update");
     expect(names).toContain("close");
