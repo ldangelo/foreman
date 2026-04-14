@@ -322,11 +322,6 @@ const trdSubcommand = new Command("trd")
 
     printSlingPlan(plan, parallel);
 
-    if (opts.dryRun) {
-      console.log(chalk.dim("Dry run — no tasks created."));
-      return;
-    }
-
     const emittedSdNotice = applySdOnlyDeprecation(opts);
     if (!emittedSdNotice && opts.brOnly) {
       console.warn(chalk.yellow(`${getSlingLegacyBackendFlagNotice()} (--br-only)`));
@@ -335,6 +330,12 @@ const trdSubcommand = new Command("trd")
     // Retained for compatibility with older tests/callers; the native path does
     // not consult these flags anymore.
     resolveDefaultBrOnly(opts);
+
+    if (opts.dryRun) {
+      console.log(chalk.dim("Dry run — native task store preview only; no tasks created."));
+      console.log(chalk.dim("Sling now writes native backlog tasks that require explicit approval before dispatch."));
+      return;
+    }
 
     if (!opts.auto) {
       const answer = await new Promise<string>((resolveAnswer) => {
