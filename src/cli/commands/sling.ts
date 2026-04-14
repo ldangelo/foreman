@@ -334,7 +334,6 @@ const trdSubcommand = new Command("trd")
     resolveDefaultBrOnly(opts);
 
     if (opts.dryRun) {
-      console.log(chalk.dim("Migration note: sling is migrating task creation to the native task store."));
       console.log(chalk.dim("Dry run — native task store preview only; no tasks created."));
       console.log(chalk.dim("Sling now writes native backlog tasks that require explicit approval before dispatch."));
       return;
