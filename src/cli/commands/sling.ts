@@ -137,7 +137,8 @@ function printSlingPlan(plan: SlingPlan, parallel: ParallelResult): void {
   }
 
   for (let si = 0; si < plan.sprints.length; si++) {
-    const sprint = plan.sprints[si]!;
+    const sprint = plan.sprints[si];
+    if (!sprint) continue;
     const sprintTasks = sprint.stories.reduce((sum, st) => sum + st.tasks.length, 0);
     const sprintHours = sprint.stories.reduce(
       (sum, st) => sum + st.tasks.reduce((ts, t) => ts + t.estimateHours, 0),
@@ -190,7 +191,8 @@ function printSlingPlan(plan: SlingPlan, parallel: ParallelResult): void {
     console.log(chalk.bold("Parallel Groups:"));
     for (const group of parallel.groups) {
       const sprintNames = group.sprintIndices
-        .map((i) => plan.sprints[i]!.title)
+        .map((i) => plan.sprints[i]?.title)
+        .filter((title): title is string => Boolean(title))
         .join(", ");
       console.log(`  ${chalk.cyan(group.label)}: ${sprintNames}`);
     }
@@ -239,7 +241,7 @@ function createProgressSpinner() {
   let processedCount = 0;
 
   return {
-    update(processed: number, total: number, tracker: "native") {
+    update(processed: number, total: number, _tracker: "native") {
       processedCount = processed;
       const line = `Writing native tasks... ${processedCount}/${total}`;
       if (process.stdout.isTTY) {
