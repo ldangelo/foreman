@@ -10,7 +10,7 @@ const { mockAccess } = vi.hoisted(() => {
 });
 
 vi.mock("node:fs/promises", async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = (await importOriginal()) as Record<string, unknown>;
   return {
     ...actual,
     access: mockAccess,
