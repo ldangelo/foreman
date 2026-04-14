@@ -1,14 +1,14 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { createTaskClient } from "../../lib/task-client-factory.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { existsSync, readdirSync } from "node:fs";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
-import type { UpdateOptions } from "../../lib/task-client.js";
+import type { ITaskClient, UpdateOptions } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { deleteWorkerConfigFile } from "../../orchestrator/dispatcher.js";
@@ -21,13 +21,9 @@ export type { StateMismatch } from "../../lib/run-status.js";
 
 /**
  * Minimal interface capturing the subset of task-client methods used by
- * detectAndFixMismatches. BeadsRustClient satisfies this interface
- * (note: show() is not on ITaskClient, hence this local type).
+ * detectAndFixMismatches.
  */
-export interface IShowUpdateClient {
-  show(id: string): Promise<{ status: string }>;
-  update(id: string, opts: UpdateOptions): Promise<void>;
-}
+export type IShowUpdateClient = Pick<ITaskClient, "show" | "update">;
 
 // ── Stale-branch detection types ─────────────────────────────────────────────
 
@@ -528,7 +524,8 @@ export const resetCommand = new Command("reset")
       let originalBranch: string | undefined;
       try { originalBranch = await vcs.getCurrentBranch(projectPath); } catch { /* ignore */ }
 
-      const seeds: IShowUpdateClient = new BeadsRustClient(projectPath);
+      const { taskClient } = await createTaskClient(projectPath);
+      const seeds: IShowUpdateClient = taskClient;
       const store = ForemanStore.forProject(projectPath);
       const project = store.getProjectByPath(projectPath);
 

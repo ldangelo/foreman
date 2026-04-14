@@ -1,9 +1,10 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { createTaskClient } from "../../lib/task-client-factory.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { ForemanStore } from "../../lib/store.js";
+import type { ITaskClient } from "../../lib/task-client.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 
@@ -24,7 +25,7 @@ export interface RetryOpts {
 export async function retryAction(
   beadId: string,
   opts: RetryOpts,
-  beadsClient: BeadsRustClient,
+  beadsClient: ITaskClient,
   store: ForemanStore,
   projectPath: string,
   dispatcher?: Dispatcher,
@@ -45,7 +46,7 @@ export async function retryAction(
   }
 
   // 2. Look up bead via BeadsRustClient
-  let bead: Awaited<ReturnType<typeof beadsClient.show>>;
+  let bead: Awaited<ReturnType<ITaskClient["show"]>>;
   try {
     bead = await beadsClient.show(beadId);
   } catch (err: unknown) {
@@ -54,9 +55,14 @@ export async function retryAction(
     return 1;
   }
 
+  const beadTitle =
+    typeof bead === "object" && bead !== null && "title" in bead && typeof bead.title === "string"
+      ? bead.title
+      : undefined;
+
   console.log(
-    chalk.bold(`Retrying bead: ${chalk.cyan(bead.id)}`) +
-      chalk.dim(` (${bead.title})`),
+    chalk.bold(`Retrying bead: ${chalk.cyan(beadId)}`) +
+      (beadTitle ? chalk.dim(` (${beadTitle})`) : ""),
   );
   console.log(`  Status: ${chalk.yellow(bead.status)}`);
 
@@ -243,13 +249,13 @@ export const retryCommand = new Command("retry")
     }
 
     const store = ForemanStore.forProject(projectPath);
-    const beadsClient = new BeadsRustClient(projectPath);
+    const { taskClient } = await createTaskClient(projectPath);
 
     try {
       const exitCode = await retryAction(
         beadId,
         opts,
-        beadsClient,
+        taskClient,
         store,
         projectPath,
       );
