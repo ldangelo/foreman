@@ -30,9 +30,9 @@ import { enqueueResetSeedToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead, e
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
+import { createTaskClient } from "../lib/task-client-factory.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { autoMerge } from "./auto-merge.js";
-import { BeadsRustClient } from "../lib/beads-rust.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { NativeTaskClient } from "../lib/native-task-client.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
@@ -177,13 +177,35 @@ function releaseFiles(
   });
 }
 
-function createRuntimeTaskClient(projectPath: string): ITaskClient {
+interface EpicTaskClient extends Pick<ITaskClient, "update" | "close"> {
+  create(
+    title: string,
+    opts: {
+      type: string;
+      priority: string;
+      parent?: string;
+      description?: string;
+      labels?: string[];
+    },
+  ): Promise<{ id: string }>;
+}
+
+async function createRuntimeTaskClient(projectPath: string): Promise<ITaskClient> {
   const runtimeMode = process.env.FOREMAN_RUNTIME_MODE?.trim().toLowerCase();
-  const forcedNative = process.env.FOREMAN_TASK_STORE?.trim().toLowerCase() === "native";
-  if (runtimeMode === "test" || forcedNative) {
+  if (runtimeMode === "test") {
     return new NativeTaskClient(projectPath);
   }
-  return new BeadsRustClient(projectPath);
+  return (await createTaskClient(projectPath)).taskClient;
+}
+
+/**
+ * Epic QA bug filing still relies on beads create/close semantics.
+ * Keep that compatibility boundary explicit until create support is promoted
+ * into a shared task-client abstraction.
+ */
+async function createEpicTaskClient(projectPath: string): Promise<EpicTaskClient> {
+  const beadsModule = await import("../lib/beads-rust.js");
+  return new beadsModule.BeadsRustClient(projectPath);
 }
 
 // ── Module-level phase tracker ───────────────────────────────────────────────
@@ -748,23 +770,23 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
     // Epic mode: sync child task bead status into br as the pipeline progresses.
     async onTaskStatusChange(taskSeedId, status) {
-      const seeds = new BeadsRustClient(pipelineProjectPath);
+      const taskClient = await createRuntimeTaskClient(pipelineProjectPath);
       if (status === "in_progress") {
-        await seeds.update(taskSeedId, { status: "in_progress" });
+        await taskClient.update(taskSeedId, { status: "in_progress" });
         log(`[EPIC] br update ${taskSeedId} → in_progress`);
       } else if (status === "completed") {
-        await seeds.close(taskSeedId, "Completed via epic pipeline");
+        await taskClient.close(taskSeedId, "Completed via epic pipeline");
         log(`[EPIC] br close ${taskSeedId} (completed)`);
       } else if (status === "failed") {
-        await seeds.update(taskSeedId, { status: "failed" });
+        await taskClient.update(taskSeedId, { status: "failed" });
         log(`[EPIC] br update ${taskSeedId} → failed`);
       }
     },
 
     // Epic mode: create a bug bead when QA fails on a child task.
     async onTaskQaFailure(taskSeedId, taskTitle, epicId) {
-      const seeds = new BeadsRustClient(pipelineProjectPath);
-      const bug = await seeds.create(`QA failure: ${taskTitle}`, {
+      const epicTaskClient = await createEpicTaskClient(pipelineProjectPath);
+      const bug = await epicTaskClient.create(`QA failure: ${taskTitle}`, {
         type: "bug",
         priority: "1",
         parent: epicId,
@@ -776,8 +798,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
     // Epic mode: close a bug bead when QA passes on retry.
     async onTaskQaPass(bugBeadId) {
-      const seeds = new BeadsRustClient(pipelineProjectPath);
-      await seeds.close(bugBeadId, "QA passed on retry");
+      const epicTaskClient = await createEpicTaskClient(pipelineProjectPath);
+      await epicTaskClient.close(bugBeadId, "QA passed on retry");
       log(`[EPIC] Closed bug bead ${bugBeadId} (QA passed on retry)`);
     },
 
@@ -995,7 +1017,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
               // `foreman run` is no longer active (fixes: bd-0qv2).
               try {
                 const mergeStore = ForemanStore.forProject(pipelineProjectPath);
-                const mergeTaskClient = createRuntimeTaskClient(pipelineProjectPath);
+                const mergeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
                 log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}${config.targetBranch ? ` → ${config.targetBranch}` : ""}`);
                 const mergeResult = await autoMerge({
                   store: mergeStore,

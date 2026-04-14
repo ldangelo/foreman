@@ -9,7 +9,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import type { ForemanStore } from "../lib/store.js";
-import type { BeadsRustClient } from "../lib/beads-rust.js";
+import type { ITaskClient, Issue } from "../lib/task-client.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
 
@@ -31,6 +31,19 @@ export interface SentinelRunResult {
   durationMs: number;
 }
 
+interface SentinelTaskClient {
+  list(opts?: { status?: string; type?: string; label?: string }): Promise<Issue[]>;
+  create(
+    title: string,
+    opts: {
+      type: string;
+      priority: string;
+      description?: string;
+      labels?: string[];
+    },
+  ): Promise<Issue>;
+}
+
 /**
  * Continuous testing agent that monitors a branch on a schedule.
  *
@@ -42,7 +55,7 @@ export interface SentinelRunResult {
  */
 export class SentinelAgent {
   private store: ForemanStore;
-  private seeds: BeadsRustClient;
+  private seeds: SentinelTaskClient;
   private projectId: string;
   private projectPath: string;
   private running = false;
@@ -51,7 +64,7 @@ export class SentinelAgent {
 
   constructor(
     store: ForemanStore,
-    seeds: BeadsRustClient,
+    seeds: SentinelTaskClient,
     projectId: string,
     projectPath: string,
   ) {
