@@ -26,10 +26,7 @@
  *                                        should not gain new backend-selection logic
  *   src/cli/commands/dashboard.ts      — direct instantiation
  *   src/cli/commands/doctor.ts         — health-check instantiation
- *   src/cli/commands/merge.ts          — factory fn returns BeadsRustClient
- *   src/cli/commands/monitor.ts        — direct instantiation
- *   src/cli/commands/plan.ts           — migrate-now; creates fresh planning work
- *                                        and must stop writing new beads
+ *   src/cli/commands/plan.ts           — factory fn returns BeadsRustClient
  *   src/cli/commands/pr.ts             — direct instantiation
  *   src/cli/commands/purge-zombie-runs.ts — direct instantiation
  *   src/cli/commands/reset.ts          — direct instantiation
