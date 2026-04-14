@@ -25,8 +25,9 @@ describe("agent-worker.ts — autoMerge integration (bd-0qv2)", () => {
     expect(source).toContain("autoMerge");
   });
 
-  it("imports BeadsRustClient for use in autoMerge call", () => {
-    expect(source).toContain("BeadsRustClient");
+  it("imports the shared task-client factory for runtime backend selection", () => {
+    expect(source).toContain('from "../lib/task-client-factory.js"');
+    expect(source).toContain("createTaskClient");
   });
 
   it("calls autoMerge inside onPipelineComplete after successful enqueue", () => {
@@ -34,8 +35,8 @@ describe("agent-worker.ts — autoMerge integration (bd-0qv2)", () => {
     expect(source).toContain("await autoMerge(");
   });
 
-  it("creates a fresh BeadsRustClient for the autoMerge task client", () => {
-    expect(source).toContain("new BeadsRustClient(pipelineProjectPath)");
+  it("creates a runtime task client helper for the autoMerge task client", () => {
+    expect(source).toContain("createRuntimeTaskClient(pipelineProjectPath)");
   });
 
   it("logs the autoMerge result", () => {

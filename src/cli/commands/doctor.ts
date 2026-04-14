@@ -2,9 +2,9 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { ForemanStore } from "../../lib/store.js";
+import { createTaskClient } from "../../lib/task-client-factory.js";
 import { Doctor } from "../../orchestrator/doctor.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
-import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { purgeLogsAction } from "./purge-logs.js";
 import type { CheckResult, CheckStatus } from "../../orchestrator/types.js";
 
@@ -107,7 +107,7 @@ export const doctorCommand = new Command("doctor")
     try {
       store = ForemanStore.forProject(projectPath);
       const mq = new MergeQueue(store.getDb());
-      const taskClient = new BeadsRustClient(projectPath);
+      const { taskClient } = await createTaskClient(projectPath);
       const doctor = new Doctor(store, projectPath, mq, taskClient);
 
       const report = await doctor.runAll({ fix, dryRun, projectPath });
