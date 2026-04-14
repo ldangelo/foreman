@@ -8,7 +8,6 @@ import chalk from "chalk";
 import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
-import { projectHasNativeTasks, resolveTaskStoreMode } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
 import { NativeTaskClient } from "../../lib/native-task-client.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
@@ -50,10 +49,15 @@ export function resolveRuntimeMode(value?: string): RuntimeMode {
 }
 
 function shouldUseNativeTaskClient(projectPath: string, runtimeMode: RuntimeMode): boolean {
-  const taskStoreMode = resolveTaskStoreMode();
-  if (taskStoreMode === "native") return true;
-  if (taskStoreMode === "beads") return false;
-  if (runtimeMode === "test") return projectHasNativeTasks(projectPath);
+  const forcedNative = (process.env.FOREMAN_TASK_STORE ?? "").trim().toLowerCase() === "native";
+  if (forcedNative || runtimeMode === "test") {
+    const store = ForemanStore.forProject(projectPath);
+    try {
+      return forcedNative || store.hasNativeTasks();
+    } finally {
+      store.close();
+    }
+  }
   return false;
 }
 
