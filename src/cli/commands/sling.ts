@@ -1,29 +1,24 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { readFileSync, existsSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { parseTrd } from "../../orchestrator/trd-parser.js";
 import { analyzeParallel } from "../../orchestrator/sprint-parallel.js";
 import { execute } from "../../orchestrator/sling-executor.js";
-import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { ForemanStore } from "../../lib/store.js";
+import { NativeTaskStore } from "../../lib/task-store.js";
 import type { SlingPlan, SlingOptions, SlingResult, ParallelResult } from "../../orchestrator/types.js";
 import { resolveProjectPathFromOption } from "./project-task-support.js";
 
-// ── TRD-021: --sd-only deprecation helper (exported for testing) ─────────
+// ── Legacy backend flag helpers (exported for testing) ────────────────────
 
 /**
- * Checks if --sd-only is set; if so, prints a deprecation warning to stderr
- * and clears the flag so the command behaves as br-only.
+ * Legacy helper retained for backward-compatibility tests.
  *
- * Returns true if the warning was emitted (flag was set), false otherwise.
- */
-/**
- * TRD-022: br-only is now the default write target.
- * When neither --sd-only nor --br-only is specified, br-only is used.
- * --br-only flag is retained but is now a no-op (already the default).
- *
- * Exported for testing.
+ * Historically sling defaulted to --br-only. Native task migration now ignores
+ * the backend-targeting flags, but this helper is retained so older callers and
+ * tests do not break while the flag surface remains accepted.
  */
 export function resolveDefaultBrOnly(opts: { sdOnly?: boolean; brOnly?: boolean }): void {
   if (!opts.sdOnly && !opts.brOnly) {
@@ -36,12 +31,16 @@ export function applySdOnlyDeprecation(opts: { sdOnly?: boolean; brOnly?: boolea
   process.stderr.write(
     chalk.yellow(
       "SLING-DEPRECATED: --sd-only is deprecated and will be removed in a future release. " +
-      "Foreman now uses br (beads_rust) exclusively. The flag is ignored.\n",
+      "Foreman now writes sling output to the native task store only. Legacy backend flags are ignored.\n",
     ),
   );
   opts.sdOnly = false;
-  opts.brOnly = true; // enforce br-only to match the deprecation message's promise
+  opts.brOnly = false;
   return true;
+}
+
+export function getSlingLegacyBackendFlagNotice(): string {
+  return "SLING-DEPRECATED: legacy backend-targeting flags are ignored; sling writes native tasks only.";
 }
 
 type SlingTargetingOptions = {
@@ -74,6 +73,39 @@ function resolveSlingProjectPath(opts: SlingTargetingOptions): string | null {
   return resolveProjectPathFromOption(opts.project);
 }
 
+export function shouldAnnounceNativeTaskMigration(projectPath: string): boolean {
+  const dbPath = join(projectPath, ".foreman", "foreman.db");
+  if (!existsSync(dbPath)) {
+    return false;
+  }
+
+  try {
+    const db = ForemanStore.openReadonly(projectPath);
+    try {
+      const row = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'")
+        .get() as { name: string } | undefined;
+      return !row;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+function openNativeTaskStore(projectPath: string): { store: ForemanStore; taskStore: NativeTaskStore } {
+  if (shouldAnnounceNativeTaskMigration(projectPath)) {
+    console.log(chalk.dim("Migrating task store to native format..."));
+  }
+
+  const store = ForemanStore.forProject(projectPath);
+  return {
+    store,
+    taskStore: new NativeTaskStore(store.getDb()),
+  };
+}
+
 // ── Preview display ──────────────────────────────────────────────────────
 
 function printSlingPlan(plan: SlingPlan, parallel: ParallelResult): void {
@@ -97,7 +129,6 @@ function printSlingPlan(plan: SlingPlan, parallel: ParallelResult): void {
     ),
   );
 
-  // Build parallel group lookup: sprintIndex → group label
   const sprintToGroup = new Map<number, string>();
   for (const group of parallel.groups) {
     for (const idx of group.sprintIndices) {
@@ -107,13 +138,14 @@ function printSlingPlan(plan: SlingPlan, parallel: ParallelResult): void {
 
   for (let si = 0; si < plan.sprints.length; si++) {
     const sprint = plan.sprints[si];
+    if (!sprint) continue;
     const sprintTasks = sprint.stories.reduce((sum, st) => sum + st.tasks.length, 0);
     const sprintHours = sprint.stories.reduce(
       (sum, st) => sum + st.tasks.reduce((ts, t) => ts + t.estimateHours, 0),
       0,
     );
     const groupLabel = sprintToGroup.get(si);
-    const prefix = groupLabel ? chalk.cyan(`║ `) : "  ";
+    const prefix = groupLabel ? chalk.cyan("║ ") : "  ";
     const groupTag = groupLabel ? chalk.cyan(` [parallel:${groupLabel}]`) : "";
     const priorityTag = chalk.dim(`[${sprint.priority}]`);
 
@@ -155,37 +187,34 @@ function printSlingPlan(plan: SlingPlan, parallel: ParallelResult): void {
     console.log();
   }
 
-  // Parallel groups summary
   if (parallel.groups.length > 0) {
     console.log(chalk.bold("Parallel Groups:"));
     for (const group of parallel.groups) {
       const sprintNames = group.sprintIndices
-        .map((i) => plan.sprints[i].title)
+        .map((i) => plan.sprints[i]?.title)
+        .filter((title): title is string => Boolean(title))
         .join(", ");
       console.log(`  ${chalk.cyan(group.label)}: ${sprintNames}`);
     }
     console.log();
   }
 
-  // Warnings
   if (parallel.warnings.length > 0) {
     console.log(chalk.yellow("Parallelization warnings:"));
-    for (const w of parallel.warnings) {
-      console.log(chalk.yellow(`  ⚠ ${w}`));
+    for (const warning of parallel.warnings) {
+      console.log(chalk.yellow(`  ⚠ ${warning}`));
     }
     console.log();
   }
 }
 
 function printSummary(result: SlingResult): void {
-  const parts: string[] = [];
-  if (result.sd) {
-    parts.push(`sd: ${result.sd.created} created, ${result.sd.skipped} skipped, ${result.sd.failed} failed`);
-  }
-  if (result.br) {
-    parts.push(`br: ${result.br.created} created, ${result.br.skipped} skipped, ${result.br.failed} failed`);
-  }
-  console.log(chalk.bold(`\nSummary: ${parts.join(" | ")}`));
+  const native = result.native;
+  console.log(
+    chalk.bold(
+      `\nSummary: native: ${native.created} created, ${native.skipped} skipped, ${native.failed} failed`,
+    ),
+  );
 
   if (result.depErrors.length > 0) {
     console.log(chalk.yellow(`\nDependency warnings (${result.depErrors.length}):`));
@@ -197,13 +226,10 @@ function printSummary(result: SlingResult): void {
     }
   }
 
-  const allErrors = [
-    ...(result.sd?.errors ?? []),
-    ...(result.br?.errors ?? []),
-  ].filter((e) => !e.includes("SLING-007"));
-  if (allErrors.length > 0) {
-    console.log(chalk.red(`\nErrors (${allErrors.length}):`));
-    for (const err of allErrors) {
+  const nonDependencyErrors = result.native.errors.filter((error) => !error.includes("SLING-007"));
+  if (nonDependencyErrors.length > 0) {
+    console.log(chalk.red(`\nErrors (${nonDependencyErrors.length}):`));
+    for (const err of nonDependencyErrors) {
       console.log(chalk.red(`  ✗ ${err}`));
     }
   }
@@ -212,16 +238,12 @@ function printSummary(result: SlingResult): void {
 // ── Progress spinner ─────────────────────────────────────────────────────
 
 function createProgressSpinner() {
-  let sdCount = 0;
-  let brCount = 0;
+  let processedCount = 0;
 
   return {
-    update(created: number, total: number, tracker: "sd" | "br") {
-      if (tracker === "sd") sdCount = created;
-      else brCount = created;
-
-      const totalCreated = sdCount + brCount;
-      const line = `Creating tasks... ${totalCreated} (sd: ${sdCount}, br: ${brCount})`;
+    update(processed: number, total: number, _tracker: "native") {
+      processedCount = processed;
+      const line = `Writing native tasks... ${processedCount}/${total}`;
       if (process.stdout.isTTY) {
         createInterface({ input: process.stdin, output: process.stdout });
         process.stdout.write(`\r${chalk.dim(line)}`);
@@ -238,19 +260,19 @@ function createProgressSpinner() {
 // ── CLI Commands ─────────────────────────────────────────────────────────
 
 const trdSubcommand = new Command("trd")
-  .description("Convert a TRD into task hierarchies in sd and br")
+  .description("Convert a TRD into native task hierarchies")
   .argument("<trd-file>", "Path to TRD markdown file")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path for advanced/scripted usage")
   .option("--dry-run", "Preview without creating tasks")
   .option("--auto", "Skip confirmation prompt")
   .option("--json", "Output parsed structure as JSON")
-  .option("--sd-only", "Write to beads_rust (br) only (deprecated, use --br-only)")
-  .option("--br-only", "Write to beads_rust (br) only")
+  .option("--sd-only", "Legacy no-op; sling now writes to the native task store only")
+  .option("--br-only", "Legacy no-op; sling now writes to the native task store only")
   .option("--skip-completed", "Skip [x] tasks (not created)")
   .option("--close-completed", "Create [x] tasks and immediately close them")
   .option("--no-parallel", "Disable parallel sprint detection")
-  .option("--force", "Recreate tasks even if trd:<ID> labels already exist")
+  .option("--force", "Refresh matching native tasks even if trd:<ID> already exists")
   .option("--no-risks", "Skip risk register parsing")
   .option("--no-quality", "Skip quality requirements parsing")
   .action(async (trdFile: string, opts: Record<string, boolean | string | undefined>) => {
@@ -263,7 +285,6 @@ const trdSubcommand = new Command("trd")
       return;
     }
 
-    // Read TRD file
     const resolved = isAbsolute(trdFile) ? resolve(trdFile) : resolve(projectPath, trdFile);
     if (!existsSync(resolved)) {
       console.error(chalk.red(`SLING-001: TRD file not found: ${resolved}`));
@@ -275,7 +296,6 @@ const trdSubcommand = new Command("trd")
     const lines = content.split("\n").length;
     console.log(chalk.dim(`Reading TRD: ${resolved} (${lines} lines)\n`));
 
-    // Parse
     let plan: SlingPlan;
     try {
       plan = parseTrd(content);
@@ -285,12 +305,10 @@ const trdSubcommand = new Command("trd")
       return;
     }
 
-    // Analyze parallelization
     const parallel = opts.parallel === false
       ? { groups: [], warnings: [] } as ParallelResult
       : analyzeParallel(plan, content);
 
-    // JSON output
     if (opts.json) {
       const output = {
         epic: plan.epic,
@@ -304,34 +322,32 @@ const trdSubcommand = new Command("trd")
       return;
     }
 
-    // Preview
     printSlingPlan(plan, parallel);
 
-    // Dry run?
+    const emittedSdNotice = applySdOnlyDeprecation(opts);
+    if (!emittedSdNotice && opts.brOnly) {
+      console.warn(chalk.yellow(`${getSlingLegacyBackendFlagNotice()} (--br-only)`));
+    }
+
+    // Retained for compatibility with older tests/callers; the native path does
+    // not consult these flags anymore.
+    resolveDefaultBrOnly(opts);
+
     if (opts.dryRun) {
-      console.log(chalk.dim("Dry run — no tasks created."));
+      console.log(chalk.dim("Migration note: sling is migrating task creation to the native task store."));
+      console.log(chalk.dim("Dry run — native task store preview only; no tasks created."));
+      console.log(chalk.dim("Sling now writes native backlog tasks that require explicit approval before dispatch."));
       return;
     }
 
-    // --sd-only is deprecated: warn and treat as no-op (br-only write)
-    applySdOnlyDeprecation(opts);
-
-    // TRD-022: br-only is the default when neither flag is set
-    resolveDefaultBrOnly(opts);
-
-    // Confirmation
     if (!opts.auto) {
-      const targets: string[] = [];
-      if (!opts.brOnly) targets.push("sd (beads)");
-      if (!opts.sdOnly) targets.push("br (beads_rust)");
-
-      const answer = await new Promise<string>((resolve) => {
+      const answer = await new Promise<string>((resolveAnswer) => {
         const rl = createInterface({ input: process.stdin, output: process.stdout });
         rl.question(
-          chalk.bold(`Create in ${targets.join(" + ")}? [y/N] `),
+          chalk.bold("Create native tasks in the project task store? [y/N] "),
           (ans) => {
             rl.close();
-            resolve(ans);
+            resolveAnswer(ans);
           },
         );
       });
@@ -341,7 +357,6 @@ const trdSubcommand = new Command("trd")
       }
     }
 
-    // Build options
     const slingOptions: SlingOptions = {
       dryRun: false,
       auto: !!opts.auto,
@@ -356,39 +371,21 @@ const trdSubcommand = new Command("trd")
       noQuality: opts.quality === false,
     };
 
-    // Detect available trackers
-    const seeds = null;
-    let beadsRust: BeadsRustClient | null = null;
-
-    if (!slingOptions.sdOnly) {
-      try {
-        beadsRust = new BeadsRustClient(projectPath);
-        await beadsRust.ensureBrInstalled();
-      } catch {
-        console.warn(chalk.yellow("SLING-004: br CLI not available — skipping beads_rust creation"));
-        beadsRust = null;
-      }
+    const { store, taskStore } = openNativeTaskStore(projectPath);
+    try {
+      const spinner = createProgressSpinner();
+      const result = await execute(
+        plan,
+        parallel,
+        slingOptions,
+        taskStore,
+        spinner.update,
+      );
+      spinner.finish();
+      printSummary(result);
+    } finally {
+      store.close();
     }
-
-    if (!beadsRust) {
-      console.error(chalk.red("SLING-005: br CLI not available. Cannot create tasks."));
-      process.exitCode = 1;
-      return;
-    }
-
-    const spinner = createProgressSpinner();
-    const result = await execute(
-      plan,
-      parallel,
-      slingOptions,
-      seeds,
-      beadsRust,
-      spinner.update,
-    );
-    spinner.finish();
-
-    // Summary
-    printSummary(result);
   });
 
 export const slingCommand = new Command("sling")

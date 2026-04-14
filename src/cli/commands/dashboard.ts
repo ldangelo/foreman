@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import {
   ForemanStore,
   type Project,
@@ -13,9 +13,7 @@ import {
   type NativeTask,
 } from "../../lib/store.js";
 import { elapsed, renderAgentCard, formatSuccessRate } from "../watch-ui.js";
-import { BeadsRustClient } from "../../lib/beads-rust.js";
-import type { BrIssue } from "../../lib/beads-rust.js";
-import type { Issue } from "../../lib/task-client.js";
+import { fetchTaskCounts } from "../../lib/task-client-factory.js";
 import { loadDashboardConfig } from "../../lib/project-config.js";
 
 // ── Task count helpers (for --simple mode) ───────────────────────────────
@@ -32,31 +30,10 @@ export interface DashboardTaskCounts {
 }
 
 /**
- * Fetch br task counts for the compact status view (used by --simple mode).
- * Returns zeros if br is not initialized or binary is missing.
+ * Fetch task counts for the compact status view (used by --simple mode).
  */
 export async function fetchDashboardTaskCounts(projectPath: string): Promise<DashboardTaskCounts> {
-  const brClient = new BeadsRustClient(projectPath);
-
-  let openIssues: BrIssue[] = [];
-  try { openIssues = await brClient.list(); } catch { /* br not available */ }
-
-  let closedIssues: BrIssue[] = [];
-  try { closedIssues = await brClient.list({ status: "closed" }); } catch { /* no closed */ }
-
-  let readyIssues: Issue[] = [];
-  try { readyIssues = await brClient.ready(); } catch { /* br ready failed */ }
-
-  const inProgress = openIssues.filter((i) => i.status === "in_progress").length;
-  const completed = closedIssues.length;
-  const readyIds = new Set(readyIssues.map((i) => i.id));
-  const ready = readyIssues.length;
-  const blocked = openIssues.filter(
-    (i) => i.status !== "in_progress" && !readyIds.has(i.id),
-  ).length;
-  const total = openIssues.length + completed;
-
-  return { total, ready, inProgress, completed, blocked };
+  return fetchTaskCounts(projectPath);
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────

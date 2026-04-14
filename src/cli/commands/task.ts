@@ -18,6 +18,9 @@
  */
 
 import { Command } from "commander";
+import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import {
@@ -121,6 +124,270 @@ function getTaskStore(projectPath: string): { store: ForemanStore; taskStore: Na
   const store = ForemanStore.forProject(projectPath);
   const taskStore = new NativeTaskStore(store.getDb());
   return { store, taskStore };
+}
+
+type ImportedBeadStatus = "open" | "in_progress" | "closed";
+
+interface ImportedBeadDependency {
+  issue_id?: string;
+  depends_on_id?: string;
+  type?: string;
+}
+
+interface ImportedBeadRecord {
+  id: string;
+  title: string;
+  description?: string | null;
+  status?: string;
+  priority?: number | string;
+  issue_type?: string;
+  type?: string;
+  created_at?: string;
+  updated_at?: string;
+  closed_at?: string;
+  dependencies?: ImportedBeadDependency[];
+}
+
+interface PreparedImportRecord {
+  nativeId: string;
+  bead: ImportedBeadRecord;
+  type: string;
+  priority: number;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  approvedAt: string | null;
+  closedAt: string | null;
+}
+
+export interface TaskImportResult {
+  imported: number;
+  duplicateSkips: number;
+  unsupportedStatusSkips: number;
+  jsonlPath: string;
+  preview: PreparedImportRecord[];
+}
+
+const IMPORTABLE_BEAD_STATUS_TO_TASK_STATUS: Record<ImportedBeadStatus, string> = {
+  open: "backlog",
+  in_progress: "ready",
+  closed: "merged",
+};
+
+function resolveBeadsImportPath(projectPath: string): string {
+  const candidates = [
+    join(projectPath, ".beads", "issues.jsonl"),
+    join(projectPath, ".beads", "beads.jsonl"),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    `No beads export found. Expected one of: ${candidates.join(", ")}`,
+  );
+}
+
+function parseBeadsJsonl(jsonlPath: string): ImportedBeadRecord[] {
+  const raw = readFileSync(jsonlPath, "utf8");
+  const lines = raw
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.map((line, index) => {
+    try {
+      return JSON.parse(line) as ImportedBeadRecord;
+    } catch (error) {
+      throw new Error(
+        `Invalid JSON in ${jsonlPath} at line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+}
+
+function normalizeImportedBeadPriority(
+  bead: ImportedBeadRecord,
+): number {
+  if (typeof bead.priority === "number") {
+    if (Number.isInteger(bead.priority) && bead.priority >= 0 && bead.priority <= 4) {
+      return bead.priority;
+    }
+    throw new Error(
+      `Bead '${bead.id}' has unsupported numeric priority '${bead.priority}'. Expected 0-4.`,
+    );
+  }
+
+  if (typeof bead.priority === "string") {
+    return parsePriority(bead.priority);
+  }
+
+  return 2;
+}
+
+function normalizeImportedBeadType(bead: ImportedBeadRecord): string {
+  const type = bead.type ?? bead.issue_type;
+  if (typeof type === "string" && type.trim().length > 0) {
+    return type;
+  }
+  return "task";
+}
+
+function mapImportedBeadStatus(status: string | undefined): string | null {
+  if (!status) return null;
+  return IMPORTABLE_BEAD_STATUS_TO_TASK_STATUS[status as ImportedBeadStatus] ?? null;
+}
+
+function summarizeImportPreview(records: PreparedImportRecord[]): void {
+  if (records.length === 0) {
+    console.log(chalk.dim("No importable beads found in the JSONL export."));
+    return;
+  }
+
+  console.log(chalk.bold("\n  Dry-run preview (first 5 tasks)\n"));
+  for (const record of records.slice(0, 5)) {
+    console.log(
+      `  ${chalk.dim(record.bead.id)} → ${record.nativeId.slice(0, 8)} ` +
+        `${chalk.cyan(record.status)} ` +
+        `${chalk.dim(`[${record.type}, ${priorityLabel(record.priority)}]`)} ` +
+        `${record.bead.title}`,
+    );
+  }
+  console.log();
+}
+
+export function performBeadsImport(
+  projectPath: string,
+  opts: { dryRun?: boolean } = {},
+): TaskImportResult {
+  const jsonlPath = resolveBeadsImportPath(projectPath);
+  const beads = parseBeadsJsonl(jsonlPath);
+  const { store, taskStore } = getTaskStore(projectPath);
+
+  try {
+    const db = store.getDb();
+    const now = new Date().toISOString();
+    const existingRows = db.prepare("SELECT id, title, external_id FROM tasks").all() as Array<{
+      id: string;
+      title: string;
+      external_id: string | null;
+    }>;
+
+    const existingByExternalId = new Map<string, string>();
+    const existingByTitle = new Map<string, string>();
+    for (const row of existingRows) {
+      if (row.external_id) {
+        existingByExternalId.set(row.external_id, row.id);
+      }
+      if (!existingByTitle.has(row.title)) {
+        existingByTitle.set(row.title, row.id);
+      }
+    }
+
+    const beadToNativeId = new Map<string, string>();
+    const prepared: PreparedImportRecord[] = [];
+    let duplicateSkips = 0;
+    let unsupportedStatusSkips = 0;
+
+    for (const bead of beads) {
+      const mappedStatus = mapImportedBeadStatus(bead.status);
+      if (!mappedStatus) {
+        unsupportedStatusSkips += 1;
+        continue;
+      }
+
+      const existingId = existingByExternalId.get(bead.id) ?? existingByTitle.get(bead.title);
+      if (existingId) {
+        duplicateSkips += 1;
+        beadToNativeId.set(bead.id, existingId);
+        continue;
+      }
+
+      const priority = normalizeImportedBeadPriority(bead);
+      const createdAt = bead.created_at ?? now;
+      const updatedAt = bead.updated_at ?? createdAt;
+      const approvedAt = mappedStatus === "ready" ? updatedAt : null;
+      const closedAt = mappedStatus === "merged" ? bead.closed_at ?? updatedAt : null;
+      const record: PreparedImportRecord = {
+        nativeId: randomUUID(),
+        bead,
+        type: normalizeImportedBeadType(bead),
+        priority,
+        status: mappedStatus,
+        createdAt,
+        updatedAt,
+        approvedAt,
+        closedAt,
+      };
+
+      prepared.push(record);
+      beadToNativeId.set(bead.id, record.nativeId);
+    }
+
+    if (!opts.dryRun) {
+      const insertTask = db.prepare(
+        `INSERT INTO tasks
+           (id, title, description, type, priority, status, external_id, created_at, updated_at, approved_at, closed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const insertDependency = db.prepare(
+        `INSERT OR IGNORE INTO task_dependencies (from_task_id, to_task_id, type)
+         VALUES (?, ?, ?)`,
+      );
+
+      const transaction = db.transaction(() => {
+        for (const record of prepared) {
+          insertTask.run(
+            record.nativeId,
+            record.bead.title,
+            record.bead.description ?? null,
+            record.type,
+            record.priority,
+            record.status,
+            record.bead.id,
+            record.createdAt,
+            record.updatedAt,
+            record.approvedAt,
+            record.closedAt,
+          );
+        }
+
+        for (const bead of beads) {
+          const fromTaskId = beadToNativeId.get(bead.id);
+          if (!fromTaskId || !Array.isArray(bead.dependencies)) continue;
+
+          for (const dependency of bead.dependencies) {
+            const dependencyType = dependency.type === "parent-child" ? "parent-child" : "blocks";
+            const blockerId = dependency.depends_on_id
+              ? beadToNativeId.get(dependency.depends_on_id)
+              : null;
+
+            if (!blockerId) continue;
+            if (taskStore.hasCyclicDependency(fromTaskId, blockerId)) {
+              throw new CircularDependencyError(fromTaskId, blockerId);
+            }
+
+            insertDependency.run(fromTaskId, blockerId, dependencyType);
+          }
+        }
+      });
+
+      transaction();
+    }
+
+    return {
+      imported: prepared.length,
+      duplicateSkips,
+      unsupportedStatusSkips,
+      jsonlPath,
+      preview: prepared,
+    };
+  } finally {
+    store.close();
+  }
 }
 
 // ── foreman task create ───────────────────────────────────────────────────────
@@ -522,6 +789,40 @@ const closeCommand = new Command("close")
     }
   });
 
+// ── foreman task import ───────────────────────────────────────────────────────
+
+const importCommand = new Command("import")
+  .description("Import legacy beads JSONL data into the native task store")
+  .requiredOption("--from-beads", "Import tasks from .beads/issues.jsonl or .beads/beads.jsonl")
+  .option("--dry-run", "Preview the first 5 mappings without writing to the database")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action((opts: { fromBeads: boolean; dryRun?: boolean; project?: string; projectPath?: string }) => {
+    const projectPath = resolveProjectPathFromOptions(opts);
+
+    try {
+      const result = performBeadsImport(projectPath, { dryRun: opts.dryRun });
+      if (opts.dryRun) {
+        summarizeImportPreview(result.preview);
+        console.log(
+          chalk.green(
+            `Would import ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id/title${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
+          ),
+        );
+        return;
+      }
+      console.log(
+        chalk.green(
+          `Imported ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id/title${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
+        ),
+      );
+      console.log(chalk.dim(`  Source: ${result.jsonlPath}`));
+    } catch (err) {
+      console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
+    }
+  });
+
 // ── foreman task dep ──────────────────────────────────────────────────────────
 
 const depAddCommand = new Command("add")
@@ -654,6 +955,7 @@ export const taskCommand = new Command("task")
   .addCommand(createCommand)
   .addCommand(listCommand)
   .addCommand(showCommand)
+  .addCommand(importCommand)
   .addCommand(approveCommand)
   .addCommand(updateCommand)
   .addCommand(closeCommand)

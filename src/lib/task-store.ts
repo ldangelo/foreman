@@ -269,6 +269,18 @@ export class NativeTaskStore {
     return row ?? null;
   }
 
+  /**
+   * Retrieve a single task by external_id. Returns null if not found.
+   *
+   * Used by native sling import to provide idempotent re-runs keyed by TRD IDs.
+   */
+  getByExternalId(externalId: string): TaskRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM tasks WHERE external_id = ?")
+      .get(externalId) as TaskRow | undefined;
+    return row ?? null;
+  }
+
   // ── Lifecycle operations ──────────────────────────────────────────────
 
   /**

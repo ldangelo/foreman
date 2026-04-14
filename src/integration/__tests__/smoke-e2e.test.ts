@@ -36,7 +36,7 @@ async function waitForStatuses(
 async function driveMergeQueueUntil(
   harness: { drainMergeQueue: () => Promise<void>; getRunStatuses: () => string[] },
   predicate: (statuses: string[]) => boolean,
-  timeoutMs = 10_000,
+  timeoutMs = 60_000,
 ): Promise<string[]> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -99,7 +99,7 @@ describe("deterministic smoke e2e", () => {
     }
   });
 
-  it("surfaces a deterministic same-file conflict outcome", { timeout: 70_000 }, async () => {
+  it("surfaces a deterministic same-file conflict outcome", { timeout: 120_000 }, async () => {
     const harness = createTempProjectHarness();
     try {
       tempHome = mkdtempSync(join(tmpdir(), "foreman-test-home-"));

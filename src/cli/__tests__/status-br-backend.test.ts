@@ -14,10 +14,14 @@ const {
   mockBrReady,
   MockBeadsRustClient,
   mockExecFileSync,
+  mockHasNativeTasks,
+  mockListTasksByStatus,
 } = vi.hoisted(() => {
   const mockGetTaskBackend = vi.fn().mockReturnValue("br");
   const mockBrList = vi.fn().mockResolvedValue([]);
   const mockBrReady = vi.fn().mockResolvedValue([]);
+  const mockHasNativeTasks = vi.fn().mockReturnValue(false);
+  const mockListTasksByStatus = vi.fn().mockReturnValue([]);
   const MockBeadsRustClient = vi.fn(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
     this.list = mockBrList;
     this.ready = mockBrReady;
@@ -29,6 +33,8 @@ const {
     mockBrReady,
     MockBeadsRustClient,
     mockExecFileSync,
+    mockHasNativeTasks,
+    mockListTasksByStatus,
   };
 });
 
@@ -51,6 +57,8 @@ vi.mock("../../lib/store.js", () => {
     this.getActiveRuns = vi.fn().mockReturnValue([]);
     this.getMetrics = vi.fn().mockReturnValue({ totalCost: 0, totalTokens: 0 });
     this.getRunsByStatusSince = vi.fn().mockReturnValue([]);
+    this.hasNativeTasks = mockHasNativeTasks;
+    this.listTasksByStatus = mockListTasksByStatus;
     this.close = vi.fn();
   });
   (Ctor as any).forProject = vi.fn((...args: unknown[]) => new (Ctor as any)(...args));
@@ -74,6 +82,8 @@ describe("TRD-019: status.ts backend selection via FOREMAN_TASK_BACKEND", () => 
     mockBrList.mockResolvedValue([]);
     mockBrReady.mockResolvedValue([]);
     mockExecFileSync.mockReturnValue(JSON.stringify([]));
+    mockHasNativeTasks.mockReturnValue(false);
+    mockListTasksByStatus.mockReturnValue([]);
   });
 
   afterEach(() => {
@@ -112,6 +122,8 @@ describe("TRD-019: fetchStatusCounts uses correct backend", () => {
     mockBrList.mockResolvedValue([]);
     mockBrReady.mockResolvedValue([]);
     mockExecFileSync.mockReturnValue(JSON.stringify([]));
+    mockHasNativeTasks.mockReturnValue(false);
+    mockListTasksByStatus.mockReturnValue([]);
   });
 
   afterEach(() => {
@@ -184,6 +196,39 @@ describe("TRD-019: fetchStatusCounts uses correct backend", () => {
     it("does not call execFileSync (sd binary) for br backend", async () => {
       await fetchStatusCounts(PROJECT_PATH);
       expect(mockExecFileSync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("when native tasks exist", () => {
+    beforeEach(() => {
+      mockHasNativeTasks.mockReturnValue(true);
+      mockListTasksByStatus.mockImplementation((statuses: string[]) => {
+        const rows = [
+          { id: "b1", status: "backlog" },
+          { id: "r1", status: "ready" },
+          { id: "p1", status: "in-progress" },
+          { id: "m1", status: "merged" },
+          { id: "c1", status: "closed" },
+          { id: "x1", status: "blocked" },
+          { id: "f1", status: "failed" },
+        ];
+        return rows.filter((row) => statuses.includes(row.status));
+      });
+    });
+
+    it("uses native task counts instead of br reads", async () => {
+      const counts = await fetchStatusCounts(PROJECT_PATH);
+
+      expect(counts).toEqual({
+        total: 7,
+        ready: 1,
+        inProgress: 1,
+        completed: 2,
+        blocked: 3,
+      });
+      expect(MockBeadsRustClient).not.toHaveBeenCalled();
+      expect(mockBrList).not.toHaveBeenCalled();
+      expect(mockBrReady).not.toHaveBeenCalled();
     });
   });
 

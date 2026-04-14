@@ -76,6 +76,46 @@ export class Doctor {
     return this.vcsBackendPromise;
   }
 
+  private getNativeTaskCount(): number {
+    try {
+      const row = this.store
+        .getDb()
+        .prepare("SELECT COUNT(*) as cnt FROM tasks")
+        .get() as { cnt: number } | undefined;
+      return row?.cnt ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  private getBeadsJsonlPath(): string | null {
+    const candidates = [
+      join(this.projectPath, ".beads", "issues.jsonl"),
+      join(this.projectPath, ".beads", "beads.jsonl"),
+    ];
+
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  private async getBeadsIssueCount(): Promise<number> {
+    const jsonlPath = this.getBeadsJsonlPath();
+    if (!jsonlPath) {
+      return 0;
+    }
+
+    const raw = await readFile(jsonlPath, "utf8");
+    return raw
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter(Boolean).length;
+  }
+
   // ── System checks ──────────────────────────────────────────────────
 
   async checkBrBinary(): Promise<CheckResult> {
@@ -88,6 +128,13 @@ export class Doctor {
         message: `Found at ${brPath}`,
       };
     } catch {
+      if (this.getNativeTaskCount() > 0) {
+        return {
+          name: "br (beads_rust) CLI binary",
+          status: "pass",
+          message: "beads (br) not found -- native task store active.",
+        };
+      }
       return {
         name: "br (beads_rust) CLI binary",
         status: "fail",
@@ -106,6 +153,13 @@ export class Doctor {
         message: `Found at ${bvPath}`,
       };
     } catch {
+      if (this.getNativeTaskCount() > 0) {
+        return {
+          name: "bv (beads_viewer) CLI binary",
+          status: "pass",
+          message: "beads_viewer (bv) not found -- native task store active.",
+        };
+      }
       return {
         name: "bv (beads_viewer) CLI binary",
         status: "fail",
@@ -470,10 +524,45 @@ export class Doctor {
         message: ".beads directory found",
       };
     }
+    if (this.getNativeTaskCount() > 0) {
+      return {
+        name: "beads (.beads/) initialized",
+        status: "skip",
+        message: "Native task store active — beads fallback not required",
+      };
+    }
     return {
       name: "beads (.beads/) initialized",
       status: "fail",
       message: `No .beads directory at ${beadsDir}. Run 'foreman init' first.`,
+    };
+  }
+
+  async checkTaskStoreMode(): Promise<CheckResult> {
+    const nativeTaskCount = this.getNativeTaskCount();
+    const beadsIssueCount = await this.getBeadsIssueCount();
+
+    if (nativeTaskCount > 0 && beadsIssueCount > 0) {
+      return {
+        name: "task store mode",
+        status: "warn",
+        message: `Task store: native (${nativeTaskCount} tasks)`,
+        details: "Both native task store and beads data exist. Run 'foreman task import --from-beads' and then remove .beads/ to complete migration.",
+      };
+    }
+
+    if (nativeTaskCount > 0) {
+      return {
+        name: "task store mode",
+        status: "pass",
+        message: `Task store: native (${nativeTaskCount} tasks)`,
+      };
+    }
+
+    return {
+      name: "task store mode",
+      status: "pass",
+      message: "Task store: beads (fallback)",
     };
   }
 
@@ -682,6 +771,7 @@ export class Doctor {
     // TRD-024: sd backend removed. Always check for .beads initialization.
     const results: CheckResult[] = [];
     results.push(await this.checkDatabaseFile());
+    results.push(await this.checkTaskStoreMode());
     results.push(await this.checkProjectRegistered());
     results.push(await this.checkBeadsInitialized());
     results.push(await this.checkPrompts(opts));

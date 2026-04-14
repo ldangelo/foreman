@@ -6,10 +6,8 @@ import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Metrics, Run, RunProgress } from "../../lib/store.js";
 import { renderAgentCard, formatSuccessRate } from "../watch-ui.js";
-import { BeadsRustClient } from "../../lib/beads-rust.js";
-import type { BrIssue } from "../../lib/beads-rust.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
-import type { Issue } from "../../lib/task-client.js";
+import { fetchTaskCounts } from "../../lib/task-client-factory.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
 import { pollDashboard, renderDashboard } from "./dashboard.js";
@@ -79,42 +77,10 @@ export interface StatusCounts {
 }
 
 /**
- * Fetch task status counts using the br backend.
- *
- * TRD-024: sd backend removed. Always uses BeadsRustClient (br CLI).
+ * Fetch task status counts using the shared task backend selector.
  */
 export async function fetchStatusCounts(projectPath: string): Promise<StatusCounts> {
-  const brClient = new BeadsRustClient(projectPath);
-
-  // Fetch open issues (all non-closed)
-  let openIssues: BrIssue[] = [];
-  try {
-    openIssues = await brClient.list();
-  } catch { /* br not initialized or binary missing — return zeros */ }
-
-  // Fetch closed issues separately (br list excludes closed by default)
-  let closedIssues: BrIssue[] = [];
-  try {
-    closedIssues = await brClient.list({ status: "closed" });
-  } catch { /* no closed issues */ }
-
-  // Fetch ready issues (open + unblocked)
-  let readyIssues: Issue[] = [];
-  try {
-    readyIssues = await brClient.ready();
-  } catch { /* br ready may fail */ }
-
-  const inProgress = openIssues.filter((i) => i.status === "in_progress").length;
-  const completed = closedIssues.length;
-  const ready = readyIssues.length;
-  // blocked = open issues that are not ready and not in_progress
-  const readyIds = new Set(readyIssues.map((i) => i.id));
-  const blocked = openIssues.filter(
-    (i) => i.status !== "in_progress" && !readyIds.has(i.id),
-  ).length;
-  const total = openIssues.length + completed;
-
-  return { total, ready, inProgress, completed, blocked };
+  return fetchTaskCounts(projectPath);
 }
 
 // ── Internal render helper ────────────────────────────────────────────────

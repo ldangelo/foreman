@@ -196,6 +196,13 @@ const BEADS_RUST_KNOWN_VIOLATIONS: Record<string, string> = {
   // Needs: change parameter type from BeadsRustClient to ITaskClient.
   "orchestrator/task-ordering.ts":
     "TRD-2026-007: parameter type → ITaskClient",
+
+  // Shared read-path/backend-selection helper currently owns the native-vs-beads
+  // fallback choice for status/dashboard and related call sites.
+  // Needs: collapse the concrete beads fallback into the final approved
+  // compatibility boundary once TRD-014 cleanup is fully complete.
+  "lib/task-client-factory.ts":
+    "TRD-014: shared backend-selection helper still instantiates BeadsRustClient fallback",
 };
 
 /** Test files (in __tests__/, or *.test.ts / *.spec.ts) are always exempt. */

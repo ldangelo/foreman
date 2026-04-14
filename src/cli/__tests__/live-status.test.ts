@@ -24,6 +24,8 @@ const {
   mockGetRunProgress,
   mockGetEvents,
   mockListProjects,
+  mockHasNativeTasks,
+  mockListTasksByStatus,
   MockForemanStore,
   mockPollDashboard,
   mockRenderDashboard,
@@ -52,6 +54,8 @@ const {
   const mockGetRunProgress = vi.fn().mockReturnValue(null);
   const mockGetEvents = vi.fn().mockReturnValue([]);
   const mockListProjects = vi.fn().mockReturnValue([]);
+  const mockHasNativeTasks = vi.fn().mockReturnValue(false);
+  const mockListTasksByStatus = vi.fn().mockReturnValue([]);
   const MockForemanStore = vi.fn(function MockForemanStoreImpl(this: Record<string, unknown>) {
     this.getProjectByPath = mockGetProjectByPath;
     this.getActiveRuns = mockGetActiveRuns;
@@ -61,10 +65,11 @@ const {
     this.getRunProgress = mockGetRunProgress;
     this.getEvents = mockGetEvents;
     this.listProjects = mockListProjects;
+    this.hasNativeTasks = mockHasNativeTasks;
+    this.listTasksByStatus = mockListTasksByStatus;
     this.getProject = vi.fn().mockReturnValue(null);
     this.close = vi.fn();
   });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
   // Dashboard function mocks (used by status --live tests)
@@ -93,6 +98,8 @@ const {
     mockGetRunProgress,
     mockGetEvents,
     mockListProjects,
+    mockHasNativeTasks,
+    mockListTasksByStatus,
     MockForemanStore,
     mockPollDashboard,
     mockRenderDashboard,
@@ -220,6 +227,8 @@ describe("fetchDashboardTaskCounts()", () => {
     });
     mockBrList.mockResolvedValue([]);
     mockBrReady.mockResolvedValue([]);
+    mockHasNativeTasks.mockReturnValue(false);
+    mockListTasksByStatus.mockReturnValue([]);
   });
 
   it("returns zero counts when br returns empty lists", async () => {
@@ -268,6 +277,33 @@ describe("fetchDashboardTaskCounts()", () => {
     // Should still return counts (ready = 0 due to failure)
     expect(counts.total).toBe(1);
     expect(counts.ready).toBe(0);
+  });
+
+  it("uses native task counts when native tasks exist", async () => {
+    mockHasNativeTasks.mockReturnValue(true);
+    mockListTasksByStatus.mockImplementation((statuses: string[]) => {
+      const rows = [
+        { id: "b1", status: "backlog" },
+        { id: "r1", status: "ready" },
+        { id: "p1", status: "in-progress" },
+        { id: "m1", status: "merged" },
+        { id: "c1", status: "closed" },
+        { id: "x1", status: "blocked" },
+        { id: "s1", status: "stuck" },
+      ];
+      return rows.filter((row) => statuses.includes(row.status));
+    });
+
+    const counts = await fetchDashboardTaskCounts("/mock/project");
+
+    expect(counts).toEqual({
+      total: 7,
+      ready: 1,
+      inProgress: 1,
+      completed: 2,
+      blocked: 3,
+    });
+    expect(MockBeadsRustClient).not.toHaveBeenCalled();
   });
 });
 
