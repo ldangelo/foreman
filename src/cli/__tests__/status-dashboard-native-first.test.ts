@@ -73,6 +73,20 @@ describe("native-first task count regression targets", () => {
     vi.stubEnv("FOREMAN_TASK_STORE", "native");
     mockHasNativeTasks.mockReturnValue(true);
     mockListTasksByStatus.mockImplementation((statuses: string[]) => {
+      if (
+        statuses.includes("ready")
+        && statuses.includes("in-progress")
+        && statuses.includes("closed")
+        && statuses.includes("blocked")
+      ) {
+        return [
+          { id: "t-ready", status: "ready" },
+          { id: "t-running", status: "in-progress" },
+          { id: "t-done", status: "closed" },
+          { id: "t-blocked", status: "blocked" },
+          { id: "t-backlog", status: "backlog" },
+        ];
+      }
       if (statuses.includes("ready")) return [{ id: "t-ready" }];
       if (statuses.includes("in-progress")) return [{ id: "t-running" }];
       if (statuses.includes("closed") || statuses.includes("merged")) return [{ id: "t-done" }];
@@ -118,6 +132,20 @@ describe("native-first task count regression targets", () => {
     vi.stubEnv("FOREMAN_TASK_STORE", "native");
     mockHasNativeTasks.mockReturnValue(true);
     mockListTasksByStatus.mockImplementation((statuses: string[]) => {
+      if (
+        statuses.includes("ready")
+        && statuses.includes("in-progress")
+        && statuses.includes("closed")
+        && statuses.includes("blocked")
+      ) {
+        return [
+          { id: "t-ready", status: "ready" },
+          { id: "t-ready-2", status: "ready" },
+          { id: "t-running", status: "in-progress" },
+          { id: "t-done", status: "closed" },
+          { id: "t-blocked", status: "blocked" },
+        ];
+      }
       if (statuses.includes("ready")) return [{ id: "t-ready" }, { id: "t-ready-2" }];
       if (statuses.includes("in-progress")) return [{ id: "t-running" }];
       if (statuses.includes("closed") || statuses.includes("merged")) return [{ id: "t-done" }];
