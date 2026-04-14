@@ -1,7 +1,5 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
@@ -30,8 +28,6 @@ export async function createMergeTaskClient(projectPath: string): Promise<ITaskC
   const { taskClient } = await createTaskClient(projectPath, { ensureBrInstalled: true });
   return taskClient;
 }
-
-const execFileAsync = promisify(execFile);
 
 async function createMergeVcsBackend(projectPath: string): Promise<VcsBackend> {
   const projectCfg = loadProjectConfig(projectPath);
