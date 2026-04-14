@@ -45,7 +45,7 @@ export async function retryAction(
     return 1;
   }
 
-  // 2. Look up bead via BeadsRustClient
+  // 2. Look up bead via the active task client
   let bead: Awaited<ReturnType<ITaskClient["show"]>>;
   try {
     bead = await beadsClient.show(beadId);
