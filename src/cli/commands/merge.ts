@@ -3,8 +3,8 @@ import chalk from "chalk";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
+import { createTaskClient } from "../../lib/task-client-factory.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
@@ -27,10 +27,8 @@ import { syncBeadStatusAfterMerge } from "../../orchestrator/auto-merge.js";
  * Throws if the br binary cannot be found.
  */
 export async function createMergeTaskClient(projectPath: string): Promise<ITaskClient> {
-  const brClient = new BeadsRustClient(projectPath);
-  // Verify binary exists before proceeding; throws with a friendly message if not
-  await brClient.ensureBrInstalled();
-  return brClient;
+  const { taskClient } = await createTaskClient(projectPath, { ensureBrInstalled: true });
+  return taskClient;
 }
 
 const execFileAsync = promisify(execFile);

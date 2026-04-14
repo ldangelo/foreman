@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { Monitor } from "../../orchestrator/monitor.js";
@@ -33,9 +33,9 @@ export const monitorCommand = new Command("monitor")
     try {
       const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
       const projectPath = await vcs.getRepoRoot(process.cwd());
-      const seeds = new BeadsRustClient(projectPath);
+      const { taskClient } = await createTaskClient(projectPath, { ensureBrInstalled: true });
       const store = ForemanStore.forProject(projectPath);
-      const monitor = new Monitor(store, seeds, projectPath, vcs);
+      const monitor = new Monitor(store, taskClient, projectPath, vcs);
 
       if (!opts.json) {
         console.log(chalk.bold("Checking agent status...\n"));

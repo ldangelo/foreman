@@ -126,16 +126,6 @@ const BEADS_RUST_KNOWN_VIOLATIONS: Record<string, string> = {
   "cli/commands/doctor.ts":
     "TRD-014: health-check instantiation → use ITaskClient or binary helper",
 
-  // Factory function `getMergeTaskClient()` returns concrete BeadsRustClient.
-  // Needs: return ITaskClient and update call-sites to use the interface.
-  "cli/commands/merge.ts":
-    "TRD-014: getMergeTaskClient() return type → ITaskClient",
-
-  // Direct instantiation for monitor loop.
-  // Needs: receive ITaskClient from a factory/DI rather than importing directly.
-  "cli/commands/monitor.ts":
-    "TRD-014: direct instantiation → inject ITaskClient",
-
   // Factory function `getPlanTaskClient()` returns concrete BeadsRustClient.
   // Decision: migrate-now; this path creates fresh planning work and should
   // stop emitting new beads as part of the native backend transition.
