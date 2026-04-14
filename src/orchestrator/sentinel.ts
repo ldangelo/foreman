@@ -9,7 +9,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import type { ForemanStore } from "../lib/store.js";
-import type { ITaskClient, Issue } from "../lib/task-client.js";
+import type { Issue } from "../lib/task-client.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
 
