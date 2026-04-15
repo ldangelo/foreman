@@ -30,6 +30,7 @@ const {
   MockRefinery,
   mockDetectDefaultBranch,
   mockTaskClientUpdate,
+  mockVcsCreate,
 } = vi.hoisted(() => {
   const mockExecFileSync = vi.fn().mockReturnValue(Buffer.from(""));
   const mockGetProjectByPath = vi.fn().mockReturnValue(null);
@@ -59,6 +60,9 @@ const {
 
   const mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
   const mockTaskClientUpdate = vi.fn().mockResolvedValue(undefined);
+  const mockVcsCreate = vi.fn().mockResolvedValue({
+    detectDefaultBranch: mockDetectDefaultBranch,
+  });
 
   return {
     mockExecFileSync,
@@ -74,6 +78,7 @@ const {
     MockRefinery,
     mockDetectDefaultBranch,
     mockTaskClientUpdate,
+    mockVcsCreate,
   };
 });
 
@@ -104,8 +109,10 @@ vi.mock("../merge-queue.js", () => ({
   RETRY_CONFIG: { maxRetries: 3, initialDelayMs: 60_000, maxDelayMs: 3_600_000, backoffMultiplier: 2 },
 }));
 vi.mock("../refinery.js", () => ({ Refinery: MockRefinery }));
-vi.mock("../../lib/git.js", () => ({
-  detectDefaultBranch: mockDetectDefaultBranch,
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: (...args: unknown[]) => mockVcsCreate(...args),
+  },
 }));
 
 import { autoMerge, type AutoMergeOpts } from "../auto-merge.js";
@@ -153,6 +160,7 @@ function resetMocks(): void {
 
   mockExecFileSync.mockReturnValue(Buffer.from(""));
   mockDetectDefaultBranch.mockResolvedValue("main");
+  mockVcsCreate.mockResolvedValue({ detectDefaultBranch: mockDetectDefaultBranch });
   mockGetProjectByPath.mockReturnValue({ id: "proj-1", path: "/mock/project" });
   mockGetDb.mockReturnValue({});
   mockGetRun.mockReturnValue({ id: "run-001", status: "merged" });

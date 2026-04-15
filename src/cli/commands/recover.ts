@@ -20,7 +20,7 @@ import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run, Message } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { loadAndInterpolate } from "../../orchestrator/template-loader.js";
 import { getHighspeedModel } from "../../lib/config.js";
@@ -164,7 +164,8 @@ export const recoverCommand = new Command("recover")
       process.exit(1);
     }
 
-    const projectPath = await getRepoRoot(process.cwd());
+    const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+    const projectPath = await vcs.getRepoRoot(process.cwd());
     const store = ForemanStore.forProject(projectPath);
 
     // Find runs for this seed

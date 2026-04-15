@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -34,12 +34,6 @@ vi.mock("node:os", async (importOriginal) => {
 
 // Mock heavy dependencies not needed for drain tests
 vi.mock("../pi-sdk-runner.js", () => ({ runWithPiSdk: vi.fn() }));
-vi.mock("../../lib/git.js", () => ({
-  createWorktree: vi.fn(),
-  gitBranchExists: vi.fn(),
-  getCurrentBranch: vi.fn().mockResolvedValue("main"),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
-}));
 vi.mock("../../lib/bv.js", () => ({}));
 vi.mock("../../lib/workflow-loader.js", () => ({
   loadWorkflowConfig: vi.fn(),
@@ -87,6 +81,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "bead-drain-test-"));
+    mkdirSync(join(tmpDir, ".beads"), { recursive: true });
     store = ForemanStore.forProject(tmpDir);
     dispatcher = makeDispatcher(store, tmpDir);
     mockExecFileSync.mockReset();

@@ -67,7 +67,7 @@ Foreman creates isolated environments for each task. In git these are **worktree
 | Remove workspace | `git worktree remove --force <path>` | `jj workspace forget <name>` |
 | List workspaces | `git worktree list` | `jj workspace list` |
 
-**Location:** Both backends place workspaces at `.foreman-worktrees/<seedId>` relative to the project root.
+**Location:** Both backends now place workspaces in Foreman's external workspace root by default (for example `../.foreman-worktrees/<repo-name>/<seedId>`), so parent-repo state writes do not dirty active workspaces.
 
 **Branch naming:** The foreman branch/bookmark is always named `foreman/<seedId>` on both backends.
 

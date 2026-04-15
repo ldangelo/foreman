@@ -1,32 +1,29 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { createTaskClient } from "../../lib/task-client-factory.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
-import { getRepoRoot, getCurrentBranch, checkoutBranch, detectDefaultBranch } from "../../lib/git.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { existsSync, readdirSync } from "node:fs";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
-import type { UpdateOptions } from "../../lib/task-client.js";
+import type { ITaskClient } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { deleteWorkerConfigFile } from "../../orchestrator/dispatcher.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { StateMismatch } from "../../lib/run-status.js";
+import { getWorkspaceRoot } from "../../lib/workspace-paths.js";
 // Re-export for callers that import these from this module (backward compatibility).
 export { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 export type { StateMismatch } from "../../lib/run-status.js";
 
 /**
  * Minimal interface capturing the subset of task-client methods used by
- * detectAndFixMismatches. BeadsRustClient satisfies this interface
- * (note: show() is not on ITaskClient, hence this local type).
+ * detectAndFixMismatches.
  */
-export interface IShowUpdateClient {
-  show(id: string): Promise<{ status: string }>;
-  update(id: string, opts: UpdateOptions): Promise<void>;
-}
+export type IShowUpdateClient = Pick<ITaskClient, "show" | "update">;
 
 // ── Stale-branch detection types ─────────────────────────────────────────────
 
@@ -181,7 +178,8 @@ export async function detectAndHandleStaleBranches(
   // Detect the target branch once (e.g. "dev" or "main") — used for all checks.
   let targetBranch: string;
   try {
-    targetBranch = await detectDefaultBranch(projectPath);
+    const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+    targetBranch = await vcs.detectDefaultBranch(projectPath);
   } catch {
     targetBranch = "dev";
   }
@@ -497,6 +495,8 @@ export const resetCommand = new Command("reset")
     String(PIPELINE_LIMITS.stuckDetectionMinutes),
   )
   .option("--dry-run", "Show what would be reset without doing it")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts, cmd) => {
     const dryRun = opts.dryRun as boolean | undefined;
     const all = opts.all as boolean | undefined;
@@ -517,14 +517,15 @@ export const resetCommand = new Command("reset")
     }
 
     try {
-      const projectPath = await getRepoRoot(process.cwd());
+      const projectPath = await resolveRepoRootProjectPath(opts);
       const vcs = await VcsBackendFactory.create({ backend: 'auto' }, projectPath);
       // Save current branch so we can restore it after worktree/branch cleanup,
       // which can change HEAD as a side effect of git worktree remove / branch -D.
       let originalBranch: string | undefined;
-      try { originalBranch = await getCurrentBranch(projectPath); } catch { /* ignore */ }
+      try { originalBranch = await vcs.getCurrentBranch(projectPath); } catch { /* ignore */ }
 
-      const seeds: IShowUpdateClient = new BeadsRustClient(projectPath);
+      const { taskClient } = await createTaskClient(projectPath);
+      const seeds: IShowUpdateClient = taskClient;
       const store = ForemanStore.forProject(projectPath);
       const project = store.getProjectByPath(projectPath);
 
@@ -785,7 +786,7 @@ export const resetCommand = new Command("reset")
       //     no SQLite run record OR only have completed/merged runs (finalize should remove them
       //     but sometimes fails to do so)
       if (!dryRun) {
-        const worktreesDir = `${projectPath}/.foreman-worktrees`;
+        const worktreesDir = getWorkspaceRoot(projectPath);
         if (existsSync(worktreesDir)) {
           // Paths that still have truly active runs (pending or running) — keep these.
           // "failed" and "stuck" are terminal states: their agents have stopped, so
@@ -937,9 +938,9 @@ export const resetCommand = new Command("reset")
       // change HEAD as a side effect.
       if (originalBranch) {
         try {
-          const currentBranch = await getCurrentBranch(projectPath);
+          const currentBranch = await vcs.getCurrentBranch(projectPath);
           if (currentBranch !== originalBranch) {
-            await checkoutBranch(projectPath, originalBranch);
+            await vcs.checkoutBranch(projectPath, originalBranch);
             console.log(chalk.dim(`Restored branch: ${originalBranch}`));
           }
         } catch {

@@ -13,7 +13,7 @@ import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { request as httpRequest } from "node:http";
-import { runWithPiSdk } from "./pi-sdk-runner.js";
+import { runPhaseSession } from "./phase-runner.js";
 import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
 import type { EpicTask } from "./pipeline-executor.js";
@@ -26,15 +26,17 @@ import {
   getDisallowedTools,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { detectDefaultBranch } from "../lib/git.js";
-import { enqueueResetSeedToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
+import { enqueueResetSeedToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead, enqueueCloseSeed } from "./task-backend-ops.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
+import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
+import { createTaskClient } from "../lib/task-client-factory.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { autoMerge } from "./auto-merge.js";
-import { BeadsRustClient } from "../lib/beads-rust.js";
+import type { ITaskClient } from "../lib/task-client.js";
+import { NativeTaskClient } from "../lib/native-task-client.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
-import { GitBackend } from "../lib/vcs/git-backend.js";
+import type { VcsBackend } from "../lib/vcs/interface.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -175,6 +177,37 @@ function releaseFiles(
   });
 }
 
+interface EpicTaskClient extends Pick<ITaskClient, "update" | "close"> {
+  create(
+    title: string,
+    opts: {
+      type: string;
+      priority: string;
+      parent?: string;
+      description?: string;
+      labels?: string[];
+    },
+  ): Promise<{ id: string }>;
+}
+
+async function createRuntimeTaskClient(projectPath: string): Promise<ITaskClient> {
+  const runtimeMode = process.env.FOREMAN_RUNTIME_MODE?.trim().toLowerCase();
+  if (runtimeMode === "test") {
+    return new NativeTaskClient(projectPath);
+  }
+  return (await createTaskClient(projectPath)).taskClient;
+}
+
+/**
+ * Epic QA bug filing still relies on beads create/close semantics.
+ * Keep that compatibility boundary explicit until create support is promoted
+ * into a shared task-client abstraction.
+ */
+async function createEpicTaskClient(projectPath: string): Promise<EpicTaskClient> {
+  const beadsModule = await import("../lib/beads-rust.js");
+  return new beadsModule.BeadsRustClient(projectPath);
+}
+
 // ── Module-level phase tracker ───────────────────────────────────────────────
 // Updated by main() and runPipeline() as phases progress so the fatal error
 // handler can report the correct phase in its Agent Mail message.
@@ -253,7 +286,7 @@ async function main(): Promise<void> {
 
   // Resolve the project-local store path from the config, falling back to the
   // parent of the worktree directory if projectPath is not provided.
-  const storeProjectPath = configProjectPath ?? join(worktreePath, "..", "..");
+  const storeProjectPath = configProjectPath ?? inferProjectPathFromWorkspacePath(worktreePath);
 
   // Set up logging
   const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
@@ -343,12 +376,21 @@ async function main(): Promise<void> {
 
   try {
     // Build clean env for Pi (strip CLAUDECODE, convert to string-only map)
-    const piResult = await runWithPiSdk({
+    const piResult = await runPhaseSession({
       prompt,
       systemPrompt: `You are an agent working on task: ${seedTitle}`,
       cwd: worktreePath,
       model,
       logFile,
+      context: {
+        phaseName: "worker",
+        seedId,
+        seedTitle,
+        seedType: config.seedType,
+        seedDescription: config.seedDescription,
+        worktreePath,
+        targetBranch: config.targetBranch,
+      },
       onToolCall: (name: string, input: Record<string, unknown>) => {
         progress.toolCalls++;
         progress.toolBreakdown[name] = (progress.toolBreakdown[name] ?? 0) + 1;
@@ -485,7 +527,7 @@ async function runPhase(
   }
 
   try {
-    const phaseResult = await runWithPiSdk({
+    const phaseResult = await runPhaseSession({
       prompt,
       systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
       cwd: config.worktreePath,
@@ -493,6 +535,15 @@ async function runPhase(
       allowedTools: roleConfig.allowedTools,
       customTools,
       logFile,
+      context: {
+        phaseName: role,
+        seedId: config.seedId,
+        seedTitle: config.seedTitle,
+        seedType: config.seedType,
+        seedDescription: config.seedDescription,
+        worktreePath: config.worktreePath,
+        targetBranch: config.targetBranch,
+      },
       onToolCall: (name, input) => {
         progress.toolCalls++;
         progress.toolBreakdown[name] = (progress.toolBreakdown[name] ?? 0) + 1;
@@ -578,20 +629,20 @@ async function runTroubleshooterPhase(
   const onFailure = workflowConfig.onFailure;
   if (!onFailure) return false;
 
-  const { runId, seedId, seedTitle } = config;
-  log(`[TROUBLESHOOTER] Activating for ${seedId} — failure context: ${failureContext.slice(0, 120)}`);
+  const { runId, seedId: beadId, seedTitle: beadTitle } = config;
+  log(`[TROUBLESHOOTER] Activating for ${beadId} — failure context: ${failureContext.slice(0, 120)}`);
 
   // Build a basic troubleshooter prompt with failure context injected
   const prompt = [
     `# Troubleshooter Agent`,
     ``,
-    `**Seed:** ${seedId} — ${seedTitle}`,
+    `**Bead:** ${beadId} — ${beadTitle}`,
     `**Run ID:** ${runId}`,
     `**Failure Context:**`,
     failureContext,
     ``,
     `Use get_run_status, read artifacts, and apply fixes. Write TROUBLESHOOT_REPORT.md when done.`,
-    `Include "RESOLVED" in the report if the failure was fixed, or "ESCALATED" if not.`,
+    `Use bead terminology in your notes. Include "RESOLVED" in the report if the failure was fixed, or "ESCALATED" if not.`,
   ].join("\n");
 
   const roleConfig = ROLE_CONFIGS.troubleshooter;
@@ -599,20 +650,29 @@ async function runTroubleshooterPhase(
 
   const customTools: import("@mariozechner/pi-coding-agent").ToolDefinition[] = [];
   if (agentMailClient) {
-    customTools.push(createSendMailTool(agentMailClient, `troubleshooter-${seedId}`));
+    customTools.push(createSendMailTool(agentMailClient, `troubleshooter-${beadId}`));
   }
   customTools.push(createGetRunStatusTool(store));
   customTools.push(createCloseBeadTool(pipelineProjectPath));
 
   try {
-    const result = await runWithPiSdk({
+    const result = await runPhaseSession({
       prompt,
-      systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for task: ${seedTitle}`,
+      systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for bead: ${beadTitle}`,
       cwd: config.worktreePath,
       model: resolvedModel,
       allowedTools: roleConfig.allowedTools,
       customTools,
       logFile,
+      context: {
+        phaseName: "troubleshooter",
+        seedId: beadId,
+        seedTitle: beadTitle,
+        seedType: config.seedType,
+        seedDescription: config.seedDescription,
+        worktreePath: config.worktreePath,
+        targetBranch: config.targetBranch,
+      },
       onToolCall: () => { /* no-op */ },
       onTurnEnd: () => { /* no-op */ },
     });
@@ -627,7 +687,7 @@ async function runTroubleshooterPhase(
       const report = rfs(pathJoin(config.worktreePath, "TROUBLESHOOT_REPORT.md"), "utf-8");
       const troubleshooterResolved = report.includes("RESOLVED");
       if (troubleshooterResolved) {
-        log(`[TROUBLESHOOTER] PIPELINE RECOVERED for ${seedId}`);
+        log(`[TROUBLESHOOTER] PIPELINE RECOVERED for ${beadId}`);
         await appendFile(logFile, `[TROUBLESHOOTER] PIPELINE RECOVERED\n`);
         return true;
       }
@@ -647,7 +707,7 @@ async function runTroubleshooterPhase(
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
 async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string, notifyClient: NotificationClient, agentMailClient: AnyMailClient | null): Promise<void> {
-  const pipelineProjectPath = config.projectPath ?? join(config.worktreePath, "..", "..");
+  const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(config.worktreePath);
   const resolvedWorkflow = resolveWorkflowName(config.seedType ?? "feature", config.seedLabels);
   // Load the workflow config (phase sequence + per-phase overrides).
   let workflowConfig: WorkflowConfig;
@@ -659,16 +719,6 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     throw err;
   }
 
-  // Ensure targetBranch is set so finalize rebases onto the correct branch.
-  // If not provided by the dispatcher, detect the default branch (e.g. dev).
-  if (!config.targetBranch) {
-    try {
-      config.targetBranch = await detectDefaultBranch(pipelineProjectPath);
-    } catch {
-      // Non-fatal: falls back to "main" in buildPhasePrompt
-    }
-  }
-
   // Create a NativeTaskStore from the same DB for phase-level visibility (REQ-012).
   // updatePhase() is called after each successful phase transition.
   // No-op when config.taskId is absent (beads fallback mode — REQ-017).
@@ -676,7 +726,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
   // Initialize VCS backend for prompt templating (TRD-026, TRD-027).
   // Reconstructed from FOREMAN_VCS_BACKEND env var set by dispatcher.
-  let vcsBackend;
+  let vcsBackend: VcsBackend | undefined;
   try {
     vcsBackend = await VcsBackendFactory.fromEnv(
       pipelineProjectPath,
@@ -686,6 +736,16 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
   } catch {
     // Non-fatal: falls back to git defaults in buildPhasePrompt
     log(`[PIPELINE] VCS backend init failed — using prompt defaults`);
+  }
+
+  // Ensure targetBranch is set so finalize rebases onto the correct branch.
+  // If not provided by the dispatcher, detect the default branch from the active backend.
+  if (!config.targetBranch && vcsBackend) {
+    try {
+      config.targetBranch = await vcsBackend.detectDefaultBranch(pipelineProjectPath);
+    } catch {
+      // Non-fatal: falls back to "main" in buildPhasePrompt
+    }
   }
 
   // Delegate to the generic workflow-driven executor.
@@ -710,23 +770,23 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
     // Epic mode: sync child task bead status into br as the pipeline progresses.
     async onTaskStatusChange(taskSeedId, status) {
-      const seeds = new BeadsRustClient(pipelineProjectPath);
+      const taskClient = await createRuntimeTaskClient(pipelineProjectPath);
       if (status === "in_progress") {
-        await seeds.update(taskSeedId, { status: "in_progress" });
+        await taskClient.update(taskSeedId, { status: "in_progress" });
         log(`[EPIC] br update ${taskSeedId} → in_progress`);
       } else if (status === "completed") {
-        await seeds.close(taskSeedId, "Completed via epic pipeline");
+        await taskClient.close(taskSeedId, "Completed via epic pipeline");
         log(`[EPIC] br close ${taskSeedId} (completed)`);
       } else if (status === "failed") {
-        await seeds.update(taskSeedId, { status: "failed" });
+        await taskClient.update(taskSeedId, { status: "failed" });
         log(`[EPIC] br update ${taskSeedId} → failed`);
       }
     },
 
     // Epic mode: create a bug bead when QA fails on a child task.
     async onTaskQaFailure(taskSeedId, taskTitle, epicId) {
-      const seeds = new BeadsRustClient(pipelineProjectPath);
-      const bug = await seeds.create(`QA failure: ${taskTitle}`, {
+      const epicTaskClient = await createEpicTaskClient(pipelineProjectPath);
+      const bug = await epicTaskClient.create(`QA failure: ${taskTitle}`, {
         type: "bug",
         priority: "1",
         parent: epicId,
@@ -738,8 +798,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
     // Epic mode: close a bug bead when QA passes on retry.
     async onTaskQaPass(bugBeadId) {
-      const seeds = new BeadsRustClient(pipelineProjectPath);
-      await seeds.close(bugBeadId, "QA passed on retry");
+      const epicTaskClient = await createEpicTaskClient(pipelineProjectPath);
+      await epicTaskClient.close(bugBeadId, "QA passed on retry");
       log(`[EPIC] Closed bug bead ${bugBeadId} (QA passed on retry)`);
     },
 
@@ -768,95 +828,119 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     // Finalize post-processing: determine push success, enqueue to merge queue, update run status.
     // P0 fix: Only send branch-ready if pipeline succeeded AND we're at the finalize phase.
     async onPipelineComplete({ progress, success }) {
-      // Guard: only send branch-ready if pipeline completed successfully at finalize phase.
-      // This prevents sending branch-ready when Explorer or other phases fail.
-      if (!success || progress.currentPhase !== "finalize") {
+      // Guard: only finalize post-processing when the pipeline reached finalize.
+      // Earlier phase failures are already handled by markStuck().
+      if (progress.currentPhase !== "finalize") {
         log(`[FINALIZE] Skipping branch-ready: success=${String(success)}, currentPhase=${progress.currentPhase}`);
         return;
       }
       const { runId, projectId, seedId, seedTitle, worktreePath } = config;
 
       // Read finalize outcome from agent mail.
-      let finalizeSucceeded = false;
+      let finalizeSucceeded = success;
       let finalizeRetryable = true;
+      let finalizeFailureReason = success ? "" : "finalize_validation_failed";
       if (agentMailClient) {
         const foremanMsgs = await agentMailClient.fetchInbox("foreman");
         const finalizeSender = `finalize-${seedId}`;
-        const finalizeMsg = foremanMsgs.find(
+        const finalizeMsgs = foremanMsgs.filter(
           (m) => (m.subject === "phase-complete" || m.subject === "agent-error") &&
                   (m.from === finalizeSender || m.from === "finalize"),
         );
-        if (finalizeMsg?.subject === "phase-complete") {
-          finalizeSucceeded = true;
-          log(`[FINALIZE] phase-complete mail received — push succeeded`);
-        } else if (finalizeMsg?.subject === "agent-error") {
-          const body = (() => { try { return JSON.parse(finalizeMsg.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
+        const nonRetryableError = finalizeMsgs.find((m) => {
+          if (m.subject !== "agent-error") return false;
+          try {
+            const body = JSON.parse(m.body ?? "{}") as Record<string, unknown>;
+            return body["retryable"] === false;
+          } catch {
+            return false;
+          }
+        });
+        const finalizePhaseComplete = finalizeMsgs.find((m) => m.subject === "phase-complete");
+
+        if (nonRetryableError) {
+          const body = (() => { try { return JSON.parse(nonRetryableError.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
+          finalizeRetryable = false;
+          finalizeSucceeded = false;
+          finalizeFailureReason = typeof body["error"] === "string"
+            ? body["error"]
+            : "finalize_non_retryable_error";
+          log(`[FINALIZE] non-retryable agent-error mail received — error: ${finalizeFailureReason}`);
+        } else if (finalizePhaseComplete?.subject === "phase-complete") {
+          const body = (() => { try { return JSON.parse(finalizePhaseComplete.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
+          const status = typeof body["status"] === "string" ? body["status"] : "complete";
           finalizeRetryable = body["retryable"] !== false;
-          const errorDetail = typeof body["error"] === "string" ? body["error"] : "unknown finalize error";
-          log(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
+          finalizeSucceeded = status === "complete" || status === "completed" || status === "success";
+          if (!finalizeSucceeded) {
+            finalizeFailureReason = typeof body["note"] === "string"
+              ? body["note"]
+              : "finalize_phase_reported_failed_status";
+          }
+          log(`[FINALIZE] phase-complete mail received — status=${status}, retryable=${String(finalizeRetryable)}`);
+        } else {
+          const finalizeAgentError = finalizeMsgs.find((m) => m.subject === "agent-error");
+          if (finalizeAgentError?.subject === "agent-error") {
+            const body = (() => { try { return JSON.parse(finalizeAgentError.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
+            finalizeRetryable = body["retryable"] !== false;
+            const errorDetail = typeof body["error"] === "string" ? body["error"] : "unknown finalize error";
+            finalizeFailureReason = errorDetail;
+            log(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
 
-          // Special case: "nothing to commit" may be normal when a worktree is
-          // reused from a previous run (commits already exist). Check if the
-          // branch has commits ahead of the target — if so, the work is done.
-          // Also handle verification/test beads which genuinely have no changes.
-          if (errorDetail === "nothing_to_commit") {
-            const beadType = config.seedType ?? "";
-            const beadTitle = config.seedTitle ?? "";
-            const isVerificationBead = beadType === "test" ||
-              /verify|validate|test/i.test(beadTitle);
+            if (errorDetail === "nothing_to_commit") {
+              const beadType = config.seedType ?? "";
+              const beadTitle = config.seedTitle ?? "";
+              const isVerificationBead = beadType === "test" ||
+                /verify|validate|test/i.test(beadTitle);
 
-            // Check if branch has commits ahead of target (reused worktree scenario).
-            // Try multiple refs: the remote target branch may not exist if it hasn't
-            // been pushed yet. Fall back to the local branch, then origin/dev.
-            let hasCommitsAhead = false;
-            {
-              const candidates: string[] = [];
-              if (config.targetBranch) {
-                candidates.push(`origin/${config.targetBranch}`, config.targetBranch);
-              }
-              candidates.push("origin/dev", "origin/main");
-              const aheadBackend = new GitBackend(worktreePath);
-              for (const ref of candidates) {
-                try {
-                  // Use VcsBackend.getChangedFiles() as a proxy for checking if
-                  // HEAD has any commits ahead of the given ref. Three-dot
-                  // semantics are used for consistency with the rest of the VCS layer.
-                  const changedFiles = await aheadBackend.getChangedFiles(worktreePath, ref, "HEAD");
-                  hasCommitsAhead = changedFiles.length > 0;
-                  break; // First valid ref wins
-                } catch {
-                  // Ref doesn't exist or git failed — try next
+              let hasCommitsAhead = false;
+              {
+                const candidates: string[] = [];
+                if (config.targetBranch) {
+                  candidates.push(`origin/${config.targetBranch}`, config.targetBranch);
+                }
+                candidates.push("origin/dev", "origin/main");
+                const aheadBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
+                for (const ref of candidates) {
+                  try {
+                    const changedFiles = await aheadBackend.getChangedFiles(worktreePath, ref, "HEAD");
+                    hasCommitsAhead = changedFiles.length > 0;
+                    break;
+                  } catch {
+                    // Ref doesn't exist or git failed — try next
+                  }
                 }
               }
-            }
 
-            if (hasCommitsAhead) {
-              finalizeSucceeded = true;
-              log(`[FINALIZE] nothing_to_commit but branch has prior commits — treating as success (reused worktree)`);
-            } else if (isVerificationBead) {
-              finalizeSucceeded = true;
-              log(`[FINALIZE] nothing_to_commit on verification bead (type="${beadType}", title="${beadTitle}") — treating as success`);
-            } else {
-              // The pipeline passed developer + QA + reviewer — all phases
-              // succeeded. If finalize finds nothing to commit and no commits
-              // ahead, the work was already merged into the target branch
-              // (e.g. from a previous run). The developer report confirms it.
-              // Treat as success rather than getting stuck in a reset loop.
-              finalizeSucceeded = true;
-              log(`[FINALIZE] nothing_to_commit and no commits ahead — work already on target branch, treating as success`);
+              if (hasCommitsAhead) {
+                finalizeSucceeded = true;
+                log(`[FINALIZE] nothing_to_commit but branch has prior commits — treating as success (reused worktree)`);
+              } else if (isVerificationBead) {
+                finalizeSucceeded = true;
+                log(`[FINALIZE] nothing_to_commit on verification bead (type="${beadType}", title="${beadTitle}") — treating as success`);
+              } else {
+                finalizeSucceeded = true;
+                log(`[FINALIZE] nothing_to_commit and no commits ahead — work already on target branch, treating as success`);
+              }
             }
+          } else {
+            // No finalize-specific mail — preserve the pipeline success result.
+            // A finalize FAIL verdict may not emit phase-complete or agent-error
+            // mail, so assuming success here can incorrectly enqueue failed runs
+            // to the merge queue and send branch-ready.
+            log(`[FINALIZE] No finalize mail found — preserving pipeline success=${String(finalizeSucceeded)}`);
           }
-        } else {
-          // No finalize-specific mail — assume success if all phases completed
-          finalizeSucceeded = true;
-          log(`[FINALIZE] No finalize mail found — assuming success`);
         }
-      } else {
-        finalizeSucceeded = true;
       }
 
       // ── Troubleshooter: attempt recovery on failure ──────────────────────
-      const troubleshooterEnabled = !finalizeSucceeded && !!workflowConfig.onFailure;
+      const shouldSkipTroubleshooter =
+        !finalizeSucceeded &&
+        !finalizeRetryable &&
+        finalizeFailureReason === "tests_failed_pre_existing_issues";
+      if (shouldSkipTroubleshooter) {
+        log("[TROUBLESHOOTER] Skipping for non-retryable pre-existing finalize test failures");
+      }
+      const troubleshooterEnabled = !finalizeSucceeded && !!workflowConfig.onFailure && !shouldSkipTroubleshooter;
       let troubleshooterResolved = false;
       if (troubleshooterEnabled) {
         const failureContext = `Pipeline failed at finalize phase. finalizeRetryable=${String(finalizeRetryable)}`;
@@ -883,75 +967,120 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         store.updateRun(runId, { status: "completed", completed_at: now });
         notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
 
-        try {
-          const enqueueStore = ForemanStore.forProject(pipelineProjectPath);
-          // Pre-compute modified files via VcsBackend (async) before calling
-          // enqueueToMergeQueue which expects a synchronous getFilesModified callback.
-          let enqueueFiles: string[] = [];
+        let skipMergeQueue = false;
+        if (troubleshooterResolved) {
           try {
-            const enqueueBackend = new GitBackend(worktreePath);
-            const enqueueDefaultBranch = await detectDefaultBranch(worktreePath);
-            enqueueFiles = await enqueueBackend.getChangedFiles(worktreePath, enqueueDefaultBranch, "HEAD");
-          } catch {
-            // Non-fatal — proceed with empty file list
-          }
-          const enqueueResult = enqueueToMergeQueue({
-            db: enqueueStore.getDb(),
-            seedId,
-            runId,
-            worktreePath,
-            getFilesModified: () => enqueueFiles,
-          });
-          enqueueStore.close();
-          if (enqueueResult.success) {
-            log(`[FINALIZE] Enqueued to merge queue`);
-            // Guard: Only send branch-ready after successful finalize push (double-check).
-            // Primary guard is at function entry, this is defense-in-depth.
-            sendMail(agentMailClient, "refinery", "branch-ready", {
-              seedId, runId, branch: `foreman/${seedId}`, worktreePath,
-            });
-
-            // Trigger autoMerge immediately so the branch is merged even if
-            // `foreman run` is no longer active (fixes: bd-0qv2).
-            try {
-              const mergeStore = ForemanStore.forProject(pipelineProjectPath);
-              const mergeTaskClient = new BeadsRustClient(pipelineProjectPath);
-              log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}${config.targetBranch ? ` → ${config.targetBranch}` : ""}`);
-              const mergeResult = await autoMerge({
-                store: mergeStore,
-                taskClient: mergeTaskClient,
-                projectPath: pipelineProjectPath,
-                targetBranch: config.targetBranch,
-              });
-              mergeStore.close();
-              log(`[FINALIZE] autoMerge result: merged=${mergeResult.merged} conflicts=${mergeResult.conflicts} failed=${mergeResult.failed}`);
-            } catch (mergeErr: unknown) {
-              const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-              log(`[FINALIZE] autoMerge failed (non-fatal): ${mergeMsg}`);
+            const completionBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
+            const completionTargetBranch = config.targetBranch ?? await completionBackend.detectDefaultBranch(worktreePath);
+            const changedAgainstTarget = await completionBackend.getChangedFiles(worktreePath, completionTargetBranch, "HEAD");
+            if (changedAgainstTarget.length === 0) {
+              skipMergeQueue = true;
+              log(`[FINALIZE] Branch already matches ${completionTargetBranch} after troubleshooter recovery — skipping branch-ready/merge queue`);
+              enqueueCloseSeed(store, seedId, "agent-worker-finalize");
             }
-          } else {
-            log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error ?? "(unknown)"}`);
+          } catch (alreadyMergedErr: unknown) {
+            const alreadyMergedMsg = alreadyMergedErr instanceof Error ? alreadyMergedErr.message : String(alreadyMergedErr);
+            log(`[FINALIZE] Unable to verify post-troubleshooter merge state (continuing with merge queue): ${alreadyMergedMsg}`);
           }
-        } catch (enqErr: unknown) {
-          const enqMsg = enqErr instanceof Error ? enqErr.message : String(enqErr);
-          log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqMsg}`);
+        }
+
+        if (!skipMergeQueue) {
+          try {
+            const enqueueStore = ForemanStore.forProject(pipelineProjectPath);
+            // Pre-compute modified files via VcsBackend (async) before calling
+            // enqueueToMergeQueue which expects a synchronous getFilesModified callback.
+            let enqueueFiles: string[] = [];
+            try {
+              const enqueueBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
+              const enqueueDefaultBranch = await enqueueBackend.detectDefaultBranch(worktreePath);
+              enqueueFiles = await enqueueBackend.getChangedFiles(worktreePath, enqueueDefaultBranch, "HEAD");
+            } catch {
+              // Non-fatal — proceed with empty file list
+            }
+            const enqueueResult = enqueueToMergeQueue({
+              db: enqueueStore.getDb(),
+              seedId,
+              runId,
+              worktreePath,
+              getFilesModified: () => enqueueFiles,
+            });
+            enqueueStore.close();
+            if (enqueueResult.success) {
+              log(`[FINALIZE] Enqueued to merge queue`);
+              // Guard: Only send branch-ready after successful finalize push (double-check).
+              // Primary guard is at function entry, this is defense-in-depth.
+              sendMail(agentMailClient, "refinery", "branch-ready", {
+                seedId, runId, branch: `foreman/${seedId}`, worktreePath,
+              });
+
+              // Trigger autoMerge immediately so the branch is merged even if
+              // `foreman run` is no longer active (fixes: bd-0qv2).
+              try {
+                const mergeStore = ForemanStore.forProject(pipelineProjectPath);
+                const mergeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
+                log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}${config.targetBranch ? ` → ${config.targetBranch}` : ""}`);
+                const mergeResult = await autoMerge({
+                  store: mergeStore,
+                  taskClient: mergeTaskClient,
+                  projectPath: pipelineProjectPath,
+                  targetBranch: config.targetBranch,
+                });
+                mergeStore.close();
+                log(`[FINALIZE] autoMerge result: merged=${mergeResult.merged} conflicts=${mergeResult.conflicts} failed=${mergeResult.failed}`);
+              } catch (mergeErr: unknown) {
+                const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+                log(`[FINALIZE] autoMerge failed (non-fatal): ${mergeMsg}`);
+              }
+            } else {
+              log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error ?? "(unknown)"}`);
+            }
+          } catch (enqErr: unknown) {
+            const enqMsg = enqErr instanceof Error ? enqErr.message : String(enqErr);
+            log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqMsg}`);
+          }
         }
       } else {
-        store.updateRun(runId, { status: "stuck", completed_at: now });
-        notifyClient.send({ type: "status", runId, status: "stuck", timestamp: now });
-        sendMail(agentMailClient, "foreman", "agent-error", {
-          seedId, phase: "finalize", error: "Push failed", retryable: finalizeRetryable,
-        });
-        if (finalizeRetryable) {
-          enqueueResetSeedToOpen(store, seedId, "agent-worker-finalize");
-        } else {
-          log(`[PIPELINE] Deterministic push failure for ${seedId} — seed left stuck (no reset to open)`);
+        let alreadyLandedOnTarget = false;
+        if (!finalizeRetryable && finalizeFailureReason === "tests_failed_pre_existing_issues") {
+          try {
+            const completionBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
+            const completionTargetBranch = config.targetBranch ?? await completionBackend.detectDefaultBranch(worktreePath);
+            const changedAgainstTarget = await completionBackend.getChangedFiles(worktreePath, completionTargetBranch, "HEAD");
+            if (changedAgainstTarget.length === 0) {
+              alreadyLandedOnTarget = true;
+              store.updateRun(runId, { status: "merged", completed_at: now });
+              notifyClient.send({ type: "status", runId, status: "merged", timestamp: now });
+              enqueueCloseSeed(store, seedId, "agent-worker-finalize");
+              log(`[FINALIZE] Pre-existing test failures but branch already matches ${completionTargetBranch} — treating bead as merged`);
+            }
+          } catch (alreadyMergedErr: unknown) {
+            const alreadyMergedMsg = alreadyMergedErr instanceof Error ? alreadyMergedErr.message : String(alreadyMergedErr);
+            log(`[FINALIZE] Unable to verify whether pre-existing test failure run already landed on target: ${alreadyMergedMsg}`);
+          }
+        }
+
+        if (!alreadyLandedOnTarget) {
+          const terminalStatus = finalizeRetryable ? "stuck" : "failed";
+          store.updateRun(runId, { status: terminalStatus, completed_at: now });
+          notifyClient.send({ type: "status", runId, status: terminalStatus, timestamp: now });
+          sendMail(agentMailClient, "foreman", "agent-error", {
+            seedId,
+            phase: "finalize",
+            error: finalizeFailureReason || "Finalize failed",
+            retryable: finalizeRetryable,
+          });
+          if (finalizeRetryable) {
+            enqueueResetSeedToOpen(store, seedId, "agent-worker-finalize");
+          } else {
+            enqueueMarkBeadFailed(store, seedId, "agent-worker-finalize");
+            log(`[PIPELINE] Deterministic finalize failure for ${seedId} — marking failed without retry`);
+          }
         }
       }
 
       // Log terminal event
       const completedPhases = workflowConfig.phases.map((p) => p.name).join("→");
-      store.logEvent(projectId, finalizeSucceeded ? "complete" : "stuck", {
+      store.logEvent(projectId, finalizeSucceeded ? "complete" : (finalizeRetryable ? "stuck" : "fail"), {
         seedId,
         title: seedTitle,
         costUsd: progress.costUsd,
@@ -1074,7 +1203,7 @@ async function fatalHandler(err: unknown): Promise<void> {
     const cfg = JSON.parse(raw) as Partial<WorkerConfig>;
     runId = cfg.runId;
     seedId = cfg.seedId;
-    projectPath = cfg.projectPath ?? (cfg.worktreePath ? join(cfg.worktreePath, "..", "..") : undefined);
+    projectPath = cfg.projectPath ?? (cfg.worktreePath ? inferProjectPathFromWorkspacePath(cfg.worktreePath) : undefined);
   } catch {
     // Config already deleted (worker started successfully but crashed later).
     // We cannot recover context from disk at this point.

@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 
 import { ForemanStore } from "../lib/store.js";
 import type { Run } from "../lib/store.js";
-import { listWorktrees, removeWorktree, branchExistsOnOrigin, detectDefaultBranch } from "../lib/git.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -17,6 +16,8 @@ import { findMissingPrompts, installBundledPrompts, findMissingSkills, installBu
 import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig } from "../lib/project-config.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
+import type { VcsBackend } from "../lib/vcs/interface.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -50,6 +51,7 @@ function isSDKBasedRun(sessionKey: string | null): boolean {
 export class Doctor {
   private mergeQueue?: MergeQueue;
   private taskClient?: ITaskClient;
+  private vcsBackendPromise?: Promise<VcsBackend>;
   /**
    * Injected execFile-like function used only by `isBranchMerged`.
    * Defaults to the real `execFileAsync`; can be overridden in tests to avoid
@@ -69,6 +71,51 @@ export class Doctor {
     this.execFn = execFn ?? (execFileAsync as ExecFileAsyncFn);
   }
 
+  private getVcsBackend(): Promise<VcsBackend> {
+    this.vcsBackendPromise ??= VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
+    return this.vcsBackendPromise;
+  }
+
+  private getNativeTaskCount(): number {
+    try {
+      const row = this.store
+        .getDb()
+        .prepare("SELECT COUNT(*) as cnt FROM tasks")
+        .get() as { cnt: number } | undefined;
+      return row?.cnt ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  private getBeadsJsonlPath(): string | null {
+    const candidates = [
+      join(this.projectPath, ".beads", "issues.jsonl"),
+      join(this.projectPath, ".beads", "beads.jsonl"),
+    ];
+
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  private async getBeadsIssueCount(): Promise<number> {
+    const jsonlPath = this.getBeadsJsonlPath();
+    if (!jsonlPath) {
+      return 0;
+    }
+
+    const raw = await readFile(jsonlPath, "utf8");
+    return raw
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter(Boolean).length;
+  }
+
   // ── System checks ──────────────────────────────────────────────────
 
   async checkBrBinary(): Promise<CheckResult> {
@@ -81,6 +128,13 @@ export class Doctor {
         message: `Found at ${brPath}`,
       };
     } catch {
+      if (this.getNativeTaskCount() > 0) {
+        return {
+          name: "br (beads_rust) CLI binary",
+          status: "pass",
+          message: "beads (br) not found -- native task store active.",
+        };
+      }
       return {
         name: "br (beads_rust) CLI binary",
         status: "fail",
@@ -99,6 +153,13 @@ export class Doctor {
         message: `Found at ${bvPath}`,
       };
     } catch {
+      if (this.getNativeTaskCount() > 0) {
+        return {
+          name: "bv (beads_viewer) CLI binary",
+          status: "pass",
+          message: "beads_viewer (bv) not found -- native task store active.",
+        };
+      }
       return {
         name: "bv (beads_viewer) CLI binary",
         status: "fail",
@@ -294,7 +355,7 @@ export class Doctor {
 
     let defaultBranch: string;
     try {
-      defaultBranch = await detectDefaultBranch(this.projectPath);
+      defaultBranch = await (await this.getVcsBackend()).detectDefaultBranch(this.projectPath);
     } catch {
       return {
         name: "git town main branch configured",
@@ -463,10 +524,45 @@ export class Doctor {
         message: ".beads directory found",
       };
     }
+    if (this.getNativeTaskCount() > 0) {
+      return {
+        name: "beads (.beads/) initialized",
+        status: "skip",
+        message: "Native task store active — beads fallback not required",
+      };
+    }
     return {
       name: "beads (.beads/) initialized",
       status: "fail",
       message: `No .beads directory at ${beadsDir}. Run 'foreman init' first.`,
+    };
+  }
+
+  async checkTaskStoreMode(): Promise<CheckResult> {
+    const nativeTaskCount = this.getNativeTaskCount();
+    const beadsIssueCount = await this.getBeadsIssueCount();
+
+    if (nativeTaskCount > 0 && beadsIssueCount > 0) {
+      return {
+        name: "task store mode",
+        status: "warn",
+        message: `Task store: native (${nativeTaskCount} tasks)`,
+        details: "Both native task store and beads data exist. Run 'foreman task import --from-beads' and then remove .beads/ to complete migration.",
+      };
+    }
+
+    if (nativeTaskCount > 0) {
+      return {
+        name: "task store mode",
+        status: "pass",
+        message: `Task store: native (${nativeTaskCount} tasks)`,
+      };
+    }
+
+    return {
+      name: "task store mode",
+      status: "pass",
+      message: "Task store: beads (fallback)",
     };
   }
 
@@ -675,6 +771,7 @@ export class Doctor {
     // TRD-024: sd backend removed. Always check for .beads initialization.
     const results: CheckResult[] = [];
     results.push(await this.checkDatabaseFile());
+    results.push(await this.checkTaskStoreMode());
     results.push(await this.checkProjectRegistered());
     results.push(await this.checkBeadsInitialized());
     results.push(await this.checkPrompts(opts));
@@ -691,7 +788,7 @@ export class Doctor {
 
     let worktrees;
     try {
-      worktrees = await listWorktrees(this.projectPath);
+      worktrees = await (await this.getVcsBackend()).listWorkspaces(this.projectPath);
     } catch {
       results.push({
         name: "orphaned worktrees",
@@ -772,7 +869,7 @@ export class Doctor {
         } else if (fix) {
           try {
             await archiveWorktreeReports(this.projectPath, wt.path, seedId).catch(() => {});
-            await removeWorktree(this.projectPath, wt.path);
+            await (await this.getVcsBackend()).removeWorkspace(this.projectPath, wt.path);
             try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
             results.push({
               name: `worktree: ${seedId}`,
@@ -822,7 +919,7 @@ export class Doctor {
         // Check if the branch exists on origin before removing locally.
         // NOTE: Uses locally-cached remote-tracking refs; does NOT network-fetch.
         // Run `git fetch` first if you need an authoritative answer.
-        const onOrigin = await branchExistsOnOrigin(this.projectPath, wt.branch);
+        const onOrigin = await (await this.getVcsBackend()).branchExistsOnRemote(this.projectPath, wt.branch);
         if (onOrigin) {
           // Branch exists on origin — never auto-remove regardless of fix/dryRun.
           const dryRunSuffix = dryRun ? " (dry-run: would not remove either way)" : "";
@@ -840,7 +937,7 @@ export class Doctor {
         } else if (fix) {
           try {
             await archiveWorktreeReports(this.projectPath, wt.path, seedId).catch(() => {});
-            await removeWorktree(this.projectPath, wt.path);
+            await (await this.getVcsBackend()).removeWorkspace(this.projectPath, wt.path);
             try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
             results.push({
               name: `worktree: ${seedId}`,
@@ -1054,7 +1151,7 @@ export class Doctor {
     // Detect the default branch once; fall back gracefully on errors.
     let defaultBranch: string;
     try {
-      defaultBranch = await detectDefaultBranch(this.projectPath);
+      defaultBranch = await (await this.getVcsBackend()).detectDefaultBranch(this.projectPath);
     } catch {
       defaultBranch = "main";
     }

@@ -10,13 +10,13 @@ Multi-agent coding orchestrator. Decomposes development work into parallelizable
 
 You already have AI coding agents. What you don't have is a way to run several of them simultaneously on the same codebase without them stepping on each other. Foreman solves this:
 
-- **Work decomposition** — PRD → TRD → beads (structured, dependency-aware tasks)
+- **Work decomposition** — PRD → TRD → native tasks (with beads compatibility fallback)
 - **Git isolation** — each agent gets its own worktree (zero conflicts during development)
 - **Pipeline phases** — Explorer → Developer ↔ QA → Reviewer → Finalize
 - **Pi SDK runtime** — agents run in-process via `@mariozechner/pi-coding-agent` SDK (`createAgentSession`)
 - **Built-in messaging** — SQLite-backed inter-agent messaging with native `send_mail` tool, phase lifecycle notifications, and file reservations
 - **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
-- **Progress tracking** — every task, agent, and phase tracked in SQLite + beads_rust
+- **Progress tracking** — every task, agent, and phase tracked in SQLite, with beads fallback where needed
 
 ## Architecture
 
@@ -49,7 +49,7 @@ Foreman CLI / Dispatcher
 2. **Developer** (Sonnet, 80 turns, read+write) — implementation + tests
 3. **QA** (Sonnet, 30 turns, read+bash) — test verification → `QA_REPORT.md`
 4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
-5. **Finalize** — git add/commit/push, br close
+5. **Finalize** — git add/commit/push, native task merge/close update (or beads fallback)
 
 Dev ↔ QA retries up to 2x before proceeding to Review.
 
@@ -63,7 +63,7 @@ flowchart TD
         A[User runs foreman run] --> B[Dispatcher.dispatch]
         B --> C{Check agent slots\navailable?}
         C -- No slots --> DONE[Return: skipped]
-        C -- Slots open --> D[br ready — fetch unblocked beads]
+        C -- Slots open --> D[native ready tasks or br fallback]
         D --> E{bv client\navailable?}
         E -- Yes --> F[bv.robotTriage → score + sort by AI recommendation]
         E -- No --> G[Sort by priority P0→P4]
@@ -154,7 +154,7 @@ flowchart TD
 
         subgraph P5["Phase 5: Finalize"]
             P5A[git add, commit, push\nforeman/bead-id branch]
-            P5A --> P5B[br close bead]
+            P5A --> P5B[native task merge/close update or br fallback]
             P5B --> P5C[Enqueue to MergeQueue\nmail branch-ready to merge-agent]
         end
     end
@@ -185,7 +185,7 @@ flowchart TD
 ## Prerequisites
 
 - **Node.js 20+**
-- **[beads_rust](https://github.com/Dicklesworthstone/beads_rust)** (`br`) — task tracking CLI
+- **[beads_rust](https://github.com/Dicklesworthstone/beads_rust)** (`br`) — compatibility fallback for legacy task flows
   ```bash
   cargo install beads_rust
   # or: download binary to ~/.local/bin/br
@@ -227,8 +227,7 @@ foreman --version
 foreman doctor              # Check dependencies (br, API key, etc.)
 ```
 
-> **Also required:** [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for task tracking:
-> `cargo install beads_rust` or download the binary to `~/.local/bin/br`
+> **Migration note:** `br` is still recommended during the transition period for compatibility/fallback flows. Native-task projects can use most Foreman paths without it, but keeping `br` installed avoids surprises on legacy paths.
 
 ## Quick Start
 
@@ -237,9 +236,11 @@ foreman doctor              # Check dependencies (br, API key, etc.)
 cd ~/your-project
 foreman init --name my-project
 
-# 2. Create tasks (beads)
-br create --title "Add user auth" --description "Implement JWT-based auth" --type feature --priority 1
-br create --title "Write auth tests" --type task --priority 2
+# 2. Create or import tasks
+foreman task create "Add user auth" --type feature --priority 1
+foreman task create "Write auth tests" --type task --priority 2
+# or migrate an existing beads project
+foreman task import --from-beads
 
 # 3. Dispatch agents to ready tasks
 foreman run
@@ -287,7 +288,7 @@ The pipeline executor also sends lifecycle messages automatically (phase-started
 
 ```bash
 foreman inbox                     # Latest run's messages
-foreman inbox --bead bd-abc1      # Messages for a specific bead
+foreman inbox --bead bd-abc1      # Messages for a specific task/bead
 foreman inbox --all --watch       # Live stream across all runs
 foreman debug <bead-id>           # AI analysis including full mail timeline
 ```
@@ -363,6 +364,7 @@ Dispatch AI coding agents to ready tasks. Enters a watch loop that auto-merges c
 
 ```bash
 foreman run                              # Dispatch to all ready tasks
+foreman run --project my-project         # Dispatch without cd into a registered project
 foreman run --bead bd-abc               # Dispatch one specific task
 foreman run --max-agents 3               # Limit concurrent agents
 foreman run --model claude-opus-4-6      # Override model for all agents
@@ -377,12 +379,15 @@ Each agent gets:
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
-Show current task and agent status.
+Show current task and agent status, or aggregate across projects from the dashboard/status surfaces.
 
 ```bash
 foreman status
+foreman status --project my-project      # Inspect a registered project without cd
 foreman status --watch                   # Live-updating display
 ```
+
+Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `--project <name-or-path>`. Registered names resolve through `~/.foreman/projects.json`; absolute paths still work for direct one-off targeting.
 
 ### `foreman merge`
 Merge completed work branches back to main. Runs automatically in the `foreman run` loop.
@@ -396,7 +401,7 @@ foreman merge --test-command "npm test"  # Custom test command
 
 Auto-merge tiers (T1–T4):
 - **T1**: Fast-forward or trivial rebase — no conflicts
-- **T2**: Auto-resolve report-file conflicts (`.beads/`, `EXPLORER_REPORT.md`, etc.)
+- **T2**: Auto-resolve report-file conflicts (`.beads/` compatibility data, `EXPLORER_REPORT.md`, etc.)
 - **T3**: AI-assisted conflict resolution via Pi session
 - **T4**: Create PR for human review (true code conflicts)
 
@@ -411,7 +416,7 @@ foreman plan --prd-only "Build a REST API"    # Stop after PRD
 ```
 
 ### `foreman sling trd`
-Parse a TRD and create seeds + beads task hierarchy.
+Parse a TRD and create a native task hierarchy (or compatibility beads when explicitly requested).
 
 ```bash
 foreman sling trd docs/TRD.md           # Parse and create tasks
@@ -428,13 +433,24 @@ foreman doctor --fix                    # Auto-fix recoverable issues
 ```
 
 ### `foreman reset`
-Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open.
+Reset failed/stuck runs: kill agents, remove worktrees, reset tasks to a dispatchable state.
 
 ```bash
 foreman reset                           # Reset failed/stuck runs
+foreman reset --project my-project      # Reset runs in a registered project without cd
 foreman reset --all                     # Reset ALL active runs
 foreman reset --detect-stuck            # Detect stuck runs first, then reset
 foreman reset --detect-stuck --timeout 20  # Stuck after 20 minutes
+```
+
+### `foreman retry`
+Retry a bead in place, optionally dispatching it again immediately.
+
+```bash
+foreman retry bd-abc                    # Reset one bead to open
+foreman retry bd-abc --project my-project # Retry inside a registered project without cd
+foreman retry bd-abc --dispatch         # Reset and dispatch immediately
+foreman retry bd-abc --dry-run          # Preview the retry flow
 ```
 
 ### `foreman pr`
@@ -444,15 +460,26 @@ Create pull requests for completed branches that couldn't be auto-merged.
 foreman pr
 ```
 
-## Task Tracking with beads_rust
+## Task Tracking
 
-Foreman uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for task tracking. Tasks are stored in `.beads/beads.jsonl` (git-tracked).
+Foreman is now **native-task first**. Tasks live in the project SQLite store (`.foreman/foreman.db`) and Foreman falls back to [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) only for compatibility paths or projects that have not been migrated yet.
 
 ```bash
-# View ready tasks (open, unblocked)
+# Native task lifecycle
+foreman task create "Implement feature X" --type feature --priority 1
+foreman task list
+foreman task approve task-123
+foreman task update task-123 --status in-progress
+foreman task import --from-beads      # migrate legacy beads data
+```
+
+When you are still operating a legacy/fallback project, the beads CLI remains relevant:
+
+```bash
+# View ready tasks (legacy/fallback path)
 br ready
 
-# Create tasks
+# Create tasks directly in beads
 br create --title "Implement feature X" --type feature --priority 1
 br create --title "Fix bug Y" --type bug --priority 0
 
@@ -466,6 +493,8 @@ br dep add bd-tests bd-feature    # tests depend on feature
 # Sync with git
 br sync --flush-only               # Export DB to JSONL before committing
 ```
+
+Set `FOREMAN_TASK_STORE=native|beads|auto` to force or inspect task-store selection behavior.
 
 Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (backlog).
 
@@ -517,7 +546,7 @@ export FOREMAN_MAX_AGENTS=5                  # Max concurrent agents (default: 5
 
 | Path | Contents |
 |---|---|
-| `.beads/` | beads_rust task database (JSONL, git-tracked) |
+| `.beads/` | legacy/compatibility beads_rust task database (JSONL, git-tracked) |
 | `.foreman/foreman.db` | SQLite: runs, merge_queue, projects |
 | `.foreman-worktrees/` | Git worktrees for active agents |
 | `~/.foreman/logs/` | Per-run agent logs |
@@ -543,7 +572,7 @@ foreman/
 │   │   ├── roles.ts                # Phase prompts + tool configs
 │   │   └── sentinel.ts             # Background health monitor
 │   └── lib/
-│       ├── beads-rust.ts           # br CLI wrapper
+│       ├── beads-rust.ts           # compatibility br CLI wrapper
 │       ├── git.ts                  # Git worktree management
 │       └── store.ts                # SQLite state store
 ├── packages/
@@ -681,7 +710,7 @@ npm link
 
 # Development commands
 npm run build          # TypeScript compile (atomic — safe while foreman is running)
-npm test               # vitest run (159 test files, ~2800 tests)
+npm test               # run the full PR-required Vitest lanes
 npm run dev            # tsx watch mode
 npx tsc --noEmit       # Type check only
 npm run bundle         # esbuild single-file bundle

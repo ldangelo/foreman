@@ -11,7 +11,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type {
   Workspace,
@@ -24,6 +24,7 @@ import type {
   FinalizeTemplateVars,
   FinalizeCommands,
 } from "./types.js";
+import { buildTrackedStateRestoreCommand, getWorkspacePath } from "../workspace-paths.js";
 import type { VcsBackend } from "./interface.js";
 
 const execFileAsync = promisify(execFile);
@@ -255,7 +256,7 @@ export class GitBackend implements VcsBackend {
    * Create a git worktree for a seed.
    *
    * - Branch: foreman/<seedId>
-   * - Location: <repoPath>/.foreman-worktrees/<seedId>
+   * - Location: external Foreman workspace root for this repo
    * - Base: baseBranch or current branch
    *
    * If the worktree already exists, rebases onto the base branch.
@@ -267,7 +268,7 @@ export class GitBackend implements VcsBackend {
   ): Promise<WorkspaceResult> {
     const base = baseBranch ?? (await this.getCurrentBranch(repoPath));
     const branchName = `foreman/${seedId}`;
-    const workspacePath = join(repoPath, ".foreman-worktrees", seedId);
+    const workspacePath = getWorkspacePath(repoPath, seedId);
 
     // If worktree already exists — reuse it with rebase
     if (existsSync(workspacePath)) {
@@ -307,6 +308,8 @@ export class GitBackend implements VcsBackend {
       }
       return { workspacePath, branchName };
     }
+
+    await fs.mkdir(dirname(workspacePath), { recursive: true });
 
     // Branch may exist without a worktree
     try {
@@ -600,6 +603,15 @@ export class GitBackend implements VcsBackend {
     }
   }
 
+  async isAncestor(repoPath: string, ancestorRef: string, descendantRef: string): Promise<boolean> {
+    try {
+      await this.git(["merge-base", "--is-ancestor", ancestorRef, descendantRef], repoPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * List files modified (staged or unstaged) in the workspace.
    */
@@ -795,7 +807,7 @@ export class GitBackend implements VcsBackend {
    * Return pre-computed git finalize commands for prompt rendering.
    */
   getFinalizeCommands(vars: FinalizeTemplateVars): FinalizeCommands {
-    const { seedId, seedTitle, baseBranch } = vars;
+    const { seedId, seedTitle, baseBranch, worktreePath } = vars;
     // Escape single quotes in seedTitle so the shell-level single-quoted commit
     // message is safe even when the title contains apostrophes or shell-special
     // characters (brackets, colons, parentheses, $, !, etc.).
@@ -806,9 +818,10 @@ export class GitBackend implements VcsBackend {
       stageCommand: "git add -A",
       commitCommand: `git commit -m '${safeSeedTitle} (${seedId})'`,
       pushCommand: `git push -u origin foreman/${seedId}`,
-      rebaseCommand: `git fetch origin && git rebase origin/${baseBranch}`,
+      integrateTargetCommand: `git fetch origin && git rebase origin/${baseBranch}`,
       branchVerifyCommand: `git rev-parse --abbrev-ref HEAD`,
       cleanCommand: `git worktree remove --force ${vars.worktreePath}`,
+      restoreTrackedStateCommand: buildTrackedStateRestoreCommand(worktreePath, this.projectPath),
     };
   }
 }

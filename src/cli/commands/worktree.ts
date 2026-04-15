@@ -3,7 +3,8 @@ import chalk from "chalk";
 
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
-import { getRepoRoot, listWorktrees, removeWorktree, deleteBranch } from "../../lib/git.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
+import type { Workspace } from "../../lib/vcs/types.js";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -54,7 +55,8 @@ export async function listForemanWorktrees(
   projectPath: string,
   store: Pick<ForemanStore, "getRunsForSeed">,
 ): Promise<WorktreeInfo[]> {
-  const worktrees = await listWorktrees(projectPath);
+  const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+  const worktrees = await vcs.listWorkspaces(projectPath);
 
   const foremanWorktrees = worktrees.filter((wt) =>
     wt.branch.startsWith("foreman/"),
@@ -109,8 +111,9 @@ export async function cleanWorktrees(
 
     try {
       await archiveWorktreeReports(projectPath, wt.path, wt.seedId);
-      await removeWorktree(projectPath, wt.path);
-      await deleteBranch(projectPath, wt.branch, {
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+      await vcs.removeWorkspace(projectPath, wt.path);
+      await vcs.deleteBranch(projectPath, wt.branch, {
         force: opts.force,
       });
       removed++;
@@ -130,7 +133,8 @@ const listSubcommand = new Command("list")
   .option("--json", "Output as JSON")
   .action(async (opts) => {
     try {
-      const projectPath = await getRepoRoot(process.cwd());
+      const startupVcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      const projectPath = await startupVcs.getRepoRoot(process.cwd());
       const store = ForemanStore.forProject(projectPath);
 
       const worktrees = await listForemanWorktrees(projectPath, store);
@@ -177,7 +181,8 @@ const cleanSubcommand = new Command("clean")
   .option("--dry-run", "Show what would be removed without making changes")
   .action(async (opts) => {
     try {
-      const projectPath = await getRepoRoot(process.cwd());
+      const startupVcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      const projectPath = await startupVcs.getRepoRoot(process.cwd());
       const store = ForemanStore.forProject(projectPath);
       const dryRun = (opts.dryRun as boolean | undefined) ?? false;
 

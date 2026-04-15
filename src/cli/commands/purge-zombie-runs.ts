@@ -1,9 +1,10 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore, type Run } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import type { ITaskClient } from "../../lib/task-client.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -25,7 +26,7 @@ export interface PurgeZombieRunsResult {
  * Returns true if the run should be purged.
  */
 async function isBeadClosedOrGone(
-  beadsClient: BeadsRustClient,
+  beadsClient: Pick<ITaskClient, "show">,
   seedId: string,
 ): Promise<boolean> {
   try {
@@ -48,7 +49,7 @@ async function isBeadClosedOrGone(
  */
 export async function purgeZombieRunsAction(
   opts: PurgeZombieRunsOpts,
-  beadsClient: BeadsRustClient,
+  beadsClient: Pick<ITaskClient, "show">,
   store: ForemanStore,
   projectPath: string,
 ): Promise<PurgeZombieRunsResult> {
@@ -148,7 +149,8 @@ export const purgeZombieRunsCommand = new Command("purge-zombie-runs")
   .action(async (opts: PurgeZombieRunsOpts) => {
     let projectPath: string;
     try {
-      projectPath = await getRepoRoot(process.cwd());
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      projectPath = await vcs.getRepoRoot(process.cwd());
     } catch {
       console.error(
         chalk.red(
@@ -159,10 +161,10 @@ export const purgeZombieRunsCommand = new Command("purge-zombie-runs")
     }
 
     const store = ForemanStore.forProject(projectPath);
-    const beadsClient = new BeadsRustClient(projectPath);
+    const { taskClient } = await createTaskClient(projectPath);
 
     try {
-      const result = await purgeZombieRunsAction(opts, beadsClient, store, projectPath);
+      const result = await purgeZombieRunsAction(opts, taskClient, store, projectPath);
       store.close();
       process.exit(result.errors > 0 ? 1 : 0);
     } catch (err: unknown) {

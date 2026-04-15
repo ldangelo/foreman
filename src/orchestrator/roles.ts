@@ -391,12 +391,20 @@ export function buildPhasePrompt(
     vcsCommitCommand?: string;
     /** Command to push the branch to remote. */
     vcsPushCommand?: string;
-    /** Command to rebase onto the base branch. */
-    vcsRebaseCommand?: string;
+    /** Command to integrate the latest target-branch changes into the bead branch. */
+    vcsIntegrateTargetCommand?: string;
     /** Command to verify the current branch name. */
     vcsBranchVerifyCommand?: string;
     /** Command to clean up the workspace. */
     vcsCleanCommand?: string;
+    /** Command to restore tracked shared-state files before commit. */
+    vcsRestoreTrackedStateCommand?: string;
+    /** Target branch revision/hash recorded when QA passed. */
+    qaValidatedTargetRef?: string;
+    /** Current target branch revision/hash seen during finalize. */
+    currentTargetRef?: string;
+    /** Whether finalize should rerun the full test suite. */
+    shouldRunFinalizeValidation?: string;
     // ── VCS context variables (TRD-027: reviewer phase) ──────────────────
     /** VCS backend name (e.g. 'git' or 'jujutsu'). */
     vcsBackendName?: string;
@@ -429,9 +437,13 @@ export function buildPhasePrompt(
     vcsStageCommand: context.vcsStageCommand ?? "git add -A",
     vcsCommitCommand: context.vcsCommitCommand ?? `git commit -m "${context.seedTitle} (${context.seedId})"`,
     vcsPushCommand: context.vcsPushCommand ?? `git push -u origin foreman/${context.seedId}`,
-    vcsRebaseCommand: context.vcsRebaseCommand ?? `git fetch origin && git rebase origin/${context.baseBranch ?? "main"}`,
+    vcsIntegrateTargetCommand: context.vcsIntegrateTargetCommand ?? `git fetch origin && git rebase origin/${context.baseBranch ?? "main"}`,
     vcsBranchVerifyCommand: context.vcsBranchVerifyCommand ?? "git rev-parse --abbrev-ref HEAD",
     vcsCleanCommand: context.vcsCleanCommand ?? `git worktree remove --force ${context.worktreePath ?? ""}`,
+    vcsRestoreTrackedStateCommand: context.vcsRestoreTrackedStateCommand ?? `git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl 2>/dev/null || git restore --source=HEAD --worktree -- .beads/issues.jsonl 2>/dev/null || true`,
+    qaValidatedTargetRef: context.qaValidatedTargetRef ?? "",
+    currentTargetRef: context.currentTargetRef ?? "",
+    shouldRunFinalizeValidation: context.shouldRunFinalizeValidation ?? "true",
     // VCS context variables (TRD-027)
     vcsBackendName: context.vcsBackendName ?? "git",
     vcsBranchPrefix: context.vcsBranchPrefix ?? "foreman/",
@@ -529,9 +541,12 @@ export function finalizePrompt(seedId: string, seedTitle: string, runId?: string
       vcsStageCommand: "git add -A",
       vcsCommitCommand: `git commit -m "${seedTitle} (${seedId})"`,
       vcsPushCommand: `git push -u origin foreman/${seedId}`,
-      vcsRebaseCommand: `git fetch origin && git rebase origin/${resolvedBase}`,
+      vcsIntegrateTargetCommand: `git fetch origin && git rebase origin/${resolvedBase}`,
       vcsBranchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       vcsCleanCommand: `git worktree remove --force ${resolvedWorktree}`,
+      qaValidatedTargetRef: "",
+      currentTargetRef: "",
+      shouldRunFinalizeValidation: "true",
     },
     "finalize-prompt.md",
     opts,
@@ -550,6 +565,9 @@ export function sentinelPrompt(branch: string, testCommand: string, opts?: Promp
 // ── Report parsing ──────────────────────────────────────────────────────
 
 export type Verdict = "pass" | "fail" | "unknown";
+export type FinalizeFailureScope = "modified_files" | "unrelated_files" | "unknown";
+export type FinalizeValidationStatus = "pass" | "fail" | "skipped" | "unknown";
+export type FinalizeIntegrationStatus = "success" | "fail" | "skipped" | "unknown";
 
 /**
  * Parse a report file for a PASS/FAIL verdict.
@@ -564,6 +582,54 @@ export function parseVerdict(reportContent: string): Verdict {
 /**
  * Extract issues from a review report for developer feedback.
  */
+export function parseFinalizeFailureScope(reportContent: string): FinalizeFailureScope {
+  const inlineMatch = reportContent.match(/##\s*Failure Scope:\s*(?:\*\*)?(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)(?:\*\*)?/i);
+  if (inlineMatch) return inlineMatch[1].toLowerCase() as FinalizeFailureScope;
+
+  const sectionMatch = reportContent.match(/##\s*Failure Scope\s*\n(?:-\s*)?(?:\*\*)?(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)(?:\*\*)?/i);
+  if (sectionMatch) return sectionMatch[1].toLowerCase() as FinalizeFailureScope;
+
+  const analysisMatch = reportContent.match(/##\s*Failure Scope Analysis[\s\S]*?(?:###\s*)?Classification:\s*(?:\*\*)?(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)(?:\*\*)?/i);
+  if (analysisMatch) return analysisMatch[1].toLowerCase() as FinalizeFailureScope;
+
+  const fallbackMatch = reportContent.match(/Classification:\s*(?:\*\*)?(MODIFIED_FILES|UNRELATED_FILES|UNKNOWN)(?:\*\*)?/i);
+  if (fallbackMatch) return fallbackMatch[1].toLowerCase() as FinalizeFailureScope;
+
+  return "unknown";
+}
+
+export function parseFinalizeValidationStatus(reportContent: string): FinalizeValidationStatus {
+  const inlineMatch = reportContent.match(/##\s*Test Validation:\s*(?:\*\*)?(PASS|FAIL|SKIPPED)(?:\*\*)?/i);
+  if (inlineMatch) return inlineMatch[1].toLowerCase() as FinalizeValidationStatus;
+
+  const sectionMatch = reportContent.match(/##\s*Test Validation\s*\n(?:-\s*Status:\s*)?(?:\*\*)?(PASS|FAIL|SKIPPED)(?:\*\*)?/i);
+  if (sectionMatch) return sectionMatch[1].toLowerCase() as FinalizeValidationStatus;
+
+  const bulletMatch = reportContent.match(/##\s*Test Validation[\s\S]*?-\s*Status:\s*(PASS|FAIL|SKIPPED)/i);
+  if (bulletMatch) return bulletMatch[1].toLowerCase() as FinalizeValidationStatus;
+
+  return "unknown";
+}
+
+export function parseFinalizeIntegrationStatus(reportContent: string): FinalizeIntegrationStatus {
+  const inlineMatch = reportContent.match(/##\s*Target Integration:\s*(?:\*\*)?(SUCCESS|FAIL|SKIPPED)(?:\*\*)?/i);
+  if (inlineMatch) return inlineMatch[1].toLowerCase() as FinalizeIntegrationStatus;
+
+  const sectionMatch = reportContent.match(/##\s*Target Integration\s*\n(?:-\s*Status:\s*)?(?:\*\*)?(SUCCESS|FAIL|SKIPPED)(?:\*\*)?/i);
+  if (sectionMatch) return sectionMatch[1].toLowerCase() as FinalizeIntegrationStatus;
+
+  const bulletMatch = reportContent.match(/##\s*Target Integration[\s\S]*?-\s*Status:\s*(SUCCESS|FAIL|SKIPPED)/i);
+  if (bulletMatch) return bulletMatch[1].toLowerCase() as FinalizeIntegrationStatus;
+
+  return "unknown";
+}
+
+export function qaReportHasTestEvidence(reportContent: string): boolean {
+  const hasCommand = /npm test/i.test(reportContent);
+  const hasCounts = /(\b\d+\s+passed\b|\b\d+\s+failed\b|\btests? failed out of\b|\btests?:\s*\d+\s+passed[, ]+\d+\s+failed\b)/i.test(reportContent);
+  return hasCommand && hasCounts;
+}
+
 export function extractIssues(reportContent: string): string {
   // Extract everything between ## Issues and the next ## heading
   const issuesMatch = reportContent.match(/## Issues\n([\s\S]*?)(?=\n## |$)/);

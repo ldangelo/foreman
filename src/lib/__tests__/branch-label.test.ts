@@ -3,7 +3,40 @@ import {
   extractBranchLabel,
   isDefaultBranch,
   applyBranchLabel,
+  isValidBranchLabel,
+  normalizeBranchLabel,
 } from "../branch-label.js";
+
+describe("normalizeBranchLabel", () => {
+  it("strips trailing jujutsu display markers", () => {
+    expect(normalizeBranchLabel("dev*")).toBe("dev");
+    expect(normalizeBranchLabel("feature/test***")).toBe("feature/test");
+  });
+
+  it("strips @origin remote-tracking suffix", () => {
+    expect(normalizeBranchLabel("dev@origin")).toBe("dev");
+    expect(normalizeBranchLabel("feature/test@origin")).toBe("feature/test");
+    expect(normalizeBranchLabel("dev*@origin")).toBe("dev");
+  });
+});
+
+describe("isValidBranchLabel", () => {
+  it("returns false for undefined and empty values", () => {
+    expect(isValidBranchLabel(undefined)).toBe(false);
+    expect(isValidBranchLabel("")).toBe(false);
+    expect(isValidBranchLabel("   ")).toBe(false);
+  });
+
+  it("returns false for detached HEAD", () => {
+    expect(isValidBranchLabel("HEAD")).toBe(false);
+  });
+
+  it("returns true for real branch names", () => {
+    expect(isValidBranchLabel("installer")).toBe(true);
+    expect(isValidBranchLabel("feature/my-feature")).toBe(true);
+    expect(isValidBranchLabel("dev*")).toBe(true);
+  });
+});
 
 describe("extractBranchLabel", () => {
   it("returns undefined when labels is undefined", () => {
@@ -39,6 +72,14 @@ describe("extractBranchLabel", () => {
   it("returns undefined for branch: with empty value", () => {
     expect(extractBranchLabel(["branch:"])).toBeUndefined();
   });
+
+  it("returns undefined for branch:HEAD", () => {
+    expect(extractBranchLabel(["branch:HEAD"])).toBeUndefined();
+  });
+
+  it("normalizes decorated jujutsu branch labels", () => {
+    expect(extractBranchLabel(["branch:dev*"])).toBe("dev");
+  });
 });
 
 describe("isDefaultBranch", () => {
@@ -52,6 +93,10 @@ describe("isDefaultBranch", () => {
 
   it("returns true for 'dev'", () => {
     expect(isDefaultBranch("dev", "main")).toBe(true);
+  });
+
+  it("treats decorated current branch names as the same default branch", () => {
+    expect(isDefaultBranch("dev*", "dev")).toBe(true);
   });
 
   it("returns true for 'develop'", () => {
@@ -98,5 +143,9 @@ describe("applyBranchLabel", () => {
     const branchLabels = result.filter((l) => l.startsWith("branch:"));
     expect(branchLabels).toHaveLength(1);
     expect(branchLabels[0]).toBe("branch:installer");
+  });
+
+  it("drops invalid branch labels like HEAD", () => {
+    expect(applyBranchLabel(["workflow:smoke", "branch:old"], "HEAD")).toEqual(["workflow:smoke"]);
   });
 });

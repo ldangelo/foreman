@@ -2,8 +2,11 @@
  * Tests for src/orchestrator/task-ordering.ts
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getTaskOrder, CircularDependencyError } from "../task-ordering.js";
-import type { BrIssueDetail } from "../../lib/beads-rust.js";
+import {
+  getTaskOrder,
+  CircularDependencyError,
+  type TaskOrderingIssueDetail,
+} from "../task-ordering.js";
 
 // ── Mock BvClient ──────────────────────────────────────────────────────────
 
@@ -22,7 +25,7 @@ function makeDetail(
   priority: string = "P1",
   deps: string[] = [],
   type: string = "task",
-): BrIssueDetail {
+): TaskOrderingIssueDetail {
   return {
     id,
     title,
@@ -44,10 +47,10 @@ function makeDetail(
       dependency_type: "blocks",
     })),
     dependents: [],
-  };
+  } as unknown as TaskOrderingIssueDetail;
 }
 
-function makeBrClient(details: Map<string, BrIssueDetail>) {
+function makeBrClient(details: Map<string, TaskOrderingIssueDetail>) {
   return {
     show: vi.fn().mockImplementation(async (id: string) => {
       const d = details.get(id);

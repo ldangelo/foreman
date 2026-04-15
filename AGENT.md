@@ -1,1 +1,1 @@
-READ ./CHANGELOG.md
+READ ./CLAUDE.md

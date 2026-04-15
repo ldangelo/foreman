@@ -2,6 +2,9 @@ version: '1'
 domains:
   - epic-execution
   - pipeline-executor
+  - orchestrator
+  - cli
+  - dispatcher
 governance:
   max_entries: 100
   warn_entries: 150
@@ -10,3 +13,4 @@ classification_defaults:
   shelf_life:
     tactical: 14
     observational: 30
+    strategic: 90

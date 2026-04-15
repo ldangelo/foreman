@@ -14,7 +14,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Message, Run } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -105,7 +105,8 @@ export const inboxCommand = new Command("inbox")
     // Resolve the project root so we can open the correct store
     let projectPath: string;
     try {
-      projectPath = await getRepoRoot(process.cwd());
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
+      projectPath = await vcs.getRepoRoot(process.cwd());
     } catch {
       projectPath = process.cwd();
     }

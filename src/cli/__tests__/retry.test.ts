@@ -392,7 +392,7 @@ describe("foreman retry", () => {
   // ── Completed run (no reset needed) ─────────────────────────────────
 
   describe("completed run", () => {
-    it("does not reset a completed run record", async () => {
+    it("marks a completed run as reset", async () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
       mockShow.mockResolvedValue(makeBead({ status: "completed" }));
@@ -405,10 +405,69 @@ describe("foreman retry", () => {
       const { retryAction } = await import("../commands/retry.js");
       await retryAction("bd-test", {}, beadsClient, store, tmpDir);
 
-      // Run should NOT be reset — it's completed
       const updated = store.getRun(run.id);
-      expect(updated!.status).toBe("completed");
-      // But bead status should be reset
+      expect(updated!.status).toBe("reset");
+      expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "open" });
+
+      consoleSpy.mockRestore();
+    });
+
+    it("marks a merged run as reset so explicit human retry can bypass merged guard", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      mockShow.mockResolvedValue(makeBead({ status: "closed" }));
+
+      const run = createTestRun(store, projectId, {
+        seedId: "bd-test",
+        status: "merged",
+      });
+
+      const { retryAction } = await import("../commands/retry.js");
+      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+
+      const updated = store.getRun(run.id);
+      expect(updated!.status).toBe("reset");
+      expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "open" });
+
+      consoleSpy.mockRestore();
+    });
+
+    it("marks a pr-created run as reset", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      mockShow.mockResolvedValue(makeBead({ status: "closed" }));
+
+      const run = createTestRun(store, projectId, {
+        seedId: "bd-test",
+        status: "pr-created",
+      });
+
+      const { retryAction } = await import("../commands/retry.js");
+      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+
+      const updated = store.getRun(run.id);
+      expect(updated!.status).toBe("reset");
+
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe("blocked bead retry", () => {
+    it("reopens a blocked bead and marks a test-failed run as reset", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      mockShow.mockResolvedValue(makeBead({ status: "blocked" }));
+
+      const run = createTestRun(store, projectId, {
+        seedId: "bd-test",
+        status: "test-failed",
+      });
+
+      const { retryAction } = await import("../commands/retry.js");
+      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+
+      const updated = store.getRun(run.id);
+      expect(updated!.status).toBe("reset");
       expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "open" });
 
       consoleSpy.mockRestore();

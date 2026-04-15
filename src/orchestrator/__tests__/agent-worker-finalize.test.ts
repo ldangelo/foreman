@@ -30,10 +30,6 @@ vi.mock("../agent-worker-enqueue.js", () => ({
   enqueueToMergeQueue: mockEnqueueToMergeQueue,
 }));
 
-vi.mock("../../lib/git.js", () => ({
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
-}));
-
 // Mock ForemanStore so we don't need a real SQLite database
 vi.mock("../../lib/store.js", () => ({
   ForemanStore: {
@@ -95,9 +91,10 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
       stageCommand: "git add -A",
       commitCommand: "git commit -m",
       pushCommand: "git push -u origin",
-      rebaseCommand: "git pull --rebase origin",
+      integrateTargetCommand: "git pull --rebase origin",
       branchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       cleanCommand: "git clean -fd",
+      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",
     }),
     ...overrides,
   } as VcsBackend;

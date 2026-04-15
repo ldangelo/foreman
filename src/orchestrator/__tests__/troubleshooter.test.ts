@@ -165,6 +165,7 @@ describe("createGetRunStatusTool", () => {
     const text = (result.content[0] as { type: string; text: string }).text;
     const info = JSON.parse(text) as Record<string, unknown>;
     expect(info.runId).toBe("run-123");
+    expect(info.beadId).toBe("bd-abc");
     expect(info.seedId).toBe("bd-abc");
     expect(info.status).toBe("stuck");
     expect(info.currentPhase).toBe("finalize");
@@ -230,9 +231,16 @@ describe("createCloseBeadTool", () => {
   it("returns error text when br command fails", async () => {
     // br binary won't exist in test env — should return a failure message
     const tool = createCloseBeadTool("/nonexistent/path");
-    const result = await tool.execute("call-1", { seedId: "bd-test", reason: "work done" }, undefined, undefined, {} as never);
+    const result = await tool.execute("call-1", { beadId: "bd-test", reason: "work done" }, undefined, undefined, {} as never);
     const text = (result.content[0] as { type: string; text: string }).text;
     expect(text).toContain("Failed to close bead");
+  });
+
+  it("accepts legacy seedId as an alias for beadId", async () => {
+    const tool = createCloseBeadTool("/nonexistent/path");
+    const result = await tool.execute("call-1", { seedId: "bd-legacy", reason: "work done" }, undefined, undefined, {} as never);
+    const text = (result.content[0] as { type: string; text: string }).text;
+    expect(text).toContain("Failed to close bead bd-legacy");
   });
 });
 
@@ -243,9 +251,9 @@ describe("troubleshooter.md prompt", () => {
     expect(existsSync(TROUBLESHOOTER_PROMPT)).toBe(true);
   });
 
-  it("contains template variables for seedId and runId", () => {
+  it("contains template variables for beadId and runId", () => {
     const content = readFileSync(TROUBLESHOOTER_PROMPT, "utf-8");
-    expect(content).toContain("{{seedId}}");
+    expect(content).toContain("{{beadId}}");
     expect(content).toContain("{{runId}}");
   });
 
@@ -263,9 +271,10 @@ describe("troubleshooter.md prompt", () => {
     expect(content).toContain("TROUBLESHOOT_REPORT.md");
   });
 
-  it("contains send_mail tool reference for lifecycle mail", () => {
+  it("contains send_mail tool reference for escalation mail", () => {
     const content = readFileSync(TROUBLESHOOTER_PROMPT, "utf-8");
     expect(content).toContain("send_mail");
+    expect(content).toContain("agent-error");
   });
 
   it("contains get_run_status tool reference", () => {

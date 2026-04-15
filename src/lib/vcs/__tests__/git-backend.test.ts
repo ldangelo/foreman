@@ -16,6 +16,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { GitBackend } from "../git-backend.js";
+import { getWorkspacePath } from "../../workspace-paths.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -243,7 +244,7 @@ describe("GitBackend.getFinalizeCommands", () => {
     expect(typeof cmds.stageCommand).toBe("string");
     expect(typeof cmds.commitCommand).toBe("string");
     expect(typeof cmds.pushCommand).toBe("string");
-    expect(typeof cmds.rebaseCommand).toBe("string");
+    expect(typeof cmds.integrateTargetCommand).toBe("string");
     expect(typeof cmds.branchVerifyCommand).toBe("string");
     expect(typeof cmds.cleanCommand).toBe("string");
   });
@@ -283,7 +284,7 @@ describe("GitBackend.getFinalizeCommands", () => {
     expect(cmds.pushCommand).toContain("origin");
   });
 
-  it("rebaseCommand references the base branch", () => {
+  it("integrateTargetCommand references the base branch", () => {
     const backend = new GitBackend("/tmp");
     const cmds = backend.getFinalizeCommands({
       seedId: "bd-xyz",
@@ -291,8 +292,16 @@ describe("GitBackend.getFinalizeCommands", () => {
       baseBranch: "develop",
       worktreePath: "/tmp",
     });
-    expect(cmds.rebaseCommand).toContain("develop");
-    expect(cmds.rebaseCommand).toContain("rebase");
+    expect(cmds.integrateTargetCommand).toContain("develop");
+    expect(cmds.integrateTargetCommand).toContain("rebase");
+  });
+
+  it("isAncestor returns true when ancestor is reachable from descendant", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    await expect(backend.isAncestor(repo, head, "HEAD")).resolves.toBe(true);
   });
 });
 
@@ -697,7 +706,7 @@ describe("GitBackend.createWorkspace", () => {
     const result = await backend.createWorkspace(repo, "seed-abc");
 
     expect(result.branchName).toBe("foreman/seed-abc");
-    expect(result.workspacePath).toBe(join(repo, ".foreman-worktrees", "seed-abc"));
+    expect(result.workspacePath).toBe(getWorkspacePath(repo, "seed-abc"));
     // The directory should exist
     const { existsSync } = await import("node:fs");
     expect(existsSync(result.workspacePath)).toBe(true);
@@ -717,7 +726,7 @@ describe("GitBackend.createWorkspace", () => {
       branchName: "foreman/seed-reuse",
     });
 
-    await backend.removeWorkspace(repo, join(repo, ".foreman-worktrees", "seed-reuse"));
+    await backend.removeWorkspace(repo, getWorkspacePath(repo, "seed-reuse"));
   });
 });
 

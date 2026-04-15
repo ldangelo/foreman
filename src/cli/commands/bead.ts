@@ -4,8 +4,8 @@ import ora from "ora";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
-import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { normalizePriority } from "../../lib/priority.js";
+import type { Issue } from "../../lib/task-client.js";
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -27,14 +27,69 @@ interface ParsedIssuesResponse {
 /**
  * Instantiate the br task-tracking client.
  *
- * TRD-024: sd backend removed. Always returns a BeadsRustClient.
+ * TRD-024: sd backend removed. Always returns a beads-compatible client.
  *
  * Exported for unit testing.
  */
+export interface BeadCommandClient {
+  ensureBrInstalled(): Promise<void>;
+  isInitialized(): Promise<boolean>;
+  create(
+    title: string,
+    opts?: {
+      type?: string;
+      priority?: string;
+      parent?: string;
+      description?: string;
+      labels?: string[];
+    },
+  ): Promise<Issue>;
+  addDependency(fromId: string, toId: string): Promise<void>;
+}
+
+class LazyBeadsCommandClient implements BeadCommandClient {
+  private readonly clientPromise: Promise<BeadCommandClient>;
+
+  constructor(projectPath: string) {
+    this.clientPromise = import("../../lib/beads-rust.js").then(({ BeadsRustClient }) =>
+      new BeadsRustClient(projectPath) as BeadCommandClient
+    );
+  }
+
+  private async withClient<T>(fn: (client: BeadCommandClient) => Promise<T>): Promise<T> {
+    return fn(await this.clientPromise);
+  }
+
+  async ensureBrInstalled(): Promise<void> {
+    return this.withClient((client) => client.ensureBrInstalled());
+  }
+
+  async isInitialized(): Promise<boolean> {
+    return this.withClient((client) => client.isInitialized());
+  }
+
+  async create(
+    title: string,
+    opts?: {
+      type?: string;
+      priority?: string;
+      parent?: string;
+      description?: string;
+      labels?: string[];
+    },
+  ): Promise<Issue> {
+    return this.withClient((client) => client.create(title, opts));
+  }
+
+  async addDependency(fromId: string, toId: string): Promise<void> {
+    return this.withClient((client) => client.addDependency(fromId, toId));
+  }
+}
+
 export function createBeadClient(
   projectPath: string,
-): BeadsRustClient {
-  return new BeadsRustClient(projectPath);
+): BeadCommandClient {
+  return new LazyBeadsCommandClient(projectPath);
 }
 
 // ── Command ──────────────────────────────────────────────────────────────

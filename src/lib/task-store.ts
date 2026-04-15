@@ -5,18 +5,20 @@
  * Implements methods for the full lifecycle of native tasks:
  *   - hasNativeTasks() — coexistence check (REQ-014)
  *   - list()           — query tasks with optional status filter (REQ-017)
+ *   - ready()          — query dispatchable tasks: status='ready' AND run_id IS NULL (REQ-017, REQ-020)
  *   - get()            — fetch a single task row by ID
  *   - claim()          — atomically claim a task for a run (REQ-020)
  *   - updatePhase()    — update phase column (no-op when taskId is null)
  *   - updateStatus()   — update task status
  *   - create()         — create a new task in backlog status (REQ-006)
+ *   - update()         — update task fields (title, description, priority, status) (REQ-007)
  *   - approve()        — transition backlog → ready (REQ-005)
- *   - close()          — mark task as merged (REQ-008)
+ *   - close()          — mark task as closed (REQ-008)
  *   - addDependency()  — add a task dependency with cycle detection (REQ-004, REQ-021.3)
  *   - getDependencies()— retrieve dependencies in either direction
  *   - removeDependency()— remove a dependency edge
  *   - hasCyclicDependency() — DFS cycle detection
- *   - reevaluateBlockedTasks() — unblock tasks when all blockers merge
+ *   - reevaluateBlockedTasks() — unblock tasks when all blockers are merged/closed
  */
 
 import { randomUUID } from "node:crypto";
@@ -106,6 +108,15 @@ export interface CreateTaskOptions {
   type?: string;
   priority?: number;
   externalId?: string | null;
+}
+
+/** Options for updating an existing task. All fields are optional. */
+export interface UpdateTaskOptions {
+  title?: string;
+  description?: string | null;
+  priority?: number;
+  status?: string;
+  force?: boolean;
 }
 
 // ── Error classes ────────────────────────────────────────────────────────
@@ -229,12 +240,44 @@ export class NativeTaskStore {
   }
 
   /**
+   * Return tasks that are ready to be dispatched (status='ready' and not yet claimed).
+   *
+   * Satisfies REQ-017 (list dispatchable tasks) and REQ-020 (claim mechanism).
+   * Only returns tasks where run_id IS NULL — tasks already claimed by an active
+   * run are excluded.
+   *
+   * Ordering: priority ASC, created_at ASC (consistent with list()).
+   */
+  async ready(): Promise<Issue[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM tasks
+         WHERE status = 'ready' AND run_id IS NULL
+         ORDER BY priority ASC, created_at ASC`,
+      )
+      .all() as TaskRow[];
+    return rows.map(rowToIssue);
+  }
+
+  /**
    * Retrieve a single task by ID. Returns null if not found.
    */
   get(id: string): TaskRow | null {
     const row = this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as
       | TaskRow
       | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * Retrieve a single task by external_id. Returns null if not found.
+   *
+   * Used by native sling import to provide idempotent re-runs keyed by TRD IDs.
+   */
+  getByExternalId(externalId: string): TaskRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM tasks WHERE external_id = ?")
+      .get(externalId) as TaskRow | undefined;
     return row ?? null;
   }
 
@@ -308,6 +351,90 @@ export class NativeTaskStore {
   }
 
   /**
+   * Update mutable fields on an existing task.
+   *
+   * Implements REQ-007 AC-007.3 (task update CLI).
+   *
+   * @param id    - Task ID to update.
+   * @param opts  - Partial update options.
+   *
+   * @throws {TaskNotFoundError} If the task ID does not exist.
+   * @throws {InvalidStatusTransitionError} If --force is not set and a backward
+   *                                         status transition is attempted.
+   */
+  update(id: string, opts: UpdateTaskOptions): TaskRow {
+    const now = new Date().toISOString();
+
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .prepare("SELECT id, status FROM tasks WHERE id = ?")
+        .get(id) as { id: string; status: string } | undefined;
+
+      if (!row) {
+        throw new TaskNotFoundError(id);
+      }
+
+      // Build dynamic UPDATE
+      const sets: string[] = [];
+      const values: unknown[] = [];
+
+      if (opts.title !== undefined) {
+        sets.push("title = ?");
+        values.push(opts.title);
+      }
+      if (opts.description !== undefined) {
+        sets.push("description = ?");
+        values.push(opts.description);
+      }
+      if (opts.priority !== undefined) {
+        sets.push("priority = ?");
+        values.push(opts.priority);
+      }
+      if (opts.status !== undefined) {
+        // Validate backward transitions
+        if (!opts.force) {
+          const statusOrder: Record<string, number> = {
+            backlog: 0,
+            ready: 1,
+            "in-progress": 2,
+            explorer: 3,
+            developer: 3,
+            qa: 3,
+            reviewer: 3,
+            finalize: 4,
+            merged: 5,
+            closed: 5,
+            conflict: -1,
+            failed: -1,
+            stuck: -1,
+            blocked: 0,
+          };
+          const fromOrder = statusOrder[row.status] ?? 0;
+          const toOrder = statusOrder[opts.status] ?? 0;
+          // Backward = going to a lower-order number (except conflict/failed which are terminal)
+          if (toOrder >= 0 && fromOrder > toOrder) {
+            throw new InvalidStatusTransitionError(id, row.status, opts.status);
+          }
+        }
+        sets.push("status = ?");
+        values.push(opts.status);
+      }
+
+      if (sets.length === 0) return row as TaskRow;
+
+      sets.push("updated_at = ?");
+      values.push(now);
+      values.push(id);
+
+      this.db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+
+      return this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as TaskRow;
+    });
+
+    return tx();
+  }
+
+  /**
    * Close a task by setting its status to 'merged' (completed state).
    *
    * Implements REQ-008 (task closure). After closing, the task is no longer active.
@@ -332,7 +459,7 @@ export class NativeTaskStore {
 
       this.db
         .prepare(
-          "UPDATE tasks SET status = 'merged', closed_at = ?, updated_at = ? WHERE id = ?",
+          "UPDATE tasks SET status = 'closed', closed_at = ?, updated_at = ? WHERE id = ?",
         )
         .run(now, now, id);
     });
@@ -535,11 +662,11 @@ export class NativeTaskStore {
 
   /**
    * Re-evaluate tasks in 'blocked' status and transition them to 'ready'
-   * if all their blocking dependencies have been completed (status = 'merged').
+   * if all their blocking dependencies have been completed (status IN ('merged', 'closed')).
    *
    * The dependency table stores from_task_id (BLOCKED) → to_task_id (BLOCKER).
    * So unresolved blockers = rows WHERE from_task_id = <blocked_task>
-   *   AND type = 'blocks' AND blocker.status != 'merged'.
+   *   AND type = 'blocks' AND blocker.status NOT IN ('merged', 'closed').
    */
   reevaluateBlockedTasks(): void {
     const now = new Date().toISOString();
@@ -556,14 +683,16 @@ export class NativeTaskStore {
            JOIN tasks blocker ON blocker.id = td.to_task_id
            WHERE td.from_task_id = ?
              AND td.type = 'blocks'
-             AND blocker.status NOT IN ('merged')`,
+             AND blocker.status NOT IN ('merged', 'closed')`,
         )
         .get(task.id) as { cnt: number } | undefined;
 
       if ((unresolvedCount?.cnt ?? 0) === 0) {
+        // Transition to 'ready' and set approved_at so the task is treated as approved
+        // (matches the semantics of approve() which sets approved_at when → ready)
         this.db
-          .prepare("UPDATE tasks SET status = 'ready', updated_at = ? WHERE id = ?")
-          .run(now, task.id);
+          .prepare("UPDATE tasks SET status = 'ready', approved_at = COALESCE(approved_at, ?), updated_at = ? WHERE id = ?")
+          .run(now, now, task.id);
       }
     }
   }

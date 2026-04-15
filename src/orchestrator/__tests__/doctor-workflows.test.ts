@@ -8,18 +8,6 @@ import { tmpdir } from "node:os";
 import { Doctor } from "../doctor.js";
 import { installBundledWorkflows } from "../../lib/workflow-loader.js";
 
-// Mock git module (required by Doctor constructor chain)
-vi.mock("../../lib/git.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../lib/git.js")>();
-  return {
-    ...actual,
-    listWorktrees: vi.fn().mockResolvedValue([]),
-    removeWorktree: vi.fn(),
-    branchExistsOnOrigin: vi.fn().mockResolvedValue(false),
-    detectDefaultBranch: vi.fn(),
-  };
-});
-
 function makeMocks(projectPath: string) {
   const store = {
     getProjectByPath: vi.fn().mockReturnValue(null),

@@ -5,12 +5,11 @@ import { homedir } from "node:os";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Metrics, Run, RunProgress } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
 import { renderAgentCard, formatSuccessRate } from "../watch-ui.js";
-import { BeadsRustClient } from "../../lib/beads-rust.js";
-import type { BrIssue } from "../../lib/beads-rust.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
-import type { Issue } from "../../lib/task-client.js";
+import { fetchTaskCounts } from "../../lib/task-client-factory.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
+import { ProjectRegistry } from "../../lib/project-registry.js";
 import { pollDashboard, renderDashboard } from "./dashboard.js";
 
 // ── Pi log activity helper ────────────────────────────────────────────────
@@ -78,48 +77,15 @@ export interface StatusCounts {
 }
 
 /**
- * Fetch task status counts using the br backend.
- *
- * TRD-024: sd backend removed. Always uses BeadsRustClient (br CLI).
+ * Fetch task status counts using the shared task backend selector.
  */
 export async function fetchStatusCounts(projectPath: string): Promise<StatusCounts> {
-  const brClient = new BeadsRustClient(projectPath);
-
-  // Fetch open issues (all non-closed)
-  let openIssues: BrIssue[] = [];
-  try {
-    openIssues = await brClient.list();
-  } catch { /* br not initialized or binary missing — return zeros */ }
-
-  // Fetch closed issues separately (br list excludes closed by default)
-  let closedIssues: BrIssue[] = [];
-  try {
-    closedIssues = await brClient.list({ status: "closed" });
-  } catch { /* no closed issues */ }
-
-  // Fetch ready issues (open + unblocked)
-  let readyIssues: Issue[] = [];
-  try {
-    readyIssues = await brClient.ready();
-  } catch { /* br ready may fail */ }
-
-  const inProgress = openIssues.filter((i) => i.status === "in_progress").length;
-  const completed = closedIssues.length;
-  const ready = readyIssues.length;
-  // blocked = open issues that are not ready and not in_progress
-  const readyIds = new Set(readyIssues.map((i) => i.id));
-  const blocked = openIssues.filter(
-    (i) => i.status !== "in_progress" && !readyIds.has(i.id),
-  ).length;
-  const total = openIssues.length + completed;
-
-  return { total, ready, inProgress, completed, blocked };
+  return fetchTaskCounts(projectPath);
 }
 
 // ── Internal render helper ────────────────────────────────────────────────
 
-async function renderStatus(): Promise<void> {
-  const projectPath = await getRepoRoot(process.cwd());
+async function renderStatus(projectPath: string): Promise<void> {
   let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
   try {
     counts = await fetchStatusCounts(projectPath);
@@ -252,11 +218,70 @@ export const statusCommand = new Command("status")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
   .option("--live", "Enable full dashboard TUI with event stream (implies --watch; use instead of 'foreman dashboard')")
   .option("--json", "Output status as JSON")
-  .action(async (opts: { watch?: boolean | string; json?: boolean; live?: boolean }) => {
+  .option("--all", "Show status across all registered projects")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action(async (opts: { watch?: boolean | string; json?: boolean; live?: boolean; project?: string; projectPath?: string; all?: boolean }) => {
+    if (opts.all) {
+      const registry = new ProjectRegistry();
+      const projects = registry.list();
+
+      if (projects.length === 0) {
+        console.log(chalk.yellow("No registered projects found. Run 'foreman project add' to register projects."));
+        return;
+      }
+
+      const aggregated: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+      let totalFailed = 0;
+      let totalStuck = 0;
+      let totalActiveAgents = 0;
+      let totalCost = 0;
+
+      for (const proj of projects) {
+        try {
+          const counts = await fetchStatusCounts(proj.path);
+          aggregated.total += counts.total;
+          aggregated.ready += counts.ready;
+          aggregated.inProgress += counts.inProgress;
+          aggregated.completed += counts.completed;
+          aggregated.blocked += counts.blocked;
+
+          const store = ForemanStore.forProject(proj.path);
+          const project = store.getProjectByPath(proj.path);
+          if (project) {
+            const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+            totalFailed += store.getRunsByStatusSince("failed", since, project.id).length;
+            totalStuck += store.getRunsByStatusSince("stuck", since, project.id).length;
+            totalActiveAgents += store.getActiveRuns(project.id).length;
+            totalCost += store.getMetrics(project.id).totalCost;
+          }
+          store.close();
+        } catch {
+          // Ignore stale/inaccessible projects in aggregated status.
+        }
+      }
+
+      console.log(chalk.bold("Tasks (All Projects)"));
+      console.log(`  Total:       ${chalk.white(aggregated.total)}`);
+      console.log(`  Ready:       ${chalk.green(aggregated.ready)}`);
+      console.log(`  In Progress: ${chalk.yellow(aggregated.inProgress)}`);
+      console.log(`  Completed:   ${chalk.cyan(aggregated.completed)}`);
+      console.log(`  Blocked:     ${chalk.red(aggregated.blocked)}`);
+      console.log();
+      console.log(chalk.bold("Summary (All Projects)"));
+      if (totalFailed > 0) console.log(`  Failed (24h): ${chalk.red(totalFailed)}`);
+      if (totalStuck > 0) console.log(`  Stuck (24h):  ${chalk.red(totalStuck)}`);
+      console.log(`  Active Agents: ${chalk.yellow(totalActiveAgents)}`);
+      if (totalCost > 0) console.log(`  Total Cost:   ${chalk.yellow(`$${totalCost.toFixed(2)}`)}`);
+      console.log();
+      console.log(chalk.dim(`Projects: ${projects.map((p) => p.name).join(", ")}`));
+      return;
+    }
+
+    const projectPath = await resolveRepoRootProjectPath(opts);
     if (opts.json) {
       // JSON output path — gather data and serialize
       try {
-        const projectPath = await getRepoRoot(process.cwd());
         let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
         try {
           counts = await fetchStatusCounts(projectPath);
@@ -339,7 +364,6 @@ export const statusCommand = new Command("status")
 
       try {
         while (!detached) {
-          const projectPath = await getRepoRoot(process.cwd());
           const store = ForemanStore.forProject(projectPath);
 
           let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
@@ -385,12 +409,12 @@ export const statusCommand = new Command("status")
         // Clear screen and move cursor to top
         process.stdout.write("\x1b[2J\x1b[H");
         console.log(chalk.bold("Project Status") + chalk.dim(`  (watching every ${seconds}s — Ctrl+C to stop)\n`));
-        await renderStatus();
+        await renderStatus(projectPath);
         console.log(chalk.dim(`\nLast updated: ${new Date().toLocaleTimeString()}`));
         await new Promise((r) => setTimeout(r, seconds * 1000));
       }
     } else {
       console.log(chalk.bold("Project Status\n"));
-      await renderStatus();
+      await renderStatus(projectPath);
     }
   });

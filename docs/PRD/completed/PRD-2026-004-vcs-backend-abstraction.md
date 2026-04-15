@@ -341,7 +341,7 @@ The system shall implement a `GitBackend` class in `src/lib/vcs/git-backend.ts` 
 
 **Acceptance Criteria:**
 
-- **AC-004-1:** Given a git repository, when `GitBackend.createWorkspace()` is called with a seedId, then a git worktree is created at `<repoPath>/.foreman-worktrees/<seedId>` on branch `foreman/<seedId>`, matching current `createWorktree()` behavior exactly.
+- **AC-004-1:** Given a git repository, when `GitBackend.createWorkspace()` is called with a seedId, then a git worktree is created in Foreman's workspace root (default: `<repoParent>/.foreman-worktrees/<repoName>/<seedId>`) on branch `foreman/<seedId>`.
 - **AC-004-2:** Given an existing worktree from a failed run, when `GitBackend.createWorkspace()` is called for the same seedId, then the worktree is reused and rebased onto the base branch, matching current retry behavior.
 - **AC-004-3:** Given a git repository with git-town configured, when `GitBackend.detectDefaultBranch()` is called, then the `git-town.main-branch` config value is returned (matching current priority order).
 - **AC-004-4:** Given a git worktree, when `GitBackend.commit()` is called, then `git add -A` and `git commit -m <message>` are executed and the short commit hash is returned.
@@ -413,7 +413,7 @@ The system shall implement a `JujutsuBackend` class in `src/lib/vcs/jujutsu-back
 
 **Acceptance Criteria:**
 
-- **AC-009-1:** Given a jj repository, when `JujutsuBackend.createWorkspace()` is called with seedId `bd-abc1`, then `jj workspace add <path> --name foreman-bd-abc1` is executed, creating a workspace at `<repoPath>/.foreman-worktrees/bd-abc1`.
+- **AC-009-1:** Given a jj repository, when `JujutsuBackend.createWorkspace()` is called with seedId `bd-abc1`, then `jj workspace add <path> --name foreman-bd-abc1` is executed, creating a workspace in Foreman's workspace root (default: `<repoParent>/.foreman-worktrees/<repoName>/bd-abc1`).
 - **AC-009-2:** Given the workspace is created, when the workspace is initialized, then a bookmark `foreman/bd-abc1` is created pointing to the new workspace's working-copy change via `jj bookmark create foreman/bd-abc1 -r @`.
 - **AC-009-3:** Given an existing workspace from a failed run, when `createWorkspace()` is called for the same seedId, then the existing workspace is reused: `jj workspace update-stale` is run if needed, and the working copy is rebased onto the base branch.
 - **AC-009-4:** Given a workspace, when `JujutsuBackend.removeWorkspace()` is called, then `jj workspace forget <name>` is executed and the workspace directory is removed.

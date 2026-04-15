@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const {
   mockGetRepoRoot,
   mockDetectDefaultBranch,
+  mockCreateVcsBackend,
   mockBrList,
   mockBrReady,
   mockEnsureBrInstalled,
@@ -32,6 +33,11 @@ const {
 } = vi.hoisted(() => {
   const mockGetRepoRoot = vi.fn().mockResolvedValue("/mock/project");
   const mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
+  const mockCreateVcsBackend = vi.fn().mockResolvedValue({
+    name: "git",
+    getRepoRoot: mockGetRepoRoot,
+    detectDefaultBranch: mockDetectDefaultBranch,
+  });
 
   // BeadsRustClient mocks
   const mockBrList = vi.fn().mockResolvedValue([]);
@@ -84,6 +90,7 @@ const {
   return {
     mockGetRepoRoot,
     mockDetectDefaultBranch,
+    mockCreateVcsBackend,
     mockBrList,
     mockBrReady,
     mockEnsureBrInstalled,
@@ -103,9 +110,10 @@ const {
   };
 });
 
-vi.mock("../../lib/git.js", () => ({
-  getRepoRoot: mockGetRepoRoot,
-  detectDefaultBranch: mockDetectDefaultBranch,
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: mockCreateVcsBackend,
+  },
 }));
 
 vi.mock("../../lib/beads-rust.js", () => ({

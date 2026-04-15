@@ -4,19 +4,33 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Doctor } from "../doctor.js";
 import type { Run } from "../../lib/store.js";
+import { getWorkspacePath } from "../../lib/workspace-paths.js";
 
-// Mock git module for worktree tests
-vi.mock("../../lib/git.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../lib/git.js")>();
-  return {
-    ...actual,
-    listWorktrees: vi.fn(),
-    removeWorktree: vi.fn(),
-    branchExistsOnOrigin: vi.fn(),
-    detectDefaultBranch: vi.fn(),
-  };
+const {
+  mockListWorkspaces,
+  mockRemoveWorkspace,
+  mockBranchExistsOnRemote,
+  mockDetectDefaultBranch,
+  mockCreateVcsBackend,
+} = vi.hoisted(() => {
+  const mockListWorkspaces = vi.fn();
+  const mockRemoveWorkspace = vi.fn();
+  const mockBranchExistsOnRemote = vi.fn();
+  const mockDetectDefaultBranch = vi.fn();
+  const mockCreateVcsBackend = vi.fn().mockResolvedValue({
+    name: "git",
+    listWorkspaces: mockListWorkspaces,
+    removeWorkspace: mockRemoveWorkspace,
+    branchExistsOnRemote: mockBranchExistsOnRemote,
+    detectDefaultBranch: mockDetectDefaultBranch,
+  });
+  return { mockListWorkspaces, mockRemoveWorkspace, mockBranchExistsOnRemote, mockDetectDefaultBranch, mockCreateVcsBackend };
 });
-import { listWorktrees, branchExistsOnOrigin, detectDefaultBranch } from "../../lib/git.js";
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: mockCreateVcsBackend,
+  },
+}));
 
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
@@ -58,7 +72,7 @@ function makeMergeQueueMock(missingEntries: Array<{ run_id: string; seed_id: str
 
 // Default: return empty worktree list so existing tests aren't affected
 beforeEach(() => {
-  vi.mocked(listWorktrees).mockResolvedValue([]);
+  mockListWorkspaces.mockResolvedValue([]);
 });
 
 describe("Doctor", () => {
@@ -460,7 +474,7 @@ describe("Doctor", () => {
         // No .beads/issues.jsonl — seed not closed via beads
         // execFn returns successfully (exit 0) → branch is merged
         const execFn = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
-        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+        mockDetectDefaultBranch.mockResolvedValue("main");
 
         const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
         const failedRun = makeRun({ id: "run-merged", seed_id: "bd-merged", status: "failed" });
@@ -498,7 +512,7 @@ describe("Doctor", () => {
       try {
         // execFn throws (non-zero exit) → branch is not merged
         const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
-        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+        mockDetectDefaultBranch.mockResolvedValue("main");
 
         const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
         const failedRun = makeRun({ id: "run-unmerged", seed_id: "bd-unmerged", status: "failed" });
@@ -533,7 +547,7 @@ describe("Doctor", () => {
 
         // execFn should NOT be called because the seed-closed check fires first
         const execFn = vi.fn().mockRejectedValue(new Error("should not be called"));
-        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+        mockDetectDefaultBranch.mockResolvedValue("main");
 
         const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
         const failedRun = makeRun({ id: "run-closed-seed", seed_id: "bd-closed", status: "failed" });
@@ -561,7 +575,7 @@ describe("Doctor", () => {
       try {
         // execFn throws a git error (e.g. corrupted repo)
         const execFn = vi.fn().mockRejectedValue(new Error("fatal: not a git repository"));
-        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+        mockDetectDefaultBranch.mockResolvedValue("main");
 
         const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
         const failedRun = makeRun({ id: "run-git-err", seed_id: "bd-git-err", status: "failed" });
@@ -585,7 +599,7 @@ describe("Doctor", () => {
       const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
       try {
         const execFn = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
-        vi.mocked(detectDefaultBranch).mockResolvedValue("dev");
+        mockDetectDefaultBranch.mockResolvedValue("dev");
 
         const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
         const stuckRun = makeRun({ id: "run-stuck", seed_id: "bd-stuck", status: "stuck" });
@@ -612,7 +626,7 @@ describe("Doctor", () => {
       try {
         // Branch not merged, seed not closed
         const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
-        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+        mockDetectDefaultBranch.mockResolvedValue("main");
 
         const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
 
@@ -655,7 +669,7 @@ describe("Doctor", () => {
       const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
       try {
         const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
-        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+        mockDetectDefaultBranch.mockResolvedValue("main");
 
         const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
 
@@ -692,7 +706,7 @@ describe("Doctor", () => {
       const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
       try {
         const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
-        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+        mockDetectDefaultBranch.mockResolvedValue("main");
 
         const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
 
@@ -735,7 +749,7 @@ describe("Doctor", () => {
       const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
       try {
         const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
-        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+        mockDetectDefaultBranch.mockResolvedValue("main");
 
         const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
 
@@ -776,7 +790,7 @@ describe("Doctor", () => {
       const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
       try {
         const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
-        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+        mockDetectDefaultBranch.mockResolvedValue("main");
 
         const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
 
@@ -817,7 +831,7 @@ describe("Doctor", () => {
       const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
       try {
         const execFn = vi.fn().mockRejectedValue(new Error("not an ancestor"));
-        vi.mocked(detectDefaultBranch).mockResolvedValue("main");
+        mockDetectDefaultBranch.mockResolvedValue("main");
 
         const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
 
@@ -1051,14 +1065,14 @@ describe("Doctor", () => {
   });
 
   describe("checkOrphanedWorktrees", () => {
-    const mockListWorktrees = vi.mocked(listWorktrees);
-    const mockBranchExistsOnOrigin = vi.mocked(branchExistsOnOrigin);
+    const mockListWorktrees = mockListWorkspaces;
+    const mockBranchExistsOnOrigin = mockBranchExistsOnRemote;
 
     beforeEach(() => {
       mockListWorktrees.mockReset();
       mockBranchExistsOnOrigin.mockReset();
       // Default: branch not on origin (safe to remove)
-      mockBranchExistsOnOrigin.mockResolvedValue(false);
+      mockBranchExistsOnRemote.mockResolvedValue(false);
     });
 
     it("returns pass when no foreman worktrees", async () => {
@@ -1154,7 +1168,7 @@ describe("Doctor", () => {
         { path: "/tmp/wt", branch: "foreman/seed-orphan", head: "abc123", bare: false },
       ]);
       store.getRunsForSeed.mockReturnValue([]);
-      mockBranchExistsOnOrigin.mockResolvedValue(true);
+      mockBranchExistsOnRemote.mockResolvedValue(true);
 
       const results = await doctor.checkOrphanedWorktrees();
 
@@ -1170,8 +1184,8 @@ describe("Doctor", () => {
         { path: "/tmp/wt", branch: "foreman/seed-gone", head: "abc123", bare: false },
       ]);
       store.getRunsForSeed.mockReturnValue([]);
-      mockBranchExistsOnOrigin.mockResolvedValue(false);
-      vi.mocked(await import("../../lib/git.js").then(m => m)).removeWorktree = vi.fn().mockResolvedValue(undefined);
+      mockBranchExistsOnRemote.mockResolvedValue(false);
+      mockRemoveWorkspace.mockResolvedValue(undefined);
 
       const results = await doctor.checkOrphanedWorktrees({ fix: true });
 
@@ -1185,7 +1199,7 @@ describe("Doctor", () => {
         { path: "/tmp/wt", branch: "foreman/seed-local", head: "abc123", bare: false },
       ]);
       store.getRunsForSeed.mockReturnValue([]);
-      mockBranchExistsOnOrigin.mockResolvedValue(false);
+      mockBranchExistsOnRemote.mockResolvedValue(false);
 
       const results = await doctor.checkOrphanedWorktrees();
 
@@ -1258,8 +1272,6 @@ describe("Doctor", () => {
   });
 
   describe("checkGitTownMainBranch", () => {
-    const mockDetectDefaultBranch = vi.mocked(detectDefaultBranch);
-
     beforeEach(() => {
       mockDetectDefaultBranch.mockReset();
     });
@@ -1547,7 +1559,7 @@ describe("checkOrphanedGlobalStoreRuns", () => {
     const { ForemanStore } = await import("../../lib/store.js");
     const store = new ForemanStore(globalDbPath);
     const project = store.registerProject("test-project", projectPath);
-    store.createRun(project.id, "seed-abc", "developer", join(projectPath, ".foreman-worktrees", "seed-abc"));
+    store.createRun(project.id, "seed-abc", "developer", getWorkspacePath(projectPath, "seed-abc"));
     const runs = store.getRunsByStatus("pending", project.id);
     store.updateRun(runs[0].id, { status: "completed", completed_at: new Date().toISOString() });
     store.close();
@@ -1636,7 +1648,7 @@ describe("checkOrphanedGlobalStoreRuns", () => {
       const globalDbPath = join(globalDir, "foreman.db");
       const globalStore = new ForemanStore(globalDbPath);
       const globalProject = globalStore.registerProject("my-project", projectDir);
-      const run = globalStore.createRun(globalProject.id, "seed-001", "developer", join(projectDir, ".foreman-worktrees", "seed-001"));
+      const run = globalStore.createRun(globalProject.id, "seed-001", "developer", getWorkspacePath(projectDir, "seed-001"));
       globalStore.updateRun(run.id, { status: "completed", completed_at: new Date().toISOString() });
       globalStore.close();
 

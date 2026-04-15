@@ -50,6 +50,7 @@ function readPackageVersion(): string {
  * to get the filename, then run the real pack.
  */
 function runNpmPack(destDir: string): string {
+  const npmCacheDir = join(destDir, ".npm-cache");
   // npm pack with --pack-destination writes the tarball to destDir
   const result = spawnSync(
     "npm",
@@ -58,6 +59,10 @@ function runNpmPack(destDir: string): string {
       cwd: REPO_ROOT,
       encoding: "utf-8",
       timeout: 60_000,
+      env: {
+        ...process.env,
+        npm_config_cache: npmCacheDir,
+      },
     }
   );
 

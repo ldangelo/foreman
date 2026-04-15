@@ -21,7 +21,7 @@
  * @module src/lib/vcs/__tests__/jujutsu-backend-integration.test
  */
 
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import {
   mkdtempSync,
   writeFileSync,
@@ -33,6 +33,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { JujutsuBackend } from "../jujutsu-backend.js";
+import { getWorkspacePath } from "../../workspace-paths.js";
 
 // ── Check if jj is available ──────────────────────────────────────────────────
 
@@ -50,16 +51,28 @@ function isJjAvailable(): boolean {
 }
 
 const JJ_AVAILABLE = isJjAvailable();
+const ORIGINAL_HOME = process.env.HOME;
+const ORIGINAL_XDG_CONFIG_HOME = process.env.XDG_CONFIG_HOME;
+let jjHomeDir: string;
 
 // ── Cleanup ───────────────────────────────────────────────────────────────────
 
 const tempDirs: string[] = [];
+
+beforeEach(() => {
+  jjHomeDir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-jj-home-")));
+  tempDirs.push(jjHomeDir);
+  process.env.HOME = jjHomeDir;
+  process.env.XDG_CONFIG_HOME = join(jjHomeDir, ".config");
+});
 
 afterEach(() => {
   for (const dir of tempDirs) {
     rmSync(dir, { recursive: true, force: true });
   }
   tempDirs.length = 0;
+  process.env.HOME = ORIGINAL_HOME;
+  process.env.XDG_CONFIG_HOME = ORIGINAL_XDG_CONFIG_HOME;
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -129,6 +142,14 @@ function makeRemoteAndLocal(): { remoteDir: string; localDir: string } {
     cwd: localDir,
     stdio: "pipe",
   });
+  execFileSync("jj", ["config", "set", "--repo", "user.name", "Test Agent"], {
+    cwd: localDir,
+    stdio: "pipe",
+  });
+  execFileSync("jj", ["config", "set", "--repo", "user.email", "test@test.com"], {
+    cwd: localDir,
+    stdio: "pipe",
+  });
 
   return { remoteDir, localDir };
 }
@@ -163,7 +184,7 @@ describe.skipIf(!JJ_AVAILABLE)(
 
       expect(workspaceResult.branchName).toBe(`foreman/${seedId}`);
       expect(workspaceResult.workspacePath).toBe(
-        join(localDir, ".foreman-worktrees", seedId),
+        getWorkspacePath(localDir, seedId),
       );
       expect(existsSync(workspaceResult.workspacePath)).toBe(true);
 

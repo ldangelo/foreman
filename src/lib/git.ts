@@ -9,39 +9,23 @@
  * See TRD-011 in trd-2026-004-vcs-backend-abstraction for migration details.
  */
 
-import { createHash } from "node:crypto";
-import { join } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import fs from "node:fs/promises";
-
 import { GitBackend } from "./vcs/git-backend.js";
+import {
+  detectPackageManager,
+  installDependencies,
+  runSetupSteps,
+  runSetupWithCache,
+} from "./setup.js";
 
 import type { WorkflowSetupStep, WorkflowSetupCache } from "./workflow-loader.js";
 import type { Workspace, MergeResult as VcsMergeResult, DeleteBranchResult as VcsDeleteBranchResult } from "./vcs/types.js";
 
-const execFileAsync = promisify(execFile);
-
-// ── Spawn Environment ─────────────────────────────────────────────────────────
-
-/**
- * Build an environment for spawned setup processes that includes common binary
- * directories in PATH.  On macOS (Apple Silicon), Homebrew installs to
- * `/opt/homebrew/bin` which may not be present in a non-interactive shell's
- * PATH.  Similarly, user-local binaries in `~/.local/bin` must be reachable.
- *
- * This mirrors the PATH augmentation in `buildWorkerEnv()` (dispatcher.ts) so
- * that setup steps (e.g. `npm install`) can find their binaries regardless of
- * how the parent process was launched.
- */
-function buildSetupEnv(): NodeJS.ProcessEnv {
-  const home = process.env.HOME ?? "/home/nobody";
-  return {
-    ...process.env,
-    PATH: `${home}/.local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`,
-  };
-}
+export {
+  detectPackageManager,
+  installDependencies,
+  runSetupSteps,
+  runSetupWithCache,
+};
 
 // ── Backward-Compat Type Re-exports ──────────────────────────────────────────
 
@@ -60,167 +44,6 @@ export type MergeResult = VcsMergeResult;
  * @deprecated Use `DeleteBranchResult` from `src/lib/vcs/types.js` instead.
  */
 export type DeleteBranchResult = VcsDeleteBranchResult;
-
-// ── Dependency Installation (non-git, kept in shim) ─────────────────────────
-
-/**
- * Detect which package manager to use based on lock files present in a directory.
- * Returns the package manager command ("npm", "yarn", or "pnpm").
- * Priority order: pnpm > yarn > npm (explicit lock-file check for each).
- */
-export function detectPackageManager(dir: string): "npm" | "yarn" | "pnpm" {
-  if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm";
-  if (existsSync(join(dir, "yarn.lock"))) return "yarn";
-  if (existsSync(join(dir, "package-lock.json"))) return "npm";
-  return "npm";
-}
-
-/**
- * Install Node.js dependencies in the given directory.
- *
- * - Detects the package manager from lock files.
- * - Skips silently if no `package.json` is present (non-Node repos).
- * - Uses `--prefer-offline` and `--no-audit` for speed when npm is used.
- * - Throws if the installation fails.
- */
-export async function installDependencies(dir: string): Promise<void> {
-  if (!existsSync(join(dir, "package.json"))) {
-    return;
-  }
-
-  const pm = detectPackageManager(dir);
-  console.error(`[git] Running ${pm} install in ${dir} …`);
-
-  const args: string[] =
-    pm === "npm"
-      ? ["install", "--prefer-offline", "--no-audit"]
-      : pm === "yarn"
-        ? ["install", "--prefer-offline"]
-        : ["install", "--prefer-offline"]; // pnpm
-
-  try {
-    await execFileAsync(pm, args, { cwd: dir, maxBuffer: 10 * 1024 * 1024, env: buildSetupEnv() });
-  } catch (err: unknown) {
-    const e = err as { stdout?: string; stderr?: string; message?: string };
-    const combined = [e.stdout, e.stderr]
-      .map((s: string | undefined) => (s ?? "").trim())
-      .filter(Boolean)
-      .join("\n") || e.message || String(err);
-    throw new Error(`${pm} install failed in ${dir}: ${combined}`);
-  }
-}
-
-/**
- * Run workflow setup steps in a worktree directory.
- *
- * Each step's `command` is split on whitespace to form an argv array and
- * executed via execFileAsync with `cwd` set to `dir`.
- */
-export async function runSetupSteps(
-  dir: string,
-  steps: WorkflowSetupStep[],
-): Promise<void> {
-  for (const step of steps) {
-    const label = step.description ?? step.command;
-    console.error(`[setup] Running: ${step.command}`);
-
-    const argv = step.command.trim().split(/\s+/);
-    const [cmd, ...args] = argv;
-
-    try {
-      await execFileAsync(cmd, args, { cwd: dir, maxBuffer: 10 * 1024 * 1024, env: buildSetupEnv() });
-    } catch (err: unknown) {
-      const e = err as { stdout?: string; stderr?: string; message?: string };
-      const joined = [e.stdout, e.stderr]
-        .map((s) => (s ?? "").trim())
-        .filter(Boolean)
-        .join("\n");
-      const combined = joined || (e.message ?? String(err));
-
-      if (step.failFatal !== false) {
-        throw new Error(`Setup step failed (${label}): ${combined}`);
-      } else {
-        console.error(`[setup] Warning: step failed (non-fatal) — ${label}: ${combined}`);
-      }
-    }
-  }
-}
-
-// ── Setup Cache (stack-agnostic) ─────────────────────────────────────────────
-
-function computeCacheHash(worktreePath: string, keyFile: string): string | null {
-  const keyPath = join(worktreePath, keyFile);
-  if (!existsSync(keyPath)) return null;
-  const content = readFileSync(keyPath);
-  return createHash("sha256").update(content).digest("hex").slice(0, 16);
-}
-
-async function tryRestoreFromCache(
-  worktreePath: string,
-  projectRoot: string,
-  cache: WorkflowSetupCache,
-): Promise<boolean> {
-  const hash = computeCacheHash(worktreePath, cache.key);
-  if (!hash) return false;
-
-  const cacheDir = join(projectRoot, ".foreman", "setup-cache", hash);
-  const cachedPath = join(cacheDir, cache.path);
-  const targetPath = join(worktreePath, cache.path);
-
-  if (!existsSync(join(cacheDir, ".complete"))) return false;
-  if (!existsSync(cachedPath)) return false;
-
-  try { await fs.rm(targetPath, { recursive: true, force: true }); } catch { /* ok */ }
-
-  await fs.symlink(cachedPath, targetPath);
-  console.error(`[setup-cache] Cache hit (${hash.slice(0, 8)}) — symlinked ${cache.path}`);
-  return true;
-}
-
-async function populateCache(
-  worktreePath: string,
-  projectRoot: string,
-  cache: WorkflowSetupCache,
-): Promise<void> {
-  const hash = computeCacheHash(worktreePath, cache.key);
-  if (!hash) return;
-
-  const cacheDir = join(projectRoot, ".foreman", "setup-cache", hash);
-  const sourcePath = join(worktreePath, cache.path);
-  const cachedPath = join(cacheDir, cache.path);
-
-  if (!existsSync(sourcePath)) return;
-  if (existsSync(join(cacheDir, ".complete"))) return;
-
-  await fs.mkdir(cacheDir, { recursive: true });
-
-  try { await fs.rm(cachedPath, { recursive: true, force: true }); } catch { /* ok */ }
-  await fs.rename(sourcePath, cachedPath);
-  await fs.symlink(cachedPath, sourcePath);
-  await fs.writeFile(join(cacheDir, ".complete"), new Date().toISOString());
-  console.error(`[setup-cache] Cached ${cache.path} (${hash.slice(0, 8)})`);
-}
-
-/**
- * Run setup steps with optional caching.
- */
-export async function runSetupWithCache(
-  worktreePath: string,
-  projectRoot: string,
-  steps: WorkflowSetupStep[],
-  cache?: WorkflowSetupCache,
-): Promise<void> {
-  if (cache) {
-    const restored = await tryRestoreFromCache(worktreePath, projectRoot, cache);
-    if (restored) return;
-  }
-
-  await runSetupSteps(worktreePath, steps);
-
-  if (cache) {
-    await populateCache(worktreePath, projectRoot, cache);
-  }
-}
 
 // ── VCS Shim Functions — delegate to GitBackend ───────────────────────────────
 
@@ -278,7 +101,8 @@ export async function checkoutBranch(repoPath: string, branchName: string): Prom
  * Create a worktree for a seed.
  *
  * - Branch: foreman/<seedId>
- * - Location: <repoPath>/.foreman-worktrees/<seedId>
+ * - Location: Foreman's workspace root for the repo (default: external to the
+ *   repo at <repoParent>/.foreman-worktrees/<repoName>/<seedId>)
  * - Base: current branch (auto-detected if not specified)
  *
  * @deprecated Use `GitBackend.createWorkspace()` from `src/lib/vcs/git-backend.js` instead.

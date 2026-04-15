@@ -31,6 +31,7 @@ import { promisify } from "node:util";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { GitBackend } from "../git-backend.js";
+import { getWorkspacePath } from "../../workspace-paths.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -136,7 +137,7 @@ describe("GitBackend Integration: Full create-commit-push-merge pipeline", () =>
 
     expect(workspaceResult.branchName).toBe(`foreman/${seedId}`);
     expect(workspaceResult.workspacePath).toBe(
-      join(localDir, ".foreman-worktrees", seedId),
+      getWorkspacePath(localDir, seedId),
     );
     expect(existsSync(workspaceResult.workspacePath)).toBe(true);
 

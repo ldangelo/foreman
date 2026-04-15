@@ -100,6 +100,7 @@ export function createGetRunStatusTool(store: ForemanStore): ToolDefinition {
         const progress = store.getRunProgress(params.runId);
         const info = {
           runId: run.id,
+          beadId: run.seed_id,
           seedId: run.seed_id,
           status: run.status,
           startedAt: run.started_at,
@@ -129,12 +130,13 @@ export function createGetRunStatusTool(store: ForemanStore): ToolDefinition {
 // ── close-bead tool ─────────────────────────────────────────────────────
 
 const CloseBeadParams = Type.Object({
-  seedId: Type.String({ description: "The seed/bead ID to close (e.g. 'bd-abc')" }),
+  beadId: Type.Optional(Type.String({ description: "The bead ID to close (e.g. 'bd-abc')" })),
+  seedId: Type.Optional(Type.String({ description: "Legacy alias for beadId" })),
   reason: Type.String({ description: "Brief reason for closing (e.g. 'Work already merged into dev')" }),
 });
 
 /**
- * Create a close_bead ToolDefinition that runs `br close <seedId>`.
+ * Create a close_bead ToolDefinition that runs `br close <beadId>`.
  *
  * Used by the troubleshooter agent to mark a bead complete when the work has
  * been confirmed as done (e.g. already merged into the target branch).
@@ -143,7 +145,7 @@ export function createCloseBeadTool(projectPath: string): ToolDefinition {
   return {
     name: "close_bead",
     label: "Close Bead",
-    description: "Mark a bead/seed as complete using the br CLI. Only call this when you have confirmed the work is done and merged.",
+    description: "Mark a bead as complete using the br CLI. Only call this when you have confirmed the work is done and merged.",
     promptSnippet: "Close a completed bead using br",
     promptGuidelines: [
       "Only close a bead when the work is confirmed complete and merged into the target branch",
@@ -153,21 +155,28 @@ export function createCloseBeadTool(projectPath: string): ToolDefinition {
       _toolCallId: string,
       params: Static<typeof CloseBeadParams>,
     ) {
+      const beadId = params.beadId ?? params.seedId;
+      if (!beadId) {
+        return {
+          content: [{ type: "text" as const, text: "Failed to close bead: missing beadId" }],
+          details: undefined,
+        };
+      }
       try {
         const brBin = process.env["BR_BIN"] ?? "br";
         const { stdout } = await execFileAsync(
           brBin,
-          ["close", params.seedId, "--reason", params.reason],
+          ["close", beadId, "--reason", params.reason],
           { cwd: projectPath },
         );
         return {
-          content: [{ type: "text" as const, text: `Bead ${params.seedId} closed: ${stdout.trim()}` }],
+          content: [{ type: "text" as const, text: `Bead ${beadId} closed: ${stdout.trim()}` }],
           details: undefined,
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          content: [{ type: "text" as const, text: `Failed to close bead ${params.seedId}: ${msg}` }],
+          content: [{ type: "text" as const, text: `Failed to close bead ${beadId}: ${msg}` }],
           details: undefined,
         };
       }

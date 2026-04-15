@@ -15,8 +15,7 @@ let mockShowFn = vi.fn().mockResolvedValue({ dependencies: [] });
 // TRD-015: branchExists is now called via GitBackend instance, not gitBranchExists shim
 let mockBranchExists = vi.fn().mockResolvedValue(false);
 
-vi.mock("../../lib/git.js", () => ({
-  // TRD-015: gitBranchExists removed — now uses GitBackend.branchExists()
+vi.mock("../../lib/setup.js", () => ({
   installDependencies: vi.fn().mockResolvedValue(undefined),
   runSetupWithCache: vi.fn().mockResolvedValue(undefined),
 }));

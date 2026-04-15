@@ -37,9 +37,7 @@ vi.mock("../../lib/workflow-config-loader.js", () => ({
   resolveWorkflowType: vi.fn().mockReturnValue("feature"),
 }));
 
-vi.mock("../../lib/git.js", () => ({
-  // TRD-015: createWorktree and gitBranchExists replaced by VcsBackend methods
-  // getCurrentBranch and detectDefaultBranch replaced by GitBackend methods
+vi.mock("../../lib/setup.js", () => ({
   installDependencies: vi.fn().mockResolvedValue(undefined),
   runSetupWithCache: vi.fn().mockResolvedValue(undefined),
 }));
@@ -174,9 +172,9 @@ describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
 
     await dispatcher.dispatch({ dryRun: false });
 
-    // VcsBackendFactory.create should have been called with 'git' backend
+    // Dispatcher now creates one auto-detected backend up front and reuses it.
     expect(VcsBackendFactory.create).toHaveBeenCalledWith(
-      { backend: "git" },
+      { backend: "auto" },
       "/tmp/project",
     );
   });
@@ -200,7 +198,7 @@ describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
     await dispatcher.dispatch({ dryRun: false });
 
     expect(VcsBackendFactory.create).toHaveBeenCalledWith(
-      { backend: "jujutsu" },
+      { backend: "auto" },
       "/tmp/project",
     );
   });
@@ -223,9 +221,9 @@ describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
 
     await dispatcher.dispatch({ dryRun: false });
 
-    // Should default to 'git' when no .jj/ directory exists in /tmp/project
+    // Dispatcher now creates one auto-detected backend up front and reuses it.
     expect(VcsBackendFactory.create).toHaveBeenCalledWith(
-      { backend: "git" },
+      { backend: "auto" },
       "/tmp/project",
     );
   });

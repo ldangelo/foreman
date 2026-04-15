@@ -155,7 +155,7 @@ setup:
 
 ## Setup Cache
 
-The `setupCache` block enables a shared dependency cache across worktrees. Instead of running setup steps for every bead, Foreman hashes a key file and symlinks the cached dependency directory. **First bead pays the full install cost; subsequent beads get a symlink in <1 second.**
+The `setupCache` block enables a shared dependency cache across worktrees. Instead of running setup steps for every task, Foreman hashes a key file and symlinks the cached dependency directory. **First task pays the full install cost; subsequent tasks get a symlink in <1 second.**
 
 ### `setupCache` (optional)
 
@@ -291,7 +291,7 @@ Full model IDs are also accepted for any provider:
 models:
   default: sonnet
 
-# Priority-based: critical beads get a more capable model
+# Priority-based: critical tasks get a more capable model
 models:
   default: sonnet
   P0: opus

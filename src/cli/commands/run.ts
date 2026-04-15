@@ -1,18 +1,22 @@
 import { Command } from "commander";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 
-import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
-import type { ITaskClient } from "../../lib/task-client.js";
+import type { ITaskClient, Issue } from "../../lib/task-client.js";
+import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
-import { getRepoRoot, getCurrentBranch, checkoutBranch, detectDefaultBranch } from "../../lib/git.js";
-import { extractBranchLabel } from "../../lib/branch-label.js";
+import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
+import type { VcsBackend } from "../../lib/vcs/interface.js";
+import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
-import type { DispatchedTask, ModelSelection } from "../../orchestrator/types.js";
-import { watchRunsInk, type WatchResult } from "../watch-ui.js";
+import type { ModelSelection } from "../../orchestrator/types.js";
+import { watchRunsInk } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
@@ -33,6 +37,26 @@ export type { AutoMergeOpts, AutoMergeResult } from "../../orchestrator/auto-mer
 export interface TaskClientResult {
   taskClient: ITaskClient;
   bvClient: BvClient | null;
+  backendType: "beads" | "native";
+}
+
+interface SentinelStartupTaskClient extends ITaskClient {
+  create(
+    title: string,
+    opts: {
+      type: string;
+      priority: string;
+      description?: string;
+      labels?: string[];
+    },
+  ): Promise<Issue>;
+}
+
+export type RuntimeMode = "normal" | "test";
+
+export function resolveRuntimeMode(value?: string): RuntimeMode {
+  const raw = (value ?? process.env.FOREMAN_RUNTIME_MODE ?? "normal").trim().toLowerCase();
+  return raw === "test" ? "test" : "normal";
 }
 
 /**
@@ -43,12 +67,20 @@ export interface TaskClientResult {
  *
  * Throws if the br binary cannot be found.
  */
-export async function createTaskClients(projectPath: string): Promise<TaskClientResult> {
-  const brClient = new BeadsRustClient(projectPath);
-  // Verify binary exists before proceeding; throws with a friendly message if not
-  await brClient.ensureBrInstalled();
-  const bvClient = new BvClient(projectPath);
-  return { taskClient: brClient, bvClient };
+export async function createTaskClients(
+  projectPath: string,
+  runtimeMode: RuntimeMode = resolveRuntimeMode(),
+): Promise<TaskClientResult> {
+  const { taskClient, backendType } = await createTaskClient(projectPath, {
+    ensureBrInstalled: true,
+    autoSelectNativeWhenAvailable: runtimeMode === "test",
+  });
+
+  return {
+    taskClient,
+    bvClient: backendType === "beads" ? new BvClient(projectPath) : null,
+    backendType,
+  };
 }
 
 // ── Branch Mismatch Detection ────────────────────────────────────────────────
@@ -68,6 +100,115 @@ async function promptYesNo(question: string): Promise<boolean> {
   });
 }
 
+const FOREMAN_OWNED_BRANCH = "foreman-controller";
+
+export function isIgnorableControllerPath(path: string): boolean {
+  return path === ".beads/issues.jsonl"
+    || path.startsWith(".omx/")
+    || path.startsWith(".foreman/")
+    || path.startsWith("SessionLogs/")
+    || path === "SESSION_LOG.md"
+    || path === "RUN_LOG.md"
+    || path.startsWith("storage.sqlite3");
+}
+
+function withCommonBinaryPath(): NodeJS.ProcessEnv {
+  const home = process.env.HOME ?? "/home/nobody";
+  return {
+    ...process.env,
+    PATH: `${home}/.local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`,
+  };
+}
+
+async function isAnonymousJujutsuRevision(
+  vcs: VcsBackend,
+  projectPath: string,
+  branch: string | undefined,
+): Promise<boolean> {
+  if (!branch || vcs.name !== "jujutsu" || typeof (vcs as Partial<VcsBackend>).branchExists !== "function") {
+    return false;
+  }
+  return !(await vcs.branchExists(projectPath, branch).catch(() => false));
+}
+
+export interface OwnedBranchResolution {
+  currentBranch: string;
+  defaultBranch: string;
+  targetBranch?: string;
+  usedOwnedBranch: boolean;
+}
+
+export async function resolveOwnedControllerBranch(
+  vcs: VcsBackend,
+  projectPath: string,
+): Promise<OwnedBranchResolution> {
+  const maybeVcs = vcs as Partial<VcsBackend>;
+  if (
+    typeof maybeVcs.getCurrentBranch !== "function" ||
+    typeof maybeVcs.detectDefaultBranch !== "function" ||
+    typeof maybeVcs.branchExists !== "function" ||
+    typeof maybeVcs.getModifiedFiles !== "function" ||
+    typeof maybeVcs.getUntrackedFiles !== "function"
+  ) {
+    return {
+      currentBranch: "",
+      defaultBranch: "",
+      usedOwnedBranch: false,
+    };
+  }
+
+  const currentBranch = normalizeBranchLabel(await vcs.getCurrentBranch(projectPath)) ?? "";
+  const defaultBranch = normalizeBranchLabel(await vcs.detectDefaultBranch(projectPath)) ?? "";
+  const currentIsAnonymousRevision = await isAnonymousJujutsuRevision(vcs, projectPath, currentBranch);
+
+  const shouldUseOwnedBranch =
+    vcs.name === "jujutsu" &&
+    (currentIsAnonymousRevision || currentBranch === defaultBranch);
+
+  if (!shouldUseOwnedBranch) {
+    return {
+      currentBranch,
+      defaultBranch,
+      usedOwnedBranch: false,
+    };
+  }
+
+  const dirtyTracked = (await vcs.getModifiedFiles(projectPath))
+    .filter((path) => !isIgnorableControllerPath(path));
+  const dirtyUntracked = (await vcs.getUntrackedFiles(projectPath))
+    .filter((path) => !isIgnorableControllerPath(path));
+  const dirtyPaths = [...dirtyTracked, ...dirtyUntracked];
+  if (dirtyPaths.length > 0) {
+    throw new Error(
+      `Foreman-owned branch requires a clean controller checkout. Dirty paths: ${dirtyPaths.slice(0, 8).join(", ")}`,
+    );
+  }
+
+  const branchExists = await vcs.branchExists(projectPath, FOREMAN_OWNED_BRANCH).catch(() => false);
+  if (!branchExists) {
+    execFileSync("jj", ["bookmark", "create", FOREMAN_OWNED_BRANCH, "-r", defaultBranch], {
+      cwd: projectPath,
+      stdio: "pipe",
+      env: withCommonBinaryPath(),
+    });
+  }
+
+  if (currentBranch !== FOREMAN_OWNED_BRANCH) {
+    execFileSync("jj", ["new", FOREMAN_OWNED_BRANCH], {
+      cwd: projectPath,
+      stdio: "pipe",
+      env: withCommonBinaryPath(),
+    });
+  }
+
+  return {
+    currentBranch: FOREMAN_OWNED_BRANCH,
+    defaultBranch,
+    targetBranch: defaultBranch,
+    usedOwnedBranch: true,
+  };
+}
+
 /**
  * Check whether any in-progress beads have a `branch:` label that differs
  * from the current git branch.
@@ -80,19 +221,33 @@ async function promptYesNo(question: string): Promise<boolean> {
  *
  * Returns true if the caller should abort (user declined to switch).
  */
+async function createRunVcsBackend(projectPath: string): Promise<VcsBackend> {
+  const projectCfg = loadProjectConfig(projectPath);
+  const vcsConfig = resolveVcsConfig(undefined, projectCfg?.vcs);
+  return VcsBackendFactory.create(vcsConfig, projectPath);
+}
+
 export async function checkBranchMismatch(
   taskClient: ITaskClient,
   projectPath: string,
 ): Promise<boolean> {
+  let vcs: VcsBackend;
+  try {
+    vcs = await createRunVcsBackend(projectPath);
+  } catch {
+    // Cannot determine VCS backend — skip mismatch check
+    return false;
+  }
+
   let currentBranch: string;
   try {
-    currentBranch = await getCurrentBranch(projectPath);
+    currentBranch = normalizeBranchLabel(await vcs.getCurrentBranch(projectPath)) ?? "";
   } catch {
     // Cannot determine current branch — skip mismatch check
     return false;
   }
 
-  let inProgressBeads: import("../../lib/task-client.js").Issue[];
+  let inProgressBeads: Issue[];
   try {
     inProgressBeads = await taskClient.list({ status: "in_progress" });
   } catch {
@@ -107,7 +262,7 @@ export async function checkBranchMismatch(
   for (const bead of inProgressBeads) {
     try {
       const detail = await taskClient.show(bead.id) as unknown as { labels?: string[] };
-      const targetBranch = extractBranchLabel(detail.labels);
+      const targetBranch = normalizeBranchLabel(extractBranchLabel(detail.labels));
       if (targetBranch && targetBranch !== currentBranch) {
         const ids = mismatchByBranch.get(targetBranch) ?? [];
         ids.push(bead.id);
@@ -132,7 +287,7 @@ export async function checkBranchMismatch(
     const shouldSwitch = await promptYesNo(question);
     if (shouldSwitch) {
       try {
-        await checkoutBranch(projectPath, targetBranch);
+        await vcs.checkoutBranch(projectPath, targetBranch);
         console.log(chalk.green(`Switched to branch ${targetBranch}.`));
         currentBranch = targetBranch;
       } catch (err: unknown) {
@@ -170,6 +325,9 @@ export const runCommand = new Command("run")
   .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
   .option("--stagger <duration>", "Stagger delay between dispatches to prevent thundering herd (e.g. '30s', '1m')")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .option("--runtime-mode <mode>", "Runtime mode: normal|test (test uses deterministic phase-runner seams)")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -183,6 +341,7 @@ export const runCommand = new Command("run")
     const skipReview = opts.skipReview as boolean | undefined;
     const beadFilter = opts.bead as string | undefined;
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
+    const runtimeMode = resolveRuntimeMode(opts.runtimeMode as string | undefined);
 
     // P1: Parse stagger delay for preventing thundering herd on Haiku quotas
     // Accept formats like "30s", "1m", "2m30s"
@@ -216,12 +375,13 @@ export const runCommand = new Command("run")
     }
 
     try {
-      const projectPath = await getRepoRoot(process.cwd());
+      const projectPath = await resolveRepoRootProjectPath(opts);
+      const startupVcs = await createRunVcsBackend(projectPath);
 
       // ── Pi Extensions check ──────────────────────────────────────────────────
       // If Pi is available, the extensions package must be built before dispatch.
       // Skipped in dry-run mode since no real agent work will happen.
-      if (!dryRun && isPiAvailable()) {
+      if (!dryRun && runtimeMode !== "test" && isPiAvailable()) {
         const extDist = join(projectPath, "packages/foreman-pi-extensions/dist/index.js");
         if (!existsSync(extDist)) {
           console.error(chalk.red("\nError: Pi extensions package has not been built.\n"));
@@ -233,10 +393,12 @@ export const runCommand = new Command("run")
 
       let taskClient: ITaskClient;
       let bvClient: BvClient | null = null;
+      let backendType: "beads" | "native" = "beads";
       try {
-        const clients = await createTaskClients(projectPath);
+        const clients = await createTaskClients(projectPath, runtimeMode);
         taskClient = clients.taskClient;
         bvClient = clients.bvClient;
+        backendType = clients.backendType;
       } catch (clientErr: unknown) {
         const message = clientErr instanceof Error ? clientErr.message : String(clientErr);
         console.error(chalk.red(`Error initialising task backend: ${message}`));
@@ -251,13 +413,13 @@ export const runCommand = new Command("run")
       // automatically alongside foreman run. Non-fatal — if anything fails,
       // log a warning and continue without sentinel.
       let sentinelAgent: SentinelAgent | null = null;
-      if (!dryRun) {
+      if (!dryRun && backendType === "beads") {
         try {
           if (project) {
             const sentinelConfig = store.getSentinelConfig(project.id);
             if (sentinelConfig && sentinelConfig.enabled === 1) {
-              const brClient = new BeadsRustClient(projectPath);
-              sentinelAgent = new SentinelAgent(store, brClient, project.id, projectPath);
+              const sentinelTaskClient = taskClient as SentinelStartupTaskClient;
+              sentinelAgent = new SentinelAgent(store, sentinelTaskClient, project.id, projectPath);
               sentinelAgent.start(
                 {
                   branch: sentinelConfig.branch,
@@ -288,16 +450,17 @@ export const runCommand = new Command("run")
           }
         } catch (sentinelErr: unknown) {
           const msg = sentinelErr instanceof Error ? sentinelErr.message : String(sentinelErr);
+          sentinelAgent = null;
           console.warn(chalk.yellow(`[sentinel] Failed to auto-start (non-fatal): ${msg}`));
         }
       }
 
-      /** Stop the sentinel agent if it is running. Non-fatal cleanup helper. */
-      const stopSentinel = (): void => {
-        if (sentinelAgent?.isRunning()) {
-          sentinelAgent.stop();
-          console.log(chalk.dim("[sentinel] Stopped."));
-        }
+      /** Stop the sentinel agent and wait for in-flight work to quiesce. */
+      const stopSentinel = async (): Promise<void> => {
+        if (!sentinelAgent) return;
+        await sentinelAgent.stop();
+        sentinelAgent = null;
+        console.log(chalk.dim("[sentinel] Stopped."));
       };
 
       // ── Startup worker config file cleanup ──────────────────────────────────
@@ -318,7 +481,7 @@ export const runCommand = new Command("run")
       // ── Startup Bead Sync ────────────────────────────────────────────────
       // Reconcile br seed statuses against SQLite run statuses before dispatching.
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
-      if (!dryRun && project) {
+      if (!dryRun && project && backendType === "beads") {
         try {
           const syncResult = await syncBeadStatusOnStartup(store, taskClient, project.id, { projectPath });
           if (syncResult.synced > 0 || syncResult.mismatches.length > 0) {
@@ -345,7 +508,7 @@ export const runCommand = new Command("run")
       if (!dryRun && !resume && !resumeFailed) {
         const shouldAbort = await checkBranchMismatch(taskClient, projectPath);
         if (shouldAbort) {
-          stopSentinel();
+          await stopSentinel();
           store.close();
           await notifyServer.stop().catch(() => { /* ignore */ });
           process.exit(1);
@@ -360,9 +523,18 @@ export const runCommand = new Command("run")
       let targetBranch: string | undefined;
       if (!dryRun) {
         try {
-          const cb = await getCurrentBranch(projectPath);
-          const db = await detectDefaultBranch(projectPath);
-          if (cb !== db) {
+          const controller = await resolveOwnedControllerBranch(startupVcs, projectPath);
+          if (controller.usedOwnedBranch) {
+            targetBranch = controller.targetBranch;
+            console.log(
+              chalk.dim(
+                `[startup] Using Foreman-owned branch ${FOREMAN_OWNED_BRANCH} (target: ${controller.defaultBranch})`,
+              ),
+            );
+          }
+          const cb = targetBranch ? undefined : normalizeBranchLabel(await startupVcs.getCurrentBranch(projectPath));
+          const db = targetBranch ? undefined : normalizeBranchLabel(await startupVcs.detectDefaultBranch(projectPath));
+          if (cb && db && cb !== db) {
             const question = chalk.yellow(
               `\nYou are on branch ${chalk.green(cb)}, ` +
               `which differs from the default branch ${chalk.cyan(db)}.\n` +
@@ -374,7 +546,7 @@ export const runCommand = new Command("run")
               console.log(
                 chalk.dim(`Aborted. Switch to ${db} or the desired target branch and re-run.`),
               );
-              stopSentinel();
+              await stopSentinel();
               store.close();
               await notifyServer.stop().catch(() => { /* ignore */ });
               process.exit(1);
@@ -397,11 +569,12 @@ export const runCommand = new Command("run")
             const newResult = await dispatcher.dispatch({
               maxAgents,
               model,
-              dryRun,
-              telemetry,
-              pipeline,
-              skipExplore,
-              skipReview,
+            dryRun,
+            telemetry,
+            pipeline,
+            runtimeMode,
+            skipExplore,
+            skipReview,
               seedId: beadFilter,
               notifyUrl,
               targetBranch,
@@ -423,6 +596,7 @@ export const runCommand = new Command("run")
           telemetry,
           statuses,
           notifyUrl,
+          runtimeMode,
         });
 
         if (result.resumed.length > 0) {
@@ -453,13 +627,13 @@ export const runCommand = new Command("run")
           // Resume mode is a one-shot recovery action — no continuous auto-dispatch needed.
           const { detached } = await watchRunsInk(store, runIds, { notificationBus });
           if (detached) {
-            stopSentinel();
+            await stopSentinel();
             store.close();
             return;
           }
         }
 
-        stopSentinel();
+        await stopSentinel();
         store.close();
         return;
       }
@@ -508,6 +682,7 @@ export const runCommand = new Command("run")
           dryRun,
           telemetry,
           pipeline,
+          runtimeMode,
           skipExplore,
           skipReview,
           seedId: beadFilter,
@@ -703,7 +878,7 @@ export const runCommand = new Command("run")
         }
       }
 
-      stopSentinel();
+      await stopSentinel();
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

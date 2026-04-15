@@ -7,25 +7,10 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { execFileSync, execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
-
-const execFileAsync = promisify(execFile);
-
-function findTsx(): string {
-  const candidates = [
-    path.resolve(__dirname, "../../../node_modules/.bin/tsx"),
-    path.resolve(__dirname, "../../../../../node_modules/.bin/tsx"),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
-  }
-  return candidates[0];
-}
-
-const TSX = findTsx();
+import { runTsxModule } from "../../test-support/tsx-subprocess.js";
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 /** Read the actual version string from package.json */
@@ -37,24 +22,30 @@ function packageVersion(): string {
 
 describe("foreman --version (dynamic version resolution)", () => {
   it("reports a non-empty version string", async () => {
-    const { stdout } = await execFileAsync(TSX, [CLI, "--version"], {
+    const { stdout, exitCode } = await runTsxModule(CLI, ["--version"], {
+      cwd: path.resolve(__dirname, "../../../"),
       timeout: 15_000,
     });
+    expect(exitCode).toBe(0);
     expect(stdout.trim()).not.toBe("");
   });
 
   it("version matches package.json at runtime", async () => {
     const expected = packageVersion();
-    const { stdout } = await execFileAsync(TSX, [CLI, "--version"], {
+    const { stdout, exitCode } = await runTsxModule(CLI, ["--version"], {
+      cwd: path.resolve(__dirname, "../../../"),
       timeout: 15_000,
     });
+    expect(exitCode).toBe(0);
     expect(stdout.trim()).toBe(expected);
   });
 
   it("version follows semver format (X.Y.Z or X.Y.Z-pre)", async () => {
-    const { stdout } = await execFileAsync(TSX, [CLI, "--version"], {
+    const { stdout, exitCode } = await runTsxModule(CLI, ["--version"], {
+      cwd: path.resolve(__dirname, "../../../"),
       timeout: 15_000,
     });
+    expect(exitCode).toBe(0);
     const semverRe = /^\d+\.\d+\.\d+(-[\w.]+)?$/;
     expect(stdout.trim()).toMatch(semverRe);
   });

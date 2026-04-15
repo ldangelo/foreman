@@ -9,11 +9,11 @@ Common problems, their causes, and step-by-step solutions for Foreman pipelines.
 Before diving into specific issues, run these commands to understand the current state:
 
 ```bash
-foreman status                    # Overview: beads, agents, costs
+foreman status                    # Overview: tasks, agents, costs
 foreman doctor                    # Health checks (br, DB, prompts)
 foreman inbox --all --watch       # Live mail stream across all runs
-foreman debug <bead-id>           # AI-powered deep-dive on a specific bead
-foreman debug <bead-id> --raw     # Raw artifacts without AI analysis
+foreman debug <task-or-bead-id>           # AI-powered deep-dive on a specific task
+foreman debug <task-or-bead-id> --raw     # Raw artifacts without AI analysis
 ```
 
 ---
@@ -95,7 +95,7 @@ cat ~/.foreman/logs/<runId>.err | grep "SyntaxError\|Error\|Cannot find"
 
 **Diagnosis:**
 ```bash
-cd .foreman-worktrees/<bead-id>
+cd ../.foreman-worktrees/<repo-name>/<bead-id>
 git status                        # Check for uncommitted files
 git diff --stat                   # See what changed but wasn't committed
 ```
@@ -105,7 +105,7 @@ git diff --stat                   # See what changed but wasn't committed
 **Fix:** This was addressed by adding `cd {{worktreePath}}` to the finalize prompt. If you're on an older version:
 ```bash
 # Manually commit from the worktree
-cd .foreman-worktrees/<bead-id>
+cd ../.foreman-worktrees/<repo-name>/<bead-id>
 git add -A
 git commit -m "Manual commit for <bead-id>"
 git push -u origin foreman/<bead-id>
@@ -118,7 +118,7 @@ foreman merge --bead <bead-id>
 
 ### Branch won't merge — "pr-created" status instead of "merged"
 
-**Symptoms:** `foreman status` shows beads completed but they never merge. Run status shows `pr-created`.
+**Symptoms:** `foreman status` shows tasks completed but they never merge. Run status shows `pr-created`.
 
 **Diagnosis:**
 ```bash
@@ -146,10 +146,10 @@ git merge --abort                 # Clean up
    # If conflict: git rm SESSION_LOG.md && git commit --no-edit
    ```
 
-2. **Branch diverged from target** — Other beads merged to dev while this one was running.
+2. **Branch diverged from target** — Other tasks merged to dev while this one was running.
    ```bash
    # Rebase the branch onto latest dev
-   cd .foreman-worktrees/<bead-id>
+   cd ../.foreman-worktrees/<repo-name>/<bead-id>
    git fetch origin
    git rebase origin/dev
    git push -f origin foreman/<bead-id>
@@ -185,13 +185,13 @@ grep "autoMerge\|no-completed-run" ~/.foreman/logs/<runId>.err
 foreman merge                     # Trigger manual merge
 ```
 
-### Infinite retry loop on sentinel beads
+### Infinite retry loop on sentinel tasks
 
-**Symptoms:** A bead keeps getting dispatched, completing, failing to merge, resetting to open, and dispatching again.
+**Symptoms:** A task keeps getting dispatched, completing, failing to merge, resetting to open, and dispatching again.
 
 **Diagnosis:**
 ```bash
-# Count runs for the bead
+# Count runs for the task
 foreman debug <bead-id> --raw | grep "Run ID"
 
 # Check why merge fails
@@ -223,17 +223,16 @@ git push
 **Diagnosis:**
 ```bash
 # Check the worktree state
-cd .foreman-worktrees/<bead-id>
+cd ../.foreman-worktrees/<repo-name>/<seedId>
 git status
 ```
 
 **Fix:**
 ```bash
-# Nuclear cleanup
-foreman stop
-rm -rf .foreman-worktrees/<bead-id>
-rm -f .git/index.lock             # Remove stale lock if present
-git worktree prune
+# Use Foreman commands instead of manual rm -rf
+foreman stop <bead-id>
+foreman worktree clean --dry-run  # Preview what will be removed
+foreman worktree clean            # Remove the worktree and prune stale refs
 foreman reset --bead <bead-id>
 foreman run --bead <bead-id>      # Fresh dispatch
 ```
@@ -247,13 +246,13 @@ foreman run --bead <bead-id>      # Fresh dispatch
 **Fix:**
 ```bash
 rm -f .git/index.lock
-# Also check worktrees:
-rm -f .foreman-worktrees/*/.git/index.lock 2>/dev/null
+# Also check worktrees (emergency only — prefer foreman worktree clean):
+rm -f ../.foreman-worktrees/<repo-name>/<seedId>/.git/index.lock 2>/dev/null
 ```
 
 ### Orphaned worktrees accumulating
 
-**Symptoms:** Disk usage growing, `.foreman-worktrees/` has many directories.
+**Symptoms:** Disk usage growing, the external Foreman workspace root (`../.foreman-worktrees/<repo-name>/` by default) has many directories.
 
 **Fix:**
 ```bash
@@ -307,7 +306,7 @@ br show <bead-id>
 
 **Fix:**
 ```bash
-# Close beads that are already merged
+# Close tasks that are already merged in the legacy beads store
 br close <bead-id> --force --reason "Already merged to dev"
 
 # Or run doctor to reconcile
@@ -386,7 +385,7 @@ phases:
 # Check if messages exist in the DB
 foreman inbox --all --limit 100
 
-# Check specific bead
+# Check specific task
 foreman inbox --bead <bead-id>
 
 # Check if the mail client initialized
@@ -397,7 +396,7 @@ grep "agent-mail" ~/.foreman/logs/<runId>.err
 
 1. **Wrong run ID** — The inbox defaults to the latest run, which might not be the one you expect.
    ```bash
-   foreman inbox --bead <bead-id>  # Use bead ID instead of run ID
+   foreman inbox --bead <bead-id>  # Use task/bead ID instead of run ID
    ```
 
 2. **Agent Mail client failed to initialize** — Check logs for errors.

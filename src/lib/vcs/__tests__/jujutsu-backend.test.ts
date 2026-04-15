@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { JujutsuBackend } from "../jujutsu-backend.js";
+import { getWorkspacePath } from "../../workspace-paths.js";
 
 // ── Check if jj is available ──────────────────────────────────────────────────
 
@@ -135,7 +136,7 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
     expect(cmds.pushCommand).toContain('foreman/bd-test');
   });
 
-  it("returns jj rebase command with base branch for rebaseCommand", () => {
+  it("returns jj rebase command with base branch for integrateTargetCommand", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({
       seedId: 'bd-test',
@@ -143,8 +144,8 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
       baseBranch: 'dev',
       worktreePath: '/tmp/worktrees/bd-test',
     });
-    expect(cmds.rebaseCommand).toContain('jj rebase');
-    expect(cmds.rebaseCommand).toContain('dev');
+    expect(cmds.integrateTargetCommand).toContain('jj rebase');
+    expect(cmds.integrateTargetCommand).toContain('dev');
   });
 
   it("returns jj workspace forget for cleanCommand", () => {
@@ -170,9 +171,14 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
     expect(typeof cmds.stageCommand).toBe('string');
     expect(typeof cmds.commitCommand).toBe('string');
     expect(typeof cmds.pushCommand).toBe('string');
-    expect(typeof cmds.rebaseCommand).toBe('string');
+    expect(typeof cmds.integrateTargetCommand).toBe('string');
     expect(typeof cmds.branchVerifyCommand).toBe('string');
     expect(typeof cmds.cleanCommand).toBe('string');
+  });
+
+  it('isAncestor returns false on resolution failure', async () => {
+    const b = new JujutsuBackend('/tmp');
+    await expect(b.isAncestor('/tmp', 'missing', 'HEAD')).resolves.toBe(false);
   });
 
   it("branchVerifyCommand uses jj bookmark list (positional arg, no --name flag)", () => {
@@ -195,6 +201,22 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
 describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend (requires jj)", () => {
   it("jj is available", () => {
     expect(JJ_AVAILABLE).toBe(true);
+  });
+
+  it("getCurrentBranch falls back to the parent bookmark for unbookmarked working-copy children", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    execFileSync(
+      "jj",
+      ["bookmark", "set", "dev", "--allow-backwards", "-r", "@"],
+      { cwd: repo, stdio: "pipe" },
+    );
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    const branch = await backend.getCurrentBranch(repo);
+    expect(branch).toBe("dev");
   });
 });
 
@@ -290,15 +312,33 @@ describe.skipIf(!JJ_AVAILABLE)(
 describe.skipIf(!JJ_AVAILABLE)(
   "JujutsuBackend.detectDefaultBranch (AC-T-017-2b)",
   () => {
-    it("falls back to current branch when no main/master bookmark exists", async () => {
+    it("falls back to current branch when no well-known bookmark exists", async () => {
       const repo = makeTempJjRepo();
       tempDirs.push(repo);
       const backend = new JujutsuBackend(repo);
 
       const defaultBranch = await backend.detectDefaultBranch(repo);
-      // No main or master bookmark → falls back to getCurrentBranch
       expect(defaultBranch).toBeTruthy();
       expect(defaultBranch.length).toBeGreaterThan(0);
+    });
+
+    it("respects git-town.main-branch when configured", async () => {
+      const repo = makeTempJjRepo();
+      tempDirs.push(repo);
+
+      execFileSync("git", ["config", "git-town.main-branch", "dev"], {
+        cwd: repo,
+        stdio: "pipe",
+      });
+      execFileSync(
+        "jj",
+        ["bookmark", "set", "dev", "--allow-backwards", "-r", "@"],
+        { cwd: repo, stdio: "pipe" },
+      );
+
+      const backend = new JujutsuBackend(repo);
+      const defaultBranch = await backend.detectDefaultBranch(repo);
+      expect(defaultBranch).toBe("dev");
     });
 
     it("returns 'main' when a main bookmark exists", async () => {
@@ -674,7 +714,7 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.removeWorkspace (AC-T-018-2)", ()
     tempDirs.push(repo);
 
     const backend = new JujutsuBackend(repo);
-    const nonExistent = join(repo, ".foreman-worktrees", "nonexistent");
+    const nonExistent = getWorkspacePath(repo, "nonexistent");
     await expect(backend.removeWorkspace(repo, nonExistent)).resolves.toBeUndefined();
   });
 });
@@ -891,6 +931,30 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.getHeadId (AC-T-022-1)", () => {
     expect(headId).toBeTruthy();
     expect(typeof headId).toBe("string");
     expect(headId.length).toBeGreaterThan(0);
+  });
+
+  it("falls back to the parent bookmarked revision for unbookmarked working-copy children", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    execFileSync("jj", ["bookmark", "create", "dev", "-r", "@"], {
+      cwd: repo,
+      stdio: "pipe",
+    });
+    const parentHead = execFileSync(
+      "jj",
+      ["log", "--no-graph", "-r", "@", "-T", "change_id.short()"],
+      { cwd: repo, stdio: "pipe", encoding: "utf8" },
+    ).trim();
+
+    execFileSync("jj", ["new", "-r", "@"], {
+      cwd: repo,
+      stdio: "pipe",
+    });
+
+    const backend = new JujutsuBackend(repo);
+    const headId = await backend.getHeadId(repo);
+    expect(headId).toBe(parentHead);
   });
 });
 

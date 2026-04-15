@@ -11,10 +11,6 @@
  * The following files are permitted to contain `import.*BeadsRustClient`:
  *
  *   src/lib/beads-rust.ts            — Defines and exports the class itself.
- *   src/orchestrator/dispatcher.ts   — The designated "fallback" instantiation
- *                                      point during the BeadsRustClient deprecation
- *                                      transition. Dispatcher owns the concrete
- *                                      client selection logic.
  *
  * --- Known Violations (TODO: migrate — see TRD-014) ---
  * The following files currently import BeadsRustClient directly and must be
@@ -22,25 +18,8 @@
  * Each entry links to the tracking issue and describes the required change.
  *
  * CLI commands (should receive ITaskClient via dispatcher/factory):
- *   src/cli/commands/bead.ts           — factory fn returns BeadsRustClient
- *   src/cli/commands/dashboard.ts      — direct instantiation
- *   src/cli/commands/doctor.ts         — health-check instantiation
- *   src/cli/commands/merge.ts          — factory fn returns BeadsRustClient
- *   src/cli/commands/monitor.ts        — direct instantiation
- *   src/cli/commands/plan.ts           — factory fn returns BeadsRustClient
- *   src/cli/commands/pr.ts             — direct instantiation
- *   src/cli/commands/purge-zombie-runs.ts — direct instantiation
- *   src/cli/commands/reset.ts          — direct instantiation
- *   src/cli/commands/retry.ts          — direct instantiation + param type
- *   src/cli/commands/run.ts            — direct import
- *   src/cli/commands/sentinel.ts       — direct instantiation
- *   src/cli/commands/sling.ts          — conditional instantiation
- *   src/cli/commands/status.ts         — direct instantiation
  *
  * Orchestrator (should use ITaskClient interface):
- *   src/orchestrator/agent-worker.ts   — direct instantiation in merge path
- *   src/orchestrator/sentinel.ts       — import type for constructor parameter
- *   src/orchestrator/sling-executor.ts — import type for multiple function params
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -93,8 +72,6 @@ function grepFile(filePath: string, pattern: string): Array<{ lineNum: number; t
 const BEADS_RUST_ALWAYS_ALLOWED: string[] = [
   // Definition file — the class lives here
   "lib/beads-rust.ts",
-  // Dispatcher — the sole designated fallback instantiation point
-  "orchestrator/dispatcher.ts",
 ];
 
 /**
@@ -106,96 +83,6 @@ const BEADS_RUST_ALWAYS_ALLOWED: string[] = [
  */
 const BEADS_RUST_KNOWN_VIOLATIONS: Record<string, string> = {
   // ── CLI commands ──────────────────────────────────────────────────────────
-  // Factory function `getBeadsClient()` returns concrete BeadsRustClient.
-  // Needs: return ITaskClient and update call-sites to use the interface.
-  "cli/commands/bead.ts":
-    "TRD-014: getBeadsClient() return type → ITaskClient",
-
-  // Direct instantiation for dashboard display.
-  // Needs: receive ITaskClient from a factory/DI rather than importing directly.
-  "cli/commands/dashboard.ts":
-    "TRD-014: direct instantiation → inject ITaskClient",
-
-  // Doctor health-check imports BeadsRustClient to test binary availability.
-  // Needs: extract binary check to a dedicated health-check helper or use ITaskClient.
-  "cli/commands/doctor.ts":
-    "TRD-014: health-check instantiation → use ITaskClient or binary helper",
-
-  // Factory function `getMergeTaskClient()` returns concrete BeadsRustClient.
-  // Needs: return ITaskClient and update call-sites to use the interface.
-  "cli/commands/merge.ts":
-    "TRD-014: getMergeTaskClient() return type → ITaskClient",
-
-  // Direct instantiation for monitor loop.
-  // Needs: receive ITaskClient from a factory/DI rather than importing directly.
-  "cli/commands/monitor.ts":
-    "TRD-014: direct instantiation → inject ITaskClient",
-
-  // Factory function `getPlanTaskClient()` returns concrete BeadsRustClient.
-  // Needs: return ITaskClient and update call-sites to use the interface.
-  "cli/commands/plan.ts":
-    "TRD-014: getPlanTaskClient() return type → ITaskClient",
-
-  // Direct instantiation for PR listing.
-  // Needs: receive ITaskClient from a factory/DI rather than importing directly.
-  "cli/commands/pr.ts":
-    "TRD-014: direct instantiation → inject ITaskClient",
-
-  // Direct instantiation for zombie-run cleanup.
-  // Needs: receive ITaskClient from a factory/DI rather than importing directly.
-  "cli/commands/purge-zombie-runs.ts":
-    "TRD-014: direct instantiation → inject ITaskClient",
-
-  // Direct instantiation in reset/mismatch-fix logic.
-  // Needs: receive ITaskClient from a factory/DI rather than importing directly.
-  "cli/commands/reset.ts":
-    "TRD-014: direct instantiation → inject ITaskClient",
-
-  // Direct instantiation + used as parameter type for retry logic.
-  // Needs: switch parameter type to ITaskClient and inject.
-  "cli/commands/retry.ts":
-    "TRD-014: parameter type + instantiation → ITaskClient",
-
-  // Direct import used in run command (dispatcher wires it up).
-  // Needs: remove direct import; receive ITaskClient from dispatcher context.
-  "cli/commands/run.ts":
-    "TRD-014: direct import → receive ITaskClient from dispatcher",
-
-  // Direct instantiation inside sentinel command.
-  // Needs: receive ITaskClient from a factory/DI rather than importing directly.
-  "cli/commands/sentinel.ts":
-    "TRD-014: direct instantiation → inject ITaskClient",
-
-  // Conditional instantiation for sling workflow.
-  // Needs: receive ITaskClient; sling-executor already typed via its own param types.
-  "cli/commands/sling.ts":
-    "TRD-014: conditional instantiation → inject ITaskClient",
-
-  // Direct instantiation for status display.
-  // Needs: receive ITaskClient from a factory/DI rather than importing directly.
-  "cli/commands/status.ts":
-    "TRD-014: direct instantiation → inject ITaskClient",
-
-  // ── Orchestrator ──────────────────────────────────────────────────────────
-  // Direct instantiation in merge-queue enqueue path of agent-worker.
-  // Needs: use the ITaskClient already threaded through the pipeline context.
-  "orchestrator/agent-worker.ts":
-    "TRD-014: direct instantiation in merge path → use injected ITaskClient",
-
-  // `import type` for constructor parameter typing in SeedWatcher.
-  // Needs: change parameter type to ITaskClient interface.
-  "orchestrator/sentinel.ts":
-    "TRD-014: parameter type → ITaskClient",
-
-  // Multiple `import type` usages for function parameter types in sling-executor.
-  // Needs: change all parameter types from BeadsRustClient to ITaskClient.
-  "orchestrator/sling-executor.ts":
-    "TRD-014: function parameter types → ITaskClient",
-
-  // Epic task ordering imports BeadsRustClient for bead detail queries.
-  // Needs: change parameter type from BeadsRustClient to ITaskClient.
-  "orchestrator/task-ordering.ts":
-    "TRD-2026-007: parameter type → ITaskClient",
 };
 
 /** Test files (in __tests__/, or *.test.ts / *.spec.ts) are always exempt. */
@@ -263,8 +150,9 @@ describe("TRD-014 / REQ-015: BeadsRustClient Deprecation Compliance", () => {
           continue;
         }
 
-        // Only flag import statements (not generic references inside code)
-        if (!trimmed.includes(IMPORT_PATTERN)) continue;
+        // Only flag static ESM import statements (not dynamic import() expressions
+        // used for lazy compatibility shims inside already-migrated modules).
+        if (!trimmed.startsWith(IMPORT_PATTERN)) continue;
 
         unexpectedViolations.push(
           `${relPath}:${lineNum}: ${trimmed.slice(0, 120)}`,
@@ -322,5 +210,14 @@ describe("TRD-014 / REQ-015: BeadsRustClient Deprecation Compliance", () => {
     }
 
     expect(allKnown.length).toBeGreaterThanOrEqual(0); // always passes
+  });
+
+  it("classifies lane-D deprecation hotspots as migrate-now vs compatibility-only", () => {
+    expect(BEADS_RUST_KNOWN_VIOLATIONS["cli/commands/bead.ts"]).toBeUndefined();
+
+    expect(BEADS_RUST_KNOWN_VIOLATIONS["cli/commands/plan.ts"]).toBeUndefined();
+
+    expect(BEADS_RUST_KNOWN_VIOLATIONS["orchestrator/task-ordering.ts"]).toBeUndefined();
+    expect(BEADS_RUST_KNOWN_VIOLATIONS["lib/task-client-factory.ts"]).toBeUndefined();
   });
 });

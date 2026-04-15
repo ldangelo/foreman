@@ -161,15 +161,13 @@ describe("default.yaml: finalize phase pre-push validation config", () => {
 // ── Structural tests: finalize.md prompt ─────────────────────────────────────
 
 describe("default/finalize.md: pre-push test validation prompt", () => {
-  it("prompt contains npm test instruction after rebase step", () => {
+  it("prompt contains npm test instruction after target integration step", () => {
     const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
-    // Rebase command is now a template variable {{vcsRebaseCommand}} (TRD-026)
-    const rebasePos = content.indexOf("{{vcsRebaseCommand}}");
+    const integratePos = content.indexOf("{{vcsIntegrateTargetCommand}}");
     const npmTestPos = content.indexOf("npm test");
-    expect(rebasePos).toBeGreaterThan(-1);
+    expect(integratePos).toBeGreaterThan(-1);
     expect(npmTestPos).toBeGreaterThan(-1);
-    // npm test must appear AFTER the rebase instruction
-    expect(npmTestPos).toBeGreaterThan(rebasePos);
+    expect(npmTestPos).toBeGreaterThan(integratePos);
   });
 
   it("prompt instructs agent to write FINALIZE_VALIDATION.md", () => {
@@ -181,6 +179,16 @@ describe("default/finalize.md: pre-push test validation prompt", () => {
     const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
     expect(content).toContain("## Verdict: PASS");
     expect(content).toContain("## Verdict: FAIL");
+  });
+
+  it("prompt instructs agent to skip integration and tests when target did not drift after QA", () => {
+    const content = readFileSync(DEFAULT_FINALIZE_MD, "utf-8");
+    expect(content).toContain("Should integrate target drift");
+    expect(content).toContain("Do **not** run `{{vcsIntegrateTargetCommand}}`");
+    expect(content).toContain("Do **not** rerun `npm test`");
+    expect(content).toContain("## Target Integration");
+    expect(content).toContain("- Status: SUCCESS | SKIPPED | FAIL");
+    expect(content).toContain("Write `## Target Integration` with `- Status: SKIPPED`");
   });
 
   it("prompt instructs agent NOT to push when tests fail", () => {
@@ -321,10 +329,10 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
 
     await executePipeline(ctx);
 
-    // retryOnFail: 1 means: developer → finalize(FAIL) → developer(retry) → finalize(FAIL, exhausted) → continue
-    // After exhausting retries it continues and calls onPipelineComplete
+    // retryOnFail: 1 means: developer → finalize(FAIL) → developer(retry) → finalize(FAIL, exhausted)
     expect(phaseOrder).toEqual(["developer", "finalize", "developer", "finalize"]);
     expect(onPipelineComplete).toHaveBeenCalledOnce();
+    expect(onPipelineComplete).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
   });
 
   it("sends mail feedback to developer on finalize FAIL", async () => {
@@ -373,6 +381,44 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
     );
   });
 
+  it("does not retry developer for unrelated pre-existing finalize failures", async () => {
+    const phaseOrder: string[] = [];
+
+    const runPhase: RunPhaseFn = vi.fn(async (role: string) => {
+      phaseOrder.push(role);
+      if (role === "developer") {
+        writeFileSync(join(tmpDir, "DEVELOPER_REPORT.md"), "# Developer Report\n");
+      } else if (role === "finalize") {
+        writeFileSync(
+          join(tmpDir, "FINALIZE_VALIDATION.md"),
+          [
+            "# Finalize Validation",
+            "## Test Validation",
+            "- Status: FAIL",
+            "- Output: unrelated tests failed",
+            "",
+            "## Failure Scope",
+            "- UNRELATED_FILES",
+            "",
+            "## Verdict: FAIL",
+          ].join("\n"),
+        );
+      }
+      return { success: true, costUsd: 0.01, turns: 5, tokensIn: 100, tokensOut: 50 } as PhaseResult;
+    });
+
+    const onPipelineComplete = vi.fn().mockResolvedValue(undefined);
+    const ctx = makePipelineContext(tmpDir, runPhase, {
+      workflowConfig: makeTestWorkflow(1),
+      onPipelineComplete,
+    });
+
+    await executePipeline(ctx);
+
+    expect(phaseOrder).toEqual(["developer", "finalize"]);
+    expect(onPipelineComplete).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
+  });
+
   it("proceeds to onPipelineComplete when finalize writes ## Verdict: PASS", async () => {
     const phaseOrder: string[] = [];
 
@@ -383,7 +429,7 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
       } else if (role === "finalize") {
         writeFileSync(
           join(tmpDir, "FINALIZE_VALIDATION.md"),
-          "# Finalize Validation\n## Verdict: PASS\n",
+          "# Finalize Validation\n\n## Target Integration\n- Status: SUCCESS\n\n## Test Validation\n- Status: PASS\n\n## Verdict: PASS\n",
         );
       }
       return { success: true, costUsd: 0.01, turns: 5, tokensIn: 100, tokensOut: 50 } as PhaseResult;

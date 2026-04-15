@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
-import { mkdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { mkdirSync, existsSync, realpathSync } from "node:fs";
+import { join, dirname, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,19 @@ function resolveBundledNativeBinding(): string | undefined {
     // Swallow — fileURLToPath / import.meta.url unavailable in some edge cases
   }
   return undefined;
+}
+
+function normalizeProjectPath(path: string): string {
+  const resolved = resolvePath(path);
+  if (!existsSync(resolved)) {
+    return resolved;
+  }
+
+  try {
+    return realpathSync.native?.(resolved) ?? realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 // ── Interfaces ──────────────────────────────────────────────────────────
@@ -113,6 +126,14 @@ export interface RunProgress {
   currentPhase?: string;        // Pipeline phase: "explorer" | "developer" | "qa" | "reviewer" | "finalize"
   costByPhase?: Record<string, number>;  // e.g. { explorer: 0.10, developer: 0.50 }
   agentByPhase?: Record<string, string>; // e.g. { explorer: "claude-haiku-4-5", developer: "claude-sonnet-4-6" }
+  /** Target branch name QA validated against. */
+  qaValidatedTargetBranch?: string;
+  /** Target branch revision/hash resolved when QA passed. */
+  qaValidatedTargetRef?: string;
+  /** Workspace HEAD revision/hash resolved when QA passed. */
+  qaValidatedHeadRef?: string;
+  /** Current target branch revision/hash resolved during finalize preparation. */
+  currentTargetRef?: string;
   /** Epic mode: total number of child tasks. */
   epicTaskCount?: number;
   /** Epic mode: number of tasks completed so far. */
@@ -440,7 +461,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   CHECK (status IN (
     'backlog', 'ready', 'in-progress',
     'explorer', 'developer', 'qa', 'reviewer', 'finalize',
-    'merged', 'conflict', 'failed', 'stuck', 'blocked'
+    'merged', 'closed', 'conflict', 'failed', 'stuck', 'blocked'
   ))
 );
 
@@ -707,10 +728,11 @@ export class ForemanStore {
 
   registerProject(name: string, path: string): Project {
     const now = new Date().toISOString();
+    const normalizedPath = normalizeProjectPath(path);
     const project: Project = {
       id: randomUUID(),
       name,
-      path,
+      path: normalizedPath,
       status: "active",
       created_at: now,
       updated_at: now,
@@ -732,10 +754,11 @@ export class ForemanStore {
   }
 
   getProjectByPath(path: string): Project | null {
+    const normalizedPath = normalizeProjectPath(path);
     return (
       (this.db
         .prepare("SELECT * FROM projects WHERE path = ?")
-        .get(path) as Project | undefined) ?? null
+        .get(normalizedPath) as Project | undefined) ?? null
     );
   }
 
@@ -1772,6 +1795,24 @@ export class ForemanStore {
       return (row?.cnt ?? 0) > 0;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Look up a native task by external_id.
+   *
+   * Used when an explicit bead ID may correspond to a native task row in auto mode.
+   * Returns null when the tasks table is missing or no row matches.
+   */
+  getTaskByExternalId(externalId: string): NativeTask | null {
+    try {
+      return (
+        (this.db
+          .prepare("SELECT * FROM tasks WHERE external_id = ? LIMIT 1")
+          .get(externalId) as NativeTask | undefined) ?? null
+      );
+    } catch {
+      return null;
     }
   }
 

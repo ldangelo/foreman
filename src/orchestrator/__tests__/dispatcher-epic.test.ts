@@ -44,7 +44,7 @@ vi.mock("../../lib/vcs/git-backend.js", () => ({
   },
 }));
 
-vi.mock("../../lib/git.js", () => ({
+vi.mock("../../lib/setup.js", () => ({
   installDependencies: vi.fn().mockResolvedValue(undefined),
   runSetupWithCache: vi.fn().mockResolvedValue(undefined),
 }));
@@ -184,9 +184,9 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     // spawnAgent should have been called with epicTasks and epicId
     expect(spawnSpy).toHaveBeenCalledOnce();
     const callArgs = spawnSpy.mock.calls[0];
-    // Args: model, worktreePath, seedInfo, runId, telemetry, pipelineOpts, notifyUrl, vcsBackend, targetBranch, epicTasks, epicId
-    const epicTasks = callArgs[9] as EpicTask[];
-    const epicId = callArgs[10] as string;
+    // Args: model, worktreePath, seedInfo, runId, telemetry, pipelineOpts, notifyUrl, vcsBackend, runtimeMode, targetBranch, epicTasks, epicId
+    const epicTasks = callArgs[10] as EpicTask[];
+    const epicId = callArgs[11] as string;
 
     expect(epicTasks).toBeDefined();
     expect(epicTasks).toHaveLength(3);
@@ -216,8 +216,8 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     // spawnAgent should have been called WITHOUT epicTasks
     expect(spawnSpy).toHaveBeenCalledOnce();
     const callArgs = spawnSpy.mock.calls[0];
-    const epicTasks = callArgs[9] as EpicTask[] | undefined;
-    const epicId = callArgs[10] as string | undefined;
+    const epicTasks = callArgs[10] as EpicTask[] | undefined;
+    const epicId = callArgs[11] as string | undefined;
 
     expect(epicTasks).toBeUndefined();
     expect(epicId).toBeUndefined();
@@ -291,7 +291,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     // Find the epic call — it should have epicTasks
     const epicCall = spawnSpy.mock.calls.find(c => (c[2] as { id: string }).id === "epic-big");
     expect(epicCall).toBeDefined();
-    const epicTasks = epicCall![9] as EpicTask[];
+    const epicTasks = epicCall![10] as EpicTask[];
     expect(epicTasks).toBeDefined();
     expect(epicTasks).toHaveLength(3); // getTaskOrder mock returns 3
 

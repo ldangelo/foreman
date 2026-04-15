@@ -13,6 +13,8 @@ import {
   aggregateSnapshots,
   approveTask,
   retryTask,
+  NEEDS_HUMAN_STATUSES,
+  type NeedsHumanStatus,
   type DashboardState,
   type ProjectSnapshot,
   type RegisteredProject,
@@ -510,13 +512,58 @@ describe("sortNeedsHumanTasks", () => {
     sortNeedsHumanTasks(tasks);
     expect(tasks).toEqual(original);
   });
+
+  it("maintains sort stability when status, priority, and age are equal", () => {
+    const timestamp = new Date(Date.now() - 1_000).toISOString();
+    const tasks = [
+      makeNativeTask({ id: "t1", status: "conflict", priority: 0, updated_at: timestamp }),
+      makeNativeTask({ id: "t2", status: "conflict", priority: 0, updated_at: timestamp }),
+      makeNativeTask({ id: "t3", status: "conflict", priority: 0, updated_at: timestamp }),
+    ];
+    const sorted = sortNeedsHumanTasks(tasks);
+    // With equal status, priority, and age, original order should be preserved
+    expect(sorted.map((t) => t.id)).toEqual(["t1", "t2", "t3"]);
+  });
+});
+
+// ── NEEDS_HUMAN_STATUSES constant ────────────────────────────────────────
+
+describe("NEEDS_HUMAN_STATUSES", () => {
+  it("contains exactly conflict, failed, stuck, backlog", () => {
+    expect(NEEDS_HUMAN_STATUSES).toEqual(["conflict", "failed", "stuck", "backlog"]);
+  });
+
+  it("is a readonly tuple of exactly 4 elements", () => {
+    expect(NEEDS_HUMAN_STATUSES.length).toBe(4);
+    // as const makes it readonly
+    expect(NEEDS_HUMAN_STATUSES).toEqual(["conflict", "failed", "stuck", "backlog"]);
+  });
+
+  it("each status is a string", () => {
+    NEEDS_HUMAN_STATUSES.forEach((status) => {
+      expect(typeof status).toBe("string");
+    });
+  });
+});
+
+// ── NeedsHumanStatus type ─────────────────────────────────────────────────
+
+describe("NeedsHumanStatus", () => {
+  it("accepts valid needs-human status values", () => {
+    const validStatuses: NeedsHumanStatus[] = ["conflict", "failed", "stuck", "backlog"];
+    validStatuses.forEach((status) => {
+      expect(NEEDS_HUMAN_STATUSES).toContain(status);
+    });
+  });
 });
 
 // ── renderNeedsHumanPanel() ───────────────────────────────────────────────
 
 describe("renderNeedsHumanPanel", () => {
-  it("returns empty string when no tasks", () => {
-    expect(renderNeedsHumanPanel([])).toBe("");
+  it("shows 'No tasks need attention.' when no tasks (REQ-011.2)", () => {
+    const output = renderNeedsHumanPanel([]);
+    expect(output).toContain("NEEDS HUMAN ATTENTION");
+    expect(output).toContain("No tasks need attention.");
   });
 
   it("shows NEEDS HUMAN ATTENTION header when tasks exist", () => {
@@ -753,6 +800,28 @@ describe("approveTask and retryTask", () => {
     } as unknown as ForemanStore);
 
     expect(() => approveTask("task-001", "/some/project")).toThrow("DB error");
+    expect(mockClose).toHaveBeenCalled();
+  });
+
+  it("approveTask propagates error from updateTaskStatus for invalid taskId", () => {
+    const mockClose = vi.fn();
+    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
+      updateTaskStatus: vi.fn().mockImplementation(() => { throw new Error("no such task: nonexistent-id"); }),
+      close: mockClose,
+    } as unknown as ForemanStore);
+
+    expect(() => approveTask("nonexistent-id", "/some/project")).toThrow("no such task: nonexistent-id");
+    expect(mockClose).toHaveBeenCalled();
+  });
+
+  it("retryTask propagates error from updateTaskStatus for invalid taskId", () => {
+    const mockClose = vi.fn();
+    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
+      updateTaskStatus: vi.fn().mockImplementation(() => { throw new Error("no such task: nonexistent-id"); }),
+      close: mockClose,
+    } as unknown as ForemanStore);
+
+    expect(() => retryTask("nonexistent-id", "/some/project")).toThrow("no such task: nonexistent-id");
     expect(mockClose).toHaveBeenCalled();
   });
 });

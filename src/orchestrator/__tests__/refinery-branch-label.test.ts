@@ -17,16 +17,11 @@ vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
 }));
 
-vi.mock("../../lib/git.js", () => ({
-  mergeWorktree: vi.fn().mockResolvedValue({ success: true }),
-  removeWorktree: vi.fn().mockResolvedValue(undefined),
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
-  gitBranchExists: vi.fn().mockResolvedValue(false),
-}));
-
 vi.mock("../task-backend-ops.js", () => ({
   enqueueResetSeedToOpen: vi.fn().mockResolvedValue(undefined),
   enqueueCloseSeed: vi.fn().mockResolvedValue(undefined),
+  enqueueAddNotesToBead: vi.fn().mockResolvedValue(undefined),
+  enqueueSetBeadStatus: vi.fn(),
 }));
 
 vi.mock("../../lib/archive-reports.js", () => ({
@@ -97,6 +92,7 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
     rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
     abortRebase: vi.fn().mockResolvedValue(undefined),
     merge: vi.fn().mockResolvedValue({ success: true }),
+    mergeWithoutCommit: vi.fn().mockResolvedValue({ success: true }),
     getHeadId: vi.fn().mockResolvedValue("abc1234"),
     fetch: vi.fn().mockResolvedValue(undefined),
     diff: vi.fn().mockResolvedValue(""),
@@ -108,15 +104,19 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
       stageCommand: "git add -A",
       commitCommand: "git commit -m",
       pushCommand: "git push -u origin",
-      rebaseCommand: "git pull --rebase origin",
+      integrateTargetCommand: "git pull --rebase origin",
       branchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       cleanCommand: "git clean -fd",
+      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",
     }),
     ...overrides,
   } as VcsBackend;
 }
 
 function makeMocks(seedLabels: string[] = []) {
+  const mockDb = {
+    prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+  };
   const store = {
     getRunsByStatus: vi.fn().mockReturnValue([] as Run[]),
     getRunsByStatuses: vi.fn().mockReturnValue([] as Run[]),
@@ -125,6 +125,7 @@ function makeMocks(seedLabels: string[] = []) {
     logEvent: vi.fn(),
     getRunsByBaseBranch: vi.fn().mockReturnValue([] as Run[]),
     sendMessage: vi.fn(),
+    getDb: vi.fn(() => mockDb),
   };
   const seeds = {
     getGraph: vi.fn().mockResolvedValue({ edges: [] }),
@@ -158,12 +159,8 @@ describe("Refinery — branch label targeting", () => {
 
     // checkoutBranch should be called with "installer" (from branch: label), not "main"
     expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp", "installer");
-    // git merge --squash should reference the feature branch
-    const calls: any[][] = (execFile as any).mock.calls;
-    const squashCall = calls.find(
-      (c: any[]) => c[0] === "git" && Array.isArray(c[1]) && c[1].includes("--squash") && c[1].includes("foreman/seed-abc"),
-    );
-    expect(squashCall).toBeDefined();
+    // Squash-merge flow is now backend-driven; verify the branch merge targeted installer.
+    expect(vcs.mergeWithoutCommit).toHaveBeenCalledWith("/tmp", "foreman/seed-abc", "installer");
   });
 
   it("falls back to default target when no branch: label exists", async () => {
@@ -196,6 +193,19 @@ describe("Refinery — branch label targeting", () => {
     expect(vcs.detectDefaultBranch).toHaveBeenCalledWith("/tmp");
     // checkoutBranch should be called with "develop" (from detectDefaultBranch)
     expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp", "develop");
+  });
+
+  it("ignores invalid branch label HEAD and falls back to default target", async () => {
+    const run = makeRun();
+    const { store, seeds } = makeMocks(["branch:HEAD"]);
+    store.getRunsByStatus = vi.fn().mockReturnValue([run]);
+
+    const vcs = makeMockVcs();
+    const refinery = new Refinery(store as never, seeds as never, "/tmp", vcs);
+    await refinery.mergeCompleted({ targetBranch: "dev", runTests: false });
+
+    expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp", "dev");
+    expect(vcs.mergeWithoutCommit).toHaveBeenCalledWith("/tmp", "foreman/seed-abc", "dev");
   });
 
   it("each run can target a different branch when multiple runs are merged", async () => {

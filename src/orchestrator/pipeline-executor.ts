@@ -16,8 +16,15 @@ import { join, basename } from "node:path";
 import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import { resolvePhaseModel } from "../lib/workflow-loader.js";
 import { ROLE_CONFIGS } from "./roles.js";
-import { buildPhasePrompt, parseVerdict, extractIssues } from "./roles.js";
-import { enqueueAddLabelsToBead } from "./task-backend-ops.js";
+import {
+  buildPhasePrompt,
+  parseVerdict,
+  extractIssues,
+  parseFinalizeFailureScope,
+  parseFinalizeIntegrationStatus,
+  parseFinalizeValidationStatus,
+  qaReportHasTestEvidence,
+} from "./roles.js";
 import { rotateReport } from "./agent-worker-finalize.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
@@ -26,6 +33,7 @@ import type { ForemanStore, RunProgress } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import type { NativeTaskStore } from "../lib/task-store.js";
 import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs } from "../lib/config.js";
+import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -688,13 +696,17 @@ async function runPhaseSequence(
     // Compute VCS-specific prompt variables for finalize and reviewer phases (TRD-026, TRD-027).
     const vcsBackend = config.vcsBackend;
     const baseBranch = config.targetBranch ?? "main";
-    let vcsPromptVars: {
+    const vcsPromptVars: {
       vcsStageCommand?: string;
       vcsCommitCommand?: string;
       vcsPushCommand?: string;
-      vcsRebaseCommand?: string;
+      vcsIntegrateTargetCommand?: string;
       vcsBranchVerifyCommand?: string;
       vcsCleanCommand?: string;
+      vcsRestoreTrackedStateCommand?: string;
+      qaValidatedTargetRef?: string;
+      currentTargetRef?: string;
+      shouldRunFinalizeValidation?: string;
       vcsBackendName?: string;
       vcsBranchPrefix?: string;
     } = {};
@@ -713,9 +725,40 @@ async function runPhaseSequence(
         vcsPromptVars.vcsStageCommand = finalizeCommands.stageCommand;
         vcsPromptVars.vcsCommitCommand = finalizeCommands.commitCommand;
         vcsPromptVars.vcsPushCommand = finalizeCommands.pushCommand;
-        vcsPromptVars.vcsRebaseCommand = finalizeCommands.rebaseCommand;
+        vcsPromptVars.vcsIntegrateTargetCommand = finalizeCommands.integrateTargetCommand;
         vcsPromptVars.vcsBranchVerifyCommand = finalizeCommands.branchVerifyCommand;
         vcsPromptVars.vcsCleanCommand = finalizeCommands.cleanCommand;
+        vcsPromptVars.vcsRestoreTrackedStateCommand = finalizeCommands.restoreTrackedStateCommand;
+
+        const qaValidatedTargetRef = progress.qaValidatedTargetRef;
+        let currentTargetRef = "";
+        if (qaValidatedTargetRef) {
+          const targetCandidates = [`origin/${baseBranch}`, baseBranch];
+          for (const candidate of targetCandidates) {
+            try {
+              currentTargetRef = await vcsBackend.resolveRef(worktreePath, candidate);
+              break;
+            } catch {
+              // Try the next candidate.
+            }
+          }
+        }
+        const shouldRunFinalizeValidation = !qaValidatedTargetRef || !currentTargetRef || qaValidatedTargetRef !== currentTargetRef;
+        progress.currentTargetRef = currentTargetRef || undefined;
+        store.updateRunProgress(runId, progress);
+        vcsPromptVars.qaValidatedTargetRef = qaValidatedTargetRef ?? "";
+        vcsPromptVars.currentTargetRef = currentTargetRef;
+        vcsPromptVars.shouldRunFinalizeValidation = shouldRunFinalizeValidation ? "true" : "false";
+
+        try {
+          execSync(finalizeCommands.restoreTrackedStateCommand, {
+            cwd: worktreePath,
+            stdio: "ignore",
+            shell: "/bin/bash",
+          });
+        } catch {
+          // Best effort: the finalize prompt also carries the same restore command.
+        }
       }
     }
 
@@ -867,7 +910,6 @@ async function runPhaseSequence(
                 });
               }
               store.logEvent(config.projectId, "complete", { seedId, phase: phaseName, costUsd: fallbackResult.costUsd }, runId);
-              enqueueAddLabelsToBead(store, seedId, [`phase:${phaseName}`], "pipeline-executor");
               ctx.taskStore?.updatePhase(config.taskId ?? null, phaseName);
 
               if (phase.mail?.forwardArtifactTo && phase.artifact) {
@@ -918,10 +960,89 @@ async function runPhaseSequence(
     // 8. Verdict handling: parse PASS/FAIL, retry if needed.
     if (phase.verdict && phase.artifact) {
       const report = readReport(worktreePath, phase.artifact);
-      const verdict = report ? parseVerdict(report) : "unknown";
+      let verdict = report ? parseVerdict(report) : "unknown";
+
+      if (phaseName === "qa" && report && !qaReportHasTestEvidence(report)) {
+        verdict = "fail";
+        feedbackContext = "QA report invalid: missing explicit `npm test` command/output evidence with pass/fail counts.";
+        ctx.log(`[QA] FAIL — report missing npm test evidence`);
+      }
+
+      if (phaseName === "finalize" && report) {
+        const expectedSkippedValidation = !!progress.qaValidatedTargetRef && !!progress.qaValidatedTargetBranch && progress.qaValidatedTargetRef === progress.currentTargetRef;
+        const validationStatus = parseFinalizeValidationStatus(report);
+        const integrationStatus = parseFinalizeIntegrationStatus(report);
+        if (expectedSkippedValidation) {
+          if (integrationStatus !== "skipped") {
+            verdict = "fail";
+            feedbackContext = "Finalize integration contract violated: target branch did not change after QA, so FINALIZE_VALIDATION.md must mark Target Integration as SKIPPED.";
+            ctx.log("[FINALIZE] FAIL — expected skipped target integration because target branch was unchanged after QA");
+          } else if (validationStatus !== "skipped") {
+            verdict = "fail";
+            feedbackContext = "Finalize validation contract violated: target branch did not change after QA, so FINALIZE_VALIDATION.md must mark Test Validation as SKIPPED.";
+            ctx.log("[FINALIZE] FAIL — expected skipped validation because target branch was unchanged after QA");
+          }
+        } else {
+          if (integrationStatus === "skipped") {
+            verdict = "fail";
+            feedbackContext = "Finalize integration contract violated: target branch changed after QA, so FINALIZE_VALIDATION.md must not skip target integration.";
+            ctx.log("[FINALIZE] FAIL — target integration was skipped even though target branch drifted after QA");
+          } else if (integrationStatus !== "success") {
+            verdict = "fail";
+            feedbackContext = "Finalize integration contract violated: target branch changed after QA, so FINALIZE_VALIDATION.md must record Target Integration as SUCCESS before verdict handling can continue.";
+            ctx.log("[FINALIZE] FAIL — target integration did not record SUCCESS after target drift");
+          } else if (config.vcsBackend && progress.currentTargetRef) {
+            const finalizedHead = await config.vcsBackend.getHeadId(worktreePath).catch(() => "");
+            const containsTargetRef = finalizedHead
+              ? await config.vcsBackend.isAncestor(worktreePath, progress.currentTargetRef, finalizedHead).catch(() => false)
+              : false;
+            if (!containsTargetRef) {
+              verdict = "fail";
+              feedbackContext = "Finalize integration contract violated: target branch drifted after QA, but the finalized branch does not actually contain the current target revision.";
+              ctx.log("[FINALIZE] FAIL — finalized branch does not contain the drifted target revision");
+            } else if (validationStatus === "skipped") {
+              verdict = "fail";
+              feedbackContext = "Finalize validation contract violated: target branch changed after QA, so FINALIZE_VALIDATION.md must not skip test validation.";
+              ctx.log("[FINALIZE] FAIL — validation was skipped even though target branch drifted after QA");
+            }
+          } else if (validationStatus === "skipped") {
+            verdict = "fail";
+            feedbackContext = "Finalize validation contract violated: target branch changed after QA, so FINALIZE_VALIDATION.md must not skip test validation.";
+            ctx.log("[FINALIZE] FAIL — validation was skipped even though target branch drifted after QA");
+          }
+        }
+      }
 
       if (phaseName === "qa") {
         qaVerdictForLog = verdict as "pass" | "fail" | "unknown";
+        if (verdict === "pass" && config.vcsBackend) {
+          const detectDefaultBranch = (
+            config.vcsBackend as Partial<VcsBackend>
+          ).detectDefaultBranch;
+          const qaTargetBranch = config.targetBranch
+            ?? (typeof detectDefaultBranch === "function"
+              ? await detectDefaultBranch.call(config.vcsBackend, worktreePath)
+              : undefined)
+            ?? "main";
+          const targetCandidates = [`origin/${qaTargetBranch}`, qaTargetBranch];
+          let qaTargetRef = "";
+          for (const candidate of targetCandidates) {
+            try {
+              qaTargetRef = await config.vcsBackend.resolveRef(worktreePath, candidate);
+              break;
+            } catch {
+              // Try local fallback if remote ref is absent.
+            }
+          }
+          try {
+            progress.qaValidatedHeadRef = await config.vcsBackend.getHeadId(worktreePath);
+          } catch {
+            progress.qaValidatedHeadRef = undefined;
+          }
+          progress.qaValidatedTargetBranch = qaTargetBranch;
+          progress.qaValidatedTargetRef = qaTargetRef || undefined;
+          store.updateRunProgress(runId, progress);
+        }
       }
 
       if (verdict === "fail" && phase.retryWith) {
@@ -929,6 +1050,15 @@ async function runPhaseSequence(
         const maxRetries = phase.retryOnFail ?? 0;
         const retryCountKey = phaseName;
         const currentRetries = retryCounts[retryCountKey] ?? 0;
+        const finalizeFailureScope = phaseName === "finalize" && report
+          ? parseFinalizeFailureScope(report)
+          : "unknown";
+
+        if (phaseName === "finalize" && finalizeFailureScope === "unrelated_files") {
+          ctx.log(`[FINALIZE] FAIL — unrelated/pre-existing test failures detected, skipping developer retry`);
+          await appendFile(logFile, `\n[PIPELINE] finalize failed due to unrelated/pre-existing test failures — no developer retry\n`);
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+        }
 
         if (currentRetries < maxRetries) {
           retryCounts[retryCountKey] = currentRetries + 1;
@@ -937,7 +1067,7 @@ async function runPhaseSequence(
             const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
             ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, report);
           }
-          feedbackContext = report ? extractIssues(report) : `(${phaseName} failed but no report)`;
+          feedbackContext = feedbackContext ?? (report ? extractIssues(report) : `(${phaseName} failed but no report)`);
 
           ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
@@ -949,10 +1079,11 @@ async function runPhaseSequence(
           }
           ctx.log(`[${phaseName.toUpperCase()}] retryWith target '${retryTarget}' not found in workflow — continuing`);
         } else {
-          ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted${failOnRetriesExhausted ? "" : ", continuing"}`);
-          await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries${failOnRetriesExhausted ? "" : ", continuing"}\n`);
+          const terminalFinalizeFailure = phaseName === "finalize";
+          ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted${failOnRetriesExhausted || terminalFinalizeFailure ? "" : ", continuing"}`);
+          await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries${failOnRetriesExhausted || terminalFinalizeFailure ? "" : ", continuing"}\n`);
           feedbackContext = undefined;
-          if (failOnRetriesExhausted) {
+          if (failOnRetriesExhausted || terminalFinalizeFailure) {
             return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, retriesExhausted: true };
           }
         }
@@ -970,8 +1101,6 @@ async function runPhaseSequence(
       });
     }
     store.logEvent(config.projectId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, runId);
-    enqueueAddLabelsToBead(store, seedId, [`phase:${phaseName}`], "pipeline-executor");
-
     ctx.taskStore?.updatePhase(config.taskId ?? null, phaseName);
 
     if (phase.mail?.forwardArtifactTo && phase.artifact) {
@@ -1007,7 +1136,7 @@ async function writeSessionLogSafe(
   const description = config.seedDescription ?? "(no description)";
 
   try {
-    const pipelineProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
+    const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(worktreePath);
     const sessionLogData: SessionLogData = {
       seedId,
       seedTitle,

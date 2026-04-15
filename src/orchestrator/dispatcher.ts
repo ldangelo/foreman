@@ -1,5 +1,5 @@
 import { writeFile, mkdir, open, readdir, unlink } from "node:fs/promises";
-import { unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -10,10 +10,9 @@ import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore, NativeTask } from "../lib/store.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
-import { installDependencies, runSetupWithCache } from "../lib/git.js";
+import { installDependencies, runSetupWithCache } from "../lib/setup.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
-import { extractBranchLabel, isDefaultBranch, applyBranchLabel } from "../lib/branch-label.js";
-import { BeadsRustClient } from "../lib/beads-rust.js";
+import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
@@ -23,6 +22,7 @@ import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.
 import { getTaskOrder } from "./task-ordering.js";
 import type { EpicTask } from "./pipeline-executor.js";
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
+import { getWorkspacePath } from "../lib/workspace-paths.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import type {
@@ -35,6 +35,27 @@ import type {
   ModelSelection,
   PlanStepDispatched,
 } from "./types.js";
+import type { RuntimeMode } from "../cli/commands/run.js";
+import type { TaskOrderingClient } from "./task-ordering.js";
+
+interface DispatcherDependencyRef {
+  id: string;
+}
+
+interface DispatcherDependentRef {
+  status: string;
+}
+
+interface DispatcherBeadsIssueDetail {
+  children?: string[];
+  dependents?: DispatcherDependentRef[];
+  dependencies?: Array<string | DispatcherDependencyRef>;
+}
+
+async function createDispatcherBeadsClient(projectPath: string): Promise<TaskOrderingClient> {
+  const { BeadsRustClient } = await import("../lib/beads-rust.js");
+  return new BeadsRustClient(projectPath) as TaskOrderingClient;
+}
 
 // ── Task store resolution (REQ-014 / REQ-017) ────────────────────────────
 
@@ -101,6 +122,7 @@ export class Dispatcher {
   async dispatch(opts?: {
     maxAgents?: number;
     runtime?: RuntimeSelection;
+    runtimeMode?: RuntimeMode;
     model?: ModelSelection;
     dryRun?: boolean;
     telemetry?: boolean;
@@ -137,10 +159,13 @@ export class Dispatcher {
     // The cache goes stale when beads are closed by the refinery, auto-close
     // logic, or manual operations outside br's normal flow.
     try {
-      execFileSync("sqlite3", [
-        join(this.projectPath, ".beads", "beads.db"),
-        "DELETE FROM blocked_issues_cache;",
-      ], { timeout: 5000 });
+      const beadsDbPath = join(this.projectPath, ".beads", "beads.db");
+      if (existsSync(beadsDbPath)) {
+        execFileSync("sqlite3", [
+          beadsDbPath,
+          "DELETE FROM blocked_issues_cache;",
+        ], { timeout: 5000 });
+      }
     } catch {
       // sqlite3 not available or .beads/beads.db missing — non-fatal
     }
@@ -246,7 +271,40 @@ export class Dispatcher {
 
     // Filter to a specific seed if requested
     if (opts?.seedId) {
+      if (this.hasMergedOutcomeWithoutLaterReset(opts.seedId, projectId)) {
+        return {
+          dispatched: [],
+          skipped: [{
+            seedId: opts.seedId,
+            title: opts.seedId,
+            reason: "Latest authoritative run already merged — use foreman reset/retry to rerun explicitly",
+          }],
+          resumed: [],
+          activeAgents: activeRuns.length,
+        };
+      }
       let target = readySeeds.find((b) => b.id === opts.seedId);
+      if (usingNativeStore && !target) {
+        const nativeMatch = this.store.getTaskByExternalId(opts.seedId);
+        if (nativeMatch) {
+          if (nativeMatch.status === "ready") {
+            target = nativeTaskToIssue(nativeMatch);
+          } else {
+            return {
+              dispatched: [],
+              skipped: [{
+                seedId: opts.seedId,
+                title: nativeMatch.title,
+                reason: `Native task for ${opts.seedId} is ${nativeMatch.status} (not ready)`
+              }],
+              resumed: [],
+              activeAgents: activeRuns.length,
+            };
+          }
+        } else {
+          usingNativeStore = false;
+        }
+      }
       // If not in br ready (possibly due to stale blocked cache — beads_rust#204),
       // fetch directly and force-dispatch if it's open/in_progress.
       if (!target) {
@@ -287,14 +345,25 @@ export class Dispatcher {
     const dispatched: DispatchedTask[] = [];
     const skipped: SkippedTask[] = [];
 
+    const resolveUsableBranchLabel = async (branch: string | undefined): Promise<string | undefined> => {
+      const normalized = normalizeBranchLabel(branch);
+      if (!normalized || !isValidBranchLabel(normalized)) return undefined;
+      if (branchBackend?.name === "jujutsu") {
+        const exists = await branchBackend.branchExists(this.projectPath, normalized).catch(() => false);
+        if (!exists) return undefined;
+      }
+      return normalized;
+    };
+
     // Detect current branch for auto-labeling (branch:<name> label).
     // Done once per dispatch() call using VcsBackend (TRD-015: migrate from git.js shims).
     let currentBranch: string | undefined;
     let defaultBranch: string | undefined;
+    let branchBackend: VcsBackend | undefined;
     try {
-      const branchBackend = new GitBackend(this.projectPath);
-      currentBranch = await branchBackend.getCurrentBranch(this.projectPath);
-      defaultBranch = await branchBackend.detectDefaultBranch(this.projectPath);
+      branchBackend = await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
+      currentBranch = await resolveUsableBranchLabel(await branchBackend.getCurrentBranch(this.projectPath));
+      defaultBranch = normalizeBranchLabel(await branchBackend.detectDefaultBranch(this.projectPath));
     } catch {
       // Non-fatal: branch detection failure must not block dispatch
     }
@@ -307,6 +376,15 @@ export class Dispatcher {
     const completedSeedIds = new Set(completedRuns.map((r) => r.seed_id));
 
     for (const seed of readySeeds) {
+      if (this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
+        skipped.push({
+          seedId: seed.id,
+          title: seed.title,
+          reason: "Latest authoritative run already merged — explicit reset/retry required",
+        });
+        continue;
+      }
+
       if (activeSeedIds.has(seed.id)) {
         skipped.push({
           seedId: seed.id,
@@ -334,7 +412,7 @@ export class Dispatcher {
           const detail = await this.seeds.show(seed.id);
           // br show --json returns `dependents` (the tasks this container blocks), not `children`.
           // Use dependents to determine whether all downstream work is complete.
-          const brDetail = detail as import("../lib/beads-rust.js").BrIssueDetail;
+          const brDetail = detail as DispatcherBeadsIssueDetail;
           const dependents = brDetail.dependents ?? [];
 
           if (dependents.length === 0) {
@@ -405,7 +483,7 @@ export class Dispatcher {
 
           // Epic has children — query task order and dispatch through epic path.
           // getTaskOrder returns only actionable child types (task, bug, chore).
-          const brClient = this.seeds as unknown as BeadsRustClient;
+          const brClient = this.seeds as unknown as TaskOrderingClient;
           const epicTasks: EpicTask[] = await getTaskOrder(
             seed.id,
             brClient,
@@ -495,7 +573,7 @@ export class Dispatcher {
       // Only applied when the bead doesn't already have a branch: label.
       if (currentBranch && defaultBranch) {
         const existingLabels: string[] = seedDetail?.labels ?? seed.labels ?? [];
-        const existingBranchLabel = extractBranchLabel(existingLabels);
+        const existingBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(existingLabels));
 
         if (!existingBranchLabel) {
           // Determine the branch to label with: prefer current non-default branch,
@@ -508,7 +586,7 @@ export class Dispatcher {
             // Check parent's branch: label for inheritance
             try {
               const parentDetail = await this.seeds.show(seed.parent) as unknown as { labels?: string[] };
-              const parentBranchLabel = extractBranchLabel(parentDetail.labels);
+              const parentBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(parentDetail.labels));
               if (parentBranchLabel && !isDefaultBranch(parentBranchLabel, defaultBranch)) {
                 labelBranch = parentBranchLabel;
               }
@@ -551,7 +629,7 @@ export class Dispatcher {
           title: seed.title,
           runtime,
           model,
-          worktreePath: join(this.projectPath, ".foreman-worktrees", seed.id),
+          worktreePath: getWorkspacePath(this.projectPath, seed.id),
           runId: "(dry-run)",
           branchName: `foreman/${seed.id}`,
         });
@@ -569,6 +647,14 @@ export class Dispatcher {
             seedId: seed.id,
             title: seed.title,
             reason: "Another run was created concurrently (race guard)",
+          });
+          continue;
+        }
+        if (this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
+          skipped.push({
+            seedId: seed.id,
+            title: seed.title,
+            reason: "Another run merged before dispatch could create a new run (merged guard)",
           });
           continue;
         }
@@ -624,7 +710,11 @@ export class Dispatcher {
         // without re-detecting.
         let vcsBackend: VcsBackend | undefined;
         try {
-          vcsBackend = await VcsBackendFactory.create({ backend: vcsBackendName }, this.projectPath);
+          if (branchBackend?.name === vcsBackendName) {
+            vcsBackend = branchBackend;
+          } else {
+            vcsBackend = await VcsBackendFactory.create({ backend: vcsBackendName }, this.projectPath);
+          }
           log(`[foreman] Created VcsBackend: ${vcsBackend.name}`);
         } catch (vcsErr: unknown) {
           const vcsMsg = vcsErr instanceof Error ? vcsErr.message : String(vcsErr);
@@ -643,7 +733,9 @@ export class Dispatcher {
         const branchName = workspaceResult.branchName;
 
         // Run setup steps / install dependencies (not part of VcsBackend interface)
-        if (setupSteps && setupSteps.length > 0) {
+        if (opts?.runtimeMode === "test") {
+          log(`[foreman] Skipping workflow setup/install for ${seed.id} in test runtime`);
+        } else if (setupSteps && setupSteps.length > 0) {
           await runSetupWithCache(worktreePath, this.projectPath, setupSteps, setupCache);
         } else {
           await installDependencies(worktreePath);
@@ -748,6 +840,7 @@ export class Dispatcher {
           },
           opts?.notifyUrl,
           vcsBackend,
+          opts?.runtimeMode,
           opts?.targetBranch,
           epicTasksForSeed,
           epicIdForSeed,
@@ -808,6 +901,7 @@ export class Dispatcher {
     statuses?: Array<"stuck" | "failed">;
     /** URL of the notification server (e.g. "http://127.0.0.1:PORT") */
     notifyUrl?: string;
+    runtimeMode?: RuntimeMode;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = this.resolveProjectId();
@@ -896,6 +990,7 @@ export class Dispatcher {
         sessionId,
         opts?.telemetry,
         opts?.notifyUrl,
+        opts?.runtimeMode,
       );
 
       this.store.updateRun(newRun.id, {
@@ -1084,13 +1179,14 @@ export class Dispatcher {
     },
     notifyUrl?: string,
     vcsBackend?: VcsBackend,
+    runtimeMode?: RuntimeMode,
     targetBranch?: string,
     epicTasks?: EpicTask[],
     epicId?: string,
   ): Promise<{ sessionKey: string }> {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
-    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, vcsBackend);
+    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, vcsBackend, runtimeMode);
     const sessionKey = `foreman:sdk:${model}:${runId}`;
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
@@ -1140,10 +1236,11 @@ export class Dispatcher {
     sdkSessionId: string,
     telemetry?: boolean,
     notifyUrl?: string,
+    runtimeMode?: RuntimeMode,
   ): Promise<{ sessionKey: string }> {
     const resumePrompt = this.buildResumePrompt(seed.id, seed.title);
 
-    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl);
+    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, undefined, runtimeMode);
     const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;
 
     log(`Resuming worker for ${seed.id} [${model}] session=${sdkSessionId}`);
@@ -1221,6 +1318,23 @@ export class Dispatcher {
   }
 
   /**
+   * Once a bead has a merged/PR-created run, it must not be dispatched again
+   * unless a later explicit reset exists. This protects against stale bead
+   * status or delayed queue writes causing accidental redispatch after merge.
+   */
+  private hasMergedOutcomeWithoutLaterReset(
+    seedId: string,
+    projectId: string,
+  ): boolean {
+    const runs = this.store.getRunsForSeed(seedId, projectId);
+    for (const run of runs) {
+      if (run.status === "reset") return false;
+      if (run.status === "merged" || run.status === "pr-created") return true;
+    }
+    return false;
+  }
+
+  /**
    * Drain the bead_write_queue and execute all pending br operations sequentially.
    *
    * This is the single writer for all br CLI operations — called by the dispatcher
@@ -1237,6 +1351,14 @@ export class Dispatcher {
   async drainBeadWriterInbox(): Promise<number> {
     const pending = this.store.getPendingBeadWrites();
     if (pending.length === 0) return 0;
+    const beadsDbPath = join(this.projectPath, ".beads", "beads.db");
+    const beadsDirPath = join(this.projectPath, ".beads");
+    if (!existsSync(beadsDirPath)) {
+      for (const entry of pending) {
+        this.store.markBeadWriteProcessed(entry.id);
+      }
+      return 0;
+    }
 
     const bin = join(homedir(), ".local", "bin", "br");
     const execOpts = {
@@ -1341,7 +1463,7 @@ export class Dispatcher {
         // Using sqlite3 CLI is safer and faster than deleting the entire DB.
         try {
           execFileSync("sqlite3", [
-            join(this.projectPath, ".beads", "beads.db"),
+            beadsDbPath,
             "DELETE FROM blocked_issues_cache;",
           ], execOpts);
           console.error(`[bead-writer] Cleared blocked_issues_cache after processing ${processed}/${pending.length} entries`);
@@ -1394,9 +1516,9 @@ export async function resolveBaseBranch(
   projectPath: string,
   store: Pick<ForemanStore, "getRunsForSeed">,
 ): Promise<string | undefined> {
-  const brClient = new BeadsRustClient(projectPath);
+  const brClient = await createDispatcherBeadsClient(projectPath);
   try {
-    const detail = await brClient.show(seedId);
+    const detail = await brClient.show(seedId) as DispatcherBeadsIssueDetail;
     // detail.dependencies is BrDepRef[] — extract id for branch resolution
     for (const dep of detail.dependencies ?? []) {
       const depId = typeof dep === "string" ? dep : (dep as { id: string }).id;
@@ -1495,14 +1617,14 @@ export interface SpawnStrategy {
 /**
  * Resolve common paths needed by both spawn strategies.
  */
-function resolveWorkerPaths(): { tsxBin: string; workerScript: string; logDir: string } {
+function resolveWorkerPaths(homeDir?: string): { tsxBin: string; workerScript: string; logDir: string } {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
   const projectRoot = join(__dirname, "..", "..");
   return {
-    tsxBin: join(projectRoot, "node_modules", ".bin", "tsx"),
-    workerScript: join(__dirname, "agent-worker.js"),
-    logDir: join(process.env.HOME ?? "/tmp", ".foreman", "logs"),
+    tsxBin: process.execPath,
+    workerScript: join(__dirname, "agent-worker.ts"),
+    logDir: join(homeDir ?? process.env.HOME ?? "/tmp", ".foreman", "logs"),
   };
 }
 
@@ -1512,10 +1634,11 @@ function resolveWorkerPaths(): { tsxBin: string; workerScript: string; logDir: s
  */
 export class DetachedSpawnStrategy implements SpawnStrategy {
   async spawn(config: WorkerConfig): Promise<SpawnResult> {
-    const { tsxBin, workerScript, logDir } = resolveWorkerPaths();
+    const homeDir = config.env.HOME ?? process.env.HOME ?? "/tmp";
+    const { tsxBin, workerScript, logDir } = resolveWorkerPaths(homeDir);
 
     // Write config to temp file (worker reads + deletes it)
-    const configDir = join(process.env.HOME ?? "/tmp", ".foreman", "tmp");
+    const configDir = join(homeDir, ".foreman", "tmp");
     await mkdir(configDir, { recursive: true });
     const configPath = join(configDir, `worker-${config.runId}.json`);
     await writeFile(configPath, JSON.stringify(config), "utf-8");
@@ -1535,7 +1658,8 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     // script's location, but ESM resolution still checks cwd for some paths.
     const __filename = fileURLToPath(import.meta.url);
     const projectRoot = join(dirname(__filename), "..", "..");
-    const child = spawn(tsxBin, [workerScript, configPath], {
+    const tsxLoader = join(projectRoot, "node_modules", "tsx", "dist", "loader.mjs");
+    const child = spawn(tsxBin, ["--import", tsxLoader, workerScript, configPath], {
       detached: true,
       stdio: ["ignore", outFd.fd, errFd.fd],
       cwd: projectRoot,
@@ -1575,6 +1699,7 @@ function buildWorkerEnv(
   model: string,
   notifyUrl?: string,
   vcsBackend?: VcsBackend,
+  runtimeMode?: RuntimeMode,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -1584,6 +1709,7 @@ function buildWorkerEnv(
   }
   const home = process.env.HOME ?? "/home/nobody";
   env.PATH = `${home}/.local/bin:/opt/homebrew/bin:${env.PATH ?? ""}`;
+  env.TSX_DISABLE_IPC = "1";
 
   if (notifyUrl) {
     env.FOREMAN_NOTIFY_URL = notifyUrl;
@@ -1594,6 +1720,10 @@ function buildWorkerEnv(
   // resolved and instantiated by the dispatcher; we serialize just the name.
   if (vcsBackend?.name) {
     env.FOREMAN_VCS_BACKEND = vcsBackend.name;
+  }
+
+  if (runtimeMode) {
+    env.FOREMAN_RUNTIME_MODE = runtimeMode;
   }
 
   if (telemetry) {

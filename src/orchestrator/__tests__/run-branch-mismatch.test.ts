@@ -6,7 +6,7 @@
  * 2. In-progress beads without branch: labels → no prompt, returns false
  * 3. In-progress beads with matching branch: label → no prompt, returns false
  * 4. In-progress beads with different branch: label → prompt
- *    - User says yes → git checkout, returns false
+ *    - User says yes → checkout target branch, returns false
  *    - User says no → returns true (abort)
  */
 
@@ -15,20 +15,39 @@ import type { ITaskClient, Issue } from "../../lib/task-client.js";
 
 // ── Module mocks ─────────────────────────────────────────────────────────────
 
-vi.mock("../../lib/git.js", () => ({
-  getCurrentBranch: vi.fn().mockResolvedValue("dev"),
-  checkoutBranch: vi.fn().mockResolvedValue(undefined),
-  getRepoRoot: vi.fn().mockResolvedValue("/tmp"),
+const {
+  mockGetCurrentBranch,
+  mockCheckoutBranch,
+  mockCreateVcsBackend,
+} = vi.hoisted(() => {
+  const mockGetCurrentBranch = vi.fn().mockResolvedValue("dev");
+  const mockCheckoutBranch = vi.fn().mockResolvedValue(undefined);
+  const mockCreateVcsBackend = vi.fn().mockResolvedValue({
+    name: "git",
+    getCurrentBranch: mockGetCurrentBranch,
+    checkoutBranch: mockCheckoutBranch,
+  });
+  return { mockGetCurrentBranch, mockCheckoutBranch, mockCreateVcsBackend };
+});
+
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: mockCreateVcsBackend,
+  },
+}));
+
+vi.mock("../../lib/project-config.js", () => ({
+  loadProjectConfig: vi.fn().mockReturnValue(null),
+  resolveVcsConfig: vi.fn().mockReturnValue({ backend: "auto" }),
 }));
 
 vi.mock("node:readline", () => ({
   createInterface: vi.fn().mockReturnValue({
-    question: vi.fn((q: string, cb: (answer: string) => void) => cb("y")),
+    question: vi.fn((_q: string, cb: (answer: string) => void) => cb("y")),
     close: vi.fn(),
   }),
 }));
 
-import { getCurrentBranch, checkoutBranch } from "../../lib/git.js";
 import { createInterface } from "node:readline";
 import { checkBranchMismatch } from "../../cli/commands/run.js";
 
@@ -81,8 +100,13 @@ function mockReadlineAnswer(answer: string): void {
 describe("checkBranchMismatch", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getCurrentBranch).mockResolvedValue("dev");
-    vi.mocked(checkoutBranch).mockResolvedValue(undefined);
+    mockGetCurrentBranch.mockResolvedValue("dev");
+    mockCheckoutBranch.mockResolvedValue(undefined);
+    mockCreateVcsBackend.mockResolvedValue({
+      name: "git",
+      getCurrentBranch: mockGetCurrentBranch,
+      checkoutBranch: mockCheckoutBranch,
+    });
     mockReadlineAnswer("y");
   });
 
@@ -105,9 +129,18 @@ describe("checkBranchMismatch", () => {
   });
 
   it("returns false when branch: label matches current branch", async () => {
-    vi.mocked(getCurrentBranch).mockResolvedValue("installer");
+    mockGetCurrentBranch.mockResolvedValue("installer");
     const beads = [makeIssue("seed-001")];
     const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });
+    const result = await checkBranchMismatch(taskClient, "/tmp");
+    expect(result).toBe(false);
+    expect(createInterface).not.toHaveBeenCalled();
+  });
+
+  it("does not prompt when the current branch is a decorated jujutsu name matching the target", async () => {
+    mockGetCurrentBranch.mockResolvedValue("dev*");
+    const beads = [makeIssue("seed-001")];
+    const taskClient = makeTaskClient(beads, { "seed-001": ["branch:dev"] });
     const result = await checkBranchMismatch(taskClient, "/tmp");
     expect(result).toBe(false);
     expect(createInterface).not.toHaveBeenCalled();
@@ -116,7 +149,6 @@ describe("checkBranchMismatch", () => {
   it("prompts when branch: label differs from current branch", async () => {
     const beads = [makeIssue("seed-001")];
     const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });
-    // current branch is "dev", bead targets "installer" → mismatch
     await checkBranchMismatch(taskClient, "/tmp");
     expect(createInterface).toHaveBeenCalled();
   });
@@ -126,7 +158,7 @@ describe("checkBranchMismatch", () => {
     const beads = [makeIssue("seed-001")];
     const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });
     const result = await checkBranchMismatch(taskClient, "/tmp");
-    expect(checkoutBranch).toHaveBeenCalledWith("/tmp", "installer");
+    expect(mockCheckoutBranch).toHaveBeenCalledWith("/tmp", "installer");
     expect(result).toBe(false);
   });
 
@@ -135,7 +167,7 @@ describe("checkBranchMismatch", () => {
     const beads = [makeIssue("seed-001")];
     const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });
     const result = await checkBranchMismatch(taskClient, "/tmp");
-    expect(checkoutBranch).toHaveBeenCalledWith("/tmp", "installer");
+    expect(mockCheckoutBranch).toHaveBeenCalledWith("/tmp", "installer");
     expect(result).toBe(false);
   });
 
@@ -144,7 +176,7 @@ describe("checkBranchMismatch", () => {
     const beads = [makeIssue("seed-001")];
     const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });
     const result = await checkBranchMismatch(taskClient, "/tmp");
-    expect(checkoutBranch).not.toHaveBeenCalled();
+    expect(mockCheckoutBranch).not.toHaveBeenCalled();
     expect(result).toBe(true);
   });
 
@@ -156,13 +188,12 @@ describe("checkBranchMismatch", () => {
     });
     mockReadlineAnswer("y");
     const result = await checkBranchMismatch(taskClient, "/tmp");
-    // Should prompt once for the group, not twice
     expect(createInterface).toHaveBeenCalledTimes(1);
     expect(result).toBe(false);
   });
 
   it("returns false when getCurrentBranch fails", async () => {
-    vi.mocked(getCurrentBranch).mockRejectedValue(new Error("git error"));
+    mockGetCurrentBranch.mockRejectedValue(new Error("vcs error"));
     const beads = [makeIssue("seed-001")];
     const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });
     const result = await checkBranchMismatch(taskClient, "/tmp");

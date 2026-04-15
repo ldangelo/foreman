@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { installBundledPrompts } from "../../lib/prompt-loader.js";
 
 // ── Type-only checks ─────────────────────────────────────────────────────────
 
@@ -145,6 +146,7 @@ describe("executePipeline(): taskStore.updatePhase() called at phase transitions
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-pipe-taskstore-test-"));
     mkdirSync(join(tmpDir, ".foreman", "prompts", "default"), { recursive: true });
+    installBundledPrompts(tmpDir, true);
   });
 
   afterEach(() => {
@@ -272,6 +274,57 @@ describe("executePipeline(): taskStore.updatePhase() called at phase transitions
     // updatePhase is called with null — the NativeTaskStore impl returns early
     // but the call itself still happens (guarded inside updatePhase impl, not at call site)
     expect(updatePhase).toHaveBeenCalledWith(null, "explorer");
+  });
+
+  it("does not enqueue phase label bead writes during active pipeline phases", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+
+    const enqueueBeadWrite = vi.fn();
+    const mockStore = {
+      updateRunProgress: vi.fn(),
+      logEvent: vi.fn(),
+      enqueueBeadWrite,
+    };
+    const mockRunPhase = vi.fn().mockResolvedValue({
+      success: true,
+      costUsd: 0,
+      turns: 1,
+      tokensIn: 0,
+      tokensOut: 0,
+    });
+
+    const workflowConfig = {
+      name: "test",
+      phases: [{ name: "explorer", artifact: "EXPLORER_REPORT.md" }],
+    };
+
+    await executePipeline({
+      config: {
+        runId: "run-no-labels",
+        projectId: "proj-no-labels",
+        seedId: "seed-no-labels",
+        seedTitle: "No phase label writes",
+        model: "anthropic/claude-haiku-4-5",
+        worktreePath: tmpDir,
+        env: {},
+      },
+      workflowConfig: workflowConfig as never,
+      store: mockStore as never,
+      logFile: join(tmpDir, "no-labels.log"),
+      notifyClient: null,
+      agentMailClient: null,
+      runPhase: mockRunPhase,
+      registerAgent: vi.fn().mockResolvedValue(undefined),
+      sendMail: vi.fn(),
+      sendMailText: vi.fn(),
+      reserveFiles: vi.fn(),
+      releaseFiles: vi.fn(),
+      markStuck: vi.fn(),
+      log: vi.fn(),
+      promptOpts: { projectRoot: tmpDir, workflow: "default" },
+    });
+
+    expect(enqueueBeadWrite).not.toHaveBeenCalled();
   });
 
   it("does NOT throw when taskStore is absent (undefined)", async () => {

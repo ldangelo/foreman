@@ -91,14 +91,16 @@ class MockVcsBackend implements VcsBackend {
   async removeFromIndex(_p: string, _f: string): Promise<void> {}
   async getMergeBase(_p: string, _r1: string, _r2: string): Promise<string> { return ''; }
   async getUntrackedFiles(_p: string): Promise<string[]> { return []; }
+  async isAncestor(_p: string, _a: string, _d: string): Promise<boolean> { return true; }
   getFinalizeCommands(_vars: import('../types.js').FinalizeTemplateVars): FinalizeCommands {
     return {
       stageCommand: 'git add -A',
       commitCommand: 'git commit -m "test"',
       pushCommand: 'git push origin main',
-      rebaseCommand: 'git rebase origin/main',
+      integrateTargetCommand: 'git rebase origin/main',
       branchVerifyCommand: 'git rev-parse HEAD',
       cleanCommand: 'git worktree remove /tmp',
+      restoreTrackedStateCommand: 'git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl',
     };
   }
 }

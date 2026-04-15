@@ -1,14 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { MergeQueue } from "../merge-queue.js";
-import type { GitBackend } from "../../lib/vcs/git-backend.js";
+import type { VcsBackend } from "../../lib/vcs/interface.js";
 
-vi.mock("../../lib/git.js", () => ({
-  detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+const { mockCreateVcsBackend } = vi.hoisted(() => ({
+  mockCreateVcsBackend: vi.fn(),
+}));
+
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: mockCreateVcsBackend,
+  },
 }));
 
 /**
- * Create a minimal GitBackend mock for reconcile() tests.
+ * Create a minimal VcsBackend mock for reconcile() tests.
  * By default: branchExists=true, branchExistsOnRemote=false, getChangedFiles=[], getRefCommitTimestamp=null.
  */
 function makeBackend(opts?: {
@@ -16,7 +22,7 @@ function makeBackend(opts?: {
   branchExistsOnRemote?: boolean | ((branch: string) => boolean);
   files?: string[];
   timestamp?: number | null;
-}): GitBackend {
+}): VcsBackend {
   const {
     branchExists: be = true,
     branchExistsOnRemote: beor = false,
@@ -32,7 +38,8 @@ function makeBackend(opts?: {
     ),
     getChangedFiles: vi.fn().mockResolvedValue(files),
     getRefCommitTimestamp: vi.fn().mockResolvedValue(timestamp),
-  } as unknown as GitBackend;
+    detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+  } as unknown as VcsBackend;
 }
 
 const SCHEMA = `
@@ -62,7 +69,7 @@ const mockGit = () => makeBackend({ branchExists: true, branchExistsOnRemote: fa
 describe("Reconcile detects missing entries", () => {
   let db: Database.Database;
   let mq: MergeQueue;
-  beforeEach(() => { db = mkDb(); mq = new MergeQueue(db); });
+  beforeEach(() => { db = mkDb(); mq = new MergeQueue(db); mockCreateVcsBackend.mockResolvedValue(makeBackend()); });
   afterEach(() => { db.close(); });
 
   it("enqueues completed runs not already queued", async () => {
@@ -94,7 +101,7 @@ describe("Reconcile detects missing entries", () => {
 describe("missingFromQueue detects completed runs not in queue", () => {
   let db: Database.Database;
   let mq: MergeQueue;
-  beforeEach(() => { db = mkDb(); mq = new MergeQueue(db); });
+  beforeEach(() => { db = mkDb(); mq = new MergeQueue(db); mockCreateVcsBackend.mockResolvedValue(makeBackend()); });
   afterEach(() => { db.close(); });
 
   it("returns empty array when no completed runs exist", () => {
@@ -138,7 +145,7 @@ describe("missingFromQueue detects completed runs not in queue", () => {
 describe("Reconcile reports invalid branches in failedToEnqueue", () => {
   let db: Database.Database;
   let mq: MergeQueue;
-  beforeEach(() => { db = mkDb(); mq = new MergeQueue(db); });
+  beforeEach(() => { db = mkDb(); mq = new MergeQueue(db); mockCreateVcsBackend.mockResolvedValue(makeBackend()); });
   afterEach(() => { db.close(); });
 
   it("populates failedToEnqueue when branch does not exist", async () => {
@@ -181,6 +188,7 @@ describe("Dequeue processes in FIFO order", () => {
     db = mkDb();
     addRun(db, "r1", "s1"); addRun(db, "r2", "s2"); addRun(db, "r3", "s3");
     mq = new MergeQueue(db);
+    mockCreateVcsBackend.mockResolvedValue(makeBackend());
   });
   afterEach(() => { db.close(); });
 
@@ -212,6 +220,7 @@ describe("Status transitions are correct", () => {
     db = mkDb();
     addRun(db, "r1", "s1"); addRun(db, "r2", "s2"); addRun(db, "r3", "s3");
     mq = new MergeQueue(db);
+    mockCreateVcsBackend.mockResolvedValue(makeBackend());
   });
   afterEach(() => { db.close(); });
 
@@ -258,7 +267,7 @@ describe("Status transitions are correct", () => {
 describe("Queue integration with merge CLI flow", () => {
   let db: Database.Database;
   let mq: MergeQueue;
-  beforeEach(() => { db = mkDb(); mq = new MergeQueue(db); });
+  beforeEach(() => { db = mkDb(); mq = new MergeQueue(db); mockCreateVcsBackend.mockResolvedValue(makeBackend()); });
   afterEach(() => { db.close(); });
 
   it("full flow: reconcile -> dequeue loop -> status updates", async () => {

@@ -35,6 +35,7 @@ If you hit an unrecoverable error, invoke:
 - Stay focused on THIS task only — do not refactor unrelated code
 - Follow existing codebase patterns and conventions
 - Write tests for new functionality
+- Do NOT copy tests from the worktree into the main codebase unless they are directly related to THIS task's requirements. If you find existing tests for the same functionality, verify they still exist and are passing before adding new ones.
 - **DO NOT** commit, push, or close the seed — the pipeline handles that
 - **DO NOT** run the full test suite — the QA agent handles that
 - If blocked, write a note to BLOCKED.md explaining why

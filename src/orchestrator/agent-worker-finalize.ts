@@ -21,8 +21,8 @@ import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import { enqueueSetBeadStatus } from "./task-backend-ops.js";
-import { detectDefaultBranch as _detectDefaultBranch } from "../lib/git.js"; // reserved for future use
 import type { VcsBackend } from "../lib/vcs/index.js";
+import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -37,8 +37,8 @@ export interface FinalizeConfig {
   worktreePath: string;
   /**
    * Absolute path to the project root (contains .beads/).
-   * Used as cwd for br commands. Defaults to worktreePath/../..
-   * when not provided.
+   * Used as cwd for br commands. When omitted, Foreman infers the project root
+   * from the workspace path so both legacy nested and external workspace roots work.
    */
   projectPath?: string;
 }
@@ -97,9 +97,9 @@ function log(msg: string): void {
 export async function finalize(config: FinalizeConfig, logFile: string, vcs: VcsBackend): Promise<FinalizeResult> {
   const { seedId, seedTitle, worktreePath } = config;
   // `storeProjectPath` is used only to open the SQLite store for the merge
-  // queue — it must never be undefined, so we fall back to worktreePath/../..
-  // (the conventional repo root for a worktree at <root>/.foreman-worktrees/<id>).
-  const storeProjectPath = config.projectPath ?? join(worktreePath, "..", "..");
+  // queue — it must never be undefined, so we infer it from the workspace path
+  // when the caller didn't pass projectPath explicitly.
+  const storeProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(worktreePath);
   const buildOpts = { cwd: worktreePath, stdio: "pipe" as const, timeout: 60_000 };
 
   const report: string[] = [

@@ -5,33 +5,13 @@ import { mkdtempSync, rmSync, realpathSync, mkdirSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
 
 const execFileAsync = promisify(execFile);
-
-const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx");
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
-interface ExecResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  try {
-    const { stdout, stderr } = await execFileAsync(TSX, [CLI, ...args], {
-      cwd,
-      timeout: 15_000,
-      env: { ...process.env, NO_COLOR: "1" },
-    });
-    return { stdout, stderr, exitCode: 0 };
-  } catch (err: any) {
-    return {
-      stdout: err.stdout ?? "",
-      stderr: err.stderr ?? "",
-      exitCode: err.code ?? 1,
-    };
-  }
+  return runTsxModule(CLI, args, { cwd, timeout: 15_000 });
 }
 
 describe("doctor command", () => {
@@ -136,7 +116,7 @@ describe("doctor command", () => {
 
     // Register the project in the store
     const storeMod = await import("../../lib/store.js");
-    const store = new storeMod.ForemanStore();
+    const store = storeMod.ForemanStore.forProject(tmp);
     store.registerProject("test-project", tmp);
     store.close();
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { execute, toTrackerPriority, toTrackerType } from "../sling-executor.js";
 import type {
   SlingPlan,
@@ -6,59 +6,66 @@ import type {
   ParallelResult,
   Priority,
 } from "../types.js";
+import type { TaskRow } from "../../lib/task-store.js";
 
-// ── Mock BeadsRustClient (used for both sd and br slots in execute()) ─────
-
-function createMockSdClient() {
+function createMockNativeTaskStore() {
   let counter = 0;
-  return {
-    create: vi.fn().mockImplementation(async () => ({
-      id: `sd-${++counter}`,
-      title: "mock",
-      type: "task",
-      priority: "P2",
-      status: "open",
-      assignee: null,
-      parent: null,
+  const byExternalId = new Map<string, TaskRow>();
+
+  const create = vi.fn((opts: {
+    title: string;
+    description?: string | null;
+    type?: string;
+    priority?: number;
+    externalId?: string | null;
+  }) => {
+    const row: TaskRow = {
+      id: `task-${++counter}`,
+      title: opts.title,
+      description: opts.description ?? null,
+      type: opts.type ?? "task",
+      priority: opts.priority ?? 2,
+      status: "backlog",
+      run_id: null,
+      branch: null,
+      external_id: opts.externalId ?? null,
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
-    })),
-    list: vi.fn().mockResolvedValue([]),
-    show: vi.fn().mockResolvedValue({ id: "sd-1", labels: [] }),
-    close: vi.fn().mockResolvedValue(undefined),
-    addDependency: vi.fn().mockResolvedValue(undefined),
-    update: vi.fn().mockResolvedValue(undefined),
-    ensureBrInstalled: vi.fn().mockResolvedValue(undefined),
-    isInitialized: vi.fn().mockResolvedValue(true),
-  };
-}
+      approved_at: null,
+      closed_at: null,
+    };
+    if (row.external_id) {
+      byExternalId.set(row.external_id, row);
+    }
+    return row;
+  });
 
-function createMockBeadsRustClient() {
-  let counter = 0;
+  const update = vi.fn((id: string, opts: { title?: string; description?: string | null; priority?: number }) => {
+    const existing = [...byExternalId.values()].find((row) => row.id === id);
+    if (!existing) {
+      throw new Error(`Missing task ${id}`);
+    }
+    const updated: TaskRow = {
+      ...existing,
+      title: opts.title ?? existing.title,
+      description: opts.description ?? existing.description,
+      priority: opts.priority ?? existing.priority,
+      updated_at: "2026-01-02T00:00:00Z",
+    };
+    if (updated.external_id) {
+      byExternalId.set(updated.external_id, updated);
+    }
+    return updated;
+  });
+
   return {
-    create: vi.fn().mockImplementation(async () => ({
-      id: `br-${++counter}`,
-      title: "mock",
-      type: "task",
-      priority: "P2",
-      status: "open",
-      assignee: null,
-      parent: null,
-      created_at: "2026-01-01T00:00:00Z",
-      updated_at: "2026-01-01T00:00:00Z",
-    })),
-    list: vi.fn().mockResolvedValue([]),
-    show: vi.fn().mockResolvedValue({ id: "br-1", labels: [] }),
-    close: vi.fn().mockResolvedValue(undefined),
-    addDependency: vi.fn().mockResolvedValue(undefined),
-    update: vi.fn().mockResolvedValue(undefined),
-    search: vi.fn().mockResolvedValue([]),
-    ensureBrInstalled: vi.fn().mockResolvedValue(undefined),
-    isInitialized: vi.fn().mockResolvedValue(true),
+    create,
+    update,
+    close: vi.fn(),
+    addDependency: vi.fn(),
+    getByExternalId: vi.fn((externalId: string) => byExternalId.get(externalId) ?? null),
   };
 }
-
-// ── Test data ────────────────────────────────────────────────────────────
 
 function makeTestPlan(): SlingPlan {
   return {
@@ -149,8 +156,6 @@ const DEFAULT_OPTIONS: SlingOptions = {
 
 const EMPTY_PARALLEL: ParallelResult = { groups: [], warnings: [] };
 
-// ── toTrackerPriority / toTrackerType ────────────────────────────────────
-
 describe("toTrackerPriority", () => {
   it("maps priorities correctly", () => {
     expect(toTrackerPriority("critical")).toBe("P0");
@@ -171,264 +176,208 @@ describe("toTrackerType", () => {
   });
 });
 
-// ── execute ──────────────────────────────────────────────────────────────
-
 describe("execute", () => {
-  it("creates hierarchy in both sd and br", async () => {
-    const seeds = createMockSdClient();
-    const br = createMockBeadsRustClient();
+  it("creates hierarchy in the native store", async () => {
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
 
-    const result = await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, br as any);
+    const result = await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, taskStore as never);
 
-    // sd: 1 epic + 2 sprints + 2 stories + 3 tasks = 8
-    expect(result.sd!.created).toBe(8);
-    expect(result.sd!.epicId).toBeDefined();
-
-    // br: same
-    expect(result.br!.created).toBe(8);
-    expect(result.br!.epicId).toBeDefined();
+    expect(result.native.created).toBe(8);
+    expect(result.native.epicId).toBeDefined();
+    expect(taskStore.create).toHaveBeenCalledTimes(8);
   });
 
-  it("wires dependencies", async () => {
-    const seeds = createMockSdClient();
+  it("wires parent-child and blocking dependencies", async () => {
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
 
-    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
+    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, taskStore as never);
 
-    // TP-T002 depends on TP-T001, TP-T003 depends on TP-T001 (task-level: 2)
-    // Sprint 2 depends on Sprint 1, Story 2.1 depends on Story 1.1 (container-level: 2)
-    expect(seeds.addDependency).toHaveBeenCalledTimes(4);
+    const calls = taskStore.addDependency.mock.calls.map(([from, to, type]) => ({ from, to, type }));
+    expect(calls.some((call) => call.type === "parent-child")).toBe(true);
+    expect(calls.some((call) => call.type === "blocks")).toBe(true);
   });
 
-  it("applies trd: labels to tasks", async () => {
-    const seeds = createMockSdClient();
+  it("stores TRD metadata in task descriptions", async () => {
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
 
-    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
+    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, taskStore as never);
 
-    // Check that create was called with trd:TP-T001 label
-    const calls = seeds.create.mock.calls;
-    const taskCall = calls.find(
-      (c: unknown[]) => (c[0] as string) === "Implement feature A",
+    const taskCall = taskStore.create.mock.calls.find(
+      ([opts]) => opts.title === "Implement feature A",
     );
     expect(taskCall).toBeDefined();
-    const opts = taskCall![1] as { labels: string[] };
-    expect(opts.labels).toContain("trd:TP-T001");
+    expect(taskCall![0].description).toContain("trd:TP-T001");
   });
 
-  it("applies risk labels when enabled", async () => {
-    const seeds = createMockSdClient();
+  it("applies risk metadata when enabled", async () => {
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
 
-    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
+    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, taskStore as never);
 
-    const calls = seeds.create.mock.calls;
-    const riskTask = calls.find(
-      (c: unknown[]) => (c[0] as string) === "Implement feature B",
+    const riskTask = taskStore.create.mock.calls.find(
+      ([opts]) => opts.title === "Implement feature B",
     );
     expect(riskTask).toBeDefined();
-    const opts = riskTask![1] as { labels: string[] };
-    expect(opts.labels).toContain("risk:high");
+    expect(riskTask![0].description).toContain("risk:high");
   });
 
-  it("skips risk labels when --no-risks", async () => {
-    const seeds = createMockSdClient();
+  it("skips risk metadata when --no-risks", async () => {
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
     const options = { ...DEFAULT_OPTIONS, noRisks: true };
 
-    await execute(plan, EMPTY_PARALLEL, options, seeds as any, null);
+    await execute(plan, EMPTY_PARALLEL, options, taskStore as never);
 
-    const calls = seeds.create.mock.calls;
-    const riskTask = calls.find(
-      (c: unknown[]) => (c[0] as string) === "Implement feature B",
+    const riskTask = taskStore.create.mock.calls.find(
+      ([opts]) => opts.title === "Implement feature B",
     );
-    const opts = riskTask![1] as { labels: string[] };
-    expect(opts.labels).not.toContain("risk:high");
+    expect(riskTask![0].description).not.toContain("risk:high");
   });
 
   it("skips completed tasks with --skip-completed", async () => {
-    const seeds = createMockSdClient();
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
     const options = { ...DEFAULT_OPTIONS, skipCompleted: true };
 
-    const result = await execute(plan, EMPTY_PARALLEL, options, seeds as any, null);
+    const result = await execute(plan, EMPTY_PARALLEL, options, taskStore as never);
 
-    // TP-T003 is completed, should be skipped
-    expect(result.sd!.skipped).toBe(1);
-    expect(result.sd!.created).toBe(7); // 8 - 1 skipped task
+    expect(result.native.skipped).toBe(1);
+    expect(result.native.created).toBe(7);
   });
 
   it("creates then closes completed tasks with --close-completed", async () => {
-    const seeds = createMockSdClient();
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
     const options = { ...DEFAULT_OPTIONS, closeCompleted: true };
 
-    await execute(plan, EMPTY_PARALLEL, options, seeds as any, null);
+    await execute(plan, EMPTY_PARALLEL, options, taskStore as never);
 
-    // TP-T003 should be created then closed
-    expect(seeds.close).toHaveBeenCalledTimes(1);
+    expect(taskStore.close).toHaveBeenCalledTimes(1);
   });
 
-  it("uses --sd-only to skip br", async () => {
-    const seeds = createMockSdClient();
-    const br = createMockBeadsRustClient();
-    const plan = makeTestPlan();
-    const options = { ...DEFAULT_OPTIONS, sdOnly: true };
-
-    const result = await execute(plan, EMPTY_PARALLEL, options, seeds as any, br as any);
-
-    expect(result.sd).not.toBeNull();
-    expect(result.br).toBeNull();
-    expect(br.create).not.toHaveBeenCalled();
-  });
-
-  it("uses --br-only to skip sd", async () => {
-    const seeds = createMockSdClient();
-    const br = createMockBeadsRustClient();
-    const plan = makeTestPlan();
-    const options = { ...DEFAULT_OPTIONS, brOnly: true };
-
-    const result = await execute(plan, EMPTY_PARALLEL, options, seeds as any, br as any);
-
-    expect(result.sd).toBeNull();
-    expect(result.br).not.toBeNull();
-    expect(seeds.create).not.toHaveBeenCalled();
-  });
-
-  it("applies parallel labels to sprint issues", async () => {
-    const seeds = createMockSdClient();
+  it("records parallel metadata on sprint descriptions", async () => {
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
     const parallel: ParallelResult = {
       groups: [{ label: "A", sprintIndices: [0, 1] }],
       warnings: [],
     };
 
-    await execute(plan, parallel, DEFAULT_OPTIONS, seeds as any, null);
+    await execute(plan, parallel, DEFAULT_OPTIONS, taskStore as never);
 
-    // Find sprint creation calls (type: "feature" with kind:sprint label)
-    const calls = seeds.create.mock.calls;
-    const sprintCalls = calls.filter(
-      (c: unknown[]) => {
-        const opts = c[1] as { labels?: string[] };
-        return opts?.labels?.includes("kind:sprint");
-      },
+    const sprintCalls = taskStore.create.mock.calls.filter(
+      ([opts]) => opts.title.startsWith("Sprint "),
     );
-    expect(sprintCalls.length).toBe(2);
-    for (const call of sprintCalls) {
-      const opts = call[1] as { labels: string[] };
-      expect(opts.labels).toContain("parallel:A");
+    expect(sprintCalls).toHaveLength(2);
+    for (const [opts] of sprintCalls) {
+      expect(opts.description).toContain("parallel:A");
     }
   });
 
-  it("passes estimate to br as minutes", async () => {
-    const br = createMockBeadsRustClient();
-    const plan = makeTestPlan();
-    const options = { ...DEFAULT_OPTIONS, sdOnly: false, brOnly: false };
-
-    await execute(plan, EMPTY_PARALLEL, options, null, br as any);
-
-    // TP-T001 has 3h estimate = 180 minutes
-    const calls = br.create.mock.calls;
-    const taskCall = calls.find(
-      (c: unknown[]) => (c[0] as string) === "Implement feature A",
-    );
-    const opts = taskCall![1] as { estimate?: number };
-    expect(opts.estimate).toBe(180);
-  });
-
   it("adds quality notes to epic description when enabled", async () => {
-    const seeds = createMockSdClient();
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
 
-    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
+    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, taskStore as never);
 
-    const epicCall = seeds.create.mock.calls[0];
-    const opts = epicCall[1] as { description: string };
-    expect(opts.description).toContain("Quality notes here");
+    const epicCall = taskStore.create.mock.calls[0];
+    expect(epicCall![0].description).toContain("Quality notes here");
   });
 
   it("skips quality notes with --no-quality", async () => {
-    const seeds = createMockSdClient();
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
     const options = { ...DEFAULT_OPTIONS, noQuality: true };
 
-    await execute(plan, EMPTY_PARALLEL, options, seeds as any, null);
+    await execute(plan, EMPTY_PARALLEL, options, taskStore as never);
 
-    const epicCall = seeds.create.mock.calls[0];
-    const opts = epicCall[1] as { description: string };
-    expect(opts.description).not.toContain("Quality notes here");
+    const epicCall = taskStore.create.mock.calls[0];
+    expect(epicCall![0].description).not.toContain("Quality notes here");
   });
 
-  it("infers test kind from title", async () => {
-    const seeds = createMockSdClient();
+  it("infers test kind metadata from title", async () => {
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
 
-    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
+    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, taskStore as never);
 
-    // "Write tests for feature A" should get kind:test label
-    const calls = seeds.create.mock.calls;
-    const testCall = calls.find(
-      (c: unknown[]) => (c[0] as string) === "Write tests for feature A",
+    const testCall = taskStore.create.mock.calls.find(
+      ([opts]) => opts.title === "Write tests for feature A",
     );
-    const opts = testCall![1] as { labels: string[] };
-    expect(opts.labels).toContain("kind:test");
+    expect(testCall![0].description).toContain("kind:test");
   });
 
   it("includes sprint summary in description", async () => {
-    const seeds = createMockSdClient();
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
 
-    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
+    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, taskStore as never);
 
-    // Sprint 1 has summary
-    const calls = seeds.create.mock.calls;
-    const sprintCall = calls.find(
-      (c: unknown[]) => (c[0] as string) === "Sprint 1: Foundation",
+    const sprintCall = taskStore.create.mock.calls.find(
+      ([opts]) => opts.title === "Sprint 1: Foundation",
     );
-    const opts = sprintCall![1] as { description: string };
-    expect(opts.description).toContain("Focus: Foundation");
-    expect(opts.description).toContain("Estimated Hours: 5");
+    expect(sprintCall![0].description).toContain("Focus: Foundation");
+    expect(sprintCall![0].description).toContain("Estimated Hours: 5");
   });
 
-  it("calls onProgress callback", async () => {
-    const seeds = createMockSdClient();
+  it("calls onProgress callback with native tracker", async () => {
+    const taskStore = createMockNativeTaskStore();
     const plan = makeTestPlan();
     const onProgress = vi.fn();
 
-    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null, onProgress);
+    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, taskStore as never, onProgress);
 
     expect(onProgress).toHaveBeenCalled();
-    // Last call should have tracker = "sd"
     const lastCall = onProgress.mock.calls[onProgress.mock.calls.length - 1];
-    expect(lastCall[2]).toBe("sd");
+    expect(lastCall[2]).toBe("native");
   });
 
   it("handles task creation failure gracefully", async () => {
-    const seeds = createMockSdClient();
+    const taskStore = createMockNativeTaskStore();
     let callCount = 0;
-    seeds.create.mockImplementation(async () => {
+    taskStore.create.mockImplementation((opts) => {
       callCount++;
-      // Fail on the 5th create (which should be a task)
       if (callCount === 5) throw new Error("Connection timeout");
       return {
-        id: `sd-${callCount}`,
-        title: "mock",
-        type: "task",
-        priority: "P2",
-        status: "open",
-        assignee: null,
-        parent: null,
+        id: `task-${callCount}`,
+        title: opts.title,
+        description: opts.description ?? null,
+        type: opts.type ?? "task",
+        priority: opts.priority ?? 2,
+        status: "backlog",
+        run_id: null,
+        branch: null,
+        external_id: opts.externalId ?? null,
         created_at: "2026-01-01T00:00:00Z",
         updated_at: "2026-01-01T00:00:00Z",
-      };
+        approved_at: null,
+        closed_at: null,
+      } satisfies TaskRow;
     });
     const plan = makeTestPlan();
 
-    const result = await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, seeds as any, null);
+    const result = await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, taskStore as never);
 
-    expect(result.sd!.failed).toBe(1);
-    expect(result.sd!.errors.length).toBeGreaterThan(0);
-    expect(result.sd!.errors[0]).toContain("SLING-006");
+    expect(result.native.failed).toBe(1);
+    expect(result.native.errors.length).toBeGreaterThan(0);
+    expect(result.native.errors[0]).toContain("SLING-006");
+  });
+
+  it("updates existing tasks when --force is enabled", async () => {
+    const taskStore = createMockNativeTaskStore();
+    const plan = makeTestPlan();
+
+    await execute(plan, EMPTY_PARALLEL, DEFAULT_OPTIONS, taskStore as never);
+    taskStore.create.mockClear();
+
+    const result = await execute(plan, EMPTY_PARALLEL, { ...DEFAULT_OPTIONS, force: true }, taskStore as never);
+
+    expect(result.native.created).toBe(8);
+    expect(taskStore.update).toHaveBeenCalled();
+    expect(taskStore.create).not.toHaveBeenCalled();
   });
 });

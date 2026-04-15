@@ -9,7 +9,7 @@
  * - Workspaces use `jj workspace add` / `jj workspace forget`.
  * - Branches are called "bookmarks" in jj (`jj bookmark`).
  * - Staging is automatic — `stageAll()` is a no-op.
- * - Commits use `jj describe -m` + `jj new`.
+ * - Commits use `jj describe -m` (no trailing `jj new`).
  * - Push requires `--allow-new` for first push of a new bookmark.
  * - Rebase uses `jj rebase -d <destination>`.
  *
@@ -20,7 +20,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
-import { join, relative as pathRelative } from "node:path";
+import { dirname, join, relative as pathRelative } from "node:path";
 
 import type {
   Workspace,
@@ -33,6 +33,12 @@ import type {
   FinalizeTemplateVars,
   FinalizeCommands,
 } from "./types.js";
+import {
+  buildTrackedStateRestoreCommand,
+  getWorkspacePath,
+  getWorkspaceRoot,
+} from "../workspace-paths.js";
+import { normalizeBranchLabel } from "../branch-label.js";
 import type { VcsBackend } from "./interface.js";
 
 const execFileAsync = promisify(execFile);
@@ -140,12 +146,33 @@ export class JujutsuBackend implements VcsBackend {
    * Detect the default/trunk branch for the repository.
    *
    * Resolution order:
-   * 1. Look for a 'main' bookmark.
-   * 2. Look for a 'master' bookmark.
-   * 3. Fall back to the current bookmark.
+   * 1. Respect `git-town.main-branch` when configured.
+   * 2. Respect `origin/HEAD` when available.
+   * 3. Look for a `main` bookmark.
+   * 4. Look for a `master` bookmark.
+   * 5. Look for a `dev` bookmark.
+   * 6. Fall back to the current bookmark.
    */
   async detectDefaultBranch(repoPath: string): Promise<string> {
-    // 1. Check for 'main' bookmark
+    // 1. Respect git-town.main-branch config (user's explicit development trunk)
+    try {
+      const gtMain = await this.git(["config", "get", "git-town.main-branch"], repoPath);
+      if (gtMain) return gtMain;
+    } catch {
+      // git-town not configured or command unavailable — fall through
+    }
+
+    // 2. Try origin/HEAD symbolic ref from colocated git metadata
+    try {
+      const ref = await this.git(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"], repoPath);
+      if (ref) {
+        return ref.replace(/^origin\//, "");
+      }
+    } catch {
+      // origin/HEAD not set or no remote — fall through
+    }
+
+    // 3. Check for 'main' bookmark
     try {
       const out = await this.jj(["bookmark", "list", "main"], repoPath);
       if (out.includes("main")) return "main";
@@ -153,7 +180,7 @@ export class JujutsuBackend implements VcsBackend {
       // not found
     }
 
-    // 2. Check for 'master' bookmark
+    // 4. Check for 'master' bookmark
     try {
       const out = await this.jj(["bookmark", "list", "master"], repoPath);
       if (out.includes("master")) return "master";
@@ -161,27 +188,48 @@ export class JujutsuBackend implements VcsBackend {
       // not found
     }
 
-    // 3. Fall back to current branch
+    // 5. Check for 'dev' bookmark
+    try {
+      const out = await this.jj(["bookmark", "list", "dev"], repoPath);
+      if (out.includes("dev")) return "dev";
+    } catch {
+      // not found
+    }
+
+    // 6. Fall back to current branch
     return this.getCurrentBranch(repoPath);
+  }
+
+  private async getBookmarksAtRevision(repoPath: string, rev: string): Promise<string[]> {
+    try {
+      const bookmarks = await this.jj(
+        ["log", "--no-graph", "-r", rev, "-T", "separate(' ', bookmarks)"],
+        repoPath,
+      );
+      return bookmarks
+        .split(" ")
+        .map((bookmark) => normalizeBranchLabel(bookmark))
+        .filter((bookmark): bookmark is string => Boolean(bookmark));
+    } catch {
+      return [];
+    }
   }
 
   /**
    * Get the name of the currently active bookmark.
    * Uses `jj log --no-graph -r @ -T 'bookmarks'` to find the current bookmark.
-   * Falls back to the short change ID if no bookmark is set.
+   * If the working copy is an unbookmarked child revision, falls back to the
+   * parent revision's bookmark before finally falling back to the short change ID.
    */
   async getCurrentBranch(repoPath: string): Promise<string> {
-    try {
-      const bookmarks = await this.jj(
-        ["log", "--no-graph", "-r", "@", "-T", "separate(' ', bookmarks)"],
-        repoPath,
-      );
-      if (bookmarks) {
-        // Take the first bookmark if multiple are set
-        return bookmarks.split(" ")[0];
-      }
-    } catch {
-      // fall through
+    const bookmarks = await this.getBookmarksAtRevision(repoPath, "@");
+    if (bookmarks.length > 0) {
+      return bookmarks[0];
+    }
+
+    const parentBookmarks = await this.getBookmarksAtRevision(repoPath, "@-");
+    if (parentBookmarks.length > 0) {
+      return parentBookmarks[0];
     }
 
     // Fall back to short change ID
@@ -286,7 +334,7 @@ export class JujutsuBackend implements VcsBackend {
   /**
    * Create a jj workspace for a seed.
    *
-   * Creates a workspace at `.foreman-worktrees/<seedId>` and sets up
+   * Creates a workspace in Foreman's external workspace root and sets up
    * a bookmark `foreman/<seedId>` pointing to the new workspace's revision.
    *
    * Handles existing workspaces by rebasing onto the base branch.
@@ -298,7 +346,7 @@ export class JujutsuBackend implements VcsBackend {
   ): Promise<WorkspaceResult> {
     const base = baseBranch ?? (await this.getCurrentBranch(repoPath));
     const branchName = `foreman/${seedId}`;
-    const workspacePath = join(repoPath, ".foreman-worktrees", seedId);
+    const workspacePath = getWorkspacePath(repoPath, seedId);
 
     // If workspace directory already exists, reuse it
     if (existsSync(workspacePath)) {
@@ -313,8 +361,9 @@ export class JujutsuBackend implements VcsBackend {
     }
 
     // Ensure the parent directory exists (jj workspace add requires it)
-    const worktreesDir = join(repoPath, ".foreman-worktrees");
+    const worktreesDir = getWorkspaceRoot(repoPath);
     await fs.mkdir(worktreesDir, { recursive: true });
+    await fs.mkdir(dirname(workspacePath), { recursive: true });
 
     // Create new workspace
     try {
@@ -408,7 +457,7 @@ export class JujutsuBackend implements VcsBackend {
           // Map workspace name back to a path
           if (name !== "default") {
             const seedId = name.replace(/^foreman-/, "");
-            const path = join(repoPath, ".foreman-worktrees", seedId);
+            const path = getWorkspacePath(repoPath, seedId);
             const branchName = `foreman/${seedId}`;
             workspaces.push({
               path,
@@ -592,10 +641,27 @@ export class JujutsuBackend implements VcsBackend {
 
   /**
    * Get the current change ID (jj's equivalent of a commit hash).
-   * Returns the short (12-char) change ID for consistency with how callers
-   * typically use commit/change IDs (e.g., as labels or references).
+   * When the working copy is an unbookmarked empty child revision, prefer the
+   * parent revision's change ID so callers reason about the effective branch tip
+   * rather than the ephemeral scratch commit jj may create on top.
    */
   async getHeadId(workspacePath: string): Promise<string> {
+    const currentBookmarks = await this.getBookmarksAtRevision(workspacePath, "@");
+    if (currentBookmarks.length > 0) {
+      return this.jj(
+        ["log", "--no-graph", "-r", "@", "-T", "change_id.short()"],
+        workspacePath,
+      );
+    }
+
+    const parentBookmarks = await this.getBookmarksAtRevision(workspacePath, "@-");
+    if (parentBookmarks.length > 0) {
+      return this.jj(
+        ["log", "--no-graph", "-r", "@-", "-T", "change_id.short()"],
+        workspacePath,
+      );
+    }
+
     return this.jj(
       ["log", "--no-graph", "-r", "@", "-T", "change_id.short()"],
       workspacePath,
@@ -612,6 +678,19 @@ export class JujutsuBackend implements VcsBackend {
       ["log", "--no-graph", "-r", ref, "-T", "commit_id"],
       repoPath,
     );
+  }
+
+  async isAncestor(repoPath: string, ancestorRef: string, descendantRef: string): Promise<boolean> {
+    try {
+      const ancestorCommit = await this.resolveRef(repoPath, ancestorRef);
+      const reachable = await this.jj(
+        ["log", "--no-graph", "-r", `${ancestorRef}::${descendantRef}`, "-T", "commit_id"],
+        repoPath,
+      );
+      return reachable.split("\n").map((line) => line.trim()).includes(ancestorCommit.trim());
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -941,7 +1020,7 @@ export class JujutsuBackend implements VcsBackend {
    * Return pre-computed jj finalize commands for prompt rendering.
    */
   getFinalizeCommands(vars: FinalizeTemplateVars): FinalizeCommands {
-    const { seedId, seedTitle, baseBranch } = vars;
+    const { seedId, seedTitle, baseBranch, worktreePath } = vars;
     // Escape single quotes so the shell-level single-quoted commit message is
     // safe even when seedTitle contains apostrophes or shell-special characters.
     const safeSeedTitle = seedTitle.replace(/'/g, "'\\''");
@@ -949,9 +1028,10 @@ export class JujutsuBackend implements VcsBackend {
       stageCommand: "", // jj auto-stages
       commitCommand: `jj describe -m '${safeSeedTitle} (${seedId})'`,
       pushCommand: `jj git push --bookmark foreman/${seedId} --allow-new`,
-      rebaseCommand: `jj git fetch && jj rebase -d ${baseBranch}@origin`,
+      integrateTargetCommand: `jj git fetch && jj rebase -d ${baseBranch}@origin`,
       branchVerifyCommand: `jj bookmark list foreman/${seedId}`,
       cleanCommand: `jj workspace forget foreman-${seedId}`,
+      restoreTrackedStateCommand: buildTrackedStateRestoreCommand(worktreePath, this.projectPath),
     };
   }
 }

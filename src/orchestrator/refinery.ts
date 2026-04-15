@@ -7,15 +7,17 @@ import type { ForemanStore } from "../lib/store.js";
 import type { BeadGraph } from "../lib/beads.js";
 import type { UpdateOptions } from "../lib/task-client.js";
 // Note: removeWorktree shim removed in TRD-012; workspace removal now goes through this.vcsBackend.removeWorkspace()
-import { extractBranchLabel } from "../lib/branch-label.js";
+import { extractBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedPr } from "./types.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
 import { enqueueCloseSeed, enqueueResetSeedToOpen, enqueueAddNotesToBead } from "./task-backend-ops.js";
+import { syncBeadStatusAfterMerge } from "./auto-merge.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
+import { NativeTaskStore } from "../lib/task-store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -90,6 +92,7 @@ export interface IRefineryTaskClient {
 export class Refinery {
   private conflictResolver: ConflictResolver;
   private vcsBackend: VcsBackend;
+  private taskStore: NativeTaskStore;
 
   constructor(
     private store: ForemanStore,
@@ -101,6 +104,7 @@ export class Refinery {
     // provide an explicit VcsBackend (e.g. CLI commands, existing tests).
     this.vcsBackend = vcsBackend ?? new GitBackend(projectPath);
     this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG);
+    this.taskStore = new NativeTaskStore(this.store.getDb());
   }
 
   /**
@@ -216,6 +220,39 @@ export class Refinery {
       }));
     } catch {
       // Non-fatal — mail is optional infrastructure
+    }
+  }
+
+  /**
+   * Close the native task (if any) linked to this run after a successful merge.
+   *
+   * Implements REQ-018: updateStatus(taskId, 'merged') on success, with fallback
+   * to syncBeadStatusAfterMerge when taskId is null (beads-only mode).
+   *
+   * Non-fatal — failures are silently ignored so they don't block the merge flow.
+   */
+  private async closeNativeTaskPostMerge(runId: string, seedId: string): Promise<void> {
+    try {
+      const row = this.store.getDb()
+        .prepare("SELECT id FROM tasks WHERE run_id = ?")
+        .get(runId) as { id: string } | undefined;
+
+      if (row) {
+        this.taskStore.updateStatus(row.id, "merged");
+      } else {
+        // No native task — fall back to beads-only sync.
+        // Note: syncBeadStatusAfterMerge does not actually use taskClient (only
+        // enqueues bead status updates via store), so we cast to ITaskClient.
+        await syncBeadStatusAfterMerge(
+          this.store,
+          this.seeds as unknown as import("../lib/task-client.js").ITaskClient,
+          runId,
+          seedId,
+          this.projectPath,
+        );
+      }
+    } catch {
+      // Non-fatal — native task closure must not block the merge
     }
   }
 
@@ -458,7 +495,9 @@ export class Refinery {
     projectId?: string;
     seedId?: string;
   }): Promise<MergeReport> {
-    const defaultTargetBranch = opts?.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
+    const defaultTargetBranch = normalizeBranchLabel(
+      opts?.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath),
+    ) ?? "dev";
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
 
@@ -482,7 +521,7 @@ export class Refinery {
       let targetBranch = defaultTargetBranch;
       try {
         const seedDetail = await this.seeds.show(run.seed_id);
-        const branchLabel = extractBranchLabel(seedDetail.labels);
+        const branchLabel = normalizeBranchLabel(extractBranchLabel(seedDetail.labels));
         if (branchLabel) {
           targetBranch = branchLabel;
         }
@@ -515,7 +554,6 @@ export class Refinery {
         {
           const markedFiles = await this.scanForConflictMarkers(branchName, targetBranch);
           if (markedFiles.length > 0) {
-            enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
             this.sendMail(run.id, "merge-failed", {
               seedId: run.seed_id,
               branchName,
@@ -554,56 +592,77 @@ export class Refinery {
           // may be unreachable. The subsequent rebase/merge will surface any real error.
         }
 
-        // Ensure working directory is clean before rebase — a previous partial rebase
-        // may have left patches applied but not committed. Stash any uncommitted changes
-        // so git rebase doesn't refuse to run.
-        let stashedBeforeRebase = false;
-        try {
-          const dirty = await this.vcsBackend.status(this.projectPath);
-          if (dirty.trim()) {
-            await gitSpecial(["stash", "push", "--include-untracked", "-m", "foreman-rebase-pre-stash"], this.projectPath);
-            stashedBeforeRebase = true;
-          }
-        } catch {
-          // stash failure is non-fatal — rebase will fail with a clear message if still dirty
-        }
-
         // Rebase branch onto current target so it picks up all prior merges.
-        // Auto-resolves report-file conflicts during rebase; aborts on real code conflicts.
+        // For git backends, refinery rebases the branch from the main repo.
+        // For jujutsu backends, rebase the branch inside its own workspace so
+        // we don't fall back to raw git rebase semantics in colocated jj repos.
         {
           let rebaseOk = true;
+          const rebaseWorkspacePath = this.vcsBackend.name === "jujutsu"
+            ? (run.worktree_path ?? this.projectPath)
+            : this.projectPath;
+          let stashedBeforeRebase = false;
+
           try {
-            // Use gitSpecial for the 2-arg rebase form (rebase <upstream> <branch>) which
-            // operates on a non-current branch and is not supported by VcsBackend.rebase().
-            await gitSpecial(["rebase", targetBranch, branchName], this.projectPath);
-          } catch (err: unknown) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            if (errMsg.includes("already used by worktree") || errMsg.includes("is already checked out")) {
-              // Branch is checked out in an active worktree — git refuses to rebase it from
-              // the main repo. Skip rebase and fall back to direct merge.
-              console.warn(`[Refinery] Skipping rebase for ${branchName} (active worktree) — falling back to direct merge`);
-              rebaseOk = true;
+            if (this.vcsBackend.name === "jujutsu") {
+              // Finalize should have committed all task changes already. Clean any
+              // leftover uncommitted artifacts in the agent workspace before rebasing.
+              try {
+                const dirty = await this.vcsBackend.status(rebaseWorkspacePath);
+                if (dirty.trim()) {
+                  await this.vcsBackend.cleanWorkingTree(rebaseWorkspacePath);
+                }
+              } catch {
+                // best effort — rebase will surface a real error if workspace is still dirty
+              }
+
+              const rebaseResult = await this.vcsBackend.rebase(rebaseWorkspacePath, targetBranch);
+              rebaseOk = rebaseResult.success;
             } else {
-              // Rebase hit conflicts — try to auto-resolve report files and continue
-              rebaseOk = await this.autoResolveRebaseConflicts(targetBranch);
+              // Ensure working directory is clean before rebase — a previous partial rebase
+              // may have left patches applied but not committed. Stash any uncommitted changes
+              // so git rebase doesn't refuse to run.
+              try {
+                const dirty = await this.vcsBackend.status(this.projectPath);
+                if (dirty.trim()) {
+                  await gitSpecial(["stash", "push", "--include-untracked", "-m", "foreman-rebase-pre-stash"], this.projectPath);
+                  stashedBeforeRebase = true;
+                }
+              } catch {
+                // stash failure is non-fatal — rebase will fail with a clear message if still dirty
+              }
+
+              try {
+                // Use gitSpecial for the 2-arg rebase form (rebase <upstream> <branch>) which
+                // operates on a non-current branch and is not supported by VcsBackend.rebase().
+                await gitSpecial(["rebase", targetBranch, branchName], this.projectPath);
+              } catch (err: unknown) {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                if (errMsg.includes("already used by worktree") || errMsg.includes("is already checked out")) {
+                  // Branch is checked out in an active worktree — git refuses to rebase it from
+                  // the main repo. Skip rebase and fall back to direct merge.
+                  console.warn(`[Refinery] Skipping rebase for ${branchName} (active worktree) — falling back to direct merge`);
+                  rebaseOk = true;
+                } else {
+                  // Rebase hit conflicts — try to auto-resolve report files and continue
+                  rebaseOk = await this.autoResolveRebaseConflicts(targetBranch);
+                }
+              }
+            }
+          } finally {
+            // Return to target branch regardless
+            try { await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch); } catch { /* best effort */ }
+
+            if (stashedBeforeRebase) {
+              try { await gitSpecial(["stash", "pop"], this.projectPath); } catch { /* best effort — may be empty */ }
             }
           }
 
-          // Return to target branch regardless
-          try { await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch); } catch { /* best effort */ }
-
           if (!rebaseOk) {
-            // Restore stash before bailing out so working directory stays clean
-            if (stashedBeforeRebase) {
-              try { await gitSpecial(["stash", "pop"], this.projectPath); } catch { /* best effort */ }
-            }
-            // Add failure note before resetting so the bead records why it was reset
             await this.addFailureNote(
               run.seed_id,
-              `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — branch reset to open for retry. Rebase conflicts detected.`,
+              `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — manual retry required. Rebase conflicts detected.`,
             );
-            // Rebase failed — reset seed to open so it can be retried, then create a PR for manual conflict resolution
-            enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
             this.sendMail(run.id, "merge-failed", {
               seedId: run.seed_id,
               branchName,
@@ -619,19 +678,13 @@ export class Refinery {
           }
         }
 
-        // Restore any stash we created before the rebase (working dir should be clean after
-        // a successful rebase, but pop defensively to avoid losing the stash entry)
-        if (stashedBeforeRebase) {
-          try { await gitSpecial(["stash", "pop"], this.projectPath); } catch { /* best effort — may be empty */ }
-        }
-
         // Save pre-merge HEAD so we can revert merge + archive if tests fail
         const preMergeHead = await this.vcsBackend.getHeadId(this.projectPath);
 
         // Use squash merge so each feature branch becomes a single commit on
         // the target branch, regardless of how many commits the branch contains.
         // This prevents empty or noisy intermediate commits from polluting dev.
-        let squashMergeOk = true;
+        const squashMergeOk = true;
         try {
           await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
           await this.vcsBackend.mergeWithoutCommit(this.projectPath, branchName, targetBranch);
@@ -662,10 +715,8 @@ export class Refinery {
 
               await this.addFailureNote(
                 run.seed_id,
-                `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — branch reset to open for retry. Conflicting files: ${codeConflicts.join(", ")}`,
+                `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — manual retry required. Conflicting files: ${codeConflicts.join(", ")}`,
               );
-
-              enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
               this.sendMail(run.id, "merge-failed", {
                 seedId: run.seed_id,
                 branchName,
@@ -731,11 +782,8 @@ export class Refinery {
             // Add failure note before resetting so the bead records why it was reset
             await this.addFailureNote(
               run.seed_id,
-              `Merge failed: post-merge tests failed on ${new Date().toISOString().slice(0, 10)} — branch reset for retry. ${testResult.output.slice(0, 300)}`,
+              `Merge failed: post-merge tests failed on ${new Date().toISOString().slice(0, 10)} — manual retry required. ${testResult.output.slice(0, 300)}`,
             );
-
-            // Reset seed to open so it can be retried
-            enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
 
             this.store.updateRun(run.id, { status: "test-failed" });
             this.store.logEvent(
@@ -795,6 +843,9 @@ export class Refinery {
         // Close the bead NOW — after the code has actually landed in main.
         // projectPath (repo root) is where .beads/ lives; not the worktree dir.
         enqueueCloseSeed(this.store, run.seed_id, "refinery");
+
+        // Close native task post-merge (REQ-018) — updateStatus('merged') or fallback
+        await this.closeNativeTaskPostMerge(run.id, run.seed_id);
 
         // Send bead-closed mail so inbox shows bead lifecycle completion
         this.sendMail(run.id, "bead-closed", {
@@ -893,8 +944,6 @@ export class Refinery {
       } catch {
         // merge --abort may fail if there is nothing to abort
       }
-      // Reset seed to open so it can be retried
-      enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
       const message = err instanceof Error ? err.message : String(err);
       this.store.updateRun(run.id, {
         status: "failed",
@@ -904,9 +953,9 @@ export class Refinery {
         run.project_id,
         "fail",
         { seedId: run.seed_id, error: message },
-        run.id,
-      );
-      await this.addFailureNote(run.seed_id, `Merge failed (theirs strategy): ${message.slice(0, 400)}`);
+          run.id,
+        );
+      await this.addFailureNote(run.seed_id, `Merge failed (theirs strategy): ${message.slice(0, 400)}. Manual retry required.`);
       return false;
     }
 
@@ -918,9 +967,6 @@ export class Refinery {
         // Revert the merge
         await gitSpecial(["reset", "--hard", "HEAD~1"], this.projectPath);
 
-        // Reset seed to open so it can be retried
-        enqueueResetSeedToOpen(this.store, run.seed_id, "refinery");
-
         this.store.updateRun(run.id, {
           status: "test-failed",
           completed_at: new Date().toISOString(),
@@ -931,7 +977,7 @@ export class Refinery {
           { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
           run.id,
         );
-        await this.addFailureNote(run.seed_id, `Merge failed: tests failed after conflict resolution. ${testResult.output.slice(0, 300)}`);
+        await this.addFailureNote(run.seed_id, `Merge failed: tests failed after conflict resolution. Manual retry required. ${testResult.output.slice(0, 300)}`);
         return false;
       }
     }
@@ -962,6 +1008,9 @@ export class Refinery {
 
     // Close the bead after successful conflict-resolution merge.
     enqueueCloseSeed(this.store, run.seed_id, "refinery");
+
+    // Close native task post-merge (REQ-018) — updateStatus('merged') or fallback
+    await this.closeNativeTaskPostMerge(run.id, run.seed_id);
 
     return true;
   }

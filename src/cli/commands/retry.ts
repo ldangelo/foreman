@@ -1,9 +1,10 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { createTaskClient } from "../../lib/task-client-factory.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { ForemanStore } from "../../lib/store.js";
-import { getRepoRoot } from "../../lib/git.js";
+import type { ITaskClient } from "../../lib/task-client.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 
@@ -24,7 +25,7 @@ export interface RetryOpts {
 export async function retryAction(
   beadId: string,
   opts: RetryOpts,
-  beadsClient: BeadsRustClient,
+  beadsClient: ITaskClient,
   store: ForemanStore,
   projectPath: string,
   dispatcher?: Dispatcher,
@@ -44,8 +45,8 @@ export async function retryAction(
     return 1;
   }
 
-  // 2. Look up bead via BeadsRustClient
-  let bead: Awaited<ReturnType<typeof beadsClient.show>>;
+  // 2. Look up bead via the active task client
+  let bead: Awaited<ReturnType<ITaskClient["show"]>>;
   try {
     bead = await beadsClient.show(beadId);
   } catch (err: unknown) {
@@ -54,9 +55,14 @@ export async function retryAction(
     return 1;
   }
 
+  const beadTitle =
+    typeof bead === "object" && bead !== null && "title" in bead && typeof bead.title === "string"
+      ? bead.title
+      : undefined;
+
   console.log(
-    chalk.bold(`Retrying bead: ${chalk.cyan(bead.id)}`) +
-      chalk.dim(` (${bead.title})`),
+    chalk.bold(`Retrying bead: ${chalk.cyan(beadId)}`) +
+      (beadTitle ? chalk.dim(` (${beadTitle})`) : ""),
   );
   console.log(`  Status: ${chalk.yellow(bead.status)}`);
 
@@ -76,7 +82,8 @@ export async function retryAction(
   const beadNeedsReset =
     bead.status === "completed" ||
     bead.status === "closed" ||
-    bead.status === "in_progress";
+    bead.status === "in_progress" ||
+    bead.status === "blocked";
 
   const runNeedsReset =
     latestRun !== null &&
@@ -84,6 +91,14 @@ export async function retryAction(
       latestRun.status === "running" ||
       latestRun.status === "pending" ||
       latestRun.status === "failed");
+
+  const runNeedsExplicitReset =
+    latestRun !== null &&
+    (latestRun.status === "completed" ||
+      latestRun.status === "merged" ||
+      latestRun.status === "pr-created" ||
+      latestRun.status === "conflict" ||
+      latestRun.status === "test-failed");
 
   // 5. Apply resets
   if (!dryRun) {
@@ -116,6 +131,20 @@ export async function retryAction(
         { reason: "foreman retry", beadId, previousRunId: latestRun.id },
         latestRun.id,
       );
+    } else if (runNeedsExplicitReset && latestRun) {
+      console.log(
+        `  ${chalk.yellow("reset")} run ${latestRun.id}: ${latestRun.status} → reset`,
+      );
+      store.updateRun(latestRun.id, {
+        status: "reset",
+        completed_at: new Date().toISOString(),
+      });
+      store.logEvent(
+        project.id,
+        "restart",
+        { reason: "foreman retry", beadId, previousRunId: latestRun.id },
+        latestRun.id,
+      );
     } else if (latestRun) {
       // Run exists but doesn't need resetting (already completed/merged/etc.)
       console.log(
@@ -135,6 +164,13 @@ export async function retryAction(
       console.log(
         chalk.dim(
           `  Would reset run ${latestRun.id}: ${latestRun.status} → failed`,
+        ),
+      );
+    }
+    if (runNeedsExplicitReset && latestRun) {
+      console.log(
+        chalk.dim(
+          `  Would reset run ${latestRun.id}: ${latestRun.status} → reset`,
         ),
       );
     }
@@ -197,10 +233,12 @@ export const retryCommand = new Command("retry")
   .option("--dispatch", "Dispatch the bead immediately after resetting")
   .option("--model <model>", "Override agent model for dispatch")
   .option("--dry-run", "Show what would happen without making changes")
-  .action(async (beadId: string, opts: RetryOpts) => {
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action(async (beadId: string, opts: RetryOpts & { project?: string; projectPath?: string }) => {
     let projectPath: string;
     try {
-      projectPath = await getRepoRoot(process.cwd());
+      projectPath = await resolveRepoRootProjectPath(opts);
     } catch {
       console.error(
         chalk.red(
@@ -211,13 +249,13 @@ export const retryCommand = new Command("retry")
     }
 
     const store = ForemanStore.forProject(projectPath);
-    const beadsClient = new BeadsRustClient(projectPath);
+    const { taskClient } = await createTaskClient(projectPath);
 
     try {
       const exitCode = await retryAction(
         beadId,
         opts,
-        beadsClient,
+        taskClient,
         store,
         projectPath,
       );

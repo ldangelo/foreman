@@ -89,7 +89,8 @@ export interface VcsBackend {
    * Create a new workspace (git worktree / jj workspace) for a seed.
    *
    * Branch name: `foreman/<seedId>`
-   * Location: `<repoPath>/.foreman-worktrees/<seedId>`
+   * Location: Foreman's workspace root for the repo (default: external to the repo at
+   * `<repoParent>/.foreman-worktrees/<repoName>/<seedId>`)
    */
   createWorkspace(
     repoPath: string,
@@ -314,6 +315,12 @@ export interface VcsBackend {
    * Returns an array of file paths relative to the workspace root.
    */
   getUntrackedFiles(workspacePath: string): Promise<string[]>;
+
+  /**
+   * Return true when `ancestorRef` is contained in the history of `descendantRef`.
+   * Used by finalize runtime enforcement to verify target drift was actually integrated.
+   */
+  isAncestor(repoPath: string, ancestorRef: string, descendantRef: string): Promise<boolean>;
 
   // ── Finalize Support ─────────────────────────────────────────────────
 

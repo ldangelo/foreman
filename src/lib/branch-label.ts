@@ -18,12 +18,32 @@
  *
  * If multiple branch: labels exist (shouldn't happen), returns the first one.
  */
+export function normalizeBranchLabel(branch: string | undefined): string | undefined {
+  if (!branch) return undefined;
+  const trimmed = branch.trim();
+  if (!trimmed) return undefined;
+  // Strip JJ bookmark decoration (*) and remote-tracking (@origin) suffixes
+  let normalized = trimmed.replace(/\*+$/, "").trim();
+  normalized = normalized.replace(/@origin$/, "").trim();
+  normalized = normalized.replace(/\*+$/, "").trim();
+  return normalized || undefined;
+}
+
+export function isValidBranchLabel(branch: string | undefined): branch is string {
+  const trimmed = normalizeBranchLabel(branch);
+  if (!trimmed) return false;
+  // Detached HEAD is not a real merge target and should never be persisted
+  // as a branch: label or used by refinery as a target branch.
+  if (trimmed === "HEAD") return false;
+  return true;
+}
+
 export function extractBranchLabel(labels: string[] | undefined): string | undefined {
   if (!labels || labels.length === 0) return undefined;
   const label = labels.find((l) => l.startsWith("branch:"));
   if (!label) return undefined;
-  const branch = label.slice("branch:".length).trim();
-  return branch || undefined;
+  const branch = normalizeBranchLabel(label.slice("branch:".length));
+  return isValidBranchLabel(branch) ? branch : undefined;
 }
 
 /**
@@ -34,11 +54,13 @@ export function extractBranchLabel(labels: string[] | undefined): string | undef
  * Returns true if the branch should NOT be labeled (i.e. it is the default).
  */
 export function isDefaultBranch(branch: string, defaultBranch: string): boolean {
+  const normalizedBranch = normalizeBranchLabel(branch) ?? branch;
+  const normalizedDefault = normalizeBranchLabel(defaultBranch) ?? defaultBranch;
   // Exact match with the configured default
-  if (branch === defaultBranch) return true;
+  if (normalizedBranch === normalizedDefault) return true;
   // Also treat well-known integration branches as defaults
   const knownDefaults = new Set(["main", "master", "dev", "develop", "trunk"]);
-  return knownDefaults.has(branch);
+  return knownDefaults.has(normalizedBranch);
 }
 
 /**
@@ -52,11 +74,13 @@ export function applyBranchLabel(
   branchName: string,
 ): string[] {
   const filtered = (existingLabels ?? []).filter((l) => !l.startsWith("branch:"));
+  const normalizedBranch = normalizeBranchLabel(branchName);
+  if (!isValidBranchLabel(normalizedBranch)) return filtered;
   // br enforces a 50-character limit per label. Skip the label entirely if it
   // would exceed the limit — a truncated branch name would cause the refinery
   // to target a non-existent branch. The explicit targetBranch threading in
   // dispatch/auto-merge handles merge targeting for long branch names.
-  const label = `branch:${branchName}`;
+  const label = `branch:${normalizedBranch}`;
   if (label.length > 50) return filtered;
   return [...filtered, label];
 }

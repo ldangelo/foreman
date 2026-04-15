@@ -19,8 +19,7 @@ import type { ForemanStore, Run } from "../../lib/store.js";
 let mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
 let mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
 
-vi.mock("../../lib/git.js", () => ({
-  // TRD-015: createWorktree, getCurrentBranch, detectDefaultBranch, gitBranchExists replaced by VcsBackend
+vi.mock("../../lib/setup.js", () => ({
   installDependencies: vi.fn().mockResolvedValue(undefined),
   runSetupWithCache: vi.fn().mockResolvedValue(undefined),
 }));
@@ -34,6 +33,17 @@ vi.mock("../../lib/vcs/git-backend.js", () => ({
     async createWorkspace(_repoPath: string, seedId: string): Promise<{ workspacePath: string; branchName: string }> {
       return { workspacePath: `/tmp/worktrees/${seedId}`, branchName: `foreman/${seedId}` };
     }
+  },
+}));
+
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: vi.fn().mockImplementation(async () => ({
+      name: "jujutsu",
+      getCurrentBranch: async (path: string) => mockGetCurrentBranch(path),
+      detectDefaultBranch: async (path: string) => mockDetectDefaultBranch(path),
+      branchExists: async (_path: string, branch: string) => branch !== "wzplklnookuz" && branch !== "HEAD",
+    })),
   },
 }));
 
@@ -159,6 +169,40 @@ describe("Dispatcher — branch label auto-labeling", () => {
     mockGetCurrentBranch = vi.fn().mockResolvedValue("dev");
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("dev");
 
+    const seed = makeIssue("seed-001");
+    const taskClient = makeTaskClient([seed]);
+    const store = makeStore();
+    const dispatcher = new Dispatcher(taskClient, store, "/tmp");
+
+    await dispatcher.dispatch({ dryRun: true });
+
+    const updateCalls = vi.mocked(taskClient.update).mock.calls;
+    const branchLabelCalls = updateCalls.filter(([, opts]) =>
+      opts.labels?.some((l: string) => l.startsWith("branch:")),
+    );
+    expect(branchLabelCalls).toHaveLength(0);
+  });
+
+  it("does NOT add branch label when current branch is detached HEAD", async () => {
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("HEAD");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("dev");
+
+    const seed = makeIssue("seed-001");
+    const taskClient = makeTaskClient([seed]);
+    const store = makeStore();
+    const dispatcher = new Dispatcher(taskClient, store, "/tmp");
+
+    await dispatcher.dispatch({ dryRun: true });
+
+    const updateCalls = vi.mocked(taskClient.update).mock.calls;
+    const branchLabelCalls = updateCalls.filter(([, opts]) =>
+      opts.labels?.some((l: string) => l.startsWith("branch:")),
+    );
+    expect(branchLabelCalls).toHaveLength(0);
+  });
+
+  it("does NOT add branch label when current jujutsu branch name is only an anonymous change id", async () => {
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("wzplklnookuz");
     const seed = makeIssue("seed-001");
     const taskClient = makeTaskClient([seed]);
     const store = makeStore();
