@@ -103,6 +103,79 @@ describe("ForemanStore DDL — tasks table", () => {
     store2.close();
   });
 
+  it("migrates legacy tasks tables that are missing the 'closed' status", () => {
+    store.close();
+    const dbPath = join(tmpDir, "test.db");
+    const now = new Date().toISOString();
+    const legacyDb = new Database(dbPath);
+    legacyDb.exec("DROP TABLE IF EXISTS task_dependencies");
+    legacyDb.exec("DROP TABLE IF EXISTS tasks");
+    legacyDb.exec(`
+      CREATE TABLE tasks (
+        id          TEXT PRIMARY KEY,
+        title       TEXT NOT NULL,
+        description TEXT,
+        type        TEXT NOT NULL DEFAULT 'task',
+        priority    INTEGER NOT NULL DEFAULT 2,
+        status      TEXT NOT NULL DEFAULT 'backlog',
+        run_id      TEXT REFERENCES runs(id),
+        branch      TEXT,
+        external_id TEXT UNIQUE,
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        approved_at TEXT,
+        closed_at   TEXT,
+        CHECK (status IN (
+          'backlog', 'ready', 'in-progress',
+          'explorer', 'developer', 'qa', 'reviewer', 'finalize',
+          'merged', 'conflict', 'failed', 'stuck', 'blocked'
+        ))
+      );
+    `);
+    legacyDb.exec(`
+      CREATE TABLE task_dependencies (
+        from_task_id TEXT NOT NULL,
+        to_task_id   TEXT NOT NULL,
+        type         TEXT NOT NULL DEFAULT 'blocks',
+        PRIMARY KEY (from_task_id, to_task_id, type)
+      );
+    `);
+    legacyDb.prepare(
+      `INSERT INTO tasks (id, title, status, created_at, updated_at)
+       VALUES (?, ?, 'ready', ?, ?)`,
+    ).run("legacy-task", "Legacy task", now, now);
+    legacyDb.prepare(
+      `INSERT INTO tasks (id, title, status, created_at, updated_at)
+       VALUES (?, ?, 'blocked', ?, ?)`,
+    ).run("legacy-blocked", "Blocked task", now, now);
+    legacyDb.prepare(
+      `INSERT INTO task_dependencies (from_task_id, to_task_id, type)
+       VALUES ('legacy-blocked', 'legacy-task', 'blocks')`,
+    ).run();
+    legacyDb.close();
+
+    const migratedStore = new ForemanStore(dbPath);
+    const migratedDb = migratedStore.getDb();
+    const schema = migratedDb
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'")
+      .get() as { sql: string };
+    expect(schema.sql).toContain("'closed'");
+
+    expect(() =>
+      migratedDb.prepare("UPDATE tasks SET status = 'closed' WHERE id = 'legacy-task'").run(),
+    ).not.toThrow();
+
+    const dep = migratedDb
+      .prepare("SELECT from_task_id, to_task_id, type FROM task_dependencies")
+      .get() as { from_task_id: string; to_task_id: string; type: string };
+    expect(dep).toEqual({
+      from_task_id: "legacy-blocked",
+      to_task_id: "legacy-task",
+      type: "blocks",
+    });
+    migratedStore.close();
+  });
+
   it("tasks table has required columns", () => {
     const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
     const names = cols.map((c) => c.name);
