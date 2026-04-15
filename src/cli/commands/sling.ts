@@ -404,7 +404,9 @@ const trdSubcommand = new Command("trd")
 
     const content = readFileSync(resolved, "utf-8");
     const lines = content.split("\n").length;
-    if (!opts.json) {
+    if (opts.json) {
+      console.error(chalk.dim(`Reading TRD: ${resolved} (${lines} lines)`));
+    } else {
       console.log(chalk.dim(`Reading TRD: ${resolved} (${lines} lines)\n`));
     }
 
