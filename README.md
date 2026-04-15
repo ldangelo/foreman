@@ -546,7 +546,7 @@ export FOREMAN_MAX_AGENTS=5                  # Max concurrent agents (default: 5
 
 | Path | Contents |
 |---|---|
-| `.beads/` | beads_rust task database (JSONL, git-tracked) |
+| `.beads/` | legacy/compatibility beads_rust task database (JSONL, git-tracked) |
 | `.foreman/foreman.db` | SQLite: runs, merge_queue, projects |
 | `.foreman-worktrees/` | Git worktrees for active agents |
 | `~/.foreman/logs/` | Per-run agent logs |
@@ -572,7 +572,7 @@ foreman/
 │   │   ├── roles.ts                # Phase prompts + tool configs
 │   │   └── sentinel.ts             # Background health monitor
 │   └── lib/
-│       ├── beads-rust.ts           # br CLI wrapper
+│       ├── beads-rust.ts           # compatibility br CLI wrapper
 │       ├── git.ts                  # Git worktree management
 │       └── store.ts                # SQLite state store
 ├── packages/
