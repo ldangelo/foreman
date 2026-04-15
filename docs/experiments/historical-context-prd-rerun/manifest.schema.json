@@ -1,0 +1,123 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Historical Context Banner Manifest",
+  "description": "Schema for manifest.json — canonical list of archival documents requiring historical context banners.",
+  "type": "object",
+  "required": ["$schema", "version", "documents", "exclusions"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema identifier"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of this manifest"
+    },
+    "generated": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when manifest was generated"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of this manifest's purpose"
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "variant", "status"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path relative to docs/ root (e.g. 'migration-seeds-to-br.md' or 'TRD/trd-2026-004.md')"
+          },
+          "variant": {
+            "type": "string",
+            "enum": ["standard", "comparison", "migration", "beads-rust-only"],
+            "description": "Banner variant to inject — must match a key in banner-variants.json"
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Why this document is archived — what historical context it captures"
+          },
+          "lastReviewed": {
+            "type": "string",
+            "format": "date",
+            "description": "ISO 8601 date string when document was last reviewed for banner correctness"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["archived", "review", "active"],
+            "description": "'archived' = banner required; 'review' = decision pending; 'active' = not archived"
+          },
+          "bannerInjected": {
+            "type": "boolean",
+            "description": "Whether the banner has been injected into the target document"
+          },
+          "decision": {
+            "type": "string",
+            "description": "The decision outcome for 'review' status documents"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Optional additional notes"
+          }
+        }
+      }
+    },
+    "exclusions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "reason"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path relative to docs/ root. Use trailing '/' for directory exclusions (e.g. 'guides/')"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "active-operator-doc",
+              "target-feature-prd",
+              "target-feature-trd",
+              "active-trd",
+              "platform-setup-guide",
+              "active-standard",
+              "not-documentation"
+            ],
+            "description": "Reason this file/directory must never receive a banner"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Optional human-readable explanation"
+          }
+        }
+      }
+    },
+    "archivalDirectories": {
+      "type": "array",
+      "description": "Directories known to contain archival documents (informational, not enforced)",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Directory path relative to docs/ root"
+          },
+          "description": {
+            "type": "string",
+            "description": "Description of this directory's contents"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Optional notes"
+          }
+        }
+      }
+    }
+  }
+}
