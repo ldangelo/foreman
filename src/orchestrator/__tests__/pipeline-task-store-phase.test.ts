@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { installBundledPrompts } from "../../lib/prompt-loader.js";
 
 // ── Type-only checks ─────────────────────────────────────────────────────────
 
@@ -145,6 +146,7 @@ describe("executePipeline(): taskStore.updatePhase() called at phase transitions
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-pipe-taskstore-test-"));
     mkdirSync(join(tmpDir, ".foreman", "prompts", "default"), { recursive: true });
+    installBundledPrompts(tmpDir, true);
   });
 
   afterEach(() => {
