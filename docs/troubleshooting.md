@@ -146,7 +146,7 @@ git merge --abort                 # Clean up
    # If conflict: git rm SESSION_LOG.md && git commit --no-edit
    ```
 
-2. **Branch diverged from target** — Other beads merged to dev while this one was running.
+2. **Branch diverged from target** — Other tasks merged to dev while this one was running.
    ```bash
    # Rebase the branch onto latest dev
    cd ../.foreman-worktrees/<repo-name>/<bead-id>
@@ -187,11 +187,11 @@ foreman merge                     # Trigger manual merge
 
 ### Infinite retry loop on sentinel tasks
 
-**Symptoms:** A bead keeps getting dispatched, completing, failing to merge, resetting to open, and dispatching again.
+**Symptoms:** A task keeps getting dispatched, completing, failing to merge, resetting to open, and dispatching again.
 
 **Diagnosis:**
 ```bash
-# Count runs for the bead
+# Count runs for the task
 foreman debug <bead-id> --raw | grep "Run ID"
 
 # Check why merge fails
@@ -306,7 +306,7 @@ br show <bead-id>
 
 **Fix:**
 ```bash
-# Close beads that are already merged
+# Close tasks that are already merged in the legacy beads store
 br close <bead-id> --force --reason "Already merged to dev"
 
 # Or run doctor to reconcile
@@ -385,7 +385,7 @@ phases:
 # Check if messages exist in the DB
 foreman inbox --all --limit 100
 
-# Check specific bead
+# Check specific task
 foreman inbox --bead <bead-id>
 
 # Check if the mail client initialized
@@ -396,7 +396,7 @@ grep "agent-mail" ~/.foreman/logs/<runId>.err
 
 1. **Wrong run ID** — The inbox defaults to the latest run, which might not be the one you expect.
    ```bash
-   foreman inbox --bead <bead-id>  # Use bead ID instead of run ID
+   foreman inbox --bead <bead-id>  # Use task/bead ID instead of run ID
    ```
 
 2. **Agent Mail client failed to initialize** — Check logs for errors.

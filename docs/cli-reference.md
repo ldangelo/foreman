@@ -242,12 +242,12 @@ foreman doctor --json             # Machine-readable output
 
 ### `foreman reset`
 
-Reset failed or stuck runs. Cleans up worktrees, deletes branches, and resets bead status to open.
+Reset failed or stuck runs. Cleans up worktrees, deletes branches, and resets task status to a dispatchable state.
 
 ```bash
 foreman reset                     # Reset all failed/stuck runs
 foreman reset --project my-project # Reset runs in a registered project without cd
-foreman reset --bead bd-abc1      # Reset a specific bead
+foreman reset --bead bd-abc1      # Reset a specific task/bead
 foreman reset --all               # Reset ALL active runs (nuclear option)
 foreman reset --detect-stuck      # Find and reset stuck agents
 foreman reset --dry-run           # Preview what would be reset
@@ -255,7 +255,7 @@ foreman reset --dry-run           # Preview what would be reset
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--bead <id>` | — | Reset a specific bead's runs |
+| `--bead <id>` | — | Reset a specific task/bead's runs |
 | `--all` | — | Reset ALL active runs |
 | `--detect-stuck` | — | Run stuck detection first |
 | `--timeout <minutes>` | `15` | Stuck detection timeout |
@@ -369,7 +369,7 @@ foreman inbox --ack               # Mark shown messages as read
 |--------|---------|-------------|
 | `--agent <name>` | all | Filter to specific agent/role |
 | `--run <id>` | latest | Filter to specific run ID |
-| `--bead <id>` | — | Resolve run by bead ID |
+| `--bead <id>` | — | Resolve run by task/bead ID |
 | `--all` | — | Show/watch messages across all runs |
 | `--watch` | — | Poll every 2 seconds for new messages |
 | `--unread` | — | Show only unread messages |
