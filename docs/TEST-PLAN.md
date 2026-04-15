@@ -15,7 +15,7 @@
 Pure logic, mocked dependencies. Fast, reliable.
 
 ### Layer 2: Integration Tests (local deps only)
-Requires filesystem + git. No Dolt/Beads/Claude.
+Requires filesystem + git. No Dolt/legacy beads/Claude.
 
 ### Layer 3: E2E Tests (full stack)
 Requires Dolt running, Beads CLI, optionally Claude. Manual or CI-gated.
@@ -41,9 +41,9 @@ Requires Dolt running, Beads CLI, optionally Claude. Manual or CI-gated.
 
 | # | Test | What to verify |
 |---|------|---------------|
-| 1 | Worker AGENTS.md contains bead ID | Template includes `{{BEAD_ID}}` replacement |
-| 2 | Worker AGENTS.md contains bd commands | Includes `bd update`, `bd close` |
-| 3 | Worker AGENTS.md contains git push | Includes push to `foreman/<bead-id>` |
+| 1 | Worker AGENTS.md contains task ID | Template includes `{{BEAD_ID}}` replacement |
+| 2 | Worker AGENTS.md contains task-update commands | Includes task/bead status guidance |
+| 3 | Worker AGENTS.md contains git push | Includes push to `foreman/<task-id>` |
 | 4 | Different runtimes produce valid output | claude-code, pi, codex all generate valid templates |
 
 ### 1.3 Dispatcher — Runtime Selection (`src/orchestrator/dispatcher.ts`)
@@ -62,20 +62,20 @@ Requires Dolt running, Beads CLI, optionally Claude. Manual or CI-gated.
 ### 1.4 Sling Executor (`src/orchestrator/sling-executor.ts`)
 **File:** `src/orchestrator/__tests__/sling-executor.test.ts`
 
-Mock SeedsClient + BeadsRustClient, verify:
+Mock native task client + compatibility beads client, verify:
 
 | # | Test | What to verify |
 |---|------|---------------|
-| 1 | Creates epic in both trackers | sd.create + br.create called with type: "epic" |
-| 2 | Creates tasks with parent ref | Both trackers receive parent IDs |
+| 1 | Creates epic in the selected backend | Native or beads client called with type: "epic" |
+| 2 | Creates tasks with parent ref | Parent/dependency refs preserved |
 | 3 | Sets up explicit dependencies | Dep column values wired as blocks deps |
-| 4 | Returns dual TrackerResult | SlingResult has sd + br fields |
+| 4 | Returns backend-aware result | SlingResult reflects selected backend |
 | 5 | Handles empty task list | No child tasks created, only epic |
 
 ### 1.5 Monitor (`src/orchestrator/monitor.ts`)
 **File:** `src/orchestrator/__tests__/monitor.test.ts`
 
-Mock store + beads:
+Mock store + task backend:
 
 | # | Test | What to verify |
 |---|------|---------------|
@@ -94,7 +94,7 @@ Mock store, test Hono routes:
 | # | Test | What to verify |
 |---|------|---------------|
 | 1 | GET /api/projects returns array | 200 + JSON array |
-| 2 | GET /api/projects/:id returns project | 200 + project object with beads |
+| 2 | GET /api/projects/:id returns project | 200 + project object with tasks |
 | 3 | GET /api/projects/:id 404 for unknown | 404 response |
 | 4 | GET /api/metrics returns aggregates | 200 + totalCost, tasksByStatus, etc. |
 | 5 | GET /api/agents returns active agents | 200 + array of active runs |
@@ -161,7 +161,7 @@ Spawn `tsx src/cli/index.ts <command>` as child process:
 ## Layer 3: E2E Tests (manual / CI-gated)
 
 ### 3.1 Full Pipeline Test
-**Requires:** Dolt running, Beads CLI, Claude Code
+**Requires:** Dolt running, optional legacy beads CLI for fallback flows, Claude Code
 
 ```bash
 # Setup
@@ -170,11 +170,11 @@ git init && echo "# Test Project" > README.md && git add -A && git commit -m "in
 
 # 1. Init
 foreman init --name "e2e-test"
-# Verify: .beads/ exists, project in ~/.foreman/foreman.db
+# Verify: .foreman/ exists, project in ~/.foreman/foreman.db
 
 # 2. Sling TRD (using sample TRD)
 foreman sling trd ~/Development/Fortium/foreman/docs/TRD/sling-trd.md --auto
-# Verify: bd list shows beads, epic + tasks created
+# Verify: task list shows imported/created tasks, epic + tasks created
 
 # 3. Status
 foreman status
@@ -217,17 +217,17 @@ foreman dashboard
 ```
 
 ### 3.3 Plan Pipeline Test (Ensemble)
-**Requires:** Dolt, Beads, Claude Code, Ensemble commands
+**Requires:** Dolt, optional legacy beads fallback, Claude Code, Ensemble commands
 
 ```bash
 cd /tmp/foreman-e2e-test
 foreman plan "Build a simple todo API with CRUD endpoints"
 # Verify:
-# - 4 beads created (create-prd, refine-prd, create-trd, refine-trd)
+# - 4 planning tasks created (create-prd, refine-prd, create-trd, refine-trd)
 # - Each step executes sequentially
 # - PRD.md and TRD.md created in docs/
 # - All steps tracked in SQLite
-# - foreman status shows completed planning beads
+# - foreman status shows completed planning tasks
 ```
 
 ---

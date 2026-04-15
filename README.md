@@ -401,7 +401,7 @@ foreman merge --test-command "npm test"  # Custom test command
 
 Auto-merge tiers (T1–T4):
 - **T1**: Fast-forward or trivial rebase — no conflicts
-- **T2**: Auto-resolve report-file conflicts (`.beads/`, `EXPLORER_REPORT.md`, etc.)
+- **T2**: Auto-resolve report-file conflicts (`.beads/` compatibility data, `EXPLORER_REPORT.md`, etc.)
 - **T3**: AI-assisted conflict resolution via Pi session
 - **T4**: Create PR for human review (true code conflicts)
 
@@ -416,7 +416,7 @@ foreman plan --prd-only "Build a REST API"    # Stop after PRD
 ```
 
 ### `foreman sling trd`
-Parse a TRD and create seeds + beads task hierarchy.
+Parse a TRD and create a native task hierarchy (or compatibility beads when explicitly requested).
 
 ```bash
 foreman sling trd docs/TRD.md           # Parse and create tasks
@@ -433,7 +433,7 @@ foreman doctor --fix                    # Auto-fix recoverable issues
 ```
 
 ### `foreman reset`
-Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open.
+Reset failed/stuck runs: kill agents, remove worktrees, reset tasks to a dispatchable state.
 
 ```bash
 foreman reset                           # Reset failed/stuck runs

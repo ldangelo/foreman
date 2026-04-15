@@ -117,7 +117,7 @@ foreman/
       __tests__/      # Orchestrator tests
     dashboard/        # Web dashboard (Hono + WebSocket)
       __tests__/      # Dashboard tests
-    lib/              # Shared utilities (store, git, beads)
+    lib/              # Shared utilities (store, git, task compatibility shims)
       __tests__/      # Library tests
   dist/               # Compiled output
   bin/                # CLI entry point

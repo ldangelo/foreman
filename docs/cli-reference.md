@@ -534,7 +534,7 @@ foreman worktree clean --dry-run  # Preview removal
 
 ### `foreman purge-zombie-runs`
 
-Remove failed run records for beads that are already closed or no longer exist. Reduces database clutter.
+Remove failed run records for tasks/beads that are already closed or no longer exist. Reduces database clutter.
 
 ```bash
 foreman purge-zombie-runs         # Clean up zombie records
