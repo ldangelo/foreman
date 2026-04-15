@@ -89,7 +89,10 @@ vi.mock("../../lib/task-store.js", () => ({
   NativeTaskStore: MockNativeTaskStore,
 }));
 
-import { createPlanClient } from "../commands/plan.js";
+import { createPlanClient, inferPrdHintPath } from "../commands/plan.js";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const PROJECT_PATH = "/mock/project";
 
@@ -241,5 +244,24 @@ describe("createPlanClient", () => {
     expect(MockNativeTaskStore).toHaveBeenCalled();
     expect(mockTaskStoreReevaluateBlockedTasks).toHaveBeenCalled();
     expect(mockStoreClose).toHaveBeenCalled();
+  });
+});
+
+describe("inferPrdHintPath", () => {
+  it("prefers an explicit --from-prd path", () => {
+    expect(inferPrdHintPath("/tmp/out", "/tmp/custom/PRD.md")).toBe("/tmp/custom/PRD.md");
+  });
+
+  it("falls back to the latest PRD markdown file in the output directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "foreman-plan-hint-"));
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "PRD-2026-001-old.md"), "# old");
+      writeFileSync(join(dir, "PRD-2026-002-new.md"), "# new");
+
+      expect(inferPrdHintPath(dir)).toBe(join(dir, "PRD-2026-002-new.md"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

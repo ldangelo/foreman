@@ -1,13 +1,15 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { readFileSync, existsSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { parseTrd } from "../../orchestrator/trd-parser.js";
 import { analyzeParallel } from "../../orchestrator/sprint-parallel.js";
 import { execute } from "../../orchestrator/sling-executor.js";
+import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
+import { PLAN_STEP_CONFIG } from "../../orchestrator/roles.js";
 import { ForemanStore } from "../../lib/store.js";
-import { NativeTaskStore } from "../../lib/task-store.js";
+import { NativeTaskStore, type CreateTaskOptions, type TaskRow, type UpdateTaskOptions } from "../../lib/task-store.js";
 import type { SlingPlan, SlingOptions, SlingResult, ParallelResult } from "../../orchestrator/types.js";
 import { resolveProjectPathFromOption } from "./project-task-support.js";
 
@@ -104,6 +106,114 @@ function openNativeTaskStore(projectPath: string): { store: ForemanStore; taskSt
     store,
     taskStore: new NativeTaskStore(store.getDb()),
   };
+}
+
+class ReadyLeafTaskStore extends NativeTaskStore {
+  override create(opts: CreateTaskOptions): TaskRow {
+    const row = super.create(opts);
+    if (row.type === "task" || row.type === "chore") {
+      this.approve(row.id);
+      return this.get(row.id) ?? row;
+    }
+    return row;
+  }
+
+  override update(id: string, opts: UpdateTaskOptions): TaskRow {
+    const row = super.update(id, opts);
+    if ((row.type === "task" || row.type === "chore") && row.status === "backlog") {
+      this.approve(row.id);
+      return this.get(row.id) ?? row;
+    }
+    return row;
+  }
+}
+
+export function parsePrdReadinessScore(content: string): number | null {
+  const patterns = [
+    /^\s*(?:[-*]\s*)?\*\*Readiness Score:\*\*\s*([0-9]+(?:\.[0-9]+)?)/im,
+    /^\s*Readiness Score:\s*([0-9]+(?:\.[0-9]+)?)/im,
+    /^\s*readiness_score:\s*([0-9]+(?:\.[0-9]+)?)/im,
+  ];
+
+  for (const pattern of patterns) {
+    const match = content.match(pattern);
+    if (match) {
+      return parseFloat(match[1]);
+    }
+  }
+
+  return null;
+}
+
+function resolveTrdOutputDir(prdPath: string): string {
+  const prdDir = dirname(prdPath);
+  if (prdDir.includes(`${join("docs", "PRD")}`)) {
+    return prdDir.replace(`${join("docs", "PRD")}`, join("docs", "TRD"));
+  }
+  return prdDir;
+}
+
+function findNewestMarkdownFile(dir: string, prefix: string, startedAtMs: number): string | null {
+  if (!existsSync(dir)) return null;
+
+  const candidates = readdirSync(dir)
+    .filter((name) => name.endsWith(".md") && name.startsWith(prefix))
+    .map((name) => {
+      const fullPath = join(dir, name);
+      return { fullPath, mtimeMs: statSync(fullPath).mtimeMs };
+    })
+    .filter((entry) => entry.mtimeMs >= startedAtMs - 1_000)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  return candidates[0]?.fullPath ?? null;
+}
+
+async function generateForemanTrd(
+  projectPath: string,
+  prdPath: string,
+  outputDir: string,
+): Promise<string> {
+  const startedAt = Date.now();
+  const prompt = `/ensemble:create-trd-foreman ${prdPath}\n\nWrite outputs to ${outputDir}/.`;
+  const result = await runWithPiSdk({
+    prompt,
+    systemPrompt: `You are a planning agent running /ensemble:create-trd-foreman for ${prdPath}`,
+    cwd: projectPath,
+    model: PLAN_STEP_CONFIG.model,
+  });
+
+  if (!result.success) {
+    throw new Error(result.errorMessage ?? "create-trd-foreman failed");
+  }
+
+  const generated = findNewestMarkdownFile(outputDir, "TRD", startedAt);
+  if (!generated) {
+    throw new Error(`SLING-008: create-trd-foreman did not produce a TRD in ${outputDir}`);
+  }
+
+  return generated;
+}
+
+async function executeSlingPlan(
+  plan: SlingPlan,
+  parallel: ParallelResult,
+  slingOptions: SlingOptions,
+  taskStore: NativeTaskStore,
+): Promise<SlingResult> {
+  const spinner = createProgressSpinner();
+  try {
+    const result = await execute(
+      plan,
+      parallel,
+      slingOptions,
+      taskStore,
+      spinner.update,
+    );
+    printSummary(result);
+    return result;
+  } finally {
+    spinner.finish();
+  }
 }
 
 // ── Preview display ──────────────────────────────────────────────────────
@@ -294,7 +404,9 @@ const trdSubcommand = new Command("trd")
 
     const content = readFileSync(resolved, "utf-8");
     const lines = content.split("\n").length;
-    console.log(chalk.dim(`Reading TRD: ${resolved} (${lines} lines)\n`));
+    if (!opts.json) {
+      console.log(chalk.dim(`Reading TRD: ${resolved} (${lines} lines)\n`));
+    }
 
     let plan: SlingPlan;
     try {
@@ -373,16 +485,159 @@ const trdSubcommand = new Command("trd")
 
     const { store, taskStore } = openNativeTaskStore(projectPath);
     try {
-      const spinner = createProgressSpinner();
-      const result = await execute(
-        plan,
-        parallel,
-        slingOptions,
-        taskStore,
-        spinner.update,
+      await executeSlingPlan(plan, parallel, slingOptions, taskStore);
+    } finally {
+      store.close();
+    }
+  });
+
+const prdSubcommand = new Command("prd")
+  .description("Generate a Foreman-native TRD from a PRD and create ready native tasks")
+  .argument("<prd-file>", "Path to PRD markdown file")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path for advanced/scripted usage")
+  .option("--output-dir <dir>", "Directory for the generated TRD (default: infer from PRD path)")
+  .option("--dry-run", "Generate and preview the resulting task hierarchy without creating tasks")
+  .option("--auto", "Skip confirmation prompt")
+  .option("--json", "Output parsed structure as JSON")
+  .option("--force", "Refresh matching native tasks even if trd:<ID> already exists")
+  .option("--no-parallel", "Disable parallel sprint detection")
+  .option("--no-risks", "Skip risk register parsing")
+  .option("--no-quality", "Skip quality requirements parsing")
+  .action(async (prdFile: string, opts: Record<string, boolean | string | undefined>) => {
+    const projectPath = resolveSlingProjectPath({
+      project: typeof opts.project === "string" ? opts.project : undefined,
+      projectPath: typeof opts.projectPath === "string" ? opts.projectPath : undefined,
+    });
+    if (!projectPath) {
+      process.exitCode = 1;
+      return;
+    }
+
+    const resolvedPrd = isAbsolute(prdFile) ? resolve(prdFile) : resolve(projectPath, prdFile);
+    if (!existsSync(resolvedPrd)) {
+      console.error(chalk.red(`SLING-001: PRD file not found: ${resolvedPrd}`));
+      process.exitCode = 1;
+      return;
+    }
+
+    const prdContent = readFileSync(resolvedPrd, "utf-8");
+    const readinessScore = parsePrdReadinessScore(prdContent);
+    if (readinessScore !== null && readinessScore < 3.5) {
+      console.error(
+        chalk.red(
+          `SLING-009: PRD readiness score ${readinessScore.toFixed(1)} is below 3.5. Run /ensemble:refine-prd before sling prd.`,
+        ),
       );
-      spinner.finish();
-      printSummary(result);
+      process.exitCode = 1;
+      return;
+    }
+    if (readinessScore !== null && readinessScore < 4.0) {
+      console.warn(
+        chalk.yellow(
+          `SLING-WARN: PRD readiness score ${readinessScore.toFixed(1)} has concerns. Proceeding with caution.`,
+        ),
+      );
+    } else if (readinessScore === null) {
+      if (!opts.json) {
+        console.log(chalk.dim("No PRD readiness score found — proceeding without gate metadata."));
+      }
+    }
+
+    const outputDir = typeof opts.outputDir === "string"
+      ? (isAbsolute(opts.outputDir) ? resolve(opts.outputDir) : resolve(projectPath, opts.outputDir))
+      : resolveTrdOutputDir(resolvedPrd);
+
+    if (!opts.json) {
+      console.log(chalk.dim(`Reading PRD: ${resolvedPrd}`));
+      console.log(chalk.dim(`Generating Foreman-native TRD in: ${outputDir}\n`));
+    }
+
+    let generatedTrdPath: string;
+    try {
+      generatedTrdPath = await generateForemanTrd(projectPath, resolvedPrd, outputDir);
+    } catch (err: unknown) {
+      console.error(chalk.red((err as Error).message));
+      process.exitCode = 1;
+      return;
+    }
+
+    const content = readFileSync(generatedTrdPath, "utf-8");
+    if (!opts.json) {
+      console.log(chalk.dim(`Generated TRD: ${generatedTrdPath} (${content.split("\n").length} lines)\n`));
+    }
+
+    let plan: SlingPlan;
+    try {
+      plan = parseTrd(content);
+    } catch (err: unknown) {
+      console.error(chalk.red((err as Error).message));
+      process.exitCode = 1;
+      return;
+    }
+
+    const parallel = opts.parallel === false
+      ? { groups: [], warnings: [] } as ParallelResult
+      : analyzeParallel(plan, content);
+
+    if (opts.json) {
+      console.log(JSON.stringify({
+        generatedTrdPath,
+        epic: plan.epic,
+        sprints: plan.sprints,
+        parallel: parallel.groups,
+        warnings: parallel.warnings,
+        acceptanceCriteria: Object.fromEntries(plan.acceptanceCriteria),
+        riskMap: Object.fromEntries(plan.riskMap),
+      }, null, 2));
+      return;
+    }
+
+    printSlingPlan(plan, parallel);
+
+    if (opts.dryRun) {
+      console.log(chalk.dim("Dry run — generated TRD parsed successfully; no native tasks created."));
+      return;
+    }
+
+    if (!opts.auto) {
+      const answer = await new Promise<string>((resolveAnswer) => {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        rl.question(
+          chalk.bold("Generate the TRD and create ready native tasks? [y/N] "),
+          (ans) => {
+            rl.close();
+            resolveAnswer(ans);
+          },
+        );
+      });
+      if (answer.toLowerCase() !== "y") {
+        console.log(chalk.dim("Aborted."));
+        return;
+      }
+    }
+
+    const slingOptions: SlingOptions = {
+      dryRun: false,
+      auto: !!opts.auto,
+      json: false,
+      sdOnly: false,
+      brOnly: false,
+      skipCompleted: false,
+      closeCompleted: false,
+      noParallel: opts.parallel === false,
+      force: !!opts.force,
+      noRisks: opts.risks === false,
+      noQuality: opts.quality === false,
+    };
+
+    const { store } = openNativeTaskStore(projectPath);
+    const readyTaskStore = new ReadyLeafTaskStore(store.getDb());
+    try {
+      const result = await executeSlingPlan(plan, parallel, slingOptions, readyTaskStore);
+      if (result.native.failed === 0) {
+        console.log(chalk.green(`\nNext step: foreman run --project-path ${projectPath}`));
+      }
     } finally {
       store.close();
     }
@@ -390,4 +645,5 @@ const trdSubcommand = new Command("trd")
 
 export const slingCommand = new Command("sling")
   .description("Convert structured documents into task hierarchies")
-  .addCommand(trdSubcommand);
+  .addCommand(trdSubcommand)
+  .addCommand(prdSubcommand);
