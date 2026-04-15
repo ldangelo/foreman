@@ -287,7 +287,7 @@ Gracefully stop running agents.
 
 ```bash
 foreman stop                      # Stop all running agents
-foreman stop bd-abc1              # Stop a specific bead's agent
+foreman stop bd-abc1              # Stop a specific task/bead's agent
 foreman stop --list               # List active runs
 foreman stop --force              # Force kill with SIGKILL
 foreman stop --dry-run            # Preview
@@ -357,7 +357,7 @@ View the Agent Mail inbox — messages sent between pipeline phases and the fore
 
 ```bash
 foreman inbox                     # Show latest run's messages
-foreman inbox --bead bd-abc1      # Messages for a specific bead
+foreman inbox --bead bd-abc1      # Messages for a specific task/bead
 foreman inbox --all --watch       # Live stream ALL messages across all runs
 foreman inbox --watch             # Live stream latest run's messages
 foreman inbox --unread            # Show only unread messages
@@ -457,7 +457,7 @@ Create compatibility beads from natural language descriptions using AI parsing.
 foreman bead "Fix the login timeout bug"
 foreman bead "Add dark mode support" --type feature --priority P1
 foreman bead docs/issue.md        # From a file
-foreman bead "..." --parent bd-abc1  # Set parent bead
+foreman bead "..." --parent bd-abc1  # Set parent task/bead
 foreman bead "..." --dry-run      # Preview
 foreman bead "..." --no-llm       # Skip AI parsing (manual fields required)
 ```
@@ -481,7 +481,7 @@ Attach to a running or completed agent session to inspect its state.
 
 ```bash
 foreman attach                    # Attach to latest session
-foreman attach bd-abc1            # Attach to specific bead
+foreman attach bd-abc1            # Attach to a specific task/bead
 foreman attach --list             # List attachable sessions
 foreman attach --follow           # Tail the agent log file
 foreman attach --stream           # Stream Agent Mail messages

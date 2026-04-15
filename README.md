@@ -288,7 +288,7 @@ The pipeline executor also sends lifecycle messages automatically (phase-started
 
 ```bash
 foreman inbox                     # Latest run's messages
-foreman inbox --bead bd-abc1      # Messages for a specific bead
+foreman inbox --bead bd-abc1      # Messages for a specific task/bead
 foreman inbox --all --watch       # Live stream across all runs
 foreman debug <bead-id>           # AI analysis including full mail timeline
 ```
