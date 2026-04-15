@@ -129,11 +129,12 @@ describe("deterministic smoke e2e", () => {
       process.chdir(harness.projectPath);
       await invokeRun(["--runtime-mode", "test", "--no-watch", "--max-agents", "2"]);
       await harness.waitForRunCount(2, 20_000);
-      await harness.waitForTerminalRuns(2, 20_000);
       const statuses = await driveMergeQueueUntil(
         harness,
         (values) => values.filter((status) => status === "merged").length === 1
-          && values.some((status) => status === "failed" || status === "conflict"),
+          && values.some((status) => status === "failed" || status === "conflict")
+          && ["conflict-a\n", "conflict-b\n"].includes(harness.readRepoFile("test.txt")),
+        90_000,
       );
       expect(statuses.filter((status) => status === "merged")).toHaveLength(1);
       expect(statuses.some((status) => status === "failed" || status === "conflict")).toBe(true);
