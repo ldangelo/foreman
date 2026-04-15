@@ -9,11 +9,11 @@ Common problems, their causes, and step-by-step solutions for Foreman pipelines.
 Before diving into specific issues, run these commands to understand the current state:
 
 ```bash
-foreman status                    # Overview: beads, agents, costs
+foreman status                    # Overview: tasks, agents, costs
 foreman doctor                    # Health checks (br, DB, prompts)
 foreman inbox --all --watch       # Live mail stream across all runs
-foreman debug <bead-id>           # AI-powered deep-dive on a specific bead
-foreman debug <bead-id> --raw     # Raw artifacts without AI analysis
+foreman debug <task-or-bead-id>           # AI-powered deep-dive on a specific task
+foreman debug <task-or-bead-id> --raw     # Raw artifacts without AI analysis
 ```
 
 ---
@@ -118,7 +118,7 @@ foreman merge --bead <bead-id>
 
 ### Branch won't merge — "pr-created" status instead of "merged"
 
-**Symptoms:** `foreman status` shows beads completed but they never merge. Run status shows `pr-created`.
+**Symptoms:** `foreman status` shows tasks completed but they never merge. Run status shows `pr-created`.
 
 **Diagnosis:**
 ```bash
@@ -185,7 +185,7 @@ grep "autoMerge\|no-completed-run" ~/.foreman/logs/<runId>.err
 foreman merge                     # Trigger manual merge
 ```
 
-### Infinite retry loop on sentinel beads
+### Infinite retry loop on sentinel tasks
 
 **Symptoms:** A bead keeps getting dispatched, completing, failing to merge, resetting to open, and dispatching again.
 

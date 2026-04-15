@@ -37,12 +37,12 @@ foreman init --force              # Overwrite existing prompt files
 
 ### `foreman run`
 
-Dispatch ready beads to AI agents. Runs in a continuous loop by default — dispatches beads, monitors agents, and auto-merges completed work.
+Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks (or beads via fallback), monitors agents, and auto-merges completed work.
 
 ```bash
-foreman run                       # Dispatch all ready beads (up to max-agents)
+foreman run                       # Dispatch all ready tasks (up to max-agents)
 foreman run --project my-project   # Dispatch against a registered project without cd
-foreman run --bead bd-abc1        # Dispatch a specific bead
+foreman run --bead bd-abc1        # Dispatch a specific task/bead ID
 foreman run --dry-run             # Preview what would be dispatched
 foreman run --max-agents 3        # Limit concurrent agents to 3
 foreman run --resume              # Resume stuck/rate-limited runs
@@ -56,7 +56,7 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--bead <id>` | — | Dispatch only this specific bead (must be ready) |
+| `--bead <id>` | — | Dispatch only this specific task/bead ID (must be ready) |
 | `--max-agents <n>` | `5` | Maximum concurrent agents |
 | `--model <model>` | — | Force a specific model for all phases |
 | `--dry-run` | — | Show what would be dispatched without doing it |
@@ -76,7 +76,7 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 
 ### `foreman status`
 
-Show project status: bead counts, active agents, cost breakdown, and tool usage.
+Show project status: task counts, active agents, cost breakdown, and tool usage.
 
 ```bash
 foreman status                    # Snapshot of current state
@@ -142,7 +142,7 @@ foreman dashboard --interval 5000 # Poll every 5 seconds
 
 ### `foreman sentinel`
 
-Continuous QA testing agent that monitors a branch for test failures and auto-creates beads to fix them.
+Continuous QA testing agent that monitors a branch for test failures and auto-creates follow-up fix tasks.
 
 ```bash
 # Run once
@@ -169,8 +169,8 @@ foreman sentinel stop --force
 |--------|---------|-------------|
 | `--branch <branch>` | `main` | Branch to test |
 | `--test-command <cmd>` | `npm test` | Test command to run |
-| `--failure-threshold <n>` | `2` | Consecutive failures before filing a bug bead |
-| `--dry-run` | — | Simulate without running tests or creating beads |
+| `--failure-threshold <n>` | `2` | Consecutive failures before filing a bug task |
+| `--dry-run` | — | Simulate without running tests or creating tasks |
 
 **`sentinel start` options:**
 
@@ -309,8 +309,8 @@ Merge completed agent work into the target branch via the refinery.
 
 ```bash
 foreman merge                     # Process merge queue
-foreman merge --bead bd-abc1      # Merge a specific bead
-foreman merge --list              # List beads ready to merge
+foreman merge --bead bd-abc1      # Merge a specific task/bead
+foreman merge --list              # List tasks ready to merge
 foreman merge --dry-run           # Preview merge operations
 foreman merge --target-branch dev # Merge into dev instead of main
 foreman merge --no-tests          # Skip test validation
@@ -323,8 +323,8 @@ foreman merge --stats weekly      # Weekly cost breakdown
 | `--target-branch <branch>` | auto-detected | Branch to merge into |
 | `--no-tests` | — | Skip running tests during merge |
 | `--test-command <cmd>` | `npm test` | Test command to run |
-| `--bead <id>` | — | Merge a single bead |
-| `--list` | — | List beads ready to merge |
+| `--bead <id>` | — | Merge a single task/bead |
+| `--list` | — | List tasks ready to merge |
 | `--dry-run` | — | Preview merge operations |
 | `--resolve <runId>` | — | Resolve a merge conflict |
 | `--strategy <strategy>` | — | Conflict resolution: `theirs` or `abort` |
@@ -337,7 +337,7 @@ foreman merge --stats weekly      # Weekly cost breakdown
 Create GitHub pull requests for completed work.
 
 ```bash
-foreman pr                        # Create PRs for all completed beads
+foreman pr                        # Create PRs for all completed tasks
 foreman pr --draft                # Create as draft PRs
 foreman pr --base-branch dev      # PR against dev instead of main
 ```
@@ -424,24 +424,24 @@ foreman plan "..." --dry-run      # Preview steps
 
 ### `foreman sling trd`
 
-Convert a Technical Requirements Document into a bead task hierarchy with dependencies.
+Convert a Technical Requirements Document into a native task hierarchy with dependencies.
 
 ```bash
-foreman sling trd docs/TRD.md    # Create beads from TRD
+foreman sling trd docs/TRD.md    # Create native tasks from TRD
 foreman sling trd docs/TRD.md --dry-run  # Preview
 foreman sling trd docs/TRD.md --json     # Output parsed structure
 foreman sling trd docs/TRD.md --auto     # Skip confirmation prompts
 foreman sling trd docs/TRD.md --skip-completed   # Skip [x] items
 foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
-foreman sling trd docs/TRD.md --br-only  # Write to beads_rust only
+foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_rust only
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--dry-run` | Preview without creating beads |
+| `--dry-run` | Preview without creating tasks |
 | `--auto` | Skip confirmation prompts |
 | `--json` | Output parsed structure as JSON |
-| `--br-only` | Write to beads_rust only (skip bv) |
+| `--br-only` | Compatibility path: write to beads_rust only |
 | `--skip-completed` | Skip `[x]` completed tasks |
 | `--close-completed` | Create and immediately close `[x]` tasks |
 | `--no-parallel` | Disable parallel sprint detection |
@@ -451,7 +451,7 @@ foreman sling trd docs/TRD.md --br-only  # Write to beads_rust only
 
 ### `foreman bead`
 
-Create beads from natural language descriptions using AI parsing.
+Create compatibility beads from natural language descriptions using AI parsing.
 
 ```bash
 foreman bead "Fix the login timeout bug"
@@ -466,7 +466,7 @@ foreman bead "..." --no-llm       # Skip AI parsing (manual fields required)
 |--------|---------|-------------|
 | `--type <type>` | auto-detected | Force type: `task`, `bug`, `feature`, `epic`, `chore`, `decision` |
 | `--priority <priority>` | auto-detected | Force priority: `P0`–`P4` |
-| `--parent <id>` | — | Parent bead ID |
+| `--parent <id>` | — | Parent task/bead ID |
 | `--dry-run` | — | Preview without creating |
 | `--no-llm` | — | Skip LLM parsing |
 | `--model <model>` | — | Claude model for AI parsing |
