@@ -57,7 +57,8 @@
     "coding",
     "orchestration",
     "openclaw",
-    "beads"
+    "task-management",
+    "native-tasks"
   ],
   "author": "Leo D'Angelo",
   "license": "MIT",
