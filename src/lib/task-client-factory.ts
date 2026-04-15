@@ -1,4 +1,3 @@
-import { BeadsRustClient } from "./beads-rust.js";
 import { NativeTaskClient } from "./native-task-client.js";
 import { ForemanStore } from "./store.js";
 import type { ITaskClient } from "./task-client.js";
@@ -11,12 +10,21 @@ export interface TaskClientFactoryResult {
   taskClient: ITaskClient;
 }
 
+export interface TaskClientFactoryOptions {
+  ensureBrInstalled?: boolean;
+  autoSelectNativeWhenAvailable?: boolean;
+}
+
 export interface TaskCounts {
   total: number;
   ready: number;
   inProgress: number;
   completed: number;
   blocked: number;
+}
+
+interface BeadsTaskClient extends ITaskClient {
+  ensureBrInstalled(): Promise<void>;
 }
 
 const NATIVE_TOTAL_STATUSES = [
@@ -45,6 +53,11 @@ export function resolveTaskStoreMode(raw = process.env.FOREMAN_TASK_STORE): Task
   return "auto";
 }
 
+async function createBeadsFallbackClient(projectPath: string): Promise<BeadsTaskClient> {
+  const { BeadsRustClient } = await import("./beads-rust.js");
+  return new BeadsRustClient(projectPath) as BeadsTaskClient;
+}
+
 export function projectHasNativeTasks(projectPath: string): boolean {
   const store = ForemanStore.forProject(projectPath);
   try {
@@ -54,19 +67,28 @@ export function projectHasNativeTasks(projectPath: string): boolean {
   }
 }
 
-export function selectTaskReadBackend(projectPath: string): TaskClientBackend {
+export function selectTaskReadBackend(
+  projectPath: string,
+  opts?: { autoSelectNativeWhenAvailable?: boolean },
+): TaskClientBackend {
   const taskStoreMode = resolveTaskStoreMode();
   if (taskStoreMode === "native") return "native";
   if (taskStoreMode === "beads") return "beads";
+
+  if (opts?.autoSelectNativeWhenAvailable === false) {
+    return "beads";
+  }
 
   return projectHasNativeTasks(projectPath) ? "native" : "beads";
 }
 
 export async function createTaskClient(
   projectPath: string,
-  opts?: { ensureBrInstalled?: boolean },
+  opts?: TaskClientFactoryOptions,
 ): Promise<TaskClientFactoryResult> {
-  const backendType = selectTaskReadBackend(projectPath);
+  const backendType = selectTaskReadBackend(projectPath, {
+    autoSelectNativeWhenAvailable: opts?.autoSelectNativeWhenAvailable,
+  });
   if (backendType === "native") {
     return {
       backendType,
@@ -74,7 +96,7 @@ export async function createTaskClient(
     };
   }
 
-  const taskClient = new BeadsRustClient(projectPath);
+  const taskClient = await createBeadsFallbackClient(projectPath);
   if (opts?.ensureBrInstalled) {
     await taskClient.ensureBrInstalled();
   }
@@ -82,7 +104,7 @@ export async function createTaskClient(
 }
 
 async function fetchBeadsTaskCounts(projectPath: string): Promise<TaskCounts> {
-  const brClient = new BeadsRustClient(projectPath);
+  const brClient = await createBeadsFallbackClient(projectPath);
 
   let openIssues: Array<{ id: string; status: string }> = [];
   try {

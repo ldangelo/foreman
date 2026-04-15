@@ -6,9 +6,26 @@
  */
 
 import { BvClient } from "../lib/bv.js";
-import type { BeadsRustClient, BrIssueDetail } from "../lib/beads-rust.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
+
+interface TaskOrderingDependencyRef {
+  id: string;
+}
+
+export interface TaskOrderingIssueDetail {
+  id: string;
+  title: string;
+  type: string;
+  priority: string;
+  description?: string | null;
+  children?: string[];
+  dependencies: Array<string | TaskOrderingDependencyRef>;
+}
+
+export interface TaskOrderingClient {
+  show(id: string): Promise<TaskOrderingIssueDetail>;
+}
 
 export interface OrderedTask {
   seedId: string;
@@ -39,12 +56,12 @@ export class CircularDependencyError extends Error {
  */
 export async function getTaskOrder(
   epicId: string,
-  brClient: BeadsRustClient,
+  brClient: TaskOrderingClient,
   projectPath: string,
   useBv: boolean = true,
 ): Promise<OrderedTask[]> {
   // Get all children of the epic
-  const epicDetail = await brClient.show(epicId) as BrIssueDetail;
+  const epicDetail = await brClient.show(epicId);
   const childIds = epicDetail.children ?? [];
 
   if (childIds.length === 0) {
@@ -52,10 +69,10 @@ export async function getTaskOrder(
   }
 
   // Load details for all children
-  const childDetails = new Map<string, BrIssueDetail>();
+  const childDetails = new Map<string, TaskOrderingIssueDetail>();
   for (const childId of childIds) {
     try {
-      const detail = await brClient.show(childId) as BrIssueDetail;
+      const detail = await brClient.show(childId);
       // Only include task-type children (skip feature/story containers)
       if (detail.type === "task" || detail.type === "bug" || detail.type === "chore") {
         childDetails.set(childId, detail);
@@ -84,7 +101,7 @@ export async function getTaskOrder(
 // ── BV ordering ─────────────────────────────────────────────────────────────
 
 async function getBvOrder(
-  childDetails: Map<string, BrIssueDetail>,
+  childDetails: Map<string, TaskOrderingIssueDetail>,
   projectPath: string,
 ): Promise<OrderedTask[] | null> {
   const bv = new BvClient(projectPath);
@@ -136,7 +153,7 @@ async function getBvOrder(
  *
  * @throws CircularDependencyError if a cycle is detected.
  */
-function topologicalSort(childDetails: Map<string, BrIssueDetail>): OrderedTask[] {
+function topologicalSort(childDetails: Map<string, TaskOrderingIssueDetail>): OrderedTask[] {
   const childIds = new Set(childDetails.keys());
 
   // Build adjacency and in-degree within the child set
@@ -178,8 +195,14 @@ function topologicalSort(childDetails: Map<string, BrIssueDetail>): OrderedTask[
 
   const result: OrderedTask[] = [];
   while (queue.length > 0) {
-    const id = queue.shift()!;
-    const detail = childDetails.get(id)!;
+    const id = queue.shift();
+    if (!id) {
+      break;
+    }
+    const detail = childDetails.get(id);
+    if (!detail) {
+      continue;
+    }
     result.push({
       seedId: detail.id,
       seedTitle: detail.title,

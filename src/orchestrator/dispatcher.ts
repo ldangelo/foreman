@@ -13,7 +13,6 @@ import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache } from "../lib/setup.js";
 import { GitBackend } from "../lib/vcs/git-backend.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
-import { BeadsRustClient } from "../lib/beads-rust.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
@@ -37,6 +36,26 @@ import type {
   PlanStepDispatched,
 } from "./types.js";
 import type { RuntimeMode } from "../cli/commands/run.js";
+import type { TaskOrderingClient } from "./task-ordering.js";
+
+interface DispatcherDependencyRef {
+  id: string;
+}
+
+interface DispatcherDependentRef {
+  status: string;
+}
+
+interface DispatcherBeadsIssueDetail {
+  children?: string[];
+  dependents?: DispatcherDependentRef[];
+  dependencies?: Array<string | DispatcherDependencyRef>;
+}
+
+async function createDispatcherBeadsClient(projectPath: string): Promise<TaskOrderingClient> {
+  const { BeadsRustClient } = await import("../lib/beads-rust.js");
+  return new BeadsRustClient(projectPath) as TaskOrderingClient;
+}
 
 // ── Task store resolution (REQ-014 / REQ-017) ────────────────────────────
 
@@ -393,7 +412,7 @@ export class Dispatcher {
           const detail = await this.seeds.show(seed.id);
           // br show --json returns `dependents` (the tasks this container blocks), not `children`.
           // Use dependents to determine whether all downstream work is complete.
-          const brDetail = detail as import("../lib/beads-rust.js").BrIssueDetail;
+          const brDetail = detail as DispatcherBeadsIssueDetail;
           const dependents = brDetail.dependents ?? [];
 
           if (dependents.length === 0) {
@@ -464,7 +483,7 @@ export class Dispatcher {
 
           // Epic has children — query task order and dispatch through epic path.
           // getTaskOrder returns only actionable child types (task, bug, chore).
-          const brClient = this.seeds as unknown as BeadsRustClient;
+          const brClient = this.seeds as unknown as TaskOrderingClient;
           const epicTasks: EpicTask[] = await getTaskOrder(
             seed.id,
             brClient,
@@ -1497,9 +1516,9 @@ export async function resolveBaseBranch(
   projectPath: string,
   store: Pick<ForemanStore, "getRunsForSeed">,
 ): Promise<string | undefined> {
-  const brClient = new BeadsRustClient(projectPath);
+  const brClient = await createDispatcherBeadsClient(projectPath);
   try {
-    const detail = await brClient.show(seedId);
+    const detail = await brClient.show(seedId) as DispatcherBeadsIssueDetail;
     // detail.dependencies is BrDepRef[] — extract id for branch resolution
     for (const dep of detail.dependencies ?? []) {
       const depId = typeof dep === "string" ? dep : (dep as { id: string }).id;

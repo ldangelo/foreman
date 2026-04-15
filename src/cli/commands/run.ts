@@ -5,12 +5,10 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 
-import { BeadsRustClient } from "../../lib/beads-rust.js";
 import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
-import { projectHasNativeTasks, resolveTaskStoreMode } from "../../lib/task-client-factory.js";
+import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
-import { NativeTaskClient } from "../../lib/native-task-client.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
@@ -42,19 +40,23 @@ export interface TaskClientResult {
   backendType: "beads" | "native";
 }
 
+interface SentinelStartupTaskClient extends ITaskClient {
+  create(
+    title: string,
+    opts: {
+      type: string;
+      priority: string;
+      description?: string;
+      labels?: string[];
+    },
+  ): Promise<Issue>;
+}
+
 export type RuntimeMode = "normal" | "test";
 
 export function resolveRuntimeMode(value?: string): RuntimeMode {
   const raw = (value ?? process.env.FOREMAN_RUNTIME_MODE ?? "normal").trim().toLowerCase();
   return raw === "test" ? "test" : "normal";
-}
-
-function shouldUseNativeTaskClient(projectPath: string, runtimeMode: RuntimeMode): boolean {
-  const taskStoreMode = resolveTaskStoreMode();
-  if (taskStoreMode === "native") return true;
-  if (taskStoreMode === "beads") return false;
-  if (runtimeMode === "test") return projectHasNativeTasks(projectPath);
-  return false;
 }
 
 /**
@@ -69,19 +71,16 @@ export async function createTaskClients(
   projectPath: string,
   runtimeMode: RuntimeMode = resolveRuntimeMode(),
 ): Promise<TaskClientResult> {
-  if (shouldUseNativeTaskClient(projectPath, runtimeMode)) {
-    return {
-      taskClient: new NativeTaskClient(projectPath),
-      bvClient: null,
-      backendType: "native",
-    };
-  }
+  const { taskClient, backendType } = await createTaskClient(projectPath, {
+    ensureBrInstalled: true,
+    autoSelectNativeWhenAvailable: runtimeMode === "test",
+  });
 
-  const brClient = new BeadsRustClient(projectPath);
-  // Verify binary exists before proceeding; throws with a friendly message if not
-  await brClient.ensureBrInstalled();
-  const bvClient = new BvClient(projectPath);
-  return { taskClient: brClient, bvClient, backendType: "beads" };
+  return {
+    taskClient,
+    bvClient: backendType === "beads" ? new BvClient(projectPath) : null,
+    backendType,
+  };
 }
 
 // ── Branch Mismatch Detection ────────────────────────────────────────────────
@@ -419,8 +418,8 @@ export const runCommand = new Command("run")
           if (project) {
             const sentinelConfig = store.getSentinelConfig(project.id);
             if (sentinelConfig && sentinelConfig.enabled === 1) {
-              const brClient = new BeadsRustClient(projectPath);
-              sentinelAgent = new SentinelAgent(store, brClient, project.id, projectPath);
+              const sentinelTaskClient = taskClient as SentinelStartupTaskClient;
+              sentinelAgent = new SentinelAgent(store, sentinelTaskClient, project.id, projectPath);
               sentinelAgent.start(
                 {
                   branch: sentinelConfig.branch,

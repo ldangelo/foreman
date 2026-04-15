@@ -146,8 +146,27 @@ describe("createPlanClient", () => {
     const client = createPlanClient(PROJECT_PATH);
 
     expect(mockSelectTaskReadBackend).toHaveBeenCalledWith(PROJECT_PATH);
-    expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
     expect(client).toBeDefined();
+  });
+
+  it("instantiates the beads client lazily when a delegated method is used", async () => {
+    mockSelectTaskReadBackend.mockReturnValue("beads");
+    const beadsReady = vi.fn().mockResolvedValue([]);
+    MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
+      this.create = vi.fn();
+      this.addDependency = vi.fn();
+      this.ready = beadsReady;
+      this.close = vi.fn();
+      this.list = vi.fn();
+      this.show = vi.fn();
+      this.update = vi.fn();
+    });
+
+    const client = createPlanClient(PROJECT_PATH);
+    await client.ready();
+
+    expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
+    expect(beadsReady).toHaveBeenCalledOnce();
   });
 
   it("returns a native-backed planning client when the shared helper selects native", async () => {

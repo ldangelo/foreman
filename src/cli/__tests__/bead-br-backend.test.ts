@@ -85,18 +85,24 @@ describe("TRD-015: bead.ts backend selection via FOREMAN_TASK_BACKEND", () => {
       mockGetTaskBackend.mockReturnValue("br");
     });
 
-    it("returns a BeadsRustClient instance", () => {
+    it("returns a beads-compatible client wrapper", () => {
       const client = createBeadClient(PROJECT_PATH);
 
-      expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(MockBeadsRustClient).toHaveBeenCalledTimes(1);
       expect(client).toBeDefined();
     });
 
-    it("returned client has a create method (BeadsRustClient API)", () => {
+    it("instantiates the concrete beads client lazily when methods are used", async () => {
+      const client = createBeadClient(PROJECT_PATH);
+      await client.ensureBrInstalled();
+
+      expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
+      expect(MockBeadsRustClient).toHaveBeenCalledTimes(1);
+      expect(mockBrEnsureInstalled).toHaveBeenCalledTimes(1);
+    });
+
+    it("returned client preserves the create method surface", () => {
       const client = createBeadClient(PROJECT_PATH);
 
-      // The BeadsRustClient mock exposes 'create'
       expect(typeof (client as unknown as Record<string, unknown>).create).toBe("function");
     });
   });

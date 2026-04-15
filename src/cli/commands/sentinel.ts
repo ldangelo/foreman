@@ -1,13 +1,33 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { BeadsRustClient } from "../../lib/beads-rust.js";
+import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
+import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
 
 export const sentinelCommand = new Command("sentinel")
   .description("QA sentinel: continuous testing agent for main/master branch");
+
+export interface SentinelCommandTaskClient extends ITaskClient {
+  create(
+    title: string,
+    opts: {
+      type: string;
+      priority: string;
+      description?: string;
+      labels?: string[];
+    },
+  ): Promise<Issue>;
+}
+
+export async function createSentinelTaskClient(projectPath: string): Promise<SentinelCommandTaskClient> {
+  const { taskClient } = await createTaskClient(projectPath, {
+    autoSelectNativeWhenAvailable: false,
+  });
+  return taskClient as SentinelCommandTaskClient;
+}
 
 // ── foreman sentinel run-once ──────────────────────────────────────────
 
@@ -23,7 +43,7 @@ sentinelCommand
       const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
       const projectPath = await vcs.getRepoRoot(process.cwd());
       const store = new ForemanStore();
-      const seeds = new BeadsRustClient(projectPath);
+      const seeds = await createSentinelTaskClient(projectPath);
 
       const project = store.getProjectByPath(projectPath);
       if (!project) {
@@ -87,7 +107,7 @@ sentinelCommand
       const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
       const projectPath = await vcs.getRepoRoot(process.cwd());
       const store = new ForemanStore();
-      const seeds = new BeadsRustClient(projectPath);
+      const seeds = await createSentinelTaskClient(projectPath);
 
       const project = store.getProjectByPath(projectPath);
       if (!project) {
