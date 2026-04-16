@@ -42,7 +42,7 @@ function makeBareRepo(): string {
   const dir = realpathSync(
     mkdtempSync(join(tmpdir(), "foreman-git-integ-bare-")),
   );
-  execFileSync("git", ["init", "--bare", "--initial-branch=dev"], { cwd: dir });
+  execFileSync("git", ["init", "--bare", "--initial-branch=dev"], { cwd: dir, stdio: "ignore" });
   return dir;
 }
 
@@ -54,16 +54,16 @@ function cloneRepo(bareRepoPath: string, branch = "dev"): string {
   const dir = realpathSync(
     mkdtempSync(join(tmpdir(), "foreman-git-integ-clone-")),
   );
-  execFileSync("git", ["clone", bareRepoPath, dir]);
-  execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
-  execFileSync("git", ["config", "user.name", "Test Agent"], { cwd: dir });
+  execFileSync("git", ["clone", bareRepoPath, dir], { stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Test Agent"], { cwd: dir, stdio: "ignore" });
 
   // Ensure the default branch exists in the clone (bare repos have no initial commit)
   try {
-    execFileSync("git", ["checkout", branch], { cwd: dir });
+    execFileSync("git", ["checkout", branch], { cwd: dir, stdio: "ignore" });
   } catch {
     // Branch doesn't exist yet (bare repo is empty) — create an initial commit
-    execFileSync("git", ["checkout", "--orphan", branch], { cwd: dir });
+    execFileSync("git", ["checkout", "--orphan", branch], { cwd: dir, stdio: "ignore" });
   }
   return dir;
 }
@@ -78,31 +78,34 @@ function makeRemoteAndLocal(): { remoteDir: string; localDir: string } {
   );
   execFileSync("git", ["init", "--bare", "--initial-branch=dev"], {
     cwd: remoteDir,
+    stdio: "ignore",
   });
 
   // Create an intermediate local repo to push an initial commit to the bare remote
   const initDir = realpathSync(
     mkdtempSync(join(tmpdir(), "foreman-git-integ-init-")),
   );
-  execFileSync("git", ["clone", remoteDir, initDir]);
+  execFileSync("git", ["clone", remoteDir, initDir], { stdio: "ignore" });
   execFileSync("git", ["config", "user.email", "test@test.com"], {
     cwd: initDir,
+    stdio: "ignore",
   });
-  execFileSync("git", ["config", "user.name", "Test Agent"], { cwd: initDir });
-  execFileSync("git", ["checkout", "-b", "dev"], { cwd: initDir });
+  execFileSync("git", ["config", "user.name", "Test Agent"], { cwd: initDir, stdio: "ignore" });
+  execFileSync("git", ["checkout", "-b", "dev"], { cwd: initDir, stdio: "ignore" });
   writeFileSync(join(initDir, "README.md"), "# Project\n");
-  execFileSync("git", ["add", "."], { cwd: initDir });
-  execFileSync("git", ["commit", "-m", "initial commit"], { cwd: initDir });
-  execFileSync("git", ["push", "-u", "origin", "dev"], { cwd: initDir });
+  execFileSync("git", ["add", "."], { cwd: initDir, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "initial commit"], { cwd: initDir, stdio: "ignore" });
+  execFileSync("git", ["push", "-u", "origin", "dev"], { cwd: initDir, stdio: "ignore" });
   rmSync(initDir, { recursive: true, force: true });
 
   // Now clone the properly-initialised remote for the main worktree
   const localDir = realpathSync(
     mkdtempSync(join(tmpdir(), "foreman-git-integ-local-")),
   );
-  execFileSync("git", ["clone", remoteDir, localDir]);
+  execFileSync("git", ["clone", remoteDir, localDir], { stdio: "ignore" });
   execFileSync("git", ["config", "user.email", "test@test.com"], {
     cwd: localDir,
+    stdio: "ignore",
   });
   execFileSync("git", ["config", "user.name", "Test Agent"], {
     cwd: localDir,
@@ -336,7 +339,7 @@ describe("AC-007-2: Git commands are called in the expected order", () => {
 
     // Switch to a different branch before calling merge — merge() should
     // automatically checkout the target branch as part of its sequence
-    execFileSync("git", ["checkout", "-b", "other-branch"], { cwd: localDir });
+    execFileSync("git", ["checkout", "-b", "other-branch"], { cwd: localDir, stdio: "ignore" });
     const beforeMergeBranch = await backend.getCurrentBranch(localDir);
     expect(beforeMergeBranch).toBe("other-branch");
 
@@ -509,11 +512,11 @@ describe("GitBackend Integration: Rebase before merge (Foreman finalize pattern)
 
     // Simulate dev branch advancing (a new commit on dev AFTER workspace was created)
     // We do this directly in the local repo
-    execFileSync("git", ["checkout", "dev"], { cwd: localDir });
+    execFileSync("git", ["checkout", "dev"], { cwd: localDir, stdio: "ignore" });
     writeFileSync(join(localDir, "dev-progress.md"), "# Dev Progress\n");
-    execFileSync("git", ["add", "."], { cwd: localDir });
-    execFileSync("git", ["commit", "-m", "chore: dev progress"], { cwd: localDir });
-    execFileSync("git", ["push", "origin", "dev"], { cwd: localDir });
+    execFileSync("git", ["add", "."], { cwd: localDir, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "chore: dev progress"], { cwd: localDir, stdio: "ignore" });
+    execFileSync("git", ["push", "origin", "dev"], { cwd: localDir, stdio: "ignore" });
 
     // Push the feature branch
     await backend.push(workspacePath, branchName);
