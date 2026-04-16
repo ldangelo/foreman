@@ -2,8 +2,7 @@
  * JujutsuBackend — Jujutsu (jj) VCS backend implementation.
  *
  * Implements the `VcsBackend` interface using the `jj` CLI.
- * Assumes a **colocated** Jujutsu repository (`.jj/` + `.git/` both present),
- * which is the only mode supported by Foreman.
+ * Supports Jujutsu repositories in either non-colocated or colocated mode.
  *
  * Key differences from GitBackend:
  * - Workspaces use `jj workspace add` / `jj workspace forget`.
@@ -46,8 +45,8 @@ const execFileAsync = promisify(execFile);
 /**
  * JujutsuBackend encapsulates jj-specific VCS operations for a Foreman project.
  *
- * Foreman assumes a colocated jj repository so that git-based tooling
- * (GitHub Actions, gh CLI, etc.) continues to work alongside jj.
+ * Foreman should prefer jj-native operations first and only use `jj git`
+ * subcommands or explicit Git integration when the workflow truly needs it.
  */
 export class JujutsuBackend implements VcsBackend {
   readonly name = 'jujutsu' as const;
@@ -89,90 +88,37 @@ export class JujutsuBackend implements VcsBackend {
     }
   }
 
-  /**
-   * Execute a git command in the given working directory.
-   * Used for operations that still need git in colocated mode
-   * (e.g. getRepoRoot, getMainRepoRoot).
-   */
-  private async git(args: string[], cwd: string): Promise<string> {
-    try {
-      const { stdout } = await execFileAsync("git", args, {
-        cwd,
-        maxBuffer: 10 * 1024 * 1024,
-        timeout: 60_000,
-        env: {
-          ...process.env,
-          GIT_EDITOR: "true",
-          GIT_TERMINAL_PROMPT: "0",
-          GIT_ASKPASS: "true",
-        },
-      });
-      return stdout.trim();
-    } catch (err: unknown) {
-      const e = err as { stdout?: string; stderr?: string; message?: string };
-      const combined =
-        [e.stdout, e.stderr]
-          .map((s) => (s ?? "").trim())
-          .filter(Boolean)
-          .join("\n") || e.message || String(err);
-      throw new Error(`git ${args[0]} failed: ${combined}`);
-    }
-  }
-
   // ── Repository Introspection ─────────────────────────────────────────
 
   /**
-   * Find the root of the jj repository containing `path`.
-   * In colocated mode this delegates to git rev-parse since both .jj and .git exist.
+   * Find the root of the current jj workspace containing `path`.
    */
   async getRepoRoot(path: string): Promise<string> {
-    // In colocated mode, use git rev-parse for compatibility
-    return this.git(["rev-parse", "--show-toplevel"], path);
+    return this.jj(["workspace", "root"], path);
   }
 
   /**
    * Find the main (primary) repository root from any workspace.
-   * In colocated mode, delegates to git rev-parse --git-common-dir.
+   *
+   * In jj there is no special requirement that a "main" working copy lives
+   * beside a colocated `.git/`. For Foreman's purposes, the current workspace
+   * root is the correct repository root to operate on.
    */
   async getMainRepoRoot(path: string): Promise<string> {
-    const commonDir = await this.git(["rev-parse", "--git-common-dir"], path);
-    if (commonDir.endsWith("/.git")) {
-      return commonDir.slice(0, -5);
-    }
-    return this.git(["rev-parse", "--show-toplevel"], path);
+    return this.getRepoRoot(path);
   }
 
   /**
    * Detect the default/trunk branch for the repository.
    *
    * Resolution order:
-   * 1. Respect `git-town.main-branch` when configured.
-   * 2. Respect `origin/HEAD` when available.
-   * 3. Look for a `main` bookmark.
-   * 4. Look for a `master` bookmark.
-   * 5. Look for a `dev` bookmark.
-   * 6. Fall back to the current bookmark.
+   * 1. Look for a `main` bookmark.
+   * 2. Look for a `master` bookmark.
+   * 3. Look for a `dev` bookmark.
+   * 4. Fall back to the current bookmark.
    */
   async detectDefaultBranch(repoPath: string): Promise<string> {
-    // 1. Respect git-town.main-branch config (user's explicit development trunk)
-    try {
-      const gtMain = await this.git(["config", "get", "git-town.main-branch"], repoPath);
-      if (gtMain) return gtMain;
-    } catch {
-      // git-town not configured or command unavailable — fall through
-    }
-
-    // 2. Try origin/HEAD symbolic ref from colocated git metadata
-    try {
-      const ref = await this.git(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"], repoPath);
-      if (ref) {
-        return ref.replace(/^origin\//, "");
-      }
-    } catch {
-      // origin/HEAD not set or no remote — fall through
-    }
-
-    // 3. Check for 'main' bookmark
+    // 1. Check for 'main' bookmark
     try {
       const out = await this.jj(["bookmark", "list", "main"], repoPath);
       if (out.includes("main")) return "main";
@@ -180,7 +126,7 @@ export class JujutsuBackend implements VcsBackend {
       // not found
     }
 
-    // 4. Check for 'master' bookmark
+    // 2. Check for 'master' bookmark
     try {
       const out = await this.jj(["bookmark", "list", "master"], repoPath);
       if (out.includes("master")) return "master";
@@ -188,7 +134,7 @@ export class JujutsuBackend implements VcsBackend {
       // not found
     }
 
-    // 5. Check for 'dev' bookmark
+    // 3. Check for 'dev' bookmark
     try {
       const out = await this.jj(["bookmark", "list", "dev"], repoPath);
       if (out.includes("dev")) return "dev";
@@ -196,7 +142,7 @@ export class JujutsuBackend implements VcsBackend {
       // not found
     }
 
-    // 6. Fall back to current branch
+    // 4. Fall back to current branch
     return this.getCurrentBranch(repoPath);
   }
 
@@ -306,20 +252,10 @@ export class JujutsuBackend implements VcsBackend {
       return { deleted: false, wasFullyMerged: true };
     }
 
-    // For jujutsu we can't easily check merge status without git, so use git
     const targetBranch =
       options?.targetBranch ?? (await this.detectDefaultBranch(repoPath));
 
-    let isFullyMerged = false;
-    try {
-      await this.git(
-        ["merge-base", "--is-ancestor", branchName, targetBranch],
-        repoPath,
-      );
-      isFullyMerged = true;
-    } catch {
-      isFullyMerged = false;
-    }
+    const isFullyMerged = await this.isAncestor(repoPath, branchName, targetBranch);
 
     if (isFullyMerged || force) {
       await this.jj(["bookmark", "delete", branchName], repoPath);

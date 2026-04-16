@@ -6,7 +6,7 @@
  * Verifies:
  * - AC-T-028-1: jj binary missing + backend=jujutsu → status=fail, message contains "ERROR" and GitHub URL
  * - AC-T-028-2: jj binary missing + backend=auto    → status=warn, message contains "WARNING"
- * - AC-T-028-3: backend=jujutsu + .jj/repo/store/git missing → status=fail, message contains "colocated"
+ * - AC-T-028-3: backend=jujutsu + .jj/repo/store/git missing → status=warn, message contains "non-colocated"
  *
  * Seed: bd-g43l
  */
@@ -320,10 +320,10 @@ describe("TRD-028: Doctor VCS Checks", () => {
     });
   });
 
-  // ── AC-T-028-3: Non-colocated Jujutsu repository ─────────────────────────
+  // ── Non-colocated Jujutsu repository ──────────────────────────────────────
 
-  describe("AC-T-028-3: non-colocated Jujutsu repository", () => {
-    it("returns status=fail when .jj/repo/store/git is missing with backend=jujutsu", async () => {
+  describe("non-colocated Jujutsu repository", () => {
+    it("returns status=warn when .jj/repo/store/git is missing with backend=jujutsu", async () => {
       const { Doctor } = await import("../../orchestrator/doctor.js");
       const { ForemanStore } = await import("../../lib/store.js");
 
@@ -336,11 +336,11 @@ describe("TRD-028: Doctor VCS Checks", () => {
 
       const result = await doctor.checkJujutsuColocated();
 
-      expect(result.status).toBe("fail");
+      expect(result.status).toBe("warn");
       store.close();
     });
 
-    it("error message mentions 'colocated' when .jj/repo/store/git is missing", async () => {
+    it("warning message mentions 'non-colocated' when .jj/repo/store/git is missing", async () => {
       const { Doctor } = await import("../../orchestrator/doctor.js");
       const { ForemanStore } = await import("../../lib/store.js");
 
@@ -353,7 +353,7 @@ describe("TRD-028: Doctor VCS Checks", () => {
 
       const result = await doctor.checkJujutsuColocated();
 
-      expect(result.message).toContain("colocated");
+      expect(result.message).toContain("non-colocated");
       store.close();
     });
 

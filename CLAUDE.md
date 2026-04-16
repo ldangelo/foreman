@@ -95,7 +95,7 @@ After finalize: autoMerge triggers immediately → refinery merges to dev → be
 Foreman abstracts all VCS operations behind a `VcsBackend` interface so that orchestration code is decoupled from the concrete VCS tool. Two built-in implementations ship with Foreman:
 
 - **`GitBackend`** (`src/lib/vcs/git-backend.ts`) — wraps standard git CLI commands
-- **`JujutsuBackend`** (`src/lib/vcs/jujutsu-backend.ts`) — wraps jj CLI; requires **colocated mode** (`.jj/` + `.git/` both present)
+- **`JujutsuBackend`** (`src/lib/vcs/jujutsu-backend.ts`) — wraps jj CLI; Foreman is migrating toward full **non-colocated jj** support and should prefer jj-native operations over raw git assumptions
 
 **All orchestration code uses VcsBackend — no direct git/jj calls outside the backend implementations.**
 
@@ -129,7 +129,7 @@ vcs:
 
 - [VcsBackend Interface Reference](docs/guides/vcs-backend-interface.md) — Method reference, custom backend guide
 - [VCS Configuration Guide](docs/guides/vcs-configuration.md) — Config examples, precedence, troubleshooting
-- [Jujutsu Considerations](docs/guides/jujutsu-considerations.md) — Colocated mode, bookmarks, finalize diffs, migration
+- [Jujutsu Considerations](docs/guides/jujutsu-considerations.md) — Repository modes, bookmarks, finalize diffs, migration
 
 ## Development Rules
 

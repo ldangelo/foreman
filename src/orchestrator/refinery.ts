@@ -54,6 +54,30 @@ async function gh(args: string[], cwd: string): Promise<string> {
   return stdout.trim();
 }
 
+async function getPrCommitLog(
+  vcsBackend: VcsBackend,
+  cwd: string,
+  baseBranch: string,
+  branchName: string,
+): Promise<string> {
+  if (vcsBackend.name === "jujutsu") {
+    const { stdout } = await execFileAsync("jj", [
+      "log",
+      "--no-graph",
+      "-r",
+      `${baseBranch}::${branchName}`,
+      "-T",
+      "commit_id.short() ++ \" \" ++ description ++ \"\\n\"",
+    ], {
+      cwd,
+      maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+    });
+    return stdout.trim();
+  }
+
+  return gitSpecial(["log", `${baseBranch}..${branchName}`, "--oneline"], cwd);
+}
+
 async function runTestCommand(command: string, cwd: string): Promise<{ ok: boolean; output: string }> {
   const [cmd, ...args] = command.split(/\s+/);
   try {
@@ -103,7 +127,7 @@ export class Refinery {
     // Default to GitBackend for backward compatibility with callers that don't
     // provide an explicit VcsBackend (e.g. CLI commands, existing tests).
     this.vcsBackend = vcsBackend ?? new GitBackend(projectPath);
-    this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG);
+    this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG, this.vcsBackend);
     this.taskStore = new NativeTaskStore(this.store.getDb());
   }
 
@@ -298,9 +322,16 @@ export class Refinery {
         if (!branchExists) continue;
 
         try {
-          // Use gitSpecial for the --onto form which is not supported by VcsBackend.rebase()
-          // (VcsBackend.rebase() only supports simple "rebase onto" without --onto syntax)
-          await gitSpecial(["rebase", "--onto", targetBranch, mergedBranch, stackedBranch], this.projectPath);
+          if (this.vcsBackend.name === "jujutsu") {
+            await execFileAsync("jj", ["rebase", "-b", stackedBranch, "-d", targetBranch], {
+              cwd: this.projectPath,
+              maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+            });
+          } else {
+            // Use gitSpecial for the --onto form which is not supported by VcsBackend.rebase()
+            // (VcsBackend.rebase() only supports simple "rebase onto" without --onto syntax)
+            await gitSpecial(["rebase", "--onto", targetBranch, mergedBranch, stackedBranch], this.projectPath);
+          }
           console.error(`[Refinery] Rebased stacked branch ${stackedBranch} onto ${targetBranch} (was on ${mergedBranch})`);
           // Update the run's base_branch to reflect it's now on targetBranch
           this.store.updateRun(stackedRun.id, { base_branch: null });
@@ -534,8 +565,8 @@ export class Refinery {
         // nothing. Creating a PR would fail ("no commits between ..."). Don't reset to open
         // (that would cause infinite redispatch to the same broken worktree). Mark as a
         // conflict so the user can investigate.
-        const branchCommits = await gitSpecial(["log", "--oneline", `${targetBranch}..${branchName}`], this.projectPath).catch(() => "");
-        if (!branchCommits.trim()) {
+        const changedFiles = await this.vcsBackend.getChangedFiles(this.projectPath, targetBranch, branchName).catch(() => []);
+        if (changedFiles.length === 0) {
           console.warn(`[Refinery] Branch ${branchName} has no commits beyond ${targetBranch} — agent may not have committed work`);
           await this.addFailureNote(run.seed_id, `Branch ${branchName} has no unique commits beyond ${targetBranch}. The agent may not have committed its work. Manual intervention required — do not auto-reset.`);
           this.sendMail(run.id, "merge-failed", {
@@ -1078,10 +1109,7 @@ export class Refinery {
         // Get commit log for the PR body
         let commitLog = "";
         try {
-          commitLog = await gitSpecial(
-            ["log", `${baseBranch}..${branchName}`, "--oneline"],
-            this.projectPath,
-          );
+          commitLog = await getPrCommitLog(this.vcsBackend, this.projectPath, baseBranch, branchName);
         } catch {
           // Non-fatal
         }

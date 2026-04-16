@@ -76,7 +76,7 @@ function makeMockVcs(): VcsBackend {
     resolveRef: vi.fn().mockResolvedValue("abc123"),
     fetch: vi.fn().mockResolvedValue(undefined),
     diff: vi.fn().mockResolvedValue(""),
-    getChangedFiles: vi.fn().mockResolvedValue([]),
+    getChangedFiles: vi.fn().mockResolvedValue(["packages/development/commands/create-trd-foreman.yaml"]),
     getRefCommitTimestamp: vi.fn().mockResolvedValue(null),
     getModifiedFiles: vi.fn().mockResolvedValue([]),
     getConflictingFiles: vi.fn().mockResolvedValue([]),
@@ -139,5 +139,119 @@ describe("Refinery jj rebase path", () => {
       (call: any[]) => call[0] === "git" && Array.isArray(call[1]) && call[1][0] === "rebase",
     );
     expect(gitRebaseCalls).toHaveLength(0);
+  });
+
+  it("rebases stacked jj branches with jj rebase -b instead of raw git rebase --onto", async () => {
+    const mockDb = {
+      prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+    };
+    const mergedRun = makeRun({ id: "run-jj-merged", seed_id: "seed-jj" });
+    const stackedRun = makeRun({
+      id: "run-jj-stacked",
+      seed_id: "seed-jj-2",
+      status: "running",
+      base_branch: "foreman/seed-jj",
+      worktree_path: "/tmp/jj-workspace-2",
+    });
+    const store = {
+      getRunsByStatus: vi.fn(() => [mergedRun]),
+      getRunsByStatuses: vi.fn(() => []),
+      getRun: vi.fn(() => null),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+      getRunsByBaseBranch: vi.fn(() => [stackedRun]),
+      sendMessage: vi.fn(),
+      getDb: vi.fn(() => mockDb),
+    };
+    const seeds = {
+      getGraph: vi.fn(async () => ({ edges: [] })),
+      show: vi.fn(async () => null),
+      update: vi.fn(async () => undefined),
+    };
+    const vcs = makeMockVcs();
+    (vcs.getChangedFiles as any).mockResolvedValue(["packages/development/commands/create-trd-foreman.yaml"]);
+    const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs);
+
+    await refinery.mergeCompleted({ runTests: false });
+
+    const jjRebaseCalls = (execFile as any).mock.calls.filter(
+      (call: any[]) => call[0] === "jj" && Array.isArray(call[1]) && call[1][0] === "rebase" && call[1][1] === "-b",
+    );
+    expect(jjRebaseCalls).toHaveLength(1);
+    expect(jjRebaseCalls[0][1]).toEqual(["rebase", "-b", "foreman/seed-jj-2", "-d", "dev"]);
+
+    const gitRebaseCalls = (execFile as any).mock.calls.filter(
+      (call: any[]) => call[0] === "git" && Array.isArray(call[1]) && call[1][0] === "rebase",
+    );
+    expect(gitRebaseCalls).toHaveLength(0);
+  });
+
+  it("passes the injected jj backend through to the conflict resolver", () => {
+    const mockDb = {
+      prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+    };
+    const store = {
+      getRunsByStatus: vi.fn(() => []),
+      getRunsByStatuses: vi.fn(() => []),
+      getRun: vi.fn(() => null),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+      getRunsByBaseBranch: vi.fn(() => []),
+      sendMessage: vi.fn(),
+      getDb: vi.fn(() => mockDb),
+    };
+    const seeds = {
+      getGraph: vi.fn(async () => ({ edges: [] })),
+      show: vi.fn(async () => null),
+      update: vi.fn(async () => undefined),
+    };
+    const vcs = makeMockVcs();
+    const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs) as any;
+
+    expect(refinery.conflictResolver.vcs).toBe(vcs);
+  });
+
+  it("uses jj log instead of raw git log when building PR commit summaries", async () => {
+    const mockDb = {
+      prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+    };
+    const run = makeRun({ id: "run-pr-jj", seed_id: "seed-pr-jj", worktree_path: null });
+    const store = {
+      getRunsByStatus: vi.fn((status: string) => (status === "completed" ? [run] : [])),
+      getRunsByStatuses: vi.fn(() => []),
+      getRun: vi.fn(() => null),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+      getRunsByBaseBranch: vi.fn(() => []),
+      sendMessage: vi.fn(),
+      getDb: vi.fn(() => mockDb),
+    };
+    const seeds = {
+      getGraph: vi.fn(async () => ({ edges: [] })),
+      show: vi.fn(async () => null),
+      update: vi.fn(async () => undefined),
+    };
+    const vcs = makeMockVcs();
+    const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs);
+
+    await refinery.createPRs({ baseBranch: "dev" });
+
+    const jjLogCalls = (execFile as any).mock.calls.filter(
+      (call: any[]) => call[0] === "jj" && Array.isArray(call[1]) && call[1][0] === "log",
+    );
+    expect(jjLogCalls).toHaveLength(1);
+    expect(jjLogCalls[0][1]).toEqual([
+      "log",
+      "--no-graph",
+      "-r",
+      "dev::foreman/seed-pr-jj",
+      "-T",
+      "commit_id.short() ++ \" \" ++ description ++ \"\\n\"",
+    ]);
+
+    const gitLogCalls = (execFile as any).mock.calls.filter(
+      (call: any[]) => call[0] === "git" && Array.isArray(call[1]) && call[1][0] === "log",
+    );
+    expect(gitLogCalls).toHaveLength(0);
   });
 });

@@ -249,16 +249,15 @@ export class Doctor {
   }
 
   /**
-   * TRD-028: Check that the Jujutsu repository is in colocated mode.
+   * Check Jujutsu workspace mode details.
    *
-   * Colocated mode requires `.jj/repo/store/git` to exist, which means the jj
-   * repo was initialized with `--colocate` so it shares a `.git/` directory
-   * with an underlying git repo.  Non-colocated jj repos cannot be merged via
-   * the standard `git merge` workflow that Foreman relies on.
+   * Foreman historically required colocated jj repositories because several
+   * code paths assumed a `.git/` directory existed beside `.jj/`. As Foreman
+   * migrates toward jj-native support, non-colocated repos should remain
+   * usable. This check now reports the mode for operator awareness instead of
+   * hard-failing on non-colocated repositories.
    *
-   * Only relevant when backend='jujutsu'.  Returns skip for other backends.
-   *
-   * AC-028-3: backend=jujutsu + .jj/repo/store/git missing → status=fail, message contains "colocated"
+   * Only relevant when backend='jujutsu'. Returns skip for other backends.
    */
   async checkJujutsuColocated(): Promise<CheckResult> {
     const checkName = "jj colocated mode";
@@ -293,9 +292,9 @@ export class Doctor {
     } catch {
       return {
         name: checkName,
-        status: "fail",
-        message: "Jujutsu repository is not in colocated mode: .jj/repo/store/git not found. Foreman requires a colocated jj repository (initialized with 'jj git init --colocate').",
-        details: "Re-initialize with: jj git init --colocate",
+        status: "warn",
+        message: "Jujutsu repository is in non-colocated mode (.jj/repo/store/git not found). Foreman is migrating toward full non-colocated jj support; some legacy git-oriented paths may still need verification.",
+        details: "Prefer jj-native operations and avoid raw git assumptions in this repo.",
       };
     }
   }

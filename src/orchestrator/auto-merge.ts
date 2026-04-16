@@ -155,7 +155,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
   }
 
   const mq = new MergeQueue(store.getDb());
-  const refinery = new Refinery(store, taskClient, projectPath);
+  const refinery = new Refinery(store, taskClient, projectPath, vcs);
 
   // Reconcile completed runs into the queue
   await mq.reconcile(store.getDb(), projectPath);

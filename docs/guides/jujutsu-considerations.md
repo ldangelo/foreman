@@ -2,10 +2,10 @@
 
 > **Audience:** Teams adopting Jujutsu as their VCS, or operators setting up a Foreman project on a jj repository.
 
-[Jujutsu](https://martinvonz.github.io/jj/) is a next-generation VCS designed to be more ergonomic than git. Foreman supports jj via the `JujutsuBackend` and requires **colocated mode** where both `.jj/` and `.git/` exist side by side.
+[Jujutsu](https://martinvonz.github.io/jj/) is a next-generation VCS designed to be more ergonomic than git. Foreman supports jj via the `JujutsuBackend` and is actively migrating toward full **non-colocated jj** support. Colocated mode still works, but it is no longer the only intended deployment model.
 
 This guide covers:
-- Colocated mode requirement and setup
+- Repository modes, setup, and migration status
 - Workspace vs worktree semantics
 - Bookmarks vs branches (terminology)
 - Conflict handling differences
@@ -16,9 +16,9 @@ This guide covers:
 
 ---
 
-## Colocated Mode (Required)
+## Workspace Modes
 
-Foreman **only** supports jj in colocated mode. In colocated mode, jujutsu operates on top of a regular git repository:
+Foreman can encounter jj repositories in either colocated or non-colocated mode:
 
 ```
 project/
@@ -27,11 +27,11 @@ project/
 └── src/
 ```
 
-### Why Colocated?
+### Why Colocated Still Matters
 
 - Git-based CI/CD tools (GitHub Actions, `gh` CLI, `git push`) continue to work unchanged.
 - Foreman's refinery uses `git` commands for some operations that are not yet abstracted (stash, rebase-onto, merge strategies).
-- The JujutsuBackend delegates `getRepoRoot()` and `getMainRepoRoot()` to `git rev-parse` for compatibility.
+- Some older Foreman paths and external tooling still assume git interoperability.
 
 ### Initializing a Colocated Repo
 
@@ -45,14 +45,14 @@ cd myproject
 jj git init --git-repo .    # Wraps the existing .git/ dir
 ```
 
-### Verifying Colocated Mode
+### Verifying Workspace Mode
 
 ```bash
 ls -la | grep -E "\.jj|\.git"
 # Should show both .jj and .git
 
 foreman doctor
-# ✓ colocated repo detected (.jj/ + .git/ present)
+# ✓ reports whether the repo is colocated or non-colocated
 ```
 
 ---
@@ -225,11 +225,11 @@ Reviewers can use `{{vcsBackendName}}` to tailor feedback (e.g., noting that a d
 
 When a jujutsu backend is configured (or auto-detected), `foreman doctor` runs these additional checks:
 
-| Check | Pass | Fail |
-|-------|------|------|
+| Check | Pass | Warn / Fail |
+|-------|------|-------------|
 | `jj` binary on PATH | ✓ jj 0.24.0 found | ✗ jj not found in PATH |
 | Minimum version | ✓ 0.24.0 >= 0.21.0 | ⚠ 0.18.0 below minimum 0.21.0 |
-| Colocated mode | ✓ .jj/ and .git/ both present | ✗ Only .jj/ found (not colocated) |
+| Repository mode | ✓ .jj/ and .git/ both present (colocated) | ⚠ Only .jj/ found (non-colocated; supported, but verify legacy flows) |
 | Bookmark support | ✓ jj bookmark list OK | ✗ jj bookmark command failed |
 
 To run only VCS checks:
@@ -244,9 +244,9 @@ foreman doctor --check vcs
 
 | Limitation | Details | Workaround |
 |-----------|---------|-----------|
-| Colocated mode only | Non-colocated jj repos are not supported | `jj git init --git-repo .` |
-| No stash support | `VcsBackend` has no stash/unstash | Refinery uses `gitSpecial()` helper |
-| Merge strategies | `VcsBackend.merge()` has no `-X theirs` equivalent | Refinery uses raw git for complex merges |
+| Legacy merge helpers still exist | A few advanced merge flows are still more git-oriented than the core jj-native path | Prefer jj-native finalize/merge flows and verify complex conflict scenarios |
+| No stash support | `VcsBackend` has no stash/unstash | Git backends use `gitSpecial()`; jj backends should keep workspaces clean instead |
+| Merge strategies | `VcsBackend.merge()` has no `-X theirs` equivalent | Prefer backend-native resolution; some complex merge strategies still use git-only helpers |
 | Change ID vs commit hash | `getHeadId()` returns change ID, not commit hash | Use `resolveRef()` for commit hash if needed |
 | Operation log | jj records an operation log; no API to query it | Access via `jj op log` manually |
 | Non-linear history | jj supports more complex history shapes; Foreman assumes linear branches | Design beads to avoid complex merge topologies |

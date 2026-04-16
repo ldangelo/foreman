@@ -71,7 +71,7 @@ Returns the root directory of the VCS repository containing `path`.
 | Backend | Equivalent |
 |---------|-----------|
 | Git | `git rev-parse --show-toplevel` |
-| Jujutsu | `git rev-parse --show-toplevel` (colocated mode) |
+| Jujutsu | `jj root` (preferred), with git interop only when the repo is colocated |
 
 For linked git worktrees, this returns the **worktree** root (not the main project root). Use `getMainRepoRoot()` to always get the primary project directory.
 
@@ -86,7 +86,7 @@ Returns the primary (main) repository root, traversing up from any worktree or w
 | Backend | Equivalent |
 |---------|-----------|
 | Git | Resolves `--git-common-dir`, strips trailing `/.git` |
-| Jujutsu | Same git fallback in colocated mode |
+| Jujutsu | Walks up from `jj root` and workspace metadata to find the shared repo root |
 
 Use this when you need the project root regardless of which worktree `path` lives in.
 
@@ -587,7 +587,7 @@ const mockVcs: VcsBackend = {
 
 Integration tests for custom backends should:
 
-1. Create a temp directory and initialize the VCS (`git init` / `jj git init --colocate`).
+1. Create a temp directory and initialize the VCS (`git init` / `jj git init`, optionally `--colocate` when the test specifically needs git interop).
 2. Run the VcsBackend method under test.
 3. Verify the result by inspecting the VCS state directly (e.g. `git log --oneline`).
 4. Clean up the temp directory in `afterEach`.
@@ -604,10 +604,8 @@ The `VcsBackend` interface deliberately omits some advanced git operations that 
 |-----------|------------------------|
 | `git stash push/pop` | No cross-backend stash concept |
 | `git reset --hard` | Semantics differ significantly in jj |
-| `git merge --abort` | No `abortMerge()` method yet |
 | `git merge -X theirs` | VcsBackend.merge() has no strategy parameter |
 | `git apply --index` | Patch application not yet abstracted |
-| `git checkout --theirs <file>` | Per-file conflict resolution not yet abstracted |
 | `git log --oneline` | No log iterator in VcsBackend |
 | `git rebase --onto <from> <onto>` | Only simple rebase-onto supported |
 

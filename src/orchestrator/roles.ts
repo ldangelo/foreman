@@ -417,6 +417,9 @@ export function buildPhasePrompt(
   const explorerInstruction = context.hasExplorerReport
     ? `2. Read **EXPLORER_REPORT.md** for codebase context and recommended approach`
     : `2. Explore the codebase to understand the relevant architecture`;
+  const defaultBranchVerifyCommand = context.vcsBackendName === "jujutsu"
+    ? "jj log -r @ --no-graph -T 'bookmarks'"
+    : "git rev-parse --abbrev-ref HEAD";
   const feedbackSection = context.feedbackContext
     ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${context.feedbackContext}\n`
     : "";
@@ -438,7 +441,7 @@ export function buildPhasePrompt(
     vcsCommitCommand: context.vcsCommitCommand ?? `git commit -m "${context.seedTitle} (${context.seedId})"`,
     vcsPushCommand: context.vcsPushCommand ?? `git push -u origin foreman/${context.seedId}`,
     vcsIntegrateTargetCommand: context.vcsIntegrateTargetCommand ?? `git fetch origin && git rebase origin/${context.baseBranch ?? "main"}`,
-    vcsBranchVerifyCommand: context.vcsBranchVerifyCommand ?? "git rev-parse --abbrev-ref HEAD",
+    vcsBranchVerifyCommand: context.vcsBranchVerifyCommand ?? defaultBranchVerifyCommand,
     vcsCleanCommand: context.vcsCleanCommand ?? `git worktree remove --force ${context.worktreePath ?? ""}`,
     vcsRestoreTrackedStateCommand: context.vcsRestoreTrackedStateCommand ?? `git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl 2>/dev/null || git restore --source=HEAD --worktree -- .beads/issues.jsonl 2>/dev/null || true`,
     qaValidatedTargetRef: context.qaValidatedTargetRef ?? "",
@@ -542,7 +545,7 @@ export function finalizePrompt(seedId: string, seedTitle: string, runId?: string
       vcsCommitCommand: `git commit -m "${seedTitle} (${seedId})"`,
       vcsPushCommand: `git push -u origin foreman/${seedId}`,
       vcsIntegrateTargetCommand: `git fetch origin && git rebase origin/${resolvedBase}`,
-      vcsBranchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
+      vcsBranchVerifyCommand: "jj log -r @ --no-graph -T 'bookmarks'",
       vcsCleanCommand: `git worktree remove --force ${resolvedWorktree}`,
       qaValidatedTargetRef: "",
       currentTargetRef: "",

@@ -45,25 +45,20 @@ afterEach(() => {
 });
 
 /**
- * Create a colocated jj+git temp repo and return its real path.
- * Uses `jj git init --colocate` to set up a jj repo on top of a git repo.
+ * Create a temp jj repo and return its real path.
+ * Uses `jj git init` in either colocated or non-colocated mode.
  */
-function makeTempJjRepo(): string {
+function makeTempJjRepo(options?: { colocate?: boolean }): string {
+  const colocate = options?.colocate ?? true;
   // realpathSync resolves macOS /var → /private/var symlink
   const dir = realpathSync(
     mkdtempSync(join(tmpdir(), "foreman-jj-backend-test-")),
   );
-  // Initialize a colocated jj+git repository
-  execFileSync("git", ["init"], { cwd: dir, stdio: "pipe" });
-  execFileSync("git", ["config", "user.email", "test@test.com"], {
-    cwd: dir,
-    stdio: "pipe",
-  });
-  execFileSync("git", ["config", "user.name", "Test"], {
-    cwd: dir,
-    stdio: "pipe",
-  });
-  execFileSync("jj", ["git", "init", "--colocate"], {
+  const initArgs = ["git", "init"];
+  if (!colocate) {
+    initArgs.push("--no-colocate");
+  }
+  execFileSync("jj", initArgs, {
     cwd: dir,
     stdio: "pipe",
   });
@@ -216,6 +211,30 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend (requires jj)", () => {
 
     const backend = new JujutsuBackend(repo);
     const branch = await backend.getCurrentBranch(repo);
+    expect(branch).toBe("dev");
+  });
+
+  it("getRepoRoot works for a non-colocated jj repo", async () => {
+    const repo = makeTempJjRepo({ colocate: false });
+    tempDirs.push(repo);
+
+    const backend = new JujutsuBackend(repo);
+    await expect(backend.getRepoRoot(repo)).resolves.toBe(repo);
+    await expect(backend.getMainRepoRoot(repo)).resolves.toBe(repo);
+  });
+
+  it("detectDefaultBranch uses jj bookmarks in a non-colocated repo", async () => {
+    const repo = makeTempJjRepo({ colocate: false });
+    tempDirs.push(repo);
+
+    execFileSync(
+      "jj",
+      ["bookmark", "set", "dev", "--allow-backwards", "-r", "@"],
+      { cwd: repo, stdio: "pipe" },
+    );
+
+    const backend = new JujutsuBackend(repo);
+    const branch = await backend.detectDefaultBranch(repo);
     expect(branch).toBe("dev");
   });
 });

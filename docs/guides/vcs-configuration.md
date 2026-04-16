@@ -11,7 +11,7 @@ Foreman supports two VCS backends — **git** and **Jujutsu (jj)** — and by de
 | Scenario | Configuration |
 |----------|--------------|
 | Pure git project (default) | No configuration needed — auto-detected |
-| Jujutsu (colocated) project | See [Project-Level Config](#project-level-config) |
+| Jujutsu project (colocated or non-colocated) | See [Project-Level Config](#project-level-config) |
 | Force git in a jj repo | Set `vcs.backend: git` in project config |
 | Different backend per workflow | Set `vcs.backend` in the workflow YAML |
 | Worker env passthrough | `FOREMAN_VCS_BACKEND=git\|jujutsu` (set automatically) |
@@ -33,7 +33,7 @@ project/
 └── ...
 ```
 
-> **Why does `.jj/` take precedence?** A colocated jj repo always has both `.jj/` and `.git/`. Checking for `.jj/` first ensures the richer jj interface is used when available.
+> **Why does `.jj/` take precedence?** Both colocated and non-colocated jj repos expose `.jj/`. Checking for `.jj/` first ensures Foreman selects the jj backend whenever a jj repository is present instead of assuming a raw git workflow.
 
 ---
 
@@ -213,6 +213,7 @@ Verify setup:
 foreman doctor
 # ✓ jj 0.24.0 >= 0.21.0 (required)
 # ✓ colocated repo detected (.jj/ + .git/ present)
+#   or a non-colocated repo with only .jj/
 ```
 
 ### Force Git on a Jujutsu Repo
@@ -310,21 +311,19 @@ jj --version
 foreman doctor
 ```
 
-### Non-colocated jj repo (Foreman limitation)
+### Non-colocated jj repo
 
 ```
-Error: JujutsuBackend requires a colocated repository (.jj/ and .git/ both present).
+Warning: Jujutsu repository is in non-colocated mode.
 ```
 
-**Cause:** `jj init` was used instead of `jj git init --colocate`.
+**Context:** `jj git init --no-colocate` (or an equivalent non-colocated setup) was used.
 
 **Fix:**
 ```bash
-# Initialize as colocated (creates both .jj/ and .git/)
-jj git init --colocate
-
-# Or if you have an existing non-colocated jj repo:
-# Create a new colocated repo and migrate history
+# Non-colocated jj is now an intended migration target for Foreman.
+# Prefer jj-native operations and verify your Foreman version no longer
+# depends on colocated-only paths.
 ```
 
 See [Jujutsu Considerations](./jujutsu-considerations.md#colocated-mode) for details.
@@ -352,7 +351,7 @@ foreman doctor
 ## Verifying Configuration
 
 ```bash
-# Run health checks (checks VCS config, binary availability, colocated mode)
+# Run health checks (checks VCS config, binary availability, repository mode)
 foreman doctor
 
 # Check which backend is active for a dispatched run
