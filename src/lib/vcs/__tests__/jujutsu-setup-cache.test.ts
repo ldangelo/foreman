@@ -11,7 +11,7 @@
  * @module src/lib/vcs/__tests__/jujutsu-setup-cache.test
  */
 
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import {
   mkdtempSync,
   writeFileSync,
@@ -49,6 +49,7 @@ let jjHomeDir: string;
 const tempDirs: string[] = [];
 
 beforeEach(() => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
   jjHomeDir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-jj-cache-home-")));
   tempDirs.push(jjHomeDir);
   process.env.HOME = jjHomeDir;
@@ -56,6 +57,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of tempDirs) {
     rmSync(dir, { recursive: true, force: true });
   }
