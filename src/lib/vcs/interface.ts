@@ -42,13 +42,14 @@ export interface VcsBackend {
   /**
    * Find the main (primary) repository root from any workspace/worktree.
    * For linked git worktrees this traverses up via `--git-common-dir`.
-   * For jujutsu colocated repos this is the same as `getRepoRoot`.
+   * For jujutsu repos this is typically the same as `getRepoRoot`.
    */
   getMainRepoRoot(path: string): Promise<string>;
 
   /**
    * Detect the default/trunk branch for the repository.
-   * Resolution order varies by backend (git-town config, origin/HEAD, main, master…).
+   * Resolution order varies by backend (for example git may consult git-town
+   * config and origin metadata, while jujutsu uses bookmark-oriented fallbacks).
    */
   detectDefaultBranch(repoPath: string): Promise<string>;
 

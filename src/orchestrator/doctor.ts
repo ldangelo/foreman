@@ -260,7 +260,7 @@ export class Doctor {
    * Only relevant when backend='jujutsu'. Returns skip for other backends.
    */
   async checkJujutsuColocated(): Promise<CheckResult> {
-    const checkName = "jj colocated mode";
+    const checkName = "jj workspace mode";
 
     // Only check when backend is explicitly jujutsu
     let backend: "git" | "jujutsu" | "auto" = "auto";
@@ -277,7 +277,7 @@ export class Doctor {
       return {
         name: checkName,
         status: "skip",
-        message: `VCS backend is '${backend}' — colocated mode check only applies to jujutsu`,
+        message: `VCS backend is '${backend}' — jj workspace mode check only applies to jujutsu`,
       };
     }
 
@@ -301,6 +301,18 @@ export class Doctor {
 
   async checkGitTownInstalled(): Promise<CheckResult> {
     try {
+      const backend = (await this.getVcsBackend()).name;
+      if (backend === "jujutsu") {
+        return {
+          name: "git town installed",
+          status: "skip",
+          message: "Skipped: git-town checks do not apply to jujutsu backend",
+        };
+      }
+    } catch {
+      // best effort — fall through to existing git-town detection
+    }
+    try {
       await execFileAsync("git", ["town", "--version"]);
       return {
         name: "git town installed",
@@ -318,6 +330,18 @@ export class Doctor {
   }
 
   async checkGitTownMainBranch(): Promise<CheckResult> {
+    try {
+      const backend = (await this.getVcsBackend()).name;
+      if (backend === "jujutsu") {
+        return {
+          name: "git town main branch configured",
+          status: "skip",
+          message: "Skipped: git-town main branch check does not apply to jujutsu backend",
+        };
+      }
+    } catch {
+      // best effort — fall through
+    }
     // Skip if git town is not installed
     const installed = await this.checkGitTownInstalled();
     if (installed.status !== "pass") {
@@ -867,9 +891,12 @@ export class Doctor {
           });
         } else if (fix) {
           try {
+            const vcs = await this.getVcsBackend();
             await archiveWorktreeReports(this.projectPath, wt.path, seedId).catch(() => {});
-            await (await this.getVcsBackend()).removeWorkspace(this.projectPath, wt.path);
-            try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
+            await vcs.removeWorkspace(this.projectPath, wt.path);
+            if (vcs.name === "git") {
+              try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
+            }
             results.push({
               name: `worktree: ${seedId}`,
               status: "fixed",
@@ -918,7 +945,8 @@ export class Doctor {
         // Check if the branch exists on origin before removing locally.
         // NOTE: Uses locally-cached remote-tracking refs; does NOT network-fetch.
         // Run `git fetch` first if you need an authoritative answer.
-        const onOrigin = await (await this.getVcsBackend()).branchExistsOnRemote(this.projectPath, wt.branch);
+        const vcs = await this.getVcsBackend();
+        const onOrigin = await vcs.branchExistsOnRemote(this.projectPath, wt.branch);
         if (onOrigin) {
           // Branch exists on origin — never auto-remove regardless of fix/dryRun.
           const dryRunSuffix = dryRun ? " (dry-run: would not remove either way)" : "";
@@ -936,8 +964,10 @@ export class Doctor {
         } else if (fix) {
           try {
             await archiveWorktreeReports(this.projectPath, wt.path, seedId).catch(() => {});
-            await (await this.getVcsBackend()).removeWorkspace(this.projectPath, wt.path);
-            try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
+            await vcs.removeWorkspace(this.projectPath, wt.path);
+            if (vcs.name === "git") {
+              try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
+            }
             results.push({
               name: `worktree: ${seedId}`,
               status: "fixed",

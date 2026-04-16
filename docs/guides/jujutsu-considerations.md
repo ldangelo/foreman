@@ -23,7 +23,7 @@ Foreman can encounter jj repositories in either colocated or non-colocated mode:
 ```
 project/
 ├── .jj/     ← Jujutsu metadata
-├── .git/    ← Git metadata (still present)
+├── .git/    ← Git metadata (present only in colocated mode)
 └── src/
 ```
 
@@ -49,7 +49,8 @@ jj git init --git-repo .    # Wraps the existing .git/ dir
 
 ```bash
 ls -la | grep -E "\.jj|\.git"
-# Should show both .jj and .git
+# Should always show .jj
+# .git is present only in colocated mode
 
 foreman doctor
 # ✓ reports whether the repo is colocated or non-colocated
@@ -188,8 +189,11 @@ Reviewers can use `{{vcsBackendName}}` to tailor feedback (e.g., noting that a d
 2. **Wrap existing git repo with jj**:
    ```bash
    cd /path/to/project
+   # colocated:
    jj git init --git-repo .
-   ls -la   # should show both .jj and .git
+   # or non-colocated:
+   # jj git init --no-colocate
+   ls -la   # should show .jj; .git may or may not be present depending on mode
    ```
 
 3. **Update `.foreman/config.yaml`**:
@@ -204,7 +208,7 @@ Reviewers can use `{{vcsBackendName}}` to tailor feedback (e.g., noting that a d
    ```bash
    foreman doctor
    # ✓ jj 0.24.0 >= 0.21.0 (required)
-   # ✓ colocated repo detected (.jj/ + .git/ present)
+   # ✓ reports whether the repo is colocated or non-colocated
    ```
 
 5. **Clean up any existing worktrees** (they were created as git worktrees):
@@ -229,7 +233,7 @@ When a jujutsu backend is configured (or auto-detected), `foreman doctor` runs t
 |-------|------|-------------|
 | `jj` binary on PATH | ✓ jj 0.24.0 found | ✗ jj not found in PATH |
 | Minimum version | ✓ 0.24.0 >= 0.21.0 | ⚠ 0.18.0 below minimum 0.21.0 |
-| Repository mode | ✓ .jj/ and .git/ both present (colocated) | ⚠ Only .jj/ found (non-colocated; supported, but verify legacy flows) |
+| Repository mode | ✓ reports colocated/non-colocated status | ⚠ non-colocated still needs verification in a few legacy flows |
 | Bookmark support | ✓ jj bookmark list OK | ✗ jj bookmark command failed |
 
 To run only VCS checks:

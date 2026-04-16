@@ -207,6 +207,8 @@ export const mergeCommand = new Command("merge")
           targetBranch,
           branches,
           opts.bead as string | undefined,
+          undefined,
+          vcs,
         );
 
         for (const entry of dryRunResults) {

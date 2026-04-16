@@ -260,6 +260,19 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
     expect(prompt).toContain("jj log -r @ --no-graph -T 'bookmarks'");
   });
 
+  it("falls back to jj-native finalize commands when backend name is jujutsu", () => {
+    const prompt = buildPhasePrompt("finalize", {
+      seedId: "bd-test",
+      seedTitle: "Fix authentication",
+      seedDescription: "desc",
+      baseBranch: "dev",
+      vcsBackendName: "jujutsu",
+    });
+    expect(prompt).toContain('jj describe -m "Fix authentication (bd-test)"');
+    expect(prompt).toContain("jj git push --bookmark foreman/bd-test --allow-new");
+    expect(prompt).toContain("jj git fetch && jj rebase -d dev@origin");
+  });
+
   it("renders jj commit command in finalize prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
       seedId: "bd-test",

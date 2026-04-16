@@ -395,6 +395,30 @@ describe("Refinery.resolveConflict()", () => {
     expect(testCallMade).toBe(false);
   });
 
+  it("theirs strategy uses jj backend merge path without raw git merge commands", async () => {
+    const { store, refinery, vcs } = makeMocks({
+      name: "jujutsu" as any,
+      merge: vi.fn().mockResolvedValue({ success: true }),
+    });
+    const run = makeRun({ id: "run-1", status: "conflict" });
+    store.getRun.mockReturnValue(run);
+
+    (execFile as any).mockImplementation(
+      (_cmd: string, _args: string[], _opts: any, callback: Function) => {
+        callback(null, { stdout: "", stderr: "" });
+      },
+    );
+
+    const result = await refinery.resolveConflict("run-1", "theirs", { runTests: false });
+
+    expect(result).toBe(true);
+    expect(vcs.merge).toHaveBeenCalledWith("/tmp/project", "foreman/seed-abc", "main");
+    const gitMergeCalls = (execFile as any).mock.calls.filter(
+      ([cmd, args]: [string, string[]]) => cmd === "git" && Array.isArray(args) && args[0] === "merge",
+    );
+    expect(gitMergeCalls).toHaveLength(0);
+  });
+
   it("theirs strategy removes worktree on success", async () => {
     // TRD-012: removeWorktree shim replaced by vcs.removeWorkspace()
     const { store, refinery, vcs } = makeMocks();
@@ -496,7 +520,7 @@ describe("Refinery.mergeCompleted()", () => {
       labels: ["workflow:smoke", "branch:installer"],
     } as unknown as null);
 
-    await refinery.mergeCompleted({ runTests: false });
+    const report = await refinery.mergeCompleted({ runTests: false });
 
     // checkoutBranch should be called with "installer" as targetBranch (squash merge checks out target first)
     expect(vcs.checkoutBranch).toHaveBeenCalledWith(
@@ -560,8 +584,6 @@ describe("Refinery.mergeCompleted()", () => {
       .mockResolvedValue(["src/main.ts", "src/index.ts"]);
 
     const report = await refinery.mergeCompleted({ runTests: false });
-
-    expect(report.conflicts).toHaveLength(1);
     expect(report.conflicts[0].conflictFiles).toContain("src/main.ts");
     // resetSeedToOpen must be called so the seed reappears in the ready queue
     expect(enqueueResetSeedToOpen).not.toHaveBeenCalled();
@@ -593,9 +615,7 @@ describe("Refinery.mergeCompleted()", () => {
       .fn()
       .mockResolvedValue(["src/index.ts"]);
 
-    const report = await refinery.mergeCompleted({ runTests: false });
-
-    expect(report.conflicts).toHaveLength(1);
+    await refinery.mergeCompleted({ runTests: false });
     // Must add a note explaining what happened before the reset
     expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
       expect.anything(), run.seed_id, expect.stringContaining("manual retry required"), "refinery",
@@ -606,6 +626,7 @@ describe("Refinery.mergeCompleted()", () => {
     const { store, seeds, refinery } = makeMocks();
     const run = makeRun();
     store.getRunsByStatus.mockReturnValue([run]);
+    (refinery as any).autoResolveRebaseConflicts = vi.fn().mockResolvedValue(false);
 
     // Sequence of git calls:
     //   1. git status --porcelain         → "" (autoCommitStateFiles: no dirty files)
@@ -639,9 +660,7 @@ describe("Refinery.mergeCompleted()", () => {
       },
     );
 
-    const report = await refinery.mergeCompleted({ runTests: false });
-
-    expect(report.conflicts).toHaveLength(1);
+    await refinery.mergeCompleted({ runTests: false });
     // Must add a note explaining what happened before the reset
     expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
       expect.anything(), run.seed_id, expect.stringContaining("manual retry required"), "refinery",

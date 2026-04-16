@@ -966,12 +966,27 @@ export class Refinery {
 
     try {
       await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
-      // Use gitSpecial for -X theirs merge strategy (not supported by VcsBackend.merge())
-      await gitSpecial(["merge", branchName, "--no-ff", "-X", "theirs"], this.projectPath);
+      if (this.vcsBackend.name === "jujutsu") {
+        const mergeResult = await this.vcsBackend.merge(this.projectPath, branchName, targetBranch);
+        if (!mergeResult.success) {
+          throw new Error(
+            mergeResult.conflicts?.length
+              ? `jj merge conflict: ${mergeResult.conflicts.join(", ")}`
+              : "jj merge conflict",
+          );
+        }
+      } else {
+        // Use gitSpecial for -X theirs merge strategy (not supported by VcsBackend.merge())
+        await gitSpecial(["merge", branchName, "--no-ff", "-X", "theirs"], this.projectPath);
+      }
     } catch (err: unknown) {
       // Merge failed — abort to leave repo in a clean state
       try {
-        await gitSpecial(["merge", "--abort"], this.projectPath);
+        if (this.vcsBackend.name === "jujutsu") {
+          await this.vcsBackend.abortMerge(this.projectPath);
+        } else {
+          await gitSpecial(["merge", "--abort"], this.projectPath);
+        }
       } catch {
         // merge --abort may fail if there is nothing to abort
       }
@@ -996,7 +1011,11 @@ export class Refinery {
 
       if (!testResult.ok) {
         // Revert the merge
-        await gitSpecial(["reset", "--hard", "HEAD~1"], this.projectPath);
+        if (this.vcsBackend.name === "jujutsu") {
+          await this.vcsBackend.resetHard(this.projectPath, "@-");
+        } else {
+          await gitSpecial(["reset", "--hard", "HEAD~1"], this.projectPath);
+        }
 
         this.store.updateRun(run.id, {
           status: "test-failed",
@@ -1202,6 +1221,7 @@ export async function dryRunMerge(
   branches: Array<{ branchName: string; seedId: string }>,
   filterSeedId?: string,
   conflictPatterns?: Map<string, number>,
+  vcsBackend?: VcsBackend,
 ): Promise<DryRunEntry[]> {
   const results: DryRunEntry[] = [];
 
@@ -1211,6 +1231,26 @@ export async function dryRunMerge(
 
   for (const { branchName, seedId } of filtered) {
     try {
+      if (vcsBackend?.name === "jujutsu") {
+        const changedFiles = await vcsBackend.getChangedFiles(projectPath, targetBranch, branchName);
+        const diffStat = await vcsBackend.diff(projectPath, targetBranch, branchName);
+        const hasConflicts =
+          diffStat.includes("<<<<<<<") ||
+          diffStat.includes("%%%%%%%") ||
+          diffStat.includes(">>>>>>>");
+        let estimatedTier: number | undefined;
+        if (hasConflicts && conflictPatterns && conflictPatterns.size > 0) {
+          const tiers = changedFiles
+            .map((file) => conflictPatterns.get(file))
+            .filter((tier): tier is number => tier !== undefined);
+          if (tiers.length > 0) {
+            estimatedTier = Math.max(...tiers);
+          }
+        }
+        results.push({ seedId, branchName, diffStat, hasConflicts, estimatedTier });
+        continue;
+      }
+
       // Get merge base
       const mergeBase = await gitReadOnly(
         ["merge-base", targetBranch, branchName],
@@ -1289,10 +1329,30 @@ export async function preserveBeadChanges(
   projectPath: string,
   branchName: string,
   targetBranch: string,
+  vcsBackend?: VcsBackend,
 ): Promise<BeadPreservationResult> {
   const tmpPatchPath = join(projectPath, `.foreman-seed-patch-${Date.now()}.patch`);
 
   try {
+    if (vcsBackend?.name === "jujutsu") {
+      const changedFiles = await vcsBackend.getChangedFiles(projectPath, targetBranch, branchName);
+      const seedFiles = changedFiles.filter((file) => file.startsWith(".seeds/"));
+
+      if (seedFiles.length === 0) {
+        return { preserved: false };
+      }
+
+      for (const file of seedFiles) {
+        const content = await vcsBackend.showFile(projectPath, branchName, file);
+        writeFileSync(join(projectPath, file), content);
+        await vcsBackend.stageFile(projectPath, file);
+      }
+
+      const seedId = branchName.replace(/^foreman\//, "");
+      await vcsBackend.commit(projectPath, `chore: preserve seed changes from ${seedId}`);
+      return { preserved: true };
+    }
+
     // Extract .seeds/ changes
     const patchContent = await gitReadOnly(
       ["diff", `${targetBranch}...${branchName}`, "--", ".seeds/"],

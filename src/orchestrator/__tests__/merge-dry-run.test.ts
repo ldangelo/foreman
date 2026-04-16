@@ -8,6 +8,7 @@ vi.mock("node:child_process", () => ({
 
 import { execFile } from "node:child_process";
 import { dryRunMerge, type DryRunEntry } from "../refinery.js";
+import type { VcsBackend } from "../../lib/vcs/index.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -188,5 +189,67 @@ describe("dryRunMerge()", () => {
     const result = await dryRunMerge("/tmp/project", "main", branches);
 
     expect(result[0].error).toContain("no common ancestor");
+  });
+
+  it("uses jj backend methods instead of raw git when a jj backend is provided", async () => {
+    const vcs: VcsBackend = {
+      name: "jujutsu",
+      getRepoRoot: vi.fn(),
+      getMainRepoRoot: vi.fn(),
+      detectDefaultBranch: vi.fn(),
+      getCurrentBranch: vi.fn(),
+      checkoutBranch: vi.fn(),
+      branchExists: vi.fn(),
+      branchExistsOnRemote: vi.fn(),
+      deleteBranch: vi.fn(),
+      createWorkspace: vi.fn(),
+      removeWorkspace: vi.fn(),
+      listWorkspaces: vi.fn(),
+      stageAll: vi.fn(),
+      commit: vi.fn(),
+      push: vi.fn(),
+      pull: vi.fn(),
+      rebase: vi.fn(),
+      abortRebase: vi.fn(),
+      merge: vi.fn(),
+      getHeadId: vi.fn(),
+      resolveRef: vi.fn(),
+      fetch: vi.fn(),
+      diff: vi.fn().mockResolvedValue("M src/foo.ts"),
+      getChangedFiles: vi.fn().mockResolvedValue(["src/foo.ts"]),
+      getRefCommitTimestamp: vi.fn(),
+      getModifiedFiles: vi.fn(),
+      getConflictingFiles: vi.fn(),
+      status: vi.fn(),
+      cleanWorkingTree: vi.fn(),
+      mergeWithoutCommit: vi.fn(),
+      commitNoEdit: vi.fn(),
+      abortMerge: vi.fn(),
+      stageFile: vi.fn(),
+      checkoutFile: vi.fn(),
+      showFile: vi.fn(),
+      resetHard: vi.fn(),
+      removeFile: vi.fn(),
+      rebaseContinue: vi.fn(),
+      removeFromIndex: vi.fn(),
+      getMergeBase: vi.fn(),
+      getUntrackedFiles: vi.fn(),
+      isAncestor: vi.fn(),
+      getFinalizeCommands: vi.fn(),
+    } as unknown as VcsBackend;
+
+    const result = await dryRunMerge(
+      "/tmp/project",
+      "main",
+      [{ branchName: "foreman/seed-jj", seedId: "seed-jj" }],
+      undefined,
+      undefined,
+      vcs,
+    );
+
+    expect(vcs.getChangedFiles).toHaveBeenCalledWith("/tmp/project", "main", "foreman/seed-jj");
+    expect(vcs.diff).toHaveBeenCalledWith("/tmp/project", "main", "foreman/seed-jj");
+    expect((execFile as any).mock.calls).toHaveLength(0);
+    expect(result[0].seedId).toBe("seed-jj");
   });
 });

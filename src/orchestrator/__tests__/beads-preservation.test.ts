@@ -17,6 +17,7 @@ vi.mock("node:fs", () => ({
 import { execFile } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { preserveBeadChanges } from "../refinery.js";
+import type { VcsBackend } from "../../lib/vcs/index.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -167,5 +168,67 @@ describe("preserveBeadChanges()", () => {
     const diffCall = calls.find((c) => c.includes("diff"));
     expect(diffCall).toBeDefined();
     expect(diffCall).toContain(".seeds/");
+  });
+
+  it("uses jj backend methods instead of raw git when a jj backend is provided", async () => {
+    const vcs: VcsBackend = {
+      name: "jujutsu",
+      getRepoRoot: vi.fn(),
+      getMainRepoRoot: vi.fn(),
+      detectDefaultBranch: vi.fn(),
+      getCurrentBranch: vi.fn(),
+      checkoutBranch: vi.fn(),
+      branchExists: vi.fn(),
+      branchExistsOnRemote: vi.fn(),
+      deleteBranch: vi.fn(),
+      createWorkspace: vi.fn(),
+      removeWorkspace: vi.fn(),
+      listWorkspaces: vi.fn(),
+      stageAll: vi.fn(),
+      commit: vi.fn().mockResolvedValue(undefined),
+      push: vi.fn(),
+      pull: vi.fn(),
+      rebase: vi.fn(),
+      abortRebase: vi.fn(),
+      merge: vi.fn(),
+      getHeadId: vi.fn(),
+      resolveRef: vi.fn(),
+      fetch: vi.fn(),
+      diff: vi.fn(),
+      getChangedFiles: vi.fn().mockResolvedValue([".seeds/issues.jsonl", "src/foo.ts"]),
+      getRefCommitTimestamp: vi.fn(),
+      getModifiedFiles: vi.fn(),
+      getConflictingFiles: vi.fn(),
+      status: vi.fn(),
+      cleanWorkingTree: vi.fn(),
+      mergeWithoutCommit: vi.fn(),
+      commitNoEdit: vi.fn(),
+      abortMerge: vi.fn(),
+      stageFile: vi.fn().mockResolvedValue(undefined),
+      checkoutFile: vi.fn(),
+      showFile: vi.fn().mockResolvedValue("seed data"),
+      resetHard: vi.fn(),
+      removeFile: vi.fn(),
+      rebaseContinue: vi.fn(),
+      removeFromIndex: vi.fn(),
+      getMergeBase: vi.fn(),
+      getUntrackedFiles: vi.fn(),
+      isAncestor: vi.fn(),
+      getFinalizeCommands: vi.fn(),
+    } as unknown as VcsBackend;
+
+    const result = await preserveBeadChanges(
+      "/tmp/project",
+      "foreman/seed-jj",
+      "main",
+      vcs,
+    );
+
+    expect(result.preserved).toBe(true);
+    expect(vcs.getChangedFiles).toHaveBeenCalledWith("/tmp/project", "main", "foreman/seed-jj");
+    expect(vcs.showFile).toHaveBeenCalledWith("/tmp/project", "foreman/seed-jj", ".seeds/issues.jsonl");
+    expect(vcs.stageFile).toHaveBeenCalledWith("/tmp/project", ".seeds/issues.jsonl");
+    expect(vcs.commit).toHaveBeenCalledWith("/tmp/project", "chore: preserve seed changes from seed-jj");
+    expect((execFile as any).mock.calls).toHaveLength(0);
   });
 });

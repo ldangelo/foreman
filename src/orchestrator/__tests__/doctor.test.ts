@@ -1269,6 +1269,22 @@ describe("Doctor", () => {
         process.env.PATH = originalPath;
       }
     });
+
+    it("returns skip on jujutsu backend", async () => {
+      const { doctor } = makeMocks();
+      mockCreateVcsBackend.mockResolvedValueOnce({
+        name: "jujutsu",
+        listWorkspaces: mockListWorkspaces,
+        removeWorkspace: mockRemoveWorkspace,
+        branchExistsOnRemote: mockBranchExistsOnRemote,
+        detectDefaultBranch: mockDetectDefaultBranch,
+      });
+
+      const result = await doctor.checkGitTownInstalled();
+      expect(result.status).toBe("skip");
+      expect(result.name).toBe("git town installed");
+      expect(result.message).toContain("jujutsu backend");
+    });
   });
 
   describe("checkGitTownMainBranch", () => {
@@ -1288,6 +1304,22 @@ describe("Doctor", () => {
       } finally {
         process.env.PATH = originalPath;
       }
+    });
+
+    it("returns skip on jujutsu backend", async () => {
+      const { doctor } = makeMocks();
+      mockCreateVcsBackend.mockResolvedValueOnce({
+        name: "jujutsu",
+        listWorkspaces: mockListWorkspaces,
+        removeWorkspace: mockRemoveWorkspace,
+        branchExistsOnRemote: mockBranchExistsOnRemote,
+        detectDefaultBranch: mockDetectDefaultBranch,
+      });
+
+      const result = await doctor.checkGitTownMainBranch();
+      expect(result.status).toBe("skip");
+      expect(result.name).toBe("git town main branch configured");
+      expect(result.message).toContain("jujutsu backend");
     });
 
     it("returns pass when git town main branch matches repo default", async () => {

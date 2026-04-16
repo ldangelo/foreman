@@ -71,7 +71,7 @@ Returns the root directory of the VCS repository containing `path`.
 | Backend | Equivalent |
 |---------|-----------|
 | Git | `git rev-parse --show-toplevel` |
-| Jujutsu | `jj root` (preferred), with git interop only when the repo is colocated |
+| Jujutsu | `jj workspace root` / `jj root` |
 
 For linked git worktrees, this returns the **worktree** root (not the main project root). Use `getMainRepoRoot()` to always get the primary project directory.
 
@@ -86,7 +86,7 @@ Returns the primary (main) repository root, traversing up from any worktree or w
 | Backend | Equivalent |
 |---------|-----------|
 | Git | Resolves `--git-common-dir`, strips trailing `/.git` |
-| Jujutsu | Walks up from `jj root` and workspace metadata to find the shared repo root |
+| Jujutsu | Uses the jj workspace root as the repository root |
 
 Use this when you need the project root regardless of which worktree `path` lives in.
 
@@ -99,7 +99,7 @@ Detects the default trunk branch name (e.g. `main`, `master`, `dev`).
 | Backend | Resolution order |
 |---------|----------------|
 | Git | git-town config → `origin/HEAD` symbolic ref → `main` → `master` |
-| Jujutsu | `jj config get --repo trunk` → same git fallbacks |
+| Jujutsu | bookmark-first detection (`main` → `master` → `dev` → current bookmark) |
 
 **Returns** branch name as a string.
 

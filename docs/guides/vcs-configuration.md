@@ -146,7 +146,7 @@ If the env var is absent or unrecognized, it falls back to `git`.
 
 ### `vcs.git.useTown`
 
-Controls whether `detectDefaultBranch()` uses git-town configuration.
+Controls whether `GitBackend.detectDefaultBranch()` uses git-town configuration.
 
 ```yaml
 vcs:
@@ -155,7 +155,7 @@ vcs:
     useTown: true    # Default: true
 ```
 
-When `useTown: true`, `detectDefaultBranch()` first checks git-town config (`git config git-town.main-branch-name`) before falling back to `origin/HEAD` → `main` → `master`.
+When `useTown: true`, the git backend first checks git-town config before falling back to `origin/HEAD` → `main` → `master`.
 
 Set `useTown: false` if you don't use git-town and want to skip that lookup.
 
@@ -212,8 +212,7 @@ Verify setup:
 ```bash
 foreman doctor
 # ✓ jj 0.24.0 >= 0.21.0 (required)
-# ✓ colocated repo detected (.jj/ + .git/ present)
-#   or a non-colocated repo with only .jj/
+# ✓ repository mode reported (colocated or non-colocated)
 ```
 
 ### Force Git on a Jujutsu Repo
@@ -326,7 +325,7 @@ Warning: Jujutsu repository is in non-colocated mode.
 # depends on colocated-only paths.
 ```
 
-See [Jujutsu Considerations](./jujutsu-considerations.md#colocated-mode) for details.
+See [Jujutsu Considerations](./jujutsu-considerations.md#workspace-modes) for details.
 
 ### Wrong backend detected
 

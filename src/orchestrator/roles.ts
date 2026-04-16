@@ -417,9 +417,23 @@ export function buildPhasePrompt(
   const explorerInstruction = context.hasExplorerReport
     ? `2. Read **EXPLORER_REPORT.md** for codebase context and recommended approach`
     : `2. Explore the codebase to understand the relevant architecture`;
+  const isJujutsu = context.vcsBackendName === "jujutsu";
   const defaultBranchVerifyCommand = context.vcsBackendName === "jujutsu"
     ? "jj log -r @ --no-graph -T 'bookmarks'"
     : "git rev-parse --abbrev-ref HEAD";
+  const defaultStageCommand = isJujutsu ? "" : "git add -A";
+  const defaultCommitCommand = isJujutsu
+    ? `jj describe -m "${context.seedTitle} (${context.seedId})"`
+    : `git commit -m "${context.seedTitle} (${context.seedId})"`;
+  const defaultPushCommand = isJujutsu
+    ? `jj git push --bookmark foreman/${context.seedId} --allow-new`
+    : `git push -u origin foreman/${context.seedId}`;
+  const defaultIntegrateTargetCommand = isJujutsu
+    ? `jj git fetch && jj rebase -d ${context.baseBranch ?? "main"}@origin`
+    : `git fetch origin && git rebase origin/${context.baseBranch ?? "main"}`;
+  const defaultCleanCommand = isJujutsu
+    ? `jj workspace forget foreman-${context.seedId}`
+    : `git worktree remove --force ${context.worktreePath ?? ""}`;
   const feedbackSection = context.feedbackContext
     ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${context.feedbackContext}\n`
     : "";
@@ -437,12 +451,12 @@ export function buildPhasePrompt(
     worktreePath: context.worktreePath ?? "",
     seedType: context.seedType ?? "",
     // VCS finalize command variables (TRD-026)
-    vcsStageCommand: context.vcsStageCommand ?? "git add -A",
-    vcsCommitCommand: context.vcsCommitCommand ?? `git commit -m "${context.seedTitle} (${context.seedId})"`,
-    vcsPushCommand: context.vcsPushCommand ?? `git push -u origin foreman/${context.seedId}`,
-    vcsIntegrateTargetCommand: context.vcsIntegrateTargetCommand ?? `git fetch origin && git rebase origin/${context.baseBranch ?? "main"}`,
+    vcsStageCommand: context.vcsStageCommand ?? defaultStageCommand,
+    vcsCommitCommand: context.vcsCommitCommand ?? defaultCommitCommand,
+    vcsPushCommand: context.vcsPushCommand ?? defaultPushCommand,
+    vcsIntegrateTargetCommand: context.vcsIntegrateTargetCommand ?? defaultIntegrateTargetCommand,
     vcsBranchVerifyCommand: context.vcsBranchVerifyCommand ?? defaultBranchVerifyCommand,
-    vcsCleanCommand: context.vcsCleanCommand ?? `git worktree remove --force ${context.worktreePath ?? ""}`,
+    vcsCleanCommand: context.vcsCleanCommand ?? defaultCleanCommand,
     vcsRestoreTrackedStateCommand: context.vcsRestoreTrackedStateCommand ?? `git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl 2>/dev/null || git restore --source=HEAD --worktree -- .beads/issues.jsonl 2>/dev/null || true`,
     qaValidatedTargetRef: context.qaValidatedTargetRef ?? "",
     currentTargetRef: context.currentTargetRef ?? "",
@@ -540,16 +554,18 @@ export function finalizePrompt(seedId: string, seedTitle: string, runId?: string
       agentRole: "finalize",
       baseBranch: resolvedBase,
       worktreePath: resolvedWorktree,
-      // Default to git commands for backward compatibility (TRD-026)
-      vcsStageCommand: "git add -A",
-      vcsCommitCommand: `git commit -m "${seedTitle} (${seedId})"`,
-      vcsPushCommand: `git push -u origin foreman/${seedId}`,
-      vcsIntegrateTargetCommand: `git fetch origin && git rebase origin/${resolvedBase}`,
+      // Default to jj-native commands when the finalize prompt is rendered
+      // without explicit backend interpolation.
+      vcsStageCommand: "",
+      vcsCommitCommand: `jj describe -m "${seedTitle} (${seedId})"`,
+      vcsPushCommand: `jj git push --bookmark foreman/${seedId} --allow-new`,
+      vcsIntegrateTargetCommand: `jj git fetch && jj rebase -d ${resolvedBase}@origin`,
       vcsBranchVerifyCommand: "jj log -r @ --no-graph -T 'bookmarks'",
-      vcsCleanCommand: `git worktree remove --force ${resolvedWorktree}`,
+      vcsCleanCommand: `jj workspace forget foreman-${seedId}`,
       qaValidatedTargetRef: "",
       currentTargetRef: "",
       shouldRunFinalizeValidation: "true",
+      vcsBackendName: "jujutsu",
     },
     "finalize-prompt.md",
     opts,
