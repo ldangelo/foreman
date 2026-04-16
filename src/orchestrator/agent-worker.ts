@@ -289,7 +289,7 @@ async function main(): Promise<void> {
   const storeProjectPath = configProjectPath ?? inferProjectPathFromWorkspacePath(worktreePath);
 
   // Set up logging
-  const logDir = join(process.env.HOME ?? "/tmp", ".foreman", "logs");
+  const logDir = join(storeProjectPath, ".foreman", "logs");
   await mkdir(logDir, { recursive: true });
   const logFile = join(logDir, `${runId}.log`);
 

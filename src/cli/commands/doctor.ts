@@ -90,14 +90,14 @@ export const doctorCommand = new Command("doctor")
     } catch {
       if (!jsonOutput) {
         console.log(chalk.bold("Repository:"));
-        console.log(`  ${chalk.red("✗")} ${"git repository".padEnd(40)} ${chalk.red("fail")}`);
-        console.log(`      ${chalk.dim("Not inside a git repository. Run from your project directory.")}`);
+        console.log(`  ${chalk.red("✗")} ${"vcs repository".padEnd(40)} ${chalk.red("fail")}`);
+        console.log(`      ${chalk.dim("Not inside a supported VCS repository (.jj or .git). Run from your project directory.")}`);
         console.log();
       } else {
         console.log(JSON.stringify({
           checks: [],
           summary: { pass: 0, warn: 0, fail: 1, fixed: 0, skip: 0 },
-          error: "Not inside a git repository",
+          error: "Not inside a supported VCS repository",
         }, null, 2));
       }
       process.exit(1);

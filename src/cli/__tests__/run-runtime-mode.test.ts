@@ -67,7 +67,7 @@ describe("run runtime mode", () => {
     expect(resolveRuntimeMode()).toBe("test");
   });
 
-  it("uses the native task client in test runtime when native tasks exist", async () => {
+  it("uses the native task client when native tasks exist in test runtime", async () => {
     const result = await createTaskClients(projectPath, "test");
 
     expect(result.backendType).toBe("native");
@@ -76,7 +76,18 @@ describe("run runtime mode", () => {
     expect(result.taskClient.constructor.name).toBe("NativeTaskClient");
   });
 
-  it("falls back to br in normal runtime", async () => {
+  it("uses the native task client when native tasks exist in normal runtime", async () => {
+    const result = await createTaskClients(projectPath, "normal");
+
+    expect(result.backendType).toBe("native");
+    expect(MockBeadsRustClient).not.toHaveBeenCalled();
+    expect(MockBvClient).not.toHaveBeenCalled();
+    expect(result.bvClient).toBeNull();
+  });
+
+  it("falls back to br when no native tasks exist", async () => {
+    mockHasNativeTasks.mockReturnValue(false);
+
     const result = await createTaskClients(projectPath, "normal");
 
     expect(result.backendType).toBe("beads");
@@ -86,4 +97,3 @@ describe("run runtime mode", () => {
     expect(result.bvClient).not.toBeNull();
   });
 });
-

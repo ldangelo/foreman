@@ -59,15 +59,15 @@ describe("doctor command", () => {
     expect(result.stdout + result.stderr).toContain("doctor");
   }, 15_000);
 
-  it("doctor outside git repo fails gracefully", async () => {
+  it("doctor outside any supported VCS repo fails gracefully", async () => {
     const tmp = makeTempDir();
-    // Not a git repo — should still run but report git repo check failure
+    // Not a jj/git repo — should still run but report repository check failure
     const result = await run(["doctor"], tmp);
 
     const output = result.stdout + result.stderr;
     // Should output check results
-    expect(output).toContain("git repository");
-    // Fails because no git repo
+    expect(output).toContain("vcs repository");
+    // Fails because no supported repository was found
     expect(result.exitCode).toBe(1);
   }, 15_000);
 

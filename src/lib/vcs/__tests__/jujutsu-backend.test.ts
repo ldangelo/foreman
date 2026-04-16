@@ -706,6 +706,30 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.createWorkspace (AC-T-018-1)", ()
     expect(result1.workspacePath).toBe(result2.workspacePath);
     expect(result1.branchName).toBe(result2.branchName);
   });
+
+  it("falls back to remote bookmark when requested base branch is not local", async () => {
+    const repo = makeTempJjRepo({ colocate: false });
+    tempDirs.push(repo);
+
+    writeFileSync(join(repo, "README.md"), "# init\n");
+    execFileSync("jj", ["describe", "-m", "initial"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    const remotePath = realpathSync(mkdtempSync(join(tmpdir(), "foreman-jj-remote-")));
+    tempDirs.push(remotePath);
+    execFileSync("git", ["init", "--bare"], { cwd: remotePath, stdio: "pipe" });
+    execFileSync("git", ["remote", "add", "origin", remotePath], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["git", "push", "--bookmark", "dev", "--allow-new"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "delete", "dev"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["git", "fetch", "--remote", "origin"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    const result1 = await backend.createWorkspace(repo, "bd-remote-base");
+    const result2 = await backend.createWorkspace(repo, "bd-remote-base", "dev");
+
+    expect(result1.workspacePath).toBe(result2.workspacePath);
+    expect(result1.branchName).toBe(result2.branchName);
+  });
 });
 
 describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.removeWorkspace (AC-T-018-2)", () => {

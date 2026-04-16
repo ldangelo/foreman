@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync } from "node:f
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
+import { workerConfigDir } from "../dispatcher.js";
 
 /**
  * Tests for the detached worker spawning pathway in the Dispatcher.
@@ -96,8 +97,8 @@ describe("Dispatcher worker spawning", () => {
     expect(parsed.resume).toBe("session-abc-def");
   });
 
-  it("config tmp directory is created under HOME/.foreman/tmp", async () => {
-    const foremanTmp = join(tmpDir, ".foreman", "tmp");
+  it("config tmp directory is created under projectPath/.foreman/tmp", async () => {
+    const foremanTmp = workerConfigDir(tmpDir);
     mkdirSync(foremanTmp, { recursive: true });
     expect(existsSync(foremanTmp)).toBe(true);
   });

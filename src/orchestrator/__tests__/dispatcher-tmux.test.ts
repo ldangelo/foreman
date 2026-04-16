@@ -133,4 +133,11 @@ describe("DetachedSpawnStrategy interface", () => {
     expect(opts?.detached).toBe(true);
     expect(result).toBeDefined();
   });
+
+  it("dispatcher resolves agent-worker.js when running from built dist output", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const source = readFileSync(join(import.meta.dirname, "..", "dispatcher.ts"), "utf-8");
+    expect(source).toContain('const workerScriptName = __filename.endsWith(".js") ? "agent-worker.js" : "agent-worker.ts"');
+  });
 });

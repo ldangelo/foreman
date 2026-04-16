@@ -702,7 +702,7 @@ export const resetCommand = new Command("reset")
 
         // 5. Clean up orphaned worker config file (if it still exists)
         if (!dryRun) {
-          await deleteWorkerConfigFile(run.id);
+          await deleteWorkerConfigFile(run.id, projectPath);
         }
 
         // 5b. Remove merge queue entries for this seed

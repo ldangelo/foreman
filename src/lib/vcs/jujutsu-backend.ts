@@ -280,7 +280,17 @@ export class JujutsuBackend implements VcsBackend {
     seedId: string,
     baseBranch?: string,
   ): Promise<WorkspaceResult> {
-    const base = baseBranch ?? (await this.getCurrentBranch(repoPath));
+    const requestedBase = baseBranch ?? (await this.getCurrentBranch(repoPath));
+    let base = requestedBase;
+    if (baseBranch) {
+      const hasLocalBase = await this.branchExists(repoPath, baseBranch);
+      if (!hasLocalBase) {
+        const hasRemoteBase = await this.branchExistsOnRemote(repoPath, baseBranch);
+        if (hasRemoteBase) {
+          base = `${baseBranch}@origin`;
+        }
+      }
+    }
     const branchName = `foreman/${seedId}`;
     const workspacePath = getWorkspacePath(repoPath, seedId);
 

@@ -1617,14 +1617,20 @@ export interface SpawnStrategy {
 /**
  * Resolve common paths needed by both spawn strategies.
  */
-function resolveWorkerPaths(homeDir?: string): { tsxBin: string; workerScript: string; logDir: string } {
+function foremanRuntimeDir(projectPath?: string, homeDir?: string): string {
+  return projectPath
+    ? join(projectPath, ".foreman")
+    : join(homeDir ?? process.env.HOME ?? "/tmp", ".foreman");
+}
+
+function resolveWorkerPaths(projectPath?: string, homeDir?: string): { tsxBin: string; workerScript: string; logDir: string } {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
-  const projectRoot = join(__dirname, "..", "..");
+  const workerScriptName = __filename.endsWith(".js") ? "agent-worker.js" : "agent-worker.ts";
   return {
     tsxBin: process.execPath,
-    workerScript: join(__dirname, "agent-worker.ts"),
-    logDir: join(homeDir ?? process.env.HOME ?? "/tmp", ".foreman", "logs"),
+    workerScript: join(__dirname, workerScriptName),
+    logDir: join(foremanRuntimeDir(projectPath, homeDir), "logs"),
   };
 }
 
@@ -1635,10 +1641,10 @@ function resolveWorkerPaths(homeDir?: string): { tsxBin: string; workerScript: s
 export class DetachedSpawnStrategy implements SpawnStrategy {
   async spawn(config: WorkerConfig): Promise<SpawnResult> {
     const homeDir = config.env.HOME ?? process.env.HOME ?? "/tmp";
-    const { tsxBin, workerScript, logDir } = resolveWorkerPaths(homeDir);
+    const { tsxBin, workerScript, logDir } = resolveWorkerPaths(config.projectPath, homeDir);
 
     // Write config to temp file (worker reads + deletes it)
-    const configDir = join(homeDir, ".foreman", "tmp");
+    const configDir = join(foremanRuntimeDir(config.projectPath, homeDir), "tmp");
     await mkdir(configDir, { recursive: true });
     const configPath = join(configDir, `worker-${config.runId}.json`);
     await writeFile(configPath, JSON.stringify(config), "utf-8");
@@ -1787,16 +1793,16 @@ function seedToInfo(
 /**
  * Return the directory where worker config JSON files are written.
  */
-export function workerConfigDir(): string {
-  return join(homedir(), ".foreman", "tmp");
+export function workerConfigDir(projectPath?: string): string {
+  return join(projectPath ?? join(homedir(), ".foreman"), projectPath ? ".foreman/tmp" : "tmp");
 }
 
 /**
  * Delete the worker config file for a specific run (if it still exists).
  * Safe to call even if the file has already been deleted by the worker.
  */
-export async function deleteWorkerConfigFile(runId: string): Promise<void> {
-  const configPath = join(workerConfigDir(), `worker-${runId}.json`);
+export async function deleteWorkerConfigFile(runId: string, projectPath?: string): Promise<void> {
+  const configPath = join(workerConfigDir(projectPath), `worker-${runId}.json`);
   try {
     await unlink(configPath);
   } catch {
@@ -1818,8 +1824,9 @@ export async function deleteWorkerConfigFile(runId: string): Promise<void> {
  */
 export async function purgeOrphanedWorkerConfigs(
   store: Pick<import("../lib/store.js").ForemanStore, "getRun">,
+  projectPath?: string,
 ): Promise<number> {
-  const dir = workerConfigDir();
+  const dir = workerConfigDir(projectPath);
   let entries: string[];
   try {
     entries = await readdir(dir);

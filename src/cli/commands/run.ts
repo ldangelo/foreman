@@ -73,7 +73,7 @@ export async function createTaskClients(
 ): Promise<TaskClientResult> {
   const { taskClient, backendType } = await createTaskClient(projectPath, {
     ensureBrInstalled: true,
-    autoSelectNativeWhenAvailable: runtimeMode === "test",
+    autoSelectNativeWhenAvailable: true,
   });
 
   return {
@@ -469,7 +469,7 @@ export const runCommand = new Command("run")
       // Non-fatal — stale files waste disk space but do not affect correctness.
       if (!dryRun) {
         try {
-          const purged = await purgeOrphanedWorkerConfigs(store);
+          const purged = await purgeOrphanedWorkerConfigs(store, projectPath);
           if (purged > 0) {
             console.log(chalk.dim(`[startup] Purged ${purged} orphaned worker config file(s).`));
           }
