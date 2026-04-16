@@ -232,15 +232,13 @@ describe("AC-T-016: No direct git calls outside VCS backend layer", () => {
       expect(typeof reason).toBe("string");
       expect(reason.length).toBeGreaterThan(0);
     }
-    // Emit a console note so CI logs show whether migration work remains
+    // Emit a console note only when migration work remains
     if (allKnown.length > 0) {
       console.log(
         `\n[TRD-016] ${allKnown.length} known violation(s) remaining to migrate:\n` +
           allKnown.map(([f, r]) => `  • ${f} — ${r}`).join("\n") +
           "\n",
       );
-    } else {
-      console.log("\n[TRD-016] All direct git runtime violations have been migrated to the backend layer.\n");
     }
     expect(allKnown.length).toBeGreaterThanOrEqual(0); // always passes
   });

@@ -195,17 +195,12 @@ describe("TRD-014 / REQ-015: BeadsRustClient Deprecation Compliance", () => {
       expect(reason.length).toBeGreaterThan(0);
     }
 
-    // Emit a console note so CI logs show the remaining migration backlog
+    // Emit a console note only when migration work remains
     if (allKnown.length > 0) {
       console.log(
         `\n[TRD-014] ${allKnown.length} known BeadsRustClient violation(s) remaining to migrate to ITaskClient:\n` +
           allKnown.map(([f, r]) => `  • src/${f} — ${r}`).join("\n") +
           "\n",
-      );
-    } else {
-      console.log(
-        "\n[TRD-014] All BeadsRustClient violations have been migrated. " +
-          "BeadsRustClient is now only used in lib/beads-rust.ts and orchestrator/dispatcher.ts.\n",
       );
     }
 
