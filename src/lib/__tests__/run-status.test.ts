@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mapRunStatusToSeedStatus } from "../run-status.js";
+import { mapRunStatusToNativeTaskStatus, mapRunStatusToSeedStatus } from "../run-status.js";
 
 describe("mapRunStatusToSeedStatus", () => {
   it("maps pending to in_progress", () => {
@@ -37,5 +37,32 @@ describe("mapRunStatusToSeedStatus", () => {
   });
   it("completed does NOT map to in_progress — visually distinct from actively-running tasks", () => {
     expect(mapRunStatusToSeedStatus("completed")).not.toBe("in_progress");
+  });
+});
+
+describe("mapRunStatusToNativeTaskStatus", () => {
+  it("maps running to in-progress", () => {
+    expect(mapRunStatusToNativeTaskStatus("running")).toBe("in-progress");
+  });
+  it("maps completed to review", () => {
+    expect(mapRunStatusToNativeTaskStatus("completed")).toBe("review");
+  });
+  it("maps merged to closed", () => {
+    expect(mapRunStatusToNativeTaskStatus("merged")).toBe("closed");
+  });
+  it("maps pr-created to closed", () => {
+    expect(mapRunStatusToNativeTaskStatus("pr-created")).toBe("closed");
+  });
+  it("maps conflict to blocked", () => {
+    expect(mapRunStatusToNativeTaskStatus("conflict")).toBe("blocked");
+  });
+  it("maps failed to failed", () => {
+    expect(mapRunStatusToNativeTaskStatus("failed")).toBe("failed");
+  });
+  it("maps stuck to ready", () => {
+    expect(mapRunStatusToNativeTaskStatus("stuck")).toBe("ready");
+  });
+  it("maps unknown statuses to ready", () => {
+    expect(mapRunStatusToNativeTaskStatus("mystery")).toBe("ready");
   });
 });

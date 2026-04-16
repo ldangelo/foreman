@@ -14,6 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import Database from "better-sqlite3";
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -21,6 +22,9 @@ const {
   mockExecFileSync,
   mockGetProjectByPath,
   mockGetDb,
+  mockDbPrepare,
+  mockDbGet,
+  mockDbRun,
   mockGetRun,
   MockForemanStore,
   mockMergeQueueReconcile,
@@ -40,7 +44,10 @@ const {
   const mockExecFileSync = vi.fn().mockReturnValue(Buffer.from(""));
 
   const mockGetProjectByPath = vi.fn().mockReturnValue(null);
-  const mockGetDb = vi.fn().mockReturnValue({});
+  const mockDbRun = vi.fn();
+  const mockDbGet = vi.fn().mockReturnValue(undefined);
+  const mockDbPrepare = vi.fn(() => ({ get: mockDbGet, run: mockDbRun }));
+  const mockGetDb = vi.fn().mockReturnValue({ prepare: mockDbPrepare });
   const mockGetRun = vi.fn().mockReturnValue(null);
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
     this.close = vi.fn();
@@ -86,6 +93,9 @@ const {
     mockExecFileSync,
     mockGetProjectByPath,
     mockGetDb,
+    mockDbPrepare,
+    mockDbGet,
+    mockDbRun,
     mockGetRun,
     MockForemanStore,
     mockMergeQueueReconcile,
@@ -177,6 +187,10 @@ function resetMocks(): void {
     name: "git",
     detectDefaultBranch: mockDetectDefaultBranch,
   });
+  mockGetDb.mockReturnValue({ prepare: mockDbPrepare });
+  mockDbGet.mockReturnValue(undefined);
+  mockDbRun.mockReset();
+  mockDbPrepare.mockImplementation(() => ({ get: mockDbGet, run: mockDbRun }));
   mockGetProjectByPath.mockReturnValue(null);
   mockGetDb.mockReturnValue({});
   mockGetRun.mockReturnValue(null);
@@ -474,6 +488,59 @@ describe("syncBeadStatusAfterMerge()", () => {
     );
     // Should NOT call taskClient.update directly (avoids SQLITE_BUSY)
     expect(taskClient.update).not.toHaveBeenCalled();
+  });
+
+  it("updates the native task row when a matching task exists", async () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        status TEXT,
+        run_id TEXT,
+        updated_at TEXT,
+        closed_at TEXT
+      );
+    `);
+    db.prepare("INSERT INTO tasks (id, status, run_id, updated_at, closed_at) VALUES (?, ?, ?, ?, ?)")
+      .run("task-1", "in-progress", "run-1", "2026-01-01T00:00:00.000Z", null);
+    const store = {
+      getRun: vi.fn().mockReturnValue({ id: "run-1", status: "failed" }),
+      getDb: vi.fn().mockReturnValue(db),
+      sendMessage: vi.fn(),
+    };
+
+    await syncBeadStatusAfterMerge(store as never, makeTaskClient() as never, "run-1", "task-1", "/proj");
+
+    const row = db.prepare("SELECT status FROM tasks WHERE id = ?").get("task-1") as { status: string };
+    expect(row.status).toBe("failed");
+    db.close();
+  });
+
+  it("closes the native task row when the merge succeeded", async () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        status TEXT,
+        run_id TEXT,
+        updated_at TEXT,
+        closed_at TEXT
+      );
+    `);
+    db.prepare("INSERT INTO tasks (id, status, run_id, updated_at, closed_at) VALUES (?, ?, ?, ?, ?)")
+      .run("task-1", "in-progress", "run-1", "2026-01-01T00:00:00.000Z", null);
+    const store = {
+      getRun: vi.fn().mockReturnValue({ id: "run-1", status: "merged" }),
+      getDb: vi.fn().mockReturnValue(db),
+      sendMessage: vi.fn(),
+    };
+
+    await syncBeadStatusAfterMerge(store as never, makeTaskClient() as never, "run-1", "task-1", "/proj");
+
+    const row = db.prepare("SELECT status, closed_at FROM tasks WHERE id = ?").get("task-1") as { status: string; closed_at: string | null };
+    expect(row.status).toBe("closed");
+    expect(row.closed_at).toBeTruthy();
+    db.close();
   });
 
   it("calls addNotesToBead with the failure reason when failureReason is provided", async () => {

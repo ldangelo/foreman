@@ -682,7 +682,9 @@ export class Refinery {
             }
           } finally {
             // Return to target branch regardless
-            try { await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch); } catch { /* best effort */ }
+            if (this.vcsBackend.name !== "jujutsu") {
+              try { await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch); } catch { /* best effort */ }
+            }
 
             if (stashedBeforeRebase) {
               try { await gitSpecial(["stash", "pop"], this.projectPath); } catch { /* best effort — may be empty */ }
@@ -717,7 +719,9 @@ export class Refinery {
         // This prevents empty or noisy intermediate commits from polluting dev.
         const squashMergeOk = true;
         try {
-          await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
+          if (this.vcsBackend.name !== "jujutsu") {
+            await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
+          }
           await this.vcsBackend.mergeWithoutCommit(this.projectPath, branchName, targetBranch);
         } catch (mergeErr: unknown) {
           const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
@@ -965,7 +969,9 @@ export class Refinery {
     const testCommand = opts?.testCommand ?? "npm test";
 
     try {
-      await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
+      if (this.vcsBackend.name !== "jujutsu") {
+        await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
+      }
       if (this.vcsBackend.name === "jujutsu") {
         const mergeResult = await this.vcsBackend.merge(this.projectPath, branchName, targetBranch);
         if (!mergeResult.success) {

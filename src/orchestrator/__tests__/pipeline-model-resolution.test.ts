@@ -213,4 +213,22 @@ describe("workflow YAML files — use models map", () => {
     );
     expect(bareModelLines).toHaveLength(0);
   });
+
+  it("default.yaml finalize phase defaults to MiniMax", async () => {
+    const { loadWorkflowConfig, resolvePhaseModel } = await import("../../lib/workflow-loader.js");
+    const workflow = loadWorkflowConfig("default", process.cwd());
+    const finalize = workflow.phases.find((phase) => phase.name === "finalize");
+    expect(finalize).toBeDefined();
+    expect(resolvePhaseModel(finalize!, undefined, "anthropic/claude-haiku-4-5")).toBe("minimax/MiniMax-M2.7");
+    expect(resolvePhaseModel(finalize!, "P0", "anthropic/claude-haiku-4-5")).toBe("minimax/MiniMax-M2.7-highspeed");
+  });
+
+  it("epic.yaml finalize phase defaults to MiniMax", async () => {
+    const { loadWorkflowConfig, resolvePhaseModel } = await import("../../lib/workflow-loader.js");
+    const workflow = loadWorkflowConfig("epic", process.cwd());
+    const finalize = workflow.phases.find((phase) => phase.name === "finalize");
+    expect(finalize).toBeDefined();
+    expect(resolvePhaseModel(finalize!, undefined, "anthropic/claude-haiku-4-5")).toBe("minimax/MiniMax-M2.7");
+    expect(resolvePhaseModel(finalize!, "P0", "anthropic/claude-haiku-4-5")).toBe("minimax/MiniMax-M2.7-highspeed");
+  });
 });

@@ -560,6 +560,12 @@ export class JujutsuBackend implements VcsBackend {
         ["new", target, sourceBranch, "-m", `Merge ${sourceBranch} into ${target}`],
         repoPath,
       );
+      if (await this.branchExists(repoPath, target)) {
+        await this.jj(
+          ["bookmark", "move", target, "--allow-backwards", "--to", "@"],
+          repoPath,
+        );
+      }
       return { success: true };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

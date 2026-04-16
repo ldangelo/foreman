@@ -72,3 +72,36 @@ export function mapRunStatusToSeedStatus(runStatus: string): string {
       return "open";
   }
 }
+
+/**
+ * Map a SQLite run status to the native Foreman task status.
+ *
+ * Native tasks use a slightly different vocabulary than br seeds:
+ * - active work remains `in-progress`
+ * - a successfully finished pipeline becomes `review` until merge queue lands it
+ * - merge success closes the task
+ * - merge conflicts/test failures become `blocked`
+ * - unexpected merge exceptions become `failed`
+ * - stuck runs return to `ready` so the task is no longer shown as actively running
+ */
+export function mapRunStatusToNativeTaskStatus(runStatus: string): string {
+  switch (runStatus) {
+    case "pending":
+    case "running":
+      return "in-progress";
+    case "completed":
+      return "review";
+    case "merged":
+    case "pr-created":
+      return "closed";
+    case "conflict":
+    case "test-failed":
+      return "blocked";
+    case "failed":
+      return "failed";
+    case "stuck":
+      return "ready";
+    default:
+      return "ready";
+  }
+}

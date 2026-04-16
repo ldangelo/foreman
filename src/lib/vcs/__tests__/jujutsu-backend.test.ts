@@ -955,10 +955,25 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.merge (AC-T-021-1)", () => {
     writeFileSync(join(repo, "feature.txt"), "feature\n");
     execFileSync("jj", ["describe", "-m", "feature commit"], { cwd: repo, stdio: "pipe" });
 
+    const mainBefore = execFileSync(
+      "jj",
+      ["log", "--no-graph", "-r", "main", "-T", "change_id.short()"],
+      { cwd: repo, stdio: "pipe", encoding: "utf8" },
+    ).trim();
+
     const backend = new JujutsuBackend(repo);
     const result = await backend.merge(repo, "feature/test", "main");
 
     expect(result.success).toBe(true);
+
+    const mainAfter = execFileSync(
+      "jj",
+      ["log", "--no-graph", "-r", "main", "-T", "change_id.short() ++ \" \" ++ parents().len()"],
+      { cwd: repo, stdio: "pipe", encoding: "utf8" },
+    ).trim();
+
+    expect(mainAfter).not.toContain(mainBefore);
+    expect(mainAfter).toMatch(/\s2$/);
   });
 });
 

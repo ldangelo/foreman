@@ -23,7 +23,7 @@ import type { VcsBackend } from "../lib/vcs/interface.js";
 import { MergeQueue, RETRY_CONFIG } from "./merge-queue.js";
 import { Refinery } from "./refinery.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
-import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
+import { mapRunStatusToNativeTaskStatus, mapRunStatusToSeedStatus } from "../lib/run-status.js";
 import { enqueueAddNotesToBead, enqueueMarkBeadFailed, enqueueSetBeadStatus } from "./task-backend-ops.js";
 
 const execFileAsync = promisify(execFile);
@@ -87,6 +87,27 @@ export async function syncBeadStatusAfterMerge(
 ): Promise<void> {
   const run = store.getRun(runId);
   if (!run) return;
+
+  try {
+    const db = store.getDb();
+    const taskRow = db
+      .prepare("SELECT id FROM tasks WHERE id = ? OR run_id = ? LIMIT 1")
+      .get(seedId, runId) as { id: string } | undefined;
+
+    if (taskRow) {
+      const nativeTaskStatus = mapRunStatusToNativeTaskStatus(run.status);
+      if (nativeTaskStatus === "closed") {
+        db.prepare(
+          "UPDATE tasks SET status = 'closed', closed_at = COALESCE(closed_at, ?), updated_at = ? WHERE id = ?",
+        ).run(new Date().toISOString(), new Date().toISOString(), taskRow.id);
+      } else {
+        db.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?")
+          .run(nativeTaskStatus, new Date().toISOString(), taskRow.id);
+      }
+    }
+  } catch {
+    // Non-fatal — native task status sync must not block merge reconciliation
+  }
 
   const expectedStatus = mapRunStatusToSeedStatus(run.status);
   // Enqueue the status update instead of calling br directly.

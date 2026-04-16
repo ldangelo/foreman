@@ -32,6 +32,19 @@ import { getModel } from "@mariozechner/pi-ai";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 
+const OUTER_RETRYABLE_ERROR_PATTERNS = [
+  /connection error\.?$/i,
+  /fetch failed/i,
+  /socket hang up/i,
+  /timed?\s*out/i,
+  /econnreset/i,
+  /econnrefused/i,
+  /enotfound/i,
+  /temporary(?:ily)? unavailable/i,
+  /network error/i,
+] as const;
+const MAX_FRESH_SESSION_ATTEMPTS = 2;
+
 // ── Public interface (compatible with pi-runner.ts) ─────────────────────
 
 export interface PiRunResult {
@@ -92,6 +105,46 @@ function buildTools(allowedNames: readonly string[], cwd: string) {
   return tools;
 }
 
+function isRetryableFreshSessionError(message: string | undefined): boolean {
+  if (!message) return false;
+  return OUTER_RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function shouldRetryWithFreshSession(result: PiRunResult): boolean {
+  return (
+    !result.success
+    && result.toolCalls === 0
+    && result.tokensOut === 0
+    && isRetryableFreshSessionError(result.errorMessage)
+  );
+}
+
+function serializeErrorDetails(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const details: Record<string, unknown> = {};
+  const extended = err as Error & {
+    code?: unknown;
+    status?: unknown;
+    type?: unknown;
+    cause?: unknown;
+  };
+  if (extended.code !== undefined) details.code = extended.code;
+  if (extended.status !== undefined) details.status = extended.status;
+  if (extended.type !== undefined) details.type = extended.type;
+  if (extended.cause instanceof Error) {
+    details.cause = {
+      name: extended.cause.name,
+      message: extended.cause.message,
+      ...(
+        (extended.cause as Error & { code?: unknown }).code !== undefined
+          ? { code: (extended.cause as Error & { code?: unknown }).code }
+          : {}
+      ),
+    };
+  }
+  return Object.keys(details).length > 0 ? JSON.stringify(details) : undefined;
+}
+
 // ── Model resolution ────────────────────────────────────────────────────
 
 /**
@@ -116,7 +169,10 @@ function parseModelString(model: string) {
  * Creates an in-memory AgentSession, sends the prompt, listens for events
  * to track tool calls / turns / cost, and resolves with structured results.
  */
-export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
+async function runSinglePiSdkSession(
+  opts: PiRunOptions,
+  writeLog: (line: string) => void,
+): Promise<PiRunResult> {
   // Resolve model — getModel is strictly typed for known providers/IDs;
   // use type assertions for dynamic values from workflow YAML.
   const { provider, modelId } = parseModelString(opts.model);
@@ -134,11 +190,6 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
   let success = true;
   let errorMessage: string | undefined;
   const textChunks: string[] = [];
-
-  const writeLog = (line: string): void => {
-    if (!opts.logFile) return;
-    appendFile(opts.logFile, line + "\n").catch(() => { /* non-fatal */ });
-  };
 
   try {
     // Explicitly set agentDir and auth so detached worker processes find credentials.
@@ -251,7 +302,9 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
     };
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
+    const detail = serializeErrorDetails(err);
     writeLog(`[pi-sdk-runner] ERROR: ${reason}`);
+    if (detail) writeLog(`[pi-sdk-runner] ERROR_DETAIL: ${detail}`);
     return {
       success: false,
       costUsd: 0,
@@ -263,4 +316,20 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       errorMessage: reason,
     };
   }
+}
+
+export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
+  const writeLog = (line: string): void => {
+    if (!opts.logFile) return;
+    appendFile(opts.logFile, line + "\n").catch(() => { /* non-fatal */ });
+  };
+
+  let result = await runSinglePiSdkSession(opts, writeLog);
+  for (let attempt = 2; attempt <= MAX_FRESH_SESSION_ATTEMPTS && shouldRetryWithFreshSession(result); attempt++) {
+    writeLog(
+      `[pi-sdk-runner] retrying with fresh session attempt=${attempt}/${MAX_FRESH_SESSION_ATTEMPTS} reason=${result.errorMessage ?? "unknown"}`,
+    );
+    result = await runSinglePiSdkSession(opts, writeLog);
+  }
+  return result;
 }
