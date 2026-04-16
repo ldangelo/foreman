@@ -13,7 +13,7 @@
  *   - Corrupt registry file: graceful recovery
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -57,6 +57,7 @@ describe("ProjectRegistry", () => {
   let registry: ProjectRegistry;
 
   beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
     tmpBase = mkTmpDir();
     // Put registry in a sub-dir that does NOT yet exist (tests auto-mkdir)
     registryFile = join(tmpBase, ".foreman", "projects.json");
@@ -64,6 +65,7 @@ describe("ProjectRegistry", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(tmpBase, { recursive: true, force: true });
   });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Mock setup ──────────────────────────────────────────────────────────────
 
@@ -12,6 +12,14 @@ vi.mock("node:child_process", () => ({
 
 import { BvClient } from "../bv.js";
 import type { BvTriageResult, BvNextResult } from "../bv.js";
+
+beforeEach(() => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

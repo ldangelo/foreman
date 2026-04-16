@@ -9,9 +9,17 @@
  * 5. other errors (network, auth) still cause run to fail
  * 6. SeedsClient-shaped show() still works (backwards compat)
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Monitor } from "../monitor.js";
 import type { Run } from "../../lib/store.js";
+
+beforeEach(() => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
