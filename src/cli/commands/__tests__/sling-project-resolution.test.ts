@@ -32,8 +32,8 @@ describe("foreman sling trd --project", () => {
     mkdirSync(join(dir, "docs", "TRD"), { recursive: true });
     cpSync(SOURCE_TRD, join(dir, "docs", "TRD", "sling-trd.md"));
     execFileSync("git", ["init", "--initial-branch", "main"], { cwd: dir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: dir, stdio: "ignore" });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: dir, stdio: "ignore" });
     return dir;
   }

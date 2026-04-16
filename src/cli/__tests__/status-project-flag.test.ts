@@ -59,8 +59,8 @@ describe("foreman status --project flag", () => {
     const projectDir = mkProject(tmpBase, "my-project");
 
     execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir, stdio: "ignore" });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
     const registryDir = join(tmpBase, ".foreman");
@@ -81,8 +81,8 @@ describe("foreman status --project flag", () => {
     const projectDir = mkProject(tmpBase, "some-project");
 
     execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir, stdio: "ignore" });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
     const registryDir = join(tmpBase, ".foreman");
@@ -106,8 +106,8 @@ describe("foreman status --project flag", () => {
     const projectDir = mkProject(tmpBase, "my-project");
 
     execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir, stdio: "ignore" });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
     const result = await run(["status"], projectDir);
@@ -123,8 +123,8 @@ describe("foreman status --project flag", () => {
 
     for (const dir of [projectDir1, projectDir2]) {
       execFileSync("git", ["init", "--initial-branch", "main"], { cwd: dir, stdio: "ignore" });
-      execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
-      execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+      execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd: dir, stdio: "ignore" });
       execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: dir, stdio: "ignore" });
     }
 
@@ -175,8 +175,8 @@ describe("foreman status --project flag", () => {
     const projectDir = mkProject(tmpBase, "my-project");
 
     execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir, stdio: "ignore" });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
     const result = await run(["status", "--project-path", projectDir], projectDir, {
@@ -194,8 +194,8 @@ describe("foreman status --project flag", () => {
     const projectDir = mkProject(tmpBase, "my-project");
 
     execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir, stdio: "ignore" });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
     const result = await run(["status", "--project-path", "relative/path"], projectDir, {
@@ -212,8 +212,8 @@ describe("foreman status --project flag", () => {
     const projectDir = mkProject(tmpBase, "my-project");
 
     execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir, stdio: "ignore" });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
     const result = await run(["status", "--project", projectDir], tmpBase, {

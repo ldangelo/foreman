@@ -31,8 +31,8 @@ describe("foreman plan --project", () => {
     mkdirSync(join(dir, ".foreman"), { recursive: true });
     mkdirSync(join(dir, "docs"), { recursive: true });
     execFileSync("git", ["init", "--initial-branch", "main"], { cwd: dir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: dir, stdio: "ignore" });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: dir, stdio: "ignore" });
     const store = ForemanStore.forProject(dir);
     try {
