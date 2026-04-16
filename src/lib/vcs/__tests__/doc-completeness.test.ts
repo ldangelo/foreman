@@ -231,7 +231,9 @@ describe("AC-T-035: Documentation Completeness — VcsBackend", () => {
    */
   describe("AC-T-035-2: Configuration option coverage", () => {
     const configDoc = readDoc("docs/guides/vcs-configuration.md");
+    const jujutsuDoc = readDoc("docs/guides/jujutsu-considerations.md");
     const workflowDoc = readDoc("docs/workflow-yaml-reference.md");
+    const claudeDoc = readDoc("CLAUDE.md");
 
     it("vcs-configuration.md exists and is non-empty", () => {
       expect(configDoc.length).toBeGreaterThan(0);
@@ -314,6 +316,36 @@ describe("AC-T-035: Documentation Completeness — VcsBackend", () => {
       it("vcs-backend-interface.md links to vcs-configuration.md", () => {
         const interfaceDoc = readDoc("docs/guides/vcs-backend-interface.md");
         expect(interfaceDoc).toContain("vcs-configuration");
+      });
+    });
+
+    describe("non-colocated jujutsu guidance", () => {
+      it("documents both colocated and non-colocated jj modes in the configuration guide", () => {
+        expect(configDoc).toContain("colocated or non-colocated");
+        expect(configDoc).toContain(".jj/");
+        expect(configDoc).toContain("takes precedence");
+      });
+
+      it("includes a troubleshooting entry for non-colocated jj repos", () => {
+        expect(configDoc).toContain("Non-colocated jj repo");
+        expect(configDoc).toContain("intended migration target");
+        expect(configDoc).toContain("colocated-only paths");
+      });
+
+      it("positions non-colocated jj as a supported migration path in the jj guide", () => {
+        expect(jujutsuDoc).toContain("non-colocated jj");
+        expect(jujutsuDoc).toContain("Colocated mode still works");
+        expect(jujutsuDoc).toContain("it is no longer the only intended deployment model");
+      });
+
+      it("keeps agent-facing guidance aligned with jj-native, non-colocated support", () => {
+        expect(claudeDoc).toContain("non-colocated jj");
+        expect(claudeDoc).toContain("prefer jj-native operations over raw git assumptions");
+      });
+
+      it("does not claim colocated mode is required in active operator docs", () => {
+        const activeDocs = [configDoc, jujutsuDoc, claudeDoc].join("\n");
+        expect(activeDocs).not.toMatch(/colocated mode is required/i);
       });
     });
   });
