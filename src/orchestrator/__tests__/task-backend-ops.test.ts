@@ -26,6 +26,14 @@ import { closeSeed, resetSeedToOpen, addLabelsToBead, addNotesToBead } from "../
 
 const HOME = "/test/home";
 
+beforeEach(() => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 // ── closeSeed ────────────────────────────────────────────────────────────────
 
 describe("closeSeed — br backend", () => {

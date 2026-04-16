@@ -45,6 +45,14 @@ import { finalize, rotateReport } from "../agent-worker-finalize.js";
 import type { FinalizeConfig, FinalizeResult } from "../agent-worker-finalize.js";
 import type { VcsBackend } from "../../lib/vcs/index.js";
 
+beforeEach(() => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 // ── VcsBackend Mock Factory ───────────────────────────────────────────────────
 
 /**
