@@ -295,21 +295,20 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
 // ── Resume detection ────────────────────────────────────────────────────────
 
 /**
- * Parse `git log --oneline` output from an epic worktree and extract
+ * Parse commit-summary output from an epic worktree and extract
  * the bead/seed IDs of tasks that have already been committed.
  *
  * Commit messages follow the format: `<title> (<beadId>)`
  * For example: `Add user auth (task-7)` → extracts `task-7`.
  *
- * @returns A Set of completed task seed IDs found in the git history.
+ * @returns A Set of completed task seed IDs found in the commit history.
  */
-export function parseCompletedTaskIds(gitLogOutput: string): Set<string> {
+export function parseCompletedTaskIds(commitLogOutput: string): Set<string> {
   const completed = new Set<string>();
-  // Match the trailing parenthesized bead ID in each commit line.
-  // git log --oneline format: "<hash> <message>"
+  // Match the trailing parenthesized bead ID in each commit summary line.
   // We look for the pattern "(<beadId>)" at the end of each line.
   const regex = /\(([^)]+)\)\s*$/;
-  for (const line of gitLogOutput.split("\n")) {
+  for (const line of commitLogOutput.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     const match = regex.exec(trimmed);
@@ -321,22 +320,25 @@ export function parseCompletedTaskIds(gitLogOutput: string): Set<string> {
 }
 
 /**
- * Read git log from a worktree directory and return completed task IDs.
- * Returns an empty set if the git command fails (e.g. no commits yet).
- *
- * Note: uses execSync with a hardcoded command string (no user input),
- * so shell injection is not a concern here.
+ * Read backend-native commit descriptions from a workspace and return completed
+ * task IDs. Returns an empty set if the backend does not expose commit history
+ * or the history lookup fails.
  */
-function detectCompletedTasks(worktreePath: string): Set<string> {
+async function detectCompletedTasks(
+  worktreePath: string,
+  vcsBackend?: VcsBackend,
+): Promise<Set<string>> {
   try {
-    const output = execSync("git log --oneline", {
-      cwd: worktreePath,
-      encoding: "utf-8",
-      timeout: 10_000,
-    });
-    return parseCompletedTaskIds(output);
+    const backendWithHistory = vcsBackend as (VcsBackend & {
+      listCommitDescriptions?: (workspacePath: string) => Promise<string[]>;
+    }) | undefined;
+    if (!backendWithHistory?.listCommitDescriptions) {
+      return new Set<string>();
+    }
+    const descriptions = await backendWithHistory.listCommitDescriptions(worktreePath);
+    return parseCompletedTaskIds(descriptions.join("\n"));
   } catch {
-    // No git history or command failed — no completed tasks
+    // No history or backend method failed — no completed tasks
     return new Set<string>();
   }
 }
@@ -368,7 +370,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
 
   // ── Resume detection (TRD-009) ──────────────────────────────────────
   const totalTaskCount = epicTasks.length;
-  const resumedTaskIds = detectCompletedTasks(worktreePath);
+  const resumedTaskIds = await detectCompletedTasks(worktreePath, config.vcsBackend);
 
   if (resumedTaskIds.size > 0) {
     const remainingTasks = epicTasks.filter((t) => !resumedTaskIds.has(t.seedId));

@@ -559,6 +559,17 @@ export class GitBackend implements VcsBackend {
   }
 
   /**
+   * List commit subjects reachable from HEAD, newest first.
+   * Used by epic resume detection to reconstruct which child tasks were
+   * already committed in a workspace.
+   */
+  async listCommitDescriptions(workspacePath: string): Promise<string[]> {
+    const out = await this.git(["log", "--format=%s"], workspacePath);
+    if (!out) return [];
+    return out.split("\n").map((line) => line.trim()).filter(Boolean);
+  }
+
+  /**
    * Fetch updates from origin (no merge).
    */
   async fetch(repoPath: string): Promise<void> {

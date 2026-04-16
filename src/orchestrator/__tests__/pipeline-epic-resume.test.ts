@@ -30,6 +30,26 @@ function makeEpicPipelineArgs(
   epicTasks: EpicTask[],
   opts?: { vcsBackend?: unknown },
 ) {
+  const fallbackVcsBackend = {
+    name: "git" as const,
+    listCommitDescriptions: vi.fn(async (workspacePath: string) => {
+      const output = execSync("git log --format=%s", {
+        cwd: workspacePath,
+        encoding: "utf-8",
+        stdio: "pipe",
+      });
+      return output.split("\n").map((line) => line.trim()).filter(Boolean);
+    }),
+    getFinalizeCommands: vi.fn().mockReturnValue({
+      stageCommand: "git add -A",
+      commitCommand: "git commit",
+      pushCommand: "git push",
+      integrateTargetCommand: "git rebase",
+      branchVerifyCommand: "git branch",
+      cleanCommand: "git clean",
+      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",
+    }),
+  };
   const mockStore = {
     updateRunProgress: vi.fn(),
     logEvent: vi.fn(),
@@ -50,7 +70,7 @@ function makeEpicPipelineArgs(
       model: "anthropic/claude-sonnet-4-6",
       worktreePath: tmpDir,
       env: {},
-      vcsBackend: opts?.vcsBackend ?? undefined,
+      vcsBackend: opts?.vcsBackend ?? fallbackVcsBackend,
     },
     workflowConfig: {
       name: "epic",
@@ -214,6 +234,14 @@ describe("epic resume detection (TRD-009)", () => {
     const mockVcsBackend = {
       name: "git" as const,
       commit: vi.fn().mockResolvedValue(undefined),
+      listCommitDescriptions: vi.fn(async (workspacePath: string) => {
+        const output = execSync("git log --format=%s", {
+          cwd: workspacePath,
+          encoding: "utf-8",
+          stdio: "pipe",
+        });
+        return output.split("\n").map((line) => line.trim()).filter(Boolean);
+      }),
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "git add -A",
         commitCommand: "git commit",

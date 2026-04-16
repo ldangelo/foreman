@@ -632,6 +632,19 @@ export class JujutsuBackend implements VcsBackend {
     );
   }
 
+  /**
+   * List commit descriptions reachable from the current working copy, newest first.
+   * Used by epic resume detection without relying on raw git commands.
+   */
+  async listCommitDescriptions(workspacePath: string): Promise<string[]> {
+    const out = await this.jj(
+      ["log", "--no-graph", "-r", "::@", "-T", "description.first_line() ++ \"\\n\""],
+      workspacePath,
+    );
+    if (!out) return [];
+    return out.split("\n").map((line) => line.trim()).filter(Boolean);
+  }
+
   async isAncestor(repoPath: string, ancestorRef: string, descendantRef: string): Promise<boolean> {
     try {
       const ancestorCommit = await this.resolveRef(repoPath, ancestorRef);

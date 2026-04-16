@@ -11,7 +11,8 @@ import { randomUUID } from "node:crypto";
 import type { ForemanStore } from "../lib/store.js";
 import type { Issue } from "../lib/task-client.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
-import { GitBackend } from "../lib/vcs/git-backend.js";
+import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -220,7 +221,9 @@ export class SentinelAgent {
   // ── Private helpers ──────────────────────────────────────────────────
 
   private async resolveCommit(branch: string): Promise<string | null> {
-    const backend = new GitBackend(this.projectPath);
+    const projectCfg = loadProjectConfig(this.projectPath);
+    const vcsConfig = resolveVcsConfig(undefined, projectCfg?.vcs);
+    const backend = await VcsBackendFactory.create(vcsConfig, this.projectPath);
     for (const ref of [`origin/${branch}`, branch]) {
       try {
         return await backend.resolveRef(this.projectPath, ref);

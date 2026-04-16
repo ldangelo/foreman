@@ -25,21 +25,8 @@
  *                                   worktree prune operations.
  *
  * --- Known Violations (TODO: migrate in TRD-016) ---
- * The following files contain direct git calls that should be migrated to
- * VcsBackend but are tracked as known exceptions until TRD-016 is resolved:
- *
- *   src/orchestrator/sentinel.ts   — `resolveCommit()` uses
- *                                    execFileAsync("git", ["rev-parse", ref]).
- *                                    Should migrate to a VcsBackend.resolveRef()
- *                                    method or getHeadId() equivalent.
- *
- *   src/orchestrator/merge-queue.ts — Branch validation uses
- *                                     execFileAsync("git", ["rev-parse", "--verify", ...]).
- *                                     Should use VcsBackend.branchExists().
- *
- *   src/orchestrator/agent-worker.ts — Merge-queue enqueue uses
- *                                      execFileSync("git", ["diff", "--name-only", ...]).
- *                                      Should use VcsBackend.diff() or getModifiedFiles().
+ * The runtime direct-git violations tracked during the jj migration have been
+ * removed. Leave the map below empty unless a temporary exception is introduced.
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -106,19 +93,7 @@ const ALWAYS_ALLOWED: string[] = [
  * TODO(TRD-016): Remove each entry as it is migrated to VcsBackend.
  * See: https://github.com/Fortium/foreman/issues/TRD-016
  */
-const KNOWN_VIOLATIONS: Record<string, string> = {
-  // resolveCommit() calls execFileAsync("git", ["rev-parse", ref]).
-  // Needs: VcsBackend.resolveRef() or equivalent method.
-  "orchestrator/sentinel.ts": "TRD-016: resolveCommit() → VcsBackend.resolveRef()",
-
-  // Branch validation calls execFileAsync("git", ["rev-parse", "--verify", ...]).
-  // Needs: migrate to VcsBackend.branchExists().
-  "orchestrator/merge-queue.ts": "TRD-016: branch check → VcsBackend.branchExists()",
-
-  // Enqueue diff calls execFileSync("git", ["diff", "--name-only", ...]).
-  // Needs: migrate to VcsBackend.diff() or getModifiedFiles().
-  "orchestrator/agent-worker.ts": "TRD-016: diff for enqueue → VcsBackend.diff()",
-};
+const KNOWN_VIOLATIONS: Record<string, string> = {};
 
 /** Test files are allowed to use direct git calls for test infrastructure. */
 function isTestFile(relPath: string): boolean {
@@ -257,13 +232,15 @@ describe("AC-T-016: No direct git calls outside VCS backend layer", () => {
       expect(typeof reason).toBe("string");
       expect(reason.length).toBeGreaterThan(0);
     }
-    // Emit a console note so CI logs show remaining migration work
+    // Emit a console note so CI logs show whether migration work remains
     if (allKnown.length > 0) {
       console.log(
         `\n[TRD-016] ${allKnown.length} known violation(s) remaining to migrate:\n` +
           allKnown.map(([f, r]) => `  • ${f} — ${r}`).join("\n") +
           "\n",
       );
+    } else {
+      console.log("\n[TRD-016] All direct git runtime violations have been migrated to the backend layer.\n");
     }
     expect(allKnown.length).toBeGreaterThanOrEqual(0); // always passes
   });

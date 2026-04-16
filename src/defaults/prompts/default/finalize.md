@@ -14,7 +14,7 @@ If you hit an unrecoverable error, use the `send_mail` tool to report it:
 ## Instructions
 
 ### Step 0: Verify working directory
-Before running any git commands, ensure you are in the correct worktree directory.
+Before running any VCS commands, ensure you are in the correct worktree directory.
 
 Run:
 ```
@@ -228,7 +228,7 @@ Use this format:
 ```
 
 ## Rules
-- **DO NOT modify any source code files** — only write FINALIZE_VALIDATION.md, FINALIZE_REPORT.md and run git commands
+- **DO NOT modify any source code files** — only write FINALIZE_VALIDATION.md, FINALIZE_REPORT.md and run VCS commands
 - Run steps in order — do not skip any step unless explicitly told to stop
 - All failures except "nothing to commit" (for non-verification beads) are logged and continue (non-fatal) unless they prevent git push
 - Do NOT commit SESSION_LOG.md, RUN_LOG.md, or .beads/issues.jsonl — SESSION_LOG.md / RUN_LOG.md are gitignored, and finalize restores tracked Beads state out of the workspace before commit
