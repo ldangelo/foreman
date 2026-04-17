@@ -42,8 +42,6 @@ export const REQUIRED_PHASES: Readonly<Record<string, ReadonlyArray<string>>> =
       "lead-explorer",
       "lead-reviewer",
     ],
-    small: ["developer", "finalize"],
-    medium: ["developer", "qa", "finalize"],
     smoke: ["explorer", "developer", "qa", "reviewer", "finalize"],
   };
 
@@ -53,11 +51,8 @@ export const REQUIRED_PHASES: Readonly<Record<string, ReadonlyArray<string>>> =
  */
 const REQUIRED_PROMPT_MARKERS: Readonly<Record<string, Readonly<Record<string, ReadonlyArray<string>>>>> = {
   default: {
-    developer: ["{{triageSection}}", "{{previousSessionSection}}", "{{explorerPreflightSection}}"],
-    explorer: ["{{triageSection}}"],
-    qa: ["{{triageSection}}", "{{previousSessionSection}}"],
-    reviewer: ["{{triageSection}}", "{{previousSessionSection}}"],
-    finalize: ["{{triageSection}}", "{{previousSessionSection}}"],
+    developer: ["EXPLORER_REPORT.md", "Implementation Plan"],
+    explorer: ["## Implementation Plan", "Likely Edit Files"],
   },
 };
 

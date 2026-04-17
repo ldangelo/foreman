@@ -100,12 +100,14 @@ describe("prompt templates", () => {
     expect(prompt).toContain("JWT token refresh");
     expect(prompt).toContain("DO NOT modify");
     expect(prompt).toContain("EXPLORER_REPORT.md");
+    expect(prompt).toContain("## Implementation Plan");
   });
 
   it("developerPrompt includes seed context", () => {
     const prompt = developerPrompt("bd-123", "Fix auth", "JWT refresh", true);
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("EXPLORER_REPORT.md");
+    expect(prompt).toContain("Implementation Plan");
   });
 
   it("developerPrompt includes feedback when provided", () => {
@@ -231,24 +233,6 @@ describe("buildPhasePrompt — seedType propagation", () => {
     // The updated finalize.md should instruct the agent to check seedType
     expect(prompt).toContain("verification");
     expect(prompt).toContain("nothing to commit");
-  });
-});
-
-describe("buildPhasePrompt — triage and session handoff", () => {
-  it("injects triage and previous-session context into downstream prompts", () => {
-    const prompt = buildPhasePrompt("qa", {
-      seedId: "foreman-12345",
-      seedTitle: "status output fix",
-      seedDescription: "Render title and description in status output",
-      triageContext: "- Recommended workflow: small",
-      previousSessionContext: "Developer changed status.ts and status-display.test.ts",
-      runId: "run-1",
-    });
-
-    expect(prompt).toContain("## Task Triage");
-    expect(prompt).toContain("Recommended workflow: small");
-    expect(prompt).toContain("## Previous Phase Session Context");
-    expect(prompt).toContain("Developer changed status.ts");
   });
 });
 

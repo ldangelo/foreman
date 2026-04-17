@@ -442,9 +442,9 @@ describe("resolveWorkflowName", () => {
     expect(resolveWorkflowName("feature", undefined)).toBe("default");
   });
 
-  it("uses triaged workflow when there is no explicit label override", () => {
-    expect(resolveWorkflowName("bug", undefined, "small")).toBe("small");
-    expect(resolveWorkflowName("feature", ["priority:high"], "medium")).toBe("medium");
+  it("ignores optional routing hints and falls back to default without explicit labels", () => {
+    expect(resolveWorkflowName("bug", undefined)).toBe("default");
+    expect(resolveWorkflowName("feature", ["priority:high"])).toBe("default");
   });
 });
 
@@ -744,9 +744,9 @@ describe("validateWorkflowConfig — epic mode", () => {
     expect(config.phases.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("includes small/medium/epic in BUNDLED_WORKFLOW_NAMES", () => {
-    expect(BUNDLED_WORKFLOW_NAMES).toContain("small");
-    expect(BUNDLED_WORKFLOW_NAMES).toContain("medium");
+  it("includes the bundled default/smoke/epic workflows", () => {
+    expect(BUNDLED_WORKFLOW_NAMES).toContain("default");
+    expect(BUNDLED_WORKFLOW_NAMES).toContain("smoke");
     expect(BUNDLED_WORKFLOW_NAMES).toContain("epic");
   });
 });

@@ -32,7 +32,6 @@ import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
-import { formatTriageReport, triageTask } from "../lib/task-triage.js";
 import { autoMerge } from "./auto-merge.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { NativeTaskClient } from "../lib/native-task-client.js";
@@ -263,8 +262,6 @@ interface WorkerConfig {
    * When set, this run is an epic execution.
    */
   epicId?: string;
-  /** Bounded triage summary injected into prompts/report handoffs. */
-  triageContext?: string;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -727,19 +724,9 @@ async function runTroubleshooterPhase(
  */
 async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string, notifyClient: NotificationClient, agentMailClient: AnyMailClient | null): Promise<void> {
   const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(config.worktreePath);
-  const triageInput = {
-    seedType: config.seedType ?? "feature",
-    seedTitle: config.seedTitle,
-    seedDescription: config.seedDescription,
-    seedComments: config.seedComments,
-    seedLabels: config.seedLabels,
-  };
-  const triage = triageTask(triageInput);
-  config.triageContext = formatTriageReport(triageInput, triage);
   const resolvedWorkflow = resolveWorkflowName(
     config.seedType ?? "feature",
     config.seedLabels,
-    triage.workflowName,
   );
   // Load the workflow config (phase sequence + per-phase overrides).
   let workflowConfig: WorkflowConfig;

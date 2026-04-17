@@ -107,8 +107,6 @@ export interface PipelineRunConfig {
    * at each phase transition (REQ-012). Null/undefined in beads fallback mode.
    */
   taskId?: string | null;
-  /** Bounded triage report produced once before workflow selection. */
-  triageContext?: string;
   /**
    * Parent epic bead ID. When set, this run is part of an epic execution.
    * Used to link child task results back to the parent epic.
@@ -200,45 +198,6 @@ function readReport(worktreePath: string, filename: string): string | null {
   try { return readFileSync(p, "utf-8"); } catch { return null; }
 }
 
-function phaseSummaryFileName(phaseName: string): string {
-  return `${phaseName.toUpperCase()}_SESSION_SUMMARY.md`;
-}
-
-function summarizeText(text: string, maxLen: number = 1200): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLen) return normalized;
-  return `${normalized.slice(0, maxLen - 1).trimEnd()}…`;
-}
-
-function buildPhaseSessionSummary(
-  phaseName: string,
-  result: PhaseResult,
-  artifactContent?: string | null,
-): string {
-  const lines = [
-    `# ${phaseName.toUpperCase()} Session Summary`,
-    "",
-    `- Success: ${result.success ? "yes" : "no"}`,
-    `- Turns: ${result.turns}`,
-    `- Cost USD: ${result.costUsd.toFixed(4)}`,
-    `- Tokens: in=${result.tokensIn}, out=${result.tokensOut}`,
-  ];
-
-  if (result.error) {
-    lines.push(`- Error: ${summarizeText(result.error, 300)}`);
-  }
-
-  if (artifactContent) {
-    lines.push("", "## Artifact Summary", summarizeText(artifactContent));
-  }
-
-  if (result.outputText) {
-    lines.push("", "## Assistant Output Summary", summarizeText(result.outputText));
-  }
-
-  return lines.join("\n");
-}
-
 /**
  * Detect if an error is a rate limit (429) error.
  * Returns true if the error indicates a rate limit, false otherwise.
@@ -300,14 +259,6 @@ interface PhaseSequenceResult {
   retriesExhausted?: boolean;
 }
 
-const SMALL_WORKFLOW_LIMITS = {
-  warnToolCalls: 25,
-  maxToolCalls: 50,
-  warnElapsedMs: 3 * 60 * 1000,
-  maxElapsedMs: 5 * 60 * 1000,
-  maxRelevantChangedFiles: 4,
-} as const;
-
 function isGeneratedWorkflowArtifact(filePath: string): boolean {
   const name = basename(filePath);
   return (
@@ -315,17 +266,12 @@ function isGeneratedWorkflowArtifact(filePath: string): boolean {
     name.endsWith("_SESSION_SUMMARY.md") ||
     name === "SESSION_LOG.md" ||
     name === "RUN_LOG.md" ||
-    name === "TRIAGE_REPORT.md" ||
     name === "FINALIZE_VALIDATION.md" ||
     name === "TASK.md" ||
     name === "AGENT.md" ||
     name === "AGENTS.md" ||
     name === "BLOCKED.md"
   );
-}
-
-function countRelevantChangedFiles(filesChanged: string[]): number {
-  return filesChanged.filter((filePath) => !isGeneratedWorkflowArtifact(filePath)).length;
 }
 
 // ── Generic Pipeline Executor ───────────────────────────────────────────────
@@ -653,10 +599,6 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
   const { config, workflowConfig, store, logFile } = ctx;
   const { seedId } = config;
 
-  if (config.triageContext) {
-    writeFileSync(join(config.worktreePath, "TRIAGE_REPORT.md"), `${config.triageContext.trim()}\n`, "utf-8");
-  }
-
   const progress: RunProgress = {
     toolCalls: 0,
     toolBreakdown: {},
@@ -715,9 +657,6 @@ async function runPhaseSequence(
   let feedbackContext: string | undefined;
   let qaVerdictForLog: "pass" | "fail" | "unknown" = "unknown";
   const retryCounts: Record<string, number> = {};
-  const phaseSessionSummaries = new Map<string, string>();
-  const sequenceStartedAtMs = Date.now();
-
   // P1: Explorer circuit breaker - track Explorer failures to fail fast after 3
   const explorerFailures: string[] = [];
   // P1/P2: Rate limit tracking per phase
@@ -848,8 +787,6 @@ async function runPhaseSequence(
       hasExplorerReport,
       requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
       feedbackContext,
-      triageContext: config.triageContext,
-      previousSessionContext: i > 0 ? phaseSessionSummaries.get(phases[i - 1].name) : undefined,
       worktreePath,
       baseBranch: config.targetBranch,
       ...vcsPromptVars,
@@ -915,17 +852,6 @@ async function runPhaseSequence(
     store.updateRunProgress(runId, progress);
 
     const phaseArtifactContent = phase.artifact ? readReport(worktreePath, phase.artifact) : null;
-    const phaseSummary = buildPhaseSessionSummary(
-      phaseName,
-      result,
-      phaseArtifactContent,
-    );
-    phaseSessionSummaries.set(phaseName, phaseSummary);
-    writeFileSync(
-      join(worktreePath, phaseSummaryFileName(phaseName)),
-      `${phaseSummary.trim()}\n`,
-      "utf-8",
-    );
 
     if (phase.artifact && !phaseArtifactContent) {
       const errorMsg = `${phaseName} completed without required artifact ${phase.artifact}`;
@@ -950,55 +876,6 @@ async function runPhaseSequence(
         config.projectPath,
       );
       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
-    }
-
-    if (workflowConfig.name === "small") {
-      const relevantChangedFiles = countRelevantChangedFiles(progress.filesChanged);
-      const elapsedMs = Date.now() - sequenceStartedAtMs;
-
-      if (progress.toolCalls >= SMALL_WORKFLOW_LIMITS.warnToolCalls) {
-        ctx.log(
-          `[SMALL] Warning: tool calls at ${progress.toolCalls}/${SMALL_WORKFLOW_LIMITS.maxToolCalls}`,
-        );
-      }
-      if (elapsedMs >= SMALL_WORKFLOW_LIMITS.warnElapsedMs) {
-        ctx.log(
-          `[SMALL] Warning: elapsed ${(elapsedMs / 1000).toFixed(1)}s/${SMALL_WORKFLOW_LIMITS.maxElapsedMs / 1000}s`,
-        );
-      }
-
-      let budgetError: string | null = null;
-      if (progress.toolCalls > SMALL_WORKFLOW_LIMITS.maxToolCalls) {
-        budgetError = `small workflow exceeded tool-call budget (${progress.toolCalls}/${SMALL_WORKFLOW_LIMITS.maxToolCalls})`;
-      } else if (elapsedMs > SMALL_WORKFLOW_LIMITS.maxElapsedMs) {
-        budgetError = `small workflow exceeded wall-time budget (${Math.round(elapsedMs / 1000)}s/${SMALL_WORKFLOW_LIMITS.maxElapsedMs / 1000}s)`;
-      } else if (relevantChangedFiles > SMALL_WORKFLOW_LIMITS.maxRelevantChangedFiles) {
-        budgetError = `small workflow exceeded relevant changed-file budget (${relevantChangedFiles}/${SMALL_WORKFLOW_LIMITS.maxRelevantChangedFiles})`;
-      }
-
-      if (budgetError) {
-        ctx.log(`[SMALL] FAIL — ${budgetError}`);
-        await appendFile(logFile, `\n[PIPELINE] ${budgetError}\n`);
-        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-          seedId,
-          phase: phaseName,
-          error: budgetError,
-          retryable: false,
-        });
-        await ctx.markStuck(
-          store,
-          runId,
-          projectId,
-          seedId,
-          seedTitle,
-          progress,
-          phaseName,
-          budgetError,
-          notifyClient,
-          config.projectPath,
-        );
-        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
-      }
     }
 
     // 7. Handle failure

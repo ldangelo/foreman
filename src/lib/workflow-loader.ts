@@ -266,7 +266,7 @@ const BUNDLED_WORKFLOWS_DIR = join(
 );
 
 /** Known workflow names with bundled defaults. */
-export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = ["default", "small", "medium", "smoke", "epic"];
+export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = ["default", "smoke", "epic"];
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
@@ -733,7 +733,6 @@ export function findStaleWorkflows(projectRoot: string): string[] {
 export function resolveWorkflowName(
   seedType: string,
   labels?: string[],
-  triagedWorkflowName?: string,
 ): string {
   if (labels) {
     for (const label of labels) {
@@ -744,7 +743,6 @@ export function resolveWorkflowName(
   }
   if (seedType === "smoke") return "smoke";
   if (seedType === "epic") return "epic";
-  if (triagedWorkflowName) return triagedWorkflowName;
   return "default";
 }
 

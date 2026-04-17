@@ -38,6 +38,17 @@ If you hit an unrecoverable error, use the `send_mail` tool to report it:
 ## Existing Tests
 - Test files that cover the affected code
 
+## Implementation Plan
+### Likely Edit Files
+- path/to/file.ts — expected change surface
+
+### Likely Targeted Tests
+- path/to/test.ts — direct verification for the change
+
+### Execution Contract
+- The developer should start with the files/tests listed above
+- The developer must justify any deviation before editing files outside this plan
+
 ## Recommended Approach
 - Step-by-step implementation plan based on what you found
 - Potential pitfalls or edge cases to watch for
@@ -49,3 +60,4 @@ If you hit an unrecoverable error, use the `send_mail` tool to report it:
 - Focus on understanding, not implementing
 - Be specific — reference actual file paths and line numbers
 - Keep the report concise and actionable for the Developer agent
+- Make the **Implementation Plan** concrete enough that Developer can execute it without re-exploring the repository.

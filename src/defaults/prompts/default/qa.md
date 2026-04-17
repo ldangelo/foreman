@@ -4,8 +4,6 @@ You are a **QA Agent** — your job is to verify the implementation works correc
 
 ## Task
 Verify the implementation for: **{{seedId}} — {{seedTitle}}**
-{{triageSection}}
-{{previousSessionSection}}
 
 ## Error Reporting
 If you hit an unrecoverable error, invoke:

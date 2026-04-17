@@ -24,6 +24,8 @@ If you hit an unrecoverable error, use the `send_mail` tool to report it:
 - Stay focused on THIS task only — do not refactor unrelated code
 - Follow existing codebase patterns and conventions
 - Write tests for new functionality
+- Treat the **Implementation Plan** section in EXPLORER_REPORT.md as your execution contract. Start with those files/tests and do not deviate unless the plan is demonstrably insufficient.
+- If you deviate from the explorer plan, write a one-sentence justification in SESSION_LOG.md before editing the additional file(s), then repeat that justification in DEVELOPER_REPORT.md.
 - **DO NOT** commit, push, or close the seed — the pipeline handles that
 - **DO NOT** run the full test suite — the QA agent handles that
 - If blocked, write a note to BLOCKED.md explaining why

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { findMissingPrompts, findStalePrompts, loadPrompt } from "../prompt-loader.js";
+import { findStalePrompts, loadPrompt } from "../prompt-loader.js";
 
 describe("prompt loader", () => {
   const tempDirs: string[] = [];
@@ -29,52 +29,26 @@ describe("prompt loader", () => {
       "utf8",
     );
 
-    const loaded = loadPrompt("finalize", { seedId: "bd-123" }, "small", projectRoot);
+    const loaded = loadPrompt("finalize", { seedId: "bd-123" }, "custom", projectRoot);
     expect(loaded).toContain("default finalize for bd-123");
   });
 
   it("prefers workflow-specific prompts over the default fallback", () => {
     const projectRoot = makeProject();
-    mkdirSync(join(projectRoot, ".foreman", "prompts", "small"), { recursive: true });
+    mkdirSync(join(projectRoot, ".foreman", "prompts", "custom"), { recursive: true });
     writeFileSync(
       join(projectRoot, ".foreman", "prompts", "default", "developer.md"),
       "default developer",
       "utf8",
     );
     writeFileSync(
-      join(projectRoot, ".foreman", "prompts", "small", "developer.md"),
-      "small developer",
+      join(projectRoot, ".foreman", "prompts", "custom", "developer.md"),
+      "custom developer",
       "utf8",
     );
 
-    const loaded = loadPrompt("developer", {}, "small", projectRoot);
-    expect(loaded).toBe("small developer");
-  });
-
-  it("treats default fallback prompts as satisfying small/medium requirements", () => {
-    const projectRoot = makeProject();
-    writeFileSync(
-      join(projectRoot, ".foreman", "prompts", "default", "developer.md"),
-      "default developer",
-      "utf8",
-    );
-    writeFileSync(
-      join(projectRoot, ".foreman", "prompts", "default", "qa.md"),
-      "default qa",
-      "utf8",
-    );
-    writeFileSync(
-      join(projectRoot, ".foreman", "prompts", "default", "finalize.md"),
-      "default finalize",
-      "utf8",
-    );
-
-    const missing = findMissingPrompts(projectRoot);
-    expect(missing).not.toContain("small/developer.md");
-    expect(missing).not.toContain("small/finalize.md");
-    expect(missing).not.toContain("medium/developer.md");
-    expect(missing).not.toContain("medium/qa.md");
-    expect(missing).not.toContain("medium/finalize.md");
+    const loaded = loadPrompt("developer", {}, "custom", projectRoot);
+    expect(loaded).toBe("custom developer");
   });
 
   it("flags stale project-local default prompts that are missing critical markers", () => {
@@ -87,5 +61,23 @@ describe("prompt loader", () => {
 
     const stale = findStalePrompts(projectRoot);
     expect(stale).toContain("default/developer.md");
+  });
+
+  it("does not flag prompts that preserve explorer-plan markers", () => {
+    const projectRoot = makeProject();
+    writeFileSync(
+      join(projectRoot, ".foreman", "prompts", "default", "developer.md"),
+      "# Developer Agent\nRead EXPLORER_REPORT.md\nImplementation Plan",
+      "utf8",
+    );
+    writeFileSync(
+      join(projectRoot, ".foreman", "prompts", "default", "explorer.md"),
+      "# Explorer Agent\n## Implementation Plan\n### Likely Edit Files",
+      "utf8",
+    );
+
+    const stale = findStalePrompts(projectRoot);
+    expect(stale).not.toContain("default/developer.md");
+    expect(stale).not.toContain("default/explorer.md");
   });
 });

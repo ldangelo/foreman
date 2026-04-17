@@ -300,28 +300,6 @@ describe("verdict-triggered retry", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("completed without required artifact"));
   });
 
-  it("stops small workflow runs that exceed the hard tool-call budget", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
-    const log = vi.fn();
-    const phases = [
-      { name: "developer", artifact: "DEVELOPER_REPORT.md" },
-      { name: "finalize", artifact: "FINALIZE_VALIDATION.md", verdict: true, retryOnFail: 0 },
-    ];
-    const runPhase = vi.fn().mockImplementation(async (_phaseName: string, _prompt: string, _cfg: unknown, progress: any) => {
-      progress.toolCalls = 51;
-      writeFileSync(join(tmpDir, "DEVELOPER_REPORT.md"), "# Developer report\n");
-      return successResult();
-    });
-    const args = makeBasePipelineArgs(tmpDir, phases, runPhase, log) as any;
-    args.workflowConfig.name = "small";
-
-    await executePipeline(args);
-
-    expect(runPhase).toHaveBeenCalledTimes(1);
-    expect(args.markStuck).toHaveBeenCalledOnce();
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("small workflow exceeded tool-call budget"));
-  });
-
   it("reviewer and qa retry counters are independent (separate retryOnFail budgets)", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
     const phaseOrder: string[] = [];

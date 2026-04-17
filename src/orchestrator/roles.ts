@@ -377,13 +377,11 @@ export function buildPhasePrompt(
     /** Bead type (e.g. "test", "task", "bug"). Used by finalize to handle
      *  "nothing to commit" as success for verification beads. */
     seedType?: string;
-    runId?: string;
-    hasExplorerReport?: boolean;
-    requiresExplorerReport?: boolean;
-    feedbackContext?: string;
-    triageContext?: string;
-    previousSessionContext?: string;
-    baseBranch?: string;
+  runId?: string;
+  hasExplorerReport?: boolean;
+  requiresExplorerReport?: boolean;
+  feedbackContext?: string;
+  baseBranch?: string;
     /** Absolute path to the worktree. Passed to finalize prompt so it can cd
      *  to the correct directory before running git commands. */
     worktreePath?: string;
@@ -418,7 +416,7 @@ export function buildPhasePrompt(
 ): string {
   const commentsSection = context.seedComments ? `\n## Additional Context\n${context.seedComments}\n` : "";
   const explorerInstruction = context.hasExplorerReport
-    ? `2. Read **EXPLORER_REPORT.md** for codebase context and recommended approach`
+    ? `2. Read **EXPLORER_REPORT.md** for codebase context and follow its **Implementation Plan** unless you document a justified deviation`
     : `2. Explore the codebase to understand the relevant architecture`;
   const explorerPreflightSection = context.requiresExplorerReport
     ? `## Pre-flight: Check EXPLORER_REPORT.md
@@ -431,16 +429,9 @@ If it is missing, invoke and stop — do not proceed with implementation:
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"{{seedId}}","error":"EXPLORER_REPORT.md is missing — explorer phase did not complete successfully"}'
 \`\`\`
 Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
-    : `## Pre-flight: Localize the change
-This workflow does not require a separate explorer handoff. Start with the smallest likely edit area, then implement the task without broad repo reconnaissance.`;
+    : "";
   const feedbackSection = context.feedbackContext
     ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${context.feedbackContext}\n`
-    : "";
-  const triageSection = context.triageContext
-    ? `\n## Task Triage\n${context.triageContext}\n`
-    : "";
-  const previousSessionSection = context.previousSessionContext
-    ? `\n## Previous Phase Session Context\n${context.previousSessionContext}\n`
     : "";
 
   const vars: Record<string, string> = {
@@ -451,8 +442,6 @@ This workflow does not require a separate explorer handoff. Start with the small
     explorerInstruction,
     explorerPreflightSection,
     feedbackSection,
-    triageSection,
-    previousSessionSection,
     runId: context.runId ?? "",
     agentRole: phaseName,
     baseBranch: context.baseBranch ?? "main",
@@ -505,7 +494,7 @@ export function developerPrompt(
   // "2. " to keep the list sequential. If a new step is added before the placeholder
   // in the template, update the numbering here to match.
   const explorerInstruction = hasExplorerReport
-    ? `2. Read **EXPLORER_REPORT.md** for codebase context and recommended approach`
+    ? `2. Read **EXPLORER_REPORT.md** for codebase context and follow its **Implementation Plan** unless you document a justified deviation`
     : `2. Explore the codebase to understand the relevant architecture`;
 
   const feedbackSection = feedbackContext

@@ -4,8 +4,6 @@ You are the **Finalize** agent — your job is to commit all implementation work
 
 ## Task
 **Seed:** {{seedId}} — {{seedTitle}}
-{{triageSection}}
-{{previousSessionSection}}
 
 ## Error Reporting
 If you hit an unrecoverable error, use the `send_mail` tool to report it:
