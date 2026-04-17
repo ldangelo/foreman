@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { ForemanStore } from "../../lib/store.js";
-import { NativeTaskStore } from "../../lib/task-store.js";
+import { NativeTaskStore, isCompactTaskId } from "../../lib/task-store.js";
 import { performBeadsImport } from "../commands/task.js";
 
 function writeBeadsJsonl(projectPath: string, records: unknown[]): void {
@@ -80,11 +80,15 @@ describe("foreman task import --from-beads", () => {
     expect(result.unsupportedStatusSkips).toBe(0);
 
     const store = ForemanStore.forProject(project);
-    const taskStore = new NativeTaskStore(store.getDb());
+    store.registerProject("foreman", project);
+    const taskStore = new NativeTaskStore(store.getDb(), { projectKey: "foreman" });
     const openTask = store.getTaskByExternalId("bd-open");
     const readyTask = store.getTaskByExternalId("bd-ready");
     const closedTask = store.getTaskByExternalId("bd-closed");
 
+    expect(openTask && isCompactTaskId(openTask.id)).toBe(true);
+    expect(readyTask && isCompactTaskId(readyTask.id)).toBe(true);
+    expect(closedTask && isCompactTaskId(closedTask.id)).toBe(true);
     expect(openTask?.status).toBe("backlog");
     expect(readyTask?.status).toBe("ready");
     expect(readyTask?.approved_at).toBeTruthy();
@@ -137,7 +141,8 @@ describe("foreman task import --from-beads", () => {
   it("skips duplicate imports when external_id already exists", async () => {
     const project = makeProject();
     const store = ForemanStore.forProject(project);
-    const taskStore = new NativeTaskStore(store.getDb());
+    store.registerProject("foreman", project);
+    const taskStore = new NativeTaskStore(store.getDb(), { projectKey: "foreman" });
     taskStore.create({
       title: "Existing bead",
       externalId: "bd-existing",

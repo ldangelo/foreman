@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
 import type { Message, Run } from "../../lib/store.js";
+import { formatMessage } from "../commands/inbox.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -241,5 +242,143 @@ describe("inbox --all: cross-run message aggregation", () => {
     const run1Only = store.getAllMessages(run1.id);
     expect(run1Only.length).toBe(1);
     expect(run1Only[0]!.run_id).toBe(run1.id);
+  });
+});
+
+// ── Unit tests for formatMessage ─────────────────────────────────────────────
+
+function makeMockMessage(overrides: Partial<Message> = {}): Message {
+  return {
+    id: "msg-1",
+    run_id: "run-1",
+    sender_agent_type: "developer",
+    recipient_agent_type: "foreman",
+    subject: "test-subject",
+    body: "plain text body",
+    read: 0,
+    created_at: "2024-01-01T12:00:00.000Z",
+    deleted_at: null,
+    ...overrides,
+  };
+}
+
+describe("formatMessage", () => {
+  it("shows key fields when body is JSON with known agent-mail fields", () => {
+    const msg = makeMockMessage({
+      body: JSON.stringify({
+        phase: "developer",
+        status: "completed",
+        seedId: "seed-123",
+        runId: "run-456",
+      }),
+    });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("phase=developer");
+    expect(output).toContain("status=completed");
+    expect(output).toContain("seedId=seed-123");
+    expect(output).toContain("runId=run-456");
+    // Should NOT contain raw JSON
+    expect(output).not.toContain('"phase"');
+  });
+
+  it("shows verdict and message fields when present in JSON body", () => {
+    const msg = makeMockMessage({
+      body: JSON.stringify({
+        verdict: "PASS",
+        message: "All checks passed",
+        currentPhase: "qa",
+      }),
+    });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("verdict=PASS");
+    expect(output).toContain("message=All checks passed");
+    expect(output).toContain("currentPhase=qa");
+  });
+
+  it("truncates non-JSON bodies longer than 200 chars", () => {
+    const longBody = "A".repeat(300);
+    const msg = makeMockMessage({ body: longBody });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("A".repeat(200));
+    expect(output).toContain("..."); // ellipsis for truncation
+    expect(output).not.toContain("A".repeat(201));
+  });
+
+  it("truncates JSON bodies that have no recognized fields", () => {
+    const msg = makeMockMessage({
+      body: JSON.stringify({ someUnknownField: "x".repeat(250) }),
+    });
+
+    const output = formatMessage(msg);
+
+    // Should fall back to truncation since no recognized fields
+    // Note: JSON structure adds ~28 chars before the x's start
+    expect(output).toContain("...");
+    expect(output).not.toContain("x".repeat(250)); // original full length
+  });
+
+  it("handles malformed JSON as plain text", () => {
+    const msg = makeMockMessage({
+      body: "this is not json { broken",
+    });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("this is not json");
+  });
+
+  it("shows full payload with pretty-printed JSON when fullPayload=true", () => {
+    const msg = makeMockMessage({
+      body: JSON.stringify({ phase: "developer", status: "running" }, null, 2),
+    });
+
+    const output = formatMessage(msg, true);
+
+    expect(output).toContain('"phase"'); // pretty-printed JSON
+    expect(output).toContain('"developer"');
+    expect(output).toContain("\n"); // multi-line output
+  });
+
+  it("shows full raw body (non-JSON) when fullPayload=true", () => {
+    const msg = makeMockMessage({
+      body: "A".repeat(500),
+    });
+
+    const output = formatMessage(msg, true);
+
+    expect(output).toContain("A".repeat(500));
+    expect(output).not.toContain("..."); // no truncation in full mode
+  });
+
+  it("includes read mark when message is read", () => {
+    const msg = makeMockMessage({ read: 1 });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("[read]");
+  });
+
+  it("does not include read mark when message is unread", () => {
+    const msg = makeMockMessage({ read: 0 });
+
+    const output = formatMessage(msg);
+
+    expect(output).not.toContain("[read]");
+  });
+
+  it("includes error field in JSON body preview", () => {
+    const msg = makeMockMessage({
+      body: JSON.stringify({ error: "Something went wrong" }),
+    });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("error=Something went wrong");
   });
 });

@@ -2,7 +2,7 @@
  * Tests for NativeTaskStore — the native SQLite task management back-end.
  *
  * Covers:
- *   - create() — task creation with UUID, defaults, validation
+ *   - create() — task creation with compact IDs, defaults, validation
  *   - approve() — backlog → ready transition
  *   - close()   — set status to merged
  *   - addDependency() — with cycle detection
@@ -32,6 +32,7 @@ import {
   NativeTaskStore,
   parsePriority,
   priorityLabel,
+  isCompactTaskId,
   TaskNotFoundError,
   InvalidStatusTransitionError,
   CircularDependencyError,
@@ -41,12 +42,13 @@ import {
 
 // ── Test fixtures ─────────────────────────────────────────────────────────────
 
-function setupStore(): { store: ForemanStore; taskStore: NativeTaskStore; tmpDir: string } {
+function setupStore(): { store: ForemanStore; taskStore: NativeTaskStore; tmpDir: string; projectId: string } {
   const tmpDir = mkdtempSync(join(tmpdir(), "foreman-task-store-test-"));
   const dbPath = join(tmpDir, "test.db");
   const store = new ForemanStore(dbPath);
-  const taskStore = new NativeTaskStore(store.getDb());
-  return { store, taskStore, tmpDir };
+  const project = store.registerProject("foreman", tmpDir);
+  const taskStore = new NativeTaskStore(store.getDb(), { projectKey: "foreman" });
+  return { store, taskStore, tmpDir, projectId: project.id };
 }
 
 function teardownStore(ctx: { store: ForemanStore; tmpDir: string }): void {
@@ -146,7 +148,8 @@ describe("NativeTaskStore.create()", () => {
   it("creates a task with required title", () => {
     const task = ctx.taskStore.create({ title: "My Task" });
     expect(task.id).toBeTruthy();
-    expect(task.id).toMatch(/^[0-9a-f-]{36}$/); // UUID v4
+    expect(task.id).toMatch(/^foreman-[0-9a-f]{5}$/);
+    expect(isCompactTaskId(task.id)).toBe(true);
     expect(task.title).toBe("My Task");
     expect(task.status).toBe("backlog");
     expect(task.type).toBe("task"); // default type
@@ -173,7 +176,7 @@ describe("NativeTaskStore.create()", () => {
     expect(task.status).toBe("backlog");
   });
 
-  it("creates tasks with unique UUIDs", () => {
+  it("creates tasks with unique compact IDs", () => {
     const t1 = ctx.taskStore.create({ title: "T1" });
     const t2 = ctx.taskStore.create({ title: "T2" });
     expect(t1.id).not.toBe(t2.id);
@@ -214,6 +217,107 @@ describe("NativeTaskStore.get()", () => {
   it("returns null for non-existent task", () => {
     const result = ctx.taskStore.get("00000000-0000-0000-0000-000000000000");
     expect(result).toBeNull();
+  });
+});
+
+describe("NativeTaskStore.migrateLegacyTaskIds()", () => {
+  let ctx: ReturnType<typeof setupStore>;
+
+  beforeEach(() => {
+    ctx = setupStore();
+  });
+  afterEach(() => teardownStore(ctx));
+
+  it("rewrites legacy UUID IDs and dependent rows while deferring active work", () => {
+    const db = ctx.store.getDb();
+    const now = new Date().toISOString();
+    const legacyA = "11111111-1111-4111-8111-111111111111";
+    const legacyB = "22222222-2222-4222-8222-222222222222";
+    const legacyActive = "33333333-3333-4333-8333-333333333333";
+    const finishedRunId = "run-finished";
+    const activeRunId = "run-active";
+
+    db.prepare(
+      `INSERT INTO runs
+         (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch)
+       VALUES (?, ?, ?, 'codex', NULL, ?, ?, NULL, ?, ?, NULL)`,
+    ).run(finishedRunId, ctx.projectId, legacyB, `/tmp/worktrees/${legacyB}`, "reset", now, now);
+
+    db.prepare(
+      `INSERT INTO runs
+         (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch)
+       VALUES (?, ?, ?, 'codex', NULL, ?, ?, ?, NULL, ?, NULL)`,
+    ).run(activeRunId, ctx.projectId, legacyActive, `/tmp/worktrees/${legacyActive}`, "running", now, now);
+
+    db.prepare(
+      `INSERT INTO tasks
+         (id, title, description, type, priority, status, run_id, branch, external_id, created_at, updated_at, approved_at, closed_at)
+       VALUES (?, ?, NULL, 'task', 2, ?, ?, ?, NULL, ?, ?, NULL, NULL)`,
+    ).run(legacyA, "Legacy A", "backlog", null, `foreman/${legacyA}`, now, now);
+
+    db.prepare(
+      `INSERT INTO tasks
+         (id, title, description, type, priority, status, run_id, branch, external_id, created_at, updated_at, approved_at, closed_at)
+       VALUES (?, ?, NULL, 'task', 2, ?, ?, ?, NULL, ?, ?, NULL, NULL)`,
+    ).run(legacyB, "Legacy B", "merged", finishedRunId, `foreman/${legacyB}`, now, now);
+
+    db.prepare(
+      `INSERT INTO tasks
+         (id, title, description, type, priority, status, run_id, branch, external_id, created_at, updated_at, approved_at, closed_at)
+       VALUES (?, ?, NULL, 'task', 2, ?, ?, ?, NULL, ?, ?, NULL, NULL)`,
+    ).run(legacyActive, "Legacy Active", "in-progress", activeRunId, `foreman/${legacyActive}`, now, now);
+
+    db.prepare(
+      `INSERT INTO task_dependencies (from_task_id, to_task_id, type)
+       VALUES (?, ?, 'blocks')`,
+    ).run(legacyB, legacyA);
+
+    db.prepare(
+      `INSERT INTO merge_queue
+         (branch_name, seed_id, run_id, agent_name, files_modified, enqueued_at, status)
+       VALUES (?, ?, ?, 'agent', '[]', ?, 'pending')`,
+    ).run(`foreman/${legacyB}`, legacyB, finishedRunId, now);
+
+    const migratedStore = new NativeTaskStore(db, { projectKey: "foreman", autoMigrateLegacyIds: false });
+    const result = migratedStore.migrateLegacyTaskIds();
+
+    expect(result.migrated).toBe(2);
+    expect(result.deferredActive).toBe(1);
+
+    const allTasks = db.prepare("SELECT id, title FROM tasks ORDER BY title").all() as Array<{ id: string; title: string }>;
+    const migratedA = allTasks.find((row) => row.title === "Legacy A");
+    const migratedB = allTasks.find((row) => row.title === "Legacy B");
+    const deferred = allTasks.find((row) => row.title === "Legacy Active");
+
+    expect(migratedA?.id).toMatch(/^foreman-[0-9a-f]{5}$/);
+    expect(migratedB?.id).toMatch(/^foreman-[0-9a-f]{5}$/);
+    expect(deferred?.id).toBe(legacyActive);
+
+    const deps = db.prepare("SELECT * FROM task_dependencies").all() as DependencyRow[];
+    expect(deps).toEqual([
+      expect.objectContaining({
+        from_task_id: migratedB?.id,
+        to_task_id: migratedA?.id,
+        type: "blocks",
+      }),
+    ]);
+
+    const updatedRun = db.prepare("SELECT seed_id, worktree_path FROM runs WHERE id = ?").get(finishedRunId) as {
+      seed_id: string;
+      worktree_path: string | null;
+    };
+    expect(updatedRun.seed_id).toBe(migratedB?.id);
+    expect(updatedRun.worktree_path).toContain(migratedB?.id ?? "");
+
+    const activeRun = db.prepare("SELECT seed_id FROM runs WHERE id = ?").get(activeRunId) as { seed_id: string };
+    expect(activeRun.seed_id).toBe(legacyActive);
+
+    const mergeQueueRow = db.prepare("SELECT seed_id, branch_name FROM merge_queue WHERE run_id = ?").get(finishedRunId) as {
+      seed_id: string;
+      branch_name: string;
+    };
+    expect(mergeQueueRow.seed_id).toBe(migratedB?.id);
+    expect(mergeQueueRow.branch_name).toBe(`foreman/${migratedB?.id}`);
   });
 });
 

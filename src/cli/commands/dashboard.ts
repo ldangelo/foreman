@@ -811,7 +811,7 @@ export function renderSimpleDashboard(
  * Opens a new read-write ForemanStore for the task's project, updates the
  * task status to 'ready', then immediately closes the connection.
  *
- * @param taskId     - Native task UUID.
+ * @param taskId     - Native task ID.
  * @param projectPath - Path to the project that owns this task.
  */
 export function approveTask(taskId: string, projectPath: string): void {
@@ -828,7 +828,7 @@ export function approveTask(taskId: string, projectPath: string): void {
  * Resets the task status to 'backlog' so it can be re-dispatched.
  * Satisfies REQ-011.3 backend requirement.
  *
- * @param taskId     - Native task UUID.
+ * @param taskId     - Native task ID.
  * @param projectPath - Path to the project that owns this task.
  */
 export function retryTask(taskId: string, projectPath: string): void {

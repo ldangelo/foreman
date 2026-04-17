@@ -23,6 +23,7 @@ import {
   NativeTaskStore,
   parsePriority,
   priorityLabel,
+  isCompactTaskId,
   TaskNotFoundError,
   InvalidStatusTransitionError,
   CircularDependencyError,
@@ -36,7 +37,8 @@ function setupStore(): { store: ForemanStore; taskStore: NativeTaskStore; tmpDir
   mkdirSync(join(tmpDir, ".foreman"), { recursive: true });
   const dbPath = join(tmpDir, ".foreman", "foreman.db");
   const store = new ForemanStore(dbPath);
-  const taskStore = new NativeTaskStore(store.getDb());
+  store.registerProject("foreman", tmpDir);
+  const taskStore = new NativeTaskStore(store.getDb(), { projectKey: "foreman" });
   return { store, taskStore, tmpDir };
 }
 
@@ -58,6 +60,8 @@ describe("task create — NativeTaskStore.create()", () => {
   it("creates a task with default values", () => {
     const task = ctx.taskStore.create({ title: "Default Task" });
     expect(task.title).toBe("Default Task");
+    expect(task.id).toMatch(/^foreman-[0-9a-f]{5}$/);
+    expect(isCompactTaskId(task.id)).toBe(true);
     expect(task.status).toBe("backlog");
     expect(task.type).toBe("task");
     expect(task.priority).toBe(2); // medium

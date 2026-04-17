@@ -21,7 +21,7 @@
  *   - reevaluateBlockedTasks() — unblock tasks when all blockers are merged/closed
  */
 
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { Database } from "better-sqlite3";
 import type { Issue } from "./task-client.js";
 
@@ -48,6 +48,54 @@ const PRIORITY_LABEL_MAP: Record<number, string> = {
   4: "backlog",
 };
 
+const LEGACY_TASK_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const COMPACT_TASK_ID_SUFFIX_HEX_LENGTH = 5;
+const ACTIVE_RUN_STATUSES = new Set(["pending", "running", "pr-created"]);
+const ACTIVE_TASK_STATUSES = new Set([
+  "in-progress",
+  "explorer",
+  "developer",
+  "qa",
+  "reviewer",
+  "finalize",
+]);
+
+export interface NativeTaskStoreOptions {
+  projectKey?: string;
+  autoMigrateLegacyIds?: boolean;
+}
+
+export interface TaskIdMigrationResult {
+  migrated: number;
+  deferredActive: number;
+}
+
+export function normalizeTaskIdPrefix(raw: string | null | undefined): string {
+  const normalized = (raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized.length > 0 ? normalized : "task";
+}
+
+export function isLegacyUuidTaskId(taskId: string): boolean {
+  return LEGACY_TASK_UUID_PATTERN.test(taskId);
+}
+
+export function isCompactTaskId(taskId: string): boolean {
+  return new RegExp(
+    `^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{${COMPACT_TASK_ID_SUFFIX_HEX_LENGTH}}$`,
+    "i",
+  ).test(taskId);
+}
+
+export function formatTaskIdDisplay(taskId: string): string {
+  return taskId.length <= 16 ? taskId : `${taskId.slice(0, 8)}…`;
+}
+
 /**
  * Parse a priority string (alias or numeric) to a numeric value (0–4).
  *
@@ -58,7 +106,8 @@ const PRIORITY_LABEL_MAP: Record<number, string> = {
  */
 export function parsePriority(value: string): number {
   const lower = value.toLowerCase().trim();
-  if (lower in PRIORITY_ALIAS_MAP) return PRIORITY_ALIAS_MAP[lower]!;
+  const aliasedPriority = PRIORITY_ALIAS_MAP[lower];
+  if (aliasedPriority !== undefined) return aliasedPriority;
   const n = parseInt(lower, 10);
   if (!isNaN(n) && n >= 0 && n <= 4) return n;
   throw new RangeError(
@@ -196,7 +245,272 @@ function rowToIssue(row: TaskRow): Issue {
  * transaction so it is effectively atomic within the same process.
  */
 export class NativeTaskStore {
-  constructor(private readonly db: Database) {}
+  private readonly explicitProjectKey: string | undefined;
+  private cachedTaskIdPrefix: string | null = null;
+
+  constructor(
+    private readonly db: Database,
+    opts: NativeTaskStoreOptions = {},
+  ) {
+    this.explicitProjectKey = opts.projectKey;
+    if (opts.autoMigrateLegacyIds !== false) {
+      this.migrateLegacyTaskIds();
+    }
+  }
+
+  private canRunMigrations(): boolean {
+    const dbLike = this.db as Database & {
+      transaction?: unknown;
+      pragma?: unknown;
+    };
+    return (
+      typeof dbLike.prepare === "function" &&
+      typeof dbLike.transaction === "function" &&
+      typeof dbLike.pragma === "function"
+    );
+  }
+
+  private tableExists(tableName: string): boolean {
+    try {
+      const row = this.db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get(tableName) as { name?: string } | undefined;
+      return row?.name === tableName;
+    } catch {
+      return false;
+    }
+  }
+
+  private columnExists(tableName: string, columnName: string): boolean {
+    try {
+      const rows = this.db
+        .prepare(`PRAGMA table_info(${tableName})`)
+        .all() as Array<{ name?: string }>;
+      return rows.some((row) => row.name === columnName);
+    } catch {
+      return false;
+    }
+  }
+
+  private resolveTaskIdPrefix(): string {
+    if (this.cachedTaskIdPrefix) {
+      return this.cachedTaskIdPrefix;
+    }
+
+    let candidate = this.explicitProjectKey;
+    if (!candidate) {
+      try {
+        const row = this.db
+          .prepare("SELECT name FROM projects ORDER BY created_at ASC, rowid ASC LIMIT 1")
+          .get() as { name?: string } | undefined;
+        candidate = row?.name;
+      } catch {
+        candidate = undefined;
+      }
+    }
+
+    this.cachedTaskIdPrefix = normalizeTaskIdPrefix(candidate);
+    return this.cachedTaskIdPrefix;
+  }
+
+  private generateTaskId(existingIds?: Set<string>): string {
+    const prefix = this.resolveTaskIdPrefix();
+    for (let attempt = 0; attempt < 64; attempt += 1) {
+      const candidate =
+        `${prefix}-${randomBytes(3).toString("hex").slice(0, COMPACT_TASK_ID_SUFFIX_HEX_LENGTH)}`;
+      const isTaken = existingIds
+        ? existingIds.has(candidate)
+        : this.get(candidate) !== null;
+      if (!isTaken) {
+        existingIds?.add(candidate);
+        return candidate;
+      }
+    }
+
+    throw new Error(`Unable to allocate a unique task ID for prefix '${prefix}'.`);
+  }
+
+  allocateTaskId(): string {
+    return this.generateTaskId();
+  }
+
+  resolveTaskId(taskIdOrPrefix: string): string {
+    const exact = this.get(taskIdOrPrefix);
+    if (exact) {
+      return exact.id;
+    }
+
+    const rows = this.db
+      .prepare("SELECT id FROM tasks WHERE id LIKE ? ORDER BY created_at ASC, rowid ASC LIMIT 2")
+      .all(`${taskIdOrPrefix}%`) as Array<{ id: string }>;
+
+    if (rows.length === 0) {
+      throw new TaskNotFoundError(taskIdOrPrefix);
+    }
+    if (rows.length > 1) {
+      throw new Error(`Ambiguous task ID prefix '${taskIdOrPrefix}'.`);
+    }
+
+    const [match] = rows;
+    return match.id;
+  }
+
+  migrateLegacyTaskIds(): TaskIdMigrationResult {
+    if (!this.canRunMigrations()) {
+      return { migrated: 0, deferredActive: 0 };
+    }
+
+    type CandidateRow = {
+      id: string;
+      status: string;
+      run_status: string | null;
+    };
+
+    const candidates = this.db
+      .prepare(
+        `SELECT t.id, t.status, r.status AS run_status
+           FROM tasks t
+           LEFT JOIN runs r ON r.id = t.run_id`,
+      )
+      .all() as CandidateRow[];
+
+    const existingIds = new Set(
+      (this.db.prepare("SELECT id FROM tasks").all() as Array<{ id: string }>)
+        .map((row) => row.id),
+    );
+
+    const remaps: Array<{ oldId: string; newId: string }> = [];
+    let deferredActive = 0;
+
+    for (const row of candidates) {
+      if (!isLegacyUuidTaskId(row.id)) {
+        continue;
+      }
+
+      if (
+        ACTIVE_TASK_STATUSES.has(row.status) ||
+        (row.run_status !== null && ACTIVE_RUN_STATUSES.has(row.run_status))
+      ) {
+        deferredActive += 1;
+        continue;
+      }
+
+      remaps.push({ oldId: row.id, newId: this.generateTaskId(existingIds) });
+    }
+
+    if (remaps.length === 0) {
+      return { migrated: 0, deferredActive };
+    }
+
+    const dbWithPragma = this.db as Database & { pragma: (sql: string) => unknown };
+    const runsHasTmuxSession = this.columnExists("runs", "tmux_session");
+    const hasMergeQueue = this.tableExists("merge_queue");
+    const hasConflictPatterns = this.tableExists("conflict_patterns");
+    dbWithPragma.pragma("foreign_keys = OFF");
+    try {
+      const transaction = this.db.transaction(() => {
+        for (const { oldId, newId } of remaps) {
+          if (runsHasTmuxSession) {
+            this.db
+              .prepare(
+                `UPDATE runs
+                    SET seed_id = ?,
+                        worktree_path = CASE
+                          WHEN worktree_path IS NULL THEN NULL
+                          ELSE REPLACE(worktree_path, ?, ?)
+                        END,
+                        tmux_session = CASE
+                          WHEN tmux_session IS NULL THEN NULL
+                          ELSE REPLACE(tmux_session, ?, ?)
+                        END
+                  WHERE seed_id = ?`,
+              )
+              .run(newId, oldId, newId, oldId, newId, oldId);
+          } else {
+            this.db
+              .prepare(
+                `UPDATE runs
+                    SET seed_id = ?,
+                        worktree_path = CASE
+                          WHEN worktree_path IS NULL THEN NULL
+                          ELSE REPLACE(worktree_path, ?, ?)
+                        END
+                  WHERE seed_id = ?`,
+              )
+              .run(newId, oldId, newId, oldId);
+          }
+
+          if (hasMergeQueue) {
+            this.db
+              .prepare(
+                `UPDATE merge_queue
+                    SET seed_id = ?,
+                        branch_name = REPLACE(branch_name, ?, ?)
+                  WHERE seed_id = ? OR branch_name LIKE ?`,
+              )
+              .run(newId, `foreman/${oldId}`, `foreman/${newId}`, oldId, `%${oldId}%`);
+          }
+
+          if (hasConflictPatterns) {
+            this.db
+              .prepare(
+                `UPDATE conflict_patterns
+                    SET seed_id = ?
+                  WHERE seed_id = ?`,
+              )
+              .run(newId, oldId);
+          }
+
+          this.db
+            .prepare(
+              `UPDATE task_dependencies
+                  SET from_task_id = ?
+                WHERE from_task_id = ?`,
+            )
+            .run(newId, oldId);
+
+          this.db
+            .prepare(
+              `UPDATE task_dependencies
+                  SET to_task_id = ?
+                WHERE to_task_id = ?`,
+            )
+            .run(newId, oldId);
+
+          this.db
+            .prepare(
+              `UPDATE tasks
+                  SET id = ?,
+                      branch = CASE
+                        WHEN branch IS NULL THEN NULL
+                        ELSE REPLACE(branch, ?, ?)
+                      END
+                WHERE id = ?`,
+            )
+            .run(newId, oldId, newId, oldId);
+        }
+      });
+
+      transaction();
+    } finally {
+      dbWithPragma.pragma("foreign_keys = ON");
+    }
+
+    const dependencyIntegrity = this.db
+      .prepare(
+        `SELECT COUNT(*) AS cnt
+           FROM task_dependencies td
+      LEFT JOIN tasks from_task ON from_task.id = td.from_task_id
+      LEFT JOIN tasks to_task ON to_task.id = td.to_task_id
+          WHERE from_task.id IS NULL OR to_task.id IS NULL`,
+      )
+      .get() as { cnt?: number } | undefined;
+    if ((dependencyIntegrity?.cnt ?? 0) > 0) {
+      throw new Error("Task ID migration left dangling task dependency references.");
+    }
+
+    return { migrated: remaps.length, deferredActive };
+  }
 
   // ── Existence check ───────────────────────────────────────────────────
 
@@ -293,7 +607,7 @@ export class NativeTaskStore {
    */
   create(opts: CreateTaskOptions): TaskRow {
     const now = new Date().toISOString();
-    const id = randomUUID();
+    const id = this.generateTaskId();
 
     this.db
       .prepare(
@@ -641,7 +955,10 @@ export class NativeTaskStore {
     const queue: string[] = [start];
 
     while (queue.length > 0) {
-      const current = queue.pop()!;
+      const current = queue.pop();
+      if (!current) {
+        continue;
+      }
       if (current === target) return true;
       if (visited.has(current)) continue;
       visited.add(current);
