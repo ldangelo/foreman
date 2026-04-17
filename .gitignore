@@ -21,8 +21,11 @@ dist/
 /QA_REPORT*.md
 /REVIEW*.md
 /FINALIZE_REPORT*.md
+/TRIAGE_REPORT*.md
+/*_SESSION_SUMMARY*.md
 /TASK.md
 /AGENTS.md
+!/AGENTS.md
 
 # bv (beads viewer) local config and caches
 .bv/

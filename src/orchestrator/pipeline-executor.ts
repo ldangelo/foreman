@@ -9,7 +9,7 @@
  * This replaces the ~450-line hardcoded runPipeline() in agent-worker.ts.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { appendFile } from "node:fs/promises";
 import { join, basename } from "node:path";
@@ -59,6 +59,7 @@ export interface PhaseResult {
   tokensIn: number;
   tokensOut: number;
   error?: string;
+  outputText?: string;
 }
 
 /** A child task within an epic pipeline run. */
@@ -106,6 +107,8 @@ export interface PipelineRunConfig {
    * at each phase transition (REQ-012). Null/undefined in beads fallback mode.
    */
   taskId?: string | null;
+  /** Bounded triage report produced once before workflow selection. */
+  triageContext?: string;
   /**
    * Parent epic bead ID. When set, this run is part of an epic execution.
    * Used to link child task results back to the parent epic.
@@ -195,6 +198,45 @@ export interface PipelineContext {
 function readReport(worktreePath: string, filename: string): string | null {
   const p = join(worktreePath, filename);
   try { return readFileSync(p, "utf-8"); } catch { return null; }
+}
+
+function phaseSummaryFileName(phaseName: string): string {
+  return `${phaseName.toUpperCase()}_SESSION_SUMMARY.md`;
+}
+
+function summarizeText(text: string, maxLen: number = 1200): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLen) return normalized;
+  return `${normalized.slice(0, maxLen - 1).trimEnd()}…`;
+}
+
+function buildPhaseSessionSummary(
+  phaseName: string,
+  result: PhaseResult,
+  artifactContent?: string | null,
+): string {
+  const lines = [
+    `# ${phaseName.toUpperCase()} Session Summary`,
+    "",
+    `- Success: ${result.success ? "yes" : "no"}`,
+    `- Turns: ${result.turns}`,
+    `- Cost USD: ${result.costUsd.toFixed(4)}`,
+    `- Tokens: in=${result.tokensIn}, out=${result.tokensOut}`,
+  ];
+
+  if (result.error) {
+    lines.push(`- Error: ${summarizeText(result.error, 300)}`);
+  }
+
+  if (artifactContent) {
+    lines.push("", "## Artifact Summary", summarizeText(artifactContent));
+  }
+
+  if (result.outputText) {
+    lines.push("", "## Assistant Output Summary", summarizeText(result.outputText));
+  }
+
+  return lines.join("\n");
 }
 
 /**
@@ -583,6 +625,10 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
   const { config, workflowConfig, store, logFile } = ctx;
   const { seedId } = config;
 
+  if (config.triageContext) {
+    writeFileSync(join(config.worktreePath, "TRIAGE_REPORT.md"), `${config.triageContext.trim()}\n`, "utf-8");
+  }
+
   const progress: RunProgress = {
     toolCalls: 0,
     toolBreakdown: {},
@@ -631,7 +677,7 @@ async function runPhaseSequence(
   /** When true (epic task mode), exhausted retries return failure instead of continuing. */
   failOnRetriesExhausted: boolean = false,
 ): Promise<PhaseSequenceResult> {
-  const { config, store, logFile, notifyClient, agentMailClient } = ctx;
+  const { config, workflowConfig, store, logFile, notifyClient, agentMailClient } = ctx;
   const { runId, projectId, seedId, seedTitle, worktreePath } = config;
   const description = config.seedDescription ?? "(no description)";
   const comments = config.seedComments;
@@ -641,6 +687,7 @@ async function runPhaseSequence(
   let feedbackContext: string | undefined;
   let qaVerdictForLog: "pass" | "fail" | "unknown" = "unknown";
   const retryCounts: Record<string, number> = {};
+  const phaseSessionSummaries = new Map<string, string>();
 
   // P1: Explorer circuit breaker - track Explorer failures to fail fast after 3
   const explorerFailures: string[] = [];
@@ -770,7 +817,10 @@ async function runPhaseSequence(
       seedType: config.seedType,
       runId,
       hasExplorerReport,
+      requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
       feedbackContext,
+      triageContext: config.triageContext,
+      previousSessionContext: i > 0 ? phaseSessionSummaries.get(phases[i - 1].name) : undefined,
       worktreePath,
       baseBranch: config.targetBranch,
       ...vcsPromptVars,
@@ -834,6 +884,19 @@ async function runPhaseSequence(
     progress.costByPhase ??= {};
     progress.costByPhase[phaseName] = (progress.costByPhase[phaseName] ?? 0) + result.costUsd;
     store.updateRunProgress(runId, progress);
+
+    const phaseArtifactContent = phase.artifact ? readReport(worktreePath, phase.artifact) : null;
+    const phaseSummary = buildPhaseSessionSummary(
+      phaseName,
+      result,
+      phaseArtifactContent,
+    );
+    phaseSessionSummaries.set(phaseName, phaseSummary);
+    writeFileSync(
+      join(worktreePath, phaseSummaryFileName(phaseName)),
+      `${phaseSummary.trim()}\n`,
+      "utf-8",
+    );
 
     // 7. Handle failure
     if (!result.success) {
@@ -964,8 +1027,8 @@ async function runPhaseSequence(
 
       if (phaseName === "qa" && report && !qaReportHasTestEvidence(report)) {
         verdict = "fail";
-        feedbackContext = "QA report invalid: missing explicit `npm test` command/output evidence with pass/fail counts.";
-        ctx.log(`[QA] FAIL — report missing npm test evidence`);
+        feedbackContext = "QA report invalid: missing explicit test command/output evidence with pass/fail counts.";
+        ctx.log("[QA] FAIL — report missing test command evidence");
       }
 
       if (phaseName === "finalize" && report) {

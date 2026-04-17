@@ -379,7 +379,10 @@ export function buildPhasePrompt(
     seedType?: string;
     runId?: string;
     hasExplorerReport?: boolean;
+    requiresExplorerReport?: boolean;
     feedbackContext?: string;
+    triageContext?: string;
+    previousSessionContext?: string;
     baseBranch?: string;
     /** Absolute path to the worktree. Passed to finalize prompt so it can cd
      *  to the correct directory before running git commands. */
@@ -417,8 +420,27 @@ export function buildPhasePrompt(
   const explorerInstruction = context.hasExplorerReport
     ? `2. Read **EXPLORER_REPORT.md** for codebase context and recommended approach`
     : `2. Explore the codebase to understand the relevant architecture`;
+  const explorerPreflightSection = context.requiresExplorerReport
+    ? `## Pre-flight: Check EXPLORER_REPORT.md
+After verifying /send-mail, check if \`EXPLORER_REPORT.md\` exists in the worktree root:
+\`\`\`bash
+test -f EXPLORER_REPORT.md || echo "MISSING"
+\`\`\`
+If it is missing, invoke and stop — do not proceed with implementation:
+\`\`\`
+/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"{{seedId}}","error":"EXPLORER_REPORT.md is missing — explorer phase did not complete successfully"}'
+\`\`\`
+Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
+    : `## Pre-flight: Localize the change
+This workflow does not require a separate explorer handoff. Start with the smallest likely edit area, then implement the task without broad repo reconnaissance.`;
   const feedbackSection = context.feedbackContext
     ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${context.feedbackContext}\n`
+    : "";
+  const triageSection = context.triageContext
+    ? `\n## Task Triage\n${context.triageContext}\n`
+    : "";
+  const previousSessionSection = context.previousSessionContext
+    ? `\n## Previous Phase Session Context\n${context.previousSessionContext}\n`
     : "";
 
   const vars: Record<string, string> = {
@@ -427,7 +449,10 @@ export function buildPhasePrompt(
     seedDescription: context.seedDescription,
     commentsSection,
     explorerInstruction,
+    explorerPreflightSection,
     feedbackSection,
+    triageSection,
+    previousSessionSection,
     runId: context.runId ?? "",
     agentRole: phaseName,
     baseBranch: context.baseBranch ?? "main",
@@ -625,7 +650,7 @@ export function parseFinalizeIntegrationStatus(reportContent: string): FinalizeI
 }
 
 export function qaReportHasTestEvidence(reportContent: string): boolean {
-  const hasCommand = /npm test/i.test(reportContent);
+  const hasCommand = /(npm test|npx\s+vitest(?:\s+run)?|pnpm\s+vitest(?:\s+run)?|yarn\s+vitest(?:\s+run)?|vitest\s+run)/i.test(reportContent);
   const hasCounts = /(\b\d+\s+passed\b|\b\d+\s+failed\b|\btests? failed out of\b|\btests?:\s*\d+\s+passed[, ]+\d+\s+failed\b)/i.test(reportContent);
   return hasCommand && hasCounts;
 }

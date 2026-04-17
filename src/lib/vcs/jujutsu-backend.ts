@@ -327,8 +327,10 @@ export class JujutsuBackend implements VcsBackend {
   /**
    * Create a jj workspace for a seed.
    *
-   * Creates a workspace in Foreman's external workspace root and sets up
-   * a bookmark `foreman/<seedId>` pointing to the new workspace's revision.
+ * Creates a workspace in Foreman's external workspace root and sets up
+ * a bookmark `foreman/<seedId>` pointing to the new workspace's revision.
+ * When `baseBranch` is provided, the new workspace is created directly from
+ * that branch/revision instead of inheriting the controller workspace parent.
    *
    * Handles existing workspaces by rebasing onto the base branch.
    */
@@ -358,10 +360,21 @@ export class JujutsuBackend implements VcsBackend {
     await fs.mkdir(worktreesDir, { recursive: true });
     await fs.mkdir(dirname(workspacePath), { recursive: true });
 
-    // Create new workspace
+    // Create new workspace pinned to the requested base. Without --revision,
+    // JJ creates the new workspace on top of the parent(s) of the current
+    // working-copy commit, which can accidentally inherit unrelated local
+    // controller changes.
     try {
       await this.jj(
-        ["workspace", "add", "--name", `foreman-${seedId}`, workspacePath],
+        [
+          "workspace",
+          "add",
+          "--name",
+          `foreman-${seedId}`,
+          "--revision",
+          base,
+          workspacePath,
+        ],
         repoPath,
       );
     } catch (err: unknown) {
@@ -372,7 +385,15 @@ export class JujutsuBackend implements VcsBackend {
         if (!existsSync(workspacePath)) {
           await this.jj(["workspace", "forget", `foreman-${seedId}`], repoPath);
           await this.jj(
-            ["workspace", "add", "--name", `foreman-${seedId}`, workspacePath],
+            [
+              "workspace",
+              "add",
+              "--name",
+              `foreman-${seedId}`,
+              "--revision",
+              base,
+              workspacePath,
+            ],
             repoPath,
           );
         }

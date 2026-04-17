@@ -9,7 +9,7 @@
  *  5. After max retries exhausted, pipeline continues to next phase
  *  6. PASS verdict does NOT loop back (normal flow)
  *  7. Missing artifact yields "unknown" verdict — no retry triggered
- *  8. QA report without npm test evidence is treated as FAIL
+ *  8. QA report without test evidence is treated as FAIL
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -211,7 +211,7 @@ describe("verdict-triggered retry", () => {
     expect(log).not.toHaveBeenCalledWith(expect.stringContaining("FAIL — looping back"));
   });
 
-  it("treats QA report without npm test evidence as FAIL and retries developer", async () => {
+  it("treats QA report without test evidence as FAIL and retries developer", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
     const phaseOrder: string[] = [];
     const log = vi.fn();
@@ -239,7 +239,7 @@ describe("verdict-triggered retry", () => {
     await executePipeline(makeBasePipelineArgs(tmpDir, phases, runPhase, log) as never);
 
     expect(phaseOrder).toEqual(["developer", "qa", "developer", "qa", "finalize"]);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("report missing npm test evidence"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("report missing test command evidence"));
   });
 
   it("missing artifact yields no retry (verdict unknown)", async () => {

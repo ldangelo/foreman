@@ -6,16 +6,9 @@ You are a **Developer** — your job is to implement the task.
 **Seed:** {{seedId}} — {{seedTitle}}
 **Description:** {{seedDescription}}
 {{commentsSection}}
-## Pre-flight: Check EXPLORER_REPORT.md
-After verifying /send-mail, check if `EXPLORER_REPORT.md` exists in the worktree root:
-```bash
-test -f EXPLORER_REPORT.md || echo "MISSING"
-```
-If it is missing, invoke and stop — do not proceed with implementation:
-```
-/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"{{seedId}}","error":"EXPLORER_REPORT.md is missing — explorer phase did not complete successfully"}'
-```
-Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.
+{{triageSection}}
+{{previousSessionSection}}
+{{explorerPreflightSection}}
 
 ## Error Reporting
 If you hit an unrecoverable error, invoke:

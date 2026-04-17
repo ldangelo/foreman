@@ -709,6 +709,27 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.createWorkspace (AC-T-018-1)", ()
     expect(result1.workspacePath).toBe(result2.workspacePath);
     expect(result1.branchName).toBe(result2.branchName);
   });
+
+  it("creates the workspace from the requested base branch instead of inheriting controller-local parent state", async () => {
+    const repo = makeTempJjRepo();
+    tempDirs.push(repo);
+
+    writeFileSync(join(repo, "README.md"), "# init\n");
+    execFileSync("jj", ["describe", "-m", "initial"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "dev", "-r", "@"], { cwd: repo, stdio: "pipe" });
+
+    // Create an unrelated local controller commit that should NOT be inherited
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+    writeFileSync(join(repo, "controller-only.txt"), "should not leak\n");
+    execFileSync("jj", ["describe", "-m", "controller local state"], { cwd: repo, stdio: "pipe" });
+    execFileSync("jj", ["new"], { cwd: repo, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repo);
+    const { workspacePath } = await backend.createWorkspace(repo, "bd-base-pin", "dev");
+
+    const changedAgainstDev = await backend.getChangedFiles(workspacePath, "dev", "@");
+    expect(changedAgainstDev).not.toContain("controller-only.txt");
+  });
 });
 
 describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.removeWorkspace (AC-T-018-2)", () => {

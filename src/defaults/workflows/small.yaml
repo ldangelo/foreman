@@ -1,0 +1,39 @@
+name: small
+onError: stop
+setup:
+  - command: npm install --prefer-offline --no-audit
+    description: Install Node.js dependencies
+    failFatal: true
+setupCache:
+  key: package-lock.json
+  path: node_modules
+
+phases:
+  - name: developer
+    prompt: developer.md
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 40
+    artifact: DEVELOPER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  - name: finalize
+    prompt: finalize.md
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 20
+    artifact: FINALIZE_VALIDATION.md
+    verdict: true
+    retryWith: developer
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer

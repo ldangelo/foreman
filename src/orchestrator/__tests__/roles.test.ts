@@ -234,6 +234,24 @@ describe("buildPhasePrompt — seedType propagation", () => {
   });
 });
 
+describe("buildPhasePrompt — triage and session handoff", () => {
+  it("injects triage and previous-session context into downstream prompts", () => {
+    const prompt = buildPhasePrompt("qa", {
+      seedId: "foreman-12345",
+      seedTitle: "status output fix",
+      seedDescription: "Render title and description in status output",
+      triageContext: "- Recommended workflow: small",
+      previousSessionContext: "Developer changed status.ts and status-display.test.ts",
+      runId: "run-1",
+    });
+
+    expect(prompt).toContain("## Task Triage");
+    expect(prompt).toContain("Recommended workflow: small");
+    expect(prompt).toContain("## Previous Phase Session Context");
+    expect(prompt).toContain("Developer changed status.ts");
+  });
+});
+
 describe("parseVerdict", () => {
   it("parses PASS verdict", () => {
     expect(parseVerdict("## Verdict: PASS\nAll good")).toBe("pass");
@@ -316,7 +334,11 @@ describe("qaReportHasTestEvidence", () => {
     expect(qaReportHasTestEvidence("Command run: npm test -- --reporter=dot\nTest suite: 10 passed, 0 failed\nRaw summary: 10 passed, 0 failed")).toBe(true);
   });
 
-  it("returns false when npm test is missing", () => {
+  it("returns true when targeted vitest command and pass/fail counts are present", () => {
+    expect(qaReportHasTestEvidence("Command run: npx vitest run src/cli/__tests__/status-display.test.ts\nTest suite: 10 passed, 0 failed\nRaw summary: 10 passed, 0 failed")).toBe(true);
+  });
+
+  it("returns false when test command is missing", () => {
     expect(qaReportHasTestEvidence("Test suite: 10 passed, 0 failed")).toBe(false);
   });
 

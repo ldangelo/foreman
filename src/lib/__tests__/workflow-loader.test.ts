@@ -441,6 +441,11 @@ describe("resolveWorkflowName", () => {
   it("returns 'default' when labels is undefined", () => {
     expect(resolveWorkflowName("feature", undefined)).toBe("default");
   });
+
+  it("uses triaged workflow when there is no explicit label override", () => {
+    expect(resolveWorkflowName("bug", undefined, "small")).toBe("small");
+    expect(resolveWorkflowName("feature", ["priority:high"], "medium")).toBe("medium");
+  });
 });
 
 // ── validateWorkflowConfig — models map ──────────────────────────────────────
@@ -739,7 +744,9 @@ describe("validateWorkflowConfig — epic mode", () => {
     expect(config.phases.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("includes 'epic' in BUNDLED_WORKFLOW_NAMES", () => {
+  it("includes small/medium/epic in BUNDLED_WORKFLOW_NAMES", () => {
+    expect(BUNDLED_WORKFLOW_NAMES).toContain("small");
+    expect(BUNDLED_WORKFLOW_NAMES).toContain("medium");
     expect(BUNDLED_WORKFLOW_NAMES).toContain("epic");
   });
 });

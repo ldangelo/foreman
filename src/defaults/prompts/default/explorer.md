@@ -6,6 +6,7 @@ You are an **Explorer** — your job is to understand the codebase before implem
 **Seed:** {{seedId}} — {{seedTitle}}
 **Description:** {{seedDescription}}
 {{commentsSection}}
+{{triageSection}}
 ## Error Reporting
 If you hit an unrecoverable error, invoke:
 ```

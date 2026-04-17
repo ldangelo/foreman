@@ -3,8 +3,9 @@
  *
  * Single resolution chain for agent phase prompts:
  *   1. <projectRoot>/.foreman/prompts/{workflow}/{phase}.md  (project-local override)
- *   2. ~/.foreman/prompts/{phase}.md                         (user global override)
- *   3. Error — no silent fallback to bundled defaults at runtime
+ *   2. <projectRoot>/.foreman/prompts/default/{phase}.md     (shared project-local fallback)
+ *   3. ~/.foreman/prompts/{phase}.md                         (user global override)
+ *   4. Error — no silent fallback to bundled defaults at runtime
  *
  * Bundled defaults live in src/defaults/prompts/{workflow}/{phase}.md and are
  * installed into a project by `foreman init` (or `foreman doctor --fix`).
@@ -41,6 +42,8 @@ export const REQUIRED_PHASES: Readonly<Record<string, ReadonlyArray<string>>> =
       "lead-explorer",
       "lead-reviewer",
     ],
+    small: ["developer", "finalize"],
+    medium: ["developer", "qa", "finalize"],
     smoke: ["explorer", "developer", "qa", "reviewer", "finalize"],
   };
 
@@ -89,8 +92,9 @@ export function renderTemplate(
  *
  * Resolution order:
  *   1. <projectRoot>/.foreman/prompts/{workflow}/{phase}.md
- *   2. ~/.foreman/prompts/{phase}.md
- *   3. Throws PromptNotFoundError
+ *   2. <projectRoot>/.foreman/prompts/default/{phase}.md
+ *   3. ~/.foreman/prompts/{phase}.md
+ *   4. Throws PromptNotFoundError
  *
  * @param phase       - Phase name: "explorer" | "developer" | "qa" | "reviewer" | ...
  * @param vars        - Template variables for {{placeholder}} substitution.
@@ -104,23 +108,21 @@ export function loadPrompt(
   workflow: string,
   projectRoot: string,
 ): string {
-  // Tier 1: project-local prompt
-  const projectPromptPath = join(
-    projectRoot,
-    ".foreman",
-    "prompts",
-    workflow,
-    `${phase}.md`,
-  );
-  if (existsSync(projectPromptPath)) {
+  const projectPromptCandidates = [
+    join(projectRoot, ".foreman", "prompts", workflow, `${phase}.md`),
+    join(projectRoot, ".foreman", "prompts", "default", `${phase}.md`),
+  ];
+
+  for (const projectPromptPath of projectPromptCandidates) {
+    if (!existsSync(projectPromptPath)) continue;
     try {
       return renderTemplate(readFileSync(projectPromptPath, "utf-8"), vars);
     } catch {
-      // Fall through to next tier
+      // Fall through to next tier/candidate
     }
   }
 
-  // Tier 2: user global prompt
+  // Tier 3: user global prompt
   const userPromptPath = join(homedir(), ".foreman", "prompts", `${phase}.md`);
   if (existsSync(userPromptPath)) {
     try {
@@ -130,7 +132,7 @@ export function loadPrompt(
     }
   }
 
-  // Tier 3: error
+  // Tier 4: error
   throw new PromptNotFoundError(phase, workflow, projectRoot);
 }
 
@@ -244,14 +246,21 @@ export function findMissingPrompts(projectRoot: string): string[] {
 
   for (const [workflow, phases] of Object.entries(REQUIRED_PHASES)) {
     for (const phase of phases) {
-      const p = join(
+      const workflowPrompt = join(
         projectRoot,
         ".foreman",
         "prompts",
         workflow,
         `${phase}.md`,
       );
-      if (!existsSync(p)) {
+      const defaultPrompt = join(
+        projectRoot,
+        ".foreman",
+        "prompts",
+        "default",
+        `${phase}.md`,
+      );
+      if (!existsSync(workflowPrompt) && !existsSync(defaultPrompt)) {
         missing.push(`${workflow}/${phase}.md`);
       }
     }

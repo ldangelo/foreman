@@ -32,6 +32,7 @@ import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
+import { formatTriageReport, triageTask } from "../lib/task-triage.js";
 import { autoMerge } from "./auto-merge.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { NativeTaskClient } from "../lib/native-task-client.js";
@@ -262,6 +263,8 @@ interface WorkerConfig {
    * When set, this run is an epic execution.
    */
   epicId?: string;
+  /** Bounded triage summary injected into prompts/report handoffs. */
+  triageContext?: string;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -493,6 +496,7 @@ interface PhaseResult {
   tokensIn: number;
   tokensOut: number;
   error?: string;
+  outputText?: string;
 }
 
 /**
@@ -585,12 +589,27 @@ async function runPhase(
     if (phaseResult.success) {
       log(`[${role.toUpperCase()}] Completed (${phaseResult.turns} turns, $${phaseResult.costUsd.toFixed(4)})`);
       await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] COMPLETED ($${phaseResult.costUsd.toFixed(4)})\n`);
-      return { success: true, costUsd: phaseResult.costUsd, turns: phaseResult.turns, tokensIn: phaseResult.tokensIn, tokensOut: phaseResult.tokensOut };
+      return {
+        success: true,
+        costUsd: phaseResult.costUsd,
+        turns: phaseResult.turns,
+        tokensIn: phaseResult.tokensIn,
+        tokensOut: phaseResult.tokensOut,
+        outputText: phaseResult.outputText,
+      };
     } else {
       const reason = phaseResult.errorMessage ?? "Pi agent ended without success";
       log(`[${role.toUpperCase()}] Failed: ${reason.slice(0, 200)}`);
       await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] FAILED: ${reason}\n`);
-      return { success: false, costUsd: phaseResult.costUsd, turns: phaseResult.turns, tokensIn: phaseResult.tokensIn, tokensOut: phaseResult.tokensOut, error: reason };
+      return {
+        success: false,
+        costUsd: phaseResult.costUsd,
+        turns: phaseResult.turns,
+        tokensIn: phaseResult.tokensIn,
+        tokensOut: phaseResult.tokensOut,
+        error: reason,
+        outputText: phaseResult.outputText,
+      };
     }
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -708,7 +727,20 @@ async function runTroubleshooterPhase(
  */
 async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string, notifyClient: NotificationClient, agentMailClient: AnyMailClient | null): Promise<void> {
   const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(config.worktreePath);
-  const resolvedWorkflow = resolveWorkflowName(config.seedType ?? "feature", config.seedLabels);
+  const triageInput = {
+    seedType: config.seedType ?? "feature",
+    seedTitle: config.seedTitle,
+    seedDescription: config.seedDescription,
+    seedComments: config.seedComments,
+    seedLabels: config.seedLabels,
+  };
+  const triage = triageTask(triageInput);
+  config.triageContext = formatTriageReport(triageInput, triage);
+  const resolvedWorkflow = resolveWorkflowName(
+    config.seedType ?? "feature",
+    config.seedLabels,
+    triage.workflowName,
+  );
   // Load the workflow config (phase sequence + per-phase overrides).
   let workflowConfig: WorkflowConfig;
   try {
