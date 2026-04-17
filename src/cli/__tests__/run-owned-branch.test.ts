@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const { mockExecFileSync } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
@@ -9,7 +12,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, execFileSync: mockExecFileSync };
 });
 
-import { isIgnorableControllerPath, resolveOwnedControllerBranch } from "../commands/run.js";
+import { collectRuntimeAssetIssues, isIgnorableControllerPath, resolveOwnedControllerBranch } from "../commands/run.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 
 function makeJjVcs(overrides: Partial<VcsBackend> = {}): VcsBackend {
@@ -116,5 +119,36 @@ describe("resolveOwnedControllerBranch", () => {
     await expect(resolveOwnedControllerBranch(vcs, "/repo")).rejects.toThrow(
       /Foreman-owned branch requires a clean controller checkout/,
     );
+  });
+});
+
+describe("collectRuntimeAssetIssues", () => {
+  const tempDirs: string[] = [];
+
+  function makeProject(): string {
+    const dir = mkdtempSync(join(tmpdir(), "foreman-run-assets-"));
+    tempDirs.push(dir);
+    mkdirSync(join(dir, ".foreman", "prompts", "default"), { recursive: true });
+    mkdirSync(join(dir, ".foreman", "workflows"), { recursive: true });
+    return dir;
+  }
+
+  afterEach(() => {
+    for (const dir of tempDirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    tempDirs.length = 0;
+  });
+
+  it("flags stale project-local prompts before dispatch", () => {
+    const projectRoot = makeProject();
+    writeFileSync(
+      join(projectRoot, ".foreman", "prompts", "default", "developer.md"),
+      "# stale prompt without new placeholders",
+      "utf8",
+    );
+
+    const issues = collectRuntimeAssetIssues(projectRoot, {});
+    expect(issues.some((issue) => issue.includes("stale prompts"))).toBe(true);
   });
 });

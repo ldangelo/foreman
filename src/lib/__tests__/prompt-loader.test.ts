@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { findMissingPrompts, loadPrompt } from "../prompt-loader.js";
+import { findMissingPrompts, findStalePrompts, loadPrompt } from "../prompt-loader.js";
 
 describe("prompt loader", () => {
   const tempDirs: string[] = [];
@@ -75,5 +75,17 @@ describe("prompt loader", () => {
     expect(missing).not.toContain("medium/developer.md");
     expect(missing).not.toContain("medium/qa.md");
     expect(missing).not.toContain("medium/finalize.md");
+  });
+
+  it("flags stale project-local default prompts that are missing critical markers", () => {
+    const projectRoot = makeProject();
+    writeFileSync(
+      join(projectRoot, ".foreman", "prompts", "default", "developer.md"),
+      "# Developer Agent\n## Pre-flight: Check EXPLORER_REPORT.md",
+      "utf8",
+    );
+
+    const stale = findStalePrompts(projectRoot);
+    expect(stale).toContain("default/developer.md");
   });
 });

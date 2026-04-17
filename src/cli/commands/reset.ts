@@ -15,6 +15,7 @@ import { deleteWorkerConfigFile } from "../../orchestrator/dispatcher.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { StateMismatch } from "../../lib/run-status.js";
 import { getWorkspaceRoot } from "../../lib/workspace-paths.js";
+import { loadProjectConfig, resolveDefaultBranch } from "../../lib/project-config.js";
 // Re-export for callers that import these from this module (backward compatibility).
 export { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 export type { StateMismatch } from "../../lib/run-status.js";
@@ -179,7 +180,11 @@ export async function detectAndHandleStaleBranches(
   let targetBranch: string;
   try {
     const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
-    targetBranch = await vcs.detectDefaultBranch(projectPath);
+    targetBranch = await resolveDefaultBranch(
+      projectPath,
+      (path) => vcs.detectDefaultBranch(path),
+      loadProjectConfig(projectPath),
+    );
   } catch {
     targetBranch = "dev";
   }

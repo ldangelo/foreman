@@ -31,8 +31,7 @@ phases:
     maxTurns: 20
     artifact: FINALIZE_VALIDATION.md
     verdict: true
-    retryWith: developer
-    retryOnFail: 1
+    retryOnFail: 0
     mail:
       onStart: true
       onComplete: true

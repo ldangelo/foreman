@@ -9,11 +9,14 @@ import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
-import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
+import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../../lib/project-config.js";
+import type { ProjectConfig } from "../../lib/project-config.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
+import { findMissingPrompts, findStalePrompts } from "../../lib/prompt-loader.js";
+import { findMissingWorkflows, findStaleWorkflows } from "../../lib/workflow-loader.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk } from "../watch-ui.js";
@@ -141,6 +144,7 @@ export interface OwnedBranchResolution {
 export async function resolveOwnedControllerBranch(
   vcs: VcsBackend,
   projectPath: string,
+  preferredDefaultBranch?: string,
 ): Promise<OwnedBranchResolution> {
   const maybeVcs = vcs as Partial<VcsBackend>;
   if (
@@ -158,7 +162,9 @@ export async function resolveOwnedControllerBranch(
   }
 
   const currentBranch = normalizeBranchLabel(await vcs.getCurrentBranch(projectPath)) ?? "";
-  const defaultBranch = normalizeBranchLabel(await vcs.detectDefaultBranch(projectPath)) ?? "";
+  const defaultBranch = normalizeBranchLabel(
+    preferredDefaultBranch ?? await vcs.detectDefaultBranch(projectPath),
+  ) ?? "";
   const currentIsAnonymousRevision = await isAnonymousJujutsuRevision(vcs, projectPath, currentBranch);
 
   const shouldUseOwnedBranch =
@@ -225,6 +231,43 @@ async function createRunVcsBackend(projectPath: string): Promise<VcsBackend> {
   const projectCfg = loadProjectConfig(projectPath);
   const vcsConfig = resolveVcsConfig(undefined, projectCfg?.vcs);
   return VcsBackendFactory.create(vcsConfig, projectPath);
+}
+
+export function collectRuntimeAssetIssues(
+  projectPath: string,
+  projectCfg?: ProjectConfig | null,
+): string[] {
+  const issues: string[] = [];
+
+  try {
+    if (projectCfg === undefined) {
+      loadProjectConfig(projectPath);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    issues.push(`project config invalid: ${msg}`);
+    return issues;
+  }
+
+  const missingPrompts = findMissingPrompts(projectPath);
+  const stalePrompts = findStalePrompts(projectPath);
+  const missingWorkflows = findMissingWorkflows(projectPath);
+  const staleWorkflows = findStaleWorkflows(projectPath);
+
+  if (missingPrompts.length > 0) {
+    issues.push(`missing prompts: ${missingPrompts.join(", ")}`);
+  }
+  if (stalePrompts.length > 0) {
+    issues.push(`stale prompts: ${stalePrompts.join(", ")}`);
+  }
+  if (missingWorkflows.length > 0) {
+    issues.push(`missing workflows: ${missingWorkflows.map((name) => `${name}.yaml`).join(", ")}`);
+  }
+  if (staleWorkflows.length > 0) {
+    issues.push(`stale workflows: ${staleWorkflows.map((name) => `${name}.yaml`).join(", ")}`);
+  }
+
+  return issues;
 }
 
 export async function checkBranchMismatch(
@@ -376,6 +419,22 @@ export const runCommand = new Command("run")
 
     try {
       const projectPath = await resolveRepoRootProjectPath(opts);
+      const projectCfg = loadProjectConfig(projectPath);
+      if (!dryRun && !resume && !resumeFailed) {
+        const assetIssues = collectRuntimeAssetIssues(projectPath, projectCfg);
+        if (assetIssues.length > 0) {
+          console.error(chalk.red("\nRun preflight failed: Foreman runtime assets are out of date.\n"));
+          for (const issue of assetIssues) {
+            console.error(chalk.yellow(`  - ${issue}`));
+          }
+          console.error(
+            chalk.dim(
+              "\nRun 'foreman doctor --fix' (or reinstall prompts/workflows) before dispatching agents.\n",
+            ),
+          );
+          process.exit(1);
+        }
+      }
       const startupVcs = await createRunVcsBackend(projectPath);
 
       // ── Pi Extensions check ──────────────────────────────────────────────────
@@ -523,7 +582,16 @@ export const runCommand = new Command("run")
       let targetBranch: string | undefined;
       if (!dryRun) {
         try {
-          const controller = await resolveOwnedControllerBranch(startupVcs, projectPath);
+          const configuredDefaultBranch = await resolveDefaultBranch(
+            projectPath,
+            (path) => startupVcs.detectDefaultBranch(path),
+            projectCfg,
+          );
+          const controller = await resolveOwnedControllerBranch(
+            startupVcs,
+            projectPath,
+            configuredDefaultBranch,
+          );
           if (controller.usedOwnedBranch) {
             targetBranch = controller.targetBranch;
             console.log(
@@ -533,7 +601,15 @@ export const runCommand = new Command("run")
             );
           }
           const cb = targetBranch ? undefined : normalizeBranchLabel(await startupVcs.getCurrentBranch(projectPath));
-          const db = targetBranch ? undefined : normalizeBranchLabel(await startupVcs.detectDefaultBranch(projectPath));
+          const db = targetBranch
+            ? undefined
+            : normalizeBranchLabel(
+                await resolveDefaultBranch(
+                  projectPath,
+                  (path) => startupVcs.detectDefaultBranch(path),
+                  projectCfg,
+                ),
+              );
           if (cb && db && cb !== db) {
             const question = chalk.yellow(
               `\nYou are on branch ${chalk.green(cb)}, ` +

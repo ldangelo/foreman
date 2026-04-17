@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -24,11 +24,26 @@ function makeBasePipelineArgs(
   phases: object[],
   runPhase: ReturnType<typeof vi.fn>,
   log: ReturnType<typeof vi.fn>,
+  opts: { autoArtifacts?: boolean } = {},
 ) {
   const mockStore = {
     updateRunProgress: vi.fn(),
     logEvent: vi.fn(),
   };
+  const phaseConfigs = phases as Array<{ name: string; artifact?: string }>;
+  const wrappedRunPhase = vi.fn(async (phaseName: string, ...args: unknown[]) => {
+    const result = await runPhase(phaseName, ...args);
+    if (opts.autoArtifacts !== false && result?.success) {
+      const artifact = phaseConfigs.find((phase) => phase.name === phaseName)?.artifact;
+      if (artifact) {
+        const artifactPath = join(tmpDir, artifact);
+        if (!existsSync(artifactPath)) {
+          writeFileSync(artifactPath, `# ${phaseName} artifact\n`);
+        }
+      }
+    }
+    return result;
+  });
 
   return {
     config: {
@@ -45,7 +60,7 @@ function makeBasePipelineArgs(
     logFile: join(tmpDir, "verdict.log"),
     notifyClient: null,
     agentMailClient: null,
-    runPhase,
+    runPhase: wrappedRunPhase,
     registerAgent: vi.fn().mockResolvedValue(undefined),
     sendMail: vi.fn(),
     sendMailText: vi.fn(),
@@ -242,7 +257,7 @@ describe("verdict-triggered retry", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("report missing test command evidence"));
   });
 
-  it("missing artifact yields no retry (verdict unknown)", async () => {
+  it("missing verdict artifact fails the phase immediately", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
     const phaseOrder: string[] = [];
     const log = vi.fn();
@@ -255,15 +270,56 @@ describe("verdict-triggered retry", () => {
 
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       phaseOrder.push(phaseName);
+      if (phaseName === "developer") {
+        writeFileSync(join(tmpDir, "DEVELOPER_REPORT.md"), "# Developer report\n");
+      }
       // reviewer does NOT write REVIEW.md — missing artifact
       return successResult();
     });
 
-    await executePipeline(makeBasePipelineArgs(tmpDir, phases, runPhase, log) as never);
+    await executePipeline(makeBasePipelineArgs(tmpDir, phases, runPhase, log, { autoArtifacts: false }) as never);
 
-    // No retry — unknown verdict falls through
-    expect(phaseOrder).toEqual(["developer", "reviewer", "finalize"]);
-    expect(log).not.toHaveBeenCalledWith(expect.stringContaining("FAIL — looping back"));
+    expect(phaseOrder).toEqual(["developer", "reviewer"]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("reviewer completed without required artifact REVIEW.md"));
+  });
+
+  it("fails a phase that completes without its required artifact", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const log = vi.fn();
+    const phases = [
+      { name: "developer", artifact: "DEVELOPER_REPORT.md" },
+      { name: "finalize", artifact: "FINALIZE_REPORT.md" },
+    ];
+    const runPhase = vi.fn().mockResolvedValue(successResult());
+    const args = makeBasePipelineArgs(tmpDir, phases, runPhase, log, { autoArtifacts: false }) as any;
+
+    await executePipeline(args);
+
+    expect(runPhase).toHaveBeenCalledTimes(1);
+    expect(args.markStuck).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("completed without required artifact"));
+  });
+
+  it("stops small workflow runs that exceed the hard tool-call budget", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const log = vi.fn();
+    const phases = [
+      { name: "developer", artifact: "DEVELOPER_REPORT.md" },
+      { name: "finalize", artifact: "FINALIZE_VALIDATION.md", verdict: true, retryOnFail: 0 },
+    ];
+    const runPhase = vi.fn().mockImplementation(async (_phaseName: string, _prompt: string, _cfg: unknown, progress: any) => {
+      progress.toolCalls = 51;
+      writeFileSync(join(tmpDir, "DEVELOPER_REPORT.md"), "# Developer report\n");
+      return successResult();
+    });
+    const args = makeBasePipelineArgs(tmpDir, phases, runPhase, log) as any;
+    args.workflowConfig.name = "small";
+
+    await executePipeline(args);
+
+    expect(runPhase).toHaveBeenCalledTimes(1);
+    expect(args.markStuck).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("small workflow exceeded tool-call budget"));
   });
 
   it("reviewer and qa retry counters are independent (separate retryOnFail budgets)", async () => {

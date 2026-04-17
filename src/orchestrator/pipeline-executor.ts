@@ -300,6 +300,34 @@ interface PhaseSequenceResult {
   retriesExhausted?: boolean;
 }
 
+const SMALL_WORKFLOW_LIMITS = {
+  warnToolCalls: 25,
+  maxToolCalls: 50,
+  warnElapsedMs: 3 * 60 * 1000,
+  maxElapsedMs: 5 * 60 * 1000,
+  maxRelevantChangedFiles: 4,
+} as const;
+
+function isGeneratedWorkflowArtifact(filePath: string): boolean {
+  const name = basename(filePath);
+  return (
+    name.endsWith("_REPORT.md") ||
+    name.endsWith("_SESSION_SUMMARY.md") ||
+    name === "SESSION_LOG.md" ||
+    name === "RUN_LOG.md" ||
+    name === "TRIAGE_REPORT.md" ||
+    name === "FINALIZE_VALIDATION.md" ||
+    name === "TASK.md" ||
+    name === "AGENT.md" ||
+    name === "AGENTS.md" ||
+    name === "BLOCKED.md"
+  );
+}
+
+function countRelevantChangedFiles(filesChanged: string[]): number {
+  return filesChanged.filter((filePath) => !isGeneratedWorkflowArtifact(filePath)).length;
+}
+
 // ── Generic Pipeline Executor ───────────────────────────────────────────────
 
 /**
@@ -688,6 +716,7 @@ async function runPhaseSequence(
   let qaVerdictForLog: "pass" | "fail" | "unknown" = "unknown";
   const retryCounts: Record<string, number> = {};
   const phaseSessionSummaries = new Map<string, string>();
+  const sequenceStartedAtMs = Date.now();
 
   // P1: Explorer circuit breaker - track Explorer failures to fail fast after 3
   const explorerFailures: string[] = [];
@@ -897,6 +926,80 @@ async function runPhaseSequence(
       `${phaseSummary.trim()}\n`,
       "utf-8",
     );
+
+    if (phase.artifact && !phaseArtifactContent) {
+      const errorMsg = `${phaseName} completed without required artifact ${phase.artifact}`;
+      ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${errorMsg}`);
+      await appendFile(logFile, `\n[PIPELINE] ${errorMsg}\n`);
+      ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+        seedId,
+        phase: phaseName,
+        error: errorMsg,
+        retryable: false,
+      });
+      await ctx.markStuck(
+        store,
+        runId,
+        projectId,
+        seedId,
+        seedTitle,
+        progress,
+        phaseName,
+        errorMsg,
+        notifyClient,
+        config.projectPath,
+      );
+      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+    }
+
+    if (workflowConfig.name === "small") {
+      const relevantChangedFiles = countRelevantChangedFiles(progress.filesChanged);
+      const elapsedMs = Date.now() - sequenceStartedAtMs;
+
+      if (progress.toolCalls >= SMALL_WORKFLOW_LIMITS.warnToolCalls) {
+        ctx.log(
+          `[SMALL] Warning: tool calls at ${progress.toolCalls}/${SMALL_WORKFLOW_LIMITS.maxToolCalls}`,
+        );
+      }
+      if (elapsedMs >= SMALL_WORKFLOW_LIMITS.warnElapsedMs) {
+        ctx.log(
+          `[SMALL] Warning: elapsed ${(elapsedMs / 1000).toFixed(1)}s/${SMALL_WORKFLOW_LIMITS.maxElapsedMs / 1000}s`,
+        );
+      }
+
+      let budgetError: string | null = null;
+      if (progress.toolCalls > SMALL_WORKFLOW_LIMITS.maxToolCalls) {
+        budgetError = `small workflow exceeded tool-call budget (${progress.toolCalls}/${SMALL_WORKFLOW_LIMITS.maxToolCalls})`;
+      } else if (elapsedMs > SMALL_WORKFLOW_LIMITS.maxElapsedMs) {
+        budgetError = `small workflow exceeded wall-time budget (${Math.round(elapsedMs / 1000)}s/${SMALL_WORKFLOW_LIMITS.maxElapsedMs / 1000}s)`;
+      } else if (relevantChangedFiles > SMALL_WORKFLOW_LIMITS.maxRelevantChangedFiles) {
+        budgetError = `small workflow exceeded relevant changed-file budget (${relevantChangedFiles}/${SMALL_WORKFLOW_LIMITS.maxRelevantChangedFiles})`;
+      }
+
+      if (budgetError) {
+        ctx.log(`[SMALL] FAIL — ${budgetError}`);
+        await appendFile(logFile, `\n[PIPELINE] ${budgetError}\n`);
+        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId,
+          phase: phaseName,
+          error: budgetError,
+          retryable: false,
+        });
+        await ctx.markStuck(
+          store,
+          runId,
+          projectId,
+          seedId,
+          seedTitle,
+          progress,
+          phaseName,
+          budgetError,
+          notifyClient,
+          config.projectPath,
+        );
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+      }
+    }
 
     // 7. Handle failure
     if (!result.success) {

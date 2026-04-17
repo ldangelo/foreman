@@ -12,10 +12,10 @@ import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue.js";
 import type { ITaskClient } from "../lib/task-client.js";
-import { findMissingPrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
+import { findMissingPrompts, findStalePrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
 import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
-import { loadProjectConfig } from "../lib/project-config.js";
+import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
 
@@ -319,6 +319,15 @@ export class Doctor {
   }
 
   async checkGitTownMainBranch(): Promise<CheckResult> {
+    const configuredProjectBranch = loadProjectConfig(this.projectPath)?.defaultBranch;
+    if (configuredProjectBranch) {
+      return {
+        name: "git town main branch configured",
+        status: "skip",
+        message: `Skipped: Foreman defaultBranch is configured as ${configuredProjectBranch}`,
+      };
+    }
+
     // Skip if git town is not installed
     const installed = await this.checkGitTownInstalled();
     if (installed.status !== "pass") {
@@ -355,7 +364,11 @@ export class Doctor {
 
     let defaultBranch: string;
     try {
-      defaultBranch = await (await this.getVcsBackend()).detectDefaultBranch(this.projectPath);
+      defaultBranch = await resolveDefaultBranch(
+        this.projectPath,
+        async (projectPath) => (await this.getVcsBackend()).detectDefaultBranch(projectPath),
+        loadProjectConfig(this.projectPath),
+      );
     } catch {
       return {
         name: "git town main branch configured",
@@ -574,8 +587,10 @@ export class Doctor {
     const { fix = false, dryRun = false } = opts;
 
     const missing = findMissingPrompts(this.projectPath);
+    const stale = findStalePrompts(this.projectPath);
+    const problemCount = missing.length + stale.length;
 
-    if (missing.length === 0) {
+    if (problemCount === 0) {
       return {
         name: "prompt templates (.foreman/prompts/)",
         status: "pass",
@@ -584,32 +599,40 @@ export class Doctor {
     }
 
     const missingList = missing.join(", ");
+    const staleList = stale.join(", ");
 
     if (dryRun) {
       return {
         name: "prompt templates (.foreman/prompts/)",
         status: "fail",
-        message: `${missing.length} missing prompt file(s): ${missingList}. Would reinstall (dry-run).`,
+        message:
+          `${problemCount} prompt issue(s): ` +
+          [
+            missing.length > 0 ? `missing: ${missingList}` : "",
+            stale.length > 0 ? `stale: ${staleList}` : "",
+          ].filter(Boolean).join("; ") +
+          ". Would reinstall (dry-run).",
       };
     }
 
     if (fix) {
       try {
-        const { installed } = installBundledPrompts(this.projectPath, false);
+        const { installed } = installBundledPrompts(this.projectPath, true);
         // Re-check after install
         const stillMissing = findMissingPrompts(this.projectPath);
-        if (stillMissing.length === 0) {
+        const stillStale = findStalePrompts(this.projectPath);
+        if (stillMissing.length === 0 && stillStale.length === 0) {
           return {
             name: "prompt templates (.foreman/prompts/)",
             status: "fixed",
-            message: `${missing.length} missing prompt file(s)`,
+            message: `${problemCount} prompt issue(s)`,
             fixApplied: `Installed ${installed.length} prompt file(s) from bundled defaults`,
           };
         } else {
           return {
             name: "prompt templates (.foreman/prompts/)",
             status: "fail",
-            message: `${stillMissing.length} prompt file(s) still missing after reinstall: ${stillMissing.join(", ")}`,
+            message: `Prompt issues remain after reinstall: missing=${stillMissing.join(", ")} stale=${stillStale.join(", ")}`,
           };
         }
       } catch (err: unknown) {
@@ -625,7 +648,13 @@ export class Doctor {
     return {
       name: "prompt templates (.foreman/prompts/)",
       status: "fail",
-      message: `${missing.length} missing prompt file(s): ${missingList}. Run 'foreman init' or 'foreman doctor --fix' to reinstall.`,
+      message:
+        `${problemCount} prompt issue(s): ` +
+        [
+          missing.length > 0 ? `missing: ${missingList}` : "",
+          stale.length > 0 ? `stale: ${staleList}` : "",
+        ].filter(Boolean).join("; ") +
+        ". Run 'foreman init' or 'foreman doctor --fix' to reinstall.",
     };
   }
 
@@ -1151,7 +1180,11 @@ export class Doctor {
     // Detect the default branch once; fall back gracefully on errors.
     let defaultBranch: string;
     try {
-      defaultBranch = await (await this.getVcsBackend()).detectDefaultBranch(this.projectPath);
+      defaultBranch = await resolveDefaultBranch(
+        this.projectPath,
+        async (projectPath) => (await this.getVcsBackend()).detectDefaultBranch(projectPath),
+        loadProjectConfig(this.projectPath),
+      );
     } catch {
       defaultBranch = "main";
     }

@@ -17,6 +17,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { load as yamlLoad } from "js-yaml";
 import type { VcsConfig } from "./vcs/index.js";
+import { normalizeBranchLabel } from "./branch-label.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -39,6 +40,11 @@ export interface DashboardConfig {
  * be added in future phases without breaking this interface.
  */
 export interface ProjectConfig {
+  /**
+   * Foreman's authoritative integration branch for this project.
+   * When set, commands should prefer this value over VCS auto-detection.
+   */
+  defaultBranch?: string;
   /** VCS backend configuration for this project. */
   vcs?: {
     /**
@@ -98,6 +104,17 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
   }
 
   const config: ProjectConfig = {};
+
+  if ("defaultBranch" in raw) {
+    if (typeof raw["defaultBranch"] !== "string") {
+      throw new ProjectConfigError(filePath, "'defaultBranch' must be a string");
+    }
+    const normalizedDefaultBranch = normalizeBranchLabel(raw["defaultBranch"] as string);
+    if (!normalizedDefaultBranch) {
+      throw new ProjectConfigError(filePath, "'defaultBranch' must be a non-empty branch name");
+    }
+    config.defaultBranch = normalizedDefaultBranch;
+  }
 
   if ("vcs" in raw) {
     const vcsRaw = raw["vcs"];
@@ -296,4 +313,33 @@ export function resolveVcsConfig(
   }
 
   return resolved;
+}
+
+/**
+ * Resolve the integration/default branch for a project.
+ *
+ * Resolution order:
+ *   1. `projectConfig.defaultBranch`
+ *   2. auto-detected VCS default branch
+ *   3. hard fallback `"main"` when detection fails
+ */
+export async function resolveDefaultBranch(
+  projectPath: string,
+  detectDefaultBranch?: (projectPath: string) => Promise<string>,
+  projectConfig?: ProjectConfig | null,
+): Promise<string> {
+  const config = projectConfig ?? loadProjectConfig(projectPath);
+  const configured = normalizeBranchLabel(config?.defaultBranch);
+  if (configured) return configured;
+
+  if (detectDefaultBranch) {
+    try {
+      const detected = normalizeBranchLabel(await detectDefaultBranch(projectPath));
+      if (detected) return detected;
+    } catch {
+      // fall through to hard default
+    }
+  }
+
+  return "main";
 }
