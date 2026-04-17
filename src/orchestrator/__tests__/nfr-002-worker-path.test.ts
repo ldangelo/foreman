@@ -8,6 +8,10 @@
 
 import { describe, it, expect } from "vitest";
 import os from "node:os";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { resolveWorkerPaths } from "../dispatcher.js";
 
 describe("TRD-NF-002: worker PATH construction includes ~/.local/bin", () => {
   it("~/.local/bin prepended produces PATH with br binary directory first", () => {
@@ -34,5 +38,23 @@ describe("TRD-NF-002: worker PATH construction includes ~/.local/bin", () => {
     const workerPath = `${home}/.local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`;
     const segments = workerPath.split(":");
     expect(segments[0]).toBe(`${home}/.local/bin`);
+  });
+
+  it("resolveWorkerPaths prefers the TS worker when running from source", () => {
+    const resolved = resolveWorkerPaths("/tmp");
+    expect(resolved.workerScript.endsWith("agent-worker.ts")).toBe(true);
+    expect(resolved.runnerArgs.some((arg) => arg.endsWith("loader.mjs"))).toBe(true);
+  });
+
+  it("resolveWorkerPaths falls back to the built JS worker when TS source is absent", () => {
+    const dir = mkdtempSync(join(tmpdir(), "foreman-worker-path-"));
+    try {
+      writeFileSync(join(dir, "agent-worker.js"), "export {};\n");
+      const resolved = resolveWorkerPaths("/tmp", dir);
+      expect(resolved.workerScript.endsWith("agent-worker.js")).toBe(true);
+      expect(resolved.runnerArgs).toEqual([resolved.workerScript]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

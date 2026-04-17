@@ -13,6 +13,7 @@ import {
   writeFileSync,
   realpathSync,
   rmSync,
+  existsSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
@@ -67,6 +68,15 @@ function makeTempJjRepo(): string {
     cwd: dir,
     stdio: "pipe",
   });
+  return dir;
+}
+
+function makeTempNonColocatedJjRepo(): string {
+  const dir = makeTempJjRepo();
+  const gitDir = join(dir, ".git");
+  if (existsSync(gitDir)) {
+    rmSync(gitDir, { recursive: true, force: true });
+  }
   return dir;
 }
 
@@ -250,7 +260,19 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.getRepoRoot (AC-T-017-1)", () => 
     tempDirs.push(dir);
     const backend = new JujutsuBackend(dir);
 
-    await expect(backend.getRepoRoot(dir)).rejects.toThrow(/rev-parse failed/);
+    await expect(backend.getRepoRoot(dir)).rejects.toThrow(/jj root failed/);
+  });
+
+  it("works in non-colocated jj repos that have no .git directory", async () => {
+    const repo = makeTempNonColocatedJjRepo();
+    tempDirs.push(repo);
+    const subdir = join(repo, "src", "nested");
+    execFileSync("mkdir", ["-p", subdir]);
+    const backend = new JujutsuBackend(repo);
+
+    const root = await backend.getRepoRoot(subdir);
+    expect(root).toBe(repo);
+    expect(existsSync(join(repo, ".git"))).toBe(false);
   });
 });
 

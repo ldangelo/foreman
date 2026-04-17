@@ -35,11 +35,13 @@ If you hit an unrecoverable error, invoke:
 - Stay focused on THIS task only — do not refactor unrelated code
 - Follow existing codebase patterns and conventions
 - Write tests for new functionality
+- For localized tasks, prefer the smallest viable diff in the fewest relevant files. Do not broaden scope unless the task truly requires it.
 - Do NOT copy tests from the worktree into the main codebase unless they are directly related to THIS task's requirements. If you find existing tests for the same functionality, verify they still exist and are passing before adding new ones.
 - **DO NOT** commit, push, or close the seed — the pipeline handles that
 - **DO NOT** run the full test suite — the QA agent handles that
 - If blocked, write a note to BLOCKED.md explaining why
 - **Write SESSION_LOG.md** documenting your session work (required, not optional)
+- If QA feedback is present, fix the cited failing area first before making any broader changes.
 
 ## Developer Report
 After implementation, write **DEVELOPER_REPORT.md** summarizing your work:

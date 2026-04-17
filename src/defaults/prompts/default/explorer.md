@@ -20,6 +20,7 @@ If you hit an unrecoverable error, invoke:
    - Identify existing patterns, conventions, and abstractions
    - Map dependencies and imports relevant to this task
    - Note any existing tests that cover the affected code
+   - If the task is narrow/localized (for example: a small CLI/status/output/display bug), aggressively constrain yourself to the smallest likely area first. Prefer identifying 1–3 likely files over broad repo reconnaissance.
 4. Update EXPLORER_REPORT.md with your findings
 5. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 
@@ -50,3 +51,5 @@ If you hit an unrecoverable error, invoke:
 - Focus on understanding, not implementing
 - Be specific — reference actual file paths and line numbers
 - Keep the report concise and actionable for the Developer agent
+- Start narrow. Use the task title/description to form an initial file hypothesis before reading broadly.
+- Stop early once you can name the likely edit files, nearby tests, and one concrete implementation path. Do not keep exploring just to be exhaustive.

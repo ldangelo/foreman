@@ -1617,14 +1617,31 @@ export interface SpawnStrategy {
 /**
  * Resolve common paths needed by both spawn strategies.
  */
-function resolveWorkerPaths(homeDir?: string): { tsxBin: string; workerScript: string; logDir: string } {
+export function resolveWorkerPaths(
+  homeDir?: string,
+  orchestratorDirOverride?: string,
+): {
+  tsxBin: string;
+  workerScript: string;
+  logDir: string;
+  projectRoot: string;
+  runnerArgs: string[];
+} {
   const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
+  const __dirname = orchestratorDirOverride ?? dirname(__filename);
   const projectRoot = join(__dirname, "..", "..");
+  const tsWorkerScript = join(__dirname, "agent-worker.ts");
+  const jsWorkerScript = join(__dirname, "agent-worker.js");
+  const workerScript = existsSync(tsWorkerScript) ? tsWorkerScript : jsWorkerScript;
+  const runnerArgs = workerScript.endsWith(".ts")
+    ? ["--import", join(projectRoot, "node_modules", "tsx", "dist", "loader.mjs"), workerScript]
+    : [workerScript];
   return {
     tsxBin: process.execPath,
-    workerScript: join(__dirname, "agent-worker.ts"),
+    workerScript,
     logDir: join(homeDir ?? process.env.HOME ?? "/tmp", ".foreman", "logs"),
+    projectRoot,
+    runnerArgs,
   };
 }
 
@@ -1635,7 +1652,7 @@ function resolveWorkerPaths(homeDir?: string): { tsxBin: string; workerScript: s
 export class DetachedSpawnStrategy implements SpawnStrategy {
   async spawn(config: WorkerConfig): Promise<SpawnResult> {
     const homeDir = config.env.HOME ?? process.env.HOME ?? "/tmp";
-    const { tsxBin, workerScript, logDir } = resolveWorkerPaths(homeDir);
+    const { tsxBin, logDir, projectRoot, runnerArgs } = resolveWorkerPaths(homeDir);
 
     // Write config to temp file (worker reads + deletes it)
     const configDir = join(homeDir, ".foreman", "tmp");
@@ -1656,10 +1673,7 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     // not the worktree. The worktree path is passed in config and used by
     // the agent for git operations. tsx resolves imports relative to the
     // script's location, but ESM resolution still checks cwd for some paths.
-    const __filename = fileURLToPath(import.meta.url);
-    const projectRoot = join(dirname(__filename), "..", "..");
-    const tsxLoader = join(projectRoot, "node_modules", "tsx", "dist", "loader.mjs");
-    const child = spawn(tsxBin, ["--import", tsxLoader, workerScript, configPath], {
+    const child = spawn(tsxBin, [...runnerArgs, configPath], {
       detached: true,
       stdio: ["ignore", outFd.fd, errFd.fd],
       cwd: projectRoot,
