@@ -28,6 +28,15 @@ import { enqueueAddNotesToBead, enqueueMarkBeadFailed, enqueueSetBeadStatus } fr
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Run a gh CLI command and return stdout.
+ * Used for PR creation in the 'pr' merge strategy.
+ */
+async function gh(args: string[], cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("gh", args, { cwd, maxBuffer: 10 * 1024 * 1024 });
+  return stdout.trim();
+}
+
 async function createAutoMergeVcsBackend(projectPath: string): Promise<VcsBackend> {
   const projectCfg = loadProjectConfig(projectPath);
   const vcsConfig = resolveVcsConfig(undefined, projectCfg?.vcs);
@@ -173,6 +182,66 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
     // Track whether this queue entry resulted in a successful merge so that
     // bead-closed mail is only sent on actual success (Fix 2).
     let mergeSucceeded = false;
+
+    // TRD-007: Check merge_strategy from run record and route accordingly
+    const run = store.getRun(currentEntry.run_id);
+    const mergeStrategy: 'auto' | 'pr' | 'none' = (run?.merge_strategy as 'auto' | 'pr' | 'none') ?? 'auto';
+
+    if (mergeStrategy === 'none') {
+      // Skip merge entirely — mark as completed
+      mq.updateStatus(currentEntry.id, 'merged', { completedAt: new Date().toISOString() });
+      store.updateRun(currentEntry.run_id, { status: 'completed' });
+      mergedCount += 1;
+      mergeSucceeded = true;
+      entry = mq.dequeue();
+      continue;
+    }
+
+    if (mergeStrategy === 'pr') {
+      // Create a PR for manual review instead of auto-merge
+      const branchName = `foreman/${currentEntry.seed_id}`;
+      try {
+        // Push branch to origin
+        await vcs.push(projectPath, branchName);
+
+        // Get seed title for PR title
+        let seedTitle = currentEntry.seed_id;
+        try {
+          const seedInfo = await taskClient.show(currentEntry.seed_id) as { title?: string } | null;
+          if (seedInfo?.title) {
+            seedTitle = seedInfo.title;
+          }
+        } catch { /* non-fatal */ }
+
+        const prTitle = `${seedTitle} (${currentEntry.seed_id})`;
+        const prBody = [
+          `## Summary`,
+          seedTitle !== currentEntry.seed_id ? `**Task:** ${seedTitle}\n` : '',
+          `**Manual PR created by Foreman** (merge_strategy: pr)`,
+          `\nForeman run: \`${currentEntry.run_id}\``,
+        ].join('\n');
+
+        const prUrl = await gh(
+          ['pr', 'create', '--base', targetBranch, '--head', branchName, '--title', prTitle, '--body', prBody],
+          projectPath,
+        );
+
+        mq.updateStatus(currentEntry.id, 'conflict', { error: 'PR created for manual review' });
+        store.updateRun(currentEntry.run_id, { status: 'pr-created' });
+        store.logEvent(project.id, 'pr-created', { seedId: currentEntry.seed_id, branchName, targetBranch, prUrl }, currentEntry.run_id);
+        conflictCount += 1;
+        entry = mq.dequeue();
+        continue;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        mergeFailureReason = `Failed to create PR: ${message}`;
+        mq.updateStatus(currentEntry.id, 'failed', { error: message });
+        failedCount += 1;
+        entry = mq.dequeue();
+        continue;
+      }
+    }
+
     try {
       const report = await refinery.mergeCompleted({
         targetBranch,

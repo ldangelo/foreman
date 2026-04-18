@@ -671,10 +671,13 @@ export class Dispatcher {
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
         let setupCache: import("../lib/workflow-loader.js").WorkflowSetupCache | undefined;
         let vcsBackendName: 'git' | 'jujutsu' = 'git'; // default to git
+        // TRD-007: capture merge strategy from workflow config
+        let workflowMerge: 'auto' | 'pr' | 'none' = 'auto';
         try {
           const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
           setupSteps = wfConfig.setup;
           setupCache = wfConfig.setupCache;
+          workflowMerge = wfConfig.merge ?? 'auto';
 
           // Load project-level config (optional — returns null if .foreman/config.yaml absent)
           let projectVcs: import("../lib/project-config.js").ProjectConfig["vcs"] | undefined;
@@ -747,12 +750,13 @@ export class Dispatcher {
         await writeFile(join(worktreePath, "TASK.md"), taskMd, "utf-8");
 
         // 4. Record run in store (include base_branch for stacking awareness)
+        // TRD-007: pass merge_strategy from workflow config
         const run = this.store.createRun(
           projectId,
           seed.id,
           model,
           worktreePath,
-          { baseBranch: baseBranch ?? null },
+          { baseBranch: baseBranch ?? null, mergeStrategy: workflowMerge },
         );
 
         // 5. Log dispatch event
