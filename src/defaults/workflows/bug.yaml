@@ -26,9 +26,9 @@ phases:
   - name: fix
     command: "/ensemble:fix-issue {task.title} {task.description}"
     models:
-      default: sonnet
-      P0: opus
-      P4: haiku
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
     maxTurns: 80
     artifact: DEVELOPER_REPORT.md
     mail:
@@ -54,9 +54,9 @@ phases:
   - name: finalize
     prompt: finalize.md
     models:
-      default: haiku
+      default: MiniMax
     maxTurns: 30
-    artifact: FINALIZE_VALIDATION.md
+    artifact: FINALIZE_REPORT.md
     verdict: true
     retryWith: fix
     retryOnFail: 1

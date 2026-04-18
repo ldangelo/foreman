@@ -48,8 +48,8 @@ describe('TRD-009 bug.yaml workflow integration', () => {
       expect(fixPhase?.mail).toBeDefined();
     });
 
-    it('fix phase uses sonnet model by default', () => {
-      expect(fixPhase?.models?.default).toBe('sonnet');
+    it('fix phase uses MiniMax model by default', () => {
+      expect(fixPhase?.models?.default).toBe('MiniMax');
     });
   });
 
