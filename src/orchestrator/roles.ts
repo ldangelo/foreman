@@ -170,6 +170,8 @@ const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker" | "se
   reviewer: getDefaultModel() as ModelSelection,
   finalize: getDefaultModel() as ModelSelection,
   troubleshooter: getDefaultModel() as ModelSelection,
+  fix: getDefaultModel() as ModelSelection,
+  test: getDefaultModel() as ModelSelection,
 };
 
 /**
@@ -236,6 +238,25 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
       permissionMode: "acceptEdits",
       reportFile: "TROUBLESHOOT_REPORT.md",
       allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "Write"],
+    },
+    fix: {
+      role: "fix",
+      model: resolveModel("FOREMAN_FIX_MODEL", DEFAULT_MODELS.fix),
+      maxBudgetUsd: getDeveloperBudget(),
+      permissionMode: "acceptEdits",
+      reportFile: "DEVELOPER_REPORT.md",
+      allowedTools: [
+        "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+        "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+      ],
+    },
+    test: {
+      role: "test",
+      model: resolveModel("FOREMAN_TEST_MODEL", DEFAULT_MODELS.test),
+      maxBudgetUsd: getQaBudget(),
+      permissionMode: "acceptEdits",
+      reportFile: "TEST_RESULTS.md",
+      allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
     },
   };
 }
@@ -309,6 +330,25 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
         permissionMode: "acceptEdits",
         reportFile: "TROUBLESHOOT_REPORT.md",
         allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "Write"],
+      },
+      fix: {
+        role: "fix",
+        model: DEFAULT_MODELS.fix,
+        maxBudgetUsd: 5.00,
+        permissionMode: "acceptEdits",
+        reportFile: "DEVELOPER_REPORT.md",
+        allowedTools: [
+          "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+          "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+        ],
+      },
+      test: {
+        role: "test",
+        model: DEFAULT_MODELS.test,
+        maxBudgetUsd: 3.00,
+        permissionMode: "acceptEdits",
+        reportFile: "TEST_RESULTS.md",
+        allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
       },
     };
   }
