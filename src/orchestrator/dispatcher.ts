@@ -25,6 +25,7 @@ import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import { getWorkspacePath } from "../lib/workspace-paths.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
+import type { TaskMeta } from "../lib/interpolate.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -1217,6 +1218,13 @@ export class Dispatcher {
       targetBranch,
       epicTasks,
       epicId,
+      taskMeta: {
+        id: seed.id,
+        title: seed.title,
+        description: seed.description ?? '',
+        type: seed.type ?? '',
+        priority: typeof seed.priority === 'number' ? seed.priority : 2,
+      },
     });
 
     return { sessionKey };
@@ -1601,6 +1609,11 @@ export interface WorkerConfig {
    * epicTasks within a single worktree.
    */
   epicId?: string;
+  /**
+   * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
+   * Populated from the bead/seed that triggered this run.
+   */
+  taskMeta?: TaskMeta;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

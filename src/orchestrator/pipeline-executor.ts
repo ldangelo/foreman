@@ -14,6 +14,7 @@ import { execSync } from "node:child_process";
 import { appendFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader.js";
+import type { TaskMeta } from "../lib/interpolate.js";
 import { resolvePhaseModel } from "../lib/workflow-loader.js";
 import { ROLE_CONFIGS } from "./roles.js";
 import {
@@ -189,6 +190,12 @@ export interface PipelineContext {
     retryCounts: Record<string, number>;
     success: boolean;
   }) => Promise<void>;
+  /**
+   * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
+   * Passed from the dispatcher via WorkerConfig.taskMeta.
+   * Undefined for legacy runs without taskMeta.
+   */
+  taskMeta?: TaskMeta;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
