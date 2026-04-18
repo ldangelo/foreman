@@ -162,6 +162,35 @@ describe("task list — NativeTaskStore.list()", () => {
     expect(ready[0]!.title).toBe("High Pri");
     expect(ready[1]!.title).toBe("Low Pri");
   });
+
+  it("filters by type=epic", () => {
+    ctx.taskStore.create({ title: "Regular Task", type: "task" });
+    const epic = ctx.taskStore.create({ title: "My Epic", type: "epic" });
+    ctx.taskStore.approve(epic.id);
+    const epics = ctx.taskStore.list({ type: "epic" });
+    expect(epics).toHaveLength(1);
+    expect(epics[0]!.title).toBe("My Epic");
+  });
+
+  it("filters by type=bug", () => {
+    ctx.taskStore.create({ title: "Feature Work", type: "feature" });
+    const bug = ctx.taskStore.create({ title: "Bug Report", type: "bug" });
+    ctx.taskStore.approve(bug.id);
+    const bugs = ctx.taskStore.list({ type: "bug" });
+    expect(bugs).toHaveLength(1);
+    expect(bugs[0]!.title).toBe("Bug Report");
+  });
+
+  it("filters by both status and type", () => {
+    const t1 = ctx.taskStore.create({ title: "Backlog Epic", type: "epic" });
+    const t2 = ctx.taskStore.create({ title: "Ready Epic", type: "epic" });
+    const t3 = ctx.taskStore.create({ title: "Backlog Bug", type: "bug" });
+    ctx.taskStore.approve(t2.id);
+    ctx.taskStore.approve(t3.id);
+    const result = ctx.taskStore.list({ status: "ready", type: "epic" });
+    expect(result).toHaveLength(1);
+    expect(result[0]!.title).toBe("Ready Epic");
+  });
 });
 
 // ── foreman task show ─────────────────────────────────────────────────────────
