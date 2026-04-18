@@ -802,6 +802,18 @@ export function findStaleWorkflows(projectRoot: string): string[] {
  * @param labels   - Optional list of labels on the bead.
  * @returns The resolved workflow name to use.
  */
+/**
+ * Resolve the workflow name for a seed/bead.
+ *
+ * Resolution order:
+ *  1. `workflow:<name>` label — explicit override
+ *  2. `{seedType}.yaml` in bundled workflows directory
+ *  3. "default"
+ *
+ * This removes the old hardcoded "smoke" → "smoke" and "epic" → "epic" mappings,
+ * replacing them with a general file-existence check. Both smoke.yaml and epic.yaml
+ * exist in defaults/workflows/ so this is backward-compatible.
+ */
 export function resolveWorkflowName(
   seedType: string,
   labels?: string[],
@@ -813,8 +825,13 @@ export function resolveWorkflowName(
       }
     }
   }
-  if (seedType === "smoke") return "smoke";
-  if (seedType === "epic") return "epic";
+  // TRD-006: type-based resolution — check if a workflow file exists for the seed type
+  if (seedType) {
+    const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${seedType}.yaml`);
+    if (existsSync(bundledPath)) {
+      return seedType;
+    }
+  }
   return "default";
 }
 
