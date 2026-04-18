@@ -15,8 +15,8 @@ describe('resolveWorkflowName (TRD-006)', () => {
     });
 
     it('handles missing labels gracefully', () => {
-      expect(resolveWorkflowName('chore', [])).toBe('default');
-      expect(resolveWorkflowName('chore', undefined)).toBe('default');
+      expect(resolveWorkflowName('unknown', [])).toBe('default');
+      expect(resolveWorkflowName('unknown', undefined)).toBe('default');
     });
   });
 
@@ -32,17 +32,34 @@ describe('resolveWorkflowName (TRD-006)', () => {
     });
 
     it('returns default when no matching workflow file exists', () => {
-      // These types have no corresponding workflow file in defaults/workflows/
-      expect(resolveWorkflowName('feature')).toBe('default');
-      expect(resolveWorkflowName('chore')).toBe('default');
-      expect(resolveWorkflowName('docs')).toBe('default');
-      expect(resolveWorkflowName('question')).toBe('default');
-      expect(resolveWorkflowName('task')).toBe('default');
+      // Types with no corresponding workflow file fall back to default
+      expect(resolveWorkflowName('unknown')).toBe('default');
+      expect(resolveWorkflowName('random')).toBe('default');
     });
 
     it('empty seedType falls back to default', () => {
       expect(resolveWorkflowName('')).toBe('default');
       expect(resolveWorkflowName('')).toBe('default');
+    });
+
+    it('feature type maps to feature.yaml (workflows for all types)', () => {
+      expect(resolveWorkflowName('feature')).toBe('feature');
+    });
+
+    it('chore type maps to chore.yaml (workflows for all types)', () => {
+      expect(resolveWorkflowName('chore')).toBe('chore');
+    });
+
+    it('docs type maps to docs.yaml (workflows for all types)', () => {
+      expect(resolveWorkflowName('docs')).toBe('docs');
+    });
+
+    it('question type maps to question.yaml (workflows for all types)', () => {
+      expect(resolveWorkflowName('question')).toBe('question');
+    });
+
+    it('task type maps to task.yaml (workflows for all types)', () => {
+      expect(resolveWorkflowName('task')).toBe('task');
     });
   });
 
@@ -57,8 +74,7 @@ describe('resolveWorkflowName (TRD-006)', () => {
     });
 
     it('no label, no matching file → default', () => {
-      // chore.yaml does not exist
-      expect(resolveWorkflowName('chore', [])).toBe('default');
+      expect(resolveWorkflowName('unknown', [])).toBe('default');
     });
   });
 

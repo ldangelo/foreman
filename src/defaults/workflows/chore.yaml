@@ -1,14 +1,12 @@
-# Bug fix workflow: command phase → bash phase → finalize → auto-merge
+# Chore workflow: command phase → bash phase → finalize → auto-merge
 #
-# Demonstrates all three new features from TRD-2026-008:
-#   - command: phase (fix) — sends an interpolated command to the agent
-#   - bash: phase (test) — runs npm test with verdict parsing
-#   - merge: auto — auto-merge on green CI
+# Lean pipeline for refactors, dependency updates, tooling, and other
+# maintenance tasks. Uses command + bash phases for efficiency (TRD-2026-008).
+# No explorer (scope is already known) and no reviewer (changes are well-scoped).
 #
-# Auto-selected when a bead has type "bug" (TRD-006 type-based dispatch).
-# Use `workflow:` label to override, e.g. `workflow:smoke` for smoke workflow.
+# Auto-selected when bead type is "chore".
 
-name: bug
+name: chore
 merge: auto
 setup:
   - command: npm install --prefer-offline --no-audit
@@ -21,24 +19,21 @@ setupCache:
 phases:
   # ── Phase 1: fix (command phase — TRD-005) ───────────────────────────────
   # Uses /ensemble:fix-issue as the agent prompt, with task metadata interpolated.
-  # All other phase config (model, maxTurns, artifact, mail) works identically
-  # to a prompt: phase.
+  # Use /ensemble:refactor or /ensemble:chore for refactoring-specific agents.
   - name: fix
     command: "/ensemble:fix-issue {task.title} {task.description}"
     models:
       default: sonnet
       P0: opus
       P4: haiku
-    maxTurns: 80
+    maxTurns: 60
     artifact: DEVELOPER_REPORT.md
     mail:
       onStart: true
       onComplete: true
 
   # ── Phase 2: test (bash phase — TRD-004) ────────────────────────────────
-  # Executes `npm run test` via /bin/sh -c in the worktree directory.
-  # {task.*} placeholders are interpolated before execution.
-  # Artifact is written from stdout; verdict is parsed from output.
+  # Runs the project's test suite to validate the chore.
   - name: test
     bash: "npm run test"
     artifact: TEST_RESULTS.md
@@ -46,16 +41,16 @@ phases:
     retryWith: fix
     retryOnFail: 2
     mail:
-      onStart: true
+      onStart: false
       onComplete: true
 
-  # ── Phase 3: finalize (prompt phase) ───────────────────────────────────
-  # Standard finalize with human-readable summary for auto-merge context.
+  # ── Phase 3: finalize ───────────────────────────────────────────────────
+  # Summarises changes for auto-merge.
   - name: finalize
     prompt: finalize.md
     models:
       default: haiku
-    maxTurns: 30
+    maxTurns: 20
     artifact: FINALIZE_VALIDATION.md
     verdict: true
     retryWith: fix

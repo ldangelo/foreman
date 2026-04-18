@@ -409,16 +409,16 @@ describe("resolveWorkflowName", () => {
     expect(resolveWorkflowName("epic")).toBe("epic");
   });
 
-  it("returns 'default' for feature bead type", () => {
-    expect(resolveWorkflowName("feature")).toBe("default");
+  it("returns 'feature' for feature bead type (feature.yaml exists)", () => {
+    expect(resolveWorkflowName("feature")).toBe("feature");
   });
 
   it("returns 'bug' for bug bead type (bug.yaml exists — TRD-008)", () => {
     expect(resolveWorkflowName("bug")).toBe("bug");
   });
 
-  it("returns 'default' for task bead type", () => {
-    expect(resolveWorkflowName("task")).toBe("default");
+  it("returns 'task' for task bead type (task.yaml exists)", () => {
+    expect(resolveWorkflowName("task")).toBe("task");
   });
 
   it("returns workflow label override when present", () => {
@@ -431,22 +431,24 @@ describe("resolveWorkflowName", () => {
   });
 
   it("ignores non-workflow labels", () => {
-    expect(resolveWorkflowName("feature", ["phase:explorer", "priority:high"])).toBe("default");
+    expect(resolveWorkflowName("feature", ["phase:explorer", "priority:high"])).toBe("feature");
   });
 
-  it("returns 'default' when labels array is empty", () => {
-    expect(resolveWorkflowName("feature", [])).toBe("default");
+  it("returns workflow when labels array is empty", () => {
+    expect(resolveWorkflowName("feature", [])).toBe("feature");
   });
 
-  it("returns 'default' when labels is undefined", () => {
-    expect(resolveWorkflowName("feature", undefined)).toBe("default");
+  it("returns workflow when labels is undefined", () => {
+    expect(resolveWorkflowName("feature", undefined)).toBe("feature");
   });
 
-  it("ignores optional routing hints and falls back to default without explicit labels", () => {
-    // bug.yaml exists (TRD-008), so bug type now selects bug workflow
+  it("ignores optional routing hints — uses type-based workflow when no workflow label", () => {
+    // bug.yaml exists → bug workflow
     expect(resolveWorkflowName("bug", ["priority:high"])).toBe("bug");
-    // feature has no corresponding workflow file → default
-    expect(resolveWorkflowName("feature", ["priority:high"])).toBe("default");
+    // feature.yaml exists → feature workflow
+    expect(resolveWorkflowName("feature", ["priority:high"])).toBe("feature");
+    // no workflow label, no matching file → default
+    expect(resolveWorkflowName("unknown", ["priority:high"])).toBe("default");
   });
 });
 

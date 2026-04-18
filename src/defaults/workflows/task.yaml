@@ -1,0 +1,85 @@
+# Task workflow: Explorer → Developer ⇄ QA → Finalize
+#
+# Standard task pipeline. Slightly lighter than feature: skips the dedicated
+# reviewer phase. Appropriate for well-scoped implementation tasks, improvements,
+# and non-feature work that still benefits from QA validation.
+#
+# Auto-selected when bead type is "task".
+
+name: task
+merge: auto
+onError: stop
+setup:
+  - command: npm install --prefer-offline --no-audit
+    description: Install Node.js dependencies
+    failFatal: true
+setupCache:
+  key: package-lock.json
+  path: node_modules
+rebaseAfterPhase: developer
+
+phases:
+  - name: explorer
+    prompt: explorer.md
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 30
+    artifact: EXPLORER_REPORT.md
+    skipIfArtifact: EXPLORER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: developer
+
+  - name: developer
+    prompt: developer.md
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 80
+    artifact: DEVELOPER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  - name: qa
+    prompt: qa.md
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 30
+    artifact: QA_REPORT.md
+    verdict: true
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  - name: finalize
+    prompt: finalize.md
+    models:
+      default: haiku
+    maxTurns: 30
+    artifact: FINALIZE_VALIDATION.md
+    verdict: true
+    retryWith: developer
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+onFailure:
+  name: troubleshooter
+  prompt: troubleshooter.md
+  models:
+    default: MiniMax
+    P0: MiniMax-highspeed
+  maxTurns: 20
+  artifact: TROUBLESHOOT_REPORT.md
