@@ -72,6 +72,8 @@ export interface Run {
   tmux_session?: string | null;
   /** Branch that this seed's worktree was branched from (null = default branch). Used for branch stacking. */
   base_branch?: string | null;
+  /** Per-run merge strategy: 'auto' (refinery), 'pr' (gh pr create), or 'none' (skip). */
+  merge_strategy?: "auto" | "pr" | "none" | null;
 }
 
 export interface Cost {
@@ -514,6 +516,7 @@ const MIGRATIONS = [
   `ALTER TABLE runs ADD COLUMN progress TEXT DEFAULT NULL`,
   `ALTER TABLE runs RENAME COLUMN bead_id TO seed_id`,
   `ALTER TABLE runs ADD COLUMN tmux_session TEXT DEFAULT NULL`,
+  `ALTER TABLE runs ADD COLUMN merge_strategy TEXT DEFAULT 'auto'`,
   `CREATE TABLE IF NOT EXISTS sentinel_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL UNIQUE,
@@ -795,7 +798,7 @@ export class ForemanStore {
     seedId: string,
     agentType: Run["agent_type"],
     worktreePath?: string,
-    opts?: { baseBranch?: string | null },
+    opts?: { baseBranch?: string | null; mergeStrategy?: Run["merge_strategy"] },
   ): Run {
     const now = new Date().toISOString();
     const run: Run = {
@@ -812,11 +815,12 @@ export class ForemanStore {
       progress: null,
       tmux_session: null,
       base_branch: opts?.baseBranch ?? null,
+      merge_strategy: opts?.mergeStrategy ?? 'auto',
     };
     this.db
       .prepare(
-        `INSERT INTO runs (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch)
-         VALUES (@id, @project_id, @seed_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at, @base_branch)`
+        `INSERT INTO runs (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch, merge_strategy)
+         VALUES (@id, @project_id, @seed_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at, @base_branch, @merge_strategy)`
       )
       .run(run);
     return run;
@@ -824,7 +828,7 @@ export class ForemanStore {
 
   updateRun(
     id: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch">>
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch" | "merge_strategy">>
   ): void {
     const fields: string[] = [];
     const values: Record<string, unknown> = { id };
