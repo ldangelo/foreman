@@ -10,11 +10,12 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFile, execSync } from "node:child_process";
 import { appendFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import type { TaskMeta } from "../lib/interpolate.js";
+import { interpolateTaskPlaceholders } from "../lib/interpolate.js";
 import { resolvePhaseModel } from "../lib/workflow-loader.js";
 import { ROLE_CONFIGS } from "./roles.js";
 import {
@@ -113,6 +114,8 @@ export interface PipelineRunConfig {
    * Used to link child task results back to the parent epic.
    */
   epicId?: string;
+  /** Task metadata for placeholder interpolation in bash/command phases (REQ-008). */
+  taskMeta?: TaskMeta;
 }
 
 export interface PipelineContext {
@@ -282,6 +285,141 @@ function isGeneratedWorkflowArtifact(filePath: string): boolean {
 }
 
 // ── Generic Pipeline Executor ───────────────────────────────────────────────
+
+// ── Bash Phase Execution (TRD-004) ─────────────────────────────────────────────
+
+const BASH_PHASE_TIMEOUT_MS = 120_000; // 120 seconds
+
+/**
+ * Result of a bash phase execution.
+ * Mirrors PhaseResult but includes stdout/stderr for artifact writing.
+ */
+export interface BashPhaseResult extends PhaseResult {
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Execute a bash phase via `/bin/sh -c` in the worktree directory.
+ *
+ * 1. Interpolate `{task.*}` placeholders using taskMeta from PipelineContext
+ * 2. Run via execFile with cwd=worktreePath, timeout=120s
+ * 3. Capture stdout + stderr
+ * 4. Write artifact file if specified
+ * 5. Return PASS (exit 0) or FAIL (non-zero exit code or timeout)
+ */
+export async function runBashPhase(
+  bashCommand: string,
+  taskMeta: TaskMeta | undefined,
+  cwd: string,
+  artifactFile?: string,
+  timeoutMs = BASH_PHASE_TIMEOUT_MS,
+): Promise<BashPhaseResult> {
+  // Interpolate placeholders
+  const interpolated = taskMeta
+    ? interpolateTaskPlaceholders(bashCommand, taskMeta)
+    : bashCommand;
+
+  let stdout = '';
+  let stderr = '';
+  let exitCode: number | null = null;
+  let timedOut = false;
+
+  try {
+    const result = await execFilePromise('/bin/sh', ['-c', interpolated], {
+      cwd,
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024, // 10 MB
+    });
+    stdout = result.stdout ?? '';
+    stderr = result.stderr ?? '';
+    exitCode = result.status ?? 0;
+  } catch (err: unknown) {
+    timedOut = err instanceof Error && err.message.includes('timed out');
+    if (timedOut) {
+      stderr = `Bash phase timed out after ${timeoutMs}ms: ${interpolated}`;
+      exitCode = 124; // standard timeout exit code
+    } else if (err instanceof Error) {
+      // execFile throws NodeJS.ErrnoException with numeric code property
+      const code = (err as NodeJS.ErrnoException).code;
+      exitCode = typeof code === 'number' ? code : 1;
+      stderr = err.message;
+    } else {
+      stderr = String(err);
+      exitCode = 1;
+    }
+  }
+
+  const success = exitCode === 0 && !timedOut;
+
+  // Write artifact file if specified
+  if (artifactFile && stdout) {
+    try {
+      writeFileSync(artifactFile, stdout, 'utf8');
+    } catch {
+      // Non-fatal: artifact write failure doesn't fail the phase
+    }
+  }
+
+  return {
+    success,
+    costUsd: 0,
+    turns: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    error: timedOut
+      ? `Timeout after ${timeoutMs}ms`
+      : exitCode !== 0
+        ? `Exit code ${exitCode}`
+        : undefined,
+    outputText: stdout || stderr,
+    stdout,
+    stderr,
+  };
+}
+
+/**
+ * Promise wrapper around execFile with timeout support.
+ * Uses child_process execFile with a race between the command and a timeout.
+ */
+function execFilePromise(
+  command: string,
+  args: string[],
+  options: { cwd?: string; timeout?: number; maxBuffer?: number },
+): Promise<{ stdout: string; stderr: string; status: number | null }> {
+  const { timeout: timeoutMs, ...restOptions } = options;
+
+  const execPromise: Promise<{ stdout: string; stderr: string; status: number | null }> =
+    new Promise((resolve, reject) => {
+      const proc = execFile(command, args, restOptions, (error, stdout, stderr) => {
+        // error is null on clean exit; Error with numeric code on non-zero exit; Error without code on fatal errors
+        if (error && !('code' in error)) {
+          reject(error); // fatal error (no exit code)
+        } else {
+          // Non-zero exit code → resolve with status; zero exit → status 0
+          const rawCode = error ? (error as NodeJS.ErrnoException).code : null;
+          const status: number | null = typeof rawCode === 'number' ? (rawCode as number) : null;
+          resolve({ stdout: stdout ?? '', stderr: stderr ?? '', status });
+        }
+      });
+      if (timeoutMs) {
+        proc.on('error', (err) => reject(err));
+      }
+    });
+
+  if (!timeoutMs) return execPromise;
+
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => {
+      reject(Object.assign(
+        new Error(`ETIMEDOUT: ${command} timed out after ${timeoutMs}ms`),
+        { code: 'ETIMEDOUT' },
+      ));
+    }, timeoutMs),
+  );
+
+  return Promise.race([execPromise, timeoutPromise]);
+}
 
 /**
  * Execute a workflow pipeline driven entirely by the YAML config.
@@ -831,6 +969,61 @@ async function runPhaseSequence(
     }
 
     const phaseConfig = { ...config, model: phaseModel };
+
+    // TRD-004: Bash phase — execute via execFile instead of SDK agent
+    if (phase.bash) {
+      const bashResult = await runBashPhase(
+        phase.bash,
+        ctx.taskMeta,
+        worktreePath,
+        phase.artifact,
+      );
+      // TRD-004: record phase result (same structure as ctx.runPhase result)
+      const result: PhaseResult = {
+        success: bashResult.success,
+        costUsd: 0,
+        turns: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        error: bashResult.error,
+        outputText: bashResult.stdout || bashResult.stderr,
+      };
+      phaseRecords.push({
+        name: phaseName,
+        skipped: false,
+        success: result.success,
+        costUsd: 0,
+        turns: 0,
+        error: result.error,
+      });
+      progress.costUsd += 0;
+      store.updateRunProgress(runId, progress);
+      // Continue to verdict handling below (same as ctx.runPhase path)
+      if (!result.success) {
+        const errorMsg = result.error ?? `${phaseName} failed`;
+        ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${errorMsg}`);
+        await appendFile(logFile, `\n[PIPELINE] ${phaseName} FAIL: ${errorMsg}\n`);
+        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: phaseName, error: errorMsg, retryable: false,
+        });
+        if (phase.retryWith && retryCounts[phaseName] < (phase.retryOnFail ?? 0)) {
+          retryCounts[phaseName] = (retryCounts[phaseName] ?? 0) + 1;
+          ctx.log(`[${phaseName.toUpperCase()}] Retry ${retryCounts[phaseName]}/${phase.retryOnFail}`);
+          await appendFile(logFile, `\n[PIPELINE] ${phaseName} retry ${retryCounts[phaseName]}\n`);
+          // fall through to retry
+        } else {
+          await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, notifyClient, config.projectPath);
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+        }
+      }
+      // Handle verdict if configured
+      if (phase.verdict && result.outputText) {
+        qaVerdictForLog = parseVerdict(result.outputText);
+      }
+      // Increment i and continue to next phase
+      i++;
+      continue;
+    }
 
     const result = await ctx.runPhase(
       phaseName, prompt, phaseConfig, progress, logFile, store, notifyClient, agentMailClient,
