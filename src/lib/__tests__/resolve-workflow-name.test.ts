@@ -15,8 +15,8 @@ describe('resolveWorkflowName (TRD-006)', () => {
     });
 
     it('handles missing labels gracefully', () => {
-      expect(resolveWorkflowName('bug', [])).toBe('default');
-      expect(resolveWorkflowName('bug', undefined)).toBe('default');
+      expect(resolveWorkflowName('chore', [])).toBe('default');
+      expect(resolveWorkflowName('chore', undefined)).toBe('default');
     });
   });
 
@@ -33,7 +33,6 @@ describe('resolveWorkflowName (TRD-006)', () => {
 
     it('returns default when no matching workflow file exists', () => {
       // These types have no corresponding workflow file in defaults/workflows/
-      expect(resolveWorkflowName('bug')).toBe('default');
       expect(resolveWorkflowName('feature')).toBe('default');
       expect(resolveWorkflowName('chore')).toBe('default');
       expect(resolveWorkflowName('docs')).toBe('default');
@@ -58,8 +57,20 @@ describe('resolveWorkflowName (TRD-006)', () => {
     });
 
     it('no label, no matching file → default', () => {
-      // bug.yaml does not exist
-      expect(resolveWorkflowName('bug', [])).toBe('default');
+      // chore.yaml does not exist
+      expect(resolveWorkflowName('chore', [])).toBe('default');
+    });
+  });
+
+  // TRD-008: bug.yaml now exists, so bug type → bug workflow
+  describe('TRD-008: bug.yaml bundled workflow (TRD-008)', () => {
+    it('bug type maps to bug.yaml when it exists in bundled workflows', () => {
+      // bug.yaml exists in defaults/workflows/ (TRD-008)
+      expect(resolveWorkflowName('bug')).toBe('bug');
+    });
+
+    it('bug type without label → bug workflow (TRD-008)', () => {
+      expect(resolveWorkflowName('bug', [])).toBe('bug');
     });
   });
 });
