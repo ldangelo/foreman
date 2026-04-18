@@ -422,10 +422,11 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["bash"] === "string") phase.bash = p["bash"];
     if (typeof p["command"] === "string") phase.command = p["command"];
 
-    // Exactly one of bash, command, or prompt must be set
+    // Exactly one of bash, command, or prompt must be set (unless builtin: true)
     const hasPrompt = typeof p["prompt"] === "string";
     const hasBash = typeof p["bash"] === "string";
     const hasCommand = typeof p["command"] === "string";
+    const isBuiltin = typeof p["builtin"] === "boolean" && p["builtin"];
     if (hasBash && hasPrompt) {
       throw new WorkflowConfigError(
         workflowName,
@@ -444,7 +445,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         `phases[${i}].${p["name"]} has both 'command:' and 'prompt:' — only one is allowed`,
       );
     }
-    if (!hasPrompt && !hasBash && !hasCommand) {
+    // builtin: true phases don't need a prompt/bash/command field
+    if (!hasPrompt && !hasBash && !hasCommand && !isBuiltin) {
       throw new WorkflowConfigError(
         workflowName,
         `phases[${i}].${p["name"]} must have one of 'prompt:', 'bash:', or 'command:'`,

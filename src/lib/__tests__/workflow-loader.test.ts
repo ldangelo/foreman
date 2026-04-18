@@ -85,7 +85,7 @@ describe("validateWorkflowConfig", () => {
   });
 
   it("ignores unknown phase fields", () => {
-    const raw = { name: "w", phases: [{ name: "explorer", unknown: "field" }] };
+    const raw = { name: "w", phases: [{ name: "explorer", prompt: "explorer.md", unknown: "field" }] };
     const config = validateWorkflowConfig(raw, "w");
     expect(config.phases[0].name).toBe("explorer");
     // unknown fields are simply not included
@@ -413,8 +413,8 @@ describe("resolveWorkflowName", () => {
     expect(resolveWorkflowName("feature")).toBe("default");
   });
 
-  it("returns 'default' for bug bead type", () => {
-    expect(resolveWorkflowName("bug")).toBe("default");
+  it("returns 'bug' for bug bead type (bug.yaml exists — TRD-008)", () => {
+    expect(resolveWorkflowName("bug")).toBe("bug");
   });
 
   it("returns 'default' for task bead type", () => {
@@ -443,7 +443,9 @@ describe("resolveWorkflowName", () => {
   });
 
   it("ignores optional routing hints and falls back to default without explicit labels", () => {
-    expect(resolveWorkflowName("bug", undefined)).toBe("default");
+    // bug.yaml exists (TRD-008), so bug type now selects bug workflow
+    expect(resolveWorkflowName("bug", ["priority:high"])).toBe("bug");
+    // feature has no corresponding workflow file → default
     expect(resolveWorkflowName("feature", ["priority:high"])).toBe("default");
   });
 });
@@ -459,6 +461,7 @@ describe("validateWorkflowConfig — models map", () => {
       phases: [
         {
           name: "developer",
+          prompt: "developer.md",
           models: { default: "sonnet", P0: "opus", P1: "sonnet" },
         },
         ...minimalPhases,
@@ -475,7 +478,7 @@ describe("validateWorkflowConfig — models map", () => {
   it("accepts models map with only 'default' key", () => {
     const raw = {
       name: "w",
-      phases: [{ name: "explorer", models: { default: "haiku" } }],
+      phases: [{ name: "explorer", prompt: "explorer.md", models: { default: "haiku" } }],
     };
     const config = validateWorkflowConfig(raw, "w");
     expect(config.phases[0].models).toEqual({ default: "haiku" });
@@ -508,7 +511,7 @@ describe("validateWorkflowConfig — models map", () => {
   it("coexists with legacy 'model' field (models takes precedence)", () => {
     const raw = {
       name: "w",
-      phases: [{ name: "developer", model: "haiku", models: { default: "sonnet" } }],
+      phases: [{ name: "developer", prompt: "developer.md", model: "haiku", models: { default: "sonnet" } }],
     };
     const config = validateWorkflowConfig(raw, "w");
     // Both fields are preserved; resolvePhaseModel() determines precedence
