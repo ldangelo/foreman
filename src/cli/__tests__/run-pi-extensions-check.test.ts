@@ -88,6 +88,16 @@ vi.mock("node:fs", () => ({
 }));
 
 vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient }));
+// Needed so collectRuntimeAssetIssues() finds no missing/stale prompts/workflows
+// when FOREMAN_RUNTIME_MODE=normal (test overrides to run the Pi extension check).
+vi.mock("../../lib/prompt-loader.js", () => ({
+  findMissingPrompts: () => [],
+  findStalePrompts: () => [],
+}));
+vi.mock("../../lib/workflow-loader.js", () => ({
+  findMissingWorkflows: () => [],
+  findStaleWorkflows: () => [],
+}));
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
@@ -160,6 +170,9 @@ describe("Pi extensions build check in foreman run", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Override test-mode env var so Pi extension check runs (not skipped).
+    // collectRuntimeAssetIssues() returns [] via mocked prompt/workflow loaders.
+    process.env.FOREMAN_RUNTIME_MODE = "normal";
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -203,6 +216,7 @@ describe("Pi extensions build check in foreman run", () => {
   });
 
   afterEach(() => {
+    delete process.env.FOREMAN_RUNTIME_MODE;
     vi.restoreAllMocks();
   });
 

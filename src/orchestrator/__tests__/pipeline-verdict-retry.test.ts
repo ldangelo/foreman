@@ -34,7 +34,7 @@ function makeBasePipelineArgs(
   const wrappedRunPhase = vi.fn(async (phaseName: string, ...args: unknown[]) => {
     // Cast through `any` to handle strict Mock<Procedure | Constructable> types
     // that newer vitest/AI-SDK type combinations produce in worktree builds.
-    const result = await (runPhase as unknown as (...args: unknown[]) => Promise<unknown>)(phaseName, ...args);
+    const result = await (runPhase as unknown as (...args: unknown[]) => Promise<unknown>)(phaseName, ...args) as { success?: boolean } | null | undefined;
     if (opts.autoArtifacts !== false && result?.success) {
       const artifact = phaseConfigs.find((phase) => phase.name === phaseName)?.artifact;
       if (artifact) {

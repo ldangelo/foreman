@@ -17,6 +17,10 @@ const baseTestConfig: NonNullable<UserConfig["test"]> = {
   env: {
     GIT_TERMINAL_PROMPT: "0",
     GIT_ASKPASS: "true",
+    // Skip runtime asset preflight checks (prompts/workflows) in test mode.
+    // Tests that need to verify preflight behavior set FOREMAN_RUNTIME_MODE=normal
+    // in their beforeEach and restore it in afterEach.
+    FOREMAN_RUNTIME_MODE: "test",
   },
 };
 
