@@ -922,23 +922,27 @@ async function runPhaseSequence(
       }
     }
 
-    // TRD-005: Command phase — use interpolated command string as prompt (no file load)
-    const prompt = phase.command
-      ? interpolateTaskPlaceholders(phase.command, ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 })
-      : buildPhasePrompt(phaseName, {
-      seedId,
-      seedTitle,
-      seedDescription: description,
-      seedComments: comments,
-      seedType: config.seedType,
-      runId,
-      hasExplorerReport,
-      requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
-      feedbackContext,
-      worktreePath,
-      baseBranch: config.targetBranch,
-      ...vcsPromptVars,
-    }, ctx.promptOpts);
+    // TRD-004/TRD-005: Build prompt only for prompt:-based phases.
+    // Bash and command phases handle their own execution without buildPhasePrompt.
+    let prompt = "";
+    if (!phase.bash) {
+      prompt = phase.command
+        ? interpolateTaskPlaceholders(phase.command, ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 })
+        : buildPhasePrompt(phaseName, {
+        seedId,
+        seedTitle,
+        seedDescription: description,
+        seedComments: comments,
+        seedType: config.seedType,
+        runId,
+        hasExplorerReport,
+        requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
+        feedbackContext,
+        worktreePath,
+        baseBranch: config.targetBranch,
+        ...vcsPromptVars,
+      }, ctx.promptOpts);
+    }
 
     const roleConfigFallback = (ROLE_CONFIGS as Record<string, { model: string } | undefined>)[phaseName];
     const fallbackModel = roleConfigFallback?.model ?? config.model;
