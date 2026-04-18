@@ -128,13 +128,29 @@ export class SentinelAgent {
     const durationMs = Date.now() - startMs;
     const completedAt = new Date().toISOString();
 
-    // Update the sentinel run record
-    this.store.updateSentinelRun(runId, {
-      status,
-      output: output.slice(0, 50_000), // cap at 50 KB
-      completed_at: completedAt,
-      failure_count: this.consecutiveFailures,
-    });
+    // Update the sentinel run record. Skip if the store has been closed (e.g. foreman
+    // run exited while runOnce was in-flight — the run record is lost but that's
+    // acceptable since the process is shutting down anyway).
+    if (this.store.isOpen()) {
+      this.store.updateSentinelRun(runId, {
+        status,
+        output: output.slice(0, 50_000), // cap at 50 KB
+        completed_at: completedAt,
+        failure_count: this.consecutiveFailures,
+      });
+    }
+
+    // Store has been closed (foreman run exiting) — skip the rest of post-result
+    // processing. The in-flight runOnce() completes but the result record is dropped.
+    if (!this.store.isOpen()) {
+      return {
+        id: runId,
+        status: "error",
+        commitHash: null,
+        output: "Sentinel store closed — skipping result record",
+        durationMs: Date.now() - startMs,
+      };
+    }
 
     // Log result event
     const eventType = status === "passed" ? "sentinel-pass" : "sentinel-fail";

@@ -683,6 +683,10 @@ export class ForemanStore {
     return this.db;
   }
 
+  isOpen(): boolean {
+    return (this.db as unknown as { open: boolean }).open;
+  }
+
   close(): void {
     this.db.close();
   }
