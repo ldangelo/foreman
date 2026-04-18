@@ -160,6 +160,24 @@ export interface WorkflowPhaseConfig {
    * rather than an SDK agent call. Currently only "finalize" uses this.
    */
   builtin?: boolean;
+  /**
+   * Bash command string executed via `/bin/sh -c` in the worktree directory.
+   * Supports multi-arg commands, shell operators (`&&`, `||`, `|`), and redirects.
+   * Mutually exclusive with `command` and `prompt`. Exactly one of the three
+   * must be set per phase.
+   *
+   * @example bash: "npm run test"
+   */
+  bash?: string;
+  /**
+   * Inline command string sent to the Pi SDK session as a prompt.
+   * Supports `{task.*}` placeholder interpolation.
+   * Mutually exclusive with `bash` and `prompt`. Exactly one of the three
+   * must be set per phase.
+   *
+   * @example command: "/ensemble:fix-issue {task.title}"
+   */
+  command?: string;
 }
 
 /** Configuration for the onFailure troubleshooter phase. */
@@ -253,6 +271,16 @@ export interface WorkflowConfig {
    * @example `taskTimeout: 300` — 5 minute timeout per task
    */
   taskTimeout?: number;
+  /**
+   * Per-workflow merge strategy. Controls how completed branches are merged:
+   *
+   * - `'auto'`: refinery merges completed branches automatically (default)
+   * - `'pr'`: creates a GitHub PR via `gh pr create`
+   * - `'none'`: no merge or PR; run ends in `completed` status
+   *
+   * @default 'auto'
+   */
+  merge?: "auto" | "pr" | "none";
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -391,6 +419,39 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["retryWith"] === "string") phase.retryWith = p["retryWith"];
     if (typeof p["retryOnFail"] === "number") phase.retryOnFail = p["retryOnFail"];
     if (typeof p["builtin"] === "boolean") phase.builtin = p["builtin"];
+    if (typeof p["bash"] === "string") phase.bash = p["bash"];
+    if (typeof p["command"] === "string") phase.command = p["command"];
+
+    // Exactly one of bash, command, or prompt must be set (unless builtin: true)
+    const hasPrompt = typeof p["prompt"] === "string";
+    const hasBash = typeof p["bash"] === "string";
+    const hasCommand = typeof p["command"] === "string";
+    const isBuiltin = typeof p["builtin"] === "boolean" && p["builtin"];
+    if (hasBash && hasPrompt) {
+      throw new WorkflowConfigError(
+        workflowName,
+        `phases[${i}].${p["name"]} has both 'bash:' and 'prompt:' — only one is allowed`,
+      );
+    }
+    if (hasBash && hasCommand) {
+      throw new WorkflowConfigError(
+        workflowName,
+        `phases[${i}].${p["name"]} has both 'bash:' and 'command:' — only one is allowed`,
+      );
+    }
+    if (hasCommand && hasPrompt) {
+      throw new WorkflowConfigError(
+        workflowName,
+        `phases[${i}].${p["name"]} has both 'command:' and 'prompt:' — only one is allowed`,
+      );
+    }
+    // builtin: true phases don't need a prompt/bash/command field
+    if (!hasPrompt && !hasBash && !hasCommand && !isBuiltin) {
+      throw new WorkflowConfigError(
+        workflowName,
+        `phases[${i}].${p["name"]} must have one of 'prompt:', 'bash:', or 'command:'`,
+      );
+    }
 
     // Parse mail hooks
     if (isRecord(p["mail"])) {
@@ -521,6 +582,19 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       throw new WorkflowConfigError(
         workflowName,
         `onError must be 'stop' or 'continue' (got: ${String(onError)})`,
+      );
+    }
+  }
+
+  // ── Parse optional merge strategy ────────────────────────────────────────
+  if (raw["merge"] !== undefined) {
+    const merge = raw["merge"];
+    if (merge === "auto" || merge === "pr" || merge === "none") {
+      config.merge = merge;
+    } else {
+      throw new WorkflowConfigError(
+        workflowName,
+        `merge must be 'auto', 'pr', or 'none' (got: ${String(merge)})`,
       );
     }
   }
@@ -730,6 +804,18 @@ export function findStaleWorkflows(projectRoot: string): string[] {
  * @param labels   - Optional list of labels on the bead.
  * @returns The resolved workflow name to use.
  */
+/**
+ * Resolve the workflow name for a seed/bead.
+ *
+ * Resolution order:
+ *  1. `workflow:<name>` label — explicit override
+ *  2. `{seedType}.yaml` in bundled workflows directory
+ *  3. "default"
+ *
+ * This removes the old hardcoded "smoke" → "smoke" and "epic" → "epic" mappings,
+ * replacing them with a general file-existence check. Both smoke.yaml and epic.yaml
+ * exist in defaults/workflows/ so this is backward-compatible.
+ */
 export function resolveWorkflowName(
   seedType: string,
   labels?: string[],
@@ -741,8 +827,13 @@ export function resolveWorkflowName(
       }
     }
   }
-  if (seedType === "smoke") return "smoke";
-  if (seedType === "epic") return "epic";
+  // TRD-006: type-based resolution — check if a workflow file exists for the seed type
+  if (seedType) {
+    const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${seedType}.yaml`);
+    if (existsSync(bundledPath)) {
+      return seedType;
+    }
+  }
   return "default";
 }
 

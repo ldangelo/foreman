@@ -537,16 +537,25 @@ export class NativeTaskStore {
    * List tasks from the `tasks` table, ordered by priority ASC, created_at ASC.
    *
    * @param opts.status — filter by exact status value (e.g. "ready")
+   * @param opts.type — filter by exact type value (e.g. "epic", "bug")
    */
-  list(opts?: { status?: string }): Issue[] {
+  list(opts?: { status?: string; type?: string }): Issue[] {
     let sql = "SELECT * FROM tasks";
     const params: string[] = [];
+    const conditions: string[] = [];
 
     if (opts?.status) {
-      sql += " WHERE status = ?";
+      conditions.push("status = ?");
       params.push(opts.status);
     }
+    if (opts?.type) {
+      conditions.push("type = ?");
+      params.push(opts.type);
+    }
 
+    if (conditions.length > 0) {
+      sql += " WHERE " + conditions.join(" AND ");
+    }
     sql += " ORDER BY priority ASC, created_at ASC";
 
     const rows = this.db.prepare(sql).all(...params) as TaskRow[];

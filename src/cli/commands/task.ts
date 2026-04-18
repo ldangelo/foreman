@@ -504,10 +504,11 @@ const createCommand = new Command("create")
 const listCommand = new Command("list")
   .description("List tasks in the native task store")
   .option("--status <status>", "Filter by status (e.g. ready, backlog, in-progress)")
+  .option("--type <type>", "Filter by type (e.g. epic, bug, feature, task)")
   .option("--all", "Include closed and merged tasks (excluded by default)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action((opts: { status?: string; all?: boolean; project?: string; projectPath?: string }) => {
+  .action((opts: { status?: string; type?: string; all?: boolean; project?: string; projectPath?: string }) => {
     const projectPath = resolveProjectPathFromOptions(opts);
 
     try {
@@ -533,6 +534,11 @@ const listCommand = new Command("list")
         conditions.push("status NOT IN ('closed', 'merged')");
       }
 
+      if (opts.type) {
+        conditions.push("type = ?");
+        params.push(opts.type);
+      }
+
       if (conditions.length > 0) {
         sql += " WHERE " + conditions.join(" AND ");
       }
@@ -543,8 +549,12 @@ const listCommand = new Command("list")
       ) as TaskRow[];
 
       if (rows.length === 0) {
-        if (opts.status) {
+        if (opts.status && opts.type) {
+          console.log(chalk.dim(`No tasks with status '${opts.status}' and type '${opts.type}'.`));
+        } else if (opts.status) {
           console.log(chalk.dim(`No tasks with status '${opts.status}'.`));
+        } else if (opts.type) {
+          console.log(chalk.dim(`No tasks with type '${opts.type}'.`));
         } else {
           console.log(
             chalk.dim("No tasks found. Use 'foreman task create' to add tasks."),
@@ -554,10 +564,14 @@ const listCommand = new Command("list")
       }
 
       const label = opts.status
-        ? `Tasks (status: ${opts.status})`
-        : opts.all
-          ? `All Tasks`
-          : `Active Tasks`;
+        ? opts.type
+          ? `Tasks (status: ${opts.status}, type: ${opts.type})`
+          : `Tasks (status: ${opts.status})`
+        : opts.type
+          ? `Tasks (type: ${opts.type})`
+          : opts.all
+            ? `All Tasks`
+            : `Active Tasks`;
       console.log(chalk.bold(`\n  ${label} (${rows.length})\n`));
       printTaskTable(rows);
       console.log();

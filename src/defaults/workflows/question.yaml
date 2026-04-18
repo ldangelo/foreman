@@ -1,0 +1,42 @@
+# Question workflow: explore → finalize (no merge)
+#
+# Lightweight research/clarification pipeline for questions, spike investigations,
+# proof-of-concepts, and architecture explorations. No code is merged — the agent
+# produces a written answer/analysis as the artifact.
+#
+# Auto-selected when bead type is "question".
+
+name: question
+merge: none
+setup: []
+# No install needed for research-only tasks
+
+phases:
+  # ── Phase 1: explore ────────────────────────────────────────────────────
+  # Investigate the question and produce a written analysis.
+  - name: explore
+    prompt: explorer.md
+    models:
+      default: sonnet
+      P0: opus
+      P4: haiku
+    maxTurns: 30
+    artifact: EXPLORER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 2: finalize ───────────────────────────────────────────────────
+  # Summarise findings. No merge — merge_strategy is "none".
+  - name: finalize
+    prompt: finalize.md
+    models:
+      default: haiku
+    maxTurns: 15
+    artifact: FINALIZE_VALIDATION.md
+    verdict: true
+    retryWith: explore
+    retryOnFail: 0
+    mail:
+      onStart: false
+      onComplete: true

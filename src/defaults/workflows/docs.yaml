@@ -1,0 +1,45 @@
+# Docs workflow: develop → finalize → auto-merge
+#
+# Minimal pipeline for documentation changes — README, API docs, inline comments,
+# examples, and guides. No testing phase (docs don't need CI) and no reviewer
+# (docs are low-risk). Auto-merges on finalize validation.
+#
+# Auto-selected when bead type is "docs".
+
+name: docs
+merge: auto
+setup: []
+# No dependencies needed for docs-only changes
+
+phases:
+  # ── Phase 1: develop ────────────────────────────────────────────────────
+  # The agent writes or updates documentation based on the task title/description.
+  - name: develop
+    prompt: developer.md
+    models:
+      default: sonnet
+      P0: opus
+      P4: haiku
+    maxTurns: 40
+    artifact: DEVELOPER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 300
+
+  # ── Phase 2: finalize ───────────────────────────────────────────────────
+  # Quick validation: verify docs build or lint, then auto-merge.
+  - name: finalize
+    prompt: finalize.md
+    models:
+      default: haiku
+    maxTurns: 15
+    artifact: FINALIZE_VALIDATION.md
+    verdict: true
+    retryWith: develop
+    retryOnFail: 1
+    mail:
+      onStart: false
+      onComplete: true

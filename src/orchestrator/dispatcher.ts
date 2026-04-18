@@ -25,6 +25,7 @@ import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import { getWorkspacePath } from "../lib/workspace-paths.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
+import type { TaskMeta } from "../lib/interpolate.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -285,7 +286,12 @@ export class Dispatcher {
       }
       let target = readySeeds.find((b) => b.id === opts.seedId);
       if (usingNativeStore && !target) {
-        const nativeMatch = this.store.getTaskByExternalId(opts.seedId);
+        // Try external_id first (for tasks that have it set)
+        let nativeMatch = this.store.getTaskByExternalId(opts.seedId);
+        // Fall back to id lookup when external_id is not set (common for native tasks)
+        if (!nativeMatch) {
+          nativeMatch = this.store.getTaskById(opts.seedId);
+        }
         if (nativeMatch) {
           if (nativeMatch.status === "ready") {
             target = nativeTaskToIssue(nativeMatch);
@@ -670,10 +676,13 @@ export class Dispatcher {
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
         let setupCache: import("../lib/workflow-loader.js").WorkflowSetupCache | undefined;
         let vcsBackendName: 'git' | 'jujutsu' = 'git'; // default to git
+        // TRD-007: capture merge strategy from workflow config
+        let workflowMerge: 'auto' | 'pr' | 'none' = 'auto';
         try {
           const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
           setupSteps = wfConfig.setup;
           setupCache = wfConfig.setupCache;
+          workflowMerge = wfConfig.merge ?? 'auto';
 
           // Load project-level config (optional — returns null if .foreman/config.yaml absent)
           let projectVcs: import("../lib/project-config.js").ProjectConfig["vcs"] | undefined;
@@ -746,12 +755,13 @@ export class Dispatcher {
         await writeFile(join(worktreePath, "TASK.md"), taskMd, "utf-8");
 
         // 4. Record run in store (include base_branch for stacking awareness)
+        // TRD-007: pass merge_strategy from workflow config
         const run = this.store.createRun(
           projectId,
           seed.id,
           model,
           worktreePath,
-          { baseBranch: baseBranch ?? null },
+          { baseBranch: baseBranch ?? null, mergeStrategy: workflowMerge },
         );
 
         // 5. Log dispatch event
@@ -1217,6 +1227,13 @@ export class Dispatcher {
       targetBranch,
       epicTasks,
       epicId,
+      taskMeta: {
+        id: seed.id,
+        title: seed.title,
+        description: seed.description ?? '',
+        type: seed.type ?? '',
+        priority: typeof seed.priority === 'number' ? seed.priority : 2,
+      },
     });
 
     return { sessionKey };
@@ -1601,6 +1618,11 @@ export interface WorkerConfig {
    * epicTasks within a single worktree.
    */
   epicId?: string;
+  /**
+   * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
+   * Populated from the bead/seed that triggered this run.
+   */
+  taskMeta?: TaskMeta;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

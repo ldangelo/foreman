@@ -37,6 +37,7 @@ import type { ITaskClient } from "../lib/task-client.js";
 import { NativeTaskClient } from "../lib/native-task-client.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
+import type { TaskMeta } from "../lib/interpolate.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -262,6 +263,10 @@ interface WorkerConfig {
    * When set, this run is an epic execution.
    */
   epicId?: string;
+  /**
+   * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
+   */
+  taskMeta?: TaskMeta;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -786,6 +791,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     markStuck,
     log,
     promptOpts: { projectRoot: pipelineProjectPath, workflow: resolvedWorkflow },
+    taskMeta: config.taskMeta,
 
     // Epic mode: sync child task bead status into br as the pipeline progresses.
     async onTaskStatusChange(taskSeedId, status) {

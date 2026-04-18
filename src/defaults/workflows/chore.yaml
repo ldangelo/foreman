@@ -1,0 +1,60 @@
+# Chore workflow: command phase → bash phase → finalize → auto-merge
+#
+# Lean pipeline for refactors, dependency updates, tooling, and other
+# maintenance tasks. Uses command + bash phases for efficiency (TRD-2026-008).
+# No explorer (scope is already known) and no reviewer (changes are well-scoped).
+#
+# Auto-selected when bead type is "chore".
+
+name: chore
+merge: auto
+setup:
+  - command: npm install --prefer-offline --no-audit
+    description: Install Node.js dependencies
+    failFatal: true
+setupCache:
+  key: package-lock.json
+  path: node_modules
+
+phases:
+  # ── Phase 1: fix (command phase — TRD-005) ───────────────────────────────
+  # Uses /ensemble:fix-issue as the agent prompt, with task metadata interpolated.
+  # Use /ensemble:refactor or /ensemble:chore for refactoring-specific agents.
+  - name: fix
+    command: "/ensemble:fix-issue {task.title} {task.description}"
+    models:
+      default: sonnet
+      P0: opus
+      P4: haiku
+    maxTurns: 60
+    artifact: DEVELOPER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 2: test (bash phase — TRD-004) ────────────────────────────────
+  # Runs the project's test suite to validate the chore.
+  - name: test
+    bash: "npm run test"
+    artifact: TEST_RESULTS.md
+    verdict: true
+    retryWith: fix
+    retryOnFail: 2
+    mail:
+      onStart: false
+      onComplete: true
+
+  # ── Phase 3: finalize ───────────────────────────────────────────────────
+  # Summarises changes for auto-merge.
+  - name: finalize
+    prompt: finalize.md
+    models:
+      default: haiku
+    maxTurns: 20
+    artifact: FINALIZE_VALIDATION.md
+    verdict: true
+    retryWith: fix
+    retryOnFail: 1
+    mail:
+      onStart: false
+      onComplete: true
