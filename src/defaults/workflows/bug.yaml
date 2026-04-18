@@ -17,7 +17,6 @@ setup:
 setupCache:
   key: package-lock.json
   path: node_modules
-rebaseAfterPhase: fix
 
 phases:
   # ── Phase 1: fix (command phase — TRD-005) ───────────────────────────────
