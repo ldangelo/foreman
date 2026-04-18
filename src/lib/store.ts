@@ -1803,6 +1803,23 @@ export class ForemanStore {
   }
 
   /**
+   * Look up a native task by its `id` column.
+   *
+   * Falls back when getTaskByExternalId misses because the task has no external_id set.
+   */
+  getTaskById(id: string): NativeTask | null {
+    try {
+      return (
+        (this.db
+          .prepare("SELECT * FROM tasks WHERE id = ? LIMIT 1")
+          .get(id) as NativeTask | undefined) ?? null
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Look up a native task by external_id.
    *
    * Used when an explicit bead ID may correspond to a native task row in auto mode.

@@ -286,7 +286,12 @@ export class Dispatcher {
       }
       let target = readySeeds.find((b) => b.id === opts.seedId);
       if (usingNativeStore && !target) {
-        const nativeMatch = this.store.getTaskByExternalId(opts.seedId);
+        // Try external_id first (for tasks that have it set)
+        let nativeMatch = this.store.getTaskByExternalId(opts.seedId);
+        // Fall back to id lookup when external_id is not set (common for native tasks)
+        if (!nativeMatch) {
+          nativeMatch = this.store.getTaskById(opts.seedId);
+        }
         if (nativeMatch) {
           if (nativeMatch.status === "ready") {
             target = nativeTaskToIssue(nativeMatch);

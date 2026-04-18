@@ -19,21 +19,8 @@ setupCache:
 rebaseAfterPhase: developer
 
 phases:
-  - name: explorer
-    prompt: explorer.md
-    models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 30
-    artifact: EXPLORER_REPORT.md
-    skipIfArtifact: EXPLORER_REPORT.md
-    mail:
-      onStart: true
-      onComplete: true
-      forwardArtifactTo: developer
-
-  - name: developer
-    prompt: developer.md
+  - name: fix
+    command: "/ensemble:fix-issue {task.title} {task.description}"
     models:
       default: MiniMax
       P0: MiniMax-highspeed
@@ -42,39 +29,36 @@ phases:
     mail:
       onStart: true
       onComplete: true
-    files:
-      reserve: true
-      leaseSecs: 600
 
-  - name: qa
-    prompt: qa.md
-    models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 30
-    artifact: QA_REPORT.md
+  # ── Phase 2: test (bash phase — TRD-004) ────────────────────────────────
+  # Executes `npm run test` via /bin/sh -c in the worktree directory.
+  # {task.*} placeholders are interpolated before execution.
+  # Artifact is written from stdout; verdict is parsed from output.
+  - name: test
+    bash: "npm run test"
+    artifact: TEST_RESULTS.md
     verdict: true
-    retryWith: developer
+    retryWith: fix
     retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
 
+  # ── Phase 3: finalize (prompt phase) ───────────────────────────────────
+  # Standard finalize with human-readable summary for auto-merge context.
   - name: finalize
     prompt: finalize.md
     models:
-      default: haiku
+      default: MiniMax
+      P0: MiniMax-highspeed
     maxTurns: 30
     artifact: FINALIZE_VALIDATION.md
     verdict: true
-    retryWith: developer
+    retryWith: fix
     retryOnFail: 1
     mail:
-      onStart: true
+      onStart: false
       onComplete: true
-      onFail: developer
-
 onFailure:
   name: troubleshooter
   prompt: troubleshooter.md

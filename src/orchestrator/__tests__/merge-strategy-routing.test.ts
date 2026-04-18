@@ -25,7 +25,7 @@ describe('TRD-007 merge_strategy routing — structural tests', () => {
   });
 
   it('merge_strategy defaults to auto when not set', () => {
-    const wf = { name: 'default', phases: [] };
+    const wf: { name: string; phases: unknown[]; merge?: string } = { name: 'default', phases: [] };
     // When merge is absent, dispatcher uses 'auto'
     const effective = wf.merge ?? 'auto';
     expect(effective).toBe('auto');
