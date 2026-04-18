@@ -922,7 +922,10 @@ async function runPhaseSequence(
       }
     }
 
-    const prompt = buildPhasePrompt(phaseName, {
+    // TRD-005: Command phase — use interpolated command string as prompt (no file load)
+    const prompt = phase.command
+      ? interpolateTaskPlaceholders(phase.command, ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 })
+      : buildPhasePrompt(phaseName, {
       seedId,
       seedTitle,
       seedDescription: description,
