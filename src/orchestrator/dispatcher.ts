@@ -25,6 +25,7 @@ import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import { getWorkspacePath } from "../lib/workspace-paths.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
+import { checkAndRebaseStaleWorktree } from "./stale-worktree-check.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import type {
   SeedInfo,
@@ -1212,6 +1213,27 @@ export class Dispatcher {
     log(`Spawning ${isEpic ? "epic runner" : usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}${isEpic ? ` (${epicTasks.length} tasks)` : ""}`);
 
     const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
+
+    // FR-5: Check if worktree is stale and auto-rebase before spawning
+    if (vcsBackend && targetBranch) {
+      try {
+        await checkAndRebaseStaleWorktree(
+          vcsBackend,
+          worktreePath,
+          targetBranch,
+          this.store,
+          this.resolveProjectId(),
+          runId,
+          seed.id,
+          { autoRebase: true, failOnConflict: true },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`[dispatch] Stale worktree check failed for ${seed.id}: ${msg}`);
+        // Re-throw so the dispatch fails cleanly rather than spawning a broken worker
+        throw err;
+      }
+    }
 
     await spawnWorkerProcess({
       runId,

@@ -247,9 +247,7 @@ export class HeartbeatManager {
     };
 
     try {
-      // Cast to unknown first, then to Record<string, unknown> to satisfy TypeScript's strict index signature requirement
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.store.logEvent(this.projectId, "heartbeat" as never, heartbeatData as unknown as Record<string, unknown>, this.runId);
+      this.store.logEvent(this.projectId, "heartbeat", heartbeatData as unknown as Record<string, unknown>, this.runId);
       this.hasFired = true;
     } catch (err) {
       // Fail-safe: log and continue

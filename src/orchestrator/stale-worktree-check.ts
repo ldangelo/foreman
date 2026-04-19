@@ -158,7 +158,7 @@ export async function checkAndRebaseStaleWorktree(
 
     if (rebaseResult.success) {
       // Rebase succeeded
-      store.logEvent(projectId, "worktree-rebased" as never, {
+      store.logEvent(projectId, "worktree-rebased", {
         seedId,
         runId,
         reason: "pre-dispatch",
@@ -173,7 +173,7 @@ export async function checkAndRebaseStaleWorktree(
       const conflictList = rebaseResult.conflictingFiles ?? [];
       const errorMsg = `Rebase failed with conflicts: ${conflictList.join(", ") || "unknown conflicts"}`;
 
-      store.logEvent(projectId, "worktree-rebase-failed" as never, {
+      store.logEvent(projectId, "worktree-rebase-failed", {
         seedId,
         runId,
         reason: "pre-dispatch",
@@ -199,7 +199,7 @@ export async function checkAndRebaseStaleWorktree(
     const msg = err instanceof Error ? err.message : String(err);
 
     // Log the failure event
-    store.logEvent(projectId, "worktree-rebase-failed" as never, {
+    store.logEvent(projectId, "worktree-rebase-failed", {
       seedId,
       runId,
       reason: "pre-dispatch",

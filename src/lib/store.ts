@@ -104,7 +104,14 @@ export type EventType =
   | "merge-queue-fallback"
   | "sentinel-start"
   | "sentinel-pass"
-  | "sentinel-fail";
+  | "sentinel-fail"
+  | "heartbeat"
+  | "guardrail-veto"
+  | "guardrail-corrected"
+  | "worktree-rebased"
+  | "worktree-rebase-failed"
+  | "phase-start"
+  | "phase-complete";
 
 export interface Event {
   id: string;

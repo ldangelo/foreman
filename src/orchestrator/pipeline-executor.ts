@@ -33,6 +33,8 @@ import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import type { ForemanStore, RunProgress } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
+import { HeartbeatManager, createHeartbeatManager, type HeartbeatConfig } from "./heartbeat-manager.js";
+import { createPhaseRecord, finalizePhaseRecord, generateActivityLog, type PhaseRecord as ActivityPhaseRecord } from "./activity-logger.js";
 import type { NativeTaskStore } from "../lib/task-store.js";
 import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs } from "../lib/config.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
@@ -199,6 +201,16 @@ export interface PipelineContext {
    * Undefined for legacy runs without taskMeta.
    */
   taskMeta?: TaskMeta;
+  /**
+   * Heartbeat manager for periodic observability events during active phases (FR-3).
+   * Created in executePipeline when vcsBackend is available and heartbeat is enabled.
+   */
+  heartbeatManager?: HeartbeatManager;
+  /**
+   * Activity log phase records accumulated during pipeline execution (FR-4).
+   * Finalized and written as ACTIVITY_LOG.json at pipeline end.
+   */
+  activityPhases?: ActivityPhaseRecord[];
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -762,10 +774,40 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
   ctx.log(`[PIPELINE] Phase sequence: ${phaseNames}`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n[PIPELINE] Phase sequence: ${phaseNames}\n`);
 
+  // FR-3: Initialize HeartbeatManager for periodic observability events
+  const heartbeatConfig: HeartbeatConfig = {
+    enabled: true,
+    intervalSeconds: 60,
+  };
+  const worktreePath = config.worktreePath;
+  ctx.heartbeatManager = config.vcsBackend
+    ? createHeartbeatManager(heartbeatConfig, store, config.projectId, config.runId, config.vcsBackend, worktreePath) ?? undefined
+    : undefined;
+  ctx.activityPhases = [];
+
   const result = await runPhaseSequence(ctx, workflowConfig.phases, progress);
 
   // Session log
   await writeSessionLogSafe(ctx, result.progress, result.phaseRecords, result.retryCounts, result.qaVerdictForLog);
+
+  // FR-4: Generate ACTIVITY_LOG.json for self-documenting commits
+  if (config.vcsBackend && ctx.activityPhases) {
+    try {
+      await generateActivityLog({
+        worktreePath,
+        runId: config.runId,
+        seedId: config.seedId,
+        phases: ctx.activityPhases,
+        vcs: config.vcsBackend,
+        targetBranch: config.targetBranch ?? "main",
+        includeGitDiffStat: true,
+      });
+      ctx.log(`[PIPELINE] ACTIVITY_LOG.json written`);
+    } catch (err) {
+      // Non-fatal — don't fail the pipeline over activity log
+      ctx.log(`[PIPELINE] ACTIVITY_LOG.json failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   // Pipeline completion callback
   // P0 fix: Pass result.success to prevent branch-ready on pipeline failure.
@@ -948,6 +990,23 @@ async function runPhaseSequence(
     const fallbackModel = roleConfigFallback?.model ?? config.model;
     let phaseModel = resolvePhaseModel(phase, config.seedPriority, fallbackModel);
 
+    // FR-2: Write phase-start event to store before agent spawns
+    store.logEvent(projectId, "phase-start", {
+      seedId,
+      phase: phaseName,
+      worktreePath,
+      expectedWorktree: worktreePath,
+      model: phaseModel,
+      runId,
+      targetBranch: config.targetBranch,
+    }, runId);
+
+    // FR-3: Start heartbeat for this phase
+    ctx.heartbeatManager?.start(phaseName);
+
+    // FR-4: Create initial activity phase record
+    const activityPhase = createPhaseRecord(phaseName, phaseModel);
+
     // P1: Explorer circuit breaker - fail fast if Explorer has failed 3 times
     // This prevents empty branch pollution when Explorer keeps failing
     if (phaseName === "explorer") {
@@ -1050,6 +1109,35 @@ async function runPhaseSequence(
       turns: result.turns,
       error: result.error,
     });
+
+    // FR-3: Update heartbeat with final phase stats before stopping
+    ctx.heartbeatManager?.update({
+      turns: result.turns,
+      toolCalls: progress.toolCalls,
+      toolBreakdown: progress.toolBreakdown,
+      costUsd: progress.costUsd,
+      tokensIn: progress.tokensIn,
+      tokensOut: progress.tokensOut,
+      lastFileEdited: progress.lastToolCall ?? null,
+      lastActivity: new Date().toISOString(),
+    });
+    // FR-3: Stop heartbeat after phase completes
+    ctx.heartbeatManager?.stop();
+    // FR-4: Finalize and record activity phase
+    if (ctx.activityPhases) {
+      const completedActivityPhase = finalizePhaseRecord(activityPhase, {
+        success: result.success,
+        costUsd: result.costUsd,
+        turns: result.turns,
+        tokensIn: result.tokensIn,
+        tokensOut: result.tokensOut,
+        error: result.error,
+        toolCalls: progress.toolCalls,
+        toolBreakdown: progress.toolBreakdown,
+        filesChanged: progress.filesChanged ?? [],
+      });
+      ctx.activityPhases.push(completedActivityPhase);
+    }
 
     progress.costUsd += result.costUsd;
     progress.tokensIn += result.tokensIn;
