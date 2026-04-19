@@ -11,7 +11,7 @@
  * @module src/orchestrator/activity-logger
  */
 
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
@@ -420,4 +420,78 @@ export function finalizePhaseRecord(
     editsByFile: result.editsByFile,
     verdict,
   };
+}
+
+/**
+ * Write an incremental pipeline report after each phase completes.
+ * Commits phase results as they finish so traceability is available in real-time.
+ */
+export async function writeIncrementalPipelineReport(opts: {
+  worktreePath: string;
+  seedId: string;
+  runId: string;
+  completedPhases: PhaseRecord[];
+  targetBranch?: string;
+  vcsBranchName?: string;
+}): Promise<void> {
+  const { worktreePath, seedId, runId, completedPhases, targetBranch, vcsBranchName } = opts;
+  const reportsDir = join(worktreePath, "docs", "reports", seedId);
+
+  await mkdir(reportsDir, { recursive: true });
+
+  const totalCostUsd = completedPhases.reduce((sum, p) => sum + (p.costUsd ?? 0), 0);
+  const totalTurns = completedPhases.reduce((sum, p) => sum + (p.turns ?? 0), 0);
+  const totalToolCalls = completedPhases.reduce((sum, p) => sum + (p.toolCalls ?? 0), 0);
+  const totalDuration = completedPhases.reduce((sum, p) => sum + (p.durationSeconds ?? 0), 0);
+
+  const phaseRows = completedPhases.map((p) => {
+    const duration = p.durationSeconds ? `${p.durationSeconds.toFixed(1)}s` : "-";
+    const cost = p.costUsd ? `$${p.costUsd.toFixed(4)}` : "-";
+    const verdict = p.skipped ? "skipped" : p.success ? "pass" : "FAIL";
+    const error = p.error ? " " + p.error.slice(0, 80) : "";
+    return `| \`${p.name}\` | ${verdict} | ${duration} | ${cost} | ${p.turns ?? 0} turns |${error} |`;
+  }).join("\n");
+
+  const currentPhase = completedPhases[completedPhases.length - 1];
+  const pipelineStatus = currentPhase?.verdict === "fail" ? "FAILED"
+    : currentPhase?.skipped ? "RUNNING"
+    : "IN_PROGRESS";
+
+  const uniqueFiles = [...new Set(completedPhases.flatMap(p => p.filesChanged ?? []))];
+  const filesSection = uniqueFiles.length > 0
+    ? uniqueFiles.map(f => `- \`${f}\``).join("\n")
+    : "_No files changed yet_";
+
+  const report = [
+    "# Pipeline Report — " + seedId,
+    "",
+    "**Run ID:** `" + runId + "`",
+    "**Target Branch:** `" + (targetBranch ?? "—") + "`",
+    "**VCS Branch:** `" + (vcsBranchName ?? "—") + "`",
+    "**Generated:** " + new Date().toISOString(),
+    "**Status:** " + pipelineStatus,
+    "",
+    "## Summary",
+    "",
+    "| Metric | Value |",
+    "|--------|-------|",
+    "| Phases completed | " + completedPhases.length + " |",
+    "| Total cost | $" + totalCostUsd.toFixed(4) + " |",
+    "| Total turns | " + totalTurns + " |",
+    "| Total tool calls | " + totalToolCalls + " |",
+    "| Total duration | " + totalDuration.toFixed(1) + "s |",
+    "",
+    "## Phase Results",
+    "",
+    "| Phase | Status | Duration | Cost | Turns | Error |",
+    "|-------|--------|----------|------|-------|--------|",
+    phaseRows,
+    "",
+    "## Files Changed",
+    "",
+    filesSection,
+  ].join("\n");
+
+  const reportPath = join(reportsDir, "PIPELINE_REPORT.md");
+  await writeFile(reportPath, report, "utf-8");
 }

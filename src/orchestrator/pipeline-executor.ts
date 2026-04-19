@@ -34,7 +34,7 @@ import type { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import type { ForemanStore, RunProgress } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { HeartbeatManager, createHeartbeatManager, type HeartbeatConfig } from "./heartbeat-manager.js";
-import { createPhaseRecord, finalizePhaseRecord, generateActivityLog, type PhaseRecord as ActivityPhaseRecord } from "./activity-logger.js";
+import { createPhaseRecord, finalizePhaseRecord, generateActivityLog, writeIncrementalPipelineReport, type PhaseRecord as ActivityPhaseRecord } from "./activity-logger.js";
 import type { NativeTaskStore } from "../lib/task-store.js";
 import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs } from "../lib/config.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
@@ -1159,6 +1159,25 @@ async function runPhaseSequence(
         filesChanged: progress.filesChanged ?? [],
       });
       ctx.activityPhases.push(completedActivityPhase);
+
+      // Write incremental pipeline report after each phase — provides real-time traceability
+      // while pipeline is running, not just at the end.
+      let branchName: string | undefined;
+      try {
+        branchName = config.vcsBackend?.getCurrentBranch ? await config.vcsBackend.getCurrentBranch(worktreePath) : undefined;
+      } catch {
+        branchName = undefined;
+      }
+      writeIncrementalPipelineReport({
+        worktreePath,
+        seedId,
+        runId,
+        completedPhases: ctx.activityPhases,
+        targetBranch: config.targetBranch,
+        vcsBranchName: branchName,
+      }).catch((err) => {
+        ctx.log(`[PIPELINE] Warning: failed to write incremental report: ${String(err)}`);
+      });
     }
 
     progress.costUsd += result.costUsd;
