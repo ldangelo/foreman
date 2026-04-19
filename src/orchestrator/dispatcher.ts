@@ -468,7 +468,8 @@ export class Dispatcher {
       // ── Epic beads: dispatch through epic pipeline or auto-close ──────────
       // Epic beads with children are dispatched as a single epic runner that
       // executes all child tasks sequentially within one worktree.
-      // Epic beads with 0 children are auto-closed.
+      // Epic beads with 0 children: if using native store (no children support),
+      // fall through to regular dispatch so the epic runs as a single-agent task.
       if (seed.type === "epic") {
         try {
           const detail = await this.seeds.show(seed.id);
@@ -476,46 +477,53 @@ export class Dispatcher {
           const childIds = detailWithChildren.children ?? [];
 
           if (childIds.length === 0) {
-            // No children — auto-close the epic
-            await this.seeds.close(seed.id, "Auto-closed: no children (empty epic)");
-            log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no children`);
-            skipped.push({
-              seedId: seed.id,
-              title: seed.title,
-              reason: "Type 'epic' auto-closed — no children",
-            });
-            continue;
+            if (usingNativeStore) {
+              // Native task store has no children support — dispatch the epic
+              // as a single-agent task through the regular pipeline. The epic's
+              // phases (developer → qa → finalize) run as a single worktree.
+              log(`[dispatch] Epic ${seed.id} has no children (native store) — dispatching as single-agent task`);
+            } else {
+              // Beads store: no children means truly empty epic — auto-close.
+              await this.seeds.close(seed.id, "Auto-closed: no children (empty epic)");
+              log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no children`);
+              skipped.push({
+                seedId: seed.id,
+                title: seed.title,
+                reason: "Type 'epic' auto-closed — no children",
+              });
+              continue;
+            }
+          } else {
+            // Epic has children — query task order and dispatch through epic path.
+            // getTaskOrder returns only actionable child types (task, bug, chore).
+            const brClient = this.seeds as unknown as TaskOrderingClient;
+            const epicTasks: EpicTask[] = await getTaskOrder(
+              seed.id,
+              brClient,
+              this.projectPath,
+            );
+
+            if (epicTasks.length === 0) {
+              // All children are non-actionable types (e.g. all feature/story containers)
+              // or all children are already closed. Auto-close.
+              await this.seeds.close(seed.id, "Auto-closed: no actionable child tasks");
+              log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no actionable child tasks`);
+              skipped.push({
+                seedId: seed.id,
+                title: seed.title,
+                reason: "Type 'epic' auto-closed — no actionable child tasks",
+              });
+              continue;
+            }
+
+            log(`[dispatch] Epic ${seed.id} has ${epicTasks.length} ordered tasks — dispatching epic runner`);
+
+            // Store epicTasks for use by the dispatch logic below.
+            // We set a marker on the seed object so the dispatch code further down
+            // can include epicTasks in the worker config.
+            (seed as unknown as Record<string, unknown>).__epicTasks = epicTasks;
+            // Fall through to normal dispatch logic (worktree creation, spawn, etc.)
           }
-
-          // Epic has children — query task order and dispatch through epic path.
-          // getTaskOrder returns only actionable child types (task, bug, chore).
-          const brClient = this.seeds as unknown as TaskOrderingClient;
-          const epicTasks: EpicTask[] = await getTaskOrder(
-            seed.id,
-            brClient,
-            this.projectPath,
-          );
-
-          if (epicTasks.length === 0) {
-            // All children are non-actionable types (e.g. all feature/story containers)
-            // or all children are already closed. Auto-close.
-            await this.seeds.close(seed.id, "Auto-closed: no actionable child tasks");
-            log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no actionable child tasks`);
-            skipped.push({
-              seedId: seed.id,
-              title: seed.title,
-              reason: "Type 'epic' auto-closed — no actionable child tasks",
-            });
-            continue;
-          }
-
-          log(`[dispatch] Epic ${seed.id} has ${epicTasks.length} ordered tasks — dispatching epic runner`);
-
-          // Store epicTasks for use by the dispatch logic below.
-          // We set a marker on the seed object so the dispatch code further down
-          // can include epicTasks in the worker config.
-          (seed as unknown as Record<string, unknown>).__epicTasks = epicTasks;
-          // Fall through to normal dispatch logic (worktree creation, spawn, etc.)
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           log(`[dispatch] Failed to prepare epic ${seed.id}: ${msg}`);

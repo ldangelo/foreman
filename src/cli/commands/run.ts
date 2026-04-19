@@ -74,9 +74,12 @@ export async function createTaskClients(
   projectPath: string,
   runtimeMode: RuntimeMode = resolveRuntimeMode(),
 ): Promise<TaskClientResult> {
+  // In normal mode: auto-detect (pass undefined so selectTaskReadBackend uses
+  // projectHasNativeTasks). In test mode: force beads (pass false to override).
+  const autoSelectNative = runtimeMode === "test" ? false : undefined;
   const { taskClient, backendType } = await createTaskClient(projectPath, {
     ensureBrInstalled: true,
-    autoSelectNativeWhenAvailable: runtimeMode === "test",
+    autoSelectNativeWhenAvailable: autoSelectNative,
   });
 
   return {
