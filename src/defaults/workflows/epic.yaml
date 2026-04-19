@@ -1,15 +1,17 @@
-# Epic workflow: Developer ⇄ QA per task, then Finalize once at the end.
+# Epic workflow: Skill-driven planning and implementation pipeline.
 #
-# Used when a bead of type "epic" is dispatched. The pipeline executor
-# iterates child tasks in dependency order, running taskPhases for each.
-# After all tasks pass, finalPhases execute once to rebase, test, and push.
+# When epic has child tasks (beads mode): iterates child tasks via taskPhases,
+# then finalPhases once at the end.
 #
-# Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
-# Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
+# When epic has no children (native mode): runs skill phases directly as a
+# single-agent pipeline:
+#   prd → trd → implement → finalize
+#
+# Skill invocation: `command:` sends /ensemble:<skill-name> as the agent prompt.
+# The Pi SDK agent recognizes skill invocations and loads the SKILL.md.
+
 name: epic
 onError: stop
-# Per-task timeout in seconds. If a task's phases exceed this, the task fails.
-# Default: 300 (5 minutes). Set to 0 to disable.
 taskTimeout: 300
 
 setup:
@@ -20,16 +22,81 @@ setupCache:
   key: package-lock.json
   path: node_modules
 
-# Per-task phases: run for each child task in the epic
+# Per-task phases: run for each child task in the epic (beads mode)
 taskPhases:
   - developer
   - qa
 
-# Final phases: run once after all tasks complete
+# Final phases: run once after all tasks complete (beads mode)
 finalPhases:
   - finalize
 
 phases:
+  # ── Phase 1: PRD ──────────────────────────────────────────────────────────
+  # Invoke /ensemble:create-prd using the epic's description as input.
+  # Output: docs/PRD/<name>.md
+  - name: prd
+    command: "/ensemble:create-prd {task.title}"
+    models:
+      default: sonnet
+      P0: opus
+    maxTurns: 40
+    artifact: PRD.md
+    verdict: false
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 2: TRD ──────────────────────────────────────────────────────────
+  # Invoke /ensemble:create-trd with the PRD path.
+  # Output: docs/TRD/<name>.md
+  - name: trd
+    command: "/ensemble:create-trd"
+    models:
+      default: sonnet
+      P0: opus
+    maxTurns: 60
+    artifact: TRD.md
+    verdict: false
+    retryWith: prd
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 3: Implement ────────────────────────────────────────────────────
+  # Invoke /ensemble:implement-trd with the TRD path.
+  # Output: implemented code, tests, merged to target branch
+  - name: implement
+    command: "/ensemble:implement-trd"
+    models:
+      default: sonnet
+      P0: opus
+    maxTurns: 120
+    artifact: IMPLEMENT_REPORT.md
+    verdict: false
+    retryWith: trd
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 4: finalize ─────────────────────────────────────────────────────
+  # Standard finalize: stage, commit, push, auto-merge.
+  - name: finalize
+    prompt: finalize.md
+    models:
+      default: haiku
+    maxTurns: 30
+    artifact: FINALIZE_VALIDATION.md
+    verdict: true
+    retryWith: implement
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Developer (beads mode fallback) ───────────────────────────────────────
   - name: developer
     prompt: developer.md
     models:
@@ -44,6 +111,7 @@ phases:
       reserve: true
       leaseSecs: 600
 
+  # ── QA (beads mode fallback) ───────────────────────────────────────────────
   - name: qa
     prompt: qa.md
     models:
@@ -54,20 +122,6 @@ phases:
     verdict: true
     retryWith: developer
     retryOnFail: 2
-    mail:
-      onStart: true
-      onComplete: true
-      onFail: developer
-
-  - name: finalize
-    prompt: finalize.md
-    models:
-      default: haiku
-    maxTurns: 30
-    artifact: FINALIZE_VALIDATION.md
-    verdict: true
-    retryWith: developer
-    retryOnFail: 1
     mail:
       onStart: true
       onComplete: true
