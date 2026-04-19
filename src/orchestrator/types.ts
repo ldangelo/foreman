@@ -4,7 +4,7 @@ export type RuntimeSelection = "claude-code";
 
 export type ModelSelection = "anthropic/claude-opus-4-6" | "anthropic/claude-sonnet-4-6" | "anthropic/claude-haiku-4-5" | "minimax/MiniMax-M2.7" | "minimax/MiniMax-M2.7-highspeed" | "openai/gpt-5.2-chat-latest";
 
-export type AgentRole = "lead" | "explorer" | "developer" | "qa" | "reviewer" | "finalize" | "worker" | "sentinel" | "troubleshooter" | "fix" | "test";
+export type AgentRole = "lead" | "explorer" | "developer" | "qa" | "reviewer" | "finalize" | "worker" | "sentinel" | "troubleshooter" | "fix" | "test" | "prd" | "trd" | "implement";
 
 export type Priority = "critical" | "high" | "medium" | "low";
 

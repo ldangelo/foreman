@@ -172,6 +172,9 @@ const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker" | "se
   troubleshooter: getDefaultModel() as ModelSelection,
   fix: getDefaultModel() as ModelSelection,
   test: getDefaultModel() as ModelSelection,
+  prd: getDefaultModel() as ModelSelection,
+  trd: getDefaultModel() as ModelSelection,
+  implement: getDefaultModel() as ModelSelection,
 };
 
 /**
@@ -257,6 +260,39 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
       permissionMode: "acceptEdits",
       reportFile: "TEST_RESULTS.md",
       allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
+    },
+    prd: {
+      role: "prd",
+      model: DEFAULT_MODELS.prd,
+      maxBudgetUsd: 5.00,
+      permissionMode: "acceptEdits",
+      reportFile: "PRD.md",
+      allowedTools: [
+        "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+        "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+      ],
+    },
+    trd: {
+      role: "trd",
+      model: DEFAULT_MODELS.trd,
+      maxBudgetUsd: 8.00,
+      permissionMode: "acceptEdits",
+      reportFile: "TRD.md",
+      allowedTools: [
+        "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+        "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+      ],
+    },
+    implement: {
+      role: "implement",
+      model: DEFAULT_MODELS.implement,
+      maxBudgetUsd: 10.00,
+      permissionMode: "acceptEdits",
+      reportFile: "IMPLEMENT_REPORT.md",
+      allowedTools: [
+        "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+        "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+      ],
     },
   };
 }
@@ -349,6 +385,39 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
         permissionMode: "acceptEdits",
         reportFile: "TEST_RESULTS.md",
         allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
+      },
+      prd: {
+        role: "prd",
+        model: DEFAULT_MODELS.prd,
+        maxBudgetUsd: 5.00,
+        permissionMode: "acceptEdits",
+        reportFile: "PRD.md",
+        allowedTools: [
+          "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+          "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+        ],
+      },
+      trd: {
+        role: "trd",
+        model: DEFAULT_MODELS.trd,
+        maxBudgetUsd: 8.00,
+        permissionMode: "acceptEdits",
+        reportFile: "TRD.md",
+        allowedTools: [
+          "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+          "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+        ],
+      },
+      implement: {
+        role: "implement",
+        model: DEFAULT_MODELS.implement,
+        maxBudgetUsd: 10.00,
+        permissionMode: "acceptEdits",
+        reportFile: "IMPLEMENT_REPORT.md",
+        allowedTools: [
+          "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+          "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+        ],
       },
     };
   }
