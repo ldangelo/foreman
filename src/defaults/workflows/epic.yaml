@@ -9,6 +9,12 @@
 #
 # Skill invocation: `command:` sends /ensemble:<skill-name> as the agent prompt.
 # The Pi SDK agent recognizes skill invocations and loads the SKILL.md.
+#
+# Artifact path conventions:
+#   - PRD/TRD: docs/PRD/PRD-{yyyymm}-{title-slug}.md (project docs, committed)
+#   - Phase reports: docs/reports/{seedId}/{REPORT}.md (execution reports, committed)
+#
+# skipIfArtifact: checked at phase start to skip if report already exists.
 
 name: epic
 onError: stop
@@ -33,26 +39,28 @@ finalPhases:
 
 phases:
   # ── Phase 1: PRD ──────────────────────────────────────────────────────────
+  # PRD skill writes to docs/PRD/PRD-{yyyymm}-{title-slug}.md
+  # skipIfArtifact checks for docs/PRD/PRD-{yyyymm}-{title-slug}.md (skill's output path)
   - name: prd
     command: "/ensemble:create-prd {task.title}"
     models:
       default: MiniMax
       P0: MiniMax
     maxTurns: 40
-    artifact: PRD.md
     verdict: false
     mail:
       onStart: true
       onComplete: true
 
   # ── Phase 2: TRD ──────────────────────────────────────────────────────────
+  # TRD skill writes to docs/TRD/TRD-{yyyymm}-{title-slug}.md
+  # skipIfArtifact checks for docs/TRD/TRD-{yyyymm}-{title-slug}.md (skill's output path)
   - name: trd
     command: "/ensemble:create-trd"
     models:
       default: MiniMax
       P0: MiniMax
     maxTurns: 60
-    artifact: TRD.md
     verdict: false
     retryWith: prd
     retryOnFail: 1
@@ -61,13 +69,16 @@ phases:
       onComplete: true
 
   # ── Phase 3: Implement ────────────────────────────────────────────────────
+  # Implement skill writes an IMPLEMENT_REPORT.md to the current working directory.
+  # We anchor it to docs/reports/{seedId}/ so it's committed with the worktree.
   - name: implement
-    command: "/ensemble:implement-trd"
+    command: "mkdir -p docs/reports/{task.id} && /ensemble:implement-trd && mv IMPLEMENT_REPORT.md docs/reports/{task.id}/IMPLEMENT_REPORT.md 2>/dev/null || true"
     models:
       default: MiniMax
       P0: MiniMax
     maxTurns: 120
-    artifact: IMPLEMENT_REPORT.md
+    artifact: docs/reports/{task.id}/IMPLEMENT_REPORT.md
+    skipIfArtifact: docs/reports/{task.id}/IMPLEMENT_REPORT.md
     verdict: false
     retryWith: trd
     retryOnFail: 2
@@ -82,7 +93,7 @@ phases:
       default: MiniMax
       P0: MiniMax
     maxTurns: 80
-    artifact: DEVELOPER_REPORT.md
+    artifact: docs/reports/{task.id}/DEVELOPER_REPORT.md
     verdict: false
     retryWith: implement
     retryOnFail: 2
@@ -97,7 +108,7 @@ phases:
       default: MiniMax
       P0: MiniMax
     maxTurns: 30
-    artifact: QA_REPORT.md
+    artifact: docs/reports/{task.id}/QA_REPORT.md
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -110,9 +121,9 @@ phases:
   - name: finalize
     prompt: finalize.md
     models:
-      default: haiku
+      default: MiniMax
     maxTurns: 30
-    artifact: FINALIZE_VALIDATION.md
+    artifact: docs/reports/{task.id}/FINALIZE_VALIDATION.md
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -127,4 +138,4 @@ onFailure:
     default: sonnet
     P0: opus
   maxTurns: 20
-  artifact: TROUBLESHOOT_REPORT.md
+  artifact: docs/reports/{task.id}/TROUBLESHOOT_REPORT.md

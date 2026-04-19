@@ -338,6 +338,11 @@ export async function runBashPhase(
     ? interpolateTaskPlaceholders(bashCommand, taskMeta)
     : bashCommand;
 
+  // Interpolate artifact path too (e.g. docs/reports/{task.id}/IMPLEMENT_REPORT.md)
+  const interpolatedArtifact = artifactFile
+    ? interpolateTaskPlaceholders(artifactFile, taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 })
+    : undefined;
+
   let stdout = '';
   let stderr = '';
   let exitCode: number | null = null;
@@ -371,9 +376,9 @@ export async function runBashPhase(
   const success = exitCode === 0 && !timedOut;
 
   // Write artifact file if specified
-  if (artifactFile && stdout) {
+  if (interpolatedArtifact && stdout) {
     try {
-      writeFileSync(artifactFile, stdout, 'utf8');
+      writeFileSync(interpolatedArtifact, stdout, 'utf8');
     } catch {
       // Non-fatal: artifact write failure doesn't fail the phase
     }
@@ -872,11 +877,17 @@ async function runPhaseSequence(
     store.updateRunProgress(runId, progress);
 
     // 1. Skip if artifact already exists (resume from crash)
+    // Interpolate {task.*} placeholders so skipIfArtifact can use
+    // {task.projectReportsDir}/{task.id}/PRD.md patterns.
     if (phase.skipIfArtifact) {
-      const artifactPath = join(worktreePath, phase.skipIfArtifact);
+      const interpolatedSkip = interpolateTaskPlaceholders(
+        phase.skipIfArtifact,
+        ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 },
+      );
+      const artifactPath = join(worktreePath, interpolatedSkip);
       if (existsSync(artifactPath)) {
-        ctx.log(`[${phaseName.toUpperCase()}] Skipping — ${phase.skipIfArtifact} already exists`);
-        await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] SKIPPED (artifact already present)\n`);
+        ctx.log(`[${phaseName.toUpperCase()}] Skipping — ${phase.skipIfArtifact} already exists at ${artifactPath}`);
+        await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] SKIPPED (artifact already present: ${artifactPath})\n`);
         phaseRecords.push({ name: phaseName, skipped: true });
         i++;
         continue;
@@ -897,8 +908,13 @@ async function runPhaseSequence(
     }
 
     // 5. Rotate and run phase
+    // Interpolate {task.*} placeholders in artifact path before use.
     if (phase.artifact) {
-      rotateReport(worktreePath, phase.artifact);
+      const interpolatedArtifact = interpolateTaskPlaceholders(
+        phase.artifact,
+        ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 },
+      );
+      rotateReport(worktreePath, interpolatedArtifact);
     }
 
     // Compute VCS-specific prompt variables for finalize and reviewer phases (TRD-026, TRD-027).
@@ -1235,7 +1251,11 @@ async function runPhaseSequence(
               ctx.taskStore?.updatePhase(config.taskId ?? null, phaseName);
 
               if (phase.mail?.forwardArtifactTo && phase.artifact) {
-                const artifactContent = readReport(worktreePath, phase.artifact);
+                const interpolatedArtifact = interpolateTaskPlaceholders(
+                  phase.artifact,
+                  ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 },
+                );
+                const artifactContent = readReport(worktreePath, interpolatedArtifact);
                 if (artifactContent) {
                   const targetAgent = phase.mail.forwardArtifactTo === "foreman"
                     ? "foreman"
@@ -1281,7 +1301,11 @@ async function runPhaseSequence(
 
     // 8. Verdict handling: parse PASS/FAIL, retry if needed.
     if (phase.verdict && phase.artifact) {
-      const report = readReport(worktreePath, phase.artifact);
+      const interpolatedArtifact = interpolateTaskPlaceholders(
+        phase.artifact,
+        ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 },
+      );
+      const report = readReport(worktreePath, interpolatedArtifact);
       let verdict = report ? parseVerdict(report) : "unknown";
 
       if (phaseName === "qa" && report && !qaReportHasTestEvidence(report)) {

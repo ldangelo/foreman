@@ -386,19 +386,46 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       } else if (report.unexpectedErrors && report.unexpectedErrors.length > 0) {
         // Git/shell command failures captured by refinery's outer catch (Fix 3).
         // These are NOT test runner failures — use reason "unexpected-error".
-        mq.updateStatus(currentEntry.id, "failed", { error: "Unexpected git/shell error" });
-        failedCount += report.unexpectedErrors.length;
-
+        // Instead of just marking as failed, try to create a PR so the user can
+        // manually merge. This is much easier to resolve than a failed queue entry.
+        const branchName = `foreman/${currentEntry.seed_id}`;
         const firstError = report.unexpectedErrors[0];
-        mergeFailureReason = `Merge failed due to unexpected error: ${firstError.error.slice(0, 800)}`;
+        mergeFailureReason = `Merge failed: ${firstError.error.slice(0, 400)}. Creating PR for manual merge.`;
 
-        for (const errRun of report.unexpectedErrors) {
-          sendMail(store, currentEntry.run_id, "merge-failed", {
-            seedId: errRun.seedId,
-            branchName: errRun.branchName,
-            reason: "unexpected-error",
-            error: errRun.error.slice(0, 400),
-          });
+        try {
+          // Push branch to origin
+          await vcs.push(projectPath, branchName);
+
+          // Get seed title
+          let seedTitle = currentEntry.seed_id;
+          try {
+            const seedInfo = await taskClient.show(currentEntry.seed_id) as { title?: string } | null;
+            if (seedInfo?.title) seedTitle = seedInfo.title;
+          } catch { /* non-fatal */ }
+
+          const prTitle = `${seedTitle} (${currentEntry.seed_id})`;
+          const prBody = [
+            `## Summary`,
+            seedTitle !== currentEntry.seed_id ? `**Task:** ${seedTitle}\n` : '',
+            `**Manual merge required** — auto-merge failed: ${firstError.error.slice(0, 400)}`,
+            `\nForeman run: \`${currentEntry.run_id}\``,
+          ].join('\n');
+
+          const prUrl = await gh(
+            ['pr', 'create', '--base', targetBranch, '--head', branchName, '--title', prTitle, '--body', prBody],
+            projectPath,
+          );
+
+          mq.updateStatus(currentEntry.id, 'conflict', { error: `PR created for manual merge: ${prUrl}` });
+          store.updateRun(currentEntry.run_id, { status: 'pr-created' });
+          store.logEvent(project.id, 'pr-created', { seedId: currentEntry.seed_id, branchName, targetBranch, prUrl }, currentEntry.run_id);
+          conflictCount += 1;
+        } catch (err: unknown) {
+          // PR creation also failed — mark as failed with full context
+          const message = err instanceof Error ? err.message : String(err);
+          mergeFailureReason = `Merge failed (PR also failed): ${message}. Original: ${firstError.error.slice(0, 400)}`;
+          mq.updateStatus(currentEntry.id, 'failed', { error: mergeFailureReason });
+          failedCount += 1;
         }
       } else {
         mq.updateStatus(currentEntry.id, "failed", { error: "No completed run found" });
@@ -413,18 +440,50 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      mq.updateStatus(currentEntry.id, "failed", { error: message });
-      failedCount++;
+      mergeFailureReason = `Merge error: ${message.slice(0, 800)}. Attempting PR creation.`;
 
-      // Capture the failure reason so the finally block can add it as a bead note
-      mergeFailureReason = `Unexpected error during merge: ${message.slice(0, 800)}`;
+      // Try to create a PR so the user can manually merge
+      const branchName = `foreman/${currentEntry.seed_id}`;
+      try {
+        await vcs.push(projectPath, branchName);
 
-      // Send merge-failed mail when an unexpected error occurs in the merge pipeline
-      sendMail(store, currentEntry.run_id, "merge-failed", {
-        seedId: currentEntry.seed_id,
-        reason: "unexpected-error",
-        error: message.slice(0, 400),
-      });
+        let seedTitle = currentEntry.seed_id;
+        try {
+          const seedInfo = await taskClient.show(currentEntry.seed_id) as { title?: string } | null;
+          if (seedInfo?.title) seedTitle = seedInfo.title;
+        } catch { /* non-fatal */ }
+
+        const prTitle = `${seedTitle} (${currentEntry.seed_id})`;
+        const prBody = [
+          `## Summary`,
+          seedTitle !== currentEntry.seed_id ? `**Task:** ${seedTitle}\n` : '',
+          `**Manual merge required** — auto-merge threw: ${message.slice(0, 400)}`,
+          `\nForeman run: \`${currentEntry.run_id}\``,
+        ].join('\n');
+
+        const prUrl = await gh(
+          ['pr', 'create', '--base', targetBranch, '--head', branchName, '--title', prTitle, '--body', prBody],
+          projectPath,
+        );
+
+        mq.updateStatus(currentEntry.id, 'conflict', { error: `PR created for manual merge: ${prUrl}` });
+        store.updateRun(currentEntry.run_id, { status: 'pr-created' });
+        store.logEvent(project.id, 'pr-created', { seedId: currentEntry.seed_id, branchName, targetBranch, prUrl }, currentEntry.run_id);
+        conflictCount += 1;
+      } catch (prErr: unknown) {
+        // PR creation failed too — mark as failed
+        const prMessage = prErr instanceof Error ? prErr.message : String(prErr);
+        mergeFailureReason = `Merge failed (PR also failed): ${prMessage}. Original: ${message.slice(0, 400)}`;
+        mq.updateStatus(currentEntry.id, 'failed', { error: mergeFailureReason });
+        failedCount += 1;
+
+        // Send merge-failed mail
+        sendMail(store, currentEntry.run_id, 'merge-failed', {
+          seedId: currentEntry.seed_id,
+          reason: 'unexpected-error',
+          error: message.slice(0, 400),
+        });
+      }
     } finally {
       // Sync bead status after every merge outcome (success or failure).
       // Pass mergeFailureReason so the bead gets a note explaining the failure.

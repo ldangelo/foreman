@@ -25,7 +25,10 @@ Do NOT run tests if conflict markers are found.
    - Only broaden to `npm test -- --reporter=dot 2>&1` when the task is broad, when targeted verification is insufficient, or when targeted checks reveal broader regression risk
 4. If tests fail due to the changes, do not modify source code. Report the failure clearly and route the task back to Developer.
 5. Write any additional test recommendations needed for uncovered edge cases, but do not implement source changes in QA
-6. Write your findings to **QA_REPORT.md**
+6. Write your findings to **docs/reports/{{seedId}}/QA_REPORT.md**. Create the directory if it doesn't exist:
+   ```bash
+   mkdir -p docs/reports/{{seedId}}
+   ```
 7. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 
 ## QA_REPORT.md Format
