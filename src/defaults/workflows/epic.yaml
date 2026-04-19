@@ -38,8 +38,8 @@ phases:
   - name: prd
     command: "/ensemble:create-prd {task.title}"
     models:
-      default: sonnet
-      P0: opus
+      default: MiniMax
+      P0: MiniMax
     maxTurns: 40
     artifact: PRD.md
     verdict: false
@@ -53,8 +53,8 @@ phases:
   - name: trd
     command: "/ensemble:create-trd"
     models:
-      default: sonnet
-      P0: opus
+      default: MiniMax
+      P0: MiniMax
     maxTurns: 60
     artifact: TRD.md
     verdict: false
@@ -70,8 +70,8 @@ phases:
   - name: implement
     command: "/ensemble:implement-trd"
     models:
-      default: sonnet
-      P0: opus
+      default: MiniMax
+      P0: MiniMax
     maxTurns: 120
     artifact: IMPLEMENT_REPORT.md
     verdict: false
@@ -95,37 +95,6 @@ phases:
     mail:
       onStart: true
       onComplete: true
-
-  # ── Developer (beads mode fallback) ───────────────────────────────────────
-  - name: developer
-    prompt: developer.md
-    models:
-      default: sonnet
-      P0: opus
-    maxTurns: 80
-    artifact: DEVELOPER_REPORT.md
-    mail:
-      onStart: true
-      onComplete: true
-    files:
-      reserve: true
-      leaseSecs: 600
-
-  # ── QA (beads mode fallback) ───────────────────────────────────────────────
-  - name: qa
-    prompt: qa.md
-    models:
-      default: sonnet
-      P0: opus
-    maxTurns: 30
-    artifact: QA_REPORT.md
-    verdict: true
-    retryWith: developer
-    retryOnFail: 2
-    mail:
-      onStart: true
-      onComplete: true
-      onFail: developer
 
 onFailure:
   name: troubleshooter

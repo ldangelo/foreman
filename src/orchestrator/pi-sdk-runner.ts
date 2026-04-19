@@ -154,7 +154,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       tools,
       customTools: opts.customTools,
       sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory(),
+      settingsManager: SettingsManager.create(opts.cwd, agentDir),
     });
 
     // Subscribe to events for tracking
