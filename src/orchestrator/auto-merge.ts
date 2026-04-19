@@ -249,6 +249,10 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         testCommand: "npm test",
         projectId: project.id,
         seedId: currentEntry.seed_id,
+        // Pass runId for direct lookup fallback to handle the race condition
+        // where finalize marks a run completed but autoMerge queries before the
+        // status is visible via the projectId/seedId query.
+        runId: currentEntry.run_id,
       });
 
 

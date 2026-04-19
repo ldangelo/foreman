@@ -878,6 +878,75 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.testFailures).toHaveLength(1);
     expect(enqueueCloseSeed).not.toHaveBeenCalled();
   });
+
+  // ── Race condition fix: runId fallback ─────────────────────────────────────
+
+  it("uses runId for direct lookup fallback when projectId/seedId query returns nothing", async () => {
+    // This tests the fix for the auto-merge race condition where finalize marks
+    // a run as completed but autoMerge queries before the status is visible via
+    // the projectId/seedId query.
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-race-fix", seed_id: "seed-race-fix", status: "completed" });
+
+    // getRunsByStatuses returns nothing (race condition scenario)
+    store.getRunsByStatuses.mockReturnValue([]);
+    // But getRun (direct lookup) finds the run
+    store.getRun.mockReturnValue(run);
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    const report = await refinery.mergeCompleted({
+      runTests: false,
+      projectId: "proj-1",
+      seedId: "seed-race-fix",
+      runId: "run-race-fix",
+    });
+
+    // Should successfully find and merge the run via direct lookup
+    expect(report.merged).toHaveLength(1);
+    expect(report.merged[0].seedId).toBe("seed-race-fix");
+    // Verify getRun was called for the direct lookup fallback
+    expect(store.getRun).toHaveBeenCalledWith("run-race-fix");
+  });
+
+  it("does NOT use runId fallback when projectId/seedId query returns runs", async () => {
+    // When the normal query succeeds, runId fallback should not be used
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-normal", seed_id: "seed-normal", status: "completed" });
+
+    // When seedId is provided, getCompletedRuns uses getRunsByStatuses
+    store.getRunsByStatuses.mockReturnValue([run]);
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    const report = await refinery.mergeCompleted({
+      runTests: false,
+      seedId: "seed-normal",
+      runId: "run-normal",
+    });
+
+    expect(report.merged).toHaveLength(1);
+    // getRun should NOT be called when the normal query succeeds
+    expect(store.getRun).not.toHaveBeenCalled();
+  });
+
+  it("runId fallback requires matching seedId", async () => {
+    // The runId fallback should only return the run if seedId also matches
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-seed-a", seed_id: "seed-a", status: "completed" });
+
+    // getRunsByStatuses returns nothing
+    store.getRunsByStatuses.mockReturnValue([]);
+    // getRun finds a run but with different seedId
+    store.getRun.mockReturnValue(run);
+
+    const report = await refinery.mergeCompleted({
+      runTests: false,
+      seedId: "seed-b", // Different from run's seed_id
+      runId: "run-seed-a",
+    });
+
+    // Should NOT use the fallback because seedId doesn't match
+    expect(report.merged).toHaveLength(0);
+  });
 });
 
 // ── resolveConflict() bead close tests (bd-jpt4 fix) ─────────────────────────

@@ -337,6 +337,8 @@ export const mergeCommand = new Command("merge")
             testCommand: opts.testCommand,
             projectId: project.id,
             seedId: entry.seed_id,
+            // Pass runId for direct lookup fallback (same as auto-merge race condition fix)
+            runId: entry.run_id,
           });
 
           if (report.merged.length > 0) {
@@ -428,6 +430,8 @@ export const mergeCommand = new Command("merge")
                   testCommand: opts.testCommand,
                   projectId: project.id,
                   seedId: toProcess.seed_id,
+                  // Pass runId for direct lookup fallback (same as auto-merge race condition fix)
+                  runId: toProcess.run_id,
                 });
 
                 if (report.merged.length > 0) {

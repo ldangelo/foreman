@@ -494,6 +494,10 @@ export class Refinery {
     testCommand?: string;
     projectId?: string;
     seedId?: string;
+    /** Optional runId for direct lookup fallback when projectId/seedId query returns nothing.
+     *  This handles the race condition where finalize marks a run completed but autoMerge
+     *  hasn't yet seen the status update via the projectId/seedId query. */
+    runId?: string;
   }): Promise<MergeReport> {
     const defaultTargetBranch = normalizeBranchLabel(
       opts?.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath),
@@ -501,7 +505,18 @@ export class Refinery {
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
 
-    const rawRuns = this.getCompletedRuns(opts?.projectId, opts?.seedId);
+    let rawRuns = this.getCompletedRuns(opts?.projectId, opts?.seedId);
+
+    // Fallback: if no runs found by projectId/seedId, try direct runId lookup.
+    // This fixes the race condition where finalize marks a run as completed but
+    // autoMerge queries before the status is visible via the projectId/seedId query.
+    if (rawRuns.length === 0 && opts?.runId) {
+      const directRun = this.store.getRun(opts.runId);
+      if (directRun && directRun.seed_id === opts.seedId) {
+        rawRuns = [directRun];
+      }
+    }
+
     const completedRuns = await this.orderByDependencies(rawRuns);
 
     const merged: MergedRun[] = [];

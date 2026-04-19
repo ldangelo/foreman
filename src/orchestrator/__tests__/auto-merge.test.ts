@@ -376,6 +376,36 @@ describe("autoMerge() — merge outcomes", () => {
     expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "failed", { error: "No completed run found" });
   });
 
+  // ── autoMerge() — race condition fix (runId fallback) ──────────────────────
+
+  describe("autoMerge() — race condition fix (runId fallback)", () => {
+    beforeEach(() => {
+      resetMocks();
+      mockGetProjectByPath.mockReturnValue({ id: "proj-1" });
+    });
+
+    it("passes runId to mergeCompleted for direct lookup fallback", async () => {
+      const entry = makeEntry(1);
+      mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
+      mockRefineryMergeCompleted.mockResolvedValueOnce({
+        merged: [{ seedId: "bd-test-001" }],
+        conflicts: [],
+        testFailures: [],
+        unexpectedErrors: [],
+        prsCreated: [],
+      });
+
+      await autoMerge(makeOpts({
+        store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+      }));
+
+      // Verify runId was passed to mergeCompleted for the race condition fallback
+      expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: entry.run_id })
+      );
+    });
+  });
+
   it("handles multiple queue entries correctly", async () => {
     mockMergeQueueDequeue
       .mockReturnValueOnce(makeEntry(1))
