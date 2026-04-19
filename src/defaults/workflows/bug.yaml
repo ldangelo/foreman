@@ -51,15 +51,19 @@ phases:
 
   # ── Phase 3: finalize (prompt phase) ───────────────────────────────────
   # Standard finalize with human-readable summary for auto-merge context.
+  # artifact: FINALIZE_VALIDATION.md is what the pipeline reads for the validation
+  # contract check (Target Integration / Test Validation sections + Verdict).
+  # FINALIZE_REPORT.md is also written by the agent as a human-readable summary.
   - name: finalize
     prompt: finalize-bug.md
     models:
       default: MiniMax
     maxTurns: 30
-    artifact: FINALIZE_REPORT.md
+    artifact: FINALIZE_VALIDATION.md
     verdict: true
     retryWith: fix
     retryOnFail: 1
     mail:
       onStart: false
       onComplete: true
+      forwardArtifactTo: foreman
