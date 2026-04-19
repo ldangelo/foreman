@@ -72,6 +72,13 @@ describe("agent-worker.ts — autoMerge integration (bd-0qv2)", () => {
     expect(source).toContain("const completedRun = store.getRun(runId)");
     expect(source).toContain("overrideRun: completedRun ?? undefined");
   });
+
+  it("explicitly passes runId to autoMerge for reliable direct ID lookup", () => {
+    // The race condition fix (v3): always pass runId explicitly to autoMerge.
+    // The runId path in mergeCompleted fetches by ID without status filtering,
+    // which is the most reliable approach for immediate auto-merge calls.
+    expect(source).toContain("runId: runId");
+  });
 });
 
 describe("auto-merge.ts — module invariants", () => {

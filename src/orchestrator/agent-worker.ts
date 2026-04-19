@@ -1041,11 +1041,15 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
               // Trigger autoMerge immediately so the branch is merged even if
               // `foreman run` is no longer active (fixes: bd-0qv2).
               //
-              // FIX: Pass the run directly via overrideRun to bypass the getRun() query.
-              // This eliminates the race condition where the 'completed' status written
-              // by `store.updateRun()` above might not be immediately visible to the
-              // refinery's database query due to SQLite WAL timing. By passing the
-              // run object directly, we eliminate the query entirely.
+              // FIX (race condition): Pass BOTH the pre-fetched run via overrideRun AND
+              // the runId directly. The runId path in mergeCompleted fetches by ID
+              // without status filtering, which is the most reliable approach when
+              // finalize triggers immediate auto-merge — it bypasses any SQLite WAL
+              // timing issues where the 'completed' status written by `store.updateRun()`
+              // above might not be immediately visible to subsequent queries.
+              //
+              // Even if overrideRun is null (SQLite timing), passing runId ensures
+              // mergeCompleted can still locate the run via a direct ID lookup.
               try {
                 const mergeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
                 // Fetch the run AFTER updating status — this is the run we'll pass to autoMerge.
@@ -1057,6 +1061,10 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
                   taskClient: mergeTaskClient,
                   projectPath: pipelineProjectPath,
                   targetBranch: config.targetBranch,
+                  // Pass runId explicitly to ensure mergeCompleted uses the direct ID lookup
+                  // path (bypasses status filtering). This is the most reliable approach
+                  // for immediate auto-merge calls where timing is critical.
+                  runId: runId,
                   overrideRun: completedRun ?? undefined,
                 });
                 log(`[FINALIZE] autoMerge result: merged=${mergeResult.merged} conflicts=${mergeResult.conflicts} failed=${mergeResult.failed}`);

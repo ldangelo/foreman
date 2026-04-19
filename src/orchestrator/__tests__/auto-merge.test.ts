@@ -421,7 +421,7 @@ describe("autoMerge() — merge outcomes", () => {
       mockRefineryMergeCompleted.mockClear();
     });
 
-    it("passes overrideRun directly to mergeCompleted when provided", async () => {
+    it("passes overrideRun and runId when both are available (race condition fix)", async () => {
       const entry = makeEntry(1);
       // Simulate the run that was just updated in the agent-worker before calling autoMerge.
       // This is the race condition fix: by passing the run directly, we bypass the getRun()
@@ -451,19 +451,18 @@ describe("autoMerge() — merge outcomes", () => {
       await autoMerge(makeOpts({
         store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
         overrideRun: completedRun,
+        runId: entry.run_id,
       }));
 
-      // Verify overrideRun was passed to mergeCompleted
+      // Verify both runId and overrideRun were passed to mergeCompleted.
+      // runId is always passed for the most reliable direct ID lookup (race condition fix).
+      // overrideRun bypasses the getRun query when it matches.
       expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
-        expect.objectContaining({ overrideRun: completedRun })
-      );
-      // Verify runId was NOT passed (overrideRun takes precedence)
-      expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
-        expect.not.objectContaining({ runId: expect.anything() })
+        expect.objectContaining({ overrideRun: completedRun, runId: entry.run_id })
       );
     });
 
-    it("prefers overrideRun over runId when both could be used", async () => {
+    it("uses optsRunId when available (preferred path for immediate autoMerge)", async () => {
       const entry = makeEntry(1);
       const completedRun = {
         id: entry.run_id,
@@ -490,23 +489,20 @@ describe("autoMerge() — merge outcomes", () => {
       await autoMerge(makeOpts({
         store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
         overrideRun: completedRun,
+        runId: entry.run_id, // Explicit runId takes precedence
       }));
 
-      // When overrideRun is provided, it should be used and runId should NOT be passed
+      // optsRunId should be used as the effective runId
       expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
-        expect.not.objectContaining({ runId: expect.anything() })
-      );
-      expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
-        expect.objectContaining({ overrideRun: completedRun })
+        expect.objectContaining({ runId: entry.run_id, overrideRun: completedRun })
       );
     });
 
-    it("falls back to runId when overrideRun does not match the queue entry", async () => {
+    it("falls back to overrideRun.id when optsRunId not provided but overrideRun matches", async () => {
       const entry = makeEntry(1);
-      // Override run with a different ID - should not match and fall back to getRun
-      const differentRun = {
-        id: "run-different",
-        seed_id: "bd-different",
+      const completedRun = {
+        id: entry.run_id,
+        seed_id: entry.seed_id,
         status: "completed" as const,
         project_id: "proj-1",
         agent_type: "worker",
@@ -517,6 +513,29 @@ describe("autoMerge() — merge outcomes", () => {
         created_at: new Date().toISOString(),
         completed_at: new Date().toISOString(),
       } as import("../../lib/store.js").Run;
+      mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
+      mockRefineryMergeCompleted.mockResolvedValueOnce({
+        merged: [{ seedId: entry.seed_id }],
+        conflicts: [],
+        testFailures: [],
+        unexpectedErrors: [],
+        prsCreated: [],
+      });
+
+      await autoMerge(makeOpts({
+        store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+        overrideRun: completedRun,
+        // No runId provided - should use overrideRun.id
+      }));
+
+      // When optsRunId not provided, should fall back to overrideRun.id
+      expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: entry.run_id })
+      );
+    });
+
+    it("falls back to currentEntry.run_id when neither optsRunId nor overrideRun available", async () => {
+      const entry = makeEntry(1);
       const matchingRun = {
         id: entry.run_id,
         seed_id: entry.seed_id,
@@ -543,10 +562,10 @@ describe("autoMerge() — merge outcomes", () => {
 
       await autoMerge(makeOpts({
         store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
-        overrideRun: differentRun, // Does not match entry.run_id
+        // No overrideRun or runId provided - should fall back to currentEntry.run_id
       }));
 
-      // When overrideRun doesn't match, runId should be passed to mergeCompleted
+      // When neither optsRunId nor overrideRun available, runId should be currentEntry.run_id
       expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
         expect.objectContaining({ runId: entry.run_id })
       );
