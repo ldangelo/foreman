@@ -251,8 +251,10 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       // 3. The queue entry already contains the run_id from the enqueue step
       const report = await refinery.mergeCompleted({
         targetBranch,
-        runTests: true,
-        testCommand: "npm run test:unit",
+        // Skip post-merge tests — the pipeline test phase already ran them.
+        // Running tests here in the main repo after rebasing risks false positives
+        // due to stale dependencies or environment differences.
+        runTests: false,
         projectId: project.id,
         seedId: currentEntry.seed_id,
         runId: currentEntry.run_id,
