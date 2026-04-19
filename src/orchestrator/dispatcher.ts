@@ -1264,6 +1264,11 @@ export class Dispatcher {
         type: seed.type ?? '',
         priority: typeof seed.priority === 'number' ? seed.priority : 2,
       },
+      // FR-1: Directory guardrail — verify agent cwd matches expected worktree
+      guardrailConfig: {
+        expectedCwd: worktreePath,
+        mode: "auto-correct",
+      },
     });
 
     return { sessionKey };
@@ -1653,6 +1658,19 @@ export interface WorkerConfig {
    * Populated from the bead/seed that triggered this run.
    */
   taskMeta?: TaskMeta;
+  /**
+   * Directory guardrail config (FR-1). When set, wraps tool factories with
+   * cwd verification in the Pi SDK session. Prevents agents from operating
+   * in the wrong worktree.
+   */
+  guardrailConfig?: {
+    /** Guardrail enforcement mode. Default: `auto-correct`. */
+    mode?: "auto-correct" | "veto" | "disabled";
+    /** Expected working directory for this agent session. */
+    expectedCwd?: string;
+    /** Optional list of allowed path prefixes. */
+    allowedPaths?: string[];
+  };
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

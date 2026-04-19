@@ -267,6 +267,15 @@ interface WorkerConfig {
    * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
    */
   taskMeta?: TaskMeta;
+  /**
+   * Directory guardrail config (FR-1). When set, wraps tool factories with
+   * cwd verification in the Pi SDK session.
+   */
+  guardrailConfig?: {
+    mode?: "auto-correct" | "veto" | "disabled";
+    expectedCwd?: string;
+    allowedPaths?: string[];
+  };
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -574,6 +583,11 @@ async function runPhase(
           timestamp: new Date().toISOString(),
         });
       },
+      // FR-1: Directory guardrail — verify cwd before each tool call
+      guardrailConfig: config.guardrailConfig ? {
+        ...config.guardrailConfig,
+        expectedCwd: config.guardrailConfig.expectedCwd ?? config.worktreePath,
+      } : undefined,
     });
 
     progress.costUsd += phaseResult.costUsd;

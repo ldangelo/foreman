@@ -118,6 +118,12 @@ export interface PipelineRunConfig {
   epicId?: string;
   /** Task metadata for placeholder interpolation in bash/command phases (REQ-008). */
   taskMeta?: TaskMeta;
+  /** Directory guardrail config (FR-1). Passed through to PiRunOptions.guardrailConfig. */
+  guardrailConfig?: {
+    mode?: "auto-correct" | "veto" | "disabled";
+    expectedCwd?: string;
+    allowedPaths?: string[];
+  };
 }
 
 export interface PipelineContext {
