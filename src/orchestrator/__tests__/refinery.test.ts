@@ -879,73 +879,75 @@ describe("Refinery.mergeCompleted()", () => {
     expect(enqueueCloseSeed).not.toHaveBeenCalled();
   });
 
-  // ── Race condition fix: runId fallback ─────────────────────────────────────
+  // ── Race condition fix: overrideRun bypasses query ─────────────────────────
 
-  it("uses runId for direct lookup fallback when projectId/seedId query returns nothing", async () => {
+  it("uses overrideRun to bypass query entirely when provided", async () => {
     // This tests the fix for the auto-merge race condition where finalize marks
-    // a run as completed but autoMerge queries before the status is visible via
-    // the projectId/seedId query.
+    // a run as completed but the query hasn't seen the update yet.
+    // Using overrideRun bypasses the getCompletedRuns() query entirely.
     const { store, refinery } = makeMocks();
-    const run = makeRun({ id: "run-race-fix", seed_id: "seed-race-fix", status: "completed" });
+    const run = makeRun({ id: "run-override", seed_id: "seed-override", status: "completed" });
 
     // getRunsByStatuses returns nothing (race condition scenario)
     store.getRunsByStatuses.mockReturnValue([]);
-    // But getRun (direct lookup) finds the run
-    store.getRun.mockReturnValue(run);
     (removeWorktree as any).mockResolvedValue(undefined);
 
+    // Pass overrideRun directly - this bypasses the query
     const report = await refinery.mergeCompleted({
       runTests: false,
       projectId: "proj-1",
-      seedId: "seed-race-fix",
-      runId: "run-race-fix",
+      seedId: "seed-override",
+      overrideRun: run,
     });
 
-    // Should successfully find and merge the run via direct lookup
+    // Should successfully find and merge the run via overrideRun
     expect(report.merged).toHaveLength(1);
-    expect(report.merged[0].seedId).toBe("seed-race-fix");
-    // Verify getRun was called for the direct lookup fallback
-    expect(store.getRun).toHaveBeenCalledWith("run-race-fix");
+    expect(report.merged[0].seedId).toBe("seed-override");
+    // getRunsByStatuses should NOT be called when overrideRun is provided
+    expect(store.getRunsByStatuses).not.toHaveBeenCalled();
   });
 
-  it("does NOT use runId fallback when projectId/seedId query returns runs", async () => {
-    // When the normal query succeeds, runId fallback should not be used
+  it("does NOT call getRunsByStatuses when overrideRun is provided", async () => {
+    // When overrideRun is provided, the normal query should be skipped entirely
     const { store, refinery } = makeMocks();
-    const run = makeRun({ id: "run-normal", seed_id: "seed-normal", status: "completed" });
+    const run = makeRun({ id: "run-skip-query", seed_id: "seed-skip-query", status: "completed" });
 
-    // When seedId is provided, getCompletedRuns uses getRunsByStatuses
-    store.getRunsByStatuses.mockReturnValue([run]);
     (removeWorktree as any).mockResolvedValue(undefined);
 
     const report = await refinery.mergeCompleted({
       runTests: false,
-      seedId: "seed-normal",
-      runId: "run-normal",
+      seedId: "seed-skip-query",
+      overrideRun: run,
     });
 
     expect(report.merged).toHaveLength(1);
-    // getRun should NOT be called when the normal query succeeds
+    // getRunsByStatuses should NOT be called when overrideRun is provided
+    expect(store.getRunsByStatuses).not.toHaveBeenCalled();
+    // getRun should NOT be called when overrideRun is provided
     expect(store.getRun).not.toHaveBeenCalled();
   });
 
-  it("runId fallback requires matching seedId", async () => {
-    // The runId fallback should only return the run if seedId also matches
+  it("skips query and uses overrideRun even when seedId differs", async () => {
+    // When overrideRun is provided, the seedId parameter is still used for
+    // other purposes (like target branch resolution), but the run lookup is
+    // bypassed entirely.
     const { store, refinery } = makeMocks();
     const run = makeRun({ id: "run-seed-a", seed_id: "seed-a", status: "completed" });
 
     // getRunsByStatuses returns nothing
     store.getRunsByStatuses.mockReturnValue([]);
-    // getRun finds a run but with different seedId
-    store.getRun.mockReturnValue(run);
+    (removeWorktree as any).mockResolvedValue(undefined);
 
+    // seedId differs from run's seed_id, but overrideRun bypasses the check
     const report = await refinery.mergeCompleted({
       runTests: false,
-      seedId: "seed-b", // Different from run's seed_id
-      runId: "run-seed-a",
+      seedId: "seed-b",
+      overrideRun: run,
     });
 
-    // Should NOT use the fallback because seedId doesn't match
-    expect(report.merged).toHaveLength(0);
+    // Should still merge because overrideRun bypasses seedId matching
+    expect(report.merged).toHaveLength(1);
+    expect(report.merged[0].seedId).toBe("seed-a");
   });
 });
 

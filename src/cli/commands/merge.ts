@@ -331,14 +331,17 @@ export const mergeCommand = new Command("merge")
         // Track failure reason for immediate bead note (declared outside try for finally access)
         let mergeFailureReason: string | undefined;
         try {
+          // Fetch the run directly to bypass the getCompletedRuns() query and eliminate
+          // the race condition where finalize marks a run completed but the query hasn't
+          // seen the update yet.
+          const run = store.getRun(entry.run_id);
           const report = await refinery.mergeCompleted({
             targetBranch,
             runTests: opts.tests,
             testCommand: opts.testCommand,
             projectId: project.id,
             seedId: entry.seed_id,
-            // Pass runId for direct lookup fallback (same as auto-merge race condition fix)
-            runId: entry.run_id,
+            overrideRun: run ?? undefined,
           });
 
           if (report.merged.length > 0) {
@@ -424,14 +427,17 @@ export const mergeCommand = new Command("merge")
 
               let retryFailureReason: string | undefined;
               try {
+                // Fetch the run directly to bypass the getCompletedRuns() query and eliminate
+                // the race condition where finalize marks a run completed but the query hasn't
+                // seen the update yet.
+                const run = store.getRun(toProcess.run_id);
                 const report = await refinery.mergeCompleted({
                   targetBranch,
                   runTests: opts.tests,
                   testCommand: opts.testCommand,
                   projectId: project.id,
                   seedId: toProcess.seed_id,
-                  // Pass runId for direct lookup fallback (same as auto-merge race condition fix)
-                  runId: toProcess.run_id,
+                  overrideRun: run ?? undefined,
                 });
 
                 if (report.merged.length > 0) {

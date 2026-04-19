@@ -494,10 +494,13 @@ export class Refinery {
     testCommand?: string;
     projectId?: string;
     seedId?: string;
-    /** Optional runId for direct lookup fallback when projectId/seedId query returns nothing.
-     *  This handles the race condition where finalize marks a run completed but autoMerge
-     *  hasn't yet seen the status update via the projectId/seedId query. */
-    runId?: string;
+    /**
+     * Optional pre-fetched run to bypass the getCompletedRuns() query entirely.
+     * When provided (e.g. from autoMerge's queue entry), this run is used directly
+     * instead of querying for completed runs. This eliminates the race condition
+     * where finalize marks a run completed but the query hasn't yet seen the update.
+     */
+    overrideRun?: import("../lib/store.js").Run;
   }): Promise<MergeReport> {
     const defaultTargetBranch = normalizeBranchLabel(
       opts?.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath),
@@ -505,16 +508,14 @@ export class Refinery {
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
 
-    let rawRuns = this.getCompletedRuns(opts?.projectId, opts?.seedId);
-
-    // Fallback: if no runs found by projectId/seedId, try direct runId lookup.
-    // This fixes the race condition where finalize marks a run as completed but
-    // autoMerge queries before the status is visible via the projectId/seedId query.
-    if (rawRuns.length === 0 && opts?.runId) {
-      const directRun = this.store.getRun(opts.runId);
-      if (directRun && directRun.seed_id === opts.seedId) {
-        rawRuns = [directRun];
-      }
+    // Use the pre-fetched run directly if provided (e.g. from autoMerge queue entry).
+    // This bypasses the getCompletedRuns() query entirely and eliminates the race
+    // condition where finalize marks a run completed but the query hasn't seen the update.
+    let rawRuns: import("../lib/store.js").Run[];
+    if (opts?.overrideRun) {
+      rawRuns = [opts.overrideRun];
+    } else {
+      rawRuns = this.getCompletedRuns(opts?.projectId, opts?.seedId);
     }
 
     const completedRuns = await this.orderByDependencies(rawRuns);

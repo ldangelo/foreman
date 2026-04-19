@@ -243,16 +243,17 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
     }
 
     try {
+      // Pass the run directly from the queue entry to bypass the getCompletedRuns() query.
+      // This eliminates the race condition where finalize marks a run completed but
+      // the query hasn't yet seen the update (SQLite WAL visibility timing issue).
+      // The run was already fetched above for the mergeStrategy check.
       const report = await refinery.mergeCompleted({
         targetBranch,
         runTests: true,
         testCommand: "npm test",
         projectId: project.id,
         seedId: currentEntry.seed_id,
-        // Pass runId for direct lookup fallback to handle the race condition
-        // where finalize marks a run completed but autoMerge queries before the
-        // status is visible via the projectId/seedId query.
-        runId: currentEntry.run_id,
+        overrideRun: run ?? undefined,
       });
 
 

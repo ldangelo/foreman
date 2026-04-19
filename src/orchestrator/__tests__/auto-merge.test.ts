@@ -376,17 +376,19 @@ describe("autoMerge() — merge outcomes", () => {
     expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "failed", { error: "No completed run found" });
   });
 
-  // ── autoMerge() — race condition fix (runId fallback) ──────────────────────
+  // ── autoMerge() — race condition fix (overrideRun) ──────────────────────────
 
-  describe("autoMerge() — race condition fix (runId fallback)", () => {
+  describe("autoMerge() — race condition fix (overrideRun)", () => {
     beforeEach(() => {
       resetMocks();
       mockGetProjectByPath.mockReturnValue({ id: "proj-1" });
     });
 
-    it("passes runId to mergeCompleted for direct lookup fallback", async () => {
+    it("passes overrideRun to mergeCompleted to bypass query", async () => {
       const entry = makeEntry(1);
+      const mockRun = { id: entry.run_id, seed_id: entry.seed_id, status: "completed" };
       mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
+      mockGetRun.mockReturnValueOnce(mockRun);
       mockRefineryMergeCompleted.mockResolvedValueOnce({
         merged: [{ seedId: "bd-test-001" }],
         conflicts: [],
@@ -399,9 +401,11 @@ describe("autoMerge() — merge outcomes", () => {
         store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
       }));
 
-      // Verify runId was passed to mergeCompleted for the race condition fallback
+      // Verify overrideRun was passed to mergeCompleted to bypass the query entirely.
+      // This eliminates the race condition where finalize marks a run completed but
+      // the query hasn't yet seen the update.
       expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
-        expect.objectContaining({ runId: entry.run_id })
+        expect.objectContaining({ overrideRun: mockRun })
       );
     });
   });
