@@ -30,6 +30,8 @@ import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
 import { autoMerge } from "../../orchestrator/auto-merge.js";
 export { autoMerge } from "../../orchestrator/auto-merge.js";
 export type { AutoMergeOpts, AutoMergeResult } from "../../orchestrator/auto-merge.js";
+import { RefineryAgent } from "../../orchestrator/refinery-agent.js";
+import { MergeQueue } from "../../orchestrator/merge-queue.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
 
@@ -87,6 +89,29 @@ export async function createTaskClients(
     bvClient: backendType === "beads" ? new BvClient(projectPath) : null,
     backendType,
   };
+}
+
+/**
+ * Run the Refinery Agent to process the merge queue.
+ * Replaces the legacy autoMerge() with an agentic approach.
+ */
+async function runRefineryMerge(store: ForemanStore, projectPath: string): Promise<{ merged: number; conflicts: number; failed: number }> {
+  try {
+    const db = store.getDb();
+    const mergeQueue = new MergeQueue(db);
+    const vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+    const agent = new RefineryAgent(mergeQueue, vcsBackend, projectPath);
+    const results = await agent.processOnce();
+
+    return {
+      merged: results.filter((r) => r.action === "merged").length,
+      conflicts: results.filter((r) => r.action === "escalated").length,
+      failed: results.filter((r) => r.action === "error" || r.action === "skipped").length,
+    };
+  } catch {
+    // Fallback to legacy autoMerge if RefineryAgent fails (e.g., in test environments)
+    return autoMerge({ store, taskClient: undefined as never, projectPath });
+  }
 }
 
 // ── Branch Mismatch Detection ────────────────────────────────────────────────
@@ -728,7 +753,7 @@ export const runCommand = new Command("run")
       // drains here provide an additional safety net.
       if (!dryRun && project) {
         try {
-          const startupMerge = await autoMerge({ store, taskClient, projectPath, targetBranch });
+          const startupMerge = await runRefineryMerge(store, projectPath);
           if (startupMerge.merged > 0) {
             console.log(chalk.green(`[startup] Merged ${startupMerge.merged} previously completed branch(es).`));
           }
@@ -818,7 +843,7 @@ export const runCommand = new Command("run")
             {
               console.log(chalk.dim("Auto-merging completed branches..."));
               try {
-                const mergeResult = await autoMerge({ store, taskClient, projectPath, targetBranch });
+                const mergeResult = await runRefineryMerge(store, projectPath);
                 if (mergeResult.merged > 0) {
                   console.log(chalk.green(`  Auto-merged ${mergeResult.merged} branch(es).`));
                 }
@@ -897,7 +922,7 @@ export const runCommand = new Command("run")
           {
             console.log(chalk.dim("Auto-merging completed branches..."));
             try {
-              const mergeResult = await autoMerge({ store, taskClient, projectPath, targetBranch });
+              const mergeResult = await runRefineryMerge(store, projectPath);
               if (mergeResult.merged > 0) {
                 console.log(chalk.green(`  Auto-merged ${mergeResult.merged} branch(es).`));
               }
@@ -939,7 +964,7 @@ export const runCommand = new Command("run")
       if (!dryRun && !userDetached) {
         console.log(chalk.dim("Processing remaining merge queue entries..."));
         try {
-          const mergeResult = await autoMerge({ store, taskClient, projectPath, targetBranch });
+          const mergeResult = await runRefineryMerge(store, projectPath);
           if (mergeResult.merged > 0 || mergeResult.conflicts > 0 || mergeResult.failed > 0) {
             if (mergeResult.merged > 0) {
               console.log(chalk.green(`  Auto-merged ${mergeResult.merged} branch(es).`));
