@@ -237,7 +237,12 @@ export async function detectAndHandleStaleBranches(
             await seeds.update(run.seed_id, { status: "closed" });
             closed++;
           } else {
-            await seeds.update(run.seed_id, { status: "open" });
+            // Try "open" first (beads), fall back to "ready" (native task store)
+            try {
+              await seeds.update(run.seed_id, { status: "open" });
+            } catch {
+              await seeds.update(run.seed_id, { status: "ready" });
+            }
             reset++;
           }
         } catch (err: unknown) {
