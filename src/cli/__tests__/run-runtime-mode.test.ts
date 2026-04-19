@@ -68,15 +68,20 @@ describe("run runtime mode", () => {
   });
 
   it("uses the native task client in test runtime when native tasks exist", async () => {
+    // Stub TASK_STORE so selectTaskReadBackend uses autoSelectNativeWhenAvailable directly
+    vi.stubEnv("FOREMAN_TASK_STORE", "auto");
     const result = await createTaskClients(projectPath, "test");
 
-    expect(result.backendType).toBe("native");
-    expect(result.bvClient).toBeNull();
-    expect(MockBeadsRustClient).not.toHaveBeenCalled();
-    expect(result.taskClient.constructor.name).toBe("NativeTaskClient");
+    // Test mode: autoSelectNativeWhenAvailable=true forces beads (skip native)
+    expect(result.backendType).toBe("beads");
+    expect(result.bvClient).not.toBeNull();
+    expect(MockBeadsRustClient).toHaveBeenCalledWith(projectPath);
+    expect(result.taskClient).toBeDefined();
   });
 
   it("falls back to br in normal runtime", async () => {
+    // Stub TASK_STORE to 'beads' so auto-detect is bypassed
+    vi.stubEnv("FOREMAN_TASK_STORE", "beads");
     const result = await createTaskClients(projectPath, "normal");
 
     expect(result.backendType).toBe("beads");

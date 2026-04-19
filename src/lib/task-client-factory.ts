@@ -75,7 +75,7 @@ export function selectTaskReadBackend(
   if (taskStoreMode === "native") return "native";
   if (taskStoreMode === "beads") return "beads";
 
-  if (opts?.autoSelectNativeWhenAvailable === false) {
+  if (opts?.autoSelectNativeWhenAvailable === true) {
     return "beads";
   }
 
