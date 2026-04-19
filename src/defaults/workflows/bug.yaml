@@ -52,7 +52,7 @@ phases:
   # ── Phase 3: finalize (prompt phase) ───────────────────────────────────
   # Standard finalize with human-readable summary for auto-merge context.
   - name: finalize
-    prompt: finalize.md
+    prompt: finalize-bug.md
     models:
       default: MiniMax
     maxTurns: 30
