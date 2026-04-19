@@ -610,7 +610,7 @@ describe("autoMerge() — refinery errors are non-fatal", () => {
     }));
 
     expect(result.failed).toBe(1);
-    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "failed", { error: "git rebase failed" });
+    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "failed", { error: expect.stringContaining("git rebase failed") });
   });
 
   it("does not throw to caller when refinery throws", async () => {

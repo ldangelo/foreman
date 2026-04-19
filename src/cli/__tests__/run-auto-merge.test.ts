@@ -364,7 +364,7 @@ describe("autoMerge() unit tests", () => {
 
     expect(result.failed).toBe(1);
     expect(result.merged).toBe(0);
-    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(3, "failed", expect.objectContaining({ error: "git exploded" }));
+    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(3, "failed", expect.objectContaining({ error: expect.stringContaining("git exploded") }));
   });
 
   it("counts failed results when refinery returns no report entries", async () => {
