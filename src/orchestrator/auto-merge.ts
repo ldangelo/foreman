@@ -252,7 +252,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       const report = await refinery.mergeCompleted({
         targetBranch,
         runTests: true,
-        testCommand: "npm test",
+        testCommand: "npm run test:unit",
         projectId: project.id,
         seedId: currentEntry.seed_id,
         runId: currentEntry.run_id,
