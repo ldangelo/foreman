@@ -378,13 +378,13 @@ describe("autoMerge() — merge outcomes", () => {
 
   // ── autoMerge() — race condition fix (overrideRun) ──────────────────────────
 
-  describe("autoMerge() — race condition fix (overrideRun)", () => {
+  describe("autoMerge() — race condition fix (runId)", () => {
     beforeEach(() => {
       resetMocks();
       mockGetProjectByPath.mockReturnValue({ id: "proj-1" });
     });
 
-    it("passes overrideRun to mergeCompleted to bypass query", async () => {
+    it("passes runId to mergeCompleted to fetch by ID (no status filter)", async () => {
       const entry = makeEntry(1);
       const mockRun = { id: entry.run_id, seed_id: entry.seed_id, status: "completed" };
       mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
@@ -401,11 +401,13 @@ describe("autoMerge() — merge outcomes", () => {
         store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
       }));
 
-      // Verify overrideRun was passed to mergeCompleted to bypass the query entirely.
-      // This eliminates the race condition where finalize marks a run completed but
-      // the query hasn't yet seen the update.
+      // Verify runId was passed to mergeCompleted to fetch by ID directly.
+      // This is the most reliable approach because:
+      // 1. It bypasses status filtering entirely
+      // 2. Eliminates the race condition where status update hasn't been
+      //    committed/visible when the query runs
       expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
-        expect.objectContaining({ overrideRun: mockRun })
+        expect.objectContaining({ runId: entry.run_id })
       );
     });
   });

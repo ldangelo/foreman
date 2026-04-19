@@ -501,6 +501,13 @@ export class Refinery {
      * where finalize marks a run completed but the query hasn't yet seen the update.
      */
     overrideRun?: import("../lib/store.js").Run;
+    /**
+     * Optional run ID to fetch the run directly by ID.
+     * When provided, the run is fetched using store.getRun(runId) which doesn't
+     * filter by status. This eliminates the race condition where the run status
+     * hasn't been updated to 'completed' yet when autoMerge queries.
+     */
+    runId?: string;
   }): Promise<MergeReport> {
     const defaultTargetBranch = normalizeBranchLabel(
       opts?.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath),
@@ -508,11 +515,19 @@ export class Refinery {
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
 
-    // Use the pre-fetched run directly if provided (e.g. from autoMerge queue entry).
-    // This bypasses the getCompletedRuns() query entirely and eliminates the race
-    // condition where finalize marks a run completed but the query hasn't seen the update.
+    // Determine the runs to process:
+    // 1. If runId is provided, fetch the run by ID directly (no status filter) - most reliable
+    // 2. Else if overrideRun is provided, use it directly
+    // 3. Else fall back to querying for completed runs
     let rawRuns: import("../lib/store.js").Run[];
-    if (opts?.overrideRun) {
+    if (opts?.runId) {
+      // Fetch by ID directly - bypasses status check entirely.
+      // This is the most reliable path for immediate autoMerge calls because
+      // the status update happens before autoMerge is called, but due to SQLite
+      // WAL timing, the query might not see it immediately.
+      const fetchedRun = this.store.getRun(opts.runId);
+      rawRuns = fetchedRun ? [fetchedRun] : [];
+    } else if (opts?.overrideRun) {
       rawRuns = [opts.overrideRun];
     } else {
       rawRuns = this.getCompletedRuns(opts?.projectId, opts?.seedId);
