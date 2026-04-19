@@ -5,7 +5,7 @@
 #
 # When epic has no children (native mode): runs skill phases directly as a
 # single-agent pipeline:
-#   prd → trd → implement → finalize
+#   prd → trd → implement → developer → qa → finalize
 #
 # Skill invocation: `command:` sends /ensemble:<skill-name> as the agent prompt.
 # The Pi SDK agent recognizes skill invocations and loads the SKILL.md.
@@ -33,8 +33,6 @@ finalPhases:
 
 phases:
   # ── Phase 1: PRD ──────────────────────────────────────────────────────────
-  # Invoke /ensemble:create-prd using the epic's description as input.
-  # Output: docs/PRD/<name>.md
   - name: prd
     command: "/ensemble:create-prd {task.title}"
     models:
@@ -48,8 +46,6 @@ phases:
       onComplete: true
 
   # ── Phase 2: TRD ──────────────────────────────────────────────────────────
-  # Invoke /ensemble:create-trd with the PRD path.
-  # Output: docs/TRD/<name>.md
   - name: trd
     command: "/ensemble:create-trd"
     models:
@@ -65,8 +61,6 @@ phases:
       onComplete: true
 
   # ── Phase 3: Implement ────────────────────────────────────────────────────
-  # Invoke /ensemble:implement-trd with the TRD path.
-  # Output: implemented code, tests, merged to target branch
   - name: implement
     command: "/ensemble:implement-trd"
     models:
@@ -81,8 +75,38 @@ phases:
       onStart: true
       onComplete: true
 
-  # ── Phase 4: finalize ─────────────────────────────────────────────────────
-  # Standard finalize: stage, commit, push, auto-merge.
+  # ── Phase 4: Developer (fix issues from finalize / qa) ──────────────────
+  - name: developer
+    prompt: developer.md
+    models:
+      default: MiniMax
+      P0: MiniMax
+    maxTurns: 80
+    artifact: DEVELOPER_REPORT.md
+    verdict: false
+    retryWith: implement
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 5: QA ──────────────────────────────────────────────────────────
+  - name: qa
+    prompt: qa.md
+    models:
+      default: MiniMax
+      P0: MiniMax
+    maxTurns: 30
+    artifact: QA_REPORT.md
+    verdict: true
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  # ── Phase 6: finalize ───────────────────────────────────────────────────
   - name: finalize
     prompt: finalize.md
     models:
@@ -90,7 +114,7 @@ phases:
     maxTurns: 30
     artifact: FINALIZE_VALIDATION.md
     verdict: true
-    retryWith: implement
+    retryWith: developer
     retryOnFail: 1
     mail:
       onStart: true
