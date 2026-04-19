@@ -1041,20 +1041,31 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
               // Trigger autoMerge immediately so the branch is merged even if
               // `foreman run` is no longer active (fixes: bd-0qv2).
               //
-              // FIX: Use the existing `store` instance instead of creating a new
-              // ForemanStore. The new store opened a separate SQLite connection, and
-              // due to SQLite's connection isolation, the 'completed' status written
-              // by `store.updateRun()` on line 992 was not visible to the new
-              // connection's reconcile query — causing "No completed run found" errors.
-              // Using the same store instance eliminates this race condition.
+              // FIX (race condition): Pass BOTH the pre-fetched run via overrideRun AND
+              // the runId directly. The runId path in mergeCompleted fetches by ID
+              // without status filtering, which is the most reliable approach when
+              // finalize triggers immediate auto-merge — it bypasses any SQLite WAL
+              // timing issues where the 'completed' status written by `store.updateRun()`
+              // above might not be immediately visible to subsequent queries.
+              //
+              // Even if overrideRun is null (SQLite timing), passing runId ensures
+              // mergeCompleted can still locate the run via a direct ID lookup.
               try {
                 const mergeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
+                // Fetch the run AFTER updating status — this is the run we'll pass to autoMerge.
+                // Using overrideRun bypasses the getRun() query in mergeCompleted.
+                const completedRun = store.getRun(runId);
                 log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}${config.targetBranch ? ` → ${config.targetBranch}` : ""}`);
                 const mergeResult = await autoMerge({
                   store: store,
                   taskClient: mergeTaskClient,
                   projectPath: pipelineProjectPath,
                   targetBranch: config.targetBranch,
+                  // Pass runId explicitly to ensure mergeCompleted uses the direct ID lookup
+                  // path (bypasses status filtering). This is the most reliable approach
+                  // for immediate auto-merge calls where timing is critical.
+                  runId: runId,
+                  overrideRun: completedRun ?? undefined,
                 });
                 log(`[FINALIZE] autoMerge result: merged=${mergeResult.merged} conflicts=${mergeResult.conflicts} failed=${mergeResult.failed}`);
               } catch (mergeErr: unknown) {
