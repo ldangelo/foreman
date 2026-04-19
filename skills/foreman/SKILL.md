@@ -1,6 +1,6 @@
 ---
 name: foreman
-description: "Multi-agent coding orchestrator. Use when: (1) user wants to plan and build features from a description, (2) user wants to run multiple AI coding agents on a codebase, (3) user asks about Foreman project status or agent progress, (4) user says 'foreman plan/sling/run/status/merge/monitor/dashboard'."
+description: "Multi-agent coding orchestrator. Use when: (1) user wants to plan and build features from a description, (2) user wants to run multiple AI coding agents on a codebase, (3) user asks about Foreman project status or agent progress, (4) user says 'foreman plan/sling/run/status/merge/monitor/dashboard/task'."
 metadata:
   openclaw:
     emoji: "👷"
@@ -40,6 +40,7 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts <command>
 foreman plan        →  Ensemble pipeline  →  Product description → PRD → TRD
 foreman sling trd   →  Structured parser  →  TRD → Seeds + Beads task hierarchy
 foreman run         →  Agent dispatcher   →  Spawn agents on ready tasks
+foreman task create →  Task management    →  Create, update, list tasks
 foreman monitor     →  Progress checker   →  Detect stuck/completed agents
 foreman merge       →  Refinery           →  Merge completed branches + test
 foreman status      →  Summary view       →  Task counts + agent status
@@ -135,9 +136,9 @@ For each ready task from bd ready --json:
   )
 ```
 
-### 6. Monitor
+### 5. Monitor
 
-### 5. Inbox
+### 6. Inbox
 
 ```bash
 # View messages for latest run
@@ -167,7 +168,7 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --ack
 
 The inbox shows inter-agent messages within pipeline runs — communications between explorer, developer, reviewer, and foreman agents.
 
-### 6. Mail (Send Inter-Agent Messages)
+### 7. Mail (Send Inter-Agent Messages)
 
 ```bash
 # Send a message between agents within a run
@@ -186,7 +187,7 @@ Subjects: `phase-started`, `phase-complete`, `agent-error`, `blocker-detected`, 
 **Tip**: Set `FOREMAN_RUN_ID` env var to avoid passing `--run-id` on every call.
 
 
-### 6. Merge
+### 8. Merge
 
 ```bash
 npx tsx ~/Development/Fortium/foreman/src/cli/index.ts merge
@@ -195,7 +196,111 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts merge --no-tests
 npx tsx ~/Development/Fortium/foreman/src/cli/index.ts merge --test-command "npm run test:ci"
 ```
 
-### 7. Dashboard
+### 9. Task Management
+
+Foreman ships a native task store backed by SQLite. Tasks can also be managed via `br`/`bd` (beads_rust) — both stores coexist; native tasks are used for dispatch and UI.
+
+#### Create a task
+
+```bash
+# Create a task in backlog status
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task create \
+  --title "Implement user authentication" \
+  --description "Add OAuth2 login flow with Google and GitHub" \
+  --type task \
+  --priority medium
+
+# Shortcuts for priority
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task create --title "Quick fix" --priority 1
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task create --title "Critical issue" --priority critical
+```
+
+Valid types: `task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question`
+Valid priorities: `0`/`critical`, `1`/`high`, `2`/`medium`, `3`/`low`, `4`/`backlog`
+
+#### List tasks
+
+```bash
+# List active tasks (excludes closed/merged by default)
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task list
+
+# Include closed tasks
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task list --all
+
+# Filter by status or type
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task list --status ready
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task list --type bug
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task list --status backlog --type feature
+```
+
+#### Show, approve, update, close
+
+```bash
+# View task details
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task show <task-id>
+
+# Approve a backlog task → makes it ready for dispatch
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task approve <task-id>
+
+# Update fields
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task update <task-id> \
+  --title "New title" \
+  --priority high \
+  --status in-progress
+
+# Force a backward status transition (e.g. merged → backlog)
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task update <task-id> --status backlog --force
+
+# Close a task (marks as merged)
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task close <task-id>
+```
+
+#### Manage dependencies
+
+```bash
+# Task A blocks Task B
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task dep add <task-a> <task-b> --type blocks
+
+# Parent-child relationship
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task dep add <epic-id> <child-id> --type parent-child
+
+# List dependencies for a task
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task dep list <task-id>
+
+# Remove a dependency
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task dep remove <task-a> <task-b>
+```
+
+#### Import from beads_rust
+
+```bash
+# Dry-run: preview first 5 mappings without writing
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task import --from-beads --dry-run
+
+# Perform the import
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task import --from-beads
+```
+
+Import reads `.beads/beads.jsonl` and maps bead status to native status:
+- `open` → `backlog`
+- `in_progress` → `ready`
+- `closed` → `merged`
+
+Tasks with `external_id` already matching a bead ID are skipped as duplicates.
+
+#### Native tasks vs beads_rust
+
+| Aspect | Native tasks (`foreman task`) | Beads (`br`/`bd`) |
+|--------|------------------------------|-------------------|
+| Storage | SQLite (`~/.foreman/foreman.db`) | `.beads/beads.jsonl` |
+| Dispatch | ✅ Used by `foreman run` | ❌ |
+| Dashboard | ✅ Shown in UI | ❌ |
+| CLI | `foreman task *` | `br`/`bd` |
+| Portability | Single DB per machine | Git-tracked JSONL |
+
+Both stores can coexist. Use `foreman task import --from-beads` to migrate bead tasks to the native store for dispatch.
+
+### 10. Dashboard
 
 ```bash
 npx tsx ~/Development/Fortium/foreman/src/cli/index.ts dashboard
