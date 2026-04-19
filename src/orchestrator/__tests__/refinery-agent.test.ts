@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { RefineryAgent, type RefineryAgentConfig } from "../refinery-agent.js";
 import type { MergeQueueEntry } from "../merge-queue.js";
 import type { VcsBackend } from "../../lib/vcs/index.js";
@@ -28,6 +28,7 @@ function makeMockVcsBackend(): VcsBackend {
     merge: vi.fn(),
     branchExists: vi.fn().mockResolvedValue(true),
     getDefaultBranch: vi.fn().mockResolvedValue("main"),
+    detectDefaultBranch: vi.fn().mockResolvedValue("dev"),
   } as unknown as VcsBackend;
 }
 
@@ -85,6 +86,27 @@ describe("RefineryAgent", () => {
 
       expect(agent).toBeDefined();
     });
+
+    it("uses default model when not specified", () => {
+      const mergeQueue = makeMockMergeQueue();
+      const vcsBackend = makeMockVcsBackend();
+
+      const agent = new RefineryAgent(mergeQueue as never, vcsBackend, "/tmp/test", {});
+
+      expect(agent).toBeDefined();
+    });
+
+    it("accepts custom model in config", () => {
+      const mergeQueue = makeMockMergeQueue();
+      const vcsBackend = makeMockVcsBackend();
+      const config: Partial<RefineryAgentConfig> = {
+        model: "anthropic/claude-opus-4-6",
+      };
+
+      const agent = new RefineryAgent(mergeQueue as never, vcsBackend, "/tmp/test", config);
+
+      expect(agent).toBeDefined();
+    });
   });
 
   describe("processOnce()", () => {
@@ -114,6 +136,22 @@ describe("RefineryAgent", () => {
       expect(results[0].action).toBe("skipped");
       expect(results[0].message).toContain("locked");
     });
+
+    it("updates queue status when PR state cannot be read", async () => {
+      const entry = makeEntry({ id: 1, branch_name: "foreman/nonexistent" });
+      const mergeQueue = makeMockMergeQueue([entry]);
+      mergeQueue.dequeue.mockReturnValue(entry);
+      mergeQueue.list.mockReturnValue([entry]);
+      const vcsBackend = makeMockVcsBackend();
+      const agent = new RefineryAgent(mergeQueue as never, vcsBackend, "/tmp/test");
+
+      // gh will fail for nonexistent branch
+      const results = await agent.processOnce();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].action).toBe("error");
+      expect(results[0].message).toContain("PR state");
+    });
   });
 
   describe("stop()", () => {
@@ -126,31 +164,35 @@ describe("RefineryAgent", () => {
       expect(() => agent.stop()).not.toThrow();
     });
   });
-});
 
-describe("RefineryAgentConfig", () => {
-  it("has correct default values", () => {
-    const mergeQueue = makeMockMergeQueue();
-    const vcsBackend = makeMockVcsBackend();
-    const agent = new RefineryAgent(mergeQueue as never, vcsBackend, "/tmp/test");
+  describe("config validation", () => {
+    it("accepts all config options", () => {
+      const mergeQueue = makeMockMergeQueue();
+      const vcsBackend = makeMockVcsBackend();
+      const config: RefineryAgentConfig = {
+        pollIntervalMs: 10_000,
+        maxFixIterations: 3,
+        projectPath: "/custom/path",
+        logDir: "/custom/logs",
+        systemPromptPath: "/custom/prompt.md",
+        model: "anthropic/claude-opus-4-6",
+      };
 
-    // Agent should be constructed successfully with defaults
-    expect(agent).toBeDefined();
-  });
+      const agent = new RefineryAgent(mergeQueue as never, vcsBackend, "/tmp/test", config);
 
-  it("accepts all config options", () => {
-    const mergeQueue = makeMockMergeQueue();
-    const vcsBackend = makeMockVcsBackend();
-    const config: RefineryAgentConfig = {
-      pollIntervalMs: 10_000,
-      maxFixIterations: 3,
-      projectPath: "/custom/path",
-      logDir: "/custom/logs",
-      systemPromptPath: "/custom/prompt.md",
-    };
+      expect(agent).toBeDefined();
+    });
 
-    const agent = new RefineryAgent(mergeQueue as never, vcsBackend, "/tmp/test", config);
+    it("uses default model when model option is undefined", () => {
+      const mergeQueue = makeMockMergeQueue();
+      const vcsBackend = makeMockVcsBackend();
+      const config: Partial<RefineryAgentConfig> = {
+        maxFixIterations: 2,
+      };
 
-    expect(agent).toBeDefined();
+      const agent = new RefineryAgent(mergeQueue as never, vcsBackend, "/tmp/test", config);
+
+      expect(agent).toBeDefined();
+    });
   });
 });

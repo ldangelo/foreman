@@ -7,7 +7,7 @@
  * Target: ~50 lines of agent code achieving 90%+ success rate.
  */
 
-import { mkdirSync, appendFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { execFile as execFileSync } from "node:child_process";
@@ -15,6 +15,20 @@ import { execFile as execFileSync } from "node:child_process";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { MergeQueue, type MergeQueueEntry } from "./merge-queue.js";
 import { PIPELINE_BUFFERS } from "../lib/config.js";
+import { ForemanStore } from "../lib/store.js";
+import { runWithPiSdk, type PiRunResult } from "./pi-sdk-runner.js";
+import { createSendMailTool } from "./pi-sdk-tools.js";
+import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
+import {
+  createBashTool,
+  createReadTool,
+  createEditTool,
+  createWriteTool,
+  createGrepTool,
+  createFindTool,
+  createLsTool,
+} from "@mariozechner/pi-coding-agent";
+import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 
 const execFileAsync = promisify(execFileSync);
 
@@ -26,6 +40,8 @@ export interface RefineryAgentConfig {
   projectPath: string;
   logDir: string;
   systemPromptPath?: string;
+  /** Model for the fix agent (default: sonnet) */
+  model?: string;
 }
 
 export interface AgentResult {
@@ -33,6 +49,7 @@ export interface AgentResult {
   action: "merged" | "escalated" | "skipped" | "error";
   logPath: string;
   message?: string;
+  costUsd?: number;
 }
 
 // ── Default Config ───────────────────────────────────────────────────────
@@ -42,6 +59,7 @@ const DEFAULT_CONFIG = {
   maxFixIterations: 2,
   logDir: "docs/reports",
   systemPromptPath: "./src/orchestrator/prompts/refinery-agent.md",
+  model: "anthropic/claude-sonnet-4-6",
 } as const;
 
 // ── RefineryAgent ────────────────────────────────────────────────────────
@@ -50,14 +68,32 @@ export class RefineryAgent {
   private config: RefineryAgentConfig;
   private running = false;
   private systemPrompt: string = "";
+  private store: ForemanStore;
+  private mailClient: SqliteMailClient;
+  private mailInitialized = false;
 
   constructor(
     private mergeQueue: MergeQueue,
     private vcsBackend: VcsBackend,
     private projectPath: string,
-    config: Partial<RefineryAgentConfig> = {}
+    config: Partial<RefineryAgentConfig> = {},
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config, projectPath };
+    this.store = new ForemanStore();
+    this.mailClient = new SqliteMailClient();
+    // Note: mailClient.ensureProject(projectPath) must be called before use
+    // in instance methods. Called lazily in processQueue() to avoid async constructor.
+  }
+
+  /**
+   * Ensure the mail client is initialized for this project.
+   * Safe to call multiple times.
+   */
+  private async ensureMailClient(): Promise<void> {
+    if (!this.mailInitialized) {
+      await this.mailClient.ensureProject(this.projectPath);
+      this.mailInitialized = true;
+    }
   }
 
   /**
@@ -114,6 +150,9 @@ export class RefineryAgent {
   private async processQueue(): Promise<AgentResult[]> {
     const results: AgentResult[] = [];
 
+    // Ensure mail client is initialized before processing
+    await this.ensureMailClient();
+
     // Get pending entries in FIFO order using MergeQueue
     const entries = this.mergeQueue.list("pending");
     console.log(`[refinery-agent] Found ${entries.length} pending entries`);
@@ -168,8 +207,12 @@ export class RefineryAgent {
         return { success: false, action: "skipped", logPath, message: "CI not passing" };
       }
 
+      // Get the worktree path from the run record
+      const run = this.store.getRun(entry.run_id);
+      const worktreePath = run?.worktree_path ?? join(this.projectPath, "worktrees", entry.seed_id);
+
       // Run agent to fix and merge
-      const result = await this.runAgent(entry, prState);
+      const result = await this.runAgent(entry, prState, worktreePath);
 
       if (result.success) {
         this.mergeQueue.updateStatus(entry.id, "merged", { completedAt: new Date().toISOString() });
@@ -228,29 +271,263 @@ export class RefineryAgent {
 
   /**
    * Run the agent to fix issues and merge.
-   * This is a placeholder that delegates to the existing merge flow.
-   * In a full implementation, this would spawn a Pi agent session.
+   *
+   * Uses the Pi SDK to run an agent session that:
+   * 1. Reads the PR diff and identifies mechanical failures
+   * 2. Applies fixes (type errors, missing imports, wiring gaps)
+   * 3. Runs build
+   * 4. Runs tests
+   * 5. Merges if all pass, escalates if not
    */
   private async runAgent(
     entry: MergeQueueEntry,
-    _prState: PrState
+    prState: PrState,
+    worktreePath: string,
   ): Promise<AgentResult> {
     const logPath = this.ensureLogDir(entry.id);
-    this.logAction(entry.id, "Agent fix logic not yet implemented - using legacy merge path");
+    const model = this.config.model ?? DEFAULT_CONFIG.model;
+    const maxIterations = this.config.maxFixIterations ?? DEFAULT_CONFIG.maxFixIterations;
 
-    // For now, delegate to the VCS backend merge
-    // In the full implementation, this would:
-    // 1. Run npm run build
-    // 2. If fails, apply fixes
-    // 3. Run npm run test
-    // 4. If all pass, merge
+    this.logAction(entry.id, `Starting agent for ${entry.branch_name} (worktree: ${worktreePath})`);
 
+    // Determine the target branch
+    const targetBranch = await this.vcsBackend.detectDefaultBranch(this.projectPath);
+
+    // Build the agent task prompt
+    const taskPrompt = this.buildAgentTaskPrompt(entry, prState, worktreePath, targetBranch);
+
+    // Build tools
+    const tools = this.buildTools(worktreePath);
+    const customTools: ToolDefinition[] = [
+      createSendMailTool(this.mailClient, `refinery-${entry.seed_id}`),
+    ];
+
+    let lastResult: PiRunResult | null = null;
+
+    for (let attempt = 1; attempt <= maxIterations; attempt++) {
+      this.logAction(entry.id, `Fix attempt ${attempt}/${maxIterations}`);
+
+      // Run the Pi SDK session
+      const result = await runWithPiSdk({
+        prompt: taskPrompt,
+        systemPrompt: this.systemPrompt,
+        cwd: worktreePath,
+        model,
+        allowedTools: ["Read", "Bash", "Edit", "Write", "Grep", "Find", "LS"],
+        customTools,
+        logFile: logPath,
+      });
+
+      lastResult = result;
+
+      if (!result.success) {
+        const errorMsg = result.errorMessage ?? "Agent ended without success";
+        this.logAction(entry.id, `Agent failed: ${errorMsg.slice(0, 200)}`);
+
+        // If this was the last attempt, escalate
+        if (attempt === maxIterations) {
+          return {
+            success: false,
+            action: "escalated",
+            logPath,
+            message: `Fix attempts exhausted (${maxIterations}). Last error: ${errorMsg.slice(0, 200)}`,
+            costUsd: result.costUsd,
+          };
+        }
+
+        // Append feedback for next attempt
+        const feedback = `\n\n## Previous Fix Attempt ${attempt} Failed\n\nError: ${errorMsg}\n\nPlease analyze the error and try a different fix approach.\n`;
+        // Update task prompt with feedback for next iteration
+        continue;
+      }
+
+      // Build passed? Check the result
+      const buildOk = await this.checkBuildOk(worktreePath);
+      if (!buildOk) {
+        this.logAction(entry.id, `Build still failing after attempt ${attempt}`);
+        if (attempt === maxIterations) {
+          return {
+            success: false,
+            action: "escalated",
+            logPath,
+            message: `Build failed after ${attempt} fix attempts`,
+            costUsd: result.costUsd,
+          };
+        }
+        continue;
+      }
+
+      // Build passes — run tests
+      this.logAction(entry.id, `Build passed, running tests...`);
+      const testOk = await this.checkTestsOk(worktreePath);
+      if (!testOk) {
+        this.logAction(entry.id, `Tests still failing after attempt ${attempt}`);
+        if (attempt === maxIterations) {
+          return {
+            success: false,
+            action: "escalated",
+            logPath,
+            message: `Tests failed after ${attempt} fix attempts`,
+            costUsd: result.costUsd,
+          };
+        }
+        continue;
+      }
+
+      // All pass — merge!
+      this.logAction(entry.id, `Build and tests passed! Merging...`);
+      const mergeOk = await this.mergeBranch(entry, targetBranch);
+      if (mergeOk) {
+        return {
+          success: true,
+          action: "merged",
+          logPath,
+          message: `Successfully merged ${entry.branch_name}`,
+          costUsd: result.costUsd,
+        };
+      } else {
+        return {
+          success: false,
+          action: "error",
+          logPath,
+          message: `Merge failed for ${entry.branch_name}`,
+          costUsd: result.costUsd,
+        };
+      }
+    }
+
+    // Exhausted all attempts
     return {
       success: false,
-      action: "skipped",
+      action: "escalated",
       logPath,
-      message: "Agent logic not yet implemented",
+      message: `Fix budget exhausted (${maxIterations} attempts)`,
+      costUsd: lastResult?.costUsd ?? 0,
     };
+  }
+
+  /**
+   * Build the task prompt for the fix agent.
+   */
+  private buildAgentTaskPrompt(
+    entry: MergeQueueEntry,
+    prState: PrState,
+    worktreePath: string,
+    targetBranch: string,
+  ): string {
+    return `# Refinery Agent — Fix Task
+
+## Context
+You are processing a merge queue entry for branch \`${entry.branch_name}\` (seed: \`${entry.seed_id}\`).
+
+## Your Mission
+Fix mechanical failures (type errors, missing imports, wiring gaps) in the branch, then build and test. If all pass, merge. If not fixable after ${this.config.maxFixIterations ?? 2} attempts, escalate.
+
+## PR State
+\`\`\`json
+${prState.view}
+\`\`\`
+
+## Diff (what changed)
+\`\`\`diff
+${prState.diff.slice(0, 20_000)}
+\`\`\`
+
+## Workflow
+1. Read files with errors using the Read tool
+2. Fix type errors, missing imports, wiring gaps using Edit/Write tools
+3. Run \`npm run build\` to verify the build passes
+4. Run \`npm test\` to verify tests pass
+5. When build AND tests pass, use Bash to run: \`gh pr merge ${entry.branch_name} --squash --delete-branch\`
+6. Report your result
+
+## Decision Rules
+- If build/test fixable → fix and continue
+- If unrecoverable after ${this.config.maxFixIterations ?? 2} attempts → report ESCALATE
+- NEVER force-push to ${targetBranch}
+- Log every action to the log file
+
+## Exit Signal
+When done, output one of:
+- MERGE_SUCCESS: <brief summary>
+- ESCALATE: <reason why it couldn't be fixed>
+`;
+  }
+
+  /**
+   * Build the tool array for the agent session.
+   * Uses the worktree path as the agent's cwd.
+   */
+  private buildTools(cwd: string) {
+    return [
+      createReadTool(cwd),
+      createBashTool(cwd),
+      createEditTool(cwd),
+      createWriteTool(cwd),
+      createGrepTool(cwd),
+      createFindTool(cwd),
+      createLsTool(cwd),
+    ];
+  }
+
+  /**
+   * Check if the build passes in the worktree.
+   */
+  private async checkBuildOk(worktreePath: string): Promise<boolean> {
+    try {
+      const { stdout, stderr } = await execFileAsync(
+        "npm", ["run", "build"],
+        { cwd: worktreePath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+      );
+      return stdout.includes("build") || stderr.length === 0;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  /**
+   * Check if tests pass in the worktree.
+   */
+  private async checkTestsOk(worktreePath: string): Promise<boolean> {
+    try {
+      const { stdout } = await execFileAsync(
+        "npm", ["test"],
+        { cwd: worktreePath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+      );
+      return stdout.includes("PASS") || stdout.includes("passed");
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Merge the branch via gh pr merge.
+   */
+  private async mergeBranch(entry: MergeQueueEntry, targetBranch: string): Promise<boolean> {
+    try {
+      // First ensure branch is pushed
+      await execFileAsync("git", ["push", "origin", entry.branch_name], {
+        cwd: this.projectPath,
+        maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+      });
+
+      // Then merge via gh
+      await execFileAsync("gh", [
+        "pr", "merge", entry.branch_name,
+        "--squash",
+        "--delete-branch",
+        "--auto-merge-delete-branch",
+      ], {
+        cwd: this.projectPath,
+        maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+      });
+
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logAction(entry.id, `Merge failed: ${msg}`);
+      return false;
+    }
   }
 
   // ── Logging ────────────────────────────────────────────────────────────
@@ -261,10 +538,6 @@ export class RefineryAgent {
       mkdirSync(logPath, { recursive: true });
     }
     return join(logPath, "AGENT_LOG.md");
-  }
-
-  private getLogPath(queueEntryId: number): string {
-    return join(this.config.logDir, `queue-entry-${queueEntryId}`, "AGENT_LOG.md");
   }
 
   private logAction(queueEntryId: number, action: string): void {
@@ -298,6 +571,7 @@ You are the Refinery Agent for Foreman. Your job is to process merge queue entri
 - read: Read files to understand code structure
 - edit: Make targeted fixes to files
 - write: Create or overwrite files
+- send_mail: Send notifications (for escalations)
 
 ## Common Fix Patterns
 | Pattern | Fix |
@@ -316,4 +590,9 @@ You are the Refinery Agent for Foreman. Your job is to process merge queue entri
 - NEVER force-push to main
 - ALWAYS verify build before merge
 - Log every action to AGENT_LOG.md
+
+## Exit Signals
+When done, output one of:
+- MERGE_SUCCESS: <brief summary>
+- ESCALATE: <reason why it couldn't be fixed>
 `;

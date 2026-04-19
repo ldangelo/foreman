@@ -24,7 +24,8 @@ Do NOT run tests if conflict markers are found.
    - For localized CLI/status/output/display changes, run targeted tests or targeted command-level verification first
    - Only broaden to `npm test -- --reporter=dot 2>&1` when the task is broad, when targeted verification is insufficient, or when targeted checks reveal broader regression risk
 4. If tests fail due to the changes, do not modify source code. Report the failure clearly and route the task back to Developer.
-5. Write any additional test recommendations needed for uncovered edge cases, but do not implement source changes in QA
+5. If the full test suite has pre-existing failures unrelated to this implementation, verify they existed BEFORE your changes by checking git stash state. If pre-existing failures are the ONLY failures, set verdict to PASS and note the pre-existing failures in the report.
+6. Write any additional test recommendations needed for uncovered edge cases, but do not implement source changes in QA
 6. Write your findings to **docs/reports/{{seedId}}/QA_REPORT.md**. Create the directory if it doesn't exist:
    ```bash
    mkdir -p docs/reports/{{seedId}}
