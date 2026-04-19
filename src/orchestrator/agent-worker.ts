@@ -1041,20 +1041,23 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
               // Trigger autoMerge immediately so the branch is merged even if
               // `foreman run` is no longer active (fixes: bd-0qv2).
               //
-              // FIX: Use the existing `store` instance instead of creating a new
-              // ForemanStore. The new store opened a separate SQLite connection, and
-              // due to SQLite's connection isolation, the 'completed' status written
-              // by `store.updateRun()` on line 992 was not visible to the new
-              // connection's reconcile query — causing "No completed run found" errors.
-              // Using the same store instance eliminates this race condition.
+              // FIX: Pass the run directly via overrideRun to bypass the getRun() query.
+              // This eliminates the race condition where the 'completed' status written
+              // by `store.updateRun()` above might not be immediately visible to the
+              // refinery's database query due to SQLite WAL timing. By passing the
+              // run object directly, we eliminate the query entirely.
               try {
                 const mergeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
+                // Fetch the run AFTER updating status — this is the run we'll pass to autoMerge.
+                // Using overrideRun bypasses the getRun() query in mergeCompleted.
+                const completedRun = store.getRun(runId);
                 log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}${config.targetBranch ? ` → ${config.targetBranch}` : ""}`);
                 const mergeResult = await autoMerge({
                   store: store,
                   taskClient: mergeTaskClient,
                   projectPath: pipelineProjectPath,
                   targetBranch: config.targetBranch,
+                  overrideRun: completedRun ?? undefined,
                 });
                 log(`[FINALIZE] autoMerge result: merged=${mergeResult.merged} conflicts=${mergeResult.conflicts} failed=${mergeResult.failed}`);
               } catch (mergeErr: unknown) {

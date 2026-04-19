@@ -61,6 +61,17 @@ describe("agent-worker.ts — autoMerge integration (bd-0qv2)", () => {
     // The fix is to use the existing store that already wrote the 'completed' status.
     expect(source).not.toContain("const mergeStore = ForemanStore.forProject");
   });
+
+  it("fetches the run and passes overrideRun to autoMerge (bypasses getRun query)", () => {
+    // The race condition fix (v2): pass the run directly via overrideRun to bypass
+    // the getRun() query entirely. This eliminates the race condition where the
+    // 'completed' status update hasn't been committed/visible when the query runs.
+    // Key patterns:
+    // 1. Fetch the run after updating status: `store.getRun(runId)`
+    // 2. Pass overrideRun to autoMerge: `overrideRun: completedRun`
+    expect(source).toContain("const completedRun = store.getRun(runId)");
+    expect(source).toContain("overrideRun: completedRun ?? undefined");
+  });
 });
 
 describe("auto-merge.ts — module invariants", () => {

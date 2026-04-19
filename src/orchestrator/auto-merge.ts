@@ -121,6 +121,13 @@ export interface AutoMergeOpts {
   projectPath: string;
   /** Merge target branch. When omitted, auto-detected via detectDefaultBranch(). */
   targetBranch?: string;
+  /**
+   * Optional pre-fetched run to bypass the getRun() query entirely.
+   * When provided, this run is used directly instead of querying by runId.
+   * This eliminates the race condition where the run status update hasn't been
+   * committed/visible when autoMerge queries for the run by ID.
+   */
+  overrideRun?: import("../lib/store.js").Run;
 }
 
 /** Result summary returned by autoMerge(). */
@@ -153,7 +160,7 @@ export interface AutoMergeResult {
  *     succeeds (new behaviour, fixes the "foreman run exits early" bug)
  */
 export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
-  const { store, taskClient, projectPath } = opts;
+  const { store, taskClient, projectPath, overrideRun } = opts;
   const vcs = await createAutoMergeVcsBackend(projectPath);
   const targetBranch = opts.targetBranch ?? await vcs.detectDefaultBranch(projectPath);
 
@@ -183,8 +190,13 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
     // bead-closed mail is only sent on actual success (Fix 2).
     let mergeSucceeded = false;
 
-    // TRD-007: Check merge_strategy from run record and route accordingly
-    const run = store.getRun(currentEntry.run_id);
+    // TRD-007: Check merge_strategy from run record and route accordingly.
+    // Use overrideRun if available (from agent-worker's immediate autoMerge call) to
+    // bypass the getRun() query entirely. This eliminates the race condition where
+    // the 'completed' status hasn't been committed/visible when the query runs.
+    const run = overrideRun?.id === currentEntry.run_id
+      ? overrideRun
+      : store.getRun(currentEntry.run_id);
     const mergeStrategy: 'auto' | 'pr' | 'none' = (run?.merge_strategy as 'auto' | 'pr' | 'none') ?? 'auto';
 
     if (mergeStrategy === 'none') {
@@ -243,12 +255,15 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
     }
 
     try {
-      // Pass the run ID to mergeCompleted to fetch by ID directly.
-      // This is the most reliable approach for immediate autoMerge calls because:
-      // 1. It bypasses the status check entirely - the run is fetched by ID
-      // 2. It eliminates the race condition where the status update hasn't been
-      //    committed/visible when autoMerge queries for 'completed' runs
-      // 3. The queue entry already contains the run_id from the enqueue step
+      // Pass the run directly via overrideRun when available (from agent-worker immediate
+      // autoMerge call) AND it matches the current queue entry. This bypasses the getRun()
+      // query entirely, eliminating the race condition where the status update hasn't been
+      // committed/visible to the query.
+      //
+      // When overrideRun is not provided or doesn't match (e.g., from foreman run dispatch
+      // loop, or a different run), fall back to passing runId which queries by ID directly.
+      // Both paths bypass status filtering.
+      const useOverrideRun = overrideRun && overrideRun.id === currentEntry.run_id;
       const report = await refinery.mergeCompleted({
         targetBranch,
         // Skip post-merge tests — the pipeline test phase already ran them.
@@ -257,7 +272,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         runTests: false,
         projectId: project.id,
         seedId: currentEntry.seed_id,
-        runId: currentEntry.run_id,
+        ...(useOverrideRun ? { overrideRun } : { runId: currentEntry.run_id }),
       });
 
 
