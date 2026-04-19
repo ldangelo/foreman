@@ -25,6 +25,7 @@ import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import { getWorkspacePath } from "../lib/workspace-paths.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
+import { checkAndRebaseStaleWorktree } from "./stale-worktree-check.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import type {
   SeedInfo,
@@ -1213,6 +1214,27 @@ export class Dispatcher {
 
     const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
 
+    // FR-5: Check if worktree is stale and auto-rebase before spawning
+    if (vcsBackend && targetBranch) {
+      try {
+        await checkAndRebaseStaleWorktree(
+          vcsBackend,
+          worktreePath,
+          targetBranch,
+          this.store,
+          this.resolveProjectId(),
+          runId,
+          seed.id,
+          { autoRebase: true, failOnConflict: true },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`[dispatch] Stale worktree check failed for ${seed.id}: ${msg}`);
+        // Re-throw so the dispatch fails cleanly rather than spawning a broken worker
+        throw err;
+      }
+    }
+
     await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
@@ -1241,10 +1263,12 @@ export class Dispatcher {
         description: seed.description ?? '',
         type: seed.type ?? '',
         priority: typeof seed.priority === 'number' ? seed.priority : 2,
-        // docs/reports/ is versioned with the worktree — reports commit with code.
-        projectReportsDir: join(worktreePath, 'docs', 'reports'),
       },
-      projectReportsDir: join(worktreePath, 'docs', 'reports'),
+      // FR-1: Directory guardrail — verify agent cwd matches expected worktree
+      guardrailConfig: {
+        expectedCwd: worktreePath,
+        mode: "auto-correct",
+      },
     });
 
     return { sessionKey };
@@ -1635,11 +1659,18 @@ export interface WorkerConfig {
    */
   taskMeta?: TaskMeta;
   /**
-   * Stable directory for phase artifacts (PRD, TRD, reports).
-   * Computed as join(worktreePath, 'docs', 'reports') — versioned with the worktree.
-   * Skills write artifacts here so they are committed along with code changes.
+   * Directory guardrail config (FR-1). When set, wraps tool factories with
+   * cwd verification in the Pi SDK session. Prevents agents from operating
+   * in the wrong worktree.
    */
-  projectReportsDir?: string;
+  guardrailConfig?: {
+    /** Guardrail enforcement mode. Default: `auto-correct`. */
+    mode?: "auto-correct" | "veto" | "disabled";
+    /** Expected working directory for this agent session. */
+    expectedCwd?: string;
+    /** Optional list of allowed path prefixes. */
+    allowedPaths?: string[];
+  };
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

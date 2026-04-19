@@ -35,6 +35,80 @@ export interface DashboardConfig {
 }
 
 /**
+ * Directory verification guardrail configuration.
+ * Prevents agents from operating in the wrong worktree directory.
+ */
+export interface DirectoryGuardrailConfig {
+  /**
+   * Guardrail enforcement mode.
+   * - `auto-correct` — Prepend `cd` to bash commands; fix edit/write file paths. Log `guardrail-corrected` event.
+   * - `veto`         — Abort the tool call and report via `guardrail-veto` event.
+   * - `disabled`     — No checks; pass through immediately.
+   * Default: `auto-correct`.
+   */
+  mode?: "auto-correct" | "veto" | "disabled";
+  /**
+   * Optional list of allowed path prefixes.
+   * When set, the agent's cwd must start with one of these prefixes.
+   */
+  allowedPaths?: string[];
+}
+
+/**
+ * Heartbeat configuration for observability events.
+ */
+export interface HeartbeatConfig {
+  /** Enable heartbeat events. Default: true. */
+  enabled?: boolean;
+  /** Interval between heartbeats in seconds. Default: 60. Set to 0 to disable. */
+  intervalSeconds?: number;
+}
+
+/**
+ * Activity log configuration for self-documenting commits.
+ */
+export interface ActivityLogConfig {
+  /** Enable activity log generation. Default: true. */
+  enabled?: boolean;
+  /** Include git diff stat output in ACTIVITY_LOG.json. Default: true. */
+  includeGitDiffStat?: boolean;
+}
+
+/**
+ * Observability configuration for pipeline run visibility.
+ */
+export interface ObservabilityConfig {
+  /** Heartbeat configuration for periodic status events. */
+  heartbeat?: HeartbeatConfig;
+  /** Activity log configuration for self-documenting commits. */
+  activityLog?: ActivityLogConfig;
+}
+
+/**
+ * Stale worktree handling configuration.
+ */
+export interface StaleWorktreeConfig {
+  /**
+   * Auto-rebase stale worktrees on dispatch (before spawning agent).
+   * Default: true.
+   */
+  autoRebase?: boolean;
+  /**
+   * Fail-fast if rebase would conflict.
+   * Default: true.
+   */
+  failOnConflict?: boolean;
+}
+
+/**
+ * Guardrails configuration for runtime-enforced constraints.
+ */
+export interface GuardrailsConfig {
+  /** Directory verification guardrail settings. */
+  directory?: DirectoryGuardrailConfig;
+}
+
+/**
  * Shape of `.foreman/config.yaml` (or `.foreman/config.json`).
  * Only the `vcs` section is currently defined; additional top-level keys may
  * be added in future phases without breaking this interface.
@@ -67,6 +141,12 @@ export interface ProjectConfig {
   };
   /** Dashboard configuration (REQ-010, REQ-019). */
   dashboard?: DashboardConfig;
+  /** Guardrails configuration for runtime-enforced constraints. */
+  guardrails?: GuardrailsConfig;
+  /** Observability configuration for pipeline run visibility. */
+  observability?: ObservabilityConfig;
+  /** Stale worktree handling configuration. */
+  staleWorktree?: StaleWorktreeConfig;
 }
 
 /** Error thrown when the project config file is present but malformed. */
@@ -190,6 +270,113 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
       dashConfig.refreshInterval = ri as number;
     }
     config.dashboard = dashConfig;
+  }
+
+  // Optional guardrails sub-config (PRD-2026-009)
+  if ("guardrails" in raw) {
+    const guardrailsRaw = raw["guardrails"];
+    if (!isRecord(guardrailsRaw)) {
+      throw new ProjectConfigError(filePath, "'guardrails' must be an object");
+    }
+    const guardrailsConfig: GuardrailsConfig = {};
+
+    if ("directory" in guardrailsRaw) {
+      const dirRaw = guardrailsRaw["directory"];
+      if (!isRecord(dirRaw)) {
+        throw new ProjectConfigError(filePath, "'guardrails.directory' must be an object");
+      }
+
+      const dirConfig: DirectoryGuardrailConfig = {};
+      if ("mode" in dirRaw) {
+        const mode = dirRaw["mode"];
+        if (mode !== undefined && mode !== "auto-correct" && mode !== "veto" && mode !== "disabled") {
+          throw new ProjectConfigError(
+            filePath,
+            "'guardrails.directory.mode' must be 'auto-correct', 'veto', or 'disabled'",
+          );
+        }
+        dirConfig.mode = mode as "auto-correct" | "veto" | "disabled" | undefined;
+      }
+      if ("allowedPaths" in dirRaw) {
+        const ap = dirRaw["allowedPaths"];
+        if (!Array.isArray(ap)) {
+          throw new ProjectConfigError(filePath, "'guardrails.directory.allowedPaths' must be an array");
+        }
+        dirConfig.allowedPaths = ap as string[];
+      }
+      guardrailsConfig.directory = dirConfig;
+    }
+
+    config.guardrails = guardrailsConfig;
+  }
+
+  // Optional observability sub-config (PRD-2026-009)
+  if ("observability" in raw) {
+    const obsRaw = raw["observability"];
+    if (!isRecord(obsRaw)) {
+      throw new ProjectConfigError(filePath, "'observability' must be an object");
+    }
+    const obsConfig: ObservabilityConfig = {};
+
+    if ("heartbeat" in obsRaw) {
+      const hbRaw = obsRaw["heartbeat"];
+      if (!isRecord(hbRaw)) {
+        throw new ProjectConfigError(filePath, "'observability.heartbeat' must be an object");
+      }
+      const hbConfig: HeartbeatConfig = {};
+      if ("enabled" in hbRaw && typeof hbRaw["enabled"] !== "boolean") {
+        throw new ProjectConfigError(filePath, "'observability.heartbeat.enabled' must be a boolean");
+      }
+      hbConfig.enabled = (hbRaw["enabled"] as boolean | undefined) ?? true;
+      if ("intervalSeconds" in hbRaw) {
+        const interval = hbRaw["intervalSeconds"];
+        if (typeof interval !== "number" || !Number.isFinite(interval) || interval < 0) {
+          throw new ProjectConfigError(
+            filePath,
+            "'observability.heartbeat.intervalSeconds' must be a non-negative number (seconds)",
+          );
+        }
+        hbConfig.intervalSeconds = interval as number;
+      }
+      obsConfig.heartbeat = hbConfig;
+    }
+
+    if ("activityLog" in obsRaw) {
+      const alRaw = obsRaw["activityLog"];
+      if (!isRecord(alRaw)) {
+        throw new ProjectConfigError(filePath, "'observability.activityLog' must be an object");
+      }
+      const alConfig: ActivityLogConfig = {};
+      if ("enabled" in alRaw && typeof alRaw["enabled"] !== "boolean") {
+        throw new ProjectConfigError(filePath, "'observability.activityLog.enabled' must be a boolean");
+      }
+      alConfig.enabled = (alRaw["enabled"] as boolean | undefined) ?? true;
+      if ("includeGitDiffStat" in alRaw && typeof alRaw["includeGitDiffStat"] !== "boolean") {
+        throw new ProjectConfigError(filePath, "'observability.activityLog.includeGitDiffStat' must be a boolean");
+      }
+      alConfig.includeGitDiffStat = (alRaw["includeGitDiffStat"] as boolean | undefined) ?? true;
+      obsConfig.activityLog = alConfig;
+    }
+
+    config.observability = obsConfig;
+  }
+
+  // Optional staleWorktree sub-config (PRD-2026-009)
+  if ("staleWorktree" in raw) {
+    const staleRaw = raw["staleWorktree"];
+    if (!isRecord(staleRaw)) {
+      throw new ProjectConfigError(filePath, "'staleWorktree' must be an object");
+    }
+    const staleConfig: StaleWorktreeConfig = {};
+    if ("autoRebase" in staleRaw && typeof staleRaw["autoRebase"] !== "boolean") {
+      throw new ProjectConfigError(filePath, "'staleWorktree.autoRebase' must be a boolean");
+    }
+    staleConfig.autoRebase = (staleRaw["autoRebase"] as boolean | undefined) ?? true;
+    if ("failOnConflict" in staleRaw && typeof staleRaw["failOnConflict"] !== "boolean") {
+      throw new ProjectConfigError(filePath, "'staleWorktree.failOnConflict' must be a boolean");
+    }
+    staleConfig.failOnConflict = (staleRaw["failOnConflict"] as boolean | undefined) ?? true;
+    config.staleWorktree = staleConfig;
   }
 
   return config;

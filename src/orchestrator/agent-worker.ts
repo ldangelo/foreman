@@ -268,12 +268,14 @@ interface WorkerConfig {
    */
   taskMeta?: TaskMeta;
   /**
-   * Stable directory for phase artifacts (PRD, TRD, reports).
-   * Computed as join(worktreePath, '.foreman', 'reports').
-   * Skill phases write here so skipIfArtifact works and downstream phases
-   * can locate prior outputs by seedId.
+   * Directory guardrail config (FR-1). When set, wraps tool factories with
+   * cwd verification in the Pi SDK session.
    */
-  projectReportsDir?: string;
+  guardrailConfig?: {
+    mode?: "auto-correct" | "veto" | "disabled";
+    expectedCwd?: string;
+    allowedPaths?: string[];
+  };
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -581,6 +583,11 @@ async function runPhase(
           timestamp: new Date().toISOString(),
         });
       },
+      // FR-1: Directory guardrail — verify cwd before each tool call
+      guardrailConfig: config.guardrailConfig ? {
+        ...config.guardrailConfig,
+        expectedCwd: config.guardrailConfig.expectedCwd ?? config.worktreePath,
+      } : undefined,
     });
 
     progress.costUsd += phaseResult.costUsd;

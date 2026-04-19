@@ -28,6 +28,7 @@ import {
   type AgentSessionEvent,
   type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
+import { createDirectoryGuardrail, wrapToolWithGuardrail, type GuardrailConfig } from "./guardrails.js";
 import { getModel } from "@mariozechner/pi-ai";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -62,17 +63,8 @@ export interface PiRunOptions {
   onTurnEnd?: (turn: number) => void;
   /** Called with text deltas as the assistant streams output. */
   onText?: (text: string) => void;
-  /** Directory guardrail config. When set, wraps tool factories with cwd verification. */
-  guardrailConfig?: DirectoryGuardrailConfig;
-}
-
-export interface DirectoryGuardrailConfig {
-  /** Guardrail enforcement mode. Default: `auto-correct`. */
-  mode?: "auto-correct" | "veto" | "disabled";
-  /** Expected working directory for this agent session. */
-  expectedCwd: string;
-  /** Optional list of allowed path prefixes. */
-  allowedPaths?: string[];
+  /** Directory guardrail config. When set, wraps tool factories with cwd verification (FR-1). */
+  guardrailConfig?: GuardrailConfig;
 }
 
 // ── Tool name → factory mapping ─────────────────────────────────────────
@@ -94,11 +86,40 @@ const TOOL_FACTORIES: Record<string, ToolFactory> = {
  * Build the tool array from allowed tool names.
  * Unknown names are silently skipped (they may be custom tools registered separately).
  */
-function buildTools(allowedNames: readonly string[], cwd: string) {
+function buildTools(
+  allowedNames: readonly string[],
+  cwd: string,
+  guardrailConfig?: GuardrailConfig,
+) {
   const tools = [];
+
+  // If guardrail config is provided, create a pre-tool hook and wrap factories
+  const guardrailHook = guardrailConfig
+    ? createDirectoryGuardrail(
+        guardrailConfig,
+        // Use a no-op logger in pi-sdk-runner since store.logEvent isn't available here.
+        // The guardrail-corrected/veto events are still emitted via the hook's return value.
+        (_eventType: string, _details: Record<string, unknown>) => { /* no-op in pi-sdk context */ },
+        "pi-sdk-runner",
+        "",
+      )
+    : null;
+
   for (const name of allowedNames) {
     const factory = TOOL_FACTORIES[name];
-    if (factory) tools.push(factory(cwd));
+    if (!factory) continue;
+
+    if (guardrailHook) {
+      // Wrap the factory with guardrail — intercepts tool calls before execution
+      const wrappedFactory = wrapToolWithGuardrail(
+        factory as (...args: unknown[]) => unknown,
+        guardrailHook,
+        () => process.cwd(),
+      );
+      tools.push(wrappedFactory(cwd));
+    } else {
+      tools.push(factory(cwd));
+    }
   }
   return tools;
 }
@@ -135,8 +156,8 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
 
   // Build tool set from allowed names
   const tools = opts.allowedTools
-    ? buildTools(opts.allowedTools, opts.cwd)
-    : buildTools(["Read", "Bash", "Edit", "Write", "Grep", "Find", "LS"], opts.cwd);
+    ? buildTools(opts.allowedTools, opts.cwd, opts.guardrailConfig)
+    : buildTools(["Read", "Bash", "Edit", "Write", "Grep", "Find", "LS"], opts.cwd, opts.guardrailConfig);
 
   // Accumulators
   let totalTurns = 0;
