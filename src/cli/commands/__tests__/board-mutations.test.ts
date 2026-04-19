@@ -240,7 +240,7 @@ describe("BoardMutations", () => {
     });
 
     it("should reject YAML without id", () => {
-      const invalidYaml = {
+      const invalidYaml: Record<string, unknown> = {
         title: "No ID Task",
         description: "Description",
       };
@@ -250,7 +250,7 @@ describe("BoardMutations", () => {
     });
 
     it("should reject YAML without title", () => {
-      const invalidYaml = {
+      const invalidYaml: Record<string, unknown> = {
         id: "bd-1234",
         description: "Description",
       };
@@ -414,7 +414,8 @@ describe("BoardMutations", () => {
     });
 
     it("should handle non-Error objects", () => {
-      const errorMessage = String({ code: "ERR_123", details: "Something went wrong" });
+      const err = { code: "ERR_123", details: "Something went wrong" };
+      const errorMessage = err instanceof Error ? err.message : JSON.stringify(err);
 
       expect(errorMessage).toContain("ERR_123");
     });

@@ -92,12 +92,14 @@ describe("BoardRendering", () => {
   describe("renderTaskCard", () => {
     it("should render task title correctly", () => {
       const task = createTask("bd-1234", { title: "Implement feature X" });
+      // MIN_COL_WIDTH - 4 = 8, MIN_COL_WIDTH - 7 = 5
+      // Truncated to 5 chars + "…"
       const truncatedTitle =
         task.title.length > MIN_COL_WIDTH - 4
           ? task.title.slice(0, MIN_COL_WIDTH - 7) + "…"
           : task.title;
 
-      expect(truncatedTitle).toBe("Implement f…");
+      expect(truncatedTitle).toBe("Imple…");
     });
 
     it("should not truncate short titles", () => {
