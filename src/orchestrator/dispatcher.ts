@@ -1699,14 +1699,13 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     const spawnEnv: Record<string, string | undefined> = { ...config.env };
     delete spawnEnv.CLAUDECODE;
 
-    // Spawn from the project root (where dist/ and node_modules/ live),
-    // not the worktree. The worktree path is passed in config and used by
-    // the agent for git operations. tsx resolves imports relative to the
-    // script's location, but ESM resolution still checks cwd for some paths.
+    // Spawn with cwd = worktree. The agent works from the worktree, so npm ci,
+    // npm run build, npm test, and git operations all target the correct tree.
+    // runnerArgs uses absolute paths to agent-worker.ts so this works regardless of cwd.
     const child = spawn(tsxBin, [...runnerArgs, configPath], {
       detached: true,
       stdio: ["ignore", outFd.fd, errFd.fd],
-      cwd: projectRoot,
+      cwd: config.worktreePath,
       env: spawnEnv,
     });
 
