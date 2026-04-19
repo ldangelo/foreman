@@ -225,23 +225,26 @@ export function renderBoard(
   lines.push("  " + colNumbers.join(chalk.dim("   ")));
   lines.push("");
 
-  // ── Task columns ──────────────────────────────────────────────────────────
+  // ── Build columns side-by-side ─────────────────────────────────────────────
   const numCols = BOARD_STATUSES.length;
-  const colWidth = Math.max(MIN_COL_WIDTH, Math.floor((terminalWidth - 4) / numCols));
-  const columnHeights: number[] = [];
+  const colWidth = Math.max(MIN_COL_WIDTH, Math.floor((terminalWidth - numCols) / numCols));
+
+  // Build column content as arrays of lines
+  const columnContent: string[][] = [];
+  let maxHeight = 0;
 
   for (let ci = 0; ci < numCols; ci++) {
     const status = BOARD_STATUSES[ci];
     const tasks = state.tasks.get(status) ?? [];
     const isNavCol = ci === state.nav.colIndex;
-    columnHeights.push(tasks.length);
+    const colLines: string[] = [];
 
     // Column header
     const countStr = tasks.length === 0
       ? chalk.dim("(empty)")
       : chalk.white(`${tasks.length}`);
     const headerText = `${STATUS_LABELS[status]} ${chalk.dim("(")}${countStr}${chalk.dim(")")}`;
-    lines.push(`  ${chalk.underline(headerText)}`);
+    colLines.push(chalk.underline(headerText).padEnd(colWidth));
 
     // Task cards
     const visibleTasks = tasks.slice(0, MAX_VISIBLE_PER_COL);
@@ -253,23 +256,35 @@ export function renderBoard(
 
       if (task) {
         const isFlash = task.id === state.flashTaskId;
-        const cardLines = renderTaskCard(task, colWidth, isNavRow, isFlash, state.showDetail && state.detailTask?.id === task.id);
-        for (const line of cardLines) {
-          lines.push(line);
+        const cardLines = renderTaskCard(task, colWidth, isNavRow, isFlash, false);
+        for (const cardLine of cardLines) {
+          colLines.push(cardLine.padEnd(colWidth));
+        }
+        // Pad if card has fewer lines than expected
+        while (cardLines.length < TASK_CARD_HEIGHT) {
+          colLines.push(" ".repeat(colWidth));
+          break; // Only need one pad line since cards are ~2-5 lines
         }
       } else {
         // Empty slot
-        const emptyLine = "  " + " ".repeat(colWidth);
-        lines.push(emptyLine);
+        colLines.push(" ".repeat(colWidth));
       }
     }
 
     // "+N more" indicator
     if (extraCount > 0) {
-      lines.push(`  ${chalk.dim(`+${extraCount} more`)}`);
+      colLines.push(chalk.dim(`+${extraCount} more`).padEnd(colWidth));
     }
 
-    lines.push(""); // gap between columns
+    columnContent.push(colLines);
+    maxHeight = Math.max(maxHeight, colLines.length);
+  }
+
+  // Render columns side-by-side row by row
+  const SEP = chalk.dim(" │ ");
+  for (let row = 0; row < maxHeight; row++) {
+    const cells = columnContent.map(col => col[row] ?? "".padEnd(colWidth));
+    lines.push("  " + cells.join(SEP));
   }
 
   // ── Footer ────────────────────────────────────────────────────────────────
