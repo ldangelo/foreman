@@ -62,6 +62,17 @@ export interface PiRunOptions {
   onTurnEnd?: (turn: number) => void;
   /** Called with text deltas as the assistant streams output. */
   onText?: (text: string) => void;
+  /** Directory guardrail config. When set, wraps tool factories with cwd verification. */
+  guardrailConfig?: DirectoryGuardrailConfig;
+}
+
+export interface DirectoryGuardrailConfig {
+  /** Guardrail enforcement mode. Default: `auto-correct`. */
+  mode?: "auto-correct" | "veto" | "disabled";
+  /** Expected working directory for this agent session. */
+  expectedCwd: string;
+  /** Optional list of allowed path prefixes. */
+  allowedPaths?: string[];
 }
 
 // ── Tool name → factory mapping ─────────────────────────────────────────
