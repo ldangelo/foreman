@@ -1241,7 +1241,10 @@ export class Dispatcher {
         description: seed.description ?? '',
         type: seed.type ?? '',
         priority: typeof seed.priority === 'number' ? seed.priority : 2,
+        // docs/reports/ is versioned with the worktree — reports commit with code.
+        projectReportsDir: join(worktreePath, 'docs', 'reports'),
       },
+      projectReportsDir: join(worktreePath, 'docs', 'reports'),
     });
 
     return { sessionKey };
@@ -1631,6 +1634,12 @@ export interface WorkerConfig {
    * Populated from the bead/seed that triggered this run.
    */
   taskMeta?: TaskMeta;
+  /**
+   * Stable directory for phase artifacts (PRD, TRD, reports).
+   * Computed as join(worktreePath, 'docs', 'reports') — versioned with the worktree.
+   * Skills write artifacts here so they are committed along with code changes.
+   */
+  projectReportsDir?: string;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

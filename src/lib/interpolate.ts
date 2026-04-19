@@ -7,9 +7,15 @@ export interface TaskMeta {
   description: string;
   type: string;
   priority: number;
+  /**
+   * Stable directory for phase artifacts (PRD, TRD, reports).
+   * Computed as join(worktreePath, 'docs', 'reports').
+   * Skills write artifacts here so they are versioned with the worktree.
+   */
+  projectReportsDir?: string;
 }
 
-const SUPPORTED_KEYS = new Set<keyof TaskMeta>(['id', 'title', 'description', 'type', 'priority']);
+const SUPPORTED_KEYS = new Set<keyof TaskMeta>(['id', 'title', 'description', 'type', 'priority', 'projectReportsDir']);
 
 /**
  * Interpolate `{task.*}` placeholders in a template string with values from task metadata.
