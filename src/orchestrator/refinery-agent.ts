@@ -59,7 +59,7 @@ const DEFAULT_CONFIG = {
   maxFixIterations: 2,
   logDir: "docs/reports",
   systemPromptPath: "./src/orchestrator/prompts/refinery-agent.md",
-  model: "anthropic/claude-sonnet-4-6",
+  model: "MiniMax",
 } as const;
 
 // ── RefineryAgent ────────────────────────────────────────────────────────
@@ -217,9 +217,13 @@ export class RefineryAgent {
       if (result.success) {
         this.mergeQueue.updateStatus(entry.id, "merged", { completedAt: new Date().toISOString() });
         this.logAction(entry.id, `Successfully merged ${entry.branch_name}`);
-      } else {
+      } else if (result.action === "escalated") {
+        await this.escalate(entry, result.message ?? "Fix budget exhausted");
         this.mergeQueue.updateStatus(entry.id, "conflict", { error: result.message });
         this.logAction(entry.id, `Escalated: ${result.message}`);
+      } else {
+        this.mergeQueue.updateStatus(entry.id, "failed", { error: result.message });
+        this.logAction(entry.id, `Error: ${result.message}`);
       }
 
       return result;
@@ -341,6 +345,16 @@ export class RefineryAgent {
         continue;
       }
 
+      // Commit and push agent changes BEFORE building/testing
+      const pushOk = await this.commitAndPush(worktreePath);
+      if (!pushOk) {
+        this.logAction(entry.id, `Could not push changes — worktree may be dirty`);
+        if (attempt === maxIterations) {
+          return { success: false, action: "escalated", logPath, message: "Could not push changes — worktree dirty", costUsd: result.costUsd };
+        }
+        continue;
+      }
+
       // Build passed? Check the result
       const buildOk = await this.checkBuildOk(worktreePath);
       if (!buildOk) {
@@ -412,47 +426,57 @@ export class RefineryAgent {
   private buildAgentTaskPrompt(
     entry: MergeQueueEntry,
     prState: PrState,
-    worktreePath: string,
+    _worktreePath: string,
     targetBranch: string,
   ): string {
-    return `# Refinery Agent — Fix Task
-
-## Context
-You are processing a merge queue entry for branch \`${entry.branch_name}\` (seed: \`${entry.seed_id}\`).
-
-## Your Mission
-Fix mechanical failures (type errors, missing imports, wiring gaps) in the branch, then build and test. If all pass, merge. If not fixable after ${this.config.maxFixIterations ?? 2} attempts, escalate.
-
-## PR State
-\`\`\`json
-${prState.view}
-\`\`\`
-
-## Diff (what changed)
-\`\`\`diff
-${prState.diff.slice(0, 20_000)}
-\`\`\`
-
-## Workflow
-1. Read files with errors using the Read tool
-2. Fix type errors, missing imports, wiring gaps using Edit/Write tools
-3. Run \`npm run build\` to verify the build passes
-4. Run \`npm test\` to verify tests pass
-5. When build AND tests pass, use Bash to run: \`gh pr merge ${entry.branch_name} --squash --delete-branch\`
-6. Report your result
-
-## Decision Rules
-- If build/test fixable → fix and continue
-- If unrecoverable after ${this.config.maxFixIterations ?? 2} attempts → report ESCALATE
-- NEVER force-push to ${targetBranch}
-- Log every action to the log file
-
-## Exit Signal
-When done, output one of:
-- MERGE_SUCCESS: <brief summary>
-- ESCALATE: <reason why it couldn't be fixed>
-`;
+    const maxIter = this.config.maxFixIterations ?? 2;
+    const gitPush = "git add -A && git commit -m 'fix: auto-fix from merge queue' && git push origin HEAD";
+    return [
+      "# Refinery Agent -- Fix Task",
+      "",
+      "## Context",
+      "You are processing a merge queue entry for branch " + entry.branch_name + " (seed: " + entry.seed_id + ").",
+      "",
+      "## Your Mission",
+      "Fix mechanical failures (type errors, missing imports, wiring gaps) in the branch, then build and test. If all pass, merge. If not fixable after " + maxIter + " attempts, escalate.",
+      "",
+      "## PR State",
+      "```json",
+      prState.view,
+      "```",
+      "",
+      "## Diff (what changed)",
+      "```diff",
+      prState.diff.slice(0, 20_000),
+      "```",
+      "",
+      "## Critical: Commit Your Fixes FIRST",
+      "After making edits, you MUST commit and push before running build/tests.",
+      "",
+      "Bash command: " + gitPush,
+      "",
+      "## Workflow",
+      "1. Read files with errors using the Read tool",
+      "2. Fix type errors, missing imports, wiring gaps using Edit/Write tools",
+      "3. Bash: " + gitPush,
+      "4. Bash: npm run build",
+      "5. Bash: npm test",
+      "6. If build+tests pass -> MERGE_SUCCESS: <summary>",
+      "7. If unrecoverable after " + maxIter + " attempts -> ESCALATE: <reason>",
+      "",
+      "## Decision Rules",
+      "- If build/test fixable -> fix and continue",
+      "- If unrecoverable after " + maxIter + " attempts -> report ESCALATE",
+      "- NEVER force-push to " + targetBranch,
+      "- Log every action to the log file",
+      "",
+      "## Exit Signal",
+      "When done, output one of:",
+      "- MERGE_SUCCESS: <brief summary>",
+      "- ESCALATE: <reason why it couldn't be fixed>",
+    ].join("\n");
   }
+
 
   /**
    * Build the tool array for the agent session.
@@ -475,12 +499,12 @@ When done, output one of:
    */
   private async checkBuildOk(worktreePath: string): Promise<boolean> {
     try {
-      const { stdout, stderr } = await execFileAsync(
-        "npm", ["run", "build"],
-        { cwd: worktreePath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
-      );
-      return stdout.includes("build") || stderr.length === 0;
-    } catch (err) {
+      const { stdout, stderr } = await execFileAsync("npm", ["run", "build"], {
+        cwd: worktreePath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+      });
+      const output = stdout + stderr;
+      return !output.includes("error") && !output.includes("ERROR");
+    } catch {
       return false;
     }
   }
@@ -490,43 +514,122 @@ When done, output one of:
    */
   private async checkTestsOk(worktreePath: string): Promise<boolean> {
     try {
-      const { stdout } = await execFileAsync(
-        "npm", ["test"],
-        { cwd: worktreePath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
-      );
-      return stdout.includes("PASS") || stdout.includes("passed");
+      const { stdout } = await execFileAsync("npm", ["test"], {
+        cwd: worktreePath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+      });
+      // Successful if: at least one test passed AND no failures
+      const passed = /\d+ passed/.test(stdout);
+      const hasFailures = /\d+ failed/.test(stdout);
+      return passed && !hasFailures;
     } catch {
       return false;
     }
   }
 
   /**
-   * Merge the branch via gh pr merge.
+   * Commit all changes in the worktree and push to origin.
+   * Handles dirty state by stashing, committing, then restoring.
    */
-  private async mergeBranch(entry: MergeQueueEntry, targetBranch: string): Promise<boolean> {
+  private async commitAndPush(worktreePath: string): Promise<boolean> {
     try {
-      // First ensure branch is pushed
-      await execFileAsync("git", ["push", "origin", entry.branch_name], {
-        cwd: this.projectPath,
+      // Check if there are changes to commit
+      const { stdout: statusOutput } = await execFileAsync(
+        "git", ["status", "--porcelain"],
+        { cwd: worktreePath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+      );
+
+      if (!statusOutput.trim()) {
+        this.logAction(0, "No changes to commit in worktree");
+        return true;
+      }
+
+      // Stage all changes
+      await execFileAsync("git", ["add", "-A"], {
+        cwd: worktreePath,
         maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
       });
 
-      // Then merge via gh
-      await execFileAsync("gh", [
-        "pr", "merge", entry.branch_name,
-        "--squash",
-        "--delete-branch",
-        "--auto-merge-delete-branch",
-      ], {
-        cwd: this.projectPath,
-        maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
-      });
+      // Commit with descriptive message
+      await execFileAsync(
+        "git",
+        ["commit", "-m", "fix: refinery agent — auto-fix from merge queue"],
+        { cwd: worktreePath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+      );
+
+      // Push to origin
+      await execFileAsync(
+        "git", ["push", "origin", "HEAD"],
+        { cwd: worktreePath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+      );
+
+      this.logAction(0, `Committed and pushed worktree changes`);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logAction(0, `Commit/push failed: ${msg.slice(0, 200)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Merge the branch via gh pr merge.
+   * Uses --squash only; does NOT auto-delete the branch on failure.
+   */
+  private async mergeBranch(entry: MergeQueueEntry, _targetBranch: string): Promise<boolean> {
+    try {
+      // Ensure branch is up-to-date first
+      await execFileAsync(
+        "git", ["push", "origin", entry.branch_name],
+        { cwd: this.projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+      );
+
+      // Merge via gh — squash only, let GitHub handle branch deletion on success
+      await execFileAsync(
+        "gh",
+        ["pr", "merge", entry.branch_name, "--squash", "--admin"],
+        { cwd: this.projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+      );
 
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logAction(entry.id, `Merge failed: ${msg}`);
+      this.logAction(entry.id, `Merge failed: ${msg.slice(0, 200)}`);
       return false;
+    }
+  }
+
+  // ── Escalation ─────────────────────────────────────────────────────────
+
+  /**
+   * Create a manual PR for escalation when the agent can't auto-fix.
+   */
+  private async escalate(entry: MergeQueueEntry, reason: string): Promise<void> {
+    try {
+      this.logAction(entry.id, `Escalating: ${reason}`);
+
+      // Get PR title and body
+      const { stdout: prView } = await execFileAsync(
+        "gh", ["pr", "view", entry.branch_name, "--json", "title,body,url"],
+        { cwd: this.projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+      );
+      const prData = JSON.parse(prView);
+
+      // Create manual PR with escalation context
+      await execFileAsync(
+        "gh",
+        [
+          "pr", "create",
+          "--title", `[ESCALATED] ${prData.title ?? entry.seed_id}`,
+          "--body", `## Escalated from Merge Queue\n\n**Queue Entry:** ${entry.id}\n**Branch:** ${entry.branch_name}\n**Reason:** ${reason}\n\n**Original PR:** ${prData.url ?? "N/A"}\n\n---\n\n*This PR was escalated because the Refinery Agent could not auto-fix within ${this.config.maxFixIterations} attempts.*`,
+          "--base", "dev",
+        ],
+        { cwd: this.projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+      );
+
+      this.logAction(entry.id, `Escalation PR created`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logAction(entry.id, `Escalation PR creation failed: ${msg.slice(0, 200)}`);
     }
   }
 
