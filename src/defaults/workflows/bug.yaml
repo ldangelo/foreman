@@ -40,7 +40,7 @@ phases:
   # {task.*} placeholders are interpolated before execution.
   # Artifact is written from stdout; verdict is parsed from output.
   - name: test
-    bash: "npm run test:unit"
+    bash: "npm run test"
     artifact: TEST_RESULTS.md
     verdict: true
     retryWith: fix

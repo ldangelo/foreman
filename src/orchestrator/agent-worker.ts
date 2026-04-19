@@ -1040,17 +1040,22 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
 
               // Trigger autoMerge immediately so the branch is merged even if
               // `foreman run` is no longer active (fixes: bd-0qv2).
+              //
+              // FIX: Use the existing `store` instance instead of creating a new
+              // ForemanStore. The new store opened a separate SQLite connection, and
+              // due to SQLite's connection isolation, the 'completed' status written
+              // by `store.updateRun()` on line 992 was not visible to the new
+              // connection's reconcile query — causing "No completed run found" errors.
+              // Using the same store instance eliminates this race condition.
               try {
-                const mergeStore = ForemanStore.forProject(pipelineProjectPath);
                 const mergeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
                 log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}${config.targetBranch ? ` → ${config.targetBranch}` : ""}`);
                 const mergeResult = await autoMerge({
-                  store: mergeStore,
+                  store: store,
                   taskClient: mergeTaskClient,
                   projectPath: pipelineProjectPath,
                   targetBranch: config.targetBranch,
                 });
-                mergeStore.close();
                 log(`[FINALIZE] autoMerge result: merged=${mergeResult.merged} conflicts=${mergeResult.conflicts} failed=${mergeResult.failed}`);
               } catch (mergeErr: unknown) {
                 const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);

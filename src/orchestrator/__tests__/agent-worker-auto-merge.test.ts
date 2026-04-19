@@ -48,15 +48,18 @@ describe("agent-worker.ts — autoMerge integration (bd-0qv2)", () => {
     expect(source).toContain("autoMerge failed (non-fatal):");
   });
 
-  it("creates a fresh ForemanStore for the autoMerge call", () => {
-    // Should use mergeStore (created via ForemanStore.forProject) for the autoMerge call
-    expect(source).toContain("mergeStore");
-    expect(source).toContain("store: mergeStore");
+  it("passes the existing store to autoMerge (fixes race condition)", () => {
+    // Should use the existing `store` instance to avoid SQLite connection isolation issues.
+    // The race condition: creating a new ForemanStore opened a separate SQLite connection,
+    // and the 'completed' status written by `store.updateRun()` was not visible to the
+    // new connection's reconcile query — causing "No completed run found" errors.
+    expect(source).toContain("store: store");
   });
 
-  it("closes the merge store after autoMerge completes", () => {
-    // Store should be closed to avoid connection leaks
-    expect(source).toContain("mergeStore.close()");
+  it("does NOT create a separate mergeStore for autoMerge", () => {
+    // Using a separate mergeStore caused race conditions with SQLite connection isolation.
+    // The fix is to use the existing store that already wrote the 'completed' status.
+    expect(source).not.toContain("const mergeStore = ForemanStore.forProject");
   });
 });
 
