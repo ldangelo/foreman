@@ -251,6 +251,21 @@ export class Refinery {
     }
   }
 
+  private async getExistingPrState(branchName: string): Promise<{ state: string; headRefName?: string; url?: string } | null> {
+    try {
+      const prRaw = await gh(["pr", "view", branchName, "--json", "state,headRefName,url", "--jq", "."], this.projectPath);
+      const parsed = JSON.parse(prRaw) as { state?: string; headRefName?: string; url?: string };
+      if (!parsed.state) return null;
+      return {
+        state: parsed.state,
+        headRefName: parsed.headRefName,
+        url: parsed.url,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   private async finalizeSuccessfulMerge(run: import("../lib/store.js").Run, branchName: string, targetBranch: string): Promise<void> {
     if (run.worktree_path) {
       try {
@@ -313,18 +328,29 @@ export class Refinery {
     }
 
     if (opts.existingOk !== false && !this.isTestRuntime()) {
-      const existingPrUrl = await this.getExistingPrUrl(branchName);
-      if (existingPrUrl) {
+      const existingPr = await this.getExistingPrState(branchName);
+      if (existingPr?.headRefName === branchName && existingPr.url) {
+        if (existingPr.state === "CLOSED") {
+          await gh(["pr", "reopen", branchName], this.projectPath);
+        }
         this.store.logEvent(
           run.project_id,
           "pr-created",
-          { seedId: run.seed_id, branchName, baseBranch, prUrl: existingPrUrl, existing: true, draft: opts.draft ?? false },
+          {
+            seedId: run.seed_id,
+            branchName,
+            baseBranch,
+            prUrl: existingPr.url,
+            existing: true,
+            reopened: existingPr.state === "CLOSED",
+            draft: opts.draft ?? false,
+          },
           run.id,
         );
         if (opts.updateRunStatus) {
           this.store.updateRun(run.id, { status: "pr-created" });
         }
-        return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPrUrl };
+        return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPr.url };
       }
     }
 

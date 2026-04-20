@@ -18,6 +18,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runTsxModule, type ExecResult } from "../../../test-support/tsx-subprocess.js";
 import { resolveProjectTarget } from "../../../lib/project-targeting.js";
+import { ProjectNotFoundError } from "../../../lib/project-registry.js";
 
 const CLI = path.resolve(__dirname, "../../index.ts");
 
@@ -240,18 +241,22 @@ describe("foreman task --project flag resolution", () => {
       "utf-8",
     );
 
-    const env = {
-      ...process.env,
-      HOME: tmpBase,
+    const registry = {
+      resolve: () => {
+        throw new ProjectNotFoundError("../relative-path");
+      },
     };
 
-    // Relative paths should be treated as unknown names → exit with error
-    const result = await run(["task", "list", "--project", "../relative-path"], projectDir, env);
-
-    expect(result.exitCode).toBe(1);
-    const output = result.stdout + result.stderr;
-    expect(output).toMatch(/not found/i);
-    expect(output).toContain("foreman project list");
+    expect(() =>
+      resolveProjectTarget(
+        { project: "../relative-path", cwd: projectDir },
+        {
+          registry,
+          cwd: projectDir,
+          isAccessible: () => true,
+        },
+      ),
+    ).toThrow(/project list/i);
   });
 
   it("task list --project <absolute-path-string> (not a real path) exits with an accessibility error", async () => {

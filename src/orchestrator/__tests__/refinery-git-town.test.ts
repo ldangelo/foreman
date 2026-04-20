@@ -227,6 +227,60 @@ describe("MQ-T058d: PR creation strategy decision", () => {
     });
   });
 
+  describe("Refinery.ensurePullRequestForRun() reuses existing PRs correctly", () => {
+    it("reopens a closed PR when reusing the same branch", async () => {
+      const { store, refinery } = createTestRefinery();
+      const run = makeRun({ id: "run-77", seed_id: "seed-reopen" });
+      store.getRun.mockReturnValue(run);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+          (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+            if (cmd === "git") {
+              callback(null, { stdout: "", stderr: "" });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+              callback(null, {
+                stdout: JSON.stringify({
+                  state: "CLOSED",
+                  headRefName: "foreman/seed-reopen",
+                  url: "https://github.com/org/repo/pull/77",
+                }),
+                stderr: "",
+              });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "reopen") {
+              callback(null, { stdout: "", stderr: "" });
+              return;
+            }
+            callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+          },
+        );
+
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-77", baseBranch: "main" });
+
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/77");
+        const calls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls;
+        const reopenCall = calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "reopen",
+        );
+        expect(reopenCall).toBeDefined();
+        expect(store.logEvent).toHaveBeenCalledWith(
+          "proj-1",
+          "pr-created",
+          expect.objectContaining({ existing: true, reopened: true, prUrl: "https://github.com/org/repo/pull/77" }),
+          "run-77",
+        );
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+  });
+
   describe("Decision rationale documentation", () => {
     it("documents that git town propose is unsuitable for automation", () => {
       // This test serves as living documentation of the MQ-T058d findings.
