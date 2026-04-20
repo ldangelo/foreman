@@ -512,6 +512,7 @@ function makeMergeQueueEntry(
     branch_name: "foreman/bd-abc",
     seed_id: "bd-abc",
     run_id: "run-1",
+    operation: "auto_merge",
     agent_name: null,
     files_modified: [],
     enqueued_at: new Date().toISOString(),

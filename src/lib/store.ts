@@ -357,6 +357,7 @@ CREATE TABLE IF NOT EXISTS merge_queue (
   branch_name TEXT NOT NULL,
   seed_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
+  operation TEXT NOT NULL DEFAULT 'auto_merge',
   agent_name TEXT,
   files_modified TEXT DEFAULT '[]',
   enqueued_at TEXT NOT NULL,
@@ -554,6 +555,7 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS idx_sentinel_runs_project ON sentinel_runs (project_id, started_at DESC)`,
   `ALTER TABLE merge_queue ADD COLUMN retry_count INTEGER DEFAULT 0`,
   `ALTER TABLE merge_queue ADD COLUMN last_attempted_at TEXT DEFAULT NULL`,
+  `ALTER TABLE merge_queue ADD COLUMN operation TEXT DEFAULT 'auto_merge'`,
   `CREATE TABLE IF NOT EXISTS merge_agent_config (
     id TEXT PRIMARY KEY DEFAULT 'default',
     enabled INTEGER NOT NULL DEFAULT 1,

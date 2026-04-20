@@ -6,12 +6,14 @@ import type { VcsBackend } from "../lib/vcs/interface.js";
 // ── Types ──────────────────────────────────────────────────────────────
 
 export type MergeQueueStatus = "pending" | "merging" | "merged" | "conflict" | "failed";
+export type MergeQueueOperation = "auto_merge" | "create_pr";
 
 export interface MergeQueueEntry {
   id: number;
   branch_name: string;
   seed_id: string;
   run_id: string;
+  operation: MergeQueueOperation;
   agent_name: string | null;
   files_modified: string[];
   enqueued_at: string;
@@ -30,6 +32,7 @@ interface MergeQueueRow {
   branch_name: string;
   seed_id: string;
   run_id: string;
+  operation: MergeQueueOperation;
   agent_name: string | null;
   files_modified: string;
   enqueued_at: string;
@@ -46,6 +49,7 @@ interface EnqueueInput {
   branchName: string;
   seedId: string;
   runId: string;
+  operation?: MergeQueueOperation;
   agentName?: string;
   filesModified?: string[];
 }
@@ -98,12 +102,16 @@ export class MergeQueue {
     this.db = db;
   }
 
+  private isTerminalStatus(status: MergeQueueStatus): boolean {
+    return status === "merged" || status === "conflict" || status === "failed";
+  }
+
   /**
    * Add a branch to the merge queue.
    * Idempotent: if the same branch_name+run_id already exists, return the existing entry.
    */
   enqueue(input: EnqueueInput): MergeQueueEntry {
-    const { branchName, seedId, runId, agentName, filesModified } = input;
+    const { branchName, seedId, runId, operation = "auto_merge", agentName, filesModified } = input;
 
     // Check for existing entry (idempotency)
     const existing = this.db
@@ -119,11 +127,11 @@ export class MergeQueue {
 
     const row = this.db
       .prepare(
-        `INSERT INTO merge_queue (branch_name, seed_id, run_id, agent_name, files_modified, enqueued_at, status)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending')
+        `INSERT INTO merge_queue (branch_name, seed_id, run_id, operation, agent_name, files_modified, enqueued_at, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
          RETURNING *`
       )
-      .get(branchName, seedId, runId, agentName ?? null, filesJson, now) as MergeQueueRow;
+      .get(branchName, seedId, runId, operation, agentName ?? null, filesJson, now) as MergeQueueRow;
 
     return rowToEntry(row);
   }
@@ -190,6 +198,18 @@ export class MergeQueue {
     status: MergeQueueStatus,
     extra?: { resolvedTier?: number; error?: string; completedAt?: string; lastAttemptedAt?: string; retryCount?: number }
   ): void {
+    const current = this.db
+      .prepare("SELECT status FROM merge_queue WHERE id = ?")
+      .get(id) as { status: MergeQueueStatus } | undefined;
+
+    if (!current) {
+      return;
+    }
+
+    if (this.isTerminalStatus(current.status) && current.status !== status) {
+      return;
+    }
+
     const fields = ["status = ?"];
     const params: unknown[] = [status];
 
@@ -361,7 +381,7 @@ export class MergeQueue {
     // Get all completed runs
     const completedRuns = db
       .prepare("SELECT * FROM runs WHERE status = 'completed' ORDER BY created_at ASC")
-      .all() as Array<{ id: string; seed_id: string }>;
+      .all() as Array<{ id: string; seed_id: string; merge_strategy?: "auto" | "pr" | "none" | null }>;
 
     // Get all run_ids AND seed_ids already in merge_queue.
     // Dedup by seed_id so that sentinel-created duplicate completed runs for
@@ -391,6 +411,11 @@ export class MergeQueue {
         continue;
       }
 
+      if (run.merge_strategy === "none") {
+        skipped++;
+        continue;
+      }
+
       const branchName = `foreman/${run.seed_id}`;
 
       // Validate branch exists via VcsBackend
@@ -412,6 +437,7 @@ export class MergeQueue {
         branchName,
         seedId: run.seed_id,
         runId: run.id,
+        operation: run.merge_strategy === "pr" ? "create_pr" : "auto_merge",
         filesModified,
       });
       // Track newly enqueued seed so further duplicates in this batch are skipped

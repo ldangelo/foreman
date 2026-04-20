@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS merge_queue (
   branch_name TEXT NOT NULL,
   seed_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
+  operation TEXT NOT NULL DEFAULT 'auto_merge',
   agent_name TEXT,
   files_modified TEXT DEFAULT '[]',
   enqueued_at TEXT NOT NULL,
@@ -105,6 +106,7 @@ describe("enqueueToMergeQueue", () => {
     expect(result.entry!.branch_name).toBe("foreman/seed-1");
     expect(result.entry!.seed_id).toBe("seed-1");
     expect(result.entry!.run_id).toBe("run-1");
+    expect(result.entry!.operation).toBe("auto_merge");
     expect(result.entry!.agent_name).toBe("pipeline");
     expect(result.entry!.files_modified).toEqual(["src/foo.ts", "src/bar.ts", "test/foo.test.ts"]);
     expect(result.entry!.status).toBe("pending");
@@ -204,5 +206,20 @@ describe("enqueueToMergeQueue", () => {
     // Verify only one entry in the queue
     const queue = new MergeQueue(db);
     expect(queue.list()).toHaveLength(1);
+  });
+
+  it("stores create_pr operation when requested", () => {
+    const result = enqueueToMergeQueue({
+      db,
+      seedId: "seed-1",
+      runId: "run-1",
+      operation: "create_pr",
+      worktreePath: "/tmp/test-worktree",
+      getFilesModified: () => ["src/foo.ts"],
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.entry!.operation).toBe("create_pr");
+    expect(new MergeQueue(db).list()[0]!.operation).toBe("create_pr");
   });
 });

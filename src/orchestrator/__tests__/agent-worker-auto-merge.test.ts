@@ -1,9 +1,8 @@
 /**
  * agent-worker-auto-merge.test.ts
  *
- * Verifies that agent-worker.ts triggers autoMerge() immediately after
- * a successful pipeline finalize (fixing bd-0qv2: merges sat in the queue
- * until foreman run was manually run again).
+ * Verifies that agent-worker.ts enqueues merge intent after finalize and
+ * leaves merge execution to the merge queue processor.
  *
  * These are structural/source-level tests that verify the wiring without
  * spawning real subprocesses or making API calls.
@@ -17,67 +16,26 @@ const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
 const AUTO_MERGE_SRC = join(PROJECT_ROOT, "src", "orchestrator", "auto-merge.ts");
 
-describe("agent-worker.ts — autoMerge integration (bd-0qv2)", () => {
+describe("agent-worker.ts — merge queue handoff", () => {
   const source = readFileSync(WORKER_SRC, "utf-8");
-
-  it("imports autoMerge from auto-merge.js", () => {
-    expect(source).toContain('from "./auto-merge.js"');
-    expect(source).toContain("autoMerge");
-  });
 
   it("imports the shared task-client factory for runtime backend selection", () => {
     expect(source).toContain('from "../lib/task-client-factory.js"');
     expect(source).toContain("createTaskClient");
   });
 
-  it("calls autoMerge inside onPipelineComplete after successful enqueue", () => {
-    // The autoMerge call must happen inside the success branch (after enqueueResult.success check)
-    expect(source).toContain("await autoMerge(");
+  it("does not invoke autoMerge directly from finalize anymore", () => {
+    expect(source).not.toContain("await autoMerge(");
+    expect(source).not.toContain("autoMerge result: merged=");
   });
 
-  it("creates a runtime task client helper for the autoMerge task client", () => {
-    expect(source).toContain("createRuntimeTaskClient(pipelineProjectPath)");
+  it("enqueues merge intent with an explicit operation", () => {
+    expect(source).toContain("operation: mergeStrategy === \"pr\" ? \"create_pr\" : \"auto_merge\"");
   });
 
-  it("logs the autoMerge result", () => {
-    expect(source).toContain("autoMerge result: merged=");
-  });
-
-  it("treats autoMerge failures as non-fatal (catch block)", () => {
-    // Must have a try/catch around the autoMerge call so failures don't block pipeline
-    expect(source).toContain("autoMerge failed (non-fatal):");
-  });
-
-  it("passes the existing store to autoMerge (fixes race condition)", () => {
-    // Should use the existing `store` instance to avoid SQLite connection isolation issues.
-    // The race condition: creating a new ForemanStore opened a separate SQLite connection,
-    // and the 'completed' status written by `store.updateRun()` was not visible to the
-    // new connection's reconcile query — causing "No completed run found" errors.
-    expect(source).toContain("store: store");
-  });
-
-  it("does NOT create a separate mergeStore for autoMerge", () => {
-    // Using a separate mergeStore caused race conditions with SQLite connection isolation.
-    // The fix is to use the existing store that already wrote the 'completed' status.
-    expect(source).not.toContain("const mergeStore = ForemanStore.forProject");
-  });
-
-  it("fetches the run and passes overrideRun to autoMerge (bypasses getRun query)", () => {
-    // The race condition fix (v2): pass the run directly via overrideRun to bypass
-    // the getRun() query entirely. This eliminates the race condition where the
-    // 'completed' status update hasn't been committed/visible when the query runs.
-    // Key patterns:
-    // 1. Fetch the run after updating status: `store.getRun(runId)`
-    // 2. Pass overrideRun to autoMerge: `overrideRun: completedRun`
-    expect(source).toContain("const completedRun = store.getRun(runId)");
-    expect(source).toContain("overrideRun: completedRun ?? undefined");
-  });
-
-  it("explicitly passes runId to autoMerge for reliable direct ID lookup", () => {
-    // The race condition fix (v3): always pass runId explicitly to autoMerge.
-    // The runId path in mergeCompleted fetches by ID without status filtering,
-    // which is the most reliable approach for immediate auto-merge calls.
-    expect(source).toContain("runId: runId");
+  it("skips merge queue enqueue when workflow merge strategy is none", () => {
+    expect(source).toContain("mergeStrategy !== \"none\"");
+    expect(source).toContain("Workflow merge strategy is none — skipping merge queue enqueue");
   });
 });
 
@@ -110,9 +68,9 @@ describe("auto-merge.ts — module invariants", () => {
     expect(source).toContain("mq.dequeue()");
   });
 
-  it("contains doc comment about being called from agent-worker (bd-0qv2 fix)", () => {
-    expect(source).toContain("agent-worker");
-    expect(source).toContain("onPipelineComplete");
+  it("routes merge behavior by queue operation", () => {
+    expect(source).toContain("const mergeOperation = currentEntry.operation");
+    expect(source).toContain("mergeOperation === 'create_pr'");
   });
 });
 

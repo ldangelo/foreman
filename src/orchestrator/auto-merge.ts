@@ -200,16 +200,16 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
     // bead-closed mail is only sent on actual success (Fix 2).
     let mergeSucceeded = false;
 
-    // TRD-007: Check merge_strategy from run record and route accordingly.
-    // Use overrideRun if available (from agent-worker's immediate autoMerge call) to
-    // bypass the getRun() query entirely. This eliminates the race condition where
-    // the 'completed' status hasn't been committed/visible when the query runs.
+    // Determine merge intent from the queue entry first, falling back to the
+    // run's merge_strategy for legacy queue rows that predate operation.
     const run = overrideRun?.id === currentEntry.run_id
       ? overrideRun
       : store.getRun(currentEntry.run_id);
     const mergeStrategy: 'auto' | 'pr' | 'none' = (run?.merge_strategy as 'auto' | 'pr' | 'none') ?? 'auto';
+    const mergeOperation = currentEntry.operation
+      ?? (mergeStrategy === 'pr' ? 'create_pr' : 'auto_merge');
 
-    if (mergeStrategy === 'none') {
+    if (!currentEntry.operation && mergeStrategy === 'none') {
       // Skip merge entirely — mark as completed
       mq.updateStatus(currentEntry.id, 'merged', { completedAt: new Date().toISOString() });
       store.updateRun(currentEntry.run_id, { status: 'completed' });
@@ -219,7 +219,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       continue;
     }
 
-    if (mergeStrategy === 'pr') {
+    if (mergeOperation === 'create_pr') {
       // Create a PR for manual review instead of auto-merge
       const branchName = `foreman/${currentEntry.seed_id}`;
       try {

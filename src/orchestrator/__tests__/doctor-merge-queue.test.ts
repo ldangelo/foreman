@@ -25,6 +25,7 @@ function makeMqEntry(overrides: Partial<MergeQueueEntry> = {}): MergeQueueEntry 
     branch_name: "foreman/test-001",
     seed_id: "test-001",
     run_id: "run-1",
+    operation: "auto_merge",
     agent_name: null,
     files_modified: [],
     enqueued_at: new Date().toISOString(),

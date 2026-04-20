@@ -38,6 +38,7 @@ function makeEntry(overrides: Partial<MergeQueueEntry> = {}): MergeQueueEntry {
     branch_name: "foreman/test-seed",
     seed_id: "test-seed",
     run_id: "run-123",
+    operation: "auto_merge",
     agent_name: null,
     files_modified: [],
     enqueued_at: new Date().toISOString(),

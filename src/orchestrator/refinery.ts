@@ -718,7 +718,11 @@ export class Refinery {
         const squashMergeOk = true;
         try {
           await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
-          await this.vcsBackend.mergeWithoutCommit(this.projectPath, branchName, targetBranch);
+          const mergeResult = await this.vcsBackend.mergeWithoutCommit(this.projectPath, branchName, targetBranch);
+          if (!mergeResult.success) {
+            const conflictSummary = mergeResult.conflicts?.join(", ") || "merge conflict";
+            throw new Error(`Merge conflict: ${conflictSummary}`);
+          }
         } catch (mergeErr: unknown) {
           const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
 
