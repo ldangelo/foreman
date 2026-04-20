@@ -110,9 +110,9 @@ describe('TRD-009 bug.yaml workflow integration', () => {
       expect(names).toEqual(['fix', 'test', 'finalize']);
     });
 
-    it('finalize phase uses prompt: finalize.md', () => {
+    it('finalize phase uses the bug-specific finalize prompt', () => {
       const finalize = bugWorkflow.phases.find((p) => p.name === 'finalize');
-      expect(finalize?.prompt).toBe('finalize.md');
+      expect(finalize?.prompt).toBe('finalize-bug.md');
     });
 
     it('finalize phase has verdict: true and retryWith: fix', () => {

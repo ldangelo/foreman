@@ -2,7 +2,7 @@
 
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import { Command } from "commander";
 
 /**
@@ -62,7 +62,19 @@ import { projectCommand } from "./commands/project.js";
 import { taskCommand } from "./commands/task.js";
 import { recoverCommand } from "./commands/recover.js";
 
-const program = new Command();
+function isCliEntrypoint(): boolean {
+  try {
+    const invokedPath = process.argv[1];
+    if (!invokedPath) {
+      return false;
+    }
+    return resolve(invokedPath) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+export const program = new Command();
 
 program
   .name("foreman")
@@ -97,4 +109,6 @@ program.addCommand(projectCommand);
 program.addCommand(taskCommand);
 program.addCommand(recoverCommand);
 
-program.parse();
+if (isCliEntrypoint()) {
+  program.parse();
+}

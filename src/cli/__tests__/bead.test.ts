@@ -32,11 +32,9 @@ describe("bead command", () => {
   });
 
   it("bead --help shows description and options", async () => {
-    const tmp = makeTempDir();
-    const result = await run(["bead", "--help"], tmp);
+    const { beadCommand } = await import("../commands/bead.js");
+    const output = beadCommand.helpInformation();
 
-    expect(result.exitCode).toBe(0);
-    const output = result.stdout;
     expect(output).toContain("bead");
     expect(output).toContain("natural-language");
     expect(output).toContain("--dry-run");
@@ -47,13 +45,21 @@ describe("bead command", () => {
   }, 15_000);
 
   it("bead without arguments shows missing argument error", async () => {
-    const tmp = makeTempDir();
-    const result = await run(["bead"], tmp);
+    const { beadCommand } = await import("../commands/bead.js");
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    beadCommand.exitOverride();
 
-    expect(result.exitCode).not.toBe(0);
-    const output = result.stdout + result.stderr;
-    // Commander.js will report a missing argument
-    expect(output.toLowerCase()).toMatch(/missing|required|argument|error/i);
+    let thrown: unknown;
+    try {
+      await beadCommand.parseAsync(["node", "bead"], { from: "node" });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeDefined();
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message.toLowerCase()).toMatch(/missing|required|argument|error/i);
+    stderrSpy.mockRestore();
   }, 15_000);
 
   it("bead fails without foreman init (no .beads directory)", async () => {

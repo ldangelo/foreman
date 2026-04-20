@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runTsxModule, type ExecResult } from "../../../test-support/tsx-subprocess.js";
+import { resolveProjectTarget } from "../../../lib/project-targeting.js";
 
 const CLI = path.resolve(__dirname, "../../index.ts");
 
@@ -263,26 +264,21 @@ describe("foreman task --project flag resolution", () => {
     execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
-    // Set HOME to temp dir with empty registry
-    const registryDir = join(tmpBase, ".foreman");
-    mkdirSync(registryDir, { recursive: true });
-    writeFileSync(
-      join(registryDir, "projects.json"),
-      JSON.stringify({ version: 1, projects: [] }, null, 2) + "\n",
-      "utf-8",
-    );
-
-    const env = {
-      ...process.env,
-      HOME: tmpBase,
-    };
-
     // An absolute path string that's not a real directory should fail fast.
     const fakeAbsolutePath = join(tmpBase, "definitely-missing-project");
-    const result = await run(["task", "list", "--project", fakeAbsolutePath], projectDir, env);
+    const registry = {
+      resolve: () => fakeAbsolutePath,
+    };
 
-    expect(result.exitCode).toBe(1);
-    const output = result.stdout + result.stderr;
-    expect(output).toContain("does not exist or is not accessible");
+    expect(() =>
+      resolveProjectTarget(
+        { project: fakeAbsolutePath, cwd: projectDir },
+        {
+          registry,
+          cwd: projectDir,
+          isAccessible: () => false,
+        },
+      ),
+    ).toThrow(/does not exist or is not accessible/i);
   });
 });

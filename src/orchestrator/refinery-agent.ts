@@ -79,7 +79,7 @@ export class RefineryAgent {
     config: Partial<RefineryAgentConfig> = {},
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config, projectPath };
-    this.store = new ForemanStore();
+    this.store = ForemanStore.forProject(this.projectPath);
     this.mailClient = new SqliteMailClient();
     // Note: mailClient.ensureProject(projectPath) must be called before use
     // in instance methods. Called lazily in processQueue() to avoid async constructor.
@@ -533,10 +533,7 @@ export class RefineryAgent {
   private async commitAndPush(worktreePath: string): Promise<boolean> {
     try {
       // Check if there are changes to commit
-      const { stdout: statusOutput } = await execFileAsync(
-        "git", ["status", "--porcelain"],
-        { cwd: worktreePath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
-      );
+      const statusOutput = await this.vcsBackend.status(worktreePath);
 
       if (!statusOutput.trim()) {
         this.logAction(0, "No changes to commit in worktree");
@@ -544,23 +541,17 @@ export class RefineryAgent {
       }
 
       // Stage all changes
-      await execFileAsync("git", ["add", "-A"], {
-        cwd: worktreePath,
-        maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
-      });
+      await this.vcsBackend.stageAll(worktreePath);
 
       // Commit with descriptive message
-      await execFileAsync(
-        "git",
-        ["commit", "-m", "fix: refinery agent — auto-fix from merge queue"],
-        { cwd: worktreePath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+      await this.vcsBackend.commit(
+        worktreePath,
+        "fix: refinery agent — auto-fix from merge queue",
       );
 
       // Push to origin
-      await execFileAsync(
-        "git", ["push", "origin", "HEAD"],
-        { cwd: worktreePath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
-      );
+      const branchName = await this.vcsBackend.getCurrentBranch(worktreePath);
+      await this.vcsBackend.push(worktreePath, branchName);
 
       this.logAction(0, `Committed and pushed worktree changes`);
       return true;
@@ -578,10 +569,7 @@ export class RefineryAgent {
   private async mergeBranch(entry: MergeQueueEntry, _targetBranch: string): Promise<boolean> {
     try {
       // Ensure branch is up-to-date first
-      await execFileAsync(
-        "git", ["push", "origin", entry.branch_name],
-        { cwd: this.projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
-      );
+      await this.vcsBackend.push(this.projectPath, entry.branch_name);
 
       // Merge via gh — squash only, let GitHub handle branch deletion on success
       await execFileAsync(

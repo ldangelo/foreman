@@ -14,7 +14,10 @@ const __dirname = dirname(__filename);
 const entryPoint = resolve(__dirname, '..', 'dist', 'cli', 'index.js');
 
 try {
-  await import(entryPoint);
+  const mod = await import(entryPoint);
+  if (mod && typeof mod === 'object' && 'program' in mod && mod.program && typeof mod.program.parse === 'function') {
+    mod.program.parse(process.argv);
+  }
 } catch (err) {
   if (err && typeof err === 'object' && 'code' in err && err.code === 'ERR_MODULE_NOT_FOUND') {
     console.error(

@@ -1,26 +1,15 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { execFile } from "node:child_process";
 import { cpSync, existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
+import { runTsxModule } from "../../test-support/tsx-subprocess.js";
 
-const execFileAsync = promisify(execFile);
 const CLI = path.resolve(__dirname, "../index.ts");
 const SOURCE_TRD = resolve(process.cwd(), "docs/TRD/sling-trd.md");
 
 async function run(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  try {
-    const { stdout, stderr } = await execFileAsync("npx", ["tsx", CLI, ...args], { cwd, timeout: 30_000 });
-    return { stdout, stderr, exitCode: 0 };
-  } catch (err: any) {
-    return {
-      stdout: err.stdout ?? "",
-      stderr: err.stderr ?? "",
-      exitCode: err.code ?? err.status ?? 1,
-    };
-  }
+  return runTsxModule(CLI, args, { cwd, timeout: 30_000 });
 }
 
 describe("sling native task transition", () => {

@@ -516,6 +516,7 @@ function detectCompletedTasks(worktreePath: string): Set<string> {
     const output = execSync("git log --oneline", {
       cwd: worktreePath,
       encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
       timeout: 10_000,
     });
     return parseCompletedTaskIds(output);

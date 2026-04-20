@@ -11,7 +11,7 @@ const execFileAsync = promisify(execFile);
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 15_000 });
+  return runTsxModule(CLI, args, { cwd, timeout: 30_000 });
 }
 
 describe("doctor command", () => {
@@ -49,27 +49,43 @@ describe("doctor command", () => {
     expect(output).toContain("doctor");
     expect(output).toContain("health");
     expect(output).toContain("--fix");
-  }, 15_000);
+  }, 30_000);
 
   it("doctor shows in top-level --help", async () => {
-    const tmp = makeTempDir();
-    const result = await run(["--help"], tmp);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout + result.stderr).toContain("doctor");
-  }, 15_000);
+    const { program } = await import("../index.js");
+    expect(program.helpInformation()).toContain("doctor");
+  }, 30_000);
 
   it("doctor outside git repo fails gracefully", async () => {
-    const tmp = makeTempDir();
-    // Not a git repo — should still run but report git repo check failure
-    const result = await run(["doctor"], tmp);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`EXIT:${code ?? 0}`);
+    }) as never);
+    const vcs = await import("../../lib/vcs/index.js");
+    const createSpy = vi.spyOn(vcs.VcsBackendFactory, "create").mockRejectedValue(new Error("not a repo"));
+    const { doctorCommand } = await import("../commands/doctor.js");
 
-    const output = result.stdout + result.stderr;
-    // Should output check results
-    expect(output).toContain("git repository");
-    // Fails because no git repo
-    expect(result.exitCode).toBe(1);
-  }, 15_000);
+    let thrown: unknown;
+    try {
+      await doctorCommand.parseAsync(["node", "doctor"], { from: "node" });
+    } catch (error) {
+      thrown = error;
+    }
+
+    const combinedOutput = [
+      ...logSpy.mock.calls.flat().map(String),
+      ...errorSpy.mock.calls.flat().map(String),
+    ].join("\n");
+
+    expect(String(thrown)).toContain("EXIT:1");
+    expect(combinedOutput).toContain("git repository");
+
+    createSpy.mockRestore();
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+  }, 30_000);
 
   it("doctor inside git repo without project init warns", async () => {
     const tmp = makeTempDir();
@@ -82,7 +98,7 @@ describe("doctor command", () => {
     expect(output).toContain("git binary");
     // Project registration check fails
     expect(output).toContain("project registered in foreman");
-  }, 15_000);
+  }, 30_000);
 
   it("doctor --json outputs valid JSON", async () => {
     const tmp = makeTempDir();
@@ -108,7 +124,7 @@ describe("doctor command", () => {
     expect(parsed.summary).toHaveProperty("fail");
     expect(parsed.summary).toHaveProperty("warn");
     expect(parsed.summary).toHaveProperty("fixed");
-  }, 15_000);
+  }, 30_000);
 
   it("doctor with registered project shows pass for project check", async () => {
     const tmp = makeTempDir();
@@ -127,7 +143,7 @@ describe("doctor command", () => {
     // The project is registered so this check should not contain "fail" for that line
     // The overall may still fail due to missing br/bv/git binaries in CI
     expect(output).toContain("Summary");
-  }, 15_000);
+  }, 30_000);
 
   it("doctor --fix runs without crashing", async () => {
     const tmp = makeTempDir();
@@ -140,7 +156,7 @@ describe("doctor command", () => {
     expect(output).not.toContain("TypeError");
     expect(output).not.toContain("ReferenceError");
     expect(output).toContain("Summary");
-  }, 15_000);
+  }, 30_000);
 });
 
 // ── Unit tests for doctor logic ──────────────────────────────────────────

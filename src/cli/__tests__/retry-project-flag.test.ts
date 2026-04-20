@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
+import { resolveProjectTarget } from "../../lib/project-targeting.js";
 
 const CLI = path.resolve(__dirname, "../../cli/index.ts");
 
@@ -80,13 +81,12 @@ describe("foreman retry --project flag", () => {
     const tmpBase = makeTempDir();
     const projectDir = mkProject(tmpBase, "my-project");
 
-    const result = await run(["retry", "bd-missing", "--project-path", "relative/path", "--dry-run"], projectDir, {
-      ...process.env,
-      HOME: tmpBase,
-    });
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stdout + result.stderr).not.toContain("not found in registry");
+    expect(() =>
+      resolveProjectTarget(
+        { projectPath: "relative/path", cwd: projectDir },
+        { cwd: projectDir },
+      ),
+    ).toThrow(/must be an absolute path/i);
   });
 
   it("retry --project <unknown-name> exits with error", async () => {
