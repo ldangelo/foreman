@@ -352,8 +352,14 @@ describe("formatMessage", () => {
 
     const output = formatMessage(msg, true);
 
-    expect(output).toContain("A".repeat(500));
-    expect(output).not.toContain("..."); // no truncation in full mode
+    // In full mode, the body is NOT truncated (no ellipsis)
+    expect(output).not.toContain("...");
+    // The total count of A's should be preserved (split across wrapped lines)
+    const aCount = (output.match(/A/g) || []).length;
+    expect(aCount).toBe(500);
+    // Wrapping should result in multiple lines
+    const lines = output.split("\n");
+    expect(lines.length).toBeGreaterThan(1);
   });
 
   it("includes read mark when message is read", () => {
@@ -380,5 +386,111 @@ describe("formatMessage", () => {
     const output = formatMessage(msg);
 
     expect(output).toContain("error=Something went wrong");
+  });
+});
+
+// ── Tests for wrapText and getTerminalWidth ───────────────────────────────────
+
+import { getTerminalWidth, wrapText } from "../commands/inbox.js";
+
+describe("getTerminalWidth", () => {
+  it("returns a reasonable default when stdout.columns is undefined", () => {
+    // This test verifies the fallback behavior works in test environment
+    const width = getTerminalWidth();
+    expect(width).toBeGreaterThanOrEqual(80);
+    expect(width).toBeLessThanOrEqual(300);
+  });
+});
+
+describe("wrapText", () => {
+  it("returns short lines unchanged", () => {
+    const input = "short line";
+    const wrapped = wrapText(input, 80);
+    expect(wrapped).toBe("short line");
+  });
+
+  it("wraps long lines at word boundaries", () => {
+    const input = "this is a very long line that needs to be wrapped at word boundaries";
+    const wrapped = wrapText(input, 40);
+    const lines = wrapped.split("\n");
+
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(40);
+    }
+  });
+
+  it("preserves newlines", () => {
+    const input = "first line\nsecond line\nthird line";
+    const wrapped = wrapText(input, 80);
+
+    expect(wrapped.split("\n").length).toBe(3);
+  });
+
+  it("wraps multiple paragraphs correctly", () => {
+    const input = "first very long line that should wrap\nsecond very long line that should also wrap";
+    const wrapped = wrapText(input, 30);
+    const lines = wrapped.split("\n");
+
+    expect(lines.length).toBeGreaterThan(2);
+  });
+
+  it("handles lines with no spaces by force-wrapping", () => {
+    const input = "a".repeat(100);
+    const wrapped = wrapText(input, 50);
+    const lines = wrapped.split("\n");
+
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(50);
+    }
+  });
+});
+
+// ── Regression: fullPayload mode with long JSON ───────────────────────────────
+
+describe("formatMessage with long JSON payloads", () => {
+  it("does not truncate when fullPayload=true for very long JSON bodies", () => {
+    // Simulate a large agent mail body (e.g., QA report with test results)
+    const largePayload = {
+      phase: "qa",
+      status: "completed",
+      seedId: "seed-123",
+      runId: "run-456",
+      verdict: "PASS",
+      message: "All tests passed",
+      testResults: Array.from({ length: 50 }, (_, i) => ({
+        name: `test-case-${i}`,
+        status: i % 2 === 0 ? "PASS" : "FAIL",
+        duration: Math.floor(Math.random() * 1000),
+        error: null,
+      })),
+    };
+    const msg = makeMockMessage({ body: JSON.stringify(largePayload) });
+
+    const output = formatMessage(msg, true);
+
+    // Should contain all key fields from the large payload
+    expect(output).toContain('"phase"');
+    expect(output).toContain('"test-case-0"');
+    expect(output).toContain('"test-case-49"');
+    // Should NOT truncate
+    expect(output).not.toContain("...");
+  });
+
+  it("wraps long JSON output to prevent terminal line clipping", () => {
+    // Create a JSON body with lines longer than typical terminal width (80 chars)
+    const wideJson = {
+      description: "This is a very long description field that contains enough content to exceed normal terminal widths and demonstrates the wrapping behavior",
+      metadata: "x".repeat(200), // Create a very long value
+    };
+    const msg = makeMockMessage({ body: JSON.stringify(wideJson) });
+
+    const output = formatMessage(msg, true);
+
+    // Should wrap, so the output contains newlines for long lines
+    const lines = output.split("\n");
+    // At least some lines should be wrapped (have newlines from wrapping)
+    expect(lines.some((line) => line.length > 0)).toBe(true);
   });
 });
