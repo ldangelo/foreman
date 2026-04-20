@@ -791,6 +791,53 @@ export class NativeTaskStore {
   }
 
   /**
+   * Reset a task back to the ready queue for retry.
+   *
+   * Operator-only path used by `foreman reset`. Unlike `update({status:"ready"})`,
+   * this intentionally allows backward recovery from active execution states and
+   * clears any existing run linkage so the dispatcher can claim the task again.
+   *
+   * Closed / merged tasks are not reopened by this method.
+   *
+   * @throws {TaskNotFoundError} If the task does not exist.
+   * @throws {InvalidStatusTransitionError} If the task is already terminal.
+   */
+  resetToReady(id: string, _reason?: string): TaskRow {
+    const now = new Date().toISOString();
+
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .prepare("SELECT id, status, approved_at FROM tasks WHERE id = ?")
+        .get(id) as { id: string; status: string; approved_at: string | null } | undefined;
+
+      if (!row) {
+        throw new TaskNotFoundError(id);
+      }
+
+      if (row.status === "closed" || row.status === "merged") {
+        throw new InvalidStatusTransitionError(id, row.status, "ready");
+      }
+
+      this.db
+        .prepare(
+          `UPDATE tasks
+              SET status = 'ready',
+                  run_id = NULL,
+                  branch = NULL,
+                  closed_at = NULL,
+                  approved_at = COALESCE(approved_at, ?),
+                  updated_at = ?
+            WHERE id = ?`,
+        )
+        .run(now, now, id);
+
+      return this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as TaskRow;
+    });
+
+    return tx();
+  }
+
+  /**
    * Atomically claim a task: set status='in-progress' and run_id=runId
    * in a single synchronous transaction.
    *

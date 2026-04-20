@@ -24,7 +24,9 @@ export type { StateMismatch } from "../../lib/run-status.js";
  * Minimal interface capturing the subset of task-client methods used by
  * detectAndFixMismatches.
  */
-export type IShowUpdateClient = Pick<ITaskClient, "show" | "update">;
+export type IShowUpdateClient = Pick<ITaskClient, "show" | "update"> & {
+  resetToReady?: ITaskClient["resetToReady"];
+};
 
 // ── Stale-branch detection types ─────────────────────────────────────────────
 
@@ -516,7 +518,11 @@ export async function resetSeedToOpen(
     }
 
     if (!dryRun) {
-      await seeds.update(seedId, { status: targetStatus });
+      if (targetStatus === "ready" && typeof seeds.resetToReady === "function") {
+        await seeds.resetToReady(seedId);
+      } else {
+        await seeds.update(seedId, { status: targetStatus });
+      }
     }
     return { action: "reset", seedId, previousStatus: seedDetail.status, targetStatus };
   } catch (err: unknown) {

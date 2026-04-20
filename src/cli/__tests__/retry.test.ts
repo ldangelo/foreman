@@ -8,6 +8,7 @@ import { ForemanStore, type Run, type RunProgress } from "../../lib/store.js";
 
 const mockShow = vi.fn();
 const mockUpdate = vi.fn();
+const mockResetToReady = vi.fn();
 const mockReady = vi.fn();
 const mockList = vi.fn();
 const mockClose = vi.fn();
@@ -16,6 +17,7 @@ vi.mock("../../lib/beads-rust.js", () => {
   class MockBeadsRustClient {
     show = mockShow;
     update = mockUpdate;
+    resetToReady = mockResetToReady;
     ready = mockReady;
     list = mockList;
     close = mockClose;
@@ -111,6 +113,7 @@ describe("foreman retry", () => {
 
     mockShow.mockReset();
     mockUpdate.mockReset();
+    mockResetToReady.mockReset();
     mockReady.mockReset();
     mockList.mockReset();
     mockClose.mockReset();
@@ -332,7 +335,8 @@ describe("foreman retry", () => {
       const { retryAction } = await import("../commands/retry.js");
       await retryAction("bd-test", {}, beadsClient, store, tmpDir, undefined, "native");
 
-      expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "ready" });
+      expect(mockResetToReady).toHaveBeenCalledWith("bd-test");
+      expect(mockUpdate).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();
     });

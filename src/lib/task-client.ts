@@ -100,6 +100,14 @@ export interface ITaskClient {
   close(id: string, reason?: string): Promise<void>;
 
   /**
+   * Reset a native task back to the retryable ready state.
+   *
+   * Optional because beads-style backends reset via `update(..., {status:"open"})`
+   * instead of a dedicated method.
+   */
+  resetToReady?(id: string, reason?: string): Promise<void>;
+
+  /**
    * Fetch comments for an issue as a formatted markdown string.
    * Returns null if there are no comments.
    * Optional — implementations that do not support comments may omit this method.

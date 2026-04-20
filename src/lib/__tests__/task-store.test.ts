@@ -417,6 +417,52 @@ describe("NativeTaskStore.close()", () => {
   });
 });
 
+// ── NativeTaskStore.resetToReady() ───────────────────────────────────────────
+
+describe("NativeTaskStore.resetToReady()", () => {
+  let ctx: ReturnType<typeof setupStore>;
+  let runId: string;
+
+  beforeEach(() => {
+    ctx = setupStore();
+    const project = ctx.store.registerProject("test-proj", "/tmp/test-proj");
+    runId = ctx.store.createRun(project.id, "seed-001", "runner").id;
+  });
+  afterEach(() => teardownStore(ctx));
+
+  it("resets an in-progress task back to ready and clears run linkage", () => {
+    const task = ctx.taskStore.create({ title: "Reset Me" });
+    ctx.taskStore.approve(task.id);
+    ctx.taskStore.claim(task.id, runId);
+
+    const updated = ctx.taskStore.resetToReady(task.id);
+
+    expect(updated.status).toBe("ready");
+    expect(updated.run_id).toBeNull();
+    expect(updated.branch).toBeNull();
+    expect(updated.closed_at).toBeNull();
+    expect(updated.approved_at).toBeTruthy();
+  });
+
+  it("preserves an existing approved_at timestamp", () => {
+    const task = ctx.taskStore.create({ title: "Keep Approval" });
+    ctx.taskStore.approve(task.id);
+    const approvedAt = ctx.taskStore.get(task.id)?.approved_at ?? null;
+    ctx.taskStore.claim(task.id, runId);
+
+    const updated = ctx.taskStore.resetToReady(task.id);
+
+    expect(updated.approved_at).toBe(approvedAt);
+  });
+
+  it("throws for closed tasks", () => {
+    const task = ctx.taskStore.create({ title: "Do Not Reopen" });
+    ctx.taskStore.close(task.id);
+
+    expect(() => ctx.taskStore.resetToReady(task.id)).toThrow(InvalidStatusTransitionError);
+  });
+});
+
 // ── NativeTaskStore.addDependency() + hasCyclicDependency() ───────────────────
 
 describe("NativeTaskStore.addDependency() and hasCyclicDependency()", () => {

@@ -156,7 +156,11 @@ export async function retryAction(
       console.log(
         `  ${chalk.yellow("reset")} bead status: ${bead.status} → ${beadResetTarget}`,
       );
-      await beadsClient.update(beadId, { status: beadResetTarget! });
+      if (beadResetTarget === "ready" && typeof beadsClient.resetToReady === "function") {
+        await beadsClient.resetToReady(beadId);
+      } else {
+        await beadsClient.update(beadId, { status: beadResetTarget! });
+      }
     } else if (beadIsAlreadyRetryable) {
       console.log(`  ${chalk.dim("ok")} bead status is already "${bead.status}"`);
     } else {

@@ -80,4 +80,10 @@ export class NativeTaskClient implements ITaskClient {
       taskStore.close(id, reason);
     });
   }
+
+  async resetToReady(id: string, reason?: string): Promise<void> {
+    this.withStore((taskStore) => {
+      taskStore.resetToReady(id, reason);
+    });
+  }
 }

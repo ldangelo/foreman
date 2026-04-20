@@ -270,10 +270,13 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
 // ── resetSeedToOpen — closed-seed guard ──────────────────────────────────
 
 describe("resetSeedToOpen", () => {
-  function makeSeedsClient(status: string) {
+  function makeSeedsClient(status: string, opts?: { resetToReady?: boolean }) {
     return {
       show: vi.fn(async (_id: string) => ({ status })),
       update: vi.fn(async (_id: string, _opts: UpdateOptions): Promise<void> => {}),
+      resetToReady: opts?.resetToReady
+        ? vi.fn(async (_id: string): Promise<void> => {})
+        : undefined,
     };
   }
 
@@ -298,14 +301,15 @@ describe("resetSeedToOpen", () => {
   });
 
   it("resets a native task in-progress back to ready", async () => {
-    const seeds = makeSeedsClient("in-progress");
+    const seeds = makeSeedsClient("in-progress", { resetToReady: true });
 
     const result = await resetSeedToOpen("task-active", seeds);
 
     expect(result.action).toBe("reset");
     expect(result.previousStatus).toBe("in-progress");
     expect(result.targetStatus).toBe("ready");
-    expect(seeds.update).toHaveBeenCalledWith("task-active", { status: "ready" });
+    expect(seeds.resetToReady).toHaveBeenCalledWith("task-active");
+    expect(seeds.update).not.toHaveBeenCalled();
   });
 
   it("returns already-open without calling update when seed is already open", async () => {
