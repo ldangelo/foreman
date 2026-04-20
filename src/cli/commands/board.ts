@@ -43,6 +43,7 @@ export const BOARD_STATUSES = [
   "review",
   "blocked",
   "closed",
+  "merged",
 ] as const;
 export type BoardStatus = (typeof BOARD_STATUSES)[number];
 
@@ -53,6 +54,7 @@ const STATUS_LABELS: Record<BoardStatus, string> = {
   review: "Review",
   blocked: "Blocked",
   closed: "Closed",
+  merged: "Merged",
 };
 
 /** Priority badge characters. */
@@ -133,8 +135,10 @@ export function loadBoardTasks(projectPath: string): Map<BoardStatus, BoardTask[
     }
 
     for (const row of rows) {
-      const status = BOARD_STATUSES.includes(row.status as BoardStatus)
-        ? (row.status as BoardStatus)
+      // Normalize status: convert hyphens to underscores for matching
+      const normalizedStatus = row.status.replace(/-/g, "_") as BoardStatus;
+      const status = BOARD_STATUSES.includes(normalizedStatus)
+        ? normalizedStatus
         : "closed";
       const tasks = map.get(status)!;
       tasks.push({
