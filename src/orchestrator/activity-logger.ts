@@ -25,6 +25,8 @@ import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 export interface PhaseRecord {
   /** Phase name (e.g., "explorer", "developer", "qa") */
   name: string;
+  /** Execution surface used for this phase. */
+  phaseType?: "prompt" | "command" | "bash" | "builtin";
   /** True if this phase was skipped */
   skipped: boolean;
   /** Whether the phase succeeded */
@@ -51,6 +53,18 @@ export interface PhaseRecord {
   editsByFile?: Record<string, number>;
   /** Commands run (for bash phases) */
   commandsRun?: string[];
+  /** Expected artifact filename for this phase. */
+  artifactExpected?: string;
+  /** Whether the expected artifact existed when the phase finished. */
+  artifactPresent?: boolean;
+  /** Relative JSON trace path for this phase. */
+  traceFile?: string;
+  /** Relative markdown trace path for this phase. */
+  traceMarkdownFile?: string;
+  /** Observability warnings recorded for this phase. */
+  phaseWarnings?: string[];
+  /** Heuristic for whether a command workflow was actually honored. */
+  commandHonored?: boolean;
   /** Verdict: pass, fail, skipped, unknown */
   verdict?: "pass" | "fail" | "skipped" | "unknown";
   /** Model used for this phase */
@@ -173,6 +187,30 @@ export function detectWarnings(phases: PhaseRecord[]): string[] {
     warnings.push(
       `Failed phases: ${failedPhases.map((p) => p.name).join(", ")}`,
     );
+  }
+
+  const missingArtifacts = phases.filter(
+    (p) => !p.skipped && p.success === true && p.artifactExpected && p.artifactPresent === false,
+  );
+  if (missingArtifacts.length > 0) {
+    warnings.push(
+      `Missing phase artifacts: ${missingArtifacts.map((p) => `${p.name} -> ${p.artifactExpected}`).join(", ")}`,
+    );
+  }
+
+  const commandIntentWarnings = phases.filter(
+    (p) => p.phaseType === "command" && p.commandHonored === false,
+  );
+  if (commandIntentWarnings.length > 0) {
+    warnings.push(
+      `Command phases without strong execution evidence: ${commandIntentWarnings.map((p) => p.name).join(", ")}`,
+    );
+  }
+
+  for (const phase of phases) {
+    for (const phaseWarning of phase.phaseWarnings ?? []) {
+      warnings.push(`${phase.name}: ${phaseWarning}`);
+    }
   }
 
   // Check for long-running phases (potential inefficiency)
@@ -333,6 +371,12 @@ export async function generateActivityLog(
       filesChanged: p.filesChanged,
       editsByFile: p.editsByFile,
       commandsRun: p.commandsRun,
+      artifactExpected: p.artifactExpected,
+      artifactPresent: p.artifactPresent,
+      traceFile: p.traceFile,
+      traceMarkdownFile: p.traceMarkdownFile,
+      phaseWarnings: p.phaseWarnings,
+      commandHonored: p.commandHonored,
       verdict: p.verdict,
       model: p.model,
     })),
@@ -363,12 +407,16 @@ export async function generateActivityLog(
 export function createPhaseRecord(
   name: string,
   model?: string,
+  extra?: Pick<PhaseRecord, "phaseType" | "commandsRun" | "artifactExpected">,
 ): PhaseRecord {
   return {
     name,
     skipped: false,
     startedAt: new Date().toISOString(),
     model,
+    phaseType: extra?.phaseType,
+    commandsRun: extra?.commandsRun,
+    artifactExpected: extra?.artifactExpected,
   };
 }
 
@@ -390,6 +438,10 @@ export function finalizePhaseRecord(
     toolBreakdown?: Record<string, number>;
     filesChanged?: string[];
     editsByFile?: Record<string, number>;
+    traceFile?: string;
+    traceMarkdownFile?: string;
+    traceWarnings?: string[];
+    commandHonored?: boolean;
   },
 ): PhaseRecord {
   const completedAt = new Date().toISOString();
@@ -418,6 +470,11 @@ export function finalizePhaseRecord(
     toolBreakdown: result.toolBreakdown,
     filesChanged: result.filesChanged,
     editsByFile: result.editsByFile,
+    artifactPresent: record.artifactExpected ? record.artifactPresent : undefined,
+    traceFile: result.traceFile ?? record.traceFile,
+    traceMarkdownFile: result.traceMarkdownFile ?? record.traceMarkdownFile,
+    phaseWarnings: result.traceWarnings ?? record.phaseWarnings,
+    commandHonored: result.commandHonored ?? record.commandHonored,
     verdict,
   };
 }
@@ -449,7 +506,12 @@ export async function writeIncrementalPipelineReport(opts: {
     const cost = p.costUsd ? `$${p.costUsd.toFixed(4)}` : "-";
     const verdict = p.skipped ? "skipped" : p.success ? "pass" : "FAIL";
     const error = p.error ? " " + p.error.slice(0, 80) : "";
-    return `| \`${p.name}\` | ${verdict} | ${duration} | ${cost} | ${p.turns ?? 0} turns |${error} |`;
+    const phaseType = p.phaseType ?? "prompt";
+    const artifact = p.artifactExpected
+      ? `${p.artifactExpected} (${p.artifactPresent === false ? "missing" : "present"})`
+      : "—";
+    const trace = p.traceFile ? `\`${p.traceFile}\`` : "—";
+    return `| \`${p.name}\` | ${phaseType} | ${verdict} | ${duration} | ${cost} | ${p.turns ?? 0} turns | ${artifact} | ${trace} |${error} |`;
   }).join("\n");
 
   const currentPhase = completedPhases[completedPhases.length - 1];
@@ -461,6 +523,10 @@ export async function writeIncrementalPipelineReport(opts: {
   const filesSection = uniqueFiles.length > 0
     ? uniqueFiles.map(f => `- \`${f}\``).join("\n")
     : "_No files changed yet_";
+  const warnings = detectWarnings(completedPhases);
+  const warningSection = warnings.length > 0
+    ? ["## Warnings", "", ...warnings.map((warning) => `- ${warning}`), ""]
+    : [];
 
   const report = [
     "# Pipeline Report — " + seedId,
@@ -483,10 +549,27 @@ export async function writeIncrementalPipelineReport(opts: {
     "",
     "## Phase Results",
     "",
-    "| Phase | Status | Duration | Cost | Turns | Error |",
-    "|-------|--------|----------|------|-------|--------|",
+    "| Phase | Type | Status | Duration | Cost | Turns | Artifact | Trace | Error |",
+    "|-------|------|--------|----------|------|-------|----------|-------|--------|",
     phaseRows,
     "",
+    "## Phase Inputs",
+    "",
+    ...completedPhases.flatMap((phase) =>
+      phase.commandsRun && phase.commandsRun.length > 0
+        ? [
+          `### ${phase.name}`,
+          "",
+          `- Type: ${phase.phaseType ?? "prompt"}`,
+          ...phase.commandsRun.map((command) => `- Input: \`${command}\``),
+          ...(phase.traceFile ? [`- Trace: \`${phase.traceFile}\``] : []),
+          ...(phase.commandHonored !== undefined ? [`- Command honored: ${phase.commandHonored ? "yes" : "no"}`] : []),
+          ...((phase.phaseWarnings ?? []).map((warning) => `- Warning: ${warning}`)),
+          "",
+        ]
+        : [],
+    ),
+    ...warningSection,
     "## Files Changed",
     "",
     filesSection,

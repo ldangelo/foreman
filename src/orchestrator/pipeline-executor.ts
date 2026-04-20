@@ -54,6 +54,7 @@ export type RunPhaseFn = (
   store: ForemanStore,
   notifyClient: any,
   agentMailClient?: AnyMailClient | null,
+  observability?: PhaseObservabilityInput,
 ) => Promise<PhaseResult>;
 
 export interface PhaseResult {
@@ -64,6 +65,16 @@ export interface PhaseResult {
   tokensOut: number;
   error?: string;
   outputText?: string;
+  traceFile?: string;
+  traceMarkdownFile?: string;
+  traceWarnings?: string[];
+  commandHonored?: boolean;
+}
+
+export interface PhaseObservabilityInput {
+  phaseType?: "prompt" | "command" | "bash" | "builtin";
+  expectedArtifact?: string;
+  resolvedCommand?: string;
 }
 
 /** A child task within an epic pipeline run. */
@@ -873,6 +884,14 @@ async function runPhaseSequence(
     const phaseName = phase.name;
     const agentName = `${phaseName}-${seedId}`;
     const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
+    const phaseType = phase.bash
+      ? "bash"
+      : phase.command
+        ? "command"
+        : phase.builtin
+          ? "builtin"
+          : "prompt";
+    const phaseMeta = ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 };
 
     progress.currentPhase = phaseName;
     store.updateRunProgress(runId, progress);
@@ -883,7 +902,7 @@ async function runPhaseSequence(
     if (phase.skipIfArtifact) {
       const interpolatedSkip = interpolateTaskPlaceholders(
         phase.skipIfArtifact,
-        ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 },
+        phaseMeta,
       );
       const artifactPath = join(worktreePath, interpolatedSkip);
       if (existsSync(artifactPath)) {
@@ -910,11 +929,10 @@ async function runPhaseSequence(
 
     // 5. Rotate and run phase
     // Interpolate {task.*} placeholders in artifact path before use.
-    if (phase.artifact) {
-      const interpolatedArtifact = interpolateTaskPlaceholders(
-        phase.artifact,
-        ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 },
-      );
+    const interpolatedArtifact = phase.artifact
+      ? interpolateTaskPlaceholders(phase.artifact, phaseMeta)
+      : undefined;
+    if (interpolatedArtifact) {
       rotateReport(worktreePath, interpolatedArtifact);
     }
 
@@ -992,7 +1010,7 @@ async function runPhaseSequence(
     let prompt = "";
     if (!phase.bash) {
       prompt = phase.command
-        ? interpolateTaskPlaceholders(phase.command, ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 })
+        ? interpolateTaskPlaceholders(phase.command, phaseMeta)
         : buildPhasePrompt(phaseName, {
         seedId,
         seedTitle,
@@ -1028,7 +1046,15 @@ async function runPhaseSequence(
     ctx.heartbeatManager?.start(phaseName);
 
     // FR-4: Create initial activity phase record
-    const activityPhase = createPhaseRecord(phaseName, phaseModel);
+    const activityPhase = createPhaseRecord(phaseName, phaseModel, {
+      phaseType,
+      commandsRun: phase.bash
+        ? [interpolateTaskPlaceholders(phase.bash, phaseMeta)]
+        : phase.command
+          ? [prompt]
+          : undefined,
+      artifactExpected: interpolatedArtifact,
+    });
 
     // P1: Explorer circuit breaker - fail fast if Explorer has failed 3 times
     // This prevents empty branch pollution when Explorer keeps failing
@@ -1061,6 +1087,7 @@ async function runPhaseSequence(
 
     // TRD-004: Bash phase — execute via execFile instead of SDK agent
     if (phase.bash) {
+      const resolvedBashCommand = interpolateTaskPlaceholders(phase.bash, phaseMeta);
       const bashResult = await runBashPhase(
         phase.bash,
         ctx.taskMeta,
@@ -1079,11 +1106,15 @@ async function runPhaseSequence(
       };
       phaseRecords.push({
         name: phaseName,
+        phaseType,
         skipped: false,
         success: result.success,
         costUsd: 0,
         turns: 0,
         error: result.error,
+        commandsRun: [resolvedBashCommand],
+        artifactExpected: interpolatedArtifact,
+        artifactPresent: interpolatedArtifact ? existsSync(join(worktreePath, interpolatedArtifact)) : undefined,
       });
       progress.costUsd += 0;
       store.updateRunProgress(runId, progress);
@@ -1116,6 +1147,11 @@ async function runPhaseSequence(
 
     const result = await ctx.runPhase(
       phaseName, prompt, phaseConfig, progress, logFile, store, notifyClient, agentMailClient,
+      {
+        phaseType,
+        expectedArtifact: interpolatedArtifact,
+        resolvedCommand: phase.command ? prompt : undefined,
+      },
     );
 
     // 6. Release files
@@ -1123,14 +1159,34 @@ async function runPhaseSequence(
       ctx.releaseFiles(agentMailClient, [worktreePath], agentName);
     }
 
+    const artifactPresent = interpolatedArtifact ? existsSync(join(worktreePath, interpolatedArtifact)) : undefined;
+    activityPhase.artifactPresent = artifactPresent;
+    activityPhase.traceFile = result.traceFile;
+    activityPhase.traceMarkdownFile = result.traceMarkdownFile;
+    activityPhase.phaseWarnings = result.traceWarnings;
+    activityPhase.commandHonored = result.commandHonored;
+    if (phase.command && result.success && interpolatedArtifact && artifactPresent === false) {
+      const artifactWarning = `[PIPELINE] WARNING — command phase ${phaseName} succeeded without artifact ${interpolatedArtifact}`;
+      ctx.log(artifactWarning);
+      await appendFile(logFile, `\n${artifactWarning}\n`);
+    }
+
     // Record phase result
     phaseRecords.push({
       name: feedbackContext ? `${phaseName} (retry)` : phaseName,
+      phaseType,
       skipped: false,
       success: result.success,
       costUsd: result.costUsd,
       turns: result.turns,
       error: result.error,
+      commandsRun: phase.command ? [prompt] : undefined,
+      artifactExpected: interpolatedArtifact,
+      artifactPresent,
+      traceFile: result.traceFile,
+      traceMarkdownFile: result.traceMarkdownFile,
+      phaseWarnings: result.traceWarnings,
+      commandHonored: result.commandHonored,
     });
 
     // FR-3: Update heartbeat with final phase stats before stopping
@@ -1158,6 +1214,10 @@ async function runPhaseSequence(
         toolCalls: progress.toolCalls,
         toolBreakdown: progress.toolBreakdown,
         filesChanged: progress.filesChanged ?? [],
+        traceFile: result.traceFile,
+        traceMarkdownFile: result.traceMarkdownFile,
+        traceWarnings: result.traceWarnings,
+        commandHonored: result.commandHonored,
       });
       ctx.activityPhases.push(completedActivityPhase);
 

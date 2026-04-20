@@ -227,7 +227,7 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
       const results = await doctor.checkMergeQueueHealth();
 
-      expect(results).toHaveLength(5);
+      expect(results).toHaveLength(6);
       expect(results.every((r) => r.status === "pass")).toBe(true);
     });
 
@@ -244,6 +244,43 @@ describe("Doctor - Merge Queue Health Checks", () => {
       // Should have at least some fixed results
       const fixedResults = results.filter((r) => r.status === "fixed");
       expect(fixedResults.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("checkResolvedMergeQueueEntries", () => {
+    it("returns pass when no resolved entries exist", async () => {
+      const { doctor, mergeQueue, store } = makeMocks();
+      mergeQueue.list.mockReturnValue([makeMqEntry({ status: "pending" })]);
+      store.getRun.mockReturnValue(makeRun({ id: "run-1", status: "running" }));
+
+      const result = await doctor.checkResolvedMergeQueueEntries();
+
+      expect(result.status).toBe("pass");
+    });
+
+    it("warns when merge queue entry points at an already merged run", async () => {
+      const { doctor, mergeQueue, store } = makeMocks();
+      mergeQueue.list.mockReturnValue([makeMqEntry({ id: 7, seed_id: "foreman-56b46", status: "conflict" })]);
+      store.getRun.mockReturnValue(makeRun({ id: "run-1", seed_id: "foreman-56b46", status: "merged" }));
+
+      const result = await doctor.checkResolvedMergeQueueEntries();
+
+      expect(result.status).toBe("warn");
+      expect(result.message).toContain("already-resolved");
+      expect(result.details).toContain("foreman-56b46");
+    });
+
+    it("fixes already resolved queue entries by removing them", async () => {
+      const { doctor, mergeQueue, store } = makeMocks();
+      mergeQueue.list.mockReturnValue([
+        makeMqEntry({ id: 7, seed_id: "foreman-56b46", status: "conflict" }),
+      ]);
+      store.getRun.mockReturnValue(makeRun({ id: "run-1", seed_id: "foreman-56b46", status: "merged" }));
+
+      const result = await doctor.checkResolvedMergeQueueEntries({ fix: true });
+
+      expect(result.status).toBe("fixed");
+      expect(mergeQueue.remove).toHaveBeenCalledWith(7);
     });
   });
 

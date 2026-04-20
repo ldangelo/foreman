@@ -16,7 +16,7 @@ import { request as httpRequest } from "node:http";
 import { runPhaseSession } from "./phase-runner.js";
 import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
-import type { EpicTask } from "./pipeline-executor.js";
+import type { EpicTask, PhaseObservabilityInput } from "./pipeline-executor.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import { NativeTaskStore } from "../lib/task-store.js";
@@ -398,12 +398,23 @@ async function main(): Promise<void> {
       logFile,
       context: {
         phaseName: "worker",
+        runId,
         seedId,
         seedTitle,
         seedType: config.seedType,
         seedDescription: config.seedDescription,
         worktreePath,
         targetBranch: config.targetBranch,
+      },
+      observability: {
+        runId,
+        seedId,
+        phase: "worker",
+        phaseType: "prompt",
+        model,
+        worktreePath,
+        rawPrompt: prompt,
+        systemPrompt: `You are an agent working on task: ${seedTitle}`,
       },
       onToolCall: (name: string, input: Record<string, unknown>) => {
         progress.toolCalls++;
@@ -508,6 +519,10 @@ interface PhaseResult {
   tokensOut: number;
   error?: string;
   outputText?: string;
+  traceFile?: string;
+  traceMarkdownFile?: string;
+  traceWarnings?: string[];
+  commandHonored?: boolean;
 }
 
 /**
@@ -522,6 +537,7 @@ async function runPhase(
   store: ForemanStore,
   notifyClient: NotificationClient,
   agentMailClient?: AnyMailClient | null,
+  observability?: PhaseObservabilityInput,
 ): Promise<PhaseResult> {
   const roleConfig = ROLE_CONFIGS[role];
   // Use the model resolved by the pipeline executor (from workflow YAML + bead priority).
@@ -552,12 +568,25 @@ async function runPhase(
       logFile,
       context: {
         phaseName: role,
+        runId: config.runId,
         seedId: config.seedId,
         seedTitle: config.seedTitle,
         seedType: config.seedType,
         seedDescription: config.seedDescription,
         worktreePath: config.worktreePath,
         targetBranch: config.targetBranch,
+      },
+      observability: {
+        runId: config.runId,
+        seedId: config.seedId,
+        phase: role,
+        phaseType: observability?.phaseType ?? "prompt",
+        model: resolvedModel,
+        worktreePath: config.worktreePath,
+        rawPrompt: prompt,
+        systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
+        expectedArtifact: observability?.expectedArtifact,
+        resolvedCommand: observability?.resolvedCommand,
       },
       onToolCall: (name, input) => {
         progress.toolCalls++;
@@ -612,6 +641,10 @@ async function runPhase(
         tokensIn: phaseResult.tokensIn,
         tokensOut: phaseResult.tokensOut,
         outputText: phaseResult.outputText,
+        traceFile: phaseResult.traceFile,
+        traceMarkdownFile: phaseResult.traceMarkdownFile,
+        traceWarnings: phaseResult.traceWarnings,
+        commandHonored: phaseResult.commandHonored,
       };
     } else {
       const reason = phaseResult.errorMessage ?? "Pi agent ended without success";
@@ -625,6 +658,10 @@ async function runPhase(
         tokensOut: phaseResult.tokensOut,
         error: reason,
         outputText: phaseResult.outputText,
+        traceFile: phaseResult.traceFile,
+        traceMarkdownFile: phaseResult.traceMarkdownFile,
+        traceWarnings: phaseResult.traceWarnings,
+        commandHonored: phaseResult.commandHonored,
       };
     }
   } catch (err: unknown) {
@@ -701,12 +738,24 @@ async function runTroubleshooterPhase(
       logFile,
       context: {
         phaseName: "troubleshooter",
+        runId,
         seedId: beadId,
         seedTitle: beadTitle,
         seedType: config.seedType,
         seedDescription: config.seedDescription,
         worktreePath: config.worktreePath,
         targetBranch: config.targetBranch,
+      },
+      observability: {
+        runId,
+        seedId: beadId,
+        phase: "troubleshooter",
+        phaseType: "prompt",
+        model: resolvedModel,
+        worktreePath: config.worktreePath,
+        rawPrompt: prompt,
+        systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for bead: ${beadTitle}`,
+        expectedArtifact: "TROUBLESHOOT_REPORT.md",
       },
       onToolCall: () => { /* no-op */ },
       onTurnEnd: () => { /* no-op */ },

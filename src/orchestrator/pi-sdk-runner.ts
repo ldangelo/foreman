@@ -14,6 +14,7 @@
 
 import {
   createAgentSession,
+  DefaultResourceLoader,
   SessionManager,
   SettingsManager,
   AuthStorage,
@@ -32,6 +33,13 @@ import { createDirectoryGuardrail, wrapToolWithGuardrail, type GuardrailConfig }
 import { getModel } from "@mariozechner/pi-ai";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  createPhaseTrace,
+  createPiObservabilityExtension,
+  finalizePhaseTrace,
+} from "./pi-observability-extension.js";
+import type { PhaseTraceMetadata } from "./pi-observability-types.js";
+import { writePhaseTrace } from "./pi-observability-writer.js";
 
 // ── Public interface (compatible with pi-runner.ts) ─────────────────────
 
@@ -46,6 +54,14 @@ export interface PiRunResult {
   errorMessage?: string;
   /** Captured assistant text output (concatenated from all text deltas). */
   outputText?: string;
+  /** Relative path to the JSON phase trace, when observability is enabled. */
+  traceFile?: string;
+  /** Relative path to the markdown phase trace, when observability is enabled. */
+  traceMarkdownFile?: string;
+  /** Observability warnings emitted for this phase. */
+  traceWarnings?: string[];
+  /** Heuristic for whether a command workflow appears to have been honored. */
+  commandHonored?: boolean;
 }
 
 export interface PiRunOptions {
@@ -65,6 +81,8 @@ export interface PiRunOptions {
   onText?: (text: string) => void;
   /** Directory guardrail config. When set, wraps tool factories with cwd verification (FR-1). */
   guardrailConfig?: GuardrailConfig;
+  /** Optional phase-level observability metadata used to emit Pi hook traces. */
+  observability?: PhaseTraceMetadata;
 }
 
 // ── Tool name → factory mapping ─────────────────────────────────────────
@@ -166,6 +184,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
   let success = true;
   let errorMessage: string | undefined;
   const textChunks: string[] = [];
+  const phaseTrace = opts.observability ? createPhaseTrace(opts.observability) : undefined;
 
   const writeLog = (line: string): void => {
     if (!opts.logFile) return;
@@ -176,6 +195,13 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
     // Explicitly set agentDir and auth so detached worker processes find credentials.
     const agentDir = getAgentDir();
     const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: opts.cwd,
+      agentDir,
+      settingsManager: SettingsManager.create(opts.cwd, agentDir),
+      extensionFactories: phaseTrace ? [createPiObservabilityExtension(phaseTrace)] : [],
+    });
+    await resourceLoader.reload();
 
     const { session } = await createAgentSession({
       cwd: opts.cwd,
@@ -185,6 +211,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       thinkingLevel: "medium",
       tools,
       customTools: opts.customTools,
+      resourceLoader,
       sessionManager: SessionManager.inMemory(),
       settingsManager: SettingsManager.create(opts.cwd, agentDir),
     });
@@ -270,6 +297,16 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       `[pi-sdk-runner] success=${success} turns=${totalTurns} tools=${totalToolCalls} cost=$${costUsd.toFixed(4)} tokensIn=${tokensIn} tokensOut=${tokensOut}`,
     );
 
+    let tracePaths;
+    if (phaseTrace) {
+      finalizePhaseTrace(phaseTrace, {
+        success,
+        error: success ? undefined : errorMessage,
+        finalMessage: textChunks.length > 0 ? textChunks.join("") : undefined,
+      });
+      tracePaths = await writePhaseTrace(phaseTrace);
+    }
+
     return {
       success,
       costUsd,
@@ -280,10 +317,23 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       tokensOut,
       errorMessage: success ? undefined : errorMessage,
       outputText: textChunks.length > 0 ? textChunks.join("") : undefined,
+      traceFile: tracePaths?.relativeJsonPath,
+      traceMarkdownFile: tracePaths?.relativeMarkdownPath,
+      traceWarnings: phaseTrace?.warnings,
+      commandHonored: phaseTrace?.commandHonored,
     };
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
     writeLog(`[pi-sdk-runner] ERROR: ${reason}`);
+    let tracePaths;
+    if (phaseTrace) {
+      finalizePhaseTrace(phaseTrace, {
+        success: false,
+        error: reason,
+        finalMessage: textChunks.length > 0 ? textChunks.join("") : undefined,
+      });
+      tracePaths = await writePhaseTrace(phaseTrace);
+    }
     return {
       success: false,
       costUsd: 0,
@@ -293,6 +343,10 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       tokensIn: 0,
       tokensOut: 0,
       errorMessage: reason,
+      traceFile: tracePaths?.relativeJsonPath,
+      traceMarkdownFile: tracePaths?.relativeMarkdownPath,
+      traceWarnings: phaseTrace?.warnings,
+      commandHonored: phaseTrace?.commandHonored,
     };
   }
 }

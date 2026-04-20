@@ -1877,6 +1877,85 @@ export class Doctor {
   }
 
   /**
+   * Check for merge queue entries that are already resolved.
+   *
+   * These are entries whose corresponding run is already terminal-successful
+   * (merged/completed/pr-created) or whose branch has already landed on the
+   * default branch. They should be removed rather than retried.
+   */
+  async checkResolvedMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
+    if (!this.mergeQueue) {
+      return { name: "resolved merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
+    }
+
+    let defaultBranch = "main";
+    try {
+      defaultBranch = await resolveDefaultBranch(
+        this.projectPath,
+        async (projectPath) => (await this.getVcsBackend()).detectDefaultBranch(projectPath),
+        loadProjectConfig(this.projectPath),
+      );
+    } catch {
+      // fall back to main
+    }
+
+    const entries = this.mergeQueue.list();
+    const resolvedEntries: MergeQueueEntry[] = [];
+
+    for (const entry of entries) {
+      const run = this.store.getRun(entry.run_id);
+      if (run && (run.status === "merged" || run.status === "completed" || run.status === "pr-created")) {
+        resolvedEntries.push(entry);
+        continue;
+      }
+
+      if (await this.isBranchMerged(entry.seed_id, defaultBranch)) {
+        resolvedEntries.push(entry);
+      }
+    }
+
+    if (resolvedEntries.length === 0) {
+      return { name: "resolved merge queue entries", status: "pass", message: "No already-resolved merge queue entries" };
+    }
+
+    const details = resolvedEntries
+      .slice(0, 5)
+      .map((entry) => `${entry.seed_id} (${entry.status})`)
+      .join(", ");
+    const truncated = resolvedEntries.length > 5 ? ` … +${resolvedEntries.length - 5} more` : "";
+
+    if (dryRun) {
+      return {
+        name: "resolved merge queue entries",
+        status: "warn",
+        message: `Found ${resolvedEntries.length} already-resolved merge queue entr${resolvedEntries.length === 1 ? "y" : "ies"}. Would remove (dry-run).`,
+        details: details + truncated,
+      };
+    }
+
+    if (fix) {
+      for (const entry of resolvedEntries) {
+        this.mergeQueue.remove(entry.id);
+      }
+      return {
+        name: "resolved merge queue entries",
+        status: "fixed",
+        message: `Removed ${resolvedEntries.length} already-resolved merge queue entr${resolvedEntries.length === 1 ? "y" : "ies"}`,
+        fixApplied: `Deleted merge queue entries: ${details}${truncated}`,
+      };
+    }
+
+    return {
+      name: "resolved merge queue entries",
+      status: "warn",
+      message: `Found ${resolvedEntries.length} already-resolved merge queue entr${resolvedEntries.length === 1 ? "y" : "ies"}. Use --fix to remove them.`,
+      details: details + truncated,
+    };
+  }
+
+  /**
    * Check for merge queue entries stuck in conflict/failed for >1h (MQ-012).
    */
   async checkStuckConflictFailedEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
@@ -1937,14 +2016,15 @@ export class Doctor {
    * Run all merge queue health checks.
    */
   async checkMergeQueueHealth(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
-    const [stale, duplicates, orphaned, notQueued, stuckConflictFailed] = await Promise.all([
+    const [stale, duplicates, orphaned, notQueued, resolved, stuckConflictFailed] = await Promise.all([
       this.checkStaleMergeQueueEntries(opts),
       this.checkDuplicateMergeQueueEntries(opts),
       this.checkOrphanedMergeQueueEntries(opts),
       this.checkCompletedRunsNotQueued({ fix: opts.fix, dryRun: opts.dryRun, projectPath: opts.projectPath }),
+      this.checkResolvedMergeQueueEntries(opts),
       this.checkStuckConflictFailedEntries(opts),
     ]);
-    return [stale, duplicates, orphaned, notQueued, stuckConflictFailed];
+    return [stale, duplicates, orphaned, notQueued, resolved, stuckConflictFailed];
   }
 
   /**

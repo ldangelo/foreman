@@ -24,7 +24,7 @@ phases:
   # All other phase config (model, maxTurns, artifact, mail) works identically
   # to a prompt: phase.
   - name: fix
-    command: "/ensemble:fix-issue {task.title} {task.description}"
+    command: "/skill:ensemble-fix-issue {task.title} {task.description}"
     models:
       default: MiniMax
       P0: MiniMax
