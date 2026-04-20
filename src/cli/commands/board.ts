@@ -16,12 +16,15 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { Box, Spacer, Text, renderToString } from "ink";
+import { createElement } from "react";
 import { basename } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
+import { createInterface } from "node:readline/promises";
 import * as yaml from "js-yaml";
 import { ForemanStore } from "../../lib/store.js";
 import {
@@ -43,7 +46,6 @@ export const BOARD_STATUSES = [
   "review",
   "blocked",
   "closed",
-  "merged",
 ] as const;
 export type BoardStatus = (typeof BOARD_STATUSES)[number];
 
@@ -54,7 +56,6 @@ const STATUS_LABELS: Record<BoardStatus, string> = {
   review: "Review",
   blocked: "Blocked",
   closed: "Closed",
-  merged: "Merged",
 };
 
 /** Priority badge characters. */
@@ -66,13 +67,12 @@ const PRIORITY_BADGES: Record<number, string> = {
   4: "P4",
 };
 
-/** Priority badge colors. */
-const PRIORITY_COLORS: Record<number, (text: string) => string> = {
-  0: chalk.bgRed.white,
-  1: chalk.bgYellow.black,
-  2: chalk.bgCyan.black,
-  3: chalk.bgGray.white,
-  4: chalk.bgBlackBright.white,
+const PRIORITY_COLORS: Record<number, { textColor: string; backgroundColor: string }> = {
+  0: { textColor: "white", backgroundColor: "red" },
+  1: { textColor: "black", backgroundColor: "yellow" },
+  2: { textColor: "black", backgroundColor: "cyan" },
+  3: { textColor: "white", backgroundColor: "gray" },
+  4: { textColor: "white", backgroundColor: "blackBright" },
 };
 
 export interface BoardTask {
@@ -173,14 +173,14 @@ const HIDE_CURSOR = "\x1b[?25l";
 /** Show the cursor. */
 const SHOW_CURSOR = "\x1b[?25h";
 
-/** Move cursor to (row, col) using 1-based coordinates. */
-function moveTo(row: number, col: number): string {
-  return `\x1B[${row};${col}H`;
-}
-
 /** Get the terminal width. */
 function getTerminalWidth(): number {
   return process.stdout.columns || 80;
+}
+
+/** Get the terminal height. */
+function getTerminalHeight(): number {
+  return process.stdout.rows || 24;
 }
 
 /**
@@ -193,8 +193,427 @@ function clamp(value: number, min: number, max: number): number {
 // ── Board renderer ────────────────────────────────────────────────────────────
 
 const MIN_COL_WIDTH = 12;
-const TASK_CARD_HEIGHT = 3;
 const MAX_VISIBLE_PER_COL = 5;
+const COLUMN_GAP = 1;
+const h = createElement;
+
+function getVisibleStatuses(
+  terminalWidth: number,
+  selectedColIndex: number,
+): readonly BoardStatus[] {
+  const maxHeaderLen = Math.max(...BOARD_STATUSES.map((status) => STATUS_LABELS[status].length + 5));
+  const minColWidth = Math.max(maxHeaderLen, MIN_COL_WIDTH);
+  const maxCols = Math.max(
+    1,
+    Math.floor((Math.max(terminalWidth, minColWidth) + COLUMN_GAP) / (minColWidth + COLUMN_GAP)),
+  );
+
+  if (maxCols >= BOARD_STATUSES.length) {
+    return BOARD_STATUSES;
+  }
+
+  const windowSize = Math.max(1, Math.min(maxCols, BOARD_STATUSES.length));
+  const maxStart = BOARD_STATUSES.length - windowSize;
+  const start = clamp(selectedColIndex - Math.floor(windowSize / 2), 0, maxStart);
+  return BOARD_STATUSES.slice(start, start + windowSize);
+}
+
+function getColumnWidth(terminalWidth: number, columnCount: number): number {
+  if (columnCount <= 0) {
+    return terminalWidth;
+  }
+
+  const availableWidth = Math.max(
+    MIN_COL_WIDTH * columnCount + COLUMN_GAP * (columnCount - 1),
+    terminalWidth,
+  );
+  return Math.max(
+    MIN_COL_WIDTH,
+    Math.floor((availableWidth - COLUMN_GAP * (columnCount - 1)) / columnCount),
+  );
+}
+
+export interface VisibleTaskWindow {
+  startIndex: number;
+  visibleTasks: BoardTask[];
+  hiddenBefore: number;
+  hiddenAfter: number;
+}
+
+export function getVisibleTaskCapacity(
+  columnHeight: number,
+  taskCount: number,
+  userLimit?: number,
+): number {
+  const reservedLines = 3; // top border + bottom border + header
+  const overflowReserve = taskCount > 0 ? 2 : 0; // room for scroll indicators when needed
+  const availableTaskLines = Math.max(2, columnHeight - reservedLines - overflowReserve);
+  const autoCapacity = Math.max(1, Math.floor(availableTaskLines / 2));
+  return userLimit == null ? autoCapacity : Math.max(1, Math.min(userLimit, autoCapacity));
+}
+
+export function getVisibleTaskWindow(
+  tasks: readonly BoardTask[],
+  selectedIndex: number,
+  maxVisiblePerCol: number,
+): VisibleTaskWindow {
+  if (tasks.length <= maxVisiblePerCol) {
+    return {
+      startIndex: 0,
+      visibleTasks: [...tasks],
+      hiddenBefore: 0,
+      hiddenAfter: 0,
+    };
+  }
+
+  const maxStartIndex = Math.max(0, tasks.length - maxVisiblePerCol);
+  const startIndex = clamp(selectedIndex - Math.floor(maxVisiblePerCol / 2), 0, maxStartIndex);
+  const endIndex = startIndex + maxVisiblePerCol;
+
+  return {
+    startIndex,
+    visibleTasks: tasks.slice(startIndex, endIndex),
+    hiddenBefore: startIndex,
+    hiddenAfter: Math.max(0, tasks.length - endIndex),
+  };
+}
+
+function renderEmptyTaskSlot(): ReturnType<typeof h> {
+  return h(
+    Box,
+    { flexDirection: "column", width: "100%" },
+    h(Text, { dimColor: true }, " "),
+    h(Text, { dimColor: true }, " "),
+  );
+}
+
+function renderTaskCardView(
+  task: BoardTask,
+  isSelected: boolean,
+  isFlash: boolean,
+): ReturnType<typeof h> {
+  const badge = PRIORITY_BADGES[task.priority] ?? "P?";
+  const badgeStyle = PRIORITY_COLORS[task.priority] ?? PRIORITY_COLORS[4];
+  const rowBackgroundColor = isFlash ? "green" : isSelected ? "cyan" : undefined;
+  const rowTextColor = rowBackgroundColor ? "black" : "white";
+  const metaTextColor = rowBackgroundColor ? "black" : "white";
+
+  return h(
+    Box,
+    { flexDirection: "column", width: "100%" },
+    h(
+      Box,
+      { width: "100%", backgroundColor: rowBackgroundColor },
+      h(Text, { color: rowTextColor }, `${isSelected || isFlash ? "▶" : " "} `),
+      h(
+        Box,
+        { flexGrow: 1, minWidth: 0 },
+        h(Text, { color: rowTextColor, wrap: "truncate-end" }, task.title),
+      ),
+      h(
+        Text,
+        {
+          color: badgeStyle.textColor,
+          backgroundColor: badgeStyle.backgroundColor,
+        },
+        ` ${badge} `,
+      ),
+    ),
+    h(
+      Box,
+      { width: "100%", backgroundColor: rowBackgroundColor },
+      h(
+        Box,
+        { width: "50%", minWidth: 0 },
+        h(Text, { color: metaTextColor, dimColor: !rowBackgroundColor, wrap: "truncate-end" }, task.type),
+      ),
+      h(
+        Box,
+        { width: "50%", minWidth: 0 },
+        h(Text, { color: metaTextColor, dimColor: !rowBackgroundColor, wrap: "truncate-end" }, task.status),
+      ),
+    ),
+  );
+}
+
+function renderBoardColumn(
+  status: BoardStatus,
+  absoluteIndex: number,
+  state: RenderState,
+  columnWidth: number,
+  columnHeight: number,
+  userVisibleLimit?: number,
+): ReturnType<typeof h> {
+  const tasks = state.tasks.get(status) ?? [];
+  const isSelectedColumn = absoluteIndex === state.nav.colIndex;
+  const visibleLimit = getVisibleTaskCapacity(columnHeight, tasks.length, userVisibleLimit);
+  const taskWindow = getVisibleTaskWindow(tasks, isSelectedColumn ? state.nav.rowIndex : 0, visibleLimit);
+  const slots: Array<ReturnType<typeof h>> = [];
+
+  if (taskWindow.hiddenBefore > 0) {
+    slots.push(
+      h(
+        Text,
+        { dimColor: true, wrap: "truncate-end" },
+        `↑ ${taskWindow.hiddenBefore} earlier`,
+      ),
+    );
+  }
+
+  for (let index = 0; index < visibleLimit; index += 1) {
+    const task = taskWindow.visibleTasks[index];
+    if (!task) {
+      slots.push(renderEmptyTaskSlot());
+      continue;
+    }
+
+    slots.push(
+      renderTaskCardView(
+        task,
+        isSelectedColumn && taskWindow.startIndex + index === state.nav.rowIndex,
+        task.id === state.flashTaskId,
+      ),
+    );
+  }
+
+  if (taskWindow.hiddenAfter > 0) {
+    slots.push(h(Text, { dimColor: true, wrap: "truncate-end" }, `↓ ${taskWindow.hiddenAfter} more`));
+  }
+
+  return h(
+    Box,
+    {
+      borderStyle: "round",
+      borderColor: isSelectedColumn ? "cyan" : "gray",
+      flexDirection: "column",
+      height: columnHeight,
+      paddingX: 1,
+      width: columnWidth,
+    },
+    h(
+      Text,
+      {
+        bold: true,
+        color: isSelectedColumn ? "cyan" : "white",
+        wrap: "truncate-end",
+      },
+      `${STATUS_LABELS[status]} (${tasks.length})`,
+    ),
+    ...slots,
+  );
+}
+
+function renderHelpOverlayView(width: number): ReturnType<typeof h> {
+  const panelWidth = Math.max(24, Math.min(72, width));
+  const keyWidth = Math.max(8, Math.floor(panelWidth * 0.35));
+  const rows: Array<[string, string]> = [
+    ["j / k", "Move up / down in column"],
+    ["h / l", "Move left / right between columns"],
+    ["g / G", "Jump to first / last task"],
+    ["[1]…[6]", "Jump to column by number"],
+    ["s / S", "Cycle status forward / backward"],
+    ["c", "Close task"],
+    ["C", "Close task with reason"],
+    ["e / E", "Edit task in editor"],
+    ["Enter", "Show task detail"],
+    ["Esc", "Dismiss help / detail"],
+    ["r", "Refresh board from store"],
+    ["q", "Quit board"],
+  ];
+
+  return h(
+    Box,
+    { borderStyle: "round", borderColor: "yellow", flexDirection: "column", width: panelWidth },
+    h(Text, { color: "yellow", bold: true }, "HELP — Key Bindings"),
+    ...rows.map(([keyLabel, description]) =>
+      h(
+        Box,
+        { key: `${keyLabel}:${description}`, width: "100%" },
+        h(
+          Box,
+          { width: keyWidth, minWidth: 0 },
+          h(Text, { color: "cyan", wrap: "truncate-end" }, keyLabel),
+        ),
+        h(
+          Box,
+          { flexGrow: 1, minWidth: 0 },
+          h(Text, { wrap: "truncate-end" }, description),
+        ),
+      )),
+    h(Text, { dimColor: true }, "Press ? or Esc to close"),
+  );
+}
+
+function renderTaskDetailView(task: BoardTask, width: number): ReturnType<typeof h> {
+  const panelWidth = Math.max(24, Math.min(64, width));
+  const fieldWidth = Math.max(8, Math.min(14, Math.floor(panelWidth * 0.28)));
+
+  const rows: Array<[string, string | null]> = [
+    ["ID:", task.id],
+    ["Title:", task.title],
+    ["Type:", task.type],
+    ["Priority:", `${priorityLabel(task.priority)} (P${task.priority})`],
+    ["Status:", task.status],
+    ["External ID:", task.external_id],
+    ["Created:", new Date(task.created_at).toLocaleString()],
+    ["Updated:", new Date(task.updated_at).toLocaleString()],
+    ["Approved:", task.approved_at ? new Date(task.approved_at).toLocaleString() : null],
+    ["Closed:", task.closed_at ? new Date(task.closed_at).toLocaleString() : null],
+  ];
+
+  const children: Array<ReturnType<typeof h>> = [
+    h(Text, { key: "detail-title", color: "blue", bold: true }, "TASK DETAIL"),
+  ];
+
+  if (task.description) {
+    const [firstLine, ...rest] = task.description.split("\n");
+    children.push(
+      h(
+        Box,
+        { key: "desc:first", width: "100%" },
+        h(
+          Box,
+          { width: fieldWidth, minWidth: 0 },
+          h(Text, { bold: true, wrap: "truncate-end" }, "Description:"),
+        ),
+        h(
+          Box,
+          { flexGrow: 1, minWidth: 0 },
+          h(Text, { wrap: "truncate-end" }, firstLine ?? ""),
+        ),
+      ),
+    );
+
+    for (const [index, line] of rest.slice(0, 4).entries()) {
+      children.push(
+        h(
+          Box,
+          { key: `desc:${index}`, width: "100%" },
+          h(Box, { width: fieldWidth }, h(Text, null, " ")),
+          h(
+            Box,
+            { flexGrow: 1, minWidth: 0 },
+            h(Text, { dimColor: true, wrap: "truncate-end" }, line),
+          ),
+        ),
+      );
+    }
+  }
+
+  for (const [label, value] of rows) {
+    if (!value) {
+      continue;
+    }
+
+    children.push(
+      h(
+        Box,
+        { key: label, width: "100%" },
+        h(
+          Box,
+          { width: fieldWidth, minWidth: 0 },
+          h(Text, { bold: true, wrap: "truncate-end" }, label),
+        ),
+        h(
+          Box,
+          { flexGrow: 1, minWidth: 0 },
+          h(Text, { wrap: "truncate-end" }, value),
+        ),
+      ),
+    );
+  }
+
+  children.push(h(Text, { key: "detail-hint", dimColor: true }, "Press Enter or Esc to close"));
+
+  return h(
+    Box,
+    { borderStyle: "round", borderColor: "blue", flexDirection: "column", width: panelWidth },
+    ...children,
+  );
+}
+
+function renderBoardFrame(
+  state: RenderState,
+  projectName: string,
+  terminalWidth: number,
+  terminalHeight: number,
+  userVisibleLimit?: number,
+): string {
+  const totalTasks = state.totalTasks;
+  const visibleStatuses = getVisibleStatuses(terminalWidth, state.nav.colIndex);
+  const columnWidth = getColumnWidth(terminalWidth, visibleStatuses.length);
+  const reservedRows =
+    5
+    + (state.errorMessage ? 2 : 0)
+    + (state.showHelp ? 16 : 0)
+    + (state.showDetail && state.detailTask ? 14 : 0);
+  const columnHeight = Math.max(8, terminalHeight - reservedRows);
+
+  const tree = h(
+    Box,
+    { flexDirection: "column", width: terminalWidth },
+    h(
+      Box,
+      { width: "100%", marginBottom: 1 },
+      h(Text, { color: "blue", bold: true, wrap: "truncate-end" }, `Foreman Kanban Board — ${projectName}`),
+      h(Spacer, null),
+      h(
+        Text,
+        { dimColor: true },
+        `${totalTasks} task${totalTasks === 1 ? "" : "s"}`,
+      ),
+    ),
+    h(
+      Box,
+      { flexDirection: "row", gap: COLUMN_GAP, marginBottom: 1, width: "100%" },
+      ...visibleStatuses.map((status) => {
+        const absoluteIndex = BOARD_STATUSES.indexOf(status);
+        return h(
+          Box,
+          { key: `jump:${status}`, width: columnWidth, minWidth: columnWidth },
+          h(
+            Text,
+            {
+              color: absoluteIndex === state.nav.colIndex ? "cyan" : undefined,
+              bold: absoluteIndex === state.nav.colIndex,
+              wrap: "truncate-end",
+            },
+            `[${absoluteIndex + 1}] ${STATUS_LABELS[status]}`,
+          ),
+        );
+      }),
+    ),
+    h(
+      Box,
+      { flexDirection: "row", gap: COLUMN_GAP, alignItems: "flex-start", width: "100%" },
+      ...visibleStatuses.map((status) => {
+        const absoluteIndex = BOARD_STATUSES.indexOf(status);
+        return h(
+          Box,
+          { key: `column:${status}`, width: columnWidth, minWidth: columnWidth, height: columnHeight },
+          renderBoardColumn(status, absoluteIndex, state, columnWidth, columnHeight, userVisibleLimit),
+        );
+      }),
+    ),
+    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  s/S cycle status  c/C close  e/E edit  Enter detail  ? help  r refresh  q quit"),
+    state.errorMessage
+      ? h(
+        Box,
+        { marginTop: 1 },
+        h(Text, { color: "red", bold: true }, "ERROR "),
+        h(Text, { color: "red", wrap: "truncate-end" }, state.errorMessage),
+      )
+      : null,
+    state.showHelp
+      ? h(Box, { marginTop: 1 }, renderHelpOverlayView(Math.max(24, terminalWidth - 2)))
+      : null,
+    state.showDetail && state.detailTask
+      ? h(Box, { marginTop: 1 }, renderTaskDetailView(state.detailTask, Math.max(24, terminalWidth - 2)))
+      : null,
+  );
+
+  return renderToString(tree, { columns: terminalWidth });
+}
 
 /**
  * Render the full kanban board to a string and write it to stdout,
@@ -211,280 +630,24 @@ export function renderBoard(
   state: RenderState,
   projectName: string,
   terminalWidth: number,
+  userVisibleLimit?: number,
+  terminalHeight = getTerminalHeight(),
 ): string {
-  const lines: string[] = [];
-
-  // ── Header ────────────────────────────────────────────────────────────────
-  const title = ` Foreman Kanban Board — ${projectName} `;
-  const taskCount = ` ${state.totalTasks} task${state.totalTasks !== 1 ? "s" : ""} `;
-  const headerLine = chalk.bgBlue.white(title) + chalk.bgBlue.dim(taskCount);
-  lines.push(CLEAR_SCREEN + headerLine);
-  lines.push("");
-
-  // ── Calculate column layout ────────────────────────────────────────────────
-  const SEP = chalk.dim(" │ ");
-  const sepWidth = SEP.length; // " │ " = 4 chars
-
-  // Calculate minimum column width needed for headers (label + count)
-  const maxHeaderLen = Math.max(...BOARD_STATUSES.map(s => STATUS_LABELS[s].length + 5));
-  const minColWidth = Math.max(maxHeaderLen, 10); // minimum 10 chars
-
-  // Calculate how many columns fit
-  const numCols = BOARD_STATUSES.length;
-  const minBoardWidth = minColWidth * numCols + sepWidth * (numCols - 1);
-
-  // Use all columns if they fit, otherwise reduce to what fits
-  let visibleStatuses: readonly string[] = BOARD_STATUSES;
-  let colWidth = Math.floor((terminalWidth - sepWidth * (numCols - 1)) / numCols);
-
-  if (minBoardWidth > terminalWidth) {
-    const maxCols = Math.floor((terminalWidth + sepWidth) / (minColWidth + sepWidth));
-    visibleStatuses = [...BOARD_STATUSES].slice(0, Math.max(1, maxCols));
-    colWidth = Math.floor((terminalWidth - sepWidth * (visibleStatuses.length - 1)) / visibleStatuses.length);
-  }
-
-  const CARD_LINES = 2;
-
-  // ── Column number row ────────────────────────────────────────────────────
-  const colNumbers = visibleStatuses.map((s, i) => {
-    const num = chalk.dim(`[${i + 1}]`);
-    return `${num} ${chalk.bold(STATUS_LABELS[s as BoardStatus])}`;
-  });
-  lines.push("  " + colNumbers.join(chalk.dim("   ")));
-  lines.push("");
-
-  // Build column content as arrays of lines
-  const columnContent: string[][] = [];
-  let maxHeight = 0;
-
-  for (let ci = 0; ci < visibleStatuses.length; ci++) {
-    const status = visibleStatuses[ci] as BoardStatus;
-    const tasks = state.tasks.get(status) ?? [];
-    const isNavCol = ci === state.nav.colIndex;
-    const colLines: string[] = [];
-
-    // Column header — underlined, exactly colWidth
-    const countStr = tasks.length === 0
-      ? chalk.dim("(0)")
-      : chalk.white(`${tasks.length}`);
-    const headerText = `${STATUS_LABELS[status]} ${chalk.dim("(")}${countStr}${chalk.dim(")")}`;
-    const headerLine = chalk.underline(headerText.slice(0, colWidth).padEnd(colWidth));
-    colLines.push(headerLine);
-
-    // Task cards — each occupies CARD_LINES lines
-    const visibleTasks = tasks.slice(0, MAX_VISIBLE_PER_COL);
-    const extraCount = Math.max(0, tasks.length - MAX_VISIBLE_PER_COL);
-
-    for (let ti = 0; ti < MAX_VISIBLE_PER_COL; ti++) {
-      const isNavRow = isNavCol && ti === state.nav.rowIndex;
-      const task = visibleTasks[ti] ?? null;
-
-      if (task) {
-        const isFlash = task.id === state.flashTaskId;
-        const cardLines = renderTaskCard(task, colWidth, isNavRow, isFlash, false);
-        for (let cl = 0; cl < CARD_LINES; cl++) {
-          colLines.push((cardLines[cl] ?? "").padEnd(colWidth));
-        }
-      } else {
-        // Empty slot — CARD_LINES blank lines
-        for (let cl = 0; cl < CARD_LINES; cl++) {
-          colLines.push(" ".repeat(colWidth));
-        }
-      }
-    }
-
-    // "+N more" indicator
-    if (extraCount > 0) {
-      colLines.push(chalk.dim(`+${extraCount} more`).padEnd(colWidth));
-    }
-
-    columnContent.push(colLines);
-    maxHeight = Math.max(maxHeight, colLines.length);
-  }
-
-  // Render columns side-by-side row by row
-  for (let row = 0; row < maxHeight; row++) {
-    const cells = columnContent.map(col => col[row] ?? "".padEnd(colWidth));
-    lines.push("  " + cells.join(SEP));
-  }
-
-  // ── Footer ────────────────────────────────────────────────────────────────
-  lines.push(chalk.dim("─".repeat(terminalWidth)));
-  lines.push(
-    `  ${chalk.dim("j/k")} up/down  ${chalk.dim("h/l")} left/right  ${chalk.dim("s/S")} cycle status  ${chalk.dim("c/C")} close  ${chalk.dim("e/E")} edit  ${chalk.dim("Enter")} detail  ${chalk.dim("?")} help  ${chalk.dim("r")} refresh  ${chalk.dim("q")} quit`,
-  );
-
-  // ── Error banner ──────────────────────────────────────────────────────────
-  if (state.errorMessage) {
-    lines.push("");
-    lines.push(chalk.bgRed.white(" ERROR ") + " " + chalk.red(state.errorMessage));
-  }
-
-  // ── Help overlay ─────────────────────────────────────────────────────────
-  if (state.showHelp) {
-    const helpLines = renderHelpOverlay(terminalWidth);
-    const startRow = Math.floor(terminalWidth / 2) - Math.floor(helpLines.length / 2);
-    for (let i = 0; i < helpLines.length; i++) {
-      lines.push(moveTo(startRow + i, 1) + helpLines[i]);
-    }
-  }
-
-  // ── Task detail panel ─────────────────────────────────────────────────────
-  if (state.showDetail && state.detailTask) {
-    const detailLines = renderTaskDetail(state.detailTask, terminalWidth);
-    const startRow = 3;
-    for (let i = 0; i < detailLines.length; i++) {
-      lines.push(moveTo(startRow + i, 1) + detailLines[i]);
-    }
-  }
-
-  return lines.join("\n");
-}
-
-/**
- * Render a single task card as 3 lines (truncated title, ID, priority badge).
- */
-export function renderTaskCard(
-  task: BoardTask,
-  width: number,
-  isSelected: boolean,
-  isFlash: boolean,
-  isExpanded: boolean,
-): string[] {
-  const idDisplay = formatTaskIdDisplay(task.id);
-  const truncatedTitle = task.title.length > width - 4
-    ? task.title.slice(0, width - 7) + "…"
-    : task.title;
-
-  const badge = PRIORITY_BADGES[task.priority] ?? "P?";
-  const badgeColorFn = PRIORITY_COLORS[task.priority] ?? chalk.bgGray;
-  const badgeStr = badgeColorFn(` ${badge} `);
-
-  // Determine highlight style
-  let prefix: string;
-  if (isSelected) {
-    if (isFlash) {
-      prefix = chalk.bgGreen.black("▶ ");
-    } else {
-      prefix = chalk.bgCyan.black("▶ ");
-    }
-  } else {
-    prefix = "  ";
-  }
-
-  const idStr = chalk.dim(idDisplay);
-  const titleStr = isSelected ? chalk.blackBright(truncatedTitle) : chalk.white(truncatedTitle);
-  const line1 = prefix + titleStr.padEnd(width - 2) + badgeStr;
-
-  const typeStr = chalk.dim(task.type);
-  const statusStr = chalk.dim(task.status);
-  const line2 = "  " + typeStr.padEnd(Math.floor(width / 2)) + statusStr.padEnd(Math.floor(width / 2));
-
-  if (isExpanded) {
-    const descLines = (task.description ?? "").slice(0, width * 2).split("\n").slice(0, 3);
-    const expanded: string[] = [];
-    for (const dl of descLines) {
-      const truncated = dl.length > width - 4 ? dl.slice(0, width - 7) + "…" : dl;
-      expanded.push("  " + chalk.dim(truncated));
-    }
-    return [line1, line2, ...expanded];
-  }
-
-  return [line1, line2];
+  return `${CLEAR_SCREEN}${renderBoardFrame(state, projectName, terminalWidth, terminalHeight, userVisibleLimit)}`;
 }
 
 /**
  * Render the help overlay panel.
  */
-export function renderHelpOverlay(width: number): string[] {
-  const panelWidth = Math.min(72, width - 4);
-  const col1 = Math.floor(panelWidth * 0.4);
-  const col2 = panelWidth - col1;
-
-  const rows: [string, string][] = [
-    ["j / k", "Move up / down in column"],
-    ["h / l", "Move left / right between columns"],
-    ["g / G", "Jump to first / last task in column"],
-    ["[1]…[6]", "Jump to column by number"],
-    ["s / S", "Cycle status forward / backward"],
-    ["c", "Close task (status → closed)"],
-    ["C", "Close task with reason prompt"],
-    ["e", "Edit task in $EDITOR (basic YAML)"],
-    ["E", "Edit task in $EDITOR (full schema)"],
-    ["Enter", "Show task detail panel"],
-    ["Esc", "Dismiss detail / help overlay"],
-    ["r", "Refresh board from store"],
-    ["q", "Quit board"],
-  ];
-
-  const lines: string[] = [];
-  const border = "─".repeat(panelWidth);
-
-  lines.push(chalk.bgYellow.black(` ${chalk.bold("HELP — Key Bindings")} `) + "─".repeat(panelWidth - 22));
-  lines.push(chalk.bgBlack(" " + "Key".padEnd(col1) + " " + "Action".padEnd(col2) + " "));
-  lines.push(chalk.bgBlack(border));
-
-  for (const [key, action] of rows) {
-    const keyStr = chalk.cyan(key.padEnd(col1));
-    const actionStr = chalk.white(action);
-    lines.push(` ${keyStr} ${actionStr.padEnd(col2)} `);
-  }
-
-  lines.push(chalk.bgBlack(border));
-  lines.push(chalk.bgBlack(" " + chalk.dim("Press ? or Esc to close").padEnd(panelWidth - 2) + " "));
-
-  return lines;
+export function renderHelpOverlay(width: number): string {
+  return renderToString(renderHelpOverlayView(width), { columns: width });
 }
 
 /**
  * Render the task detail panel (full metadata).
  */
-export function renderTaskDetail(task: BoardTask, width: number): string[] {
-  const panelWidth = Math.min(64, width - 4);
-  const lines: string[] = [];
-
-  const border = "─".repeat(panelWidth);
-  lines.push(chalk.bgBlue.white(" TASK DETAIL ") + "─".repeat(panelWidth - 14));
-  lines.push("");
-
-  const fieldWidth = 12;
-  const valueWidth = panelWidth - fieldWidth - 2;
-
-  function fieldRow(label: string, value: string): string {
-    const truncated = value.length > valueWidth ? value.slice(0, valueWidth - 1) + "…" : value;
-    return `  ${chalk.bold(label.padEnd(fieldWidth))} ${truncated}`;
-  }
-
-  lines.push(fieldRow("ID:", task.id));
-  lines.push(fieldRow("Title:", task.title));
-  if (task.description) {
-    // Description may span multiple lines
-    const descLines = task.description.split("\n").slice(0, 5);
-    lines.push(fieldRow("Description:", descLines[0] ?? ""));
-    for (const dl of descLines.slice(1)) {
-      lines.push("  " + " ".repeat(fieldWidth) + " " + chalk.dim(dl));
-    }
-  }
-  lines.push(fieldRow("Type:", task.type));
-  lines.push(fieldRow("Priority:", `${priorityLabel(task.priority)} (P${task.priority})`));
-  lines.push(fieldRow("Status:", task.status));
-  if (task.external_id) {
-    lines.push(fieldRow("External ID:", task.external_id));
-  }
-  lines.push(fieldRow("Created:", new Date(task.created_at).toLocaleString()));
-  lines.push(fieldRow("Updated:", new Date(task.updated_at).toLocaleString()));
-  if (task.approved_at) {
-    lines.push(fieldRow("Approved:", new Date(task.approved_at).toLocaleString()));
-  }
-  if (task.closed_at) {
-    lines.push(fieldRow("Closed:", new Date(task.closed_at).toLocaleString()));
-  }
-
-  lines.push("");
-  lines.push(chalk.dim("─".repeat(panelWidth)));
-  lines.push(chalk.dim("  Press Enter or Esc to close"));
-
-  return lines;
+export function renderTaskDetail(task: BoardTask, width: number): string {
+  return renderToString(renderTaskDetailView(task, width), { columns: width });
 }
 
 // ── Editor integration ───────────────────────────────────────────────────────
@@ -711,6 +874,8 @@ export interface KeyHandlerResult {
   needsRefresh: boolean;
   /** If true, the board should exit. */
   quit: boolean;
+  /** If true, the caller should prompt for a close reason before closing. */
+  promptForCloseReason: boolean;
   /** Close reason for C key */
   closeReason?: string;
 }
@@ -738,6 +903,7 @@ export function createKeyHandler(projectPath: string): KeyHandler {
       detailTask: state.detailTask,
       needsRefresh: false,
       quit: false,
+      promptForCloseReason: false,
     };
 
     // Dismiss overlays on any key when shown
@@ -833,19 +999,23 @@ export function createKeyHandler(projectPath: string): KeyHandler {
       }
 
       // ── Close task ─────────────────────────────────────────────────────────
-      case KEY_c:
-      case KEY_C: {
+      case KEY_c: {
         const task = getHighlightedTask(result.nav, state.tasks);
         if (!task) break;
 
-        // For C key, prompt for reason (handled by caller)
-        const err = closeTask(projectPath, task.id, key === KEY_C ? undefined : undefined);
+        const err = closeTask(projectPath, task.id);
         if (err) {
           result.errorMessage = err;
         } else {
           result.flashTaskId = task.id;
           result.needsRefresh = true;
         }
+        break;
+      }
+      case KEY_C: {
+        const task = getHighlightedTask(result.nav, state.tasks);
+        if (!task) break;
+        result.promptForCloseReason = true;
         break;
       }
 
@@ -926,37 +1096,34 @@ export interface BoardOptions {
 }
 
 /**
- * Read a line from stdin synchronously (for close reason prompt).
+ * Read a line from stdin (for close reason prompt).
  */
-function readLineSync(prompt: string): string {
+async function readLine(prompt: string): Promise<string> {
   // Temporarily disable raw mode to read input
   if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
     process.stdin.setRawMode!(false);
   }
 
-  const readline = require("readline");
-  const rl = readline.createInterface({
+  const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
   });
 
-  return new Promise<string>((resolve) => {
-    rl.question(prompt, (answer: string) => {
-      rl.close();
-      // Re-enable raw mode
-      if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
-        process.stdin.setRawMode!(true);
-      }
-      resolve(answer);
-    });
-  }) as unknown as string;
+  try {
+    return await rl.question(prompt);
+  } finally {
+    rl.close();
+    if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+      process.stdin.setRawMode!(true);
+    }
+  }
 }
 
 /**
  * Run the interactive kanban board TUI loop.
  */
 export function runBoard(opts: BoardOptions): void {
-  const { projectPath, projectName, limit = 200 } = opts;
+  const { projectPath, projectName, limit } = opts;
 
   let tasks: Map<BoardStatus, BoardTask[]>;
   try {
@@ -994,7 +1161,7 @@ export function runBoard(opts: BoardOptions): void {
   };
 
   process.stdout.write(HIDE_CURSOR);
-  process.stdout.write(renderBoard(initialState, projectName, getTerminalWidth()));
+  process.stdout.write(renderBoard(initialState, projectName, getTerminalWidth(), limit, getTerminalHeight()));
 
   const attachRawMode = () => {
     if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
@@ -1032,16 +1199,6 @@ export function runBoard(opts: BoardOptions): void {
     else if (key === "\x1B[C") normalizedKey = KEY_l; // arrow right
     else if (key === "\x1B[D") normalizedKey = KEY_h; // arrow left
 
-    // Handle C key (close with reason) specially
-    let closeReason: string | undefined;
-    if (normalizedKey === KEY_C) {
-      // Dismiss raw mode temporarily to read the reason
-      detachRawMode();
-      process.stdout.write("\n" + chalk.bold("Close reason (optional, press Enter to skip): ") + "");
-      closeReason = await readLineSync("");
-      attachRawMode();
-    }
-
     const currentState: RenderState = {
       tasks,
       nav,
@@ -1055,16 +1212,21 @@ export function runBoard(opts: BoardOptions): void {
 
     const result = handleKey(normalizedKey, currentState, projectPath);
 
-    // Apply close reason if this was a C key press
-    if (normalizedKey === KEY_C && closeReason !== undefined) {
+    if (result.promptForCloseReason) {
       const task = getHighlightedTask(nav, tasks);
       if (task) {
-        const err = closeTask(projectPath, task.id, closeReason || undefined);
-        if (!err) {
-          result.flashTaskId = task.id;
-          result.needsRefresh = true;
-        } else {
-          result.errorMessage = err;
+        detachRawMode();
+        try {
+          const closeReason = await readLine("\nClose reason (optional, press Enter to skip): ");
+          const err = closeTask(projectPath, task.id, closeReason || undefined);
+          if (!err) {
+            result.flashTaskId = task.id;
+            result.needsRefresh = true;
+          } else {
+            result.errorMessage = err;
+          }
+        } finally {
+          attachRawMode();
         }
       }
     }
@@ -1104,7 +1266,7 @@ export function runBoard(opts: BoardOptions): void {
       detailTask,
     };
 
-    process.stdout.write(renderBoard(newState, projectName, getTerminalWidth()));
+    process.stdout.write(renderBoard(newState, projectName, getTerminalWidth(), limit, getTerminalHeight()));
 
     if (quit) {
       process.stdout.write(SHOW_CURSOR + "\n");
@@ -1130,12 +1292,15 @@ export const boardCommand = new Command("board")
   .description("Terminal UI kanban board for managing Foreman tasks")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .option("--limit <n>", "Maximum tasks per column to display", "5")
+  .option("--limit <n>", "Maximum tasks per column to display (default: auto-fit terminal height)")
   .option("--filter <status>", "Filter by status (e.g., backlog, ready, in_progress)")
   .action((opts: { project?: string; projectPath?: string; limit?: string; filter?: string }) => {
     const projectPath = resolveProjectPathFromOptions(opts);
     const projectName = opts.project ?? basename(projectPath);
-    const limit = Math.max(1, parseInt(opts.limit ?? "5", 10) || 5);
+    const parsedLimit = opts.limit == null ? undefined : parseInt(opts.limit, 10);
+    const limit = parsedLimit == null || Number.isNaN(parsedLimit)
+      ? undefined
+      : Math.max(1, parsedLimit);
     const filter = opts.filter;
 
     try {

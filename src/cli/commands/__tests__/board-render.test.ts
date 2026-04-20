@@ -5,7 +5,14 @@
  */
 
 import { describe, it, expect } from "vitest";
-import type { BoardStatus, BoardTask, RenderState } from "../board.js";
+import {
+  getVisibleTaskCapacity,
+  getVisibleTaskWindow,
+  renderBoard,
+  type BoardStatus,
+  type BoardTask,
+  type RenderState,
+} from "../board.js";
 
 // Constants matching board.ts
 const BOARD_STATUSES: readonly BoardStatus[] = [
@@ -37,6 +44,12 @@ const PRIORITY_BADGES: Record<number, string> = {
   3: "P3",
   4: "P4",
 };
+
+function stripTerminalFormatting(value: string): string {
+  return value
+    .replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "");
+}
 
 describe("BoardRendering", () => {
   // Helper to create a board task
@@ -185,6 +198,109 @@ describe("BoardRendering", () => {
 
       expect(visibleTasks).toHaveLength(5);
       expect(extraCount).toBe(5);
+    });
+
+    it("should center the visible task window around the selected task when scrolling", () => {
+      const tasks = Array.from({ length: 10 }, (_, index) => createTask(`bd-${index}`));
+
+      const window = getVisibleTaskWindow(tasks, 6, MAX_VISIBLE_PER_COL);
+
+      expect(window.startIndex).toBe(4);
+      expect(window.hiddenBefore).toBe(4);
+      expect(window.hiddenAfter).toBe(1);
+      expect(window.visibleTasks.map((task) => task.id)).toEqual([
+        "bd-4",
+        "bd-5",
+        "bd-6",
+        "bd-7",
+        "bd-8",
+      ]);
+    });
+
+    it("should derive visible task capacity from terminal height when no limit is provided", () => {
+      expect(getVisibleTaskCapacity(24, 20)).toBeGreaterThan(5);
+      expect(getVisibleTaskCapacity(24, 20, 4)).toBe(4);
+    });
+
+    it("should render six column jump labels without a merged column", () => {
+      const output = stripTerminalFormatting(renderBoard(createRenderState({}), "Demo", 120));
+
+      expect(output).toContain("[1] Backlog");
+      expect(output).toContain("[6] Closed");
+      expect(output).not.toContain("Merged");
+    });
+
+    it("should render aligned boxed columns for the task grid", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({
+          backlog: [createTask("bd-1", { title: "Implement task board layout" })],
+        }),
+        "Demo",
+        120,
+      ));
+
+      const lines = output.split("\n");
+      const borderLine = lines.find((line) => line.includes("╭") && line.includes("╮"));
+      const gridLine = lines.find((line) => line.includes("│ Backlog (1)"));
+
+      expect(borderLine).toBeDefined();
+      expect(borderLine?.match(/╭/g)).toHaveLength(6);
+      expect(gridLine).toBeDefined();
+      expect(gridLine?.match(/│/g)?.length).toBeGreaterThanOrEqual(12);
+    });
+
+    it("should keep the selected task visible when navigating past the first page", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({
+          backlog: Array.from({ length: 10 }, (_, index) =>
+            createTask(`bd-${index}`, { title: `Task ${index}` })),
+        }, {
+          nav: { colIndex: 0, rowIndex: 6 },
+        }),
+        "Demo",
+        120,
+        MAX_VISIBLE_PER_COL,
+        24,
+      ));
+
+      expect(output).toContain("▶ Task 6");
+      expect(output).toContain("↑ 4 earlier");
+      expect(output).toContain("↓ 1 more");
+      expect(output).not.toContain("▶ Task 0");
+    });
+
+    it("should stretch columns to fill a taller terminal", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({
+          backlog: [createTask("bd-1", { title: "Task 1" })],
+        }),
+        "Demo",
+        120,
+        MAX_VISIBLE_PER_COL,
+        30,
+      ));
+
+      const lines = output.split("\n");
+      const borderLines = lines.filter((line) => line.includes("│") || line.includes("╭") || line.includes("╰"));
+
+      expect(lines.length).toBeGreaterThanOrEqual(24);
+      expect(borderLines.length).toBeGreaterThan(10);
+    });
+
+    it("should show more than five tasks in a tall terminal by default", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({
+          backlog: Array.from({ length: 10 }, (_, index) =>
+            createTask(`bd-${index}`, { title: `Task ${index}` })),
+        }),
+        "Demo",
+        120,
+        undefined,
+        30,
+      ));
+
+      expect(output).toContain("Task 0");
+      expect(output).toContain("Task 5");
     });
   });
 

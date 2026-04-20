@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import type { BoardStatus, BoardTask } from "../board.js";
+import { createKeyHandler, type BoardStatus, type BoardTask, type RenderState } from "../board.js";
 
 // Constants matching board.ts
 const BOARD_STATUSES: readonly BoardStatus[] = [
@@ -36,6 +36,28 @@ describe("BoardMutations", () => {
     closed_at: null,
     ...overrides,
   });
+
+  const createState = (
+    tasksByStatus: Partial<Record<BoardStatus, BoardTask[]>>,
+    overrides: Partial<RenderState> = {},
+  ): RenderState => {
+    const tasks = new Map<BoardStatus, BoardTask[]>();
+    for (const status of BOARD_STATUSES) {
+      tasks.set(status, tasksByStatus[status] ?? []);
+    }
+
+    return {
+      tasks,
+      nav: { colIndex: 0, rowIndex: 0 },
+      totalTasks: [...tasks.values()].reduce((sum, entries) => sum + entries.length, 0),
+      errorMessage: null,
+      flashTaskId: null,
+      showHelp: false,
+      showDetail: false,
+      detailTask: null,
+      ...overrides,
+    };
+  };
 
   describe("Status Cycling (s/S keys)", () => {
     it("s should advance status to next in order", () => {
@@ -163,6 +185,20 @@ describe("BoardMutations", () => {
       // In the actual implementation, reason is stored in closed_at field
       const closedTask = { ...task, closed_at: reason };
       expect(closedTask.closed_at).toBe(reason);
+    });
+
+    it("C should request a close reason instead of closing immediately", () => {
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({
+        backlog: [createTask("bd-1234", { status: "backlog" })],
+      });
+
+      const result = handleKey("C", state, "/tmp/project");
+
+      expect(result.promptForCloseReason).toBe(true);
+      expect(result.needsRefresh).toBe(false);
+      expect(result.flashTaskId).toBeNull();
+      expect(result.errorMessage).toBeNull();
     });
   });
 
