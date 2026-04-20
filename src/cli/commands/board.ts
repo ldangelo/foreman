@@ -23,7 +23,6 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 import * as yaml from "js-yaml";
-import blessed from "blessed";
 import { ForemanStore } from "../../lib/store.js";
 import {
   NativeTaskStore,
@@ -63,6 +62,15 @@ const PRIORITY_BADGES: Record<number, string> = {
   2: "P2",
   3: "P3",
   4: "P4",
+};
+
+/** Priority badge colors. */
+const PRIORITY_COLORS: Record<number, (text: string) => string> = {
+  0: chalk.bgRed.white,
+  1: chalk.bgYellow.black,
+  2: chalk.bgCyan.black,
+  3: chalk.bgGray.white,
+  4: chalk.bgBlackBright.white,
 };
 
 export interface BoardTask {
@@ -108,11 +116,13 @@ function getTaskStore(projectPath: string): { store: ForemanStore; taskStore: Na
 
 /**
  * Load all tasks from the native task store, grouped by status.
+ * Tasks with unknown statuses are placed in the rightmost column (closed).
  */
 export function loadBoardTasks(projectPath: string): Map<BoardStatus, BoardTask[]> {
   const { store, taskStore } = getTaskStore(projectPath);
   try {
     const db = store.getDb();
+    // Load all tasks ordered by priority and created_at
     const rows = db.prepare(
       "SELECT * FROM tasks ORDER BY priority ASC, created_at ASC",
     ).all() as TaskRow[];
@@ -148,8 +158,510 @@ export function loadBoardTasks(projectPath: string): Map<BoardStatus, BoardTask[
   }
 }
 
-// ── Key handling helpers ──────────────────────────────────────────────────────
+// ── ANSI rendering helpers ────────────────────────────────────────────────────
 
+/** Clear the entire screen and move cursor to top-left. */
+const CLEAR_SCREEN = "\x1B[2J\x1B[H";
+
+/** Hide the cursor. */
+const HIDE_CURSOR = "\x1b[?25l";
+
+/** Show the cursor. */
+const SHOW_CURSOR = "\x1b[?25h";
+
+/** Move cursor to (row, col) using 1-based coordinates. */
+function moveTo(row: number, col: number): string {
+  return `\x1B[${row};${col}H`;
+}
+
+/** Get the terminal width. */
+function getTerminalWidth(): number {
+  return process.stdout.columns || 80;
+}
+
+/**
+ * Clamp a value to [min, max] inclusive.
+ */
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+// ── Board renderer ────────────────────────────────────────────────────────────
+
+const MIN_COL_WIDTH = 12;
+const TASK_CARD_HEIGHT = 3;
+const MAX_VISIBLE_PER_COL = 5;
+
+/**
+ * Render the full kanban board to a string and write it to stdout,
+ * leaving the cursor just below the board.
+ *
+ * Layout (top to bottom):
+ *   1. Header: project name + total task count
+ *   2. Column number row: [1] Backlog  [2] Ready ...
+ *   3. Column headers (name + count)
+ *   4. Task cards (scrollable within column to 5 visible, +N more)
+ *   5. Footer: keybindings hint
+ */
+export function renderBoard(
+  state: RenderState,
+  projectName: string,
+  terminalWidth: number,
+): string {
+  const lines: string[] = [];
+
+  // ── Header ────────────────────────────────────────────────────────────────
+  const title = ` Foreman Kanban Board — ${projectName} `;
+  const taskCount = ` ${state.totalTasks} task${state.totalTasks !== 1 ? "s" : ""} `;
+  const headerLine = chalk.bgBlue.white(title) + chalk.bgBlue.dim(taskCount);
+  lines.push(CLEAR_SCREEN + headerLine);
+  lines.push("");
+
+  // ── Column number row ────────────────────────────────────────────────────
+  const colNumbers = BOARD_STATUSES.map((s, i) => {
+    const num = chalk.dim(`[${i + 1}]`);
+    return `${num} ${chalk.bold(STATUS_LABELS[s])}`;
+  });
+  lines.push("  " + colNumbers.join(chalk.dim("   ")));
+  lines.push("");
+
+  // ── Build columns side-by-side ─────────────────────────────────────────────
+  const numCols = BOARD_STATUSES.length;
+  const colWidth = Math.max(MIN_COL_WIDTH, Math.floor((terminalWidth - numCols) / numCols));
+  const CARD_LINES = 2; // each task card renders 2 lines
+  const SEP = chalk.dim(" │ ");
+
+  // Build column content as arrays of lines
+  const columnContent: string[][] = [];
+  let maxHeight = 0;
+
+  for (let ci = 0; ci < numCols; ci++) {
+    const status = BOARD_STATUSES[ci];
+    const tasks = state.tasks.get(status) ?? [];
+    const isNavCol = ci === state.nav.colIndex;
+    const colLines: string[] = [];
+
+    // Column header — underlined, padded to column width
+    const countStr = tasks.length === 0
+      ? chalk.dim("(empty)")
+      : chalk.white(`${tasks.length}`);
+    const headerText = `${STATUS_LABELS[status]} ${chalk.dim("(")}${countStr}${chalk.dim(")")}`;
+    const headerLine = chalk.underline(headerText.padEnd(colWidth));
+    colLines.push(headerLine);
+
+    // Task cards — each occupies CARD_LINES lines
+    const visibleTasks = tasks.slice(0, MAX_VISIBLE_PER_COL);
+    const extraCount = Math.max(0, tasks.length - MAX_VISIBLE_PER_COL);
+
+    for (let ti = 0; ti < MAX_VISIBLE_PER_COL; ti++) {
+      const isNavRow = isNavCol && ti === state.nav.rowIndex;
+      const task = visibleTasks[ti] ?? null;
+
+      if (task) {
+        const isFlash = task.id === state.flashTaskId;
+        const cardLines = renderTaskCard(task, colWidth, isNavRow, isFlash, false);
+        for (let cl = 0; cl < CARD_LINES; cl++) {
+          colLines.push((cardLines[cl] ?? "").padEnd(colWidth));
+        }
+      } else {
+        // Empty slot — CARD_LINES blank lines
+        for (let cl = 0; cl < CARD_LINES; cl++) {
+          colLines.push(" ".repeat(colWidth));
+        }
+      }
+    }
+
+    // "+N more" indicator
+    if (extraCount > 0) {
+      colLines.push(chalk.dim(`+${extraCount} more`).padEnd(colWidth));
+    }
+
+    columnContent.push(colLines);
+    maxHeight = Math.max(maxHeight, colLines.length);
+  }
+
+  // Render columns side-by-side row by row
+  for (let row = 0; row < maxHeight; row++) {
+    const cells = columnContent.map(col => col[row] ?? "".padEnd(colWidth));
+    lines.push("  " + cells.join(SEP));
+  }
+
+  // ── Footer ────────────────────────────────────────────────────────────────
+  lines.push(chalk.dim("─".repeat(terminalWidth)));
+  lines.push(
+    `  ${chalk.dim("j/k")} up/down  ${chalk.dim("h/l")} left/right  ${chalk.dim("s/S")} cycle status  ${chalk.dim("c/C")} close  ${chalk.dim("e/E")} edit  ${chalk.dim("Enter")} detail  ${chalk.dim("?")} help  ${chalk.dim("r")} refresh  ${chalk.dim("q")} quit`,
+  );
+
+  // ── Error banner ──────────────────────────────────────────────────────────
+  if (state.errorMessage) {
+    lines.push("");
+    lines.push(chalk.bgRed.white(" ERROR ") + " " + chalk.red(state.errorMessage));
+  }
+
+  // ── Help overlay ─────────────────────────────────────────────────────────
+  if (state.showHelp) {
+    const helpLines = renderHelpOverlay(terminalWidth);
+    const startRow = Math.floor(terminalWidth / 2) - Math.floor(helpLines.length / 2);
+    for (let i = 0; i < helpLines.length; i++) {
+      lines.push(moveTo(startRow + i, 1) + helpLines[i]);
+    }
+  }
+
+  // ── Task detail panel ─────────────────────────────────────────────────────
+  if (state.showDetail && state.detailTask) {
+    const detailLines = renderTaskDetail(state.detailTask, terminalWidth);
+    const startRow = 3;
+    for (let i = 0; i < detailLines.length; i++) {
+      lines.push(moveTo(startRow + i, 1) + detailLines[i]);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Render a single task card as 3 lines (truncated title, ID, priority badge).
+ */
+export function renderTaskCard(
+  task: BoardTask,
+  width: number,
+  isSelected: boolean,
+  isFlash: boolean,
+  isExpanded: boolean,
+): string[] {
+  const idDisplay = formatTaskIdDisplay(task.id);
+  const truncatedTitle = task.title.length > width - 4
+    ? task.title.slice(0, width - 7) + "…"
+    : task.title;
+
+  const badge = PRIORITY_BADGES[task.priority] ?? "P?";
+  const badgeColorFn = PRIORITY_COLORS[task.priority] ?? chalk.bgGray;
+  const badgeStr = badgeColorFn(` ${badge} `);
+
+  // Determine highlight style
+  let prefix: string;
+  if (isSelected) {
+    if (isFlash) {
+      prefix = chalk.bgGreen.black("▶ ");
+    } else {
+      prefix = chalk.bgCyan.black("▶ ");
+    }
+  } else {
+    prefix = "  ";
+  }
+
+  const idStr = chalk.dim(idDisplay);
+  const titleStr = isSelected ? chalk.blackBright(truncatedTitle) : chalk.white(truncatedTitle);
+  const line1 = prefix + titleStr.padEnd(width - 2) + badgeStr;
+
+  const typeStr = chalk.dim(task.type);
+  const statusStr = chalk.dim(task.status);
+  const line2 = "  " + typeStr.padEnd(Math.floor(width / 2)) + statusStr.padEnd(Math.floor(width / 2));
+
+  if (isExpanded) {
+    const descLines = (task.description ?? "").slice(0, width * 2).split("\n").slice(0, 3);
+    const expanded: string[] = [];
+    for (const dl of descLines) {
+      const truncated = dl.length > width - 4 ? dl.slice(0, width - 7) + "…" : dl;
+      expanded.push("  " + chalk.dim(truncated));
+    }
+    return [line1, line2, ...expanded];
+  }
+
+  return [line1, line2];
+}
+
+/**
+ * Render the help overlay panel.
+ */
+export function renderHelpOverlay(width: number): string[] {
+  const panelWidth = Math.min(72, width - 4);
+  const col1 = Math.floor(panelWidth * 0.4);
+  const col2 = panelWidth - col1;
+
+  const rows: [string, string][] = [
+    ["j / k", "Move up / down in column"],
+    ["h / l", "Move left / right between columns"],
+    ["g / G", "Jump to first / last task in column"],
+    ["[1]…[6]", "Jump to column by number"],
+    ["s / S", "Cycle status forward / backward"],
+    ["c", "Close task (status → closed)"],
+    ["C", "Close task with reason prompt"],
+    ["e", "Edit task in $EDITOR (basic YAML)"],
+    ["E", "Edit task in $EDITOR (full schema)"],
+    ["Enter", "Show task detail panel"],
+    ["Esc", "Dismiss detail / help overlay"],
+    ["r", "Refresh board from store"],
+    ["q", "Quit board"],
+  ];
+
+  const lines: string[] = [];
+  const border = "─".repeat(panelWidth);
+
+  lines.push(chalk.bgYellow.black(` ${chalk.bold("HELP — Key Bindings")} `) + "─".repeat(panelWidth - 22));
+  lines.push(chalk.bgBlack(" " + "Key".padEnd(col1) + " " + "Action".padEnd(col2) + " "));
+  lines.push(chalk.bgBlack(border));
+
+  for (const [key, action] of rows) {
+    const keyStr = chalk.cyan(key.padEnd(col1));
+    const actionStr = chalk.white(action);
+    lines.push(` ${keyStr} ${actionStr.padEnd(col2)} `);
+  }
+
+  lines.push(chalk.bgBlack(border));
+  lines.push(chalk.bgBlack(" " + chalk.dim("Press ? or Esc to close").padEnd(panelWidth - 2) + " "));
+
+  return lines;
+}
+
+/**
+ * Render the task detail panel (full metadata).
+ */
+export function renderTaskDetail(task: BoardTask, width: number): string[] {
+  const panelWidth = Math.min(64, width - 4);
+  const lines: string[] = [];
+
+  const border = "─".repeat(panelWidth);
+  lines.push(chalk.bgBlue.white(" TASK DETAIL ") + "─".repeat(panelWidth - 14));
+  lines.push("");
+
+  const fieldWidth = 12;
+  const valueWidth = panelWidth - fieldWidth - 2;
+
+  function fieldRow(label: string, value: string): string {
+    const truncated = value.length > valueWidth ? value.slice(0, valueWidth - 1) + "…" : value;
+    return `  ${chalk.bold(label.padEnd(fieldWidth))} ${truncated}`;
+  }
+
+  lines.push(fieldRow("ID:", task.id));
+  lines.push(fieldRow("Title:", task.title));
+  if (task.description) {
+    // Description may span multiple lines
+    const descLines = task.description.split("\n").slice(0, 5);
+    lines.push(fieldRow("Description:", descLines[0] ?? ""));
+    for (const dl of descLines.slice(1)) {
+      lines.push("  " + " ".repeat(fieldWidth) + " " + chalk.dim(dl));
+    }
+  }
+  lines.push(fieldRow("Type:", task.type));
+  lines.push(fieldRow("Priority:", `${priorityLabel(task.priority)} (P${task.priority})`));
+  lines.push(fieldRow("Status:", task.status));
+  if (task.external_id) {
+    lines.push(fieldRow("External ID:", task.external_id));
+  }
+  lines.push(fieldRow("Created:", new Date(task.created_at).toLocaleString()));
+  lines.push(fieldRow("Updated:", new Date(task.updated_at).toLocaleString()));
+  if (task.approved_at) {
+    lines.push(fieldRow("Approved:", new Date(task.approved_at).toLocaleString()));
+  }
+  if (task.closed_at) {
+    lines.push(fieldRow("Closed:", new Date(task.closed_at).toLocaleString()));
+  }
+
+  lines.push("");
+  lines.push(chalk.dim("─".repeat(panelWidth)));
+  lines.push(chalk.dim("  Press Enter or Esc to close"));
+
+  return lines;
+}
+
+// ── Editor integration ───────────────────────────────────────────────────────
+
+/** Resolve the $EDITOR environment variable with fallbacks. */
+export function resolveEditor(): string {
+  const editor = process.env.EDITOR ?? process.env.VISUAL;
+  if (editor) return editor;
+  // Check which editors are available on PATH
+  for (const candidate of ["vim", "nvim", "nano", "vi", "emacs"]) {
+    try {
+      require("node:child_process").execFileSync(candidate, ["--version"], {
+        stdio: "ignore",
+      });
+      return candidate;
+    } catch {
+      // not available
+    }
+  }
+  return "vi";
+}
+
+/**
+ * Open the task YAML in $EDITOR and return the parsed content on success.
+ * On error or non-zero exit, returns null and sets errorMessage.
+ */
+export function editTaskInEditor(
+  task: BoardTask,
+  fullSchema: boolean,
+  onError: (msg: string) => void,
+): BoardTask | null {
+  const editor = resolveEditor();
+  const tmpFile = joinPath(tmpdir(), `foreman-task-${randomUUID()}.yaml`);
+
+  // Build YAML document
+  const doc: Record<string, unknown> = {
+    id: task.id,
+    title: task.title,
+    description: task.description ?? "",
+    type: task.type,
+    priority: task.priority,
+    status: task.status,
+  };
+
+  if (fullSchema) {
+    doc.external_id = task.external_id ?? null;
+    doc.created_at = task.created_at;
+    doc.updated_at = task.updated_at;
+    doc.approved_at = task.approved_at;
+    doc.closed_at = task.closed_at;
+  }
+
+  try {
+    writeFileSync(tmpFile, yaml.dump(doc), "utf8");
+  } catch (err) {
+    onError(`Failed to write temp file: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+
+  let exitCode = 0;
+  try {
+    exitCode = spawnSync(editor, [tmpFile], {
+      stdio: "inherit",
+      shell: true,
+    }).status ?? 0;
+  } catch (err) {
+    onError(`Failed to launch editor '${editor}': ${err instanceof Error ? err.message : String(err)}`);
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    return null;
+  }
+
+  if (exitCode !== 0) {
+    onError(`Editor exited with code ${exitCode} — changes discarded.`);
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    return null;
+  }
+
+  try {
+    const raw = readFileSync(tmpFile, "utf8");
+    const parsed = yaml.load(raw) as Record<string, unknown>;
+
+    // Validate required fields
+    if (!parsed.id || typeof parsed.title !== "string") {
+      onError("YAML must include id and title fields.");
+      try { unlinkSync(tmpFile); } catch { /* ignore */ }
+      return null;
+    }
+
+    // Reconstitute a BoardTask (filter unknown fields)
+    const updated: BoardTask = {
+      id: String(parsed.id),
+      title: String(parsed.title),
+      description: typeof parsed.description === "string" ? parsed.description : null,
+      type: typeof parsed.type === "string" ? parsed.type : task.type,
+      priority: typeof parsed.priority === "number" ? clamp(parsed.priority, 0, 4) : task.priority,
+      status: typeof parsed.status === "string" ? parsed.status : task.status,
+      external_id: typeof parsed.external_id === "string" ? parsed.external_id : task.external_id,
+      created_at: typeof parsed.created_at === "string" ? parsed.created_at : task.created_at,
+      updated_at: typeof parsed.updated_at === "string" ? parsed.updated_at : task.updated_at,
+      approved_at: typeof parsed.approved_at === "string" ? parsed.approved_at : task.approved_at,
+      closed_at: typeof parsed.closed_at === "string" ? parsed.closed_at : task.closed_at,
+    };
+
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    return updated;
+  } catch (err) {
+    onError(`Failed to parse YAML: ${err instanceof Error ? err.message : String(err)}`);
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    return null;
+  }
+}
+
+// ── Store mutation helpers ────────────────────────────────────────────────────
+
+/**
+ * Write a status change to the store.
+ */
+export function applyStatusChange(projectPath: string, taskId: string, newStatus: string): string | null {
+  const { store, taskStore } = getTaskStore(projectPath);
+  try {
+    taskStore.update(taskId, { status: newStatus });
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * Close a task (status → closed, optionally with a reason stored in closed_at).
+ */
+export function closeTask(projectPath: string, taskId: string, reason?: string): string | null {
+  const { store, taskStore } = getTaskStore(projectPath);
+  try {
+    taskStore.close(taskId);
+    if (reason) {
+      // Store reason in closed_at (we reuse this field; a real implementation might use a separate field)
+      const db = store.getDb();
+      db.prepare("UPDATE tasks SET closed_at = ? WHERE id = ?").run(reason, taskId);
+    }
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * Save an edited task back to the store (title, description, priority, status).
+ */
+export function saveEditedTask(projectPath: string, originalId: string, updated: BoardTask): string | null {
+  const { store, taskStore } = getTaskStore(projectPath);
+  try {
+    const db = store.getDb();
+    db.prepare(
+      `UPDATE tasks SET title = ?, description = ?, type = ?, priority = ?, status = ?, updated_at = ? WHERE id = ?`,
+    ).run(
+      updated.title,
+      updated.description ?? null,
+      updated.type,
+      updated.priority,
+      updated.status,
+      new Date().toISOString(),
+      originalId,
+    );
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  } finally {
+    store.close();
+  }
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+
+/**
+ * Normalize nav.rowIndex to be within the bounds of the current column.
+ * If the column is empty, set rowIndex = 0.
+ */
+export function normalizeNavRowIndex(nav: NavigationState, tasks: Map<BoardStatus, BoardTask[]>): void {
+  const currentTasks = tasks.get(BOARD_STATUSES[nav.colIndex]) ?? [];
+  nav.rowIndex = clamp(nav.rowIndex, 0, Math.max(0, currentTasks.length - 1));
+}
+
+/**
+ * Get the currently highlighted task, or null if the column is empty.
+ */
+export function getHighlightedTask(nav: NavigationState, tasks: Map<BoardStatus, BoardTask[]>): BoardTask | null {
+  const currentTasks = tasks.get(BOARD_STATUSES[nav.colIndex]) ?? [];
+  return currentTasks[nav.rowIndex] ?? null;
+}
+
+// ── Key handler ──────────────────────────────────────────────────────────────
+
+/** Key codes. */
+const KEY_ESC = "\x1B";
+const KEY_ENTER = "\r";
 const KEY_j = "j";
 const KEY_k = "k";
 const KEY_h = "h";
@@ -162,25 +674,9 @@ const KEY_c = "c";
 const KEY_C = "C";
 const KEY_e = "e";
 const KEY_E = "E";
-const KEY_ENTER = "enter";
 const KEY_r = "r";
-const KEY_QUESTION = "?";
-const KEY_ESC = "escape";
 const KEY_q = "q";
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-export function normalizeNavRowIndex(nav: NavigationState, tasks: Map<BoardStatus, BoardTask[]>): void {
-  const currentTasks = tasks.get(BOARD_STATUSES[nav.colIndex]) ?? [];
-  nav.rowIndex = clamp(nav.rowIndex, 0, Math.max(0, currentTasks.length - 1));
-}
-
-export function getHighlightedTask(nav: NavigationState, tasks: Map<BoardStatus, BoardTask[]>): BoardTask | null {
-  const currentTasks = tasks.get(BOARD_STATUSES[nav.colIndex]) ?? [];
-  return currentTasks[nav.rowIndex] ?? null;
-}
+const KEY_QUESTION = "?";
 
 export interface KeyHandlerResult {
   nav: NavigationState;
@@ -189,15 +685,23 @@ export interface KeyHandlerResult {
   showHelp: boolean;
   showDetail: boolean;
   detailTask: BoardTask | null;
+  /** If true, the board should be re-rendered after this handler. */
   needsRefresh: boolean;
+  /** If true, the board should exit. */
   quit: boolean;
+  /** Close reason for C key */
+  closeReason?: string;
 }
 
 export type KeyHandler = (
   key: string,
   state: RenderState,
+  projectPath: string,
 ) => KeyHandlerResult;
 
+/**
+ * Create the key handler closure that captures projectPath.
+ */
 export function createKeyHandler(projectPath: string): KeyHandler {
   return function handleKey(
     key: string,
@@ -233,6 +737,7 @@ export function createKeyHandler(projectPath: string): KeyHandler {
     }
 
     switch (key) {
+      // ── Navigation ─────────────────────────────────────────────────────────
       case KEY_j: {
         const currentTasks = state.tasks.get(BOARD_STATUSES[result.nav.colIndex]) ?? [];
         if (currentTasks.length > 0) {
@@ -281,6 +786,8 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         }
         break;
       }
+
+      // ── Status cycling ─────────────────────────────────────────────────────
       case KEY_s:
       case KEY_S: {
         const task = getHighlightedTask(result.nav, state.tasks);
@@ -302,11 +809,14 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         }
         break;
       }
+
+      // ── Close task ─────────────────────────────────────────────────────────
       case KEY_c:
       case KEY_C: {
         const task = getHighlightedTask(result.nav, state.tasks);
         if (!task) break;
 
+        // For C key, prompt for reason (handled by caller)
         const err = closeTask(projectPath, task.id, key === KEY_C ? undefined : undefined);
         if (err) {
           result.errorMessage = err;
@@ -316,6 +826,8 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         }
         break;
       }
+
+      // ── Edit in editor ──────────────────────────────────────────────────────
       case KEY_e:
       case KEY_E: {
         const task = getHighlightedTask(result.nav, state.tasks);
@@ -337,6 +849,8 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         }
         break;
       }
+
+      // ── Task detail ─────────────────────────────────────────────────────────
       case KEY_ENTER: {
         const task = getHighlightedTask(result.nav, state.tasks);
         if (task) {
@@ -346,24 +860,32 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         }
         break;
       }
+
+      // ── Refresh ─────────────────────────────────────────────────────────────
       case KEY_r: {
         result.needsRefresh = true;
         break;
       }
+
+      // ── Help ────────────────────────────────────────────────────────────────
       case KEY_QUESTION: {
         result.showHelp = true;
         result.needsRefresh = true;
         break;
       }
+
+      // ── Quit ────────────────────────────────────────────────────────────────
       case KEY_q:
       case KEY_ESC: {
         result.quit = true;
         break;
       }
+
       default:
         break;
     }
 
+    // Clamp row index after any navigation that might change the column
     if (result.needsRefresh && !result.quit) {
       normalizeNavRowIndex(result.nav, state.tasks);
     }
@@ -372,250 +894,7 @@ export function createKeyHandler(projectPath: string): KeyHandler {
   };
 }
 
-// ── Task operations ──────────────────────────────────────────────────────────
-
-export function resolveEditor(): string {
-  return process.env.VISUAL ?? process.env.EDITOR ?? "vi";
-}
-
-export function editTaskInEditor(
-  task: BoardTask,
-  fullSchema: boolean,
-  onError: (msg: string) => void,
-): BoardTask | null {
-  const editor = resolveEditor();
-  const schema: Record<string, unknown> = {
-    id: task.id,
-    title: task.title,
-    description: task.description ?? "",
-    type: task.type,
-    priority: task.priority,
-    status: task.status,
-  };
-
-  if (fullSchema) {
-    schema.external_id = task.external_id ?? "";
-    schema.created_at = task.created_at;
-    schema.updated_at = task.updated_at;
-    schema.approved_at = task.approved_at ?? "";
-    schema.closed_at = task.closed_at ?? "";
-  }
-
-  const yamlContent = yaml.dump(schema);
-  const tmpFile = joinPath(tmpdir(), `foreman-task-edit-${randomUUID()}.yaml`);
-  writeFileSync(tmpFile, yamlContent, "utf8");
-
-  try {
-    const result = spawnSync(editor, [tmpFile], { stdio: "inherit" });
-    if (result.status !== 0) {
-      return null;
-    }
-
-    const editedContent = readFileSync(tmpFile, "utf8");
-    const parsed = yaml.load(editedContent) as Record<string, unknown>;
-
-    return {
-      id: String(parsed.id ?? task.id),
-      title: String(parsed.title ?? task.title),
-      description: parsed.description != null ? String(parsed.description) : null,
-      type: String(parsed.type ?? task.type),
-      priority: Number(parsed.priority ?? task.priority),
-      status: String(parsed.status ?? task.status),
-      external_id: parsed.external_id != null ? String(parsed.external_id) : null,
-      created_at: String(parsed.created_at ?? task.created_at),
-      updated_at: String(parsed.updated_at ?? task.updated_at),
-      approved_at: parsed.approved_at != null ? String(parsed.approved_at) : null,
-      closed_at: parsed.closed_at != null ? String(parsed.closed_at) : null,
-    };
-  } catch (err) {
-    onError(`Editor error: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  } finally {
-    try { unlinkSync(tmpFile); } catch { /* ignore */ }
-  }
-}
-
-export function applyStatusChange(projectPath: string, taskId: string, newStatus: string): string | null {
-  const { store, taskStore } = getTaskStore(projectPath);
-  try {
-    taskStore.updateStatus(taskId, newStatus);
-    return null;
-  } catch (err) {
-    return err instanceof Error ? err.message : String(err);
-  } finally {
-    store.close();
-  }
-}
-
-export function closeTask(projectPath: string, taskId: string, reason?: string): string | null {
-  const { store, taskStore } = getTaskStore(projectPath);
-  try {
-    taskStore.updateStatus(taskId, "closed");
-    return null;
-  } catch (err) {
-    return err instanceof Error ? err.message : String(err);
-  } finally {
-    store.close();
-  }
-}
-
-export function saveEditedTask(projectPath: string, originalId: string, updated: BoardTask): string | null {
-  const { store, taskStore } = getTaskStore(projectPath);
-  try {
-    taskStore.updateStatus(originalId, updated.status);
-    taskStore.update(originalId, {
-      title: updated.title,
-      description: updated.description,
-      priority: updated.priority,
-    });
-    return null;
-  } catch (err) {
-    return err instanceof Error ? err.message : String(err);
-  } finally {
-    store.close();
-  }
-}
-
-// ── Blessed rendering ────────────────────────────────────────────────────────
-
-/** Priority colors for task cards */
-const PRIORITY_FG: Record<number, string> = {
-  0: "red",
-  1: "yellow",
-  2: "cyan",
-  3: "white",
-  4: "gray",
-};
-
-/** Background colors for column headers */
-const COL_COLORS: Record<BoardStatus, string> = {
-  backlog: "blue",
-  ready: "green",
-  in_progress: "yellow",
-  review: "magenta",
-  blocked: "red",
-  closed: "gray",
-};
-
-function truncate(str: string, max: number): string {
-  return str.length > max - 1 ? str.slice(0, max - 2) + "…" : str;
-}
-
-function taskCardText(task: BoardTask, width: number, isSelected: boolean): string[] {
-  const id = formatTaskIdDisplay(task.id);
-  const badge = PRIORITY_BADGES[task.priority] ?? "P?";
-  const title = truncate(task.title, width - 8);
-  const type = task.type;
-  const prefix = isSelected ? "▶ " : "  ";
-  
-  const lines: string[] = [];
-  lines.push(
-    `{${isSelected ? "bold" : ""}${isSelected ? " white" : ""}}${prefix}${title}${/} {${PRIORITY_FG[task.priority] || "white"}}${badge}${/}`
-  );
-  lines.push(`{dim}${id}  ${type}{/}`);
-  return lines;
-}
-
-function buildBoard(screen: blessed.Widgets.Screen, tasks: Map<BoardStatus, BoardTask[]>, nav: NavigationState, projectName: string, totalTasks: number) {
-  const numCols = BOARD_STATUSES.length;
-  const width = Math.floor(100 / numCols);
-  const cols: blessed.Widgets.BoxElement[] = [];
-  
-  // Title bar
-  const sw = 120; // screen width fallback
-  const title = blessed.box({
-    parent: screen,
-    top: 0,
-    left: 0,
-    width: "100%",
-    height: 1,
-    content: ` Foreman Kanban Board — ${projectName} `,
-    style: { bg: "blue", fg: "white", bold: true },
-    tags: true,
-  });
-
-  // Column headers row
-  let left = 0;
-  for (let i = 0; i < numCols; i++) {
-    const status = BOARD_STATUSES[i];
-    const colTasks = tasks.get(status) ?? [];
-    const label = STATUS_LABELS[status];
-    const count = colTasks.length;
-    const headerWidth = Math.floor(sw / numCols) - 1;
-
-    const header = blessed.box({
-      parent: screen,
-      top: 1,
-      left,
-      width: headerWidth,
-      height: 1,
-      content: ` ${label} (${count}) `,
-      style: { bg: COL_COLORS[status], fg: "white", bold: true },
-      align: "left",
-      tags: true,
-    });
-
-    cols.push(header);
-    left += headerWidth + 1;
-  }
-
-  // Task lists
-  const listTop = 2;
-  const listHeight = 26;
-  left = 0;
-
-  for (let ci = 0; ci < numCols; ci++) {
-    const status = BOARD_STATUSES[ci];
-    const colTasks = tasks.get(status) ?? [];
-    const listWidth = Math.floor(sw / numCols) - 1;
-    const isNavCol = ci === nav.colIndex;
-
-    const list = blessed.box({
-      parent: screen,
-      top: listTop,
-      left,
-      width: listWidth,
-      height: listHeight,
-      style: { border: { fg: COL_COLORS[status] } },
-      scrollable: true,
-      alwaysScroll: false,
-      tags: true,
-    });
-
-    // Build content
-    let content = "";
-    for (let ti = 0; ti < colTasks.length; ti++) {
-      const task = colTasks[ti];
-      const isNavRow = isNavCol && ti === nav.rowIndex;
-      const lines = taskCardText(task, listWidth - 2, isNavRow);
-      content += lines.join("\n") + "\n";
-    }
-
-    if (colTasks.length === 0) {
-      content = "{dim}(empty){/}";
-    }
-
-    list.setContent(content);
-    cols.push(list);
-    left += listWidth + 1;
-  }
-
-  // Footer
-  const footer = blessed.box({
-    parent: screen,
-    bottom: 0,
-    left: 0,
-    width: "100%",
-    height: 1,
-    content: " {bold}j/k{/} up/down  {bold}h/l{/} left/right  {bold}s/S{/} cycle  {bold}c{/} close  {bold}e{/} edit  {bold}Enter{/} detail  {bold}?{/} help  {bold}r{/} refresh  {bold}q{/} quit ",
-    style: { bg: "black", fg: "gray" },
-    tags: true,
-  });
-
-  return { title, cols, footer };
-}
-
-// ── Main board loop ──────────────────────────────────────────────────────────
+// ── Main board loop ────────────────────────────────────────────────────────────
 
 export interface BoardOptions {
   projectPath: string;
@@ -624,8 +903,38 @@ export interface BoardOptions {
   filter?: string;
 }
 
+/**
+ * Read a line from stdin synchronously (for close reason prompt).
+ */
+function readLineSync(prompt: string): string {
+  // Temporarily disable raw mode to read input
+  if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+    process.stdin.setRawMode!(false);
+  }
+
+  const readline = require("readline");
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise<string>((resolve) => {
+    rl.question(prompt, (answer: string) => {
+      rl.close();
+      // Re-enable raw mode
+      if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+        process.stdin.setRawMode!(true);
+      }
+      resolve(answer);
+    });
+  }) as unknown as string;
+}
+
+/**
+ * Run the interactive kanban board TUI loop.
+ */
 export function runBoard(opts: BoardOptions): void {
-  const { projectPath, projectName } = opts;
+  const { projectPath, projectName, limit = 200 } = opts;
 
   let tasks: Map<BoardStatus, BoardTask[]>;
   try {
@@ -641,41 +950,80 @@ export function runBoard(opts: BoardOptions): void {
   let detailTask: BoardTask | null = null;
   let errorMessage: string | null = null;
   let flashTaskId: string | null = null;
-  let helpOverlay: blessed.Widgets.BoxElement | null = null;
-  let detailOverlay: blessed.Widgets.BoxElement | null = null;
-  let errorOverlay: blessed.Widgets.BoxElement | null = null;
+  let quit = false;
+  let stdinRawMode = false;
 
+  // Normalize initial navigation
   normalizeNavRowIndex(nav, tasks);
+
   const handleKey = createKeyHandler(projectPath);
-  const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
-
-  // Create screen
-  const screen = blessed.screen({
-    smartCSR: true,
-    autoPadding: false,
-    title: "Foreman Kanban Board",
-  });
-
-  // Build initial board
-  let widgets = buildBoard(screen, tasks, nav, projectName, totalTasks);
 
   // Render initial state
-  screen.render();
+  const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
+  let initialState: RenderState = {
+    tasks,
+    nav,
+    totalTasks,
+    errorMessage,
+    flashTaskId,
+    showHelp,
+    showDetail,
+    detailTask,
+  };
 
-  // Key handling
-  screen.on("keypress", (ch, key) => {
-    let normalizedKey = key.name;
+  process.stdout.write(HIDE_CURSOR);
+  process.stdout.write(renderBoard(initialState, projectName, getTerminalWidth()));
 
-    // Arrow keys → vim keys
-    if (key.name === "up") normalizedKey = KEY_k;
-    else if (key.name === "down") normalizedKey = KEY_j;
-    else if (key.name === "left") normalizedKey = KEY_h;
-    else if (key.name === "right") normalizedKey = KEY_l;
+  const attachRawMode = () => {
+    if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+      try {
+        process.stdin.setRawMode!(true);
+        process.stdin.resume();
+        process.stdin.setEncoding("utf8");
+        stdinRawMode = true;
+      } catch {
+        // Continue without keyboard handling
+      }
+    }
+  };
 
-    const state: RenderState = {
+  const detachRawMode = () => {
+    if (stdinRawMode) {
+      try {
+        process.stdin.setRawMode!(false);
+      } catch {
+        // ignore
+      }
+      stdinRawMode = false;
+    }
+  };
+
+  attachRawMode();
+
+  const onData = async (chunk: Buffer | string) => {
+    const key = chunk.toString();
+
+    // Handle ESC sequences (arrow keys etc.) — map to vim keys
+    let normalizedKey = key;
+    if (key === "\x1B[A") normalizedKey = KEY_k; // arrow up
+    else if (key === "\x1B[B") normalizedKey = KEY_j; // arrow down
+    else if (key === "\x1B[C") normalizedKey = KEY_l; // arrow right
+    else if (key === "\x1B[D") normalizedKey = KEY_h; // arrow left
+
+    // Handle C key (close with reason) specially
+    let closeReason: string | undefined;
+    if (normalizedKey === KEY_C) {
+      // Dismiss raw mode temporarily to read the reason
+      detachRawMode();
+      process.stdout.write("\n" + chalk.bold("Close reason (optional, press Enter to skip): ") + "");
+      closeReason = await readLineSync("");
+      attachRawMode();
+    }
+
+    const currentState: RenderState = {
       tasks,
       nav,
-      totalTasks,
+      totalTasks: [...tasks.values()].reduce((sum, t) => sum + t.length, 0),
       errorMessage,
       flashTaskId,
       showHelp,
@@ -683,12 +1031,23 @@ export function runBoard(opts: BoardOptions): void {
       detailTask,
     };
 
-    const result = handleKey(normalizedKey, state);
-    applyResult(result);
-    screen.render();
-  });
+    const result = handleKey(normalizedKey, currentState, projectPath);
 
-  function applyResult(result: KeyHandlerResult) {
+    // Apply close reason if this was a C key press
+    if (normalizedKey === KEY_C && closeReason !== undefined) {
+      const task = getHighlightedTask(nav, tasks);
+      if (task) {
+        const err = closeTask(projectPath, task.id, closeReason || undefined);
+        if (!err) {
+          result.flashTaskId = task.id;
+          result.needsRefresh = true;
+        } else {
+          result.errorMessage = err;
+        }
+      }
+    }
+
+    // Apply navigation changes
     nav = result.nav;
     showHelp = result.showHelp;
     showDetail = result.showDetail;
@@ -696,135 +1055,71 @@ export function runBoard(opts: BoardOptions): void {
     errorMessage = result.errorMessage;
     flashTaskId = result.flashTaskId;
 
-    // Refresh tasks
-    if (result.needsRefresh && !(showHelp || showDetail)) {
+    // Refresh tasks if requested
+    if (result.needsRefresh) {
       try {
         tasks = loadBoardTasks(projectPath);
         normalizeNavRowIndex(nav, tasks);
-        errorMessage = null;
-        flashTaskId = null;
       } catch (err) {
         errorMessage = `Failed to refresh: ${err instanceof Error ? err.message : String(err)}`;
       }
+      flashTaskId = null;
     }
 
-    // Rebuild widgets
-    widgets.cols.forEach(w => w.detach());
-    widgets = buildBoard(screen, tasks, nav, projectName, [...tasks.values()].reduce((s, t) => s + t.length, 0));
-
-    // Show help overlay
-    if (showHelp) {
-      if (helpOverlay) helpOverlay.detach();
-      helpOverlay = blessed.box({
-        parent: screen,
-        top: "center",
-        left: "center",
-        width: "60%",
-        height: "60%",
-        border: "line",
-        label: " Help ",
-        style: { bg: "black", fg: "white", border: { fg: "cyan" } },
-        content: [
-          " {bold}Navigation{/}",
-          " {cyan}j/k{/}  Move up/down in column",
-          " {cyan}h/l{/}  Move between columns",
-          " {cyan}1-6{/}  Jump to column",
-          " {cyan}g/G{/}  Go to first/last task",
-          "",
-          " {bold}Actions{/}",
-          " {cyan}s/S{/}  Cycle task status forward/back",
-          " {cyan}c{/}    Close task",
-          " {cyan}C{/}    Close with reason",
-          " {cyan}e/E{/}  Edit task (basic/extended)",
-          " {cyan}Enter{/}  Task detail view",
-          "",
-          " {bold}Other{/}",
-          " {cyan}r{/}    Refresh board",
-          " {cyan}?{/}    Toggle this help",
-          " {cyan}q{/}    Quit",
-          "",
-          " {dim}Press ? or Esc to close{/}",
-        ].join("\n"),
-      });
-    } else if (helpOverlay) {
-      helpOverlay.detach();
-      helpOverlay = null;
+    if (result.quit) {
+      quit = true;
     }
 
-    // Show detail overlay
-    if (showDetail && detailTask) {
-      if (detailOverlay) detailOverlay.detach();
-      const lines = [
-        ` {bold}${detailTask.title}{/}`,
-        "",
-        ` {dim}ID:{/} ${detailTask.id}`,
-        ` {dim}Type:{/} ${detailTask.type}`,
-        ` {dim}Priority:{/} ${PRIORITY_BADGES[detailTask.priority] ?? "P?"}`,
-        ` {dim}Status:{/} ${detailTask.status}`,
-        "",
-      ];
-      if (detailTask.description) {
-        lines.push(` {dim}Description{/}`);
-        lines.push(...detailTask.description.split("\n").slice(0, 10).map(l => `  ${l}`));
-      }
-      lines.push("");
-      lines.push(" {dim}Press Enter or Esc to close{/}");
-      detailOverlay = blessed.box({
-        parent: screen,
-        top: "center",
-        left: "center",
-        width: "60%",
-        height: "shrink",
-        border: "line",
-        label: " Task Detail ",
-        style: { bg: "black", fg: "white", border: { fg: "green" } },
-        content: lines.join("\n"),
-        tags: true,
-      });
-    } else if (detailOverlay) {
-      detailOverlay.detach();
-      detailOverlay = null;
-    }
+    // Re-render
+    const newState: RenderState = {
+      tasks,
+      nav,
+      totalTasks: [...tasks.values()].reduce((sum, t) => sum + t.length, 0),
+      errorMessage,
+      flashTaskId,
+      showHelp,
+      showDetail,
+      detailTask,
+    };
 
-    // Show error
-    if (errorMessage) {
-      if (errorOverlay) errorOverlay.detach();
-      errorOverlay = blessed.box({
-        parent: screen,
-        bottom: 1,
-        left: "center",
-        width: "80%",
-        height: 3,
-        border: "line",
-        style: { bg: "black", fg: "red", border: { fg: "red" } },
-        content: ` {red}{bold}ERROR:{/} ${errorMessage}{/}`,
-        tags: true,
-      });
-    } else if (errorOverlay) {
-      errorOverlay.detach();
-      errorOverlay = null;
-    }
-  }
+    process.stdout.write(renderBoard(newState, projectName, getTerminalWidth()));
 
-  // Quit on Ctrl+C
-  screen.key(["C-c"], () => {
+    if (quit) {
+      process.stdout.write(SHOW_CURSOR + "\n");
+      detachRawMode();
+      process.exit(0);
+    }
+  };
+
+  process.stdin.on("data", onData);
+
+  // Handle SIGINT gracefully
+  const onSigint = () => {
+    process.stdout.write(SHOW_CURSOR + "\n");
+    detachRawMode();
     process.exit(0);
-  });
+  };
+  process.on("SIGINT", onSigint);
 }
 
-// ── Command ──────────────────────────────────────────────────────────────────
-
+// ── Command ────────────────────────────────────────────────────────────────────
 
 export const boardCommand = new Command("board")
   .description("Terminal UI kanban board for managing Foreman tasks")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .option("--limit <n>", "Maximum tasks per column to display", "200")
+  .option("--limit <n>", "Maximum tasks per column to display", "5")
   .option("--filter <status>", "Filter by status (e.g., backlog, ready, in_progress)")
-  .action(async (opts: Record<string, string>) => {
-    const projectPath = resolveProjectPathFromOptions({ project: opts.project, projectPath: opts["project-path"] });
-    const store = ForemanStore.forProject(projectPath);
-    const project = store.getProjectByPath(projectPath);
-    const projectName = project?.name ?? basename(projectPath);
-    runBoard({ projectPath, projectName, limit: parseInt(opts.limit ?? "200", 10), filter: opts.filter });
+  .action((opts: { project?: string; projectPath?: string; limit?: string; filter?: string }) => {
+    const projectPath = resolveProjectPathFromOptions(opts);
+    const projectName = opts.project ?? basename(projectPath);
+    const limit = Math.max(1, parseInt(opts.limit ?? "5", 10) || 5);
+    const filter = opts.filter;
+
+    try {
+      runBoard({ projectPath, projectName, limit, filter });
+    } catch (err) {
+      console.error(chalk.red(`Fatal: ${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
+    }
   });
