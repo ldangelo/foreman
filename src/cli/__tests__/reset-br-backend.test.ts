@@ -277,14 +277,14 @@ describe("resetSeedToOpen", () => {
     };
   }
 
-  it("reopens a seed that is already closed (foreman reset must always make seeds retryable)", async () => {
+  it("does not reopen a seed that is already closed", async () => {
     const seeds = makeSeedsClient("closed");
 
     const result = await resetSeedToOpen("bd-completed", seeds);
 
-    expect(result.action).toBe("reset");
+    expect(result.action).toBe("skipped-closed");
     expect(result.previousStatus).toBe("closed");
-    expect(seeds.update).toHaveBeenCalledWith("bd-completed", { status: "open" });
+    expect(seeds.update).not.toHaveBeenCalled();
   });
 
   it("resets a seed that is in_progress to open", async () => {
@@ -297,6 +297,17 @@ describe("resetSeedToOpen", () => {
     expect(seeds.update).toHaveBeenCalledWith("bd-active", { status: "open" });
   });
 
+  it("resets a native task in-progress back to ready", async () => {
+    const seeds = makeSeedsClient("in-progress");
+
+    const result = await resetSeedToOpen("task-active", seeds);
+
+    expect(result.action).toBe("reset");
+    expect(result.previousStatus).toBe("in-progress");
+    expect(result.targetStatus).toBe("ready");
+    expect(seeds.update).toHaveBeenCalledWith("task-active", { status: "ready" });
+  });
+
   it("returns already-open without calling update when seed is already open", async () => {
     const seeds = makeSeedsClient("open");
 
@@ -304,6 +315,17 @@ describe("resetSeedToOpen", () => {
 
     expect(result.action).toBe("already-open");
     expect(result.previousStatus).toBe("open");
+    expect(seeds.update).not.toHaveBeenCalled();
+  });
+
+  it("returns already-open without calling update when native task is already ready", async () => {
+    const seeds = makeSeedsClient("ready");
+
+    const result = await resetSeedToOpen("task-ready", seeds);
+
+    expect(result.action).toBe("already-open");
+    expect(result.previousStatus).toBe("ready");
+    expect(result.targetStatus).toBe("ready");
     expect(seeds.update).not.toHaveBeenCalled();
   });
 
@@ -359,14 +381,13 @@ describe("resetSeedToOpen", () => {
     expect(seeds.update).not.toHaveBeenCalled();
   });
 
-  it("dry-run: returns 'reset' for a closed seed (would reopen, consistent with non-dry-run)", async () => {
+  it("dry-run: returns 'skipped-closed' for a closed seed", async () => {
     const seeds = makeSeedsClient("closed");
 
     const result = await resetSeedToOpen("bd-completed", seeds, { dryRun: true });
 
-    expect(result.action).toBe("reset");
+    expect(result.action).toBe("skipped-closed");
     expect(result.previousStatus).toBe("closed");
-    // In dry-run, update must NOT be called even though action is "reset"
     expect(seeds.update).not.toHaveBeenCalled();
   });
 

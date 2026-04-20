@@ -451,22 +451,51 @@ export interface ResetSeedResult {
   action: "reset" | "skipped-closed" | "already-open" | "not-found" | "error";
   seedId: string;
   previousStatus?: string;
+  targetStatus?: string;
   error?: string;
 }
 
+const RETRY_READY_STATUSES = new Set([
+  "backlog",
+  "ready",
+  "in-progress",
+  "blocked",
+  "conflict",
+  "failed",
+  "stuck",
+  "explorer",
+  "developer",
+  "qa",
+  "reviewer",
+  "finalize",
+]);
+
+function getResetTargetStatus(currentStatus: string): "open" | "ready" | null {
+  if (currentStatus === "open" || currentStatus === "ready") {
+    return currentStatus === "ready" ? "ready" : "open";
+  }
+
+  if (currentStatus === "closed" || currentStatus === "completed" || currentStatus === "merged") {
+    return null;
+  }
+
+  if (RETRY_READY_STATUSES.has(currentStatus)) {
+    return "ready";
+  }
+
+  return "open";
+}
+
 /**
- * Reset a single seed back to "open" status.
+ * Reset a single seed back to a retryable status.
  *
- * - ALL non-open seeds are re-opened, including "closed" ones — this ensures
- *   that `foreman reset` always makes a seed retryable regardless of its
- *   previous state.
- * - If the seed is already "open", the update is skipped (idempotent).
+ * - Native tasks are reset to "ready"; beads are reset to "open".
+ * - Closed/completed tasks are left unchanged.
+ * - If the seed is already retryable ("open" or "ready"), the update is skipped
+ *   (idempotent).
  * - If the seed is not found, returns "not-found" without throwing.
  * - In dry-run mode, the `show()` check still runs (read-only) but `update()`
  *   is skipped — the returned `action` accurately reflects what would happen.
- *
- * Note: The `force` parameter is retained for API compatibility but no longer
- * changes behaviour (closed seeds are always reopened).
  */
 export async function resetSeedToOpen(
   seedId: string,
@@ -476,15 +505,20 @@ export async function resetSeedToOpen(
   const dryRun = opts?.dryRun ?? false;
   try {
     const seedDetail = await seeds.show(seedId);
+    const targetStatus = getResetTargetStatus(seedDetail.status);
 
-    if (seedDetail.status === "open") {
-      return { action: "already-open", seedId, previousStatus: seedDetail.status };
+    if (targetStatus == null) {
+      return { action: "skipped-closed", seedId, previousStatus: seedDetail.status };
+    }
+
+    if (seedDetail.status === targetStatus) {
+      return { action: "already-open", seedId, previousStatus: seedDetail.status, targetStatus };
     }
 
     if (!dryRun) {
-      await seeds.update(seedId, { status: "open" });
+      await seeds.update(seedId, { status: targetStatus });
     }
-    return { action: "reset", seedId, previousStatus: seedDetail.status };
+    return { action: "reset", seedId, previousStatus: seedDetail.status, targetStatus };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("not found")) {
@@ -495,7 +529,7 @@ export async function resetSeedToOpen(
 }
 
 export const resetCommand = new Command("reset")
-  .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
+  .description("Reset failed/stuck runs: kill agents, remove worktrees, and reset tasks to a retryable status")
   .option("--bead <id>", "Reset a specific bead by ID (clears all runs for that bead, including stale pending ones)")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
   .option("--detect-stuck", "Run stuck detection first, adding newly-detected stuck runs to the reset list")
@@ -731,23 +765,24 @@ export const resetCommand = new Command("reset")
         console.log();
       }
 
-      // 5. Reset seeds to open (force-reopen if --seed was explicitly provided)
+      // 5. Reset seeds to a retryable status
       for (const seedId of seedIds) {
         const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!beadFilter });
         switch (result.action) {
           case "skipped-closed":
-            // This case is no longer reachable — resetSeedToOpen now always reopens
-            // closed seeds. Kept to satisfy the exhaustive switch type check.
             console.log(
               `  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already closed — not reopening`,
             );
             break;
           case "already-open":
-            // Bead was already open — no update was made (or would be made).
-            console.log(`  ${chalk.dim("skip")} bead ${chalk.cyan(seedId)} is already open`);
+            console.log(
+              `  ${chalk.dim("skip")} bead ${chalk.cyan(seedId)} is already ${result.targetStatus ?? "retryable"}`,
+            );
             break;
           case "reset":
-            console.log(`  ${chalk.yellow("reset")} bead ${chalk.cyan(seedId)} → open`);
+            console.log(
+              `  ${chalk.yellow("reset")} bead ${chalk.cyan(seedId)} → ${result.targetStatus ?? "retryable"}`,
+            );
             seedsReset++;
             break;
           case "not-found":
