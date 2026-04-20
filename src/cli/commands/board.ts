@@ -217,36 +217,54 @@ export function renderBoard(
   lines.push(CLEAR_SCREEN + headerLine);
   lines.push("");
 
+  // ── Calculate column layout ────────────────────────────────────────────────
+  const SEP = chalk.dim(" │ ");
+  const sepWidth = SEP.length; // " │ " = 4 chars
+
+  // Calculate minimum column width needed for headers (label + count)
+  const maxHeaderLen = Math.max(...BOARD_STATUSES.map(s => STATUS_LABELS[s].length + 5));
+  const minColWidth = Math.max(maxHeaderLen, 10); // minimum 10 chars
+
+  // Calculate how many columns fit
+  const numCols = BOARD_STATUSES.length;
+  const minBoardWidth = minColWidth * numCols + sepWidth * (numCols - 1);
+
+  // Use all columns if they fit, otherwise reduce to what fits
+  let visibleStatuses: readonly string[] = BOARD_STATUSES;
+  let colWidth = Math.floor((terminalWidth - sepWidth * (numCols - 1)) / numCols);
+
+  if (minBoardWidth > terminalWidth) {
+    const maxCols = Math.floor((terminalWidth + sepWidth) / (minColWidth + sepWidth));
+    visibleStatuses = [...BOARD_STATUSES].slice(0, Math.max(1, maxCols));
+    colWidth = Math.floor((terminalWidth - sepWidth * (visibleStatuses.length - 1)) / visibleStatuses.length);
+  }
+
+  const CARD_LINES = 2;
+
   // ── Column number row ────────────────────────────────────────────────────
-  const colNumbers = BOARD_STATUSES.map((s, i) => {
+  const colNumbers = visibleStatuses.map((s, i) => {
     const num = chalk.dim(`[${i + 1}]`);
-    return `${num} ${chalk.bold(STATUS_LABELS[s])}`;
+    return `${num} ${chalk.bold(STATUS_LABELS[s as BoardStatus])}`;
   });
   lines.push("  " + colNumbers.join(chalk.dim("   ")));
   lines.push("");
-
-  // ── Build columns side-by-side ─────────────────────────────────────────────
-  const numCols = BOARD_STATUSES.length;
-  const colWidth = Math.max(MIN_COL_WIDTH, Math.floor((terminalWidth - numCols) / numCols));
-  const CARD_LINES = 2; // each task card renders 2 lines
-  const SEP = chalk.dim(" │ ");
 
   // Build column content as arrays of lines
   const columnContent: string[][] = [];
   let maxHeight = 0;
 
-  for (let ci = 0; ci < numCols; ci++) {
-    const status = BOARD_STATUSES[ci];
+  for (let ci = 0; ci < visibleStatuses.length; ci++) {
+    const status = visibleStatuses[ci] as BoardStatus;
     const tasks = state.tasks.get(status) ?? [];
     const isNavCol = ci === state.nav.colIndex;
     const colLines: string[] = [];
 
-    // Column header — underlined, padded to column width
+    // Column header — underlined, exactly colWidth
     const countStr = tasks.length === 0
-      ? chalk.dim("(empty)")
+      ? chalk.dim("(0)")
       : chalk.white(`${tasks.length}`);
     const headerText = `${STATUS_LABELS[status]} ${chalk.dim("(")}${countStr}${chalk.dim(")")}`;
-    const headerLine = chalk.underline(headerText.padEnd(colWidth));
+    const headerLine = chalk.underline(headerText.slice(0, colWidth).padEnd(colWidth));
     colLines.push(headerLine);
 
     // Task cards — each occupies CARD_LINES lines
