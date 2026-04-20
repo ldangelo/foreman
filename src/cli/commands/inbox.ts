@@ -18,6 +18,44 @@ import { VcsBackendFactory } from "../../lib/vcs/index.js";
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
+/**
+ * Get the terminal width for output wrapping.
+ * Falls back to 80 columns when stdout is not a TTY.
+ */
+export function getTerminalWidth(): number {
+  return process.stdout.columns || 80;
+}
+
+/**
+ * Wrap text to fit within a maximum width, breaking at word boundaries.
+ * Preserves existing newlines and indents continuation lines.
+ */
+export function wrapText(text: string, maxWidth: number): string {
+  const lines = text.split("\n");
+  return lines
+    .map((line) => {
+      if (line.length <= maxWidth) return line;
+      // Word wrap: break at maxWidth, then continue at indent
+      let result = "";
+      let remaining = line;
+      while (remaining.length > maxWidth) {
+        // Find last space before maxWidth
+        const slice = remaining.slice(0, maxWidth);
+        const lastSpace = slice.lastIndexOf(" ");
+        if (lastSpace > 0) {
+          result += slice.slice(0, lastSpace) + "\n";
+          remaining = remaining.slice(lastSpace + 1);
+        } else {
+          // No space found, force break
+          result += slice + "\n";
+          remaining = remaining.slice(maxWidth);
+        }
+      }
+      return result + remaining;
+    })
+    .join("\n");
+}
+
 function formatTimestamp(isoStr: string): string {
   try {
     const d = new Date(isoStr);
@@ -45,7 +83,10 @@ function formatMessage(msg: Message, fullPayload = false): string {
     } catch {
       bodyDisplay = msg.body;
     }
-    return `${header}\n${bodyDisplay.split("\n").map((l) => `  ${l}`).join("\n")}`;
+    // Wrap at terminal width to prevent line clipping on long JSON payloads
+    const terminalWidth = getTerminalWidth();
+    const wrappedBody = wrapText(bodyDisplay, terminalWidth - 2); // -2 for indentation
+    return `${header}\n${wrappedBody.split("\n").map((l) => `  ${l}`).join("\n")}`;
   }
 
   // Default: try to parse JSON and show key fields for readability
