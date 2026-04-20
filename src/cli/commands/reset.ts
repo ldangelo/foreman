@@ -40,6 +40,66 @@ export type ExecFileAsyncFn = (
   options?: { cwd?: string },
 ) => Promise<{ stdout: string; stderr: string }>;
 
+export interface PullRequestCleanupResult {
+  action: "closed" | "none" | "dry-run";
+  prUrl?: string;
+  reason?: string;
+}
+
+export async function closeForemanPullRequest(
+  projectPath: string,
+  branchName: string,
+  opts?: {
+    dryRun?: boolean;
+    execFileAsync?: ExecFileAsyncFn;
+  },
+): Promise<PullRequestCleanupResult> {
+  const execFn = opts?.execFileAsync ?? (await getDefaultExecFileAsync());
+
+  let prStateRaw = "";
+  try {
+    const { stdout } = await execFn(
+      "gh",
+      ["pr", "view", branchName, "--json", "state,headRefName,url", "--jq", "."],
+      { cwd: projectPath },
+    );
+    prStateRaw = stdout.trim();
+  } catch {
+    return { action: "none", reason: "no-associated-pr" };
+  }
+
+  let prState: { state?: string; headRefName?: string; url?: string } = {};
+  try {
+    prState = JSON.parse(prStateRaw) as { state?: string; headRefName?: string; url?: string };
+  } catch {
+    return { action: "none", reason: "unparseable-pr-state" };
+  }
+
+  if (prState.headRefName !== branchName) {
+    return { action: "none", prUrl: prState.url, reason: "head-branch-mismatch" };
+  }
+  if (prState.state !== "OPEN") {
+    return { action: "none", prUrl: prState.url, reason: "pr-not-open" };
+  }
+  if (opts?.dryRun) {
+    return { action: "dry-run", prUrl: prState.url, reason: "would-close-open-pr" };
+  }
+
+  await execFn(
+    "gh",
+    [
+      "pr",
+      "close",
+      branchName,
+      "--comment",
+      "Closed automatically by `foreman reset` before rerun.",
+    ],
+    { cwd: projectPath },
+  );
+
+  return { action: "closed", prUrl: prState.url };
+}
+
 /**
  * Result of stale-branch analysis for a single completed run.
  *
@@ -653,13 +713,33 @@ export const resetCommand = new Command("reset")
       let runsMarkedFailed = 0;
       let mqEntriesRemoved = 0;
       let seedsReset = 0;
+      let prsClosed = 0;
       const errors: string[] = [];
+      const closedPrSeeds = new Set<string>();
 
       for (const run of runs) {
         const pid = extractPid(run.session_key);
         const branchName = `foreman/${run.seed_id}`;
 
         console.log(`  ${chalk.cyan(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)} status=${run.status}`);
+
+        if (!closedPrSeeds.has(run.seed_id)) {
+          console.log(`    ${chalk.yellow("close")} PR for branch ${branchName}`);
+          try {
+            const result = await closeForemanPullRequest(projectPath, branchName, { dryRun });
+            if (result.action === "closed") {
+              prsClosed++;
+              console.log(`    ${chalk.green("closed")} PR ${result.prUrl ?? ""}`.trim());
+            } else if (result.action === "dry-run") {
+              console.log(`    ${chalk.dim("would close")} PR ${result.prUrl ?? ""}`.trim());
+            }
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            errors.push(`Failed to close PR for ${run.seed_id}: ${msg}`);
+            console.log(`    ${chalk.red("error")} closing PR: ${msg}`);
+          }
+          closedPrSeeds.add(run.seed_id);
+        }
 
         // 1. Kill the agent process if alive
         if (pid && isAlive(pid)) {
@@ -971,6 +1051,7 @@ export const resetCommand = new Command("reset")
         console.log(`  Branches deleted:   ${branchesDeleted}`);
         console.log(`  Runs marked reset:   ${runsMarkedFailed}`);
         console.log(`  MQ entries removed:  ${mqEntriesRemoved}`);
+        console.log(`  PRs closed:         ${prsClosed}`);
         console.log(`  Beads reset:        ${seedsReset}`);
         console.log(`  Mismatches fixed:   ${mismatchResult.fixed}`);
         console.log(`  Beads closed (merged): ${staleResult.closed}`);

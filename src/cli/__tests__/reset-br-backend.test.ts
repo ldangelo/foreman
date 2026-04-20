@@ -7,6 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  closeForemanPullRequest,
   detectAndFixMismatches,
   resetSeedToOpen,
   detectAndHandleStaleBranches,
@@ -264,6 +265,74 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
     expect(result.mismatches).toHaveLength(1);
     expect(result.mismatches[0].expectedSeedStatus).toBe("closed");
     expect(brClient.update).toHaveBeenCalledWith("bd-abc", { status: "closed" });
+  });
+});
+
+describe("closeForemanPullRequest", () => {
+  it("closes an open PR whose head branch matches the Foreman branch", async () => {
+    const execFn = vi.fn<ExecFileAsyncFn>()
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          state: "OPEN",
+          headRefName: "foreman/bd-abc",
+          url: "https://github.com/example/repo/pull/42",
+        }),
+        stderr: "",
+      })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    const result = await closeForemanPullRequest("/tmp/project", "foreman/bd-abc", {
+      execFileAsync: execFn,
+    });
+
+    expect(result).toEqual({
+      action: "closed",
+      prUrl: "https://github.com/example/repo/pull/42",
+    });
+    expect(execFn).toHaveBeenNthCalledWith(
+      2,
+      "gh",
+      [
+        "pr",
+        "close",
+        "foreman/bd-abc",
+        "--comment",
+        "Closed automatically by `foreman reset` before rerun.",
+      ],
+      { cwd: "/tmp/project" },
+    );
+  });
+
+  it("returns none when no PR exists for the branch", async () => {
+    const execFn = vi.fn<ExecFileAsyncFn>().mockRejectedValue(new Error("no pull requests found"));
+
+    const result = await closeForemanPullRequest("/tmp/project", "foreman/bd-missing", {
+      execFileAsync: execFn,
+    });
+
+    expect(result).toEqual({ action: "none", reason: "no-associated-pr" });
+  });
+
+  it("skips PRs whose head branch does not match exactly", async () => {
+    const execFn = vi.fn<ExecFileAsyncFn>().mockResolvedValue({
+      stdout: JSON.stringify({
+        state: "OPEN",
+        headRefName: "feature/manual-branch",
+        url: "https://github.com/example/repo/pull/99",
+      }),
+      stderr: "",
+    });
+
+    const result = await closeForemanPullRequest("/tmp/project", "foreman/bd-abc", {
+      execFileAsync: execFn,
+    });
+
+    expect(result).toEqual({
+      action: "none",
+      prUrl: "https://github.com/example/repo/pull/99",
+      reason: "head-branch-mismatch",
+    });
+    expect(execFn).toHaveBeenCalledTimes(1);
   });
 });
 
