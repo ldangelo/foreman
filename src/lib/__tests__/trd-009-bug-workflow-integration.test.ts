@@ -64,8 +64,8 @@ describe('TRD-009 bug.yaml workflow integration', () => {
       expect(testPhase?.bash).toBeDefined();
     });
 
-    it('test phase bash command is npm run test', () => {
-      expect(testPhase?.bash).toBe('npm run test');
+    it('test phase bash command is npm run test:unit', () => {
+      expect(testPhase?.bash).toBe('npm run test:unit');
     });
 
     it('test phase has artifact: TEST_RESULTS.md', () => {

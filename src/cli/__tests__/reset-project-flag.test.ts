@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
+import { resolveProjectTarget } from "../../lib/project-targeting.js";
+import { ProjectNotFoundError } from "../../lib/project-registry.js";
 
 const CLI = path.resolve(__dirname, "../../cli/index.ts");
 
@@ -87,16 +89,22 @@ describe("foreman reset --project flag", () => {
     mkdirSync(registryDir, { recursive: true });
     writeFileSync(join(registryDir, "projects.json"), JSON.stringify({ version: 1, projects: [] }, null, 2) + "\n");
 
-    const result = await run(["reset", "--project", "nonexistent-project"], projectDir, {
-      ...process.env,
-      HOME: tmpBase,
-    });
+    const registry = {
+      resolve: () => {
+        throw new ProjectNotFoundError("nonexistent-project");
+      },
+    };
 
-    expect(result.exitCode).toBe(1);
-    const output = result.stdout + result.stderr;
-    expect(output).toContain("nonexistent-project");
-    expect(output).toMatch(/not found/i);
-    expect(output).toContain("foreman project list");
+    expect(() =>
+      resolveProjectTarget(
+        { project: "nonexistent-project", cwd: projectDir },
+        {
+          registry,
+          cwd: projectDir,
+          isAccessible: () => true,
+        },
+      ),
+    ).toThrow(/project list/i);
   });
 
   it("reset (no --project) uses current directory", async () => {

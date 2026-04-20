@@ -18,14 +18,14 @@ async function invokeRun(args: string[]): Promise<void> {
 }
 
 async function driveMergeQueueUntil(
-  harness: { drainMergeQueue: () => Promise<void>; getRunStatuses: () => string[] },
+  harness: { drainMergeQueue: () => Promise<void>; getRunStatuses: () => Promise<string[]> },
   predicate: (statuses: string[]) => boolean,
   timeoutMs = 10_000,
 ): Promise<string[]> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     await harness.drainMergeQueue();
-    const statuses = harness.getRunStatuses();
+    const statuses = await harness.getRunStatuses();
     if (predicate(statuses)) {
       return statuses;
     }
@@ -59,7 +59,7 @@ describe("full-run test runtime e2e", () => {
       process.env.FOREMAN_TASK_STORE = "native";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
 
-      harness.seedTask({
+      await harness.seedTask({
         title: "Full run deterministic happy path",
         scenario: {
           kind: "create",

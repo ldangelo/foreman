@@ -387,6 +387,31 @@ describe("formatMessage", () => {
 
     expect(output).toContain("error=Something went wrong");
   });
+
+  it("shows compact trace mail fields instead of raw markdown blobs", () => {
+    const msg = makeMockMessage({
+      body: JSON.stringify({
+        seedId: "foreman-93880",
+        phase: "fix",
+        kind: "update",
+        tool: "bash",
+        message: "tool=bash",
+        argsPreview: "cd <worktree> && grep -n \"foreman board\" README.md",
+        traceFile: "docs/reports/foreman-93880/FIX_TRACE.json",
+        commandHonored: false,
+      }),
+    });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("phase=fix");
+    expect(output).toContain("kind=update");
+    expect(output).toContain("tool=bash");
+    expect(output).toContain("args=cd <worktree>");
+    expect(output).toContain("trace=docs/reports/foreman-93880/FIX_TRACE.json");
+    expect(output).toContain("commandHonored=no");
+    expect(output).not.toContain("# Fix Trace update");
+  });
 });
 
 // ── Tests for wrapText and getTerminalWidth ───────────────────────────────────

@@ -10,7 +10,7 @@
  * for `foreman run` to be running and call autoMerge() in its dispatch loop.
  */
 
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -25,17 +25,6 @@ import { Refinery } from "./refinery.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
 import { enqueueAddNotesToBead, enqueueMarkBeadFailed, enqueueSetBeadStatus } from "./task-backend-ops.js";
-
-const execFileAsync = promisify(execFile);
-
-/**
- * Run a gh CLI command and return stdout.
- * Used for PR creation in the 'pr' merge strategy.
- */
-async function gh(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync("gh", args, { cwd, maxBuffer: 10 * 1024 * 1024 });
-  return stdout.trim();
-}
 
 async function createAutoMergeVcsBackend(projectPath: string): Promise<VcsBackend> {
   const projectCfg = loadProjectConfig(projectPath);
@@ -220,37 +209,28 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
     }
 
     if (mergeOperation === 'create_pr') {
-      // Create a PR for manual review instead of auto-merge
-      const branchName = `foreman/${currentEntry.seed_id}`;
       try {
-        // Push branch to origin
-        await vcs.push(projectPath, branchName);
-
-        // Get seed title for PR title
-        let seedTitle = currentEntry.seed_id;
-        try {
-          const seedInfo = await taskClient.show(currentEntry.seed_id) as { title?: string } | null;
-          if (seedInfo?.title) {
-            seedTitle = seedInfo.title;
-          }
-        } catch { /* non-fatal */ }
-
-        const prTitle = `${seedTitle} (${currentEntry.seed_id})`;
-        const prBody = [
-          `## Summary`,
-          seedTitle !== currentEntry.seed_id ? `**Task:** ${seedTitle}\n` : '',
-          `**Manual PR created by Foreman** (merge_strategy: pr)`,
-          `\nForeman run: \`${currentEntry.run_id}\``,
-        ].join('\n');
-
-        const prUrl = await gh(
-          ['pr', 'create', '--base', targetBranch, '--head', branchName, '--title', prTitle, '--body', prBody],
+        const pr = await refinery.ensurePullRequestForRun({
+          runId: currentEntry.run_id,
+          baseBranch: targetBranch,
+          updateRunStatus: true,
+          bodyNote: "Manual PR created by Foreman",
+        });
+        mq.updateStatus(currentEntry.id, 'merged', { completedAt: new Date().toISOString() });
+        await syncBeadStatusAfterMerge(
+          store,
+          taskClient,
+          currentEntry.run_id,
+          currentEntry.seed_id,
           projectPath,
+          `PR created for manual review.\nPR URL: ${pr.prUrl}`,
         );
-
-        mq.updateStatus(currentEntry.id, 'conflict', { error: 'PR created for manual review' });
-        store.updateRun(currentEntry.run_id, { status: 'pr-created' });
-        store.logEvent(project.id, 'pr-created', { seedId: currentEntry.seed_id, branchName, targetBranch, prUrl }, currentEntry.run_id);
+        sendMail(store, currentEntry.run_id, "merge-conflict", {
+          seedId: currentEntry.seed_id,
+          branchName: pr.branchName,
+          prUrl: pr.prUrl,
+          prCreated: true,
+        });
         conflictCount += 1;
         entry = mq.dequeue();
         continue;
@@ -265,33 +245,20 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
     }
 
     try {
-      // Pass the run directly via overrideRun when available (from agent-worker immediate
-      // autoMerge call) AND it matches the current queue entry. This bypasses the getRun()
-      // query entirely, eliminating the race condition where the status update hasn't been
-      // committed/visible to the query.
-      //
-      // Prefer optsRunId (passed explicitly from agent-worker) for the most reliable
-      // immediate auto-merge path. The runId path in mergeCompleted fetches by ID
-      // without status filtering, bypassing SQLite WAL timing issues.
-      //
-      // When neither is available (e.g., foreman run dispatch loop), fall back to
-      // currentEntry.run_id which queries by ID directly.
-      const useOverrideRun = overrideRun && overrideRun.id === currentEntry.run_id;
-      // Determine the runId to pass: prefer explicit optsRunId > overrideRun's id > currentEntry.run_id
       const effectiveRunId = optsRunId ?? overrideRun?.id ?? currentEntry.run_id;
-      const report = await refinery.mergeCompleted({
-        targetBranch,
-        // Skip post-merge tests — the pipeline test phase already ran them.
-        // Running tests here in the main repo after rebasing risks false positives
-        // due to stale dependencies or environment differences.
-        runTests: false,
-        projectId: project.id,
-        seedId: currentEntry.seed_id,
-        // Always pass runId for the most reliable direct ID lookup.
-        // Pass overrideRun only when it matches the current entry (bypasses getRun query).
-        runId: effectiveRunId,
-        ...(useOverrideRun ? { overrideRun } : {}),
-      });
+      const report = typeof (refinery as Refinery & { mergePullRequest?: typeof refinery.mergePullRequest }).mergePullRequest === "function"
+        ? await refinery.mergePullRequest({
+          targetBranch,
+          runId: effectiveRunId,
+        })
+        : await refinery.mergeCompleted({
+          targetBranch,
+          runTests: false,
+          projectId: project.id,
+          seedId: currentEntry.seed_id,
+          runId: effectiveRunId,
+          ...(overrideRun && overrideRun.id === currentEntry.run_id ? { overrideRun } : {}),
+        });
 
 
       if (report.merged.length > 0) {
@@ -315,11 +282,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         if (report.conflicts.length > 0) {
           const files = report.conflicts.flatMap((c) => c.conflictFiles).slice(0, 10);
           mergeFailureReason = `Merge conflict detected in branch foreman/${currentEntry.seed_id}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
-        } else if (report.prsCreated.length > 0) {
-          const pr = report.prsCreated[0];
-          mergeFailureReason = `Merge conflict: a PR was created for manual review.\nPR URL: ${pr.prUrl}\nBranch: ${pr.branchName}`;
         }
-
         // Send merge-conflict mail for each conflicted run
         for (const conflictRun of report.conflicts) {
           sendMail(store, currentEntry.run_id, "merge-conflict", {
@@ -329,7 +292,6 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
             prCreated: false,
           });
         }
-        // Send merge-conflict mail for PRs created on conflict
         for (const pr of report.prsCreated) {
           sendMail(store, currentEntry.run_id, "merge-conflict", {
             seedId: pr.seedId,
@@ -384,53 +346,14 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
           });
         }
       } else if (report.unexpectedErrors && report.unexpectedErrors.length > 0) {
-        // Git/shell command failures captured by refinery's outer catch (Fix 3).
-        // These are NOT test runner failures — use reason "unexpected-error".
-        // Instead of just marking as failed, try to create a PR so the user can
-        // manually merge. This is much easier to resolve than a failed queue entry.
-        const branchName = `foreman/${currentEntry.seed_id}`;
         const firstError = report.unexpectedErrors[0];
-        mergeFailureReason = `Merge failed: ${firstError.error.slice(0, 400)}. Creating PR for manual merge.`;
-
-        try {
-          // Push branch to origin
-          await vcs.push(projectPath, branchName);
-
-          // Get seed title
-          let seedTitle = currentEntry.seed_id;
-          try {
-            const seedInfo = await taskClient.show(currentEntry.seed_id) as { title?: string } | null;
-            if (seedInfo?.title) seedTitle = seedInfo.title;
-          } catch { /* non-fatal */ }
-
-          const prTitle = `${seedTitle} (${currentEntry.seed_id})`;
-          const prBody = [
-            `## Summary`,
-            seedTitle !== currentEntry.seed_id ? `**Task:** ${seedTitle}\n` : '',
-            `**Manual merge required** — auto-merge failed: ${firstError.error.slice(0, 400)}`,
-            `\nForeman run: \`${currentEntry.run_id}\``,
-          ].join('\n');
-
-          const prUrl = await gh(
-            ['pr', 'create', '--base', targetBranch, '--head', branchName, '--title', prTitle, '--body', prBody],
-            projectPath,
-          );
-
-          mq.updateStatus(currentEntry.id, 'conflict', { error: `PR created for manual merge: ${prUrl}` });
-          store.updateRun(currentEntry.run_id, { status: 'pr-created' });
-          store.logEvent(project.id, 'pr-created', { seedId: currentEntry.seed_id, branchName, targetBranch, prUrl }, currentEntry.run_id);
-          conflictCount += 1;
-        } catch (err: unknown) {
-          // PR creation also failed — mark as failed with full context
-          const message = err instanceof Error ? err.message : String(err);
-          mergeFailureReason = `Merge failed (PR also failed): ${message}. Original: ${firstError.error.slice(0, 400)}`;
-          mq.updateStatus(currentEntry.id, 'failed', { error: mergeFailureReason });
-          failedCount += 1;
-        }
+        mergeFailureReason = `PR merge failed: ${firstError.error.slice(0, 400)}`;
+        mq.updateStatus(currentEntry.id, 'failed', { error: mergeFailureReason });
+        failedCount += 1;
       } else {
         mq.updateStatus(currentEntry.id, "failed", { error: "No completed run found" });
         failedCount++;
-        mergeFailureReason = `Merge failed: no completed run found for seed ${currentEntry.seed_id}. The run may have been deleted or not yet finalized.`;
+        mergeFailureReason = `Merge failed: no mergeable run found for seed ${currentEntry.seed_id}. The run may have been deleted or not yet finalized.`;
 
         // Send merge-failed mail when no completed run was found in the queue
         sendMail(store, currentEntry.run_id, "merge-failed", {
@@ -440,50 +363,15 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      mergeFailureReason = `Merge error: ${message.slice(0, 800)}. Attempting PR creation.`;
+      mergeFailureReason = `PR merge error: ${message.slice(0, 800)}`;
+      mq.updateStatus(currentEntry.id, 'failed', { error: mergeFailureReason });
+      failedCount += 1;
 
-      // Try to create a PR so the user can manually merge
-      const branchName = `foreman/${currentEntry.seed_id}`;
-      try {
-        await vcs.push(projectPath, branchName);
-
-        let seedTitle = currentEntry.seed_id;
-        try {
-          const seedInfo = await taskClient.show(currentEntry.seed_id) as { title?: string } | null;
-          if (seedInfo?.title) seedTitle = seedInfo.title;
-        } catch { /* non-fatal */ }
-
-        const prTitle = `${seedTitle} (${currentEntry.seed_id})`;
-        const prBody = [
-          `## Summary`,
-          seedTitle !== currentEntry.seed_id ? `**Task:** ${seedTitle}\n` : '',
-          `**Manual merge required** — auto-merge threw: ${message.slice(0, 400)}`,
-          `\nForeman run: \`${currentEntry.run_id}\``,
-        ].join('\n');
-
-        const prUrl = await gh(
-          ['pr', 'create', '--base', targetBranch, '--head', branchName, '--title', prTitle, '--body', prBody],
-          projectPath,
-        );
-
-        mq.updateStatus(currentEntry.id, 'conflict', { error: `PR created for manual merge: ${prUrl}` });
-        store.updateRun(currentEntry.run_id, { status: 'pr-created' });
-        store.logEvent(project.id, 'pr-created', { seedId: currentEntry.seed_id, branchName, targetBranch, prUrl }, currentEntry.run_id);
-        conflictCount += 1;
-      } catch (prErr: unknown) {
-        // PR creation failed too — mark as failed
-        const prMessage = prErr instanceof Error ? prErr.message : String(prErr);
-        mergeFailureReason = `Merge failed (PR also failed): ${prMessage}. Original: ${message.slice(0, 400)}`;
-        mq.updateStatus(currentEntry.id, 'failed', { error: mergeFailureReason });
-        failedCount += 1;
-
-        // Send merge-failed mail
-        sendMail(store, currentEntry.run_id, 'merge-failed', {
-          seedId: currentEntry.seed_id,
-          reason: 'unexpected-error',
-          error: message.slice(0, 400),
-        });
-      }
+      sendMail(store, currentEntry.run_id, 'merge-failed', {
+        seedId: currentEntry.seed_id,
+        reason: 'unexpected-error',
+        error: message.slice(0, 400),
+      });
     } finally {
       // Sync bead status after every merge outcome (success or failure).
       // Pass mergeFailureReason so the bead gets a note explaining the failure.

@@ -28,6 +28,7 @@ const {
   mockMergeQueueUpdateStatus,
   MockMergeQueue,
   mockRefineryMergeCompleted,
+  mockRefineryEnsurePullRequest,
   MockRefinery,
   mockDetectDefaultBranch,
   mockCreateVcsBackend,
@@ -69,8 +70,16 @@ const {
     unexpectedErrors: [],
     prsCreated: [],
   });
+  const mockRefineryEnsurePullRequest = vi.fn().mockResolvedValue({
+    runId: "run-001",
+    seedId: "bd-test-001",
+    branchName: "foreman/bd-test-001",
+    prUrl: "https://github.com/x/y/pull/1",
+  });
   const MockRefinery = vi.fn(function (this: Record<string, unknown>) {
     this.mergeCompleted = mockRefineryMergeCompleted;
+    this.mergePullRequest = mockRefineryMergeCompleted;
+    this.ensurePullRequestForRun = mockRefineryEnsurePullRequest;
   });
 
   const mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
@@ -93,6 +102,7 @@ const {
     mockMergeQueueUpdateStatus,
     MockMergeQueue,
     mockRefineryMergeCompleted,
+    mockRefineryEnsurePullRequest,
     MockRefinery,
     mockDetectDefaultBranch,
     mockCreateVcsBackend,
@@ -189,6 +199,12 @@ function resetMocks(): void {
     testFailures: [],
     unexpectedErrors: [],
     prsCreated: [],
+  });
+  mockRefineryEnsurePullRequest.mockResolvedValue({
+    runId: "run-001",
+    seedId: "bd-test-001",
+    branchName: "foreman/bd-test-001",
+    prUrl: "https://github.com/x/y/pull/1",
   });
   mockTaskClientUpdate.mockResolvedValue(undefined);
   mockAddNotesToBead.mockReturnValue(undefined);
@@ -322,22 +338,18 @@ describe("autoMerge() — merge outcomes", () => {
     expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "conflict", expect.any(Object));
   });
 
-  it("increments conflictCount for prsCreated entries", async () => {
-    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
-    mockRefineryMergeCompleted.mockResolvedValueOnce({
-      merged: [],
-      conflicts: [],
-      testFailures: [],
-      unexpectedErrors: [],
-      prsCreated: [{ seedId: "bd-test-001", url: "https://github.com/x/y/pull/1" }],
-    });
+  it("marks create_pr queue entries processed after publishing a PR", async () => {
+    mockMergeQueueDequeue
+      .mockReturnValueOnce({ ...makeEntry(), operation: "create_pr" })
+      .mockReturnValue(null);
 
     const result = await autoMerge(makeOpts({
-      store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+      store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", seed_id: "bd-test-001", project_id: "proj-1" }) }) as never,
     }));
 
     expect(result.conflicts).toBe(1);
-    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "conflict", expect.any(Object));
+    expect(mockRefineryEnsurePullRequest).toHaveBeenCalled();
+    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "merged", expect.any(Object));
   });
 
   it("increments failedCount when report.testFailures is non-empty", async () => {
@@ -454,11 +466,9 @@ describe("autoMerge() — merge outcomes", () => {
         runId: entry.run_id,
       }));
 
-      // Verify both runId and overrideRun were passed to mergeCompleted.
-      // runId is always passed for the most reliable direct ID lookup (race condition fix).
-      // overrideRun bypasses the getRun query when it matches.
+      // Verify runId is passed to the PR-merge path.
       expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
-        expect.objectContaining({ overrideRun: completedRun, runId: entry.run_id })
+        expect.objectContaining({ runId: entry.run_id, targetBranch: "main" })
       );
     });
 
@@ -494,7 +504,7 @@ describe("autoMerge() — merge outcomes", () => {
 
       // optsRunId should be used as the effective runId
       expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
-        expect.objectContaining({ runId: entry.run_id, overrideRun: completedRun })
+        expect.objectContaining({ runId: entry.run_id, targetBranch: "main" })
       );
     });
 
@@ -803,13 +813,14 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
   });
 
   it("calls addNotesToBead with PR URL when PR was created on conflict", async () => {
-    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
-    mockRefineryMergeCompleted.mockResolvedValueOnce({
-      merged: [],
-      conflicts: [],
-      testFailures: [],
-      unexpectedErrors: [],
-      prsCreated: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", prUrl: "https://github.com/x/y/pull/42" }],
+    mockMergeQueueDequeue
+      .mockReturnValueOnce({ ...makeEntry(), operation: "create_pr" })
+      .mockReturnValue(null);
+    mockRefineryEnsurePullRequest.mockResolvedValueOnce({
+      runId: "run-001",
+      seedId: "bd-test-001",
+      branchName: "foreman/bd-test-001",
+      prUrl: "https://github.com/x/y/pull/42",
     });
 
     await autoMerge(makeOpts({

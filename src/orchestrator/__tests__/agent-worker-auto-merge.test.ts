@@ -24,18 +24,19 @@ describe("agent-worker.ts — merge queue handoff", () => {
     expect(source).toContain("createTaskClient");
   });
 
-  it("does not invoke autoMerge directly from finalize anymore", () => {
-    expect(source).not.toContain("await autoMerge(");
-    expect(source).not.toContain("autoMerge result: merged=");
+  it("invokes immediate autoMerge after finalize enqueue for auto strategies", () => {
+    expect(source).toContain("await autoMerge(");
+    expect(source).toContain("Immediate merge drain result: merged=");
   });
 
   it("enqueues merge intent with an explicit operation", () => {
-    expect(source).toContain("operation: mergeStrategy === \"pr\" ? \"create_pr\" : \"auto_merge\"");
+    expect(source).toContain("operation: \"auto_merge\"");
+    expect(source).toContain("const pr = await refinery.ensurePullRequestForRun");
   });
 
-  it("skips merge queue enqueue when workflow merge strategy is none", () => {
-    expect(source).toContain("mergeStrategy !== \"none\"");
-    expect(source).toContain("Workflow merge strategy is none — skipping merge queue enqueue");
+  it("publishes a PR and skips merge queue enqueue for non-auto strategies", () => {
+    expect(source).toContain("mergeStrategy === \"auto\"");
+    expect(source).toContain("Workflow merge strategy is ${mergeStrategy} — PR created, skipping merge queue enqueue");
   });
 });
 
@@ -58,9 +59,9 @@ describe("auto-merge.ts — module invariants", () => {
     expect(source).toContain("export interface AutoMergeResult");
   });
 
-  it("uses Refinery for mergeCompleted calls", () => {
+  it("uses Refinery for mergePullRequest calls", () => {
     expect(source).toContain("new Refinery(");
-    expect(source).toContain("refinery.mergeCompleted(");
+    expect(source).toContain("refinery.mergePullRequest(");
   });
 
   it("reconciles queue before draining", () => {

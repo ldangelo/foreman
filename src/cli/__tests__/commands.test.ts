@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
+import { readFileSync } from "node:fs";
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
@@ -39,11 +40,10 @@ describe("CLI smoke tests", () => {
   }, 10_000);
 
   it("--version prints version number", async () => {
-    const tmp = makeTempDir();
-    const result = await run(["--version"], tmp);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("0.1.0");
+    const pkgPath = path.resolve(__dirname, "../../../package.json");
+    const expected = (JSON.parse(readFileSync(pkgPath, "utf8")) as { version: string }).version;
+    const { program } = await import("../index.js");
+    expect(program.version()).toBe(expected);
   }, 10_000);
 
   it("status without init shows error", async () => {

@@ -101,6 +101,11 @@ function formatMessage(msg: Message, fullPayload = false): string {
     if (typeof parsed["seedId"] === "string") parts.push(`seedId=${parsed["seedId"]}`);
     if (typeof parsed["runId"] === "string") parts.push(`runId=${parsed["runId"]}`);
     if (typeof parsed["message"] === "string") parts.push(`message=${parsed["message"]}`);
+    if (typeof parsed["kind"] === "string") parts.push(`kind=${parsed["kind"]}`);
+    if (typeof parsed["tool"] === "string") parts.push(`tool=${parsed["tool"]}`);
+    if (typeof parsed["argsPreview"] === "string") parts.push(`args=${parsed["argsPreview"]}`);
+    if (typeof parsed["traceFile"] === "string") parts.push(`trace=${parsed["traceFile"]}`);
+    if (typeof parsed["commandHonored"] === "boolean") parts.push(`commandHonored=${parsed["commandHonored"] ? "yes" : "no"}`);
     if (typeof parsed["verdict"] === "string") parts.push(`verdict=${parsed["verdict"]}`);
     if (parts.length > 0) {
       preview = parts.join(", ");

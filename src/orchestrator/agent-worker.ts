@@ -33,6 +33,7 @@ import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { autoMerge } from "./auto-merge.js";
+import { Refinery } from "./refinery.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { NativeTaskClient } from "../lib/native-task-client.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
@@ -125,7 +126,19 @@ function sendMailText(
   });
 }
 
-function formatTraceMailBody(event: {
+function compactTraceValue(value: string): string {
+  let compact = value
+    .replace(/\/Users\/ldangelo\/Development\/Fortium\/\.foreman-worktrees\/foreman\/foreman-[^/\s]+/g, "<worktree>")
+    .replace(/\/Users\/ldangelo\/Development\/Fortium\/foreman/g, "<repo>")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (compact.length > 160) {
+    compact = `${compact.slice(0, 157)}…`;
+  }
+  return compact;
+}
+
+function buildTraceMailPayload(event: {
   kind: "start" | "update" | "warning" | "complete";
   phase: string;
   seedId: string;
@@ -135,21 +148,18 @@ function formatTraceMailBody(event: {
   traceFile?: string;
   traceMarkdownFile?: string;
   commandHonored?: boolean;
-}): string {
-  const lines = [
-    `# ${event.phase.charAt(0).toUpperCase() + event.phase.slice(1)} Trace ${event.kind}`,
-    "",
-    `- Seed: \`${event.seedId}\``,
-    `- Phase: \`${event.phase}\``,
-    `- Kind: \`${event.kind}\``,
-    `- Message: ${event.message}`,
-  ];
-  if (event.toolName) lines.push(`- Tool: \`${event.toolName}\``);
-  if (event.argsPreview) lines.push(`- Args: \`${event.argsPreview}\``);
-  if (event.traceFile) lines.push(`- Trace JSON: \`${event.traceFile}\``);
-  if (event.traceMarkdownFile) lines.push(`- Trace Markdown: \`${event.traceMarkdownFile}\``);
-  if (event.commandHonored !== undefined) lines.push(`- Command honored: ${event.commandHonored ? "yes" : "no"}`);
-  return `${lines.join("\n")}\n`;
+}): Record<string, unknown> {
+  return {
+    seedId: event.seedId,
+    phase: event.phase,
+    kind: event.kind,
+    message: compactTraceValue(event.message),
+    tool: event.toolName,
+    argsPreview: event.argsPreview ? compactTraceValue(event.argsPreview) : undefined,
+    traceFile: event.traceFile,
+    traceMarkdownFile: event.traceMarkdownFile,
+    commandHonored: event.commandHonored,
+  };
 }
 
 function sendTraceMail(
@@ -167,7 +177,7 @@ function sendTraceMail(
   },
 ): void {
   const subject = `${event.phase.charAt(0).toUpperCase() + event.phase.slice(1)} Trace ${event.kind}`;
-  sendMailText(client, "foreman", subject, formatTraceMailBody(event));
+  sendMail(client, "foreman", subject, buildTraceMailPayload(event));
 }
 
 /**
@@ -1105,6 +1115,37 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         store.updateRun(runId, { status: "completed", completed_at: now });
         notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
 
+        let prCreated = false;
+        try {
+          const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
+          const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend);
+          const pr = await refinery.ensurePullRequestForRun({
+            runId,
+            baseBranch: config.targetBranch,
+            updateRunStatus: false,
+            bodyNote: workflowConfig.merge === "auto"
+              ? "Automatically published before refinery PR merge."
+              : "Published by finalize for operator review.",
+          });
+          prCreated = true;
+          log(`[FINALIZE] PR ready: ${pr.prUrl}`);
+          sendMail(agentMailClient, "foreman", "pr-created", {
+            seedId,
+            runId,
+            branchName: pr.branchName,
+            prUrl: pr.prUrl,
+            strategy: workflowConfig.merge ?? "auto",
+          });
+
+          if ((workflowConfig.merge ?? "auto") !== "auto") {
+            store.updateRun(runId, { status: "pr-created", completed_at: now });
+            notifyClient.send({ type: "status", runId, status: "pr-created", timestamp: now });
+          }
+        } catch (prErr: unknown) {
+          const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
+          log(`[FINALIZE] PR creation failed (will rely on queue/retry path): ${prMsg}`);
+        }
+
         let skipMergeQueue = false;
         if (troubleshooterResolved) {
           try {
@@ -1123,7 +1164,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         }
 
         const mergeStrategy = workflowConfig.merge ?? "auto";
-        if (!skipMergeQueue && mergeStrategy !== "none") {
+        if (!skipMergeQueue && mergeStrategy === "auto") {
           try {
             const enqueueStore = ForemanStore.forProject(pipelineProjectPath);
             // Pre-compute modified files via VcsBackend (async) before calling
@@ -1140,7 +1181,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
               db: enqueueStore.getDb(),
               seedId,
               runId,
-              operation: mergeStrategy === "pr" ? "create_pr" : "auto_merge",
+              operation: "auto_merge",
               worktreePath,
               getFilesModified: () => enqueueFiles,
             });
@@ -1152,6 +1193,25 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
               sendMail(agentMailClient, "refinery", "branch-ready", {
                 seedId, runId, branch: `foreman/${seedId}`, worktreePath,
               });
+
+              try {
+                const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
+                const currentRun = store.getRun(runId) ?? undefined;
+                const mergeResult = await autoMerge({
+                  store,
+                  taskClient: runtimeTaskClient,
+                  projectPath: pipelineProjectPath,
+                  targetBranch: config.targetBranch,
+                  runId,
+                  ...(currentRun ? { overrideRun: currentRun } : {}),
+                });
+                log(
+                  `[FINALIZE] Immediate merge drain result: merged=${mergeResult.merged}, conflicts=${mergeResult.conflicts}, failed=${mergeResult.failed}`,
+                );
+              } catch (drainErr: unknown) {
+                const drainMsg = drainErr instanceof Error ? drainErr.message : String(drainErr);
+                log(`[FINALIZE] Immediate merge drain failed (non-fatal): ${drainMsg}`);
+              }
             } else {
               log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error ?? "(unknown)"}`);
             }
@@ -1159,10 +1219,37 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
             const enqMsg = enqErr instanceof Error ? enqErr.message : String(enqErr);
             log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqMsg}`);
           }
-        } else if (mergeStrategy === "none") {
-          log("[FINALIZE] Workflow merge strategy is none — skipping merge queue enqueue");
+        } else if (mergeStrategy !== "auto") {
+          if (prCreated) {
+            log(`[FINALIZE] Workflow merge strategy is ${mergeStrategy} — PR created, skipping merge queue enqueue`);
+          } else {
+            log(`[FINALIZE] Workflow merge strategy is ${mergeStrategy} but PR was not created — no merge queue enqueue`);
+          }
         }
       } else {
+        try {
+          const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
+          const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend);
+          const pr = await refinery.ensurePullRequestForRun({
+            runId,
+            baseBranch: config.targetBranch,
+            updateRunStatus: false,
+            bodyNote: `Pipeline finished with failure: ${finalizeFailureReason || "unknown error"}`,
+            existingOk: true,
+          });
+          log(`[FINALIZE] Failure PR ready: ${pr.prUrl}`);
+          sendMail(agentMailClient, "foreman", "pr-created", {
+            seedId,
+            runId,
+            branchName: pr.branchName,
+            prUrl: pr.prUrl,
+            strategy: "failure-review",
+          });
+        } catch (prErr: unknown) {
+          const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
+          log(`[FINALIZE] Failed to publish PR after finalize failure: ${prMsg}`);
+        }
+
         let alreadyLandedOnTarget = false;
         if (!finalizeRetryable && finalizeFailureReason === "tests_failed_pre_existing_issues") {
           try {
