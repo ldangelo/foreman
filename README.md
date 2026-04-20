@@ -29,8 +29,9 @@ Foreman CLI / Dispatcher
   │       Tools: read, write, edit, bash, grep, find, ls, send_mail
   │
   ├─ Pipeline Executor (workflow YAML-driven)
-  │    Phases defined in .foreman/workflows/*.yaml
+  │    Phases defined in .foreman/workflows/*.yaml or src/defaults/workflows/
   │    Model selection, retries, mail hooks, artifacts — all YAML config
+  │    Phase types: prompt:, command:, bash:, merge:
   │
   ├─ Messaging (SQLite, .foreman/foreman.db — no external server)
   │    send_mail tool: agents call directly as a native Pi SDK tool
@@ -45,17 +46,17 @@ Foreman CLI / Dispatcher
 ```
 
 **Pipeline phases** (orchestrated by TypeScript, not AI):
-1. **Explorer** (Haiku, 30 turns, read-only) — codebase analysis → `EXPLORER_REPORT.md`
-2. **Developer** (Sonnet, 80 turns, read+write) — implementation + tests
-3. **QA** (Sonnet, 30 turns, read+bash) — test verification → `QA_REPORT.md`
-4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
+1. **Explorer** (30 turns, read-only) — codebase analysis → `EXPLORER_REPORT.md`
+2. **Developer** (80 turns, read+write) — implementation + tests
+3. **QA** (30 turns, read+bash) — test verification → `QA_REPORT.md`
+4. **Reviewer** (20 turns, read-only) — code review → `REVIEW.md`
 5. **Finalize** — git add/commit/push, native task merge/close update (or beads fallback)
 
 Dev ↔ QA retries up to 2x before proceeding to Review.
 
 ## Dispatch Flow
 
-The following diagram shows the full lifecycle of a bead from `foreman run` to merged branch:
+The following diagram shows the full lifecycle of a task from `foreman run` to merged branch:
 
 ```mermaid
 flowchart TD
@@ -63,27 +64,28 @@ flowchart TD
         A[User runs foreman run] --> B[Dispatcher.dispatch]
         B --> C{Check agent slots\navailable?}
         C -- No slots --> DONE[Return: skipped]
-        C -- Slots open --> D[native ready tasks or br fallback]
-        D --> E{bv client\navailable?}
+        C -- Slots open --> D[native ready tasks]
+        D --> E{useBv?}
         E -- Yes --> F[bv.robotTriage → score + sort by AI recommendation]
         E -- No --> G[Sort by priority P0→P4]
         F --> H
-        G --> H[For each bead...]
+        G --> H[For each task...]
         H --> I{Skip checks}
         I -- already active --> SKIP[Skip: already running]
         I -- completed, unmerged --> SKIP2[Skip: awaiting merge]
         I -- in backoff from stuck --> SKIP3[Skip: exponential backoff]
         I -- over max agents limit --> SKIP4[Skip: agent limit]
-        I -- passes all checks --> J[Fetch full bead detail\ntitle, description, notes, labels]
+        I -- has open blockers --> SKIP5[Skip: blocked by dependency]
+        I -- passes all checks --> J[Fetch full task detail\ntitle, description, notes, labels]
     end
 
-    subgraph SETUP["Per-bead setup"]
+    subgraph SETUP["Per-task setup"]
         J --> K[resolveBaseBranch\nstack on dependency branch?]
-        K --> L[createWorktree\ngit worktree add foreman/bead-id]
+        K --> L[createWorktree\ngit worktree add foreman/task-id]
         L --> M[Write TASK.md\ninto worktree]
         M --> N[store.createRun → SQLite]
         N --> O[store.logEvent dispatch]
-        O --> P[br update bead → in_progress]
+        O --> P[Update task status → in_progress]
         P --> Q[spawnAgent]
     end
 
@@ -100,7 +102,7 @@ flowchart TD
     subgraph WORKER["agent-worker process (detached)"]
         W --> X[Read + delete config.json]
         X --> Y[Open SQLite store\nOpen ~/.foreman/logs/runId.log]
-        Y --> Z[Init SqliteMailClient\n.foreman/mail.db]
+        Y --> Z[Init SqliteMailClient]
         Z --> AA{pipeline mode?}
         AA -- No --> AB[Single agent via Pi RPC]
         AA -- Yes --> AC[runPipeline]
@@ -109,20 +111,22 @@ flowchart TD
     subgraph PIPELINE["Pipeline phases"]
         AC --> P1
 
-        subgraph P1["Phase 1: Explorer (Haiku, 30 turns, read-only)"]
+        subgraph P1["Phase 1: Explorer (30 turns, read-only)"]
             P1A[Register agent-mail identity] --> P1B[Run SDK query\nexplorerPrompt]
             P1B --> P1C[Write EXPLORER_REPORT.md]
-            P1C --> P1D[Mail report to developer inbox]
+            P1C --> P1D[Write EXPLORER_TRACE.json + .md]
+            P1D --> P1E[Mail report to developer inbox]
         end
 
         P1 --> P1_ok{success?}
-        P1_ok -- No --> STUCK[markStuck → bead reset to open\nexponential backoff]
+        P1_ok -- No --> STUCK[markStuck → task reset to open\nexponential backoff]
         P1_ok -- Yes --> P2
 
-        subgraph P2["Phase 2: Developer (Sonnet, 80 turns, read+write)"]
+        subgraph P2["Phase 2: Developer (80 turns, read+write)"]
             P2A[Reserve worktree files via Agent Mail] --> P2B[Run SDK query\ndeveloperPrompt + explorer context]
             P2B --> P2C[Write DEVELOPER_REPORT.md]
-            P2C --> P2D[Release file reservations]
+            P2C --> P2D[Write DEVELOPER_TRACE.json + .md]
+            P2D --> P2E[Release file reservations]
         end
 
         P2 --> P2_ok{success?}
@@ -130,10 +134,11 @@ flowchart TD
 
         P2_ok -- Yes --> P3
 
-        subgraph P3["Phase 3: QA (Sonnet, 30 turns, read+bash)"]
+        subgraph P3["Phase 3: QA (30 turns, read+bash)"]
             P3A[Run SDK query\nqaPrompt + dev report]
             P3A --> P3B[Run tests\nWrite QA_REPORT.md]
-            P3B --> P3C[Parse verdict: PASS / FAIL]
+            P3B --> P3C[Write QA_TRACE.json + .md]
+            P3C --> P3D[Parse verdict: PASS / FAIL]
         end
 
         P3 --> P3_ok{QA verdict?}
@@ -143,18 +148,19 @@ flowchart TD
 
         P3_ok -- PASS --> P4
 
-        subgraph P4["Phase 4: Reviewer (Sonnet, 20 turns, read-only)"]
+        subgraph P4["Phase 4: Reviewer (20 turns, read-only)"]
             P4A[Run SDK query\nreviewerPrompt]
             P4A --> P4B[Write REVIEW.md]
-            P4B --> P4C{CRITICAL or\nWARNING issues?}
-            P4C -- Yes --> FAIL_REV[Mark pipeline FAILED_REVIEW]
+            P4B --> P4C[Write REVIEWER_TRACE.json + .md]
+            P4C --> P4D{CRITICAL or\nWARNING issues?}
+            P4D -- Yes --> FAIL_REV[Mark pipeline FAILED_REVIEW]
         end
 
-        P4C -- No --> P5
+        P4D -- No --> P5
 
         subgraph P5["Phase 5: Finalize"]
-            P5A[git add, commit, push\nforeman/bead-id branch]
-            P5A --> P5B[native task merge/close update or br fallback]
+            P5A[git add, commit, push\nforeman/task-id branch]
+            P5A --> P5B[native task merge/close update]
             P5B --> P5C[Enqueue to MergeQueue\nmail branch-ready to merge-agent]
         end
     end
@@ -174,12 +180,12 @@ flowchart TD
 
 | Decision | Outcome |
 |---|---|
-| **Backoff check** | Bead recently failed/stuck → exponential delay before retry |
-| **Dependency stacking** | Bead depends on open bead → worktree branches from that dependency's branch |
+| **Backoff check** | Task recently failed/stuck → exponential delay before retry |
+| **Dependency stacking** | Task depends on open task → worktree branches from that dependency's branch |
 | **Pi vs SDK** | `pi` binary on PATH → JSONL RPC protocol; otherwise Claude SDK `query()` |
-| **Pipeline vs single** | `--pipeline` flag → 4-phase orchestration; otherwise single agent |
+| **Pipeline vs single** | `--pipeline` flag → multi-phase orchestration; otherwise single agent |
 | **Dev↔QA retry** | Max 2 retries; QA feedback injected into next developer prompt |
-| **Reviewer FAIL** | CRITICAL/WARNING issues → run marked failed, bead reset to open |
+| **Reviewer FAIL** | CRITICAL/WARNING issues → run marked failed, task reset to open |
 | **Merge tiers T1-T4** | T1/T2 = TypeScript auto-merge; T3/T4 = AI-assisted conflict resolution |
 
 ## Prerequisites
@@ -236,19 +242,25 @@ foreman doctor              # Check dependencies (br, API key, etc.)
 cd ~/your-project
 foreman init --name my-project
 
-# 2. Create or import tasks
+# 2. Create tasks (native task store — no beads needed)
 foreman task create "Add user auth" --type feature --priority 1
 foreman task create "Write auth tests" --type task --priority 2
-# or migrate an existing beads project
-foreman task import --from-beads
 
-# 3. Dispatch agents to ready tasks
+# 3. Approve tasks to make them ready for dispatch
+foreman task approve task-abc
+
+# 4. Launch the kanban board (optional, vim-style navigation)
+foreman board
+
+# 5. Dispatch agents to ready tasks
 foreman run
 
-# 4. Monitor progress
+# 6. Monitor progress
 foreman status
+foreman inbox --all --watch    # Live agent mail stream
+foreman dashboard             # Full dashboard with metrics
 
-# 5. Merge completed branches (runs automatically in foreman run loop)
+# 7. Merge completed branches (runs automatically in foreman run loop)
 foreman merge
 ```
 
@@ -288,9 +300,13 @@ The pipeline executor also sends lifecycle messages automatically (phase-started
 
 ```bash
 foreman inbox                     # Latest run's messages
-foreman inbox --bead bd-abc1      # Messages for a specific task/bead
+foreman inbox --bead task-abc     # Messages for a specific task
 foreman inbox --all --watch       # Live stream across all runs
-foreman debug <bead-id>           # AI analysis including full mail timeline
+foreman inbox --full             # Show full JSON payloads
+foreman inbox --agent developer  # Filter by agent/role
+foreman inbox --unread           # Only unread messages
+foreman inbox --ack             # Mark shown messages as read
+foreman debug task-abc           # AI analysis including full mail timeline
 ```
 
 ### File reservations
@@ -365,17 +381,16 @@ Dispatch AI coding agents to ready tasks. Enters a watch loop that auto-merges c
 ```bash
 foreman run                              # Dispatch to all ready tasks
 foreman run --project my-project         # Dispatch without cd into a registered project
-foreman run --bead bd-abc               # Dispatch one specific task
+foreman run --bead task-abc              # Dispatch one specific task
 foreman run --max-agents 3               # Limit concurrent agents
-foreman run --model claude-opus-4-6      # Override model for all agents
+foreman run --model claude-sonnet-4-6    # Override model for all agents
 foreman run --no-tests                   # Skip test suite in merge step
 foreman run --dry-run                    # Preview without dispatching
 ```
 
 Each agent gets:
-- Its own git worktree (branch: `foreman/<bead-id>`)
-- A `TASK.md` with task instructions, phase prompts, and bead context
-- `br` CLI for status updates
+- Its own git worktree (branch: `foreman/<task-id>`)
+- A `TASK.md` with task instructions, phase prompts, and task context
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
@@ -388,6 +403,39 @@ foreman status --watch                   # Live-updating display
 ```
 
 Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `--project <name-or-path>`. Registered names resolve through `~/.foreman/projects.json`; absolute paths still work for direct one-off targeting.
+
+### `foreman board`
+Terminal UI kanban board for managing tasks. 6 columns: backlog, ready, in_progress, review, blocked, closed. Vim-style navigation (j/k, h/l), status cycling (s/S), close (c/C), edit (e/E), detail view (Enter), help (?).
+
+```bash
+foreman board                       # Open interactive board
+foreman board --project my-project  # Inspect a registered project
+foreman board --limit 10           # Max tasks per column
+```
+
+### `foreman inbox`
+View agent mail messages from SQLite. Live streaming across all runs.
+
+```bash
+foreman inbox                     # Latest run's messages
+foreman inbox --bead task-abc     # Messages for a specific task
+foreman inbox --all --watch        # Live stream across all runs
+foreman inbox --full              # Show full JSON payloads
+foreman inbox --agent developer   # Filter by agent role
+foreman inbox --unread            # Only unread messages
+```
+
+### `foreman attach`
+Attach to a running agent session to view live logs, follow phase execution, or kill stuck sessions.
+
+```bash
+foreman attach <run-id>            # Tail agent log file
+foreman attach --list             # List all active sessions
+foreman attach --stream <run-id>  # Poll-based log streaming
+foreman attach --follow <run-id>  # Follow agent log file in real-time
+foreman attach --kill <run-id>    # Kill a stuck session
+foreman attach --worktree <run-id> # Open the worktree path for the session
+```
 
 ### `foreman merge`
 Merge completed work branches back to main. Runs automatically in the `foreman run` loop.
@@ -444,13 +492,49 @@ foreman reset --detect-stuck --timeout 20  # Stuck after 20 minutes
 ```
 
 ### `foreman retry`
-Retry a bead in place, optionally dispatching it again immediately.
+Retry a task in place, optionally dispatching it again immediately.
 
 ```bash
-foreman retry bd-abc                    # Reset one bead to open
-foreman retry bd-abc --project my-project # Retry inside a registered project without cd
-foreman retry bd-abc --dispatch         # Reset and dispatch immediately
-foreman retry bd-abc --dry-run          # Preview the retry flow
+foreman retry task-abc                  # Reset one task to open
+foreman retry task-abc --project my-project # Retry inside a registered project without cd
+foreman retry task-abc --dispatch         # Reset and dispatch immediately
+foreman retry task-abc --dry-run          # Preview the retry flow
+```
+
+### `foreman debug`
+AI-powered execution analysis using Opus for deep debugging of pipeline runs.
+
+```bash
+foreman debug task-abc                   # Full Opus analysis
+foreman debug task-abc --raw            # Dump all artifacts without AI analysis
+foreman debug task-abc --model anthropic/claude-sonnet-4-6  # Cheaper model
+```
+
+### `foreman sentinel`
+QA sentinel for continuous testing on main/master branch.
+
+```bash
+foreman sentinel run-once               # Run tests once and exit
+foreman sentinel start                  # Start background monitoring daemon
+foreman sentinel status                 # Check sentinel health
+foreman sentinel stop                  # Stop the daemon
+```
+
+### `foreman worktree`
+Git worktree management commands.
+
+```bash
+foreman worktree list                   # List all active worktrees
+foreman worktree clean                  # Remove orphaned worktrees
+```
+
+### `foreman stop`
+Gracefully stop running agents without destroying infrastructure.
+
+```bash
+foreman stop                            # Stop all running agents
+foreman stop --list                    # Show agents before stopping
+foreman stop task-abc                  # Stop a specific agent
 ```
 
 ### `foreman pr`
@@ -462,43 +546,30 @@ foreman pr
 
 ## Task Tracking
 
-Foreman is now **native-task first**. Tasks live in the project SQLite store (`.foreman/foreman.db`) and Foreman falls back to [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) only for compatibility paths or projects that have not been migrated yet.
+Foreman ships with a **native SQLite task store** — no external dependencies required. Tasks are managed entirely through `foreman task` commands.
 
 ```bash
-# Native task lifecycle
+# Create tasks (start in backlog)
 foreman task create "Implement feature X" --type feature --priority 1
-foreman task list
-foreman task approve task-123
-foreman task update task-123 --status in-progress
-foreman task import --from-beads      # migrate legacy beads data
-```
+foreman task create "Fix bug Y" --type bug --priority 0
 
-When you are still operating a legacy/fallback project, the beads CLI remains relevant:
+# Approve to make ready for dispatch
+foreman task approve task-abc
 
-```bash
-# View ready tasks (legacy/fallback path)
-br ready
+# List, filter, and inspect
+foreman task list --status ready
+foreman task show task-abc
 
-# Create tasks directly in beads
-br create --title "Implement feature X" --type feature --priority 1
-br create --title "Fix bug Y" --type bug --priority 0
-
-# Work lifecycle
-br update bd-abc --status=in_progress
-br close bd-abc --reason="Completed"
+# Update and close
+foreman task update task-abc --priority 2
+foreman task close task-abc
 
 # Dependencies
-br dep add bd-tests bd-feature    # tests depend on feature
-
-# Sync with git
-br sync --flush-only               # Export DB to JSONL before committing
+foreman task dep add task-tests task-feature  # tests depend on feature
+foreman task dep list task-abc                 # show dependencies
 ```
 
-Set `FOREMAN_TASK_STORE=native|beads|auto` to force or inspect task-store selection behavior.
-
 Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (backlog).
-
-## Configuration
 
 ### Workflow YAML
 
@@ -508,9 +579,11 @@ Workflows define:
 - **Setup steps** — dependency installation, build commands (stack-agnostic)
 - **Setup cache** — symlink dependency directories from a shared cache
 - **Phase sequence** — which agents run in what order
+- **Phase types** — `prompt:` (AI agent), `command:` (skill interpolation), `bash:` (test execution)
 - **Model selection** — per-phase models with priority-based overrides
 - **Retry loops** — QA/Reviewer failure → Developer retry with feedback
 - **Mail hooks** — lifecycle notifications and artifact forwarding
+- **Verdict parsing** — auto-parse PASS/FAIL from phase artifacts
 
 ```yaml
 # .foreman/workflows/default.yaml (project-local override)
@@ -522,12 +595,22 @@ setupCache:
   key: package-lock.json
   path: node_modules
 phases:
+  - name: explorer
+    prompt: explorer.md
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 30
+    artifact: EXPLORER_REPORT.md
+    skipIfArtifact: EXPLORER_REPORT.md
+
   - name: developer
     prompt: developer.md
-    models:
-      default: sonnet
-      P0: opus
     maxTurns: 80
+    files:
+      reserve: true
+      leaseSecs: 600
+
   - name: qa
     prompt: qa.md
     verdict: true
@@ -535,21 +618,34 @@ phases:
     retryOnFail: 2
 ```
 
+### Phase Trace Artifacts
+
+Each phase writes structured trace files for observability and debugging:
+
+| File | Purpose |
+|---|---|
+| `{PHASE}_TRACE.json` | Machine-readable: model, turns, tool calls, cost, timing |
+| `{PHASE}_TRACE.md` | Human-readable summary linked from the JSON |
+
+Traces are stored in `docs/reports/{seedId}/` inside each worktree. Use `foreman inbox --all --watch` for live mail updates during execution, or `foreman debug <task-id>` for AI-powered execution analysis with full trace context.
+
 ### Environment variables
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...          # Required (or use `pi /login` for OAuth)
 export FOREMAN_MAX_AGENTS=5                  # Max concurrent agents (default: 5)
+export FOREMAN_TASK_STORE=native|beads|auto   # Force task store selection
 ```
 
 ### Storage locations
 
 | Path | Contents |
 |---|---|
-| `.beads/` | legacy/compatibility beads_rust task database (JSONL, git-tracked) |
-| `.foreman/foreman.db` | SQLite: runs, merge_queue, projects |
+| `.beads/` | Legacy beads_rust task database (JSONL, git-tracked; optional) |
+| `.foreman/` | Project config, SQLite store, workflows |
+| `.foreman/foreman.db` | SQLite: tasks, runs, merge_queue, projects, messages |
 | `.foreman-worktrees/` | Git worktrees for active agents |
-| `~/.foreman/logs/` | Per-run agent logs |
+| `~/.foreman/` | Global config, logs, projects registry |
 
 ## Project Structure
 
@@ -559,30 +655,44 @@ foreman/
 │   ├── cli/                        # CLI entry point + commands
 │   │   └── commands/
 │   │       ├── run.ts              # Main dispatch + merge loop
-│   │       ├── status.ts           # Status display
+│   │       ├── status.ts           # Status display + watch
+│   │       ├── dashboard.ts        # Full dashboard with metrics
+│   │       ├── board.ts            # Interactive kanban board TUI
+│   │       ├── inbox.ts            # Agent mail viewer
+│   │       ├── attach.ts           # Attach to running sessions
+│   │       ├── task.ts             # Native task CRUD + deps
+│   │       ├── bead.ts             # Legacy beads CLI wrapper
 │   │       ├── merge.ts            # Manual merge trigger
-│   │       └── doctor.ts           # Health checks
+│   │       ├── reset.ts            # Reset failed/stuck runs
+│   │       ├── retry.ts            # Retry a specific task
+│   │       ├── doctor.ts           # Health checks
+│   │       ├── sentinel.ts         # QA sentinel + background monitor
+│   │       └── worktree.ts         # Git worktree management
 │   ├── orchestrator/               # Core orchestration engine
-│   │   ├── dispatcher.ts           # Task → agent spawning strategies
-│   │   ├── pi-rpc-spawn-strategy.ts  # Pi RPC spawn (primary)
-│   │   ├── agent-worker.ts         # Claude SDK pipeline (fallback)
-│   │   ├── agent-mail-client.ts    # Agent Mail HTTP wrapper
+│   │   ├── dispatcher.ts           # Task → agent spawning
+│   │   ├── pipeline-executor.ts    # Workflow YAML-driven phase runner
+│   │   ├── pi-sdk-runner.ts        # Pi SDK wrapper (createAgentSession)
+│   │   ├── pi-sdk-tools.ts         # Custom Pi tools (send_mail)
+│   │   ├── pi-rpc-spawn-strategy.ts # Pi RPC spawn (primary)
+│   │   ├── agent-worker.ts         # Detached worker process
 │   │   ├── refinery.ts             # Merge + test + cleanup
+│   │   ├── auto-merge.ts           # Immediate post-pipeline merge
 │   │   ├── conflict-resolver.ts    # T1-T4 conflict resolution
-│   │   ├── roles.ts                # Phase prompts + tool configs
-│   │   └── sentinel.ts             # Background health monitor
-│   └── lib/
-│       ├── beads-rust.ts           # compatibility br CLI wrapper
-│       ├── git.ts                  # Git worktree management
-│       └── store.ts                # SQLite state store
-├── packages/
-│   └── foreman-pi-extensions/      # Pi extension package
-│       ├── src/tool-gate.ts        # Block disallowed tools per phase
-│       ├── src/budget-enforcer.ts  # Turn + token limits
-│       └── src/audit-logger.ts     # Audit trail → Agent Mail
+│   │   ├── pi-observability-writer.ts # Phase trace artifact writer
+│   │   └── activity-logger.ts       # Activity log + phase records
+│   ├── lib/
+│   │   ├── store.ts                # SQLite state store
+│   │   ├── task-store.ts           # Native task CRUD
+│   │   ├── sqlite-mail-client.ts   # Agent mail SQLite backend
+│   │   ├── git.ts                  # Git worktree management
+│   │   ├── vcs/                    # VCS backend abstraction (git, jujutsu)
+│   │   ├── workflow-loader.ts      # YAML workflow parser
+│   │   └── project-config.ts       # .foreman/config.yaml loader
+│   └── defaults/
+│       └── workflows/               # Bundled workflow YAMLs (8 types)
 └── docs/
-    ├── TRD/                        # Technical Requirements Documents
-    └── PRD/                        # Product Requirements Documents
+    ├── guides/                      # User guides
+    └── workflow-yaml-reference.md  # Full workflow YAML docs
 ```
 
 ## Standalone Binaries
