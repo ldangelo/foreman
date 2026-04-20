@@ -27,6 +27,8 @@ function renderTraceMarkdown(trace: PhaseTrace, relativeJsonPath: string): strin
     `- Run ID: \`${trace.runId}\``,
     `- Phase type: \`${trace.phaseType}\``,
     `- Model: \`${trace.model}\``,
+    `- Workflow: ${trace.workflowName ? `\`${trace.workflowName}\`` : "—"}`,
+    `- Workflow path: ${trace.workflowPath ? `\`${trace.workflowPath}\`` : "—"}`,
     `- Started: ${trace.startedAt}`,
     `- Completed: ${trace.completedAt ?? "—"}`,
     `- Success: ${trace.success === undefined ? "unknown" : trace.success ? "yes" : "no"}`,

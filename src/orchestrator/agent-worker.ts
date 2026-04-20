@@ -587,6 +587,8 @@ async function runPhase(
         systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
         expectedArtifact: observability?.expectedArtifact,
         resolvedCommand: observability?.resolvedCommand,
+        workflowName: observability?.workflowName,
+        workflowPath: observability?.workflowPath,
       },
       onToolCall: (name, input) => {
         progress.toolCalls++;

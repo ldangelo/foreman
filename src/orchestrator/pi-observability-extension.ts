@@ -34,6 +34,26 @@ interface AgentEndEventLike {
   messages: unknown[];
 }
 
+interface ToolCallEventLike {
+  toolName: string;
+  input?: {
+    command?: string;
+  };
+}
+
+export function getForbiddenVcsAction(command: string | undefined, phase: string): "git commit" | "git push" | undefined {
+  if (!command) return undefined;
+  if (phase === "finalize") return undefined;
+  const normalized = command.replace(/\s+/g, " ").trim().toLowerCase();
+  if (/(^|[;&|]\s*|&&\s*|\|\|\s*)git commit\b/.test(normalized) || /\bgit commit\b/.test(normalized)) {
+    return "git commit";
+  }
+  if (/(^|[;&|]\s*|&&\s*|\|\|\s*)git push\b/.test(normalized) || /\bgit push\b/.test(normalized)) {
+    return "git push";
+  }
+  return undefined;
+}
+
 function truncate(value: string, max = 240): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 }
@@ -101,6 +121,8 @@ export function createPhaseTrace(metadata: PhaseTraceMetadata): PhaseTrace {
     phaseType: metadata.phaseType,
     model: metadata.model,
     worktreePath: metadata.worktreePath,
+    workflowName: metadata.workflowName,
+    workflowPath: metadata.workflowPath,
     startedAt: new Date().toISOString(),
     rawPrompt: metadata.rawPrompt,
     resolvedCommand: metadata.resolvedCommand,
@@ -122,6 +144,17 @@ export function createPiObservabilityExtension(trace: PhaseTrace): ExtensionFact
     pi.on("before_agent_start", async (event) => {
       trace.rawPrompt = event.prompt;
       trace.systemPromptPreview = truncate(event.systemPrompt);
+    });
+
+    (pi as ExtensionAPI & { on: (event: "tool_call", handler: (event: ToolCallEventLike) => unknown) => void }).on("tool_call", async (event: ToolCallEventLike) => {
+      if (event.toolName !== "bash") return;
+      const forbidden = getForbiddenVcsAction(event.input?.command, trace.phase);
+      if (!forbidden) return;
+      trace.warnings.push(`Blocked ${forbidden} during non-finalize phase`);
+      return {
+        block: true,
+        reason: `${forbidden} is only allowed during finalize`,
+      };
     });
 
     pi.on("tool_execution_start", async (event: ToolExecutionEventLike) => {

@@ -201,6 +201,8 @@ export type OnErrorStrategy = "stop" | "continue";
 export interface WorkflowConfig {
   /** Workflow name (e.g. "default", "smoke"). */
   name: string;
+  /** Absolute path of the workflow YAML file that was actually loaded. */
+  sourcePath?: string;
   /**
    * Optional setup steps to run before pipeline phases begin.
    * When present, these replace the Node.js-specific installDependencies() fallback.
@@ -624,7 +626,7 @@ export function loadWorkflowConfig(
   if (existsSync(localPath)) {
     try {
       const raw = yamlLoad(readFileSync(localPath, "utf-8"));
-      return validateWorkflowConfig(raw, workflowName);
+      return { ...validateWorkflowConfig(raw, workflowName), sourcePath: localPath };
     } catch (err) {
       if (err instanceof WorkflowConfigError) throw err;
       const msg = err instanceof Error ? err.message : String(err);
@@ -637,7 +639,7 @@ export function loadWorkflowConfig(
   if (existsSync(bundledPath)) {
     try {
       const raw = yamlLoad(readFileSync(bundledPath, "utf-8"));
-      return validateWorkflowConfig(raw, workflowName);
+      return { ...validateWorkflowConfig(raw, workflowName), sourcePath: bundledPath };
     } catch (err) {
       if (err instanceof WorkflowConfigError) throw err;
       const msg = err instanceof Error ? err.message : String(err);

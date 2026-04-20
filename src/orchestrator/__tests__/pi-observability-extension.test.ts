@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createPhaseTrace, finalizePhaseTrace } from "../pi-observability-extension.js";
+import { createPhaseTrace, finalizePhaseTrace, getForbiddenVcsAction } from "../pi-observability-extension.js";
 import { writePhaseTrace } from "../pi-observability-writer.js";
 
 describe("pi observability trace", () => {
@@ -21,6 +21,8 @@ describe("pi observability trace", () => {
       resolvedCommand: "/ensemble:fix-issue Fix the broken inbox rendering",
       expectedArtifact: "DEVELOPER_REPORT.md",
       systemPrompt: "You are the fix agent",
+      workflowName: "bug",
+      workflowPath: "/tmp/project/.foreman/workflows/bug.yaml",
     });
 
     finalizePhaseTrace(trace, {
@@ -30,9 +32,17 @@ describe("pi observability trace", () => {
 
     expect(trace.expectedSkill).toBe("ensemble-fix-issue");
     expect(trace.commandLooksLikeLegacySlash).toBe(true);
+    expect(trace.workflowPath).toBe("/tmp/project/.foreman/workflows/bug.yaml");
     expect(trace.artifactPresent).toBe(false);
     expect(trace.commandHonored).toBe(false);
     expect(trace.warnings).toContain("Expected artifact missing: DEVELOPER_REPORT.md");
+  });
+
+  it("blocks git commit and git push outside finalize", () => {
+    expect(getForbiddenVcsAction("git commit -m 'x'", "fix")).toBe("git commit");
+    expect(getForbiddenVcsAction("npm test && git push origin head", "test")).toBe("git push");
+    expect(getForbiddenVcsAction("git commit -m 'x'", "finalize")).toBeUndefined();
+    expect(getForbiddenVcsAction("git status", "fix")).toBeUndefined();
   });
 
   it("marks command intent as honored when the expected artifact exists", async () => {

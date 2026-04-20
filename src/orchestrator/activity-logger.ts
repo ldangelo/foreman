@@ -65,6 +65,10 @@ export interface PhaseRecord {
   phaseWarnings?: string[];
   /** Heuristic for whether a command workflow was actually honored. */
   commandHonored?: boolean;
+  /** Workflow name used for this phase. */
+  workflowName?: string;
+  /** Workflow YAML source path used for this phase. */
+  workflowPath?: string;
   /** Verdict: pass, fail, skipped, unknown */
   verdict?: "pass" | "fail" | "skipped" | "unknown";
   /** Model used for this phase */
@@ -377,6 +381,8 @@ export async function generateActivityLog(
       traceMarkdownFile: p.traceMarkdownFile,
       phaseWarnings: p.phaseWarnings,
       commandHonored: p.commandHonored,
+      workflowName: p.workflowName,
+      workflowPath: p.workflowPath,
       verdict: p.verdict,
       model: p.model,
     })),
@@ -407,7 +413,7 @@ export async function generateActivityLog(
 export function createPhaseRecord(
   name: string,
   model?: string,
-  extra?: Pick<PhaseRecord, "phaseType" | "commandsRun" | "artifactExpected">,
+  extra?: Pick<PhaseRecord, "phaseType" | "commandsRun" | "artifactExpected" | "workflowName" | "workflowPath">,
 ): PhaseRecord {
   return {
     name,
@@ -417,6 +423,8 @@ export function createPhaseRecord(
     phaseType: extra?.phaseType,
     commandsRun: extra?.commandsRun,
     artifactExpected: extra?.artifactExpected,
+    workflowName: extra?.workflowName,
+    workflowPath: extra?.workflowPath,
   };
 }
 
@@ -442,6 +450,8 @@ export function finalizePhaseRecord(
     traceMarkdownFile?: string;
     traceWarnings?: string[];
     commandHonored?: boolean;
+    workflowName?: string;
+    workflowPath?: string;
   },
 ): PhaseRecord {
   const completedAt = new Date().toISOString();
@@ -475,6 +485,8 @@ export function finalizePhaseRecord(
     traceMarkdownFile: result.traceMarkdownFile ?? record.traceMarkdownFile,
     phaseWarnings: result.traceWarnings ?? record.phaseWarnings,
     commandHonored: result.commandHonored ?? record.commandHonored,
+    workflowName: result.workflowName ?? record.workflowName,
+    workflowPath: result.workflowPath ?? record.workflowPath,
     verdict,
   };
 }
@@ -532,6 +544,8 @@ export async function writeIncrementalPipelineReport(opts: {
     "# Pipeline Report — " + seedId,
     "",
     "**Run ID:** `" + runId + "`",
+    "**Workflow:** `" + (currentPhase?.workflowName ?? "—") + "`",
+    "**Workflow Path:** `" + (currentPhase?.workflowPath ?? "—") + "`",
     "**Target Branch:** `" + (targetBranch ?? "—") + "`",
     "**VCS Branch:** `" + (vcsBranchName ?? "—") + "`",
     "**Generated:** " + new Date().toISOString(),

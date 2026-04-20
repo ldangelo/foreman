@@ -22,6 +22,8 @@ export interface PhaseTraceMetadata {
   systemPrompt?: string;
   expectedArtifact?: string;
   resolvedCommand?: string;
+  workflowName?: string;
+  workflowPath?: string;
 }
 
 export interface PhaseTrace {
@@ -32,6 +34,8 @@ export interface PhaseTrace {
   phaseType: PhaseExecutionType;
   model: string;
   worktreePath: string;
+  workflowName?: string;
+  workflowPath?: string;
   startedAt: string;
   completedAt?: string;
   rawPrompt: string;

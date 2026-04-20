@@ -75,6 +75,8 @@ export interface PhaseObservabilityInput {
   phaseType?: "prompt" | "command" | "bash" | "builtin";
   expectedArtifact?: string;
   resolvedCommand?: string;
+  workflowName?: string;
+  workflowPath?: string;
 }
 
 /** A child task within an epic pipeline run. */
@@ -1054,6 +1056,8 @@ async function runPhaseSequence(
           ? [prompt]
           : undefined,
       artifactExpected: interpolatedArtifact,
+      workflowName: workflowConfig.name,
+      workflowPath: workflowConfig.sourcePath,
     });
 
     // P1: Explorer circuit breaker - fail fast if Explorer has failed 3 times
@@ -1151,6 +1155,8 @@ async function runPhaseSequence(
         phaseType,
         expectedArtifact: interpolatedArtifact,
         resolvedCommand: phase.command ? prompt : undefined,
+        workflowName: workflowConfig.name,
+        workflowPath: workflowConfig.sourcePath,
       },
     );
 
@@ -1218,6 +1224,8 @@ async function runPhaseSequence(
         traceMarkdownFile: result.traceMarkdownFile,
         traceWarnings: result.traceWarnings,
         commandHonored: result.commandHonored,
+        workflowName: workflowConfig.name,
+        workflowPath: workflowConfig.sourcePath,
       });
       ctx.activityPhases.push(completedActivityPhase);
 

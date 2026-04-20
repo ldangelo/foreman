@@ -49,6 +49,10 @@ export interface PhaseRecord {
   phaseWarnings?: string[];
   /** Heuristic for whether a command workflow was actually honored. */
   commandHonored?: boolean;
+  /** Workflow name used for this phase. */
+  workflowName?: string;
+  /** Workflow YAML source path used for this phase. */
+  workflowPath?: string;
 }
 
 /**
