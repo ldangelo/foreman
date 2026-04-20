@@ -8,6 +8,7 @@ import { basename, join } from "node:path";
 import type {
   FinalizePhaseTraceOptions,
   PhaseTrace,
+  PhaseTraceLiveEvent,
   PhaseTraceMetadata,
 } from "./pi-observability-types.js";
 
@@ -140,17 +141,39 @@ function findTool(trace: PhaseTrace, toolCallId: string) {
 }
 
 export function createPiObservabilityExtension(trace: PhaseTrace): ExtensionFactory {
+  return createPiObservabilityExtensionWithEmitter(trace);
+}
+
+export function createPiObservabilityExtensionWithEmitter(
+  trace: PhaseTrace,
+  emit?: (event: PhaseTraceLiveEvent) => void,
+): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     pi.on("before_agent_start", async (event) => {
       trace.rawPrompt = event.prompt;
       trace.systemPromptPreview = truncate(event.systemPrompt);
+      emit?.({
+        kind: "start",
+        phase: trace.phase,
+        seedId: trace.seedId,
+        message: `phase=${trace.phase} workflow=${trace.workflowName ?? "unknown"} command=${trace.resolvedCommand ?? trace.rawPrompt}`,
+      });
     });
 
     (pi as ExtensionAPI & { on: (event: "tool_call", handler: (event: ToolCallEventLike) => unknown) => void }).on("tool_call", async (event: ToolCallEventLike) => {
       if (event.toolName !== "bash") return;
       const forbidden = getForbiddenVcsAction(event.input?.command, trace.phase);
       if (!forbidden) return;
-      trace.warnings.push(`Blocked ${forbidden} during non-finalize phase`);
+      const warning = `Blocked ${forbidden} during non-finalize phase`;
+      trace.warnings.push(warning);
+      emit?.({
+        kind: "warning",
+        phase: trace.phase,
+        seedId: trace.seedId,
+        message: warning,
+        toolName: "bash",
+        argsPreview: event.input?.command,
+      });
       return {
         block: true,
         reason: `${forbidden} is only allowed during finalize`,
@@ -165,6 +188,16 @@ export function createPiObservabilityExtension(trace: PhaseTrace): ExtensionFact
         argsPreview: summarizeUnknown(event.args),
         updateCount: 0,
       });
+      if (event.toolName === "edit" || event.toolName === "write" || event.toolName === "bash") {
+        emit?.({
+          kind: "update",
+          phase: trace.phase,
+          seedId: trace.seedId,
+          toolName: event.toolName,
+          argsPreview: summarizeUnknown(event.args),
+          message: `tool=${event.toolName}`,
+        });
+      }
     });
 
     pi.on("tool_execution_update", async (event: ToolExecutionEventLike) => {

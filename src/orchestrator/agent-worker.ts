@@ -125,6 +125,51 @@ function sendMailText(
   });
 }
 
+function formatTraceMailBody(event: {
+  kind: "start" | "update" | "warning" | "complete";
+  phase: string;
+  seedId: string;
+  message: string;
+  toolName?: string;
+  argsPreview?: string;
+  traceFile?: string;
+  traceMarkdownFile?: string;
+  commandHonored?: boolean;
+}): string {
+  const lines = [
+    `# ${event.phase.charAt(0).toUpperCase() + event.phase.slice(1)} Trace ${event.kind}`,
+    "",
+    `- Seed: \`${event.seedId}\``,
+    `- Phase: \`${event.phase}\``,
+    `- Kind: \`${event.kind}\``,
+    `- Message: ${event.message}`,
+  ];
+  if (event.toolName) lines.push(`- Tool: \`${event.toolName}\``);
+  if (event.argsPreview) lines.push(`- Args: \`${event.argsPreview}\``);
+  if (event.traceFile) lines.push(`- Trace JSON: \`${event.traceFile}\``);
+  if (event.traceMarkdownFile) lines.push(`- Trace Markdown: \`${event.traceMarkdownFile}\``);
+  if (event.commandHonored !== undefined) lines.push(`- Command honored: ${event.commandHonored ? "yes" : "no"}`);
+  return `${lines.join("\n")}\n`;
+}
+
+function sendTraceMail(
+  client: AnyMailClient | null,
+  event: {
+    kind: "start" | "update" | "warning" | "complete";
+    phase: string;
+    seedId: string;
+    message: string;
+    toolName?: string;
+    argsPreview?: string;
+    traceFile?: string;
+    traceMarkdownFile?: string;
+    commandHonored?: boolean;
+  },
+): void {
+  const subject = `${event.phase.charAt(0).toUpperCase() + event.phase.slice(1)} Trace ${event.kind}`;
+  sendMailText(client, "foreman", subject, formatTraceMailBody(event));
+}
+
 /**
  * Register agent identity for a phase and set as the sending identity on the client.
  * Uses ensureAgentRegistered so the auto-generated name is cached and used as sender_name.
@@ -589,6 +634,9 @@ async function runPhase(
         resolvedCommand: observability?.resolvedCommand,
         workflowName: observability?.workflowName,
         workflowPath: observability?.workflowPath,
+      },
+      onTraceEvent: (event) => {
+        sendTraceMail(agentMailClient ?? null, event);
       },
       onToolCall: (name, input) => {
         progress.toolCalls++;

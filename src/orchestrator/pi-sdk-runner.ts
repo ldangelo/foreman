@@ -35,10 +35,10 @@ import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   createPhaseTrace,
-  createPiObservabilityExtension,
+  createPiObservabilityExtensionWithEmitter,
   finalizePhaseTrace,
 } from "./pi-observability-extension.js";
-import type { PhaseTraceMetadata } from "./pi-observability-types.js";
+import type { PhaseTraceLiveEvent, PhaseTraceMetadata } from "./pi-observability-types.js";
 import { writePhaseTrace } from "./pi-observability-writer.js";
 
 // ── Public interface (compatible with pi-runner.ts) ─────────────────────
@@ -83,6 +83,8 @@ export interface PiRunOptions {
   guardrailConfig?: GuardrailConfig;
   /** Optional phase-level observability metadata used to emit Pi hook traces. */
   observability?: PhaseTraceMetadata;
+  /** Live observability callback fired from Pi extension hooks. */
+  onTraceEvent?: (event: PhaseTraceLiveEvent) => void;
 }
 
 // ── Tool name → factory mapping ─────────────────────────────────────────
@@ -199,7 +201,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       cwd: opts.cwd,
       agentDir,
       settingsManager: SettingsManager.create(opts.cwd, agentDir),
-      extensionFactories: phaseTrace ? [createPiObservabilityExtension(phaseTrace)] : [],
+      extensionFactories: phaseTrace ? [createPiObservabilityExtensionWithEmitter(phaseTrace, opts.onTraceEvent)] : [],
     });
     await resourceLoader.reload();
 
@@ -305,6 +307,15 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
         finalMessage: textChunks.length > 0 ? textChunks.join("") : undefined,
       });
       tracePaths = await writePhaseTrace(phaseTrace);
+      opts.onTraceEvent?.({
+        kind: "complete",
+        phase: phaseTrace.phase,
+        seedId: phaseTrace.seedId,
+        message: `phase=${phaseTrace.phase} success=${String(success)} artifactPresent=${String(phaseTrace.artifactPresent)} commandHonored=${String(phaseTrace.commandHonored)}`,
+        traceFile: tracePaths.relativeJsonPath,
+        traceMarkdownFile: tracePaths.relativeMarkdownPath,
+        commandHonored: phaseTrace.commandHonored,
+      });
     }
 
     return {
@@ -333,6 +344,15 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
         finalMessage: textChunks.length > 0 ? textChunks.join("") : undefined,
       });
       tracePaths = await writePhaseTrace(phaseTrace);
+      opts.onTraceEvent?.({
+        kind: "complete",
+        phase: phaseTrace.phase,
+        seedId: phaseTrace.seedId,
+        message: `phase=${phaseTrace.phase} success=false error=${reason}`,
+        traceFile: tracePaths.relativeJsonPath,
+        traceMarkdownFile: tracePaths.relativeMarkdownPath,
+        commandHonored: phaseTrace.commandHonored,
+      });
     }
     return {
       success: false,

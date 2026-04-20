@@ -65,3 +65,15 @@ export interface PhaseTraceWriteResult {
   relativeJsonPath: string;
   relativeMarkdownPath: string;
 }
+
+export interface PhaseTraceLiveEvent {
+  kind: "start" | "update" | "warning" | "complete";
+  phase: string;
+  seedId: string;
+  message: string;
+  toolName?: string;
+  argsPreview?: string;
+  traceFile?: string;
+  traceMarkdownFile?: string;
+  commandHonored?: boolean;
+}

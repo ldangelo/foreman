@@ -239,6 +239,30 @@ function readReport(worktreePath: string, filename: string): string | null {
   try { return readFileSync(p, "utf-8"); } catch { return null; }
 }
 
+function readRelativeFile(worktreePath: string, relativePath?: string): string | null {
+  if (!relativePath) return null;
+  const path = join(worktreePath, relativePath);
+  try { return readFileSync(path, "utf-8"); } catch { return null; }
+}
+
+function sendTraceMail(
+  ctx: PipelineContext,
+  client: AnyMailClient | null,
+  phaseName: string,
+  seedId: string,
+  worktreePath: string,
+  result: PhaseResult,
+): void {
+  const traceMarkdown = readRelativeFile(worktreePath, result.traceMarkdownFile);
+  if (!traceMarkdown) return;
+  ctx.sendMailText(
+    client,
+    "foreman",
+    `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Trace`,
+    traceMarkdown,
+  );
+}
+
 /**
  * Detect if an error is a rate limit (429) error.
  * Returns true if the error indicates a rate limit, false otherwise.
