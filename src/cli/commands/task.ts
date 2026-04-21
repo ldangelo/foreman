@@ -34,6 +34,8 @@ import {
   type DependencyRow,
 } from "../../lib/task-store.js";
 import { resolveProjectPathFromOptions } from "./project-task-support.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
+import { ProjectRegistry } from "../../lib/project-registry.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -44,6 +46,48 @@ const COL_TYPE = 10;
 const COL_PRI = 14;
 const COL_STATUS = 14;
 const COL_GAP = "  ";
+
+// ── tRPC task helpers ─────────────────────────────────────────────────────
+
+/** Try to resolve a projectId from the project flag, then attempt tRPC call.
+ * Falls back to NativeTaskStore on daemon errors.
+ */
+async function withTaskTrpc<T>(
+  opts: { project?: string },
+  fn: (client: ReturnType<typeof createTrpcClient>, projectId: string) => Promise<T>,
+  fallback: () => Promise<T>,
+): Promise<T> {
+  if (!opts.project) return fallback();
+  try {
+    const registry = new ProjectRegistry();
+    const record = await registry.get(opts.project);
+    if (!record) return fallback();
+    const client = createTrpcClient();
+    return fn(client, record.id);
+  } catch {
+    return fallback();
+  }
+}
+
+function handleTaskDaemonError(err: unknown): void {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (
+    msg.includes("ECONNREFUSED") ||
+    msg.includes("ENOENT") ||
+    msg.includes("connect") ||
+    msg.includes("socket")
+  ) {
+    console.error(
+      chalk.yellow(
+        "Daemon unavailable. Falling back to local task store."
+      )
+    );
+  } else {
+    console.error(
+      chalk.red(`Daemon error: ${msg}`)
+    );
+  }
+}
 
 function pad(str: string, width: number): string {
   return str.length >= width ? str.slice(0, width - 1) + "…" : str.padEnd(width);
