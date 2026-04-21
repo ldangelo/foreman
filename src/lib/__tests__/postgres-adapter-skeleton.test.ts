@@ -2,16 +2,39 @@
  * TRD-003-TEST | Verifies: TRD-003 | Tests: PostgresAdapter throws "not implemented" on all methods
  * PRD: docs/PRD/PRD-2026-010-multi-project-orchestrator.md
  * TRD: docs/TRD/TRD-2026-011-multi-project-orchestrator.md#trd-003
+ *
+ * Note: Project methods are fully implemented (TRD-011). The project operation
+ * tests below use a mock pool. Non-project methods still throw "not implemented".
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PostgresAdapter } from "../db/postgres-adapter.js";
+import { initPool, destroyPool, type PoolLike } from "../db/pool-manager.js";
 
 const PROJECT_ID = "proj-test123";
 
 const adapter = new PostgresAdapter();
-
 const NOT_IMPLEMENTED = "not implemented";
+
+// ---------------------------------------------------------------------------
+// Mock pool factory
+// ---------------------------------------------------------------------------
+
+function makeMockPool(responses: Array<{ sqlPattern: RegExp; rows?: unknown[]; rowCount?: number }>): PoolLike {
+  return {
+    query: vi.fn(async (text: string) => {
+      for (const r of responses) {
+        if (r.sqlPattern.test(text)) {
+          return { rows: (r.rows ?? []) as never, rowCount: (r.rowCount ?? r.rows?.length ?? 0) as never };
+        }
+      }
+      return { rows: [], rowCount: 0 };
+    }),
+    connect: vi.fn(),
+    end: vi.fn(),
+    on: vi.fn(),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -28,50 +51,191 @@ async function assertNotImplemented(
 }
 
 // ---------------------------------------------------------------------------
-// Project operations
+// Project operations (implemented — use mock pool)
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter project operations", () => {
-  it("createProject throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.createProject({ name: "test", path: "/tmp" }),
-      "createProject"
-    );
+  beforeEach(() => {
+    vi.restoreAllMocks();
   });
 
-  it("listProjects throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.listProjects(),
-      "listProjects"
-    );
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
-  it("getProject throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.getProject(PROJECT_ID),
-      "getProject"
-    );
+  it("createProject inserts and returns the project row", async () => {
+    const mockRows = [
+      {
+        id: "proj-001",
+        name: "Test Project",
+        path: "/tmp/test",
+        github_url: null,
+        default_branch: null,
+        status: "active",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ];
+    const mockPool = makeMockPool([
+      { sqlPattern: /INSERT INTO projects/, rows: mockRows },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.createProject({ name: "Test Project", path: "/tmp/test" });
+      expect(result.id).toBe("proj-001");
+      expect(result.name).toBe("Test Project");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("updateProject throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.updateProject(PROJECT_ID, { name: "newname" }),
-      "updateProject"
-    );
+  it("listProjects returns rows from the database", async () => {
+    const mockRows = [
+      { id: "proj-001", name: "Project A", path: "/a", github_url: null, default_branch: null, status: "active", created_at: "", updated_at: "" },
+      { id: "proj-002", name: "Project B", path: "/b", github_url: null, default_branch: null, status: "paused", created_at: "", updated_at: "" },
+    ];
+    const mockPool = makeMockPool([
+      { sqlPattern: /SELECT \* FROM projects/, rows: mockRows },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.listProjects();
+      expect(result).toHaveLength(2);
+      expect(result[0].id).toBe("proj-001");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("removeProject throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.removeProject(PROJECT_ID),
-      "removeProject"
-    );
+  it("listProjects filters by status", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /SELECT \* FROM projects WHERE status = \$1/, rows: [{ id: "proj-001", name: "Active", path: "/a", github_url: null, default_branch: null, status: "active", created_at: "", updated_at: "" }] },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.listProjects({ status: "active" });
+      expect(result).toHaveLength(1);
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("syncProject throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.syncProject(PROJECT_ID),
-      "syncProject"
-    );
+  it("getProject returns a project by id", async () => {
+    const mockRows = [
+      { id: PROJECT_ID, name: "Test", path: "/tmp", github_url: null, default_branch: null, status: "active", created_at: "", updated_at: "" },
+    ];
+    const mockPool = makeMockPool([
+      { sqlPattern: /SELECT \* FROM projects WHERE id = \$1/, rows: mockRows },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.getProject(PROJECT_ID);
+      expect(result?.id).toBe(PROJECT_ID);
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("getProject returns null when not found", async () => {
+    const mockPool = makeMockPool([{ sqlPattern: /SELECT \* FROM projects WHERE id = \$1/, rows: [] }]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.getProject("nonexistent");
+      expect(result).toBeNull();
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("updateProject executes UPDATE with correct parameters", async () => {
+    let capturedSql = "";
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /UPDATE projects SET/,
+        rows: [],
+        rowCount: 1,
+      },
+    ]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
+      capturedSql = text;
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      const adapter = new PostgresAdapter();
+      await adapter.updateProject(PROJECT_ID, { name: "New Name" });
+      expect(capturedSql).toContain("UPDATE projects SET");
+      expect(capturedSql).toContain("name");
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("removeProject soft-deletes (archives) by default", async () => {
+    let capturedSql = "";
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /UPDATE projects SET status = 'archived'/,
+        rows: [],
+        rowCount: 1,
+      },
+    ]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
+      capturedSql = text;
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      const adapter = new PostgresAdapter();
+      await adapter.removeProject(PROJECT_ID);
+      expect(capturedSql).toContain("archived");
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("removeProject hard-deletes when force=true", async () => {
+    let capturedSql = "";
+    const mockPool = makeMockPool([
+      { sqlPattern: /DELETE FROM projects/, rows: [], rowCount: 1 },
+    ]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
+      capturedSql = text;
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      const adapter = new PostgresAdapter();
+      await adapter.removeProject(PROJECT_ID, { force: true });
+      expect(capturedSql).toContain("DELETE FROM projects");
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("syncProject updates last_sync_at and updated_at", async () => {
+    let capturedSql = "";
+    const mockPool = makeMockPool([
+      { sqlPattern: /UPDATE projects SET last_sync_at/, rows: [], rowCount: 1 },
+    ]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
+      capturedSql = text;
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      const adapter = new PostgresAdapter();
+      await adapter.syncProject(PROJECT_ID);
+      expect(capturedSql).toContain("last_sync_at");
+      expect(capturedSql).toContain("updated_at");
+    } finally {
+      await destroyPool();
+    }
   });
 });
 

@@ -97,59 +97,156 @@ export class PostgresAdapter {
 
   /**
    * Create a new project.
-   * @throws Error("not implemented")
+   *
+   * @param metadata.projectId - Optional. If not provided, the database generates a UUID.
+   * @returns The inserted project row.
+   * @throws DatabaseError on constraint violation (e.g. duplicate path).
    */
   async createProject(metadata: ProjectMetadata): Promise<ProjectRow> {
-    throw new Error("not implemented");
+    const rows = await query<ProjectRow>(
+      `INSERT INTO projects (name, path, github_url, default_branch, status)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [
+        metadata.name,
+        metadata.path,
+        metadata.githubUrl ?? null,
+        metadata.defaultBranch ?? null,
+        metadata.status ?? "active",
+      ],
+    );
+    return rows[0];
   }
 
   /**
    * List all projects, optionally filtered by status.
-   * @throws Error("not implemented")
+   *
+   * @param filters.status - Filter by project status.
+   * @param filters.search - ILIKE pattern match on project name.
+   * @returns Matching project rows, ordered by created_at DESC.
    */
   async listProjects(filters?: {
     status?: "active" | "paused" | "archived";
     search?: string;
   }): Promise<ProjectRow[]> {
-    throw new Error("not implemented");
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let paramIndex = 1;
+
+    if (filters?.status) {
+      conditions.push(`status = $${paramIndex++}`);
+      params.push(filters.status);
+    }
+
+    if (filters?.search) {
+      conditions.push(`name ILIKE $${paramIndex++}`);
+      params.push(`%${filters.search}%`);
+    }
+
+    const where =
+      conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    return query<ProjectRow>(
+      `SELECT * FROM projects ${where} ORDER BY created_at DESC`,
+      params,
+    );
   }
 
   /**
    * Get a single project by ID.
-   * @throws Error("not implemented")
+   *
+   * @param projectId - The project UUID.
+   * @returns The project row, or null if not found.
    */
   async getProject(projectId: string): Promise<ProjectRow | null> {
-    throw new Error("not implemented");
+    const rows = await query<ProjectRow>(
+      `SELECT * FROM projects WHERE id = $1`,
+      [projectId],
+    );
+    return rows[0] ?? null;
   }
 
   /**
    * Update project fields.
-   * @throws Error("not implemented")
+   *
+   * @param projectId - The project UUID.
+   * @param updates - Fields to update. All fields are optional.
+   * @throws DatabaseError if the project does not exist.
    */
   async updateProject(
     projectId: string,
-    updates: Partial<Pick<ProjectRow, "name" | "path" | "status" | "github_url" | "default_branch">>
+    updates: Partial<Pick<ProjectRow, "name" | "path" | "status" | "github_url" | "default_branch">>,
   ): Promise<void> {
-    throw new Error("not implemented");
+    const setClauses: string[] = ["updated_at = now()"];
+    const params: unknown[] = [];
+    let i = 1;
+
+    if (updates.name !== undefined) {
+      setClauses.push(`name = $${i++}`);
+      params.push(updates.name);
+    }
+    if (updates.path !== undefined) {
+      setClauses.push(`path = $${i++}`);
+      params.push(updates.path);
+    }
+    if (updates.status !== undefined) {
+      setClauses.push(`status = $${i++}`);
+      params.push(updates.status);
+    }
+    if (updates.github_url !== undefined) {
+      setClauses.push(`github_url = $${i++}`);
+      params.push(updates.github_url);
+    }
+    if (updates.default_branch !== undefined) {
+      setClauses.push(`default_branch = $${i++}`);
+      params.push(updates.default_branch);
+    }
+
+    if (setClauses.length === 1) return; // only updated_at, nothing to do
+
+    params.push(projectId);
+    await execute(
+      `UPDATE projects SET ${setClauses.join(", ")} WHERE id = $${i}`,
+      params,
+    );
   }
 
   /**
    * Remove (archive) a project.
-   * @throws Error("not implemented")
+   *
+   * Default behaviour: soft-delete by setting status = 'archived'.
+   * With force=true: hard-delete the row.
+   *
+   * @param projectId - The project UUID.
+   * @param options.force - If true, DELETE the row. If false (default), archive it.
    */
   async removeProject(
     projectId: string,
-    options?: { force?: boolean }
+    options?: { force?: boolean },
   ): Promise<void> {
-    throw new Error("not implemented");
+    if (options?.force) {
+      await execute(`DELETE FROM projects WHERE id = $1`, [projectId]);
+    } else {
+      await execute(
+        `UPDATE projects SET status = 'archived', updated_at = now() WHERE id = $1`,
+        [projectId],
+      );
+    }
   }
 
   /**
    * Sync a project (git fetch + update last_sync timestamp).
-   * @throws Error("not implemented")
+   *
+   * Updates last_sync_at to the current time. Actual git fetch is handled
+   * by the caller's process.
+   *
+   * @param projectId - The project UUID.
    */
   async syncProject(projectId: string): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `UPDATE projects SET last_sync_at = now(), updated_at = now() WHERE id = $1`,
+      [projectId],
+    );
   }
 
   // -------------------------------------------------------------------------
