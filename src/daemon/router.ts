@@ -27,6 +27,8 @@ import {
 import { ProjectRegistry } from "../lib/project-registry.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
+import Database from "better-sqlite3";
 
 // ---------------------------------------------------------------------------
 // Context
@@ -290,6 +292,9 @@ const projectsRouter = t.router({
   /**
    * Remove (archive) a project.
    * POST /trpc/projects.remove
+   *
+   * Guards against removing a project with active (pending/running) tasks
+   * unless force=true.
    */
   remove: t.procedure
     .input(
@@ -299,6 +304,16 @@ const projectsRouter = t.router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // Active-run guard: prevent removal if project has pending/running tasks
+      if (!input.force) {
+        const hasActive = await hasActiveRuns(input.id, ctx);
+        if (hasActive) {
+          throw new TrpcProjectError(
+            `Project '${input.id}' has active runs. ` +
+              `Complete or cancel them before removing, or use --force to skip this check.`
+          );
+        }
+      }
       return ctx.adapter.removeProject(input.id, {
         force: input.force ?? false,
       });
@@ -370,4 +385,41 @@ function parseGitHubUrl(url: string): { owner: string; repo: string } {
     `Invalid GitHub URL '${url}'. Expected formats: ` +
       `"owner/repo", "https://github.com/owner/repo", or "git@github.com:owner/repo"`
   );
+}
+
+// ---------------------------------------------------------------------------
+// Active-run guard
+// ---------------------------------------------------------------------------
+
+/**
+ * Check whether a project has any active (pending or running) tasks.
+ * Queries the per-project SQLite task store at `<project-path>/.beads/beads.db`.
+ * Returns false if the store file does not exist (no tasks have been created yet).
+ */
+async function hasActiveRuns(
+  projectId: string,
+  ctx: Context
+): Promise<boolean> {
+  const record = await ctx.registry.get(projectId);
+  if (!record) return false; // project doesn't exist — guard won't prevent removal
+
+  const dbPath = join(record.path, ".beads", "beads.db");
+  if (!existsSync(dbPath)) return false;
+
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const rows = db
+        .prepare(
+          `SELECT COUNT(*) as cnt FROM tasks WHERE status IN ('pending', 'running') LIMIT 1`
+        )
+        .get() as { cnt: number } | undefined;
+      return (rows?.cnt ?? 0) > 0;
+    } finally {
+      db.close();
+    }
+  } catch {
+    // If the database is locked or schema is wrong, fail open — don't block removal
+    return false;
+  }
 }
