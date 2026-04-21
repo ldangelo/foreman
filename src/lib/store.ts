@@ -102,6 +102,7 @@ export type EventType =
   | "merge-queue-dequeue"
   | "merge-queue-resolve"
   | "merge-queue-fallback"
+  | "merge-cleanup-fallback"
   | "sentinel-start"
   | "sentinel-pass"
   | "sentinel-fail"
