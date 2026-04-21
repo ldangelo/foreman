@@ -11,8 +11,7 @@
       "Bash(cloc:*)",
       "Bash(find:*)",
       "Bash(wc:*)",
-      "Skill(commit-commands:commit-push-pr)",
-      "WebFetch(domain:archon.diy)"
+      "Skill(commit-commands:commit-push-pr)"
     ]
   },
   "outputStyle": "default"
