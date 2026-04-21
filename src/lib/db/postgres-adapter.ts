@@ -95,6 +95,44 @@ export interface CostRow {
   recorded_at: string;
 }
 
+// TRD-032: Pipeline run / event / message tables
+
+export interface PipelineRunRow {
+  id: string;
+  project_id: string;
+  bead_id: string;
+  run_number: number;
+  status: string;
+  branch: string;
+  commit_sha: string | null;
+  trigger: string;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PipelineEventRow {
+  id: string;
+  project_id: string;
+  run_id: string;
+  task_id: string | null;
+  event_type: string;
+  payload: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface MessageRow {
+  id: string;
+  run_id: string;
+  step_key: string | null;
+  stream: string;
+  chunk: string;
+  line_number: number;
+  created_at: string;
+}
+
 // ---------------------------------------------------------------------------
 // PostgresAdapter
 // ---------------------------------------------------------------------------
@@ -838,6 +876,158 @@ export class PostgresAdapter {
     updates: Record<string, unknown>
   ): Promise<void> {
     throw new Error("not implemented");
+  }
+
+  // -------------------------------------------------------------------------
+  // Pipeline run / event / message operations (TRD-032)
+  // -------------------------------------------------------------------------
+
+  async createPipelineRun(data: {
+    projectId: string;
+    beadId: string;
+    runNumber: number;
+    branch: string;
+    commitSha?: string;
+    trigger?: string;
+  }): Promise<PipelineRunRow> {
+    const rows = await query<PipelineRunRow>(
+      `INSERT INTO runs (project_id, bead_id, run_number, branch, commit_sha, trigger)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [
+        data.projectId,
+        data.beadId,
+        data.runNumber,
+        data.branch,
+        data.commitSha ?? null,
+        data.trigger ?? "manual",
+      ]
+    );
+    return rows[0];
+  }
+
+  async listPipelineRuns(
+    projectId: string,
+    filters?: {
+      beadId?: string;
+      status?: string;
+      limit?: number;
+    }
+  ): Promise<PipelineRunRow[]> {
+    let sql = `SELECT * FROM runs WHERE project_id = $1`;
+    const params: unknown[] = [projectId];
+    let p = 2;
+    if (filters?.beadId) {
+      sql += ` AND bead_id = $${p++}`;
+      params.push(filters.beadId);
+    }
+    if (filters?.status) {
+      sql += ` AND status = $${p++}`;
+      params.push(filters.status);
+    }
+    sql += ` ORDER BY created_at DESC`;
+    if (filters?.limit) {
+      sql += ` LIMIT $${p}`;
+      params.push(filters.limit);
+    }
+    return query<PipelineRunRow>(sql, params);
+  }
+
+  async getPipelineRun(runId: string): Promise<PipelineRunRow | null> {
+    const rows = await query<PipelineRunRow>(
+      `SELECT * FROM runs WHERE id = $1`,
+      [runId]
+    );
+    return rows[0] ?? null;
+  }
+
+  async updatePipelineRun(
+    runId: string,
+    updates: {
+      status?: string;
+      startedAt?: string;
+      finishedAt?: string;
+    }
+  ): Promise<PipelineRunRow | null> {
+    const setParts: string[] = [];
+    const params: unknown[] = [];
+    let p = 1;
+    if (updates.status !== undefined) {
+      setParts.push(`status = $${p++}`);
+      params.push(updates.status);
+    }
+    if (updates.startedAt !== undefined) {
+      setParts.push(`started_at = $${p++}`);
+      params.push(updates.startedAt);
+    }
+    if (updates.finishedAt !== undefined) {
+      setParts.push(`finished_at = $${p++}`);
+      params.push(updates.finishedAt);
+    }
+    if (setParts.length === 0) return this.getPipelineRun(runId);
+    setParts.push(`updated_at = now()`);
+    params.push(runId);
+    const rows = await query<PipelineRunRow>(
+      `UPDATE runs SET ${setParts.join(", ")} WHERE id = $${p} RETURNING *`,
+      params
+    );
+    return rows[0] ?? null;
+  }
+
+  async recordPipelineEvent(data: {
+    projectId: string;
+    runId: string;
+    taskId?: string;
+    eventType: string;
+    payload?: Record<string, unknown>;
+  }): Promise<PipelineEventRow> {
+    const rows = await query<PipelineEventRow>(
+      `INSERT INTO events (project_id, run_id, task_id, event_type, payload)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [
+        data.projectId,
+        data.runId,
+        data.taskId ?? null,
+        data.eventType,
+        data.payload ? JSON.stringify(data.payload) : null,
+      ]
+    );
+    return rows[0];
+  }
+
+  async listPipelineEvents(runId: string): Promise<PipelineEventRow[]> {
+    return query<PipelineEventRow>(
+      `SELECT * FROM events WHERE run_id = $1 ORDER BY created_at ASC`,
+      [runId]
+    );
+  }
+
+  async appendMessage(data: {
+    runId: string;
+    stepKey?: string;
+    stream: "stdout" | "stderr" | "system";
+    chunk: string;
+    lineNumber: number;
+  }): Promise<MessageRow> {
+    const rows = await query<MessageRow>(
+      `INSERT INTO messages (run_id, step_key, stream, chunk, line_number)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [data.runId, data.stepKey ?? null, data.stream, data.chunk, data.lineNumber]
+    );
+    return rows[0];
+  }
+
+  async listMessages(runId: string, stepKey?: string): Promise<MessageRow[]> {
+    let sql = `SELECT * FROM messages WHERE run_id = $1`;
+    const params: unknown[] = [runId];
+    if (stepKey) {
+      sql += ` AND step_key = $2`;
+      params.push(stepKey);
+    }
+    sql += ` ORDER BY line_number ASC`;
+    return query<MessageRow>(sql, params);
   }
 }
 
