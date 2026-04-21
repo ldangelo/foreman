@@ -60,6 +60,12 @@ function shouldCreateFreshPrAfterReopenFailure(err: unknown): boolean {
     || message.includes("reopenPullRequest");
 }
 
+function shouldTreatLocalBranchDeleteFailureAsNonFatal(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("cannot delete branch")
+    && message.includes("used by worktree");
+}
+
 async function runTestCommand(command: string, cwd: string): Promise<{ ok: boolean; output: string }> {
   const [cmd, ...args] = command.split(/\s+/);
   try {
@@ -465,7 +471,7 @@ export class Refinery {
         testFailures.push(...report.testFailures);
         unexpectedErrors.push(...report.unexpectedErrors);
       } else {
-        await gh(["pr", "merge", branchName, "--squash", "--delete-branch"], this.projectPath);
+        await gh(["pr", "merge", branchName, "--squash"], this.projectPath);
 
         await this.finalizeSuccessfulMerge(run, branchName, targetBranch);
 
@@ -477,6 +483,24 @@ export class Refinery {
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+      if (!this.isTestRuntime() && shouldTreatLocalBranchDeleteFailureAsNonFatal(err)) {
+        const existingPr = await this.getExistingPrState(branchName);
+        if (existingPr?.state === "MERGED") {
+          this.store.logEvent(
+            run.project_id,
+            "merge-cleanup-fallback",
+            { seedId: run.seed_id, branchName, error: message.slice(0, 400) },
+            run.id,
+          );
+          await this.finalizeSuccessfulMerge(run, branchName, targetBranch);
+          merged.push({
+            runId: run.id,
+            seedId: run.seed_id,
+            branchName,
+          });
+          return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
+        }
+      }
       this.store.updateRun(run.id, { status: "failed" });
       this.store.logEvent(
         run.project_id,
