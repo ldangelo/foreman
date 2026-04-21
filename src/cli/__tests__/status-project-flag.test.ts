@@ -63,7 +63,7 @@ describe("foreman status --project flag", () => {
     execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
-    const registryDir = join(tmpBase, ".foreman");
+    const registryDir = join(tmpBase, ".foreman", "projects");
     setupRegistryWithProject(registryDir, projectDir, "my-project");
 
     const result = await run(["status", "--project", "my-project"], projectDir, {
@@ -85,7 +85,7 @@ describe("foreman status --project flag", () => {
     execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
-    const registryDir = join(tmpBase, ".foreman");
+    const registryDir = join(tmpBase, ".foreman", "projects");
     mkdirSync(registryDir, { recursive: true });
     writeFileSync(join(registryDir, "projects.json"), JSON.stringify({ version: 1, projects: [] }, null, 2) + "\n");
 
@@ -128,7 +128,7 @@ describe("foreman status --project flag", () => {
       execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: dir, stdio: "ignore" });
     }
 
-    const registryDir = join(tmpBase, ".foreman");
+    const registryDir = join(tmpBase, ".foreman", "projects");
     setupRegistryWithProject(registryDir, projectDir1, "project-1");
     const registryPath = join(registryDir, "projects.json");
     const registry = JSON.parse(readFileSync(registryPath, "utf-8")) as {
@@ -156,7 +156,7 @@ describe("foreman status --project flag", () => {
 
   it("status --all with no registered projects shows warning", async () => {
     const tmpBase = makeTempDir();
-    const registryDir = join(tmpBase, ".foreman");
+    const registryDir = join(tmpBase, ".foreman", "projects");
     mkdirSync(registryDir, { recursive: true });
     writeFileSync(join(registryDir, "projects.json"), JSON.stringify({ version: 1, projects: [] }, null, 2) + "\n");
 

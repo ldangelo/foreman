@@ -23,12 +23,36 @@ const mockAdapter = {
   syncProject: vi.fn(),
 };
 
+const mockGh = {
+  checkAuth: vi.fn(),
+  authStatus: vi.fn(),
+  repoClone: vi.fn(),
+  api: vi.fn(),
+  getRepoMetadata: vi.fn(),
+  isInstalled: vi.fn(),
+};
+
+const mockRegistry = {
+  generateProjectId: vi.fn(),
+  add: vi.fn(),
+  get: vi.fn(),
+  list: vi.fn(),
+  update: vi.fn(),
+  remove: vi.fn(),
+  sync: vi.fn(),
+  isHealthy: vi.fn(),
+  resolve: vi.fn(),
+};
+
+
 const mockCtx: Context = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   req: {} as any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   res: {} as any,
   adapter: mockAdapter as never,
+  gh: mockGh as never,
+  registry: mockRegistry as never,
 };
 
 // ---------------------------------------------------------------------------
@@ -116,26 +140,27 @@ describe("Zod schemas", () => {
     expect(() => schema.parse("invalid")).toThrow();
   });
 
-  it("createProject input schema validates required fields", () => {
+  it("add input schema validates githubUrl as primary field", () => {
     const schema = z.object({
-      name: z.string().min(1).max(255),
-      path: z.string().min(1),
-      githubUrl: z.string().url().optional(),
+      githubUrl: z.string().min(1),
+      name: z.string().min(1).max(255).optional(),
       defaultBranch: z.string().optional(),
+      status: z.enum(["active", "paused", "archived"]).optional(),
     });
 
-    // Valid
+    // Valid: githubUrl only
+    expect(() => schema.parse({ githubUrl: "owner/repo" })).not.toThrow();
+    // Valid: full input
     expect(() =>
-      schema.parse({ name: "my-project", path: "/tmp/my-project" })
+      schema.parse({
+        githubUrl: "https://github.com/owner/repo",
+        name: "my-project",
+        defaultBranch: "main",
+        status: "active",
+      })
     ).not.toThrow();
-
-    // Missing required
-    expect(() => schema.parse({ path: "/tmp" })).toThrow();
-
-    // Invalid URL
-    expect(() =>
-      schema.parse({ name: "my-project", path: "/tmp", githubUrl: "not-a-url" })
-    ).toThrow();
+    // Missing githubUrl
+    expect(() => schema.parse({ name: "my-project" })).toThrow();
   });
 });
 
@@ -144,12 +169,14 @@ describe("Zod schemas", () => {
 // ---------------------------------------------------------------------------
 
 describe("createContext", () => {
-  it("returns a Context object with adapter", async () => {
+  it("createContext returns a Context object with adapter, gh, and registry", async () => {
     const { createContext } = await import("../router.js");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ctx = await createContext({ req: {} as any, res: {} as any });
     expect(ctx).toHaveProperty("adapter");
     expect(ctx).toHaveProperty("req");
     expect(ctx).toHaveProperty("res");
+    expect(ctx).toHaveProperty("gh");
+    expect(ctx).toHaveProperty("registry");
   });
 });

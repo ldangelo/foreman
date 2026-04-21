@@ -48,15 +48,17 @@ describe("add sub-command options", () => {
     expect(add).toBeDefined();
   });
 
-  it("add command has --name, --github-url, --default-branch options", async () => {
+  it("add command has --name, --default-branch, --status options (github-url is positional argument)", async () => {
     const { projectCommand } = await import("../project.js");
     const add = projectCommand.commands.find(
       (c: { name(): string }) => c.name() === "add",
     )!;
-    const opts = add.options.map((o: { long: string }) => o.long);
+    // github-url is the positional argument (no --github-url option)
+    const opts = add.options.map((o) => o.long ?? "");
     expect(opts).toContain("--name");
-    expect(opts).toContain("--github-url");
     expect(opts).toContain("--default-branch");
+    expect(opts).toContain("--status");
+    expect(opts).not.toContain("--github-url"); // github-url is positional, not option
   });
 });
 
@@ -66,7 +68,7 @@ describe("list sub-command options", () => {
     const list = projectCommand.commands.find(
       (c: { name(): string }) => c.name() === "list",
     )!;
-    const opts = list.options.map((o: { long: string }) => o.long);
+    const opts = list.options.map((o) => o.long ?? "");
     expect(opts).toContain("--status");
     expect(opts).toContain("--search");
     expect(opts).toContain("--json");
@@ -87,7 +89,7 @@ describe("remove sub-command options", () => {
     const remove = projectCommand.commands.find(
       (c: { name(): string }) => c.name() === "remove",
     )!;
-    const opts = remove.options.map((o: { long: string }) => o.long);
+    const opts = remove.options.map((o) => o.long ?? "");
     expect(opts).toContain("--force");
   });
 });

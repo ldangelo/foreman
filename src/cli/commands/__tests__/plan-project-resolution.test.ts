@@ -54,9 +54,9 @@ describe("foreman plan --project", () => {
     const tmpBase = makeTempDir();
     const targetProject = mkProject(tmpBase, "target-project");
 
-    mkdirSync(join(tmpBase, ".foreman"), { recursive: true });
+    mkdirSync(join(tmpBase, ".foreman", "projects"), { recursive: true });
     writeFileSync(
-      join(tmpBase, ".foreman", "projects.json"),
+      join(tmpBase, ".foreman", "projects", "projects.json"),
       JSON.stringify({
         version: 1,
         projects: [{
@@ -86,9 +86,9 @@ describe("foreman plan --project", () => {
     const targetProject = mkProject(tmpBase, "target-project");
     writeFileSync(join(targetProject, "docs", "PRD.md"), "# PRD\n\nExisting\n", "utf-8");
 
-    mkdirSync(join(tmpBase, ".foreman"), { recursive: true });
+    mkdirSync(join(tmpBase, ".foreman", "projects"), { recursive: true });
     writeFileSync(
-      join(tmpBase, ".foreman", "projects.json"),
+      join(tmpBase, ".foreman", "projects", "projects.json"),
       JSON.stringify({
         version: 1,
         projects: [{

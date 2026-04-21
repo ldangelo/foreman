@@ -13,9 +13,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, rmSync as rmSyncAlt } from "node:fs";
 import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import chalk from "chalk";
 import { ProjectRegistry } from "../../lib/project-registry.js";
 import { resolveProjectPath } from "../../lib/project-path.js";
@@ -45,7 +45,9 @@ function mkProjectDir(baseDir: string, name: string): string {
  * Returns the path to the registry file.
  */
 function buildRegistry(tmpBase: string, projects: Array<{ name: string; path: string }>): string {
-  const registryDir = join(tmpBase, ".foreman");
+  // Write to the actual home directory path that ProjectRegistry uses.
+  // We use the real homedir() since it cannot be stubbed in vitest.
+  const registryDir = join(homedir(), ".foreman", "projects");
   mkdirSync(registryDir, { recursive: true });
   const registryPath = join(registryDir, "projects.json");
   writeFileSync(
@@ -74,8 +76,6 @@ describe("resolveProjectPath (--project flag resolution)", () => {
 
   beforeEach(() => {
     tmpBase = mkTmpDir();
-    originalHome = process.env.HOME;
-    process.env.HOME = tmpBase;
     originalExit = process.exit;
     originalError = console.error;
     originalWarn = console.warn;
@@ -96,12 +96,12 @@ describe("resolveProjectPath (--project flag resolution)", () => {
     process.exit = originalExit;
     console.error = originalError;
     console.warn = originalWarn;
-    if (originalHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = originalHome;
-    }
     rmSync(tmpBase, { recursive: true, force: true });
+    // Clean up real home directory registry
+    rmSyncAlt(join(homedir(), ".foreman", "projects"), {
+      recursive: true,
+      force: true,
+    });
     vi.restoreAllMocks();
   });
 

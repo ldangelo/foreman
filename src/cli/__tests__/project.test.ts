@@ -59,7 +59,7 @@ describe("foreman project commands (unit — ProjectRegistry class)", () => {
 
   beforeEach(() => {
     tmpBase = mkdtempSync(join(tmpdir(), "foreman-proj-test-"));
-    registryFile = join(tmpBase, ".foreman", "projects.json");
+    registryFile = join(tmpBase, ".foreman", "projects", "projects.json");
   });
 
   afterEach(() => {
@@ -69,7 +69,7 @@ describe("foreman project commands (unit — ProjectRegistry class)", () => {
   it("ProjectRegistry can be instantiated with a custom path", async () => {
     const { ProjectRegistry } = await import("../../lib/project-registry.js");
     const reg = new ProjectRegistry(registryFile);
-    expect(reg.list()).toEqual([]);
+    expect(await reg.list()).toEqual([]);
   });
 
   it("add + list round-trip", async () => {
@@ -77,7 +77,7 @@ describe("foreman project commands (unit — ProjectRegistry class)", () => {
     const reg = new ProjectRegistry(registryFile);
     const p = mkTmpProjectDir(tmpBase, "alpha");
     await reg.add(p, "alpha");
-    const projects = reg.list();
+    const projects = await reg.list();
     expect(projects).toHaveLength(1);
     expect(projects[0]!.name).toBe("alpha");
   });
@@ -88,7 +88,7 @@ describe("foreman project commands (unit — ProjectRegistry class)", () => {
     const p = mkTmpProjectDir(tmpBase, "beta");
     await reg.add(p, "beta");
     await reg.remove("beta");
-    expect(reg.list()).toHaveLength(0);
+    expect(await reg.list()).toHaveLength(0);
   });
 
   it("resolve by name", async () => {
@@ -120,7 +120,7 @@ describe("foreman project commands (unit — ProjectRegistry class)", () => {
 
   it("removeStale() removes inaccessible directories", async () => {
     const { ProjectRegistry } = await import("../../lib/project-registry.js");
-    mkdirSync(join(tmpBase, ".foreman"), { recursive: true });
+    mkdirSync(join(tmpBase, ".foreman", "projects"), { recursive: true });
 
     const live = mkTmpProjectDir(tmpBase, "live");
     const ghostPath = join(tmpBase, "ghost-does-not-exist");
@@ -141,12 +141,12 @@ describe("foreman project commands (unit — ProjectRegistry class)", () => {
     const removed = await reg.removeStale();
     expect(removed).toContain("ghost");
     expect(removed).not.toContain("live");
-    expect(reg.list()).toHaveLength(1);
+    expect(await reg.list()).toHaveLength(1);
   });
 
   it("listStale() lists without removing", async () => {
     const { ProjectRegistry } = await import("../../lib/project-registry.js");
-    mkdirSync(join(tmpBase, ".foreman"), { recursive: true });
+    mkdirSync(join(tmpBase, ".foreman", "projects"), { recursive: true });
 
     const live = mkTmpProjectDir(tmpBase, "live");
     const ghostPath = join(tmpBase, "ghost-does-not-exist");
@@ -164,10 +164,10 @@ describe("foreman project commands (unit — ProjectRegistry class)", () => {
     );
 
     const reg = new ProjectRegistry(registryFile);
-    const stale = reg.listStale();
+    const stale = await reg.listStale();
     expect(stale).toHaveLength(1);
     expect(stale[0]!.name).toBe("ghost");
     // list() still returns both
-    expect(reg.list()).toHaveLength(2);
+    expect(await reg.list()).toHaveLength(2);
   });
 });

@@ -69,13 +69,13 @@ describe("ProjectRegistry", () => {
 
   // ── Initial state ────────────────────────────────────────────────────────────
 
-  it("list() returns empty array when registry file does not exist", () => {
-    const projects = registry.list();
+  it("list() returns empty array when registry file does not exist", async () => {
+    const projects = await registry.list();
     expect(projects).toEqual([]);
   });
 
-  it("does not create registry file on list()", () => {
-    registry.list();
+  it("does not create registry file on list()", async () => {
+    await registry.list();
     expect(existsSync(registryFile)).toBe(false);
   });
 
@@ -85,11 +85,11 @@ describe("ProjectRegistry", () => {
     const projectDir = mkProject(tmpBase, "my-project");
     await registry.add(projectDir);
 
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects).toHaveLength(1);
     expect(projects[0]!.name).toBe("my-project");
     expect(projects[0]!.path).toBe(resolve(projectDir));
-    expect(projects[0]!.addedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(projects[0]!.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("add() creates registry file (and parent dir) on first write", async () => {
@@ -102,7 +102,7 @@ describe("ProjectRegistry", () => {
     const projectDir = mkProject(tmpBase, "my-project");
     await registry.add(projectDir, "alias");
 
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects[0]!.name).toBe("alias");
   });
 
@@ -110,7 +110,7 @@ describe("ProjectRegistry", () => {
     const projectDir = mkProject(tmpBase, "rel-project");
     // Pass a path that starts absolute (resolve does nothing but we test the contract)
     await registry.add(resolve(projectDir));
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects[0]!.path).toBe(resolve(projectDir));
   });
 
@@ -169,7 +169,7 @@ describe("ProjectRegistry", () => {
     await registry.add(p2);
     await registry.add(p3);
 
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects).toHaveLength(3);
     expect(projects.map((p) => p.name)).toEqual(["alpha", "beta", "gamma"]);
   });
@@ -178,7 +178,7 @@ describe("ProjectRegistry", () => {
     const bareDir = mkBareProject(tmpBase, "bare-project");
     // Should not throw — just warn to console.error
     await expect(registry.add(bareDir)).resolves.not.toThrow();
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects).toHaveLength(1);
     expect(projects[0]!.name).toBe("bare-project");
   });
@@ -193,7 +193,7 @@ describe("ProjectRegistry", () => {
 
     await registry.remove("alpha");
 
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects).toHaveLength(1);
     expect(projects[0]!.name).toBe("beta");
   });
@@ -272,7 +272,7 @@ describe("ProjectRegistry", () => {
     expect(removed).toContain("ghost-project");
     expect(removed).not.toContain("live-project");
 
-    const remaining = registry.list();
+    const remaining = await registry.list();
     expect(remaining).toHaveLength(1);
     expect(remaining[0]!.name).toBe("live-project");
   });
@@ -291,7 +291,7 @@ describe("ProjectRegistry", () => {
 
     await registry.removeStale();
 
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects).toHaveLength(1);
   });
 
@@ -315,12 +315,13 @@ describe("ProjectRegistry", () => {
       "utf-8",
     );
 
-    const stale = registry.listStale();
+    const stale = await registry.listStale();
     expect(stale).toHaveLength(1);
     expect(stale[0]!.name).toBe("ghost");
 
     // Registry is untouched
-    expect(registry.list()).toHaveLength(2);
+    const projects = await registry.list();
+    expect(projects).toHaveLength(2);
   });
 
   // ── Corrupt registry ──────────────────────────────────────────────────────────
@@ -330,7 +331,7 @@ describe("ProjectRegistry", () => {
     writeFileSync(registryFile, "this is not valid JSON!!!!", "utf-8");
 
     // Should not throw — should return empty list
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects).toEqual([]);
   });
 
@@ -340,18 +341,20 @@ describe("ProjectRegistry", () => {
 
     const p1 = mkProject(tmpBase, "fresh-project");
     await expect(registry.add(p1)).resolves.not.toThrow();
-    expect(registry.list()).toHaveLength(1);
+    const projects = await registry.list();
+    expect(projects).toHaveLength(1);
   });
 
   // ── Registry file format ──────────────────────────────────────────────────────
 
-  it("persisted registry file has version=1", async () => {
+  it("persisted registry file has no version wrapper (flat array)", async () => {
     const p1 = mkProject(tmpBase, "alpha");
     await registry.add(p1);
 
-    const raw = JSON.parse(
-      readFileSync(registryFile, "utf-8"),
-    ) as { version: number };
-    expect(raw.version).toBe(1);
+    const raw = JSON.parse(readFileSync(registryFile, "utf-8"));
+    // New format: flat array of ProjectRecord objects
+    expect(Array.isArray(raw)).toBe(true);
+    expect((raw as unknown[]).length).toBe(1);
+    expect((raw as { id: string }[])[0]!.id).toBeDefined();
   });
 });

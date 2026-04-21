@@ -39,9 +39,9 @@ describe("foreman sling trd --project", () => {
   }
 
   function writeRegistry(baseDir: string, projectName: string, projectPath: string): void {
-    mkdirSync(join(baseDir, ".foreman"), { recursive: true });
+    mkdirSync(join(baseDir, ".foreman", "projects"), { recursive: true });
     writeFileSync(
-      join(baseDir, ".foreman", "projects.json"),
+      join(baseDir, ".foreman", "projects", "projects.json"),
       JSON.stringify({
         version: 1,
         projects: [{

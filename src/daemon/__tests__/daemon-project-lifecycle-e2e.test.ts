@@ -130,8 +130,8 @@ describe("Daemon project lifecycle E2E", { timeout: 60_000 }, () => {
     });
 
     const result = await client.projects.add({
+      githubUrl: "https://github.com/fortium/foreman",
       name: TEST_PROJECT_NAME,
-      path: TEST_PROJECT_PATH,
     });
 
     expect(result).toHaveProperty("id");
@@ -230,8 +230,8 @@ describe("Daemon project lifecycle E2E", { timeout: 60_000 }, () => {
 
     // Re-create a project to sync
     const created = (await client.projects.add({
+      githubUrl: "https://github.com/fortium/foreman",
       name: `${TEST_PROJECT_NAME}-sync`,
-      path: TEST_PROJECT_PATH,
     })) as { id: string };
     expect(created.id).toBeDefined();
 

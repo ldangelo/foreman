@@ -224,7 +224,7 @@ export const statusCommand = new Command("status")
   .action(async (opts: { watch?: boolean | string; json?: boolean; live?: boolean; project?: string; projectPath?: string; all?: boolean }) => {
     if (opts.all) {
       const registry = new ProjectRegistry();
-      const projects = registry.list();
+      const projects = await registry.list();
 
       if (projects.length === 0) {
         console.log(chalk.yellow("No registered projects found. Run 'foreman project add' to register projects."));

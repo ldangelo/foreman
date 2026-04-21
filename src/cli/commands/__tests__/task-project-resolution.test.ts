@@ -86,7 +86,7 @@ describe("foreman task --project flag resolution", () => {
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
     // Set HOME to our temp dir so ProjectRegistry uses our test registry
-    const registryDir = join(tmpBase, ".foreman");
+    const registryDir = join(tmpBase, ".foreman", "projects");
     setupRegistryWithProject(registryDir, projectDir, "my-project");
 
     const env = {
@@ -117,7 +117,7 @@ describe("foreman task --project flag resolution", () => {
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
     // Set HOME to temp dir with empty registry
-    const registryDir = join(tmpBase, ".foreman");
+    const registryDir = join(tmpBase, ".foreman", "projects");
     mkdirSync(registryDir, { recursive: true });
     writeFileSync(
       join(registryDir, "projects.json"),
@@ -153,7 +153,7 @@ describe("foreman task --project flag resolution", () => {
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
     // Set HOME to temp dir with empty registry
-    const registryDir = join(tmpBase, ".foreman");
+    const registryDir = join(tmpBase, ".foreman", "projects");
     mkdirSync(registryDir, { recursive: true });
     writeFileSync(
       join(registryDir, "projects.json"),
@@ -233,7 +233,7 @@ describe("foreman task --project flag resolution", () => {
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
     // Set HOME to temp dir with empty registry
-    const registryDir = join(tmpBase, ".foreman");
+    const registryDir = join(tmpBase, ".foreman", "projects");
     mkdirSync(registryDir, { recursive: true });
     writeFileSync(
       join(registryDir, "projects.json"),

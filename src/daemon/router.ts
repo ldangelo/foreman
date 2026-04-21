@@ -13,11 +13,20 @@
  * @module daemon/router
  */
 
-import { initTRPC } from "@trpc/server";
+import { initTRPC, TRPCError } from "@trpc/server";
 import type { inferRouterContext } from "@trpc/server";
 import { z } from "zod";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
+import {
+  GhCli,
+  GhNotInstalledError,
+  GhNotAuthenticatedError,
+  GhError,
+} from "../lib/gh-cli.js";
+import { ProjectRegistry } from "../lib/project-registry.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Context
@@ -29,6 +38,10 @@ export interface Context {
   res: FastifyReply;
   /** PostgresAdapter instance scoped to this request. */
   adapter: PostgresAdapter;
+  /** GitHub CLI wrapper. */
+  gh: GhCli;
+  /** Project registry (JSON + Postgres dual-write). */
+  registry: ProjectRegistry;
 }
 
 export async function createContext({
@@ -42,6 +55,9 @@ export async function createContext({
     req,
     res,
     adapter: new PostgresAdapter(),
+    // Singleton instances shared across all requests in the daemon process
+    gh: new GhCli(),
+    registry: new ProjectRegistry(),
   };
 }
 
@@ -55,7 +71,6 @@ export type RouterContext = inferRouterContext<AppRouter>;
 const PROJECT_ID_SCHEMA = z.string().min(1);
 const PROJECT_NAME_SCHEMA = z.string().min(1).max(255);
 const PROJECT_PATH_SCHEMA = z.string().min(1);
-const GITHUB_URL_SCHEMA = z.string().url().optional();
 const STATUS_FILTER_SCHEMA = z
   .enum(["active", "paused", "archived"])
   .optional();
@@ -67,13 +82,26 @@ const STATUS_FILTER_SCHEMA = z
 const t = initTRPC.context<Context>().create();
 
 // ---------------------------------------------------------------------------
+// Error helpers
+// ---------------------------------------------------------------------------
+
+class TrpcProjectError extends TRPCError {
+  constructor(message: string) {
+    super({ code: "BAD_REQUEST", message });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Projects router
 // ---------------------------------------------------------------------------
 
 const projectsRouter = t.router({
   /**
-   * List all projects.
+   * List all projects with health status.
    * GET /trpc/projects.list
+   *
+   * Returns projects from the registry (source of truth), enriched with health status.
+   * Tasks counts (running, ready, needs human) come from the task store.
    */
   list: t.procedure
     .input(
@@ -83,10 +111,38 @@ const projectsRouter = t.router({
       }).optional()
     )
     .query(async ({ input, ctx }) => {
-      return ctx.adapter.listProjects({
-        status: input?.status,
-        search: input?.search,
-      });
+      const records = await ctx.registry.list();
+
+      // Filter in memory (source of truth is JSON, Postgres is query mirror)
+      let filtered = records;
+      if (input?.status) {
+        filtered = filtered.filter((p) => p.status === input.status);
+      }
+      if (input?.search) {
+        const term = input.search.toLowerCase();
+        filtered = filtered.filter(
+          (p) =>
+            p.name.toLowerCase().includes(term) ||
+            p.githubUrl?.toLowerCase().includes(term)
+        );
+      }
+
+      // Enrich with health status in parallel
+      const enriched = await Promise.all(
+        filtered.map(async (p) => ({
+          id: p.id,
+          name: p.name,
+          path: p.path,
+          githubUrl: p.githubUrl,
+          defaultBranch: p.defaultBranch,
+          status: p.status,
+          lastSyncAt: p.lastSyncAt,
+          createdAt: p.createdAt,
+          healthy: await ctx.registry.isHealthy(p.id).catch(() => false),
+        }))
+      );
+
+      return enriched;
     }),
 
   /**
@@ -100,26 +156,116 @@ const projectsRouter = t.router({
     }),
 
   /**
-   * Create a new project.
+   * Add a project from a GitHub URL.
    * POST /trpc/projects.add
+   *
+   * Steps:
+   * 1. Verify gh auth (throws if not authenticated)
+   * 2. Fetch repo metadata (owner, repo, default branch, visibility)
+   * 3. Generate stable project ID: <normalized-name>-<hex5>
+   * 4. Create ~/.foreman/projects/ directory if absent
+   * 5. Clone repo to ~/.foreman/projects/<project-id>/
+   * 6. Write to Postgres (idempotent: fails if path already exists)
+   *
+   * @throws GhNotInstalledError if gh is not installed
+   * @throws GhNotAuthenticatedError if gh is not logged in
+   * @throws GhCloneError if clone fails
+   * @throws GhApiError if repo metadata fetch fails
    */
   add: t.procedure
     .input(
       z.object({
-        name: PROJECT_NAME_SCHEMA,
-        path: PROJECT_PATH_SCHEMA,
-        githubUrl: GITHUB_URL_SCHEMA,
+        /** GitHub repository URL or owner/repo shorthand. */
+        githubUrl: z.string().min(1),
+        /** Override display name. Defaults to repo name from GitHub API. */
+        name: PROJECT_NAME_SCHEMA.optional(),
+        /** Override default branch. Defaults to repo default from GitHub API. */
         defaultBranch: z.string().optional(),
+        /** Override project status. Defaults to "active". */
+        status: z.enum(["active", "paused", "archived"]).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      return ctx.adapter.createProject({
-        name: input.name,
-        path: input.path,
-        githubUrl: input.githubUrl,
-        defaultBranch: input.defaultBranch,
-        status: "active",
-      });
+      const { gh, registry, adapter } = ctx;
+
+      // Step 1: Verify gh auth
+      try {
+        await gh.checkAuth();
+      } catch (err) {
+        if (err instanceof GhNotInstalledError) {
+          throw new TrpcProjectError(
+            "GitHub CLI (gh) is required but not installed. Install it from https://cli.github.com"
+          );
+        }
+        if (err instanceof GhNotAuthenticatedError) {
+          throw new TrpcProjectError(
+            `GitHub authentication required: ${err.message}. Run 'gh auth login' first.`
+          );
+        }
+        throw err;
+      }
+
+      // Step 2: Parse GitHub URL to extract owner/repo
+      const parsed = parseGitHubUrl(input.githubUrl);
+
+      // Step 3: Fetch repo metadata from GitHub API
+      let defaultBranch = input.defaultBranch ?? "main";
+      let displayName = input.name;
+      try {
+        const meta = await gh.getRepoMetadata(parsed.owner, parsed.repo);
+        defaultBranch = meta.defaultBranch;
+        displayName = displayName ?? parsed.repo;
+      } catch (err) {
+        if (err instanceof GhError) {
+          throw new TrpcProjectError(
+            `Failed to fetch repository metadata for '${input.githubUrl}': ${err.message}`
+          );
+        }
+        throw err;
+      }
+
+      // Step 4: Generate stable project ID and derive clone path
+      const projectId = registry.generateProjectId(displayName);
+      const projectsDir = join(homedir(), ".foreman", "projects");
+      const clonePath = join(projectsDir, projectId);
+
+      // Step 5: Ensure projects directory exists
+      const { mkdir } = await import("node:fs/promises");
+      await mkdir(projectsDir, { recursive: true });
+
+      // Step 6: Clone the repository
+      try {
+        await gh.repoClone(input.githubUrl, clonePath);
+      } catch (err) {
+        if (err instanceof GhNotAuthenticatedError) {
+          throw new TrpcProjectError(
+            `GitHub authentication required to clone '${input.githubUrl}'. Run 'gh auth login' first.`
+          );
+        }
+        if (err instanceof GhError) {
+          throw new TrpcProjectError(
+            `Failed to clone repository '${input.githubUrl}': ${err.message}`
+          );
+        }
+        throw err;
+      }
+
+      // Step 7: Write to Postgres (idempotent — throws on duplicate path)
+      try {
+        const row = await adapter.createProject({
+          id: projectId,
+          name: displayName,
+          path: clonePath,
+          githubUrl: input.githubUrl,
+          defaultBranch,
+          status: input.status ?? "active",
+        });
+        return row;
+      } catch (err) {
+        // Postgres write failed — best effort cleanup of cloned repo
+        // (Leave the clone on disk; user can remove manually)
+        throw err;
+      }
     }),
 
   /**
@@ -153,17 +299,21 @@ const projectsRouter = t.router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      return ctx.adapter.removeProject(input.id, { force: input.force });
+      return ctx.adapter.removeProject(input.id, {
+        force: input.force ?? false,
+      });
     }),
 
   /**
-   * Sync a project (git fetch + update timestamp).
+   * Sync a project: run git fetch and update lastSyncAt in both JSON and Postgres.
    * POST /trpc/projects.sync
    */
   sync: t.procedure
     .input(z.object({ id: PROJECT_ID_SCHEMA }))
     .mutation(async ({ input, ctx }) => {
-      return ctx.adapter.syncProject(input.id);
+      // registry.sync() runs git fetch and updates lastSyncAt in JSON + Postgres
+      const record = await ctx.registry.sync(input.id);
+      return record;
     }),
 });
 
@@ -176,3 +326,48 @@ export const appRouter = t.router({
 });
 
 export type AppRouter = typeof appRouter;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a GitHub URL or shorthand into owner and repo.
+ *
+ * Accepts:
+ * - `https://github.com/owner/repo`
+ * - `https://github.com/owner/repo/tree/branch-name`
+ * - `git@github.com:owner/repo.git`
+ * - `owner/repo`
+ *
+ * @throws TrpcProjectError if the URL cannot be parsed.
+ */
+function parseGitHubUrl(url: string): { owner: string; repo: string } {
+  // HTTPS URL: https://github.com/owner/repo[.git]
+  const httpsMatch = url.match(
+    /^https?:\/\/github\.com\/([^/]+)\/([^/.]+)/i
+  );
+  if (httpsMatch) {
+    return {
+      owner: httpsMatch[1]!,
+      repo: httpsMatch[2]!.replace(/\.git$/, ""),
+    };
+  }
+
+  // SSH URL: git@github.com:owner/repo.git
+  const sshMatch = url.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/i);
+  if (sshMatch) {
+    return { owner: sshMatch[1]!, repo: sshMatch[2]! };
+  }
+
+  // Shortcut: owner/repo
+  const shortcutMatch = url.match(/^([^/]+)\/(.+)$/);
+  if (shortcutMatch) {
+    return { owner: shortcutMatch[1]!, repo: shortcutMatch[2]! };
+  }
+
+  throw new TrpcProjectError(
+    `Invalid GitHub URL '${url}'. Expected formats: ` +
+      `"owner/repo", "https://github.com/owner/repo", or "git@github.com:owner/repo"`
+  );
+}

@@ -164,10 +164,10 @@ export interface TRPCProjectsClient {
   }): Promise<unknown>;
   get(input: { id: string }): Promise<unknown>;
   add(input: {
-    name: string;
-    path: string;
-    githubUrl?: string;
+    githubUrl: string;
+    name?: string;
     defaultBranch?: string;
+    status?: "active" | "paused" | "archived";
   }): Promise<unknown>;
   update(
     input: {

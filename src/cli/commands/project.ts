@@ -100,24 +100,44 @@ function handleDaemonError(err: unknown): never {
 // ---------------------------------------------------------------------------
 
 const addCommand = new Command("add")
-  .description("Register a project via ForemanDaemon")
-  .argument("<path>", "Path to the project root")
-  .option("--name <name>", "Project name (default: directory basename)")
-  .option("--github-url <url>", "GitHub repository URL")
-  .option("--default-branch <branch>", "Default git branch", "main")
-  .action(async (projectPath: string, opts) => {
-    const resolvedPath = resolve(projectPath);
-    const name = opts.name ?? resolvedPath.split("/").pop() ?? resolvedPath;
+  .description("Clone a GitHub repository and register it as a project via ForemanDaemon")
+  .argument("<github-url>", "GitHub repository URL or owner/repo shorthand")
+  .description(`Examples:
+    foreman project add owner/repo
+    foreman project add https://github.com/owner/repo
+    foreman project add git@github.com:owner/repo.git`)
+  .option("--name <name>", "Project display name (default: repo name from GitHub)")
+  .option("--default-branch <branch>", "Override the default git branch")
+  .option("--status <status>", "Project status", "active")
+  .action(async (githubUrl: string, opts) => {
     const client = getClient();
 
     try {
-      const result = await client.projects.add({
-        name,
-        path: resolvedPath,
-        githubUrl: opts.githubUrl,
+      const result = (await client.projects.add({
+        githubUrl,
+        name: opts.name,
         defaultBranch: opts.defaultBranch,
-      });
-      console.log(chalk.green(`✓ Project '${name}' created: ${(result as { id: string }).id}`));
+        status: opts.status as "active" | "paused" | "archived",
+      })) as {
+        id: string;
+        name: string;
+        path: string | null;
+        default_branch: string | null;
+      };
+      console.log(
+        chalk.green(
+          `✓ Project '${result.name}' added as '${result.id}'`
+        )
+      );
+      console.log(
+        chalk.dim(`  Clone: ${result.path ?? "unknown"}`)
+      );
+      console.log(
+        chalk.dim(`  GitHub: ${githubUrl}`)
+      );
+      console.log(
+        chalk.dim(`  Branch: ${result.default_branch ?? "main"}`)
+      );
     } catch (err) {
       handleDaemonError(err);
     }
