@@ -156,6 +156,8 @@ export interface TrpcClient {
   readonly projects: TRPCProjectsClient;
   /** Typed proxy to the daemon's tasks procedures. */
   readonly tasks: TRPCTasksClient;
+  /** Typed proxy to the daemon's runs/events/messages procedures. */
+  readonly runs: TRPCRunsClient;
 }
 
 /** Tasks sub-router client. */
@@ -227,6 +229,53 @@ export interface TRPCProjectsClient {
   sync(input: { id: string }): Promise<unknown>;
 }
 
+/** Runs / events / messages sub-router client (TRD-033/034/035). */
+export interface TRPCRunsClient {
+  create(input: {
+    projectId: string;
+    beadId: string;
+    runNumber: number;
+    branch: string;
+    commitSha?: string;
+    trigger?: string;
+  }): Promise<unknown>;
+  list(input: {
+    projectId: string;
+    beadId?: string;
+    status?: string;
+    limit?: number;
+  }): Promise<unknown>;
+  listActive(input: { projectId: string; beadId?: string }): Promise<unknown>;
+  get(input: { runId: string }): Promise<unknown>;
+  updateStatus(input: {
+    runId: string;
+    status: string;
+    startedAt?: string;
+    finishedAt?: string;
+  }): Promise<unknown>;
+  finalize(input: {
+    runId: string;
+    status: string;
+    finishedAt?: string;
+  }): Promise<unknown>;
+  logEvent(input: {
+    projectId: string;
+    runId: string;
+    taskId?: string;
+    eventType: string;
+    payload?: Record<string, unknown>;
+  }): Promise<unknown>;
+  listEvents(input: { runId: string }): Promise<unknown>;
+  sendMessage(input: {
+    runId: string;
+    stepKey?: string;
+    stream: string;
+    chunk: string;
+    lineNumber: number;
+  }): Promise<unknown>;
+  listMessages(input: { runId: string; stepKey?: string }): Promise<unknown>;
+}
+
 /**
  * Create a tRPC client that connects to ForemanDaemon.
  *
@@ -273,6 +322,18 @@ export function createTrpcClient(
       approve: (input) => untypedClient.mutation("tasks.approve", input),
       reset: (input) => untypedClient.mutation("tasks.reset", input),
       retry: (input) => untypedClient.mutation("tasks.retry", input),
+    },
+    runs: {
+      create: (input) => untypedClient.mutation("runs.create", input),
+      list: (input) => untypedClient.query("runs.list", input),
+      listActive: (input) => untypedClient.query("runs.listActive", input),
+      get: (input) => untypedClient.query("runs.get", input),
+      updateStatus: (input) => untypedClient.mutation("runs.updateStatus", input),
+      finalize: (input) => untypedClient.mutation("runs.finalize", input),
+      logEvent: (input) => untypedClient.mutation("runs.logEvent", input),
+      listEvents: (input) => untypedClient.query("runs.listEvents", input),
+      sendMessage: (input) => untypedClient.mutation("runs.sendMessage", input),
+      listMessages: (input) => untypedClient.query("runs.listMessages", input),
     },
   };
 }

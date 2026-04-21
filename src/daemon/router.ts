@@ -289,6 +289,231 @@ const tasksRouter = t.router({
 });
 
 // ---------------------------------------------------------------------------
+// Runs router (TRD-033/034/035)
+// ---------------------------------------------------------------------------
+
+const RUN_STATUS_SCHEMA = z.enum(["pending", "running", "success", "failure", "cancelled", "skipped"]);
+const RUN_TRIGGER_SCHEMA = z.enum(["push", "pr", "manual", "schedule", "bead"]).optional();
+const PIPELINE_EVENT_TYPE_SCHEMA = z.enum([
+  "run:queued", "run:started", "run:success", "run:failure", "run:cancelled",
+  "task:claimed", "task:approved", "task:rejected", "task:reset", "bead:synced", "bead:conflict",
+]);
+const STREAM_SCHEMA = z.enum(["stdout", "stderr", "system"]);
+
+const runsRouter = t.router({
+  /**
+   * Create a new pipeline run.
+   * POST /trpc/runs.create
+   */
+  create: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        beadId: z.string().min(1),
+        runNumber: z.number().int().min(0),
+        branch: z.string().min(1),
+        commitSha: z.string().optional(),
+        trigger: RUN_TRIGGER_SCHEMA,
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      return ctx.adapter.createPipelineRun({
+        projectId: input.projectId,
+        beadId: input.beadId,
+        runNumber: input.runNumber,
+        branch: input.branch,
+        commitSha: input.commitSha,
+        trigger: input.trigger,
+      });
+    }),
+
+  /**
+   * List runs for a project.
+   * GET /trpc/runs.list
+   */
+  list: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        beadId: z.string().optional(),
+        status: RUN_STATUS_SCHEMA.optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.listPipelineRuns(input.projectId, {
+        beadId: input.beadId,
+        status: input.status,
+        limit: input.limit,
+      });
+    }),
+
+  /**
+   * List active (pending/running) runs for a project.
+   * GET /trpc/runs.listActive
+   */
+  listActive: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        beadId: z.string().optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const pending = await ctx.adapter.listPipelineRuns(input.projectId, {
+        beadId: input.beadId,
+        status: "pending",
+      });
+      const running = await ctx.adapter.listPipelineRuns(input.projectId, {
+        beadId: input.beadId,
+        status: "running",
+      });
+      return [...pending, ...running];
+    }),
+
+  /**
+   * Get a single run by ID.
+   * GET /trpc/runs.get
+   */
+  get: t.procedure
+    .input(
+      z.object({
+        runId: z.string().uuid(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const run = await ctx.adapter.getPipelineRun(input.runId);
+      if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "Run not found" });
+      return run;
+    }),
+
+  /**
+   * Update run status (used by sentinel/pipeline to transition state).
+   * POST /trpc/runs.updateStatus
+   */
+  updateStatus: t.procedure
+    .input(
+      z.object({
+        runId: z.string().uuid(),
+        status: RUN_STATUS_SCHEMA,
+        startedAt: z.string().datetime().optional(),
+        finishedAt: z.string().datetime().optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const run = await ctx.adapter.updatePipelineRun(input.runId, {
+        status: input.status,
+        startedAt: input.startedAt,
+        finishedAt: input.finishedAt,
+      });
+      if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "Run not found" });
+      return run;
+    }),
+
+  /**
+   * Finalize a run: set status + finishedAt atomically.
+   * POST /trpc/runs.finalize
+   */
+  finalize: t.procedure
+    .input(
+      z.object({
+        runId: z.string().uuid(),
+        status: RUN_STATUS_SCHEMA,
+        finishedAt: z.string().datetime().optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const run = await ctx.adapter.updatePipelineRun(input.runId, {
+        status: input.status,
+        finishedAt: input.finishedAt ?? new Date().toISOString(),
+      });
+      if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "Run not found" });
+      return run;
+    }),
+
+  // ── Events ────────────────────────────────────────────────────────────────
+
+  /**
+   * Record a pipeline event.
+   * POST /trpc/runs.logEvent
+   */
+  logEvent: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        runId: z.string().uuid(),
+        taskId: z.string().optional(),
+        eventType: PIPELINE_EVENT_TYPE_SCHEMA,
+        payload: z.record(z.string(), z.unknown()).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      return ctx.adapter.recordPipelineEvent({
+        projectId: input.projectId,
+        runId: input.runId,
+        taskId: input.taskId,
+        eventType: input.eventType,
+        payload: input.payload,
+      });
+    }),
+
+  /**
+   * List events for a run.
+   * GET /trpc/runs.listEvents
+   */
+  listEvents: t.procedure
+    .input(
+      z.object({
+        runId: z.string().uuid(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.listPipelineEvents(input.runId);
+    }),
+
+  // ── Messages ──────────────────────────────────────────────────────────────
+
+  /**
+   * Append a message chunk to a run.
+   * POST /trpc/runs.sendMessage
+   */
+  sendMessage: t.procedure
+    .input(
+      z.object({
+        runId: z.string().uuid(),
+        stepKey: z.string().optional(),
+        stream: STREAM_SCHEMA,
+        chunk: z.string(),
+        lineNumber: z.number().int().min(0),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      return ctx.adapter.appendMessage({
+        runId: input.runId,
+        stepKey: input.stepKey,
+        stream: input.stream,
+        chunk: input.chunk,
+        lineNumber: input.lineNumber,
+      });
+    }),
+
+  /**
+   * List messages for a run, optionally filtered by step.
+   * GET /trpc/runs.listMessages
+   */
+  listMessages: t.procedure
+    .input(
+      z.object({
+        runId: z.string().uuid(),
+        stepKey: z.string().optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.listMessages(input.runId, input.stepKey);
+    }),
+});
+
+// ---------------------------------------------------------------------------
 // Projects router
 // ---------------------------------------------------------------------------
 
@@ -534,6 +759,7 @@ const projectsRouter = t.router({
 export const appRouter = t.router({
   projects: projectsRouter,
   tasks: tasksRouter,
+  runs: runsRouter,
 });
 
 export type AppRouter = typeof appRouter;
