@@ -31,6 +31,15 @@ const mockAdapter = {
   retryTask: vi.fn(),
   listReadyTasks: vi.fn(),
   listNeedsHumanTasks: vi.fn(),
+  // Pipeline / runs / events / messages (TRD-039)
+  createPipelineRun: vi.fn(),
+  listPipelineRuns: vi.fn(),
+  getPipelineRun: vi.fn(),
+  updatePipelineRun: vi.fn(),
+  recordPipelineEvent: vi.fn(),
+  listPipelineEvents: vi.fn(),
+  appendMessage: vi.fn(),
+  listMessages: vi.fn(),
 };
 
 const mockGh = {
@@ -546,6 +555,348 @@ describe("tasks.get procedure", () => {
       // @ts-ignore - intentionally testing missing projectId
       caller.tasks.get({ taskId: "task-1" })
     ).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runs / Events / Messages procedure integration tests (TRD-039)
+// ---------------------------------------------------------------------------
+
+describe("runs router structure", () => {
+  it("has a runs router", () => {
+    // @ts-ignore
+    expect(appRouter).toHaveProperty("runs");
+  });
+
+  it("runs router has create procedure", () => {
+    // @ts-ignore
+    expect(appRouter.runs).toHaveProperty("create");
+  });
+
+  it("runs router has list procedure", () => {
+    // @ts-ignore
+    expect(appRouter.runs).toHaveProperty("list");
+  });
+
+  it("runs router has listActive procedure", () => {
+    // @ts-ignore
+    expect(appRouter.runs).toHaveProperty("listActive");
+  });
+
+  it("runs router has get procedure", () => {
+    // @ts-ignore
+    expect(appRouter.runs).toHaveProperty("get");
+  });
+
+  it("runs router has updateStatus procedure", () => {
+    // @ts-ignore
+    expect(appRouter.runs).toHaveProperty("updateStatus");
+  });
+
+  it("runs router has finalize procedure", () => {
+    // @ts-ignore
+    expect(appRouter.runs).toHaveProperty("finalize");
+  });
+
+  it("runs router has logEvent procedure", () => {
+    // @ts-ignore
+    expect(appRouter.runs).toHaveProperty("logEvent");
+  });
+
+  it("runs router has listEvents procedure", () => {
+    // @ts-ignore
+    expect(appRouter.runs).toHaveProperty("listEvents");
+  });
+
+  it("runs router has sendMessage procedure", () => {
+    // @ts-ignore
+    expect(appRouter.runs).toHaveProperty("sendMessage");
+  });
+
+  it("runs router has listMessages procedure", () => {
+    // @ts-ignore
+    expect(appRouter.runs).toHaveProperty("listMessages");
+  });
+});
+
+describe("runs.create procedure", () => {
+  beforeEach(() => mockAdapter.createPipelineRun.mockReset());
+
+  it("calls adapter.createPipelineRun with projectId and run data", async () => {
+    const mockRun = {
+      id: "run-1",
+      project_id: "proj-123",
+      bead_id: "bead-1",
+      run_number: 1,
+      status: "pending",
+      branch: "main",
+      commit_sha: null,
+      trigger: "manual",
+      queued_at: new Date().toISOString(),
+      started_at: null,
+      finished_at: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    mockAdapter.createPipelineRun.mockResolvedValueOnce(mockRun);
+
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.runs.create({
+      projectId: "proj-123",
+      beadId: "bead-1",
+      runNumber: 1,
+      branch: "main",
+      trigger: "manual",
+    });
+
+    expect(mockAdapter.createPipelineRun).toHaveBeenCalledWith({
+      projectId: "proj-123",
+      beadId: "bead-1",
+      runNumber: 1,
+      branch: "main",
+      commitSha: undefined,
+      trigger: "manual",
+    });
+    expect(result.id).toBe("run-1");
+  });
+
+  it("rejects missing projectId", async () => {
+    const caller = appRouter.createCaller(mockCtx);
+    await expect(
+      // @ts-ignore - intentionally testing missing projectId
+      caller.runs.create({ beadId: "bead-1", runNumber: 1, branch: "main" })
+    ).rejects.toThrow();
+  });
+});
+
+describe("runs.list procedure", () => {
+  beforeEach(() => mockAdapter.listPipelineRuns.mockReset());
+
+  it("calls adapter.listPipelineRuns with projectId and filters", async () => {
+    mockAdapter.listPipelineRuns.mockResolvedValueOnce([]);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    await caller.runs.list({ projectId: "proj-123", status: "pending" });
+    expect(mockAdapter.listPipelineRuns).toHaveBeenCalledWith(
+      "proj-123",
+      expect.objectContaining({ status: "pending" })
+    );
+  });
+
+  it("rejects missing projectId", async () => {
+    const caller = appRouter.createCaller(mockCtx);
+    await expect(
+      // @ts-ignore - intentionally testing missing projectId
+      caller.runs.list({})
+    ).rejects.toThrow();
+  });
+});
+
+describe("runs.get procedure", () => {
+  beforeEach(() => mockAdapter.getPipelineRun.mockReset());
+
+  it("calls adapter.getPipelineRun and returns run", async () => {
+    const mockRun = {
+      id: "run-uuid-1",
+      project_id: "proj-123",
+      bead_id: "bead-1",
+      run_number: 1,
+      status: "running",
+      branch: "main",
+      commit_sha: null,
+      trigger: "manual",
+      queued_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      finished_at: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    mockAdapter.getPipelineRun.mockResolvedValueOnce(mockRun);
+
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.runs.get({ runId: "550e8400-e29b-41d4-a716-446655440001" });
+
+    expect(mockAdapter.getPipelineRun).toHaveBeenCalledWith("550e8400-e29b-41d4-a716-446655440001");
+    expect(result.id).toBe("run-uuid-1");
+  });
+
+  it("throws NOT_FOUND for unknown run", async () => {
+    mockAdapter.getPipelineRun.mockResolvedValueOnce(null);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    await expect(caller.runs.get({ runId: "00000000-0000-0000-0000-000000000000" }))
+      .rejects.toThrow();
+  });
+});
+
+describe("runs.updateStatus procedure", () => {
+  beforeEach(() => mockAdapter.updatePipelineRun.mockReset());
+
+  it("calls adapter.updatePipelineRun with runId and status", async () => {
+    const mockRun = {
+      id: "run-uuid-1",
+      project_id: "proj-123",
+      bead_id: "bead-1",
+      run_number: 1,
+      status: "running",
+      branch: "main",
+      commit_sha: null,
+      trigger: "manual",
+      queued_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      finished_at: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    mockAdapter.updatePipelineRun.mockResolvedValueOnce(mockRun);
+
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.runs.updateStatus({
+      runId: "550e8400-e29b-41d4-a716-446655440001",
+      status: "running",
+      startedAt: new Date().toISOString(),
+    });
+
+    expect(mockAdapter.updatePipelineRun).toHaveBeenCalledWith(
+      "550e8400-e29b-41d4-a716-446655440001",
+      expect.objectContaining({ status: "running", startedAt: expect.any(String) })
+    );
+    expect(result.id).toBe("run-uuid-1");
+  });
+
+  it("throws NOT_FOUND for unknown run", async () => {
+    mockAdapter.updatePipelineRun.mockResolvedValueOnce(null);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    await expect(caller.runs.updateStatus({
+      runId: "00000000-0000-0000-0000-000000000000",
+      status: "success",
+    })).rejects.toThrow();
+  });
+});
+
+describe("runs.logEvent procedure", () => {
+  beforeEach(() => mockAdapter.recordPipelineEvent.mockReset());
+
+  it("calls adapter.recordPipelineEvent", async () => {
+    const mockEvent = {
+      id: "evt-1",
+      project_id: "proj-123",
+      run_id: "run-uuid-1",
+      task_id: null,
+      event_type: "run:started",
+      payload: {},
+      created_at: new Date().toISOString(),
+    };
+    mockAdapter.recordPipelineEvent.mockResolvedValueOnce(mockEvent);
+
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.runs.logEvent({
+      projectId: "proj-123",
+      runId: "550e8400-e29b-41d4-a716-446655440001",
+      eventType: "run:started",
+    });
+
+    expect(mockAdapter.recordPipelineEvent).toHaveBeenCalledWith({
+      projectId: "proj-123",
+      runId: "550e8400-e29b-41d4-a716-446655440001",
+      taskId: undefined,
+      eventType: "run:started",
+      payload: undefined,
+    });
+    expect(result.id).toBe("evt-1");
+  });
+
+  it("rejects missing projectId", async () => {
+    const caller = appRouter.createCaller(mockCtx);
+    await expect(
+      // @ts-ignore - intentionally testing missing projectId
+      caller.runs.logEvent({ runId: "550e8400-e29b-41d4-a716-446655440001", eventType: "run:started" })
+    ).rejects.toThrow();
+  });
+});
+
+describe("runs.listEvents procedure", () => {
+  beforeEach(() => mockAdapter.listPipelineEvents.mockReset());
+
+  it("calls adapter.listPipelineEvents with runId", async () => {
+    mockAdapter.listPipelineEvents.mockResolvedValueOnce([]);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    await caller.runs.listEvents({ runId: "550e8400-e29b-41d4-a716-446655440001" });
+    expect(mockAdapter.listPipelineEvents).toHaveBeenCalledWith("550e8400-e29b-41d4-a716-446655440001");
+  });
+});
+
+describe("runs.sendMessage procedure", () => {
+  beforeEach(() => mockAdapter.appendMessage.mockReset());
+
+  it("calls adapter.appendMessage", async () => {
+    const mockMsg = {
+      id: "msg-1",
+      run_id: "run-uuid-1",
+      step_key: null,
+      stream: "stdout",
+      chunk: "Hello world",
+      line_number: 0,
+      created_at: new Date().toISOString(),
+    };
+    mockAdapter.appendMessage.mockResolvedValueOnce(mockMsg);
+
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.runs.sendMessage({
+      runId: "550e8400-e29b-41d4-a716-446655440001",
+      stream: "stdout",
+      chunk: "Hello world",
+      lineNumber: 0,
+    });
+
+    expect(mockAdapter.appendMessage).toHaveBeenCalledWith({
+      runId: "550e8400-e29b-41d4-a716-446655440001",
+      stepKey: undefined,
+      stream: "stdout",
+      chunk: "Hello world",
+      lineNumber: 0,
+    });
+    expect(result.id).toBe("msg-1");
+  });
+
+  it("rejects invalid stream type", async () => {
+    const caller = appRouter.createCaller(mockCtx);
+    await expect(
+      caller.runs.sendMessage({
+        runId: "550e8400-e29b-41d4-a716-446655440001",
+        // @ts-ignore - intentionally testing invalid stream type
+        stream: "invalid-stream",
+        chunk: "test",
+        lineNumber: 0,
+      })
+    ).rejects.toThrow();
+  });
+});
+
+describe("runs.listMessages procedure", () => {
+  beforeEach(() => mockAdapter.listMessages.mockReset());
+
+  it("calls adapter.listMessages with runId", async () => {
+    mockAdapter.listMessages.mockResolvedValueOnce([]);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    await caller.runs.listMessages({ runId: "550e8400-e29b-41d4-a716-446655440001" });
+    expect(mockAdapter.listMessages).toHaveBeenCalledWith("550e8400-e29b-41d4-a716-446655440001", undefined);
+  });
+
+  it("passes stepKey filter to adapter", async () => {
+    mockAdapter.listMessages.mockResolvedValueOnce([]);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    await caller.runs.listMessages({ runId: "550e8400-e29b-41d4-a716-446655440001", stepKey: "build" });
+    expect(mockAdapter.listMessages).toHaveBeenCalledWith("550e8400-e29b-41d4-a716-446655440001", "build");
   });
 });
 
