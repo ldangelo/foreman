@@ -1,0 +1,154 @@
+{
+  "$schema": "./manifest.schema.json",
+  "version": "1.0.0",
+  "generated": "2026-04-15T00:00:00Z",
+  "description": "Canonical list of archival documents requiring historical context banners. Maintained manually — see PRD-2026-008 for process.",
+  "documents": [
+    {
+      "path": "migration-seeds-to-br.md",
+      "variant": "migration",
+      "rationale": "Migration guide; describes sd → br transition; pre-native-task-management era",
+      "lastReviewed": "2026-04-15",
+      "status": "archived"
+    },
+    {
+      "path": "Overstory_comparison.md",
+      "variant": "comparison",
+      "rationale": "Feature comparison with Overstory; assumes beads-first as default backend",
+      "lastReviewed": "2026-04-15",
+      "status": "archived"
+    },
+    {
+      "path": "flywheel_comparison.md",
+      "variant": "comparison",
+      "rationale": "Feature comparison with Flywheel; assumes sd task backend and beads-first pipeline",
+      "lastReviewed": "2026-04-15",
+      "status": "archived"
+    },
+    {
+      "path": "mail-transport-plan.md",
+      "variant": "standard",
+      "rationale": "Draft plan from 2026-03-21; references seeds CLI; no native task store mentions",
+      "lastReviewed": "2026-04-15",
+      "status": "archived"
+    },
+    {
+      "path": "PRD.md",
+      "variant": "standard",
+      "rationale": "Draft PRD from 2026-03-10; assumes beads-first, Beads for task tracking",
+      "lastReviewed": "2026-04-15",
+      "status": "archived"
+    },
+    {
+      "path": "PRD/PRD-2026-005-mid-pipeline-rebase-and-shared-worktree.md",
+      "variant": "standard",
+      "rationale": "Draft PRD from 2026-03-29; references current pipeline but does not reflect native task management",
+      "lastReviewed": "2026-04-15",
+      "status": "archived"
+    },
+    {
+      "path": "PRD/PRD-2026-006-multi-project-native-task-management.md",
+      "variant": "standard",
+      "rationale": "Borderline: describes native task management as a feature request (draft); once shipped, remove from manifest and add to exclusions. Flagged for review.",
+      "lastReviewed": "2026-04-15",
+      "status": "review"
+    },
+    {
+      "path": "TRD/TRD-2026-004-vcs-backend-abstraction.md",
+      "variant": "standard",
+      "rationale": "Draft TRD from 2026-03-27; pre-native-task; may contain beads-first assumptions",
+      "lastReviewed": "2026-04-15",
+      "status": "archived"
+    },
+    {
+      "path": "TRD/TRD-2026-005-mid-pipeline-rebase.md",
+      "variant": "standard",
+      "rationale": "Draft TRD from 2026-03-29; same as PRD-2026-005",
+      "lastReviewed": "2026-04-15",
+      "status": "archived"
+    },
+    {
+      "path": "TRD/seeds-to-br-bv-migration.md",
+      "variant": "comparison",
+      "rationale": "See OQ-3: depends on whether it describes beads-first as end state (archived) or baseline for native task management (needs reclassification). Status: review until OQ-3 resolved.",
+      "lastReviewed": "2026-04-15",
+      "status": "review"
+    }
+  ],
+  "exclusions": [
+    {
+      "path": "workflow-yaml-reference.md",
+      "reason": "active-operator-doc",
+      "notes": "Current operating procedure for workflow YAML configuration"
+    },
+    {
+      "path": "troubleshooting.md",
+      "reason": "active-operator-doc",
+      "notes": "Current operational guidance"
+    },
+    {
+      "path": "cli-reference.md",
+      "reason": "active-operator-doc",
+      "notes": "Current CLI reference"
+    },
+    {
+      "path": "TEST-PLAN.md",
+      "reason": "active-operator-doc",
+      "notes": "Current testing strategy"
+    },
+    {
+      "path": "windows-install.md",
+      "reason": "active-operator-doc",
+      "notes": "Platform setup guide"
+    },
+    {
+      "path": "homebrew-tap-setup.md",
+      "reason": "active-operator-doc",
+      "notes": "Platform setup guide"
+    },
+    {
+      "path": "PRD/PRD-2026-007-epic-execution-mode.md",
+      "reason": "active-trd",
+      "notes": "Active epic execution TRD — describes current architecture"
+    },
+    {
+      "path": "TRD/TRD-2026-007-epic-execution-mode.md",
+      "reason": "active-trd",
+      "notes": "Active epic execution TRD — describes current architecture"
+    },
+    {
+      "path": "PRD/PRD-2026-008-historical-context-banner-system.md",
+      "reason": "not-applicable",
+      "notes": "This PRD itself — not a historical document"
+    },
+    {
+      "path": "guides/vcs-backend-interface.md",
+      "reason": "active-operator-doc",
+      "notes": "All files in guides/ are excluded"
+    },
+    {
+      "path": "guides/vcs-configuration.md",
+      "reason": "active-operator-doc",
+      "notes": "All files in guides/ are excluded"
+    },
+    {
+      "path": "guides/jujutsu-considerations.md",
+      "reason": "active-operator-doc",
+      "notes": "All files in guides/ are excluded"
+    }
+  ],
+  "archivalDirectories": [
+    {
+      "path": ".",
+      "notes": "docs/ root — legacy comparison docs, migration guides, draft PRDs"
+    },
+    {
+      "path": "PRD/completed",
+      "notes": "Historical PRD artifacts — banners applied at time of completion"
+    },
+    {
+      "path": "TRD",
+      "notes": "TRDs prior to TRD-2026-006; see manifest for specifics"
+    }
+  ]
+}

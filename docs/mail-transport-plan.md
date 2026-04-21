@@ -1,3 +1,9 @@
+> ⚠️ Historical Context
+> This document describes Foreman's beads-first architecture, which has been
+> superseded by native task management (TRD-2026-006). Some instructions,
+> configurations, or comparisons in this document may no longer reflect
+> current behavior.
+
 # Agent Mail-Driven Phase Transitions: Implementation Plan
 
 > **Status:** Draft — awaiting approval
