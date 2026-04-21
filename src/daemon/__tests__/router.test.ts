@@ -162,6 +162,54 @@ describe("Zod schemas", () => {
     // Missing githubUrl
     expect(() => schema.parse({ name: "my-project" })).toThrow();
   });
+
+  // TRD-030: projectId required on all task procedures
+  it("task create input requires projectId", () => {
+    const schema = z.object({
+      projectId: z.string().min(1),
+      title: z.string().min(1),
+      description: z.string().optional(),
+      type: z.enum(["feature", "bugfix", "chore", "test", "docs", "refactor", "security"]).optional(),
+      priority: z.enum(["P0", "P1", "P2", "P3", "P4"]).optional(),
+      status: z.enum(["backlog", "ready", "in-progress", "in-review", "approved", "merged", "closed"]).optional(),
+      externalId: z.string().optional(),
+    });
+    // Missing projectId
+    expect(() => schema.parse({ title: "Test" })).toThrow();
+    // Valid: projectId only
+    expect(() => schema.parse({ projectId: "proj-123", title: "Test" })).not.toThrow();
+  });
+
+  it("task get/list input requires projectId", () => {
+    const listSchema = z.object({
+      projectId: z.string().min(1),
+      status: z.enum(["backlog", "ready", "in-progress", "in-review", "approved", "merged", "closed"]).optional(),
+      type: z.string().optional(),
+      priority: z.enum(["P0", "P1", "P2", "P3", "P4"]).optional(),
+      assignee: z.string().optional(),
+    });
+    const getSchema = z.object({
+      projectId: z.string().min(1),
+      taskId: z.string().min(1),
+    });
+    // Missing projectId
+    expect(() => listSchema.parse({})).toThrow();
+    expect(() => getSchema.parse({ taskId: "task-1" })).toThrow();
+    // Valid
+    expect(() => listSchema.parse({ projectId: "proj-123" })).not.toThrow();
+    expect(() => getSchema.parse({ projectId: "proj-123", taskId: "task-1" })).not.toThrow();
+  });
+
+  it("task update/approve/reset/retry require projectId", () => {
+    const schema = z.object({
+      projectId: z.string().min(1),
+      taskId: z.string().min(1),
+    });
+    // Missing projectId
+    expect(() => schema.parse({ taskId: "task-1" })).toThrow();
+    // Valid
+    expect(() => schema.parse({ projectId: "proj-123", taskId: "task-1" })).not.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------
