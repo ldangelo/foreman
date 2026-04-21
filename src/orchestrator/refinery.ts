@@ -54,6 +54,12 @@ async function gh(args: string[], cwd: string): Promise<string> {
   return stdout.trim();
 }
 
+function shouldCreateFreshPrAfterReopenFailure(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("Could not open the pull request")
+    || message.includes("reopenPullRequest");
+}
+
 async function runTestCommand(command: string, cwd: string): Promise<{ ok: boolean; output: string }> {
   const [cmd, ...args] = command.split(/\s+/);
   try {
@@ -330,27 +336,37 @@ export class Refinery {
     if (opts.existingOk !== false && !this.isTestRuntime()) {
       const existingPr = await this.getExistingPrState(branchName);
       if (existingPr?.headRefName === branchName && existingPr.url) {
+        let reopenedExistingPr = false;
         if (existingPr.state === "CLOSED") {
-          await gh(["pr", "reopen", branchName], this.projectPath);
+          try {
+            await gh(["pr", "reopen", existingPr.url], this.projectPath);
+            reopenedExistingPr = true;
+          } catch (err: unknown) {
+            if (!shouldCreateFreshPrAfterReopenFailure(err)) {
+              throw err;
+            }
+          }
         }
-        this.store.logEvent(
-          run.project_id,
-          "pr-created",
-          {
-            seedId: run.seed_id,
-            branchName,
-            baseBranch,
-            prUrl: existingPr.url,
-            existing: true,
-            reopened: existingPr.state === "CLOSED",
-            draft: opts.draft ?? false,
-          },
-          run.id,
-        );
-        if (opts.updateRunStatus) {
-          this.store.updateRun(run.id, { status: "pr-created" });
+        if (existingPr.state !== "CLOSED" || reopenedExistingPr) {
+          this.store.logEvent(
+            run.project_id,
+            "pr-created",
+            {
+              seedId: run.seed_id,
+              branchName,
+              baseBranch,
+              prUrl: existingPr.url,
+              existing: true,
+              reopened: reopenedExistingPr,
+              draft: opts.draft ?? false,
+            },
+            run.id,
+          );
+          if (opts.updateRunStatus) {
+            this.store.updateRun(run.id, { status: "pr-created" });
+          }
+          return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPr.url };
         }
-        return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPr.url };
       }
     }
 

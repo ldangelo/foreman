@@ -228,7 +228,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
   });
 
   describe("Refinery.ensurePullRequestForRun() reuses existing PRs correctly", () => {
-    it("reopens a closed PR when reusing the same branch", async () => {
+    it("reopens a closed PR by URL when reusing the same branch", async () => {
       const { store, refinery } = createTestRefinery();
       const run = makeRun({ id: "run-77", seed_id: "seed-reopen" });
       store.getRun.mockReturnValue(run);
@@ -269,11 +269,72 @@ describe("MQ-T058d: PR creation strategy decision", () => {
           (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "reopen",
         );
         expect(reopenCall).toBeDefined();
+        expect(reopenCall?.[1]).toContain("https://github.com/org/repo/pull/77");
         expect(store.logEvent).toHaveBeenCalledWith(
           "proj-1",
           "pr-created",
           expect.objectContaining({ existing: true, reopened: true, prUrl: "https://github.com/org/repo/pull/77" }),
           "run-77",
+        );
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+
+    it("creates a fresh PR when GitHub refuses to reopen the old closed PR", async () => {
+      const { store, refinery } = createTestRefinery();
+      const run = makeRun({ id: "run-88", seed_id: "seed-reopen-fallback" });
+      store.getRun.mockReturnValue(run);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+          (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+            if (cmd === "git") {
+              callback(null, { stdout: args.includes("log") ? "abc123 refresh branch" : "", stderr: "" });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+              callback(null, {
+                stdout: JSON.stringify({
+                  state: "CLOSED",
+                  headRefName: "foreman/seed-reopen-fallback",
+                  url: "https://github.com/org/repo/pull/88",
+                }),
+                stderr: "",
+              });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "reopen") {
+              callback(new Error("Command failed: gh pr reopen https://github.com/org/repo/pull/88\nAPI call failed: GraphQL: Could not open the pull request. (reopenPullRequest)\n"), { stdout: "", stderr: "API call failed: GraphQL: Could not open the pull request. (reopenPullRequest)\n" });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "create") {
+              callback(null, { stdout: "https://github.com/org/repo/pull/99", stderr: "" });
+              return;
+            }
+            callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+          },
+        );
+
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-88", baseBranch: "main" });
+
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/99");
+        const calls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls;
+        const reopenCall = calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "reopen",
+        );
+        const createCall = calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "create",
+        );
+        expect(reopenCall).toBeDefined();
+        expect(createCall).toBeDefined();
+        expect(store.logEvent).toHaveBeenCalledWith(
+          "proj-1",
+          "pr-created",
+          expect.objectContaining({ existing: false, prUrl: "https://github.com/org/repo/pull/99" }),
+          "run-88",
         );
       } finally {
         process.env.FOREMAN_RUNTIME_MODE = previousMode;
