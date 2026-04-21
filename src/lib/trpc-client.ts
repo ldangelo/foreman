@@ -191,6 +191,10 @@ export interface TRPCTasksClient {
     };
   }): Promise<unknown>;
   delete(input: { projectId: string; taskId: string }): Promise<unknown>;
+  claim(input: { projectId: string; taskId: string; runId: string }): Promise<unknown>;
+  approve(input: { projectId: string; taskId: string }): Promise<unknown>;
+  reset(input: { projectId: string; taskId: string }): Promise<unknown>;
+  retry(input: { projectId: string; taskId: string }): Promise<unknown>;
 }
 
 /** Projects sub-router client. */
@@ -265,6 +269,10 @@ export function createTrpcClient(
       create: (input) => untypedClient.mutation("tasks.create", input),
       update: (input) => untypedClient.mutation("tasks.update", input),
       delete: (input) => untypedClient.mutation("tasks.delete", input),
+      claim: (input) => untypedClient.mutation("tasks.claim", input),
+      approve: (input) => untypedClient.mutation("tasks.approve", input),
+      reset: (input) => untypedClient.mutation("tasks.reset", input),
+      retry: (input) => untypedClient.mutation("tasks.retry", input),
     },
   };
 }

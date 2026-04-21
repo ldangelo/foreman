@@ -215,6 +215,77 @@ const tasksRouter = t.router({
       await ctx.adapter.deleteTask(input.projectId, input.taskId);
       return { deleted: true, taskId: input.taskId };
     }),
+
+  /**
+   * Claim a task for a run.
+   * Uses SELECT ... FOR UPDATE to prevent concurrent claims.
+   * POST /trpc/tasks.claim
+   */
+  claim: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+        runId: z.string().min(1),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const claimed = await ctx.adapter.claimTask(
+        input.projectId,
+        input.taskId,
+        input.runId
+      );
+      if (!claimed) return { claimed: false, taskId: input.taskId };
+      return { claimed: true, taskId: input.taskId };
+    }),
+
+  /**
+   * Approve a backlog task: transition to 'ready'.
+   * POST /trpc/tasks.approve
+   */
+  approve: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.approveTask(input.projectId, input.taskId);
+      return ctx.adapter.getTask(input.projectId, input.taskId);
+    }),
+
+  /**
+   * Reset a task back to 'ready' state (clears run_id).
+   * POST /trpc/tasks.reset
+   */
+  reset: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.resetTask(input.projectId, input.taskId);
+      return ctx.adapter.getTask(input.projectId, input.taskId);
+    }),
+
+  /**
+   * Retry a failed/stuck task: transition to 'ready'.
+   * POST /trpc/tasks.retry
+   */
+  retry: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.retryTask(input.projectId, input.taskId);
+      return ctx.adapter.getTask(input.projectId, input.taskId);
+    }),
 });
 
 // ---------------------------------------------------------------------------
