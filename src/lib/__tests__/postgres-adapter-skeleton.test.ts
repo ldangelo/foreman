@@ -244,81 +244,166 @@ describe("PostgresAdapter project operations", () => {
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter task operations", () => {
-  it("createTask throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.createTask(PROJECT_ID, { title: "Test task" }),
-      "createTask"
-    );
+  beforeEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const TASK_ID = "bd-task-001";
+  const RUN_ID = "run-001";
+  const TASK_ROW = {
+    id: TASK_ID,
+    project_id: PROJECT_ID,
+    title: "Test Task",
+    description: null,
+    type: "task",
+    priority: 2,
+    status: "backlog",
+    run_id: null,
+    branch: null,
+    external_id: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    approved_at: null,
+    closed_at: null,
+  };
+
+  it("createTask inserts and returns the task row", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /INSERT INTO tasks/, rows: [TASK_ROW] },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.createTask(PROJECT_ID, { id: TASK_ID, title: "Test Task" });
+      expect(result.id).toBe(TASK_ID);
+      expect(result.project_id).toBe(PROJECT_ID);
+      expect(result.status).toBe("backlog");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("listTasks throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.listTasks(PROJECT_ID),
-      "listTasks"
-    );
+  it("listTasks returns rows from the database", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /SELECT \* FROM tasks/, rows: [TASK_ROW] },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.listTasks(PROJECT_ID);
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe(TASK_ID);
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("getTask throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.getTask(PROJECT_ID, "task-1"),
-      "getTask"
-    );
+  it("listTasks filters by status", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /SELECT \* FROM tasks WHERE project_id = \$1 AND status IN/, rows: [TASK_ROW] },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.listTasks(PROJECT_ID, { status: ["backlog", "ready"] });
+      expect(result).toHaveLength(1);
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("updateTask throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.updateTask(PROJECT_ID, "task-1", { status: "done" }),
-      "updateTask"
-    );
+  it("getTask returns a task by id", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /SELECT \* FROM tasks WHERE id = \$1 AND project_id = \$2/, rows: [TASK_ROW] },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.getTask(PROJECT_ID, TASK_ID);
+      expect(result?.id).toBe(TASK_ID);
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("deleteTask throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.deleteTask(PROJECT_ID, "task-1"),
-      "deleteTask"
-    );
+  it("getTask returns null when not found", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /SELECT \* FROM tasks WHERE id = \$1 AND project_id = \$2/, rows: [] },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.getTask(PROJECT_ID, "nonexistent");
+      expect(result).toBeNull();
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("claimTask throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.claimTask(PROJECT_ID, "task-1", "run-1"),
-      "claimTask"
-    );
+  it("updateTask executes UPDATE with correct parameters", async () => {
+    let capturedSql = "";
+    const mockPool = makeMockPool([
+      { sqlPattern: /UPDATE tasks SET/, rows: [] },
+    ]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
+      capturedSql = text;
+      return { rows: [], rowCount: 0 };
+    });
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      await adapter.updateTask(PROJECT_ID, TASK_ID, { status: "ready" });
+      expect(capturedSql).toContain("UPDATE tasks SET");
+      expect(capturedSql).toContain("status");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("approveTask throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.approveTask(PROJECT_ID, "task-1"),
-      "approveTask"
-    );
+  it("deleteTask executes DELETE", async () => {
+    let capturedSql = "";
+    const mockPool = makeMockPool([
+      { sqlPattern: /DELETE FROM tasks/, rows: [] },
+    ]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
+      capturedSql = text;
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      await adapter.deleteTask(PROJECT_ID, TASK_ID);
+      expect(capturedSql).toContain("DELETE FROM tasks");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("resetTask throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.resetTask(PROJECT_ID, "task-1"),
-      "resetTask"
-    );
+  it("listReadyTasks returns only ready tasks", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /SELECT\s+\*\s+FROM\s+tasks\s+WHERE\s+project_id\s+=\s+\$1\s+AND\s+status\s+=\s+'ready'/, rows: [TASK_ROW] },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.listReadyTasks(PROJECT_ID);
+      expect(result).toHaveLength(1);
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("retryTask throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.retryTask(PROJECT_ID, "task-1"),
-      "retryTask"
-    );
-  });
-
-  it("listReadyTasks throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.listReadyTasks(PROJECT_ID),
-      "listReadyTasks"
-    );
-  });
-
-  it("listNeedsHumanTasks throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.listNeedsHumanTasks(PROJECT_ID),
-      "listNeedsHumanTasks"
-    );
+  it("listNeedsHumanTasks returns backlog/conflict/failed/stuck/blocked", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /SELECT\s+\*\s+FROM\s+tasks\s+WHERE\s+project_id\s+=\s+\$1\s+AND\s+status\s+IN/, rows: [TASK_ROW] },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.listNeedsHumanTasks(PROJECT_ID);
+      expect(result).toHaveLength(1);
+    } finally {
+      await destroyPool();
+    }
   });
 });
 

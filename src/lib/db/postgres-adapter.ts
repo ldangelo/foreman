@@ -62,9 +62,18 @@ export interface RunRow {
 export interface TaskRow {
   id: string;
   project_id: string;
-  run_id: string | null;
+  title: string;
+  description: string | null;
+  type: string;
+  priority: number;
   status: string;
+  run_id: string | null;
+  branch: string | null;
+  external_id: string | null;
   created_at: string;
+  updated_at: string;
+  approved_at: string | null;
+  closed_at: string | null;
 }
 
 export interface EventRow {
@@ -254,16 +263,37 @@ export class PostgresAdapter {
   // -------------------------------------------------------------------------
 
   /**
-   * Create a new task.
-   * @throws Error("not implemented")
+   * Create a new task in backlog status.
+   *
+   * @param projectId - The owner project UUID.
+   * @param taskData - Task fields. Required: id. Optional: title, description, type, priority.
+   * @throws DatabaseError on constraint violation.
    */
   async createTask(projectId: string, taskData: Record<string, unknown>): Promise<TaskRow> {
-    throw new Error("not implemented");
+    const id = taskData.id as string;
+    const title = (taskData.title as string) ?? id;
+    const description = taskData.description as string | null ?? null;
+    const type = (taskData.type as string) ?? "task";
+    const priority = (taskData.priority as number) ?? 2;
+    const externalId = taskData.external_id as string | null ?? null;
+    const branch = taskData.branch as string | null ?? null;
+
+    const rows = await query<TaskRow>(
+      `INSERT INTO tasks (id, project_id, title, description, type, priority, external_id, branch)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [id, projectId, title, description, type, priority, externalId, branch],
+    );
+    return rows[0];
   }
 
   /**
-   * List tasks with optional filters.
-   * @throws Error("not implemented")
+   * List tasks for a project with optional filters.
+   *
+   * @param projectId - The owner project UUID.
+   * @param filters.status - Include only these statuses.
+   * @param filters.runId - Include only tasks for this run.
+   * @param filters.limit - Max rows to return (default: 100).
    */
   async listTasks(
     projectId: string,
@@ -273,87 +303,261 @@ export class PostgresAdapter {
       limit?: number;
     }
   ): Promise<TaskRow[]> {
-    throw new Error("not implemented");
+    const conditions = ["project_id = $1"];
+    const params: unknown[] = [projectId];
+    let i = 2;
+
+    if (filters?.status && filters.status.length > 0) {
+      conditions.push(`status IN (${filters.status.map((_, idx) => `$${i + idx}`).join(",")})`);
+      params.push(...filters.status);
+      i += filters.status.length;
+    }
+
+    if (filters?.runId !== undefined) {
+      conditions.push(`run_id = $${i++}`);
+      params.push(filters.runId);
+    }
+
+    const limit = filters?.limit ?? 100;
+    params.push(limit);
+
+    return query<TaskRow>(
+      `SELECT * FROM tasks WHERE ${conditions.join(" AND ")}
+       ORDER BY priority ASC, created_at ASC
+       LIMIT $${i}`,
+      params,
+    );
   }
 
   /**
    * Get a single task by ID.
-   * @throws Error("not implemented")
+   *
+   * @param projectId - The owner project UUID.
+   * @param taskId - The task UUID.
+   * @returns The task row, or null if not found or belongs to a different project.
    */
   async getTask(projectId: string, taskId: string): Promise<TaskRow | null> {
-    throw new Error("not implemented");
+    const rows = await query<TaskRow>(
+      `SELECT * FROM tasks WHERE id = $1 AND project_id = $2`,
+      [taskId, projectId],
+    );
+    return rows[0] ?? null;
   }
 
   /**
    * Update a task's fields.
-   * @throws Error("not implemented")
+   *
+   * @param projectId - The owner project UUID.
+   * @param taskId - The task UUID.
+   * @param updates - Fields to update. Supported: title, description, type, priority, status, branch, external_id.
    */
   async updateTask(
     projectId: string,
     taskId: string,
     updates: Record<string, unknown>
   ): Promise<void> {
-    throw new Error("not implemented");
+    const setClauses: string[] = ["updated_at = now()"];
+    const params: unknown[] = [];
+    let i = 1;
+
+    if (updates.title !== undefined) {
+      setClauses.push(`title = $${i++}`);
+      params.push(updates.title as string);
+    }
+    if (updates.description !== undefined) {
+      setClauses.push(`description = $${i++}`);
+      params.push(updates.description as string | null);
+    }
+    if (updates.type !== undefined) {
+      setClauses.push(`type = $${i++}`);
+      params.push(updates.type as string);
+    }
+    if (updates.priority !== undefined) {
+      setClauses.push(`priority = $${i++}`);
+      params.push(updates.priority as number);
+    }
+    if (updates.status !== undefined) {
+      setClauses.push(`status = $${i++}`);
+      params.push(updates.status as string);
+    }
+    if (updates.branch !== undefined) {
+      setClauses.push(`branch = $${i++}`);
+      params.push(updates.branch as string | null);
+    }
+    if (updates.external_id !== undefined) {
+      setClauses.push(`external_id = $${i++}`);
+      params.push(updates.external_id as string | null);
+    }
+
+    if (setClauses.length === 1) return; // only updated_at
+
+    params.push(taskId, projectId);
+    await execute(
+      `UPDATE tasks SET ${setClauses.join(", ")} WHERE id = $${i++} AND project_id = $${i}`,
+      params,
+    );
   }
 
   /**
-   * Delete a task.
-   * @throws Error("not implemented")
+   * Delete a task and its dependencies.
+   *
+   * @param projectId - The owner project UUID.
+   * @param taskId - The task UUID.
    */
   async deleteTask(projectId: string, taskId: string): Promise<void> {
-    throw new Error("not implemented");
+    // ON DELETE CASCADE handles task_dependencies automatically
+    await execute(
+      `DELETE FROM tasks WHERE id = $1 AND project_id = $2`,
+      [taskId, projectId],
+    );
   }
 
   /**
-   * Claim a task for a run (uses SELECT ... FOR UPDATE).
-   * @throws Error("not implemented")
+   * Claim a task for a run using SELECT ... FOR UPDATE.
+   *
+   * Uses row-level locking to prevent concurrent claims on the same task.
+   * Only tasks in 'ready' status can be claimed.
+   *
+   * @param projectId - The owner project UUID.
+   * @param taskId - The task UUID.
+   * @param runId - The run UUID claiming this task.
+   * @returns true if the claim succeeded (task was 'ready' and is now claimed),
+   *          false if the task was already claimed by another run.
    */
   async claimTask(
     projectId: string,
     taskId: string,
     runId: string
   ): Promise<boolean> {
-    throw new Error("not implemented");
+    const client = await acquireClient();
+    try {
+      await client.query("BEGIN");
+
+      // SELECT ... FOR UPDATE acquires a row-level lock on the task
+      const result = await client.query<{ id: string }>(
+        `SELECT id FROM tasks
+         WHERE id = $1 AND project_id = $2 AND status = 'ready'
+         FOR UPDATE`,
+        [taskId, projectId],
+      );
+
+      if (result.rows.length === 0) {
+        // Task not found, not in 'ready' status, or belongs to another project
+        await client.query("ROLLBACK");
+        return false;
+      }
+
+      await client.query(
+        `UPDATE tasks SET run_id = $1, status = 'in-progress', updated_at = now()
+         WHERE id = $2 AND project_id = $3`,
+        [runId, taskId, projectId],
+      );
+
+      await client.query("COMMIT");
+      return true;
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      releaseClient(client);
+    }
   }
 
   /**
-   * Approve a task (human approval gate).
-   * @throws Error("not implemented")
+   * Approve a task: transition from 'backlog' to 'ready'.
+   *
+   * Only tasks in 'backlog' status can be approved. Sets approved_at timestamp.
+   *
+   * @param projectId - The owner project UUID.
+   * @param taskId - The task UUID.
+   * @throws Error if the task is not in 'backlog' status.
    */
   async approveTask(projectId: string, taskId: string): Promise<void> {
-    throw new Error("not implemented");
+    const rows = await query<TaskRow>(
+      `UPDATE tasks
+       SET status = 'ready', approved_at = now(), updated_at = now()
+       WHERE id = $1 AND project_id = $2 AND status = 'backlog'
+       RETURNING id`,
+      [taskId, projectId],
+    );
+    if (rows.length === 0) {
+      throw new Error(
+        `Cannot approve task '${taskId}': task not found or not in backlog status`,
+      );
+    }
   }
 
   /**
-   * Reset a task back to ready state.
-   * @throws Error("not implemented")
+   * Reset a task back to 'ready' state.
+   *
+   * Clears run_id and transitions to 'ready'. Use after a run fails or is cancelled
+   * to make the task available for re-dispatch.
+   *
+   * @param projectId - The owner project UUID.
+   * @param taskId - The task UUID.
    */
   async resetTask(projectId: string, taskId: string): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `UPDATE tasks
+       SET status = 'ready', run_id = NULL, updated_at = now()
+       WHERE id = $1 AND project_id = $2`,
+      [taskId, projectId],
+    );
   }
 
   /**
-   * Retry a failed/stuck task.
-   * @throws Error("not implemented")
+   * Retry a failed or stuck task.
+   *
+   * Resets status to 'ready' for tasks in 'failed' or 'stuck' status,
+   * allowing them to be re-dispatched.
+   *
+   * @param projectId - The owner project UUID.
+   * @param taskId - The task UUID.
    */
   async retryTask(projectId: string, taskId: string): Promise<void> {
-    throw new Error("not implemented");
+    const rows = await query<TaskRow>(
+      `UPDATE tasks
+       SET status = 'ready', run_id = NULL, updated_at = now()
+       WHERE id = $1 AND project_id = $2 AND status IN ('failed', 'stuck')
+       RETURNING id`,
+      [taskId, projectId],
+    );
+    if (rows.length === 0) {
+      throw new Error(
+        `Cannot retry task '${taskId}': task not found or not in failed/stuck status`,
+      );
+    }
   }
 
   /**
-   * List tasks in 'ready' status for a project.
-   * @throws Error("not implemented")
+   * List tasks in 'ready' status for a project (dispatchable tasks).
+   *
+   * @param projectId - The owner project UUID.
+   * @returns Tasks with status = 'ready', ordered by priority ASC, created_at ASC.
    */
   async listReadyTasks(projectId: string): Promise<TaskRow[]> {
-    throw new Error("not implemented");
+    return query<TaskRow>(
+      `SELECT * FROM tasks
+       WHERE project_id = $1 AND status = 'ready'
+       ORDER BY priority ASC, created_at ASC`,
+      [projectId],
+    );
   }
 
   /**
-   * List tasks that need human attention (conflict, failed, stuck, backlog).
-   * @throws Error("not implemented")
+   * List tasks that need human attention.
+   *
+   * Includes: backlog (not approved), conflict, failed, stuck, blocked.
+   *
+   * @param projectId - The owner project UUID.
    */
   async listNeedsHumanTasks(projectId: string): Promise<TaskRow[]> {
-    throw new Error("not implemented");
+    return query<TaskRow>(
+      `SELECT * FROM tasks
+       WHERE project_id = $1 AND status IN ('backlog', 'conflict', 'failed', 'stuck', 'blocked')
+       ORDER BY priority ASC, created_at ASC`,
+      [projectId],
+    );
   }
 
   // -------------------------------------------------------------------------
