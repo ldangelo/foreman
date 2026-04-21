@@ -21,6 +21,16 @@ const mockAdapter = {
   updateProject: vi.fn(),
   removeProject: vi.fn(),
   syncProject: vi.fn(),
+  createTask: vi.fn(),
+  listTasks: vi.fn(),
+  getTask: vi.fn(),
+  updateTask: vi.fn(),
+  deleteTask: vi.fn(),
+  approveTask: vi.fn(),
+  resetTask: vi.fn(),
+  retryTask: vi.fn(),
+  listReadyTasks: vi.fn(),
+  listNeedsHumanTasks: vi.fn(),
 };
 
 const mockGh = {
@@ -209,6 +219,333 @@ describe("Zod schemas", () => {
     expect(() => schema.parse({ taskId: "task-1" })).toThrow();
     // Valid
     expect(() => schema.parse({ projectId: "proj-123", taskId: "task-1" })).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task procedure integration tests (TRD-031)
+// ---------------------------------------------------------------------------
+
+describe("tasks router structure", () => {
+  it("has a tasks router", () => {
+    // @ts-ignore - only testing structure at runtime
+    expect(appRouter).toHaveProperty("tasks");
+  });
+
+  it("tasks router has list procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("list");
+  });
+
+  it("tasks router has get procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("get");
+  });
+
+  it("tasks router has create procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("create");
+  });
+
+  it("tasks router has update procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("update");
+  });
+
+  it("tasks router has delete procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("delete");
+  });
+
+  it("tasks router has approve procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("approve");
+  });
+
+  it("tasks router has reset procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("reset");
+  });
+
+  it("tasks router has retry procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("retry");
+  });
+
+  it("tasks router has claim procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("claim");
+  });
+});
+
+describe("tasks.list procedure", () => {
+  beforeEach(() => mockAdapter.listTasks.mockReset());
+
+  it("calls adapter.listTasks with projectId and filters", async () => {
+    const mockTask = {
+      id: "task-1",
+      project_id: "proj-123",
+      title: "Test task",
+      description: null,
+      type: "feature",
+      priority: 2,
+      status: "backlog",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      approved_at: null,
+      closed_at: null,
+    };
+    mockAdapter.listTasks.mockResolvedValueOnce([mockTask]);
+
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.tasks.list({ projectId: "proj-123" });
+
+    expect(mockAdapter.listTasks).toHaveBeenCalledWith(
+      "proj-123",
+      expect.objectContaining({})
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("task-1");
+  });
+
+  it("passes status filter to adapter", async () => {
+    mockAdapter.listTasks.mockResolvedValueOnce([]);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    await caller.tasks.list({ projectId: "proj-123", status: ["ready"] });
+    expect(mockAdapter.listTasks).toHaveBeenCalledWith(
+      "proj-123",
+      expect.objectContaining({ status: ["ready"] })
+    );
+  });
+
+  it("rejects missing projectId", async () => {
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    await expect(caller.tasks.list({})).rejects.toThrow();
+  });
+});
+
+describe("tasks.create procedure", () => {
+  beforeEach(() => mockAdapter.createTask.mockReset());
+
+  it("calls adapter.createTask with projectId and task data", async () => {
+    const mockTask = {
+      id: "task-2",
+      project_id: "proj-123",
+      title: "New feature",
+      description: "Implement X",
+      type: "task",
+      priority: 1,
+      status: "backlog",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      approved_at: null,
+      closed_at: null,
+    };
+    mockAdapter.createTask.mockResolvedValueOnce(mockTask);
+
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.tasks.create({
+      projectId: "proj-123",
+      id: "task-2",
+      title: "New feature",
+      description: "Implement X",
+      type: "task",
+      priority: 1,
+    });
+
+    expect(mockAdapter.createTask).toHaveBeenCalledWith(
+      "proj-123",
+      expect.objectContaining({ title: "New feature", type: "task" })
+    );
+    expect(result.id).toBe("task-2");
+  });
+
+  it("rejects empty title", async () => {
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    await expect(
+      caller.tasks.create({ projectId: "proj-123", id: "task-x", title: "" })
+    ).rejects.toThrow();
+  });
+
+  it("rejects missing projectId", async () => {
+    const caller = appRouter.createCaller(mockCtx);
+    await expect(
+      // @ts-ignore - intentionally testing missing projectId
+      caller.tasks.create({ id: "task-x", title: "Test" })
+    ).rejects.toThrow();
+  });
+});
+
+describe("tasks.approve procedure", () => {
+  beforeEach(() => {
+    mockAdapter.approveTask.mockReset();
+    mockAdapter.getTask.mockReset();
+  });
+
+  it("calls adapter.approveTask then returns updated task", async () => {
+    const mockTask = {
+      id: "task-1",
+      project_id: "proj-123",
+      title: "Test",
+      description: null,
+      type: "task",
+      priority: 2,
+      status: "approved",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      approved_at: new Date().toISOString(),
+      closed_at: null,
+    };
+    mockAdapter.approveTask.mockResolvedValueOnce(undefined);
+    mockAdapter.getTask.mockResolvedValueOnce(mockTask);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.tasks.approve({
+      projectId: "proj-123",
+      taskId: "task-1",
+    });
+
+    expect(mockAdapter.approveTask).toHaveBeenCalledWith("proj-123", "task-1");
+    expect(result!.id).toBe("task-1");
+    expect(result!.status).toBe("approved");
+  });
+
+  it("rejects missing projectId", async () => {
+    const caller = appRouter.createCaller(mockCtx);
+    await expect(
+      // @ts-ignore - intentionally testing missing projectId
+      caller.tasks.approve({ taskId: "task-1" })
+    ).rejects.toThrow();
+  });
+});
+
+describe("tasks.reset procedure", () => {
+  beforeEach(() => {
+    mockAdapter.resetTask.mockReset();
+    mockAdapter.getTask.mockReset();
+  });
+
+  it("calls adapter.resetTask then returns updated task", async () => {
+    const mockTask = {
+      id: "task-1",
+      project_id: "proj-123",
+      title: "Test",
+      description: null,
+      type: "task",
+      priority: 2,
+      status: "backlog",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      approved_at: null,
+      closed_at: null,
+    };
+    mockAdapter.resetTask.mockResolvedValueOnce(undefined);
+    mockAdapter.getTask.mockResolvedValueOnce(mockTask);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.tasks.reset({
+      projectId: "proj-123",
+      taskId: "task-1",
+    });
+
+    expect(mockAdapter.resetTask).toHaveBeenCalledWith("proj-123", "task-1");
+    expect(result!.id).toBe("task-1");
+  });
+});
+
+describe("tasks.retry procedure", () => {
+  beforeEach(() => {
+    mockAdapter.retryTask.mockReset();
+    mockAdapter.getTask.mockReset();
+  });
+
+  it("calls adapter.retryTask then returns updated task", async () => {
+    const mockTask = {
+      id: "task-1",
+      project_id: "proj-123",
+      title: "Test",
+      description: null,
+      type: "task",
+      priority: 2,
+      status: "backlog",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      approved_at: null,
+      closed_at: null,
+    };
+    mockAdapter.retryTask.mockResolvedValueOnce(undefined);
+    mockAdapter.getTask.mockResolvedValueOnce(mockTask);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.tasks.retry({
+      projectId: "proj-123",
+      taskId: "task-1",
+    });
+
+    expect(mockAdapter.retryTask).toHaveBeenCalledWith("proj-123", "task-1");
+    expect(result!.id).toBe("task-1");
+  });
+});
+
+describe("tasks.get procedure", () => {
+  beforeEach(() => mockAdapter.getTask.mockReset());
+
+  it("calls adapter.getTask and returns task", async () => {
+    const mockTask = {
+      id: "task-1",
+      project_id: "proj-123",
+      title: "Test",
+      description: null,
+      type: "feature",
+      priority: 2,
+      status: "backlog",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      approved_at: null,
+      closed_at: null,
+    };
+    mockAdapter.getTask.mockResolvedValueOnce(mockTask);
+
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.tasks.get({
+      projectId: "proj-123",
+      taskId: "task-1",
+    });
+
+    expect(mockAdapter.getTask).toHaveBeenCalledWith("proj-123", "task-1");
+    expect(result!.id).toBe("task-1");
+  });
+
+  it("rejects missing projectId", async () => {
+    const caller = appRouter.createCaller(mockCtx);
+    await expect(
+      // @ts-ignore - intentionally testing missing projectId
+      caller.tasks.get({ taskId: "task-1" })
+    ).rejects.toThrow();
   });
 });
 
