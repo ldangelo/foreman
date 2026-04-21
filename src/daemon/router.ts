@@ -77,6 +77,18 @@ const STATUS_FILTER_SCHEMA = z
   .enum(["active", "paused", "archived"])
   .optional();
 
+// Task schemas
+const TASK_ID_SCHEMA = z.string().min(1);
+const TASK_STATUS_VALUES = [
+  "backlog", "ready", "in-progress",
+  "explorer", "developer", "qa", "reviewer", "finalize",
+  "merged", "closed", "conflict", "failed", "stuck", "blocked",
+] as const;
+const TASK_STATUS_SCHEMA = z.enum(TASK_STATUS_VALUES).optional();
+const TASK_STATUS_ARRAY_SCHEMA = z.array(z.enum(TASK_STATUS_VALUES)).optional();
+const TASK_PRIORITY_SCHEMA = z.number().int().min(0).max(4).optional();
+const TASK_TYPE_SCHEMA = z.enum(["task", "bug", "story", "epic", "chore"]).optional();
+
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
@@ -92,6 +104,118 @@ class TrpcProjectError extends TRPCError {
     super({ code: "BAD_REQUEST", message });
   }
 }
+
+// ---------------------------------------------------------------------------
+// Tasks router
+// ---------------------------------------------------------------------------
+
+const tasksRouter = t.router({
+  /**
+   * List tasks for a project.
+   * GET /trpc/tasks.list
+   */
+  list: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        status: TASK_STATUS_ARRAY_SCHEMA,
+        runId: z.string().optional(),
+        limit: z.number().int().min(1).max(1000).optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.listTasks(input.projectId, {
+        status: input.status,
+        runId: input.runId,
+        limit: input.limit,
+      });
+    }),
+
+  /**
+   * Get a single task by ID.
+   * GET /trpc/tasks.get
+   */
+  get: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.getTask(input.projectId, input.taskId);
+    }),
+
+  /**
+   * Create a new task.
+   * POST /trpc/tasks.create
+   */
+  create: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        id: TASK_ID_SCHEMA,
+        title: z.string().min(1).max(1000).optional(),
+        description: z.string().optional(),
+        type: TASK_TYPE_SCHEMA,
+        priority: TASK_PRIORITY_SCHEMA,
+        externalId: z.string().optional(),
+        branch: z.string().optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      return ctx.adapter.createTask(input.projectId, {
+        id: input.id,
+        title: input.title ?? input.id,
+        description: input.description,
+        type: input.type ?? "task",
+        priority: input.priority ?? 2,
+        external_id: input.externalId,
+        branch: input.branch,
+      });
+    }),
+
+  /**
+   * Update a task's fields.
+   * POST /trpc/tasks.update
+   */
+  update: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+        updates: z.object({
+          title: z.string().min(1).max(1000).optional(),
+          description: z.string().optional(),
+          type: TASK_TYPE_SCHEMA,
+          priority: TASK_PRIORITY_SCHEMA,
+          status: TASK_STATUS_SCHEMA,
+          branch: z.string().optional(),
+          external_id: z.string().optional(),
+        }),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.updateTask(input.projectId, input.taskId, input.updates);
+      return ctx.adapter.getTask(input.projectId, input.taskId);
+    }),
+
+  /**
+   * Delete a task.
+   * POST /trpc/tasks.delete
+   */
+  delete: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.deleteTask(input.projectId, input.taskId);
+      return { deleted: true, taskId: input.taskId };
+    }),
+});
 
 // ---------------------------------------------------------------------------
 // Projects router
@@ -338,6 +462,7 @@ const projectsRouter = t.router({
 
 export const appRouter = t.router({
   projects: projectsRouter,
+  tasks: tasksRouter,
 });
 
 export type AppRouter = typeof appRouter;

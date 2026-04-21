@@ -152,8 +152,45 @@ export interface TrpcClientOptions {
 
 /** A fully-typed tRPC client for ForemanDaemon. */
 export interface TrpcClient {
-  /** Typed proxy to the daemon's procedures. */
+  /** Typed proxy to the daemon's projects procedures. */
   readonly projects: TRPCProjectsClient;
+  /** Typed proxy to the daemon's tasks procedures. */
+  readonly tasks: TRPCTasksClient;
+}
+
+/** Tasks sub-router client. */
+export interface TRPCTasksClient {
+  list(input: {
+    projectId: string;
+    status?: string[];
+    runId?: string;
+    limit?: number;
+  }): Promise<unknown>;
+  get(input: { projectId: string; taskId: string }): Promise<unknown>;
+  create(input: {
+    projectId: string;
+    id: string;
+    title?: string;
+    description?: string;
+    type?: string;
+    priority?: number;
+    externalId?: string;
+    branch?: string;
+  }): Promise<unknown>;
+  update(input: {
+    projectId: string;
+    taskId: string;
+    updates: {
+      title?: string;
+      description?: string;
+      type?: string;
+      priority?: number;
+      status?: string;
+      branch?: string;
+      external_id?: string;
+    };
+  }): Promise<unknown>;
+  delete(input: { projectId: string; taskId: string }): Promise<unknown>;
 }
 
 /** Projects sub-router client. */
@@ -221,6 +258,13 @@ export function createTrpcClient(
       update: (input) => untypedClient.mutation("projects.update", input),
       remove: (input) => untypedClient.mutation("projects.remove", input),
       sync: (input) => untypedClient.mutation("projects.sync", input),
+    },
+    tasks: {
+      list: (input) => untypedClient.query("tasks.list", input),
+      get: (input) => untypedClient.query("tasks.get", input),
+      create: (input) => untypedClient.mutation("tasks.create", input),
+      update: (input) => untypedClient.mutation("tasks.update", input),
+      delete: (input) => untypedClient.mutation("tasks.delete", input),
     },
   };
 }
