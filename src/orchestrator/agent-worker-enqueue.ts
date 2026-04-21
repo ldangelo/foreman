@@ -8,6 +8,7 @@
 import type Database from "better-sqlite3";
 import { MergeQueue } from "./merge-queue.js";
 import type { MergeQueueEntry } from "./merge-queue.js";
+import type { MergeQueueOperation } from "./merge-queue.js";
 
 export interface EnqueueOptions {
   /** The database connection to use for the merge queue. */
@@ -16,6 +17,8 @@ export interface EnqueueOptions {
   seedId: string;
   /** The run ID for this pipeline execution. */
   runId: string;
+  /** The merge action this completed run requires. */
+  operation?: MergeQueueOperation;
   /** The worktree path (used for context, not directly by enqueue). */
   worktreePath: string;
   /**
@@ -39,7 +42,7 @@ export interface EnqueueResult {
  * This ensures finalization is never blocked by merge queue failures.
  */
 export function enqueueToMergeQueue(options: EnqueueOptions): EnqueueResult {
-  const { db, seedId, runId, getFilesModified } = options;
+  const { db, seedId, runId, operation = "auto_merge", getFilesModified } = options;
 
   try {
     // Collect modified files — tolerate failures
@@ -55,6 +58,7 @@ export function enqueueToMergeQueue(options: EnqueueOptions): EnqueueResult {
       branchName: `foreman/${seedId}`,
       seedId,
       runId,
+      operation,
       agentName: "pipeline",
       filesModified,
     });

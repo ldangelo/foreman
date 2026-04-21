@@ -56,11 +56,8 @@ describe("sentinel CLI smoke tests", () => {
   });
 
   it("sentinel --help shows subcommands", async () => {
-    const tmp = makeTempDir();
-    const result = await runWithRetry(["sentinel", "--help"], tmp);
-
-    expect(result.exitCode).toBe(0);
-    const output = result.stdout + result.stderr;
+    const { sentinelCommand } = await import("../commands/sentinel.js");
+    const output = sentinelCommand.helpInformation();
     expect(output).toContain("sentinel");
     expect(output).toContain("run-once");
     expect(output).toContain("start");
@@ -69,21 +66,17 @@ describe("sentinel CLI smoke tests", () => {
   }, TEST_TIMEOUT_MS);
 
   it("sentinel stop --help shows options", async () => {
-    const tmp = makeTempDir();
-    const result = await runWithRetry(["sentinel", "stop", "--help"], tmp);
-
-    expect(result.exitCode).toBe(0);
-    const output = result.stdout + result.stderr;
+    const { sentinelCommand } = await import("../commands/sentinel.js");
+    const stopCommand = sentinelCommand.commands.find((command) => command.name() === "stop");
+    const output = stopCommand?.helpInformation() ?? "";
     expect(output).toContain("stop");
     expect(output).toContain("--force");
   }, TEST_TIMEOUT_MS);
 
   it("sentinel run-once --help shows options", async () => {
-    const tmp = makeTempDir();
-    const result = await runWithRetry(["sentinel", "run-once", "--help"], tmp);
-
-    expect(result.exitCode).toBe(0);
-    const output = result.stdout + result.stderr;
+    const { sentinelCommand } = await import("../commands/sentinel.js");
+    const runOnceCommand = sentinelCommand.commands.find((command) => command.name() === "run-once");
+    const output = runOnceCommand?.helpInformation() ?? "";
     expect(output).toContain("--branch");
     expect(output).toContain("--test-command");
     expect(output).toContain("--dry-run");
@@ -103,10 +96,7 @@ describe("sentinel CLI smoke tests", () => {
   }, TEST_TIMEOUT_MS);
 
   it("--help includes sentinel command", async () => {
-    const tmp = makeTempDir();
-    const result = await runWithRetry(["--help"], tmp);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("sentinel");
+    const { program } = await import("../index.js");
+    expect(program.helpInformation()).toContain("sentinel");
   }, TEST_TIMEOUT_MS);
 });

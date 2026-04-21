@@ -8,6 +8,7 @@ import { ForemanStore, type Run, type RunProgress } from "../../lib/store.js";
 
 const mockShow = vi.fn();
 const mockUpdate = vi.fn();
+const mockResetToReady = vi.fn();
 const mockReady = vi.fn();
 const mockList = vi.fn();
 const mockClose = vi.fn();
@@ -16,6 +17,7 @@ vi.mock("../../lib/beads-rust.js", () => {
   class MockBeadsRustClient {
     show = mockShow;
     update = mockUpdate;
+    resetToReady = mockResetToReady;
     ready = mockReady;
     list = mockList;
     close = mockClose;
@@ -111,6 +113,7 @@ describe("foreman retry", () => {
 
     mockShow.mockReset();
     mockUpdate.mockReset();
+    mockResetToReady.mockReset();
     mockReady.mockReset();
     mockList.mockReset();
     mockClose.mockReset();
@@ -228,7 +231,7 @@ describe("foreman retry", () => {
   // ── Completed/closed bead reset ──────────────────────────────────────
 
   describe("completed bead", () => {
-    it("resets bead status from 'completed' to 'open'", async () => {
+    it("does not reset bead status when it is already completed", async () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
       mockShow.mockResolvedValue(makeBead({ status: "completed" }));
@@ -243,12 +246,12 @@ describe("foreman retry", () => {
       );
 
       expect(exitCode).toBe(0);
-      expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "open" });
+      expect(mockUpdate).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();
     });
 
-    it("resets bead status from 'closed' to 'open'", async () => {
+    it("does not reset bead status from 'closed'", async () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
       mockShow.mockResolvedValue(makeBead({ status: "closed" }));
@@ -263,7 +266,7 @@ describe("foreman retry", () => {
       );
 
       expect(exitCode).toBe(0);
-      expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "open" });
+      expect(mockUpdate).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();
     });
@@ -315,6 +318,25 @@ describe("foreman retry", () => {
       await retryAction("bd-test", {}, beadsClient, store, tmpDir);
 
       expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "open" });
+
+      consoleSpy.mockRestore();
+    });
+
+    it("resets native task status when task is 'in-progress' with stuck run", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      mockShow.mockResolvedValue(makeBead({ status: "in-progress" }));
+
+      createTestRun(store, projectId, {
+        seedId: "bd-test",
+        status: "stuck",
+      });
+
+      const { retryAction } = await import("../commands/retry.js");
+      await retryAction("bd-test", {}, beadsClient, store, tmpDir, undefined, "native");
+
+      expect(mockResetToReady).toHaveBeenCalledWith("bd-test");
+      expect(mockUpdate).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();
     });
@@ -407,7 +429,7 @@ describe("foreman retry", () => {
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("reset");
-      expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "open" });
+      expect(mockUpdate).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();
     });
@@ -427,7 +449,7 @@ describe("foreman retry", () => {
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("reset");
-      expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "open" });
+      expect(mockUpdate).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();
     });
@@ -447,6 +469,7 @@ describe("foreman retry", () => {
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("reset");
+      expect(mockUpdate).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();
     });
@@ -468,6 +491,24 @@ describe("foreman retry", () => {
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("reset");
+      expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "open" });
+
+      consoleSpy.mockRestore();
+    });
+
+    it("keeps beads-style blocked seeds on the open path", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      mockShow.mockResolvedValue(makeBead({ status: "blocked" }));
+
+      createTestRun(store, projectId, {
+        seedId: "bd-test",
+        status: "test-failed",
+      });
+
+      const { retryAction } = await import("../commands/retry.js");
+      await retryAction("bd-test", {}, beadsClient, store, tmpDir, undefined, "beads");
+
       expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "open" });
 
       consoleSpy.mockRestore();

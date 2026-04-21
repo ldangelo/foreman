@@ -12,10 +12,10 @@ import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue.js";
 import type { ITaskClient } from "../lib/task-client.js";
-import { findMissingPrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
+import { findMissingPrompts, findStalePrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
 import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
-import { loadProjectConfig } from "../lib/project-config.js";
+import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
 
@@ -319,6 +319,15 @@ export class Doctor {
   }
 
   async checkGitTownMainBranch(): Promise<CheckResult> {
+    const configuredProjectBranch = loadProjectConfig(this.projectPath)?.defaultBranch;
+    if (configuredProjectBranch) {
+      return {
+        name: "git town main branch configured",
+        status: "skip",
+        message: `Skipped: Foreman defaultBranch is configured as ${configuredProjectBranch}`,
+      };
+    }
+
     // Skip if git town is not installed
     const installed = await this.checkGitTownInstalled();
     if (installed.status !== "pass") {
@@ -355,7 +364,11 @@ export class Doctor {
 
     let defaultBranch: string;
     try {
-      defaultBranch = await (await this.getVcsBackend()).detectDefaultBranch(this.projectPath);
+      defaultBranch = await resolveDefaultBranch(
+        this.projectPath,
+        async (projectPath) => (await this.getVcsBackend()).detectDefaultBranch(projectPath),
+        loadProjectConfig(this.projectPath),
+      );
     } catch {
       return {
         name: "git town main branch configured",
@@ -574,8 +587,10 @@ export class Doctor {
     const { fix = false, dryRun = false } = opts;
 
     const missing = findMissingPrompts(this.projectPath);
+    const stale = findStalePrompts(this.projectPath);
+    const problemCount = missing.length + stale.length;
 
-    if (missing.length === 0) {
+    if (problemCount === 0) {
       return {
         name: "prompt templates (.foreman/prompts/)",
         status: "pass",
@@ -584,32 +599,40 @@ export class Doctor {
     }
 
     const missingList = missing.join(", ");
+    const staleList = stale.join(", ");
 
     if (dryRun) {
       return {
         name: "prompt templates (.foreman/prompts/)",
         status: "fail",
-        message: `${missing.length} missing prompt file(s): ${missingList}. Would reinstall (dry-run).`,
+        message:
+          `${problemCount} prompt issue(s): ` +
+          [
+            missing.length > 0 ? `missing: ${missingList}` : "",
+            stale.length > 0 ? `stale: ${staleList}` : "",
+          ].filter(Boolean).join("; ") +
+          ". Would reinstall (dry-run).",
       };
     }
 
     if (fix) {
       try {
-        const { installed } = installBundledPrompts(this.projectPath, false);
+        const { installed } = installBundledPrompts(this.projectPath, true);
         // Re-check after install
         const stillMissing = findMissingPrompts(this.projectPath);
-        if (stillMissing.length === 0) {
+        const stillStale = findStalePrompts(this.projectPath);
+        if (stillMissing.length === 0 && stillStale.length === 0) {
           return {
             name: "prompt templates (.foreman/prompts/)",
             status: "fixed",
-            message: `${missing.length} missing prompt file(s)`,
+            message: `${problemCount} prompt issue(s)`,
             fixApplied: `Installed ${installed.length} prompt file(s) from bundled defaults`,
           };
         } else {
           return {
             name: "prompt templates (.foreman/prompts/)",
             status: "fail",
-            message: `${stillMissing.length} prompt file(s) still missing after reinstall: ${stillMissing.join(", ")}`,
+            message: `Prompt issues remain after reinstall: missing=${stillMissing.join(", ")} stale=${stillStale.join(", ")}`,
           };
         }
       } catch (err: unknown) {
@@ -625,7 +648,13 @@ export class Doctor {
     return {
       name: "prompt templates (.foreman/prompts/)",
       status: "fail",
-      message: `${missing.length} missing prompt file(s): ${missingList}. Run 'foreman init' or 'foreman doctor --fix' to reinstall.`,
+      message:
+        `${problemCount} prompt issue(s): ` +
+        [
+          missing.length > 0 ? `missing: ${missingList}` : "",
+          stale.length > 0 ? `stale: ${staleList}` : "",
+        ].filter(Boolean).join("; ") +
+        ". Run 'foreman init' or 'foreman doctor --fix' to reinstall.",
     };
   }
 
@@ -1151,7 +1180,11 @@ export class Doctor {
     // Detect the default branch once; fall back gracefully on errors.
     let defaultBranch: string;
     try {
-      defaultBranch = await (await this.getVcsBackend()).detectDefaultBranch(this.projectPath);
+      defaultBranch = await resolveDefaultBranch(
+        this.projectPath,
+        async (projectPath) => (await this.getVcsBackend()).detectDefaultBranch(projectPath),
+        loadProjectConfig(this.projectPath),
+      );
     } catch {
       defaultBranch = "main";
     }
@@ -1844,6 +1877,85 @@ export class Doctor {
   }
 
   /**
+   * Check for merge queue entries that are already resolved.
+   *
+   * These are entries whose corresponding run is already terminal-successful
+   * (merged/completed/pr-created) or whose branch has already landed on the
+   * default branch. They should be removed rather than retried.
+   */
+  async checkResolvedMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+
+    if (!this.mergeQueue) {
+      return { name: "resolved merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
+    }
+
+    let defaultBranch = "main";
+    try {
+      defaultBranch = await resolveDefaultBranch(
+        this.projectPath,
+        async (projectPath) => (await this.getVcsBackend()).detectDefaultBranch(projectPath),
+        loadProjectConfig(this.projectPath),
+      );
+    } catch {
+      // fall back to main
+    }
+
+    const entries = this.mergeQueue.list();
+    const resolvedEntries: MergeQueueEntry[] = [];
+
+    for (const entry of entries) {
+      const run = this.store.getRun(entry.run_id);
+      if (run && (run.status === "merged" || run.status === "completed" || run.status === "pr-created")) {
+        resolvedEntries.push(entry);
+        continue;
+      }
+
+      if (await this.isBranchMerged(entry.seed_id, defaultBranch)) {
+        resolvedEntries.push(entry);
+      }
+    }
+
+    if (resolvedEntries.length === 0) {
+      return { name: "resolved merge queue entries", status: "pass", message: "No already-resolved merge queue entries" };
+    }
+
+    const details = resolvedEntries
+      .slice(0, 5)
+      .map((entry) => `${entry.seed_id} (${entry.status})`)
+      .join(", ");
+    const truncated = resolvedEntries.length > 5 ? ` … +${resolvedEntries.length - 5} more` : "";
+
+    if (dryRun) {
+      return {
+        name: "resolved merge queue entries",
+        status: "warn",
+        message: `Found ${resolvedEntries.length} already-resolved merge queue entr${resolvedEntries.length === 1 ? "y" : "ies"}. Would remove (dry-run).`,
+        details: details + truncated,
+      };
+    }
+
+    if (fix) {
+      for (const entry of resolvedEntries) {
+        this.mergeQueue.remove(entry.id);
+      }
+      return {
+        name: "resolved merge queue entries",
+        status: "fixed",
+        message: `Removed ${resolvedEntries.length} already-resolved merge queue entr${resolvedEntries.length === 1 ? "y" : "ies"}`,
+        fixApplied: `Deleted merge queue entries: ${details}${truncated}`,
+      };
+    }
+
+    return {
+      name: "resolved merge queue entries",
+      status: "warn",
+      message: `Found ${resolvedEntries.length} already-resolved merge queue entr${resolvedEntries.length === 1 ? "y" : "ies"}. Use --fix to remove them.`,
+      details: details + truncated,
+    };
+  }
+
+  /**
    * Check for merge queue entries stuck in conflict/failed for >1h (MQ-012).
    */
   async checkStuckConflictFailedEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
@@ -1904,14 +2016,15 @@ export class Doctor {
    * Run all merge queue health checks.
    */
   async checkMergeQueueHealth(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
-    const [stale, duplicates, orphaned, notQueued, stuckConflictFailed] = await Promise.all([
+    const [stale, duplicates, orphaned, notQueued, resolved, stuckConflictFailed] = await Promise.all([
       this.checkStaleMergeQueueEntries(opts),
       this.checkDuplicateMergeQueueEntries(opts),
       this.checkOrphanedMergeQueueEntries(opts),
       this.checkCompletedRunsNotQueued({ fix: opts.fix, dryRun: opts.dryRun, projectPath: opts.projectPath }),
+      this.checkResolvedMergeQueueEntries(opts),
       this.checkStuckConflictFailedEntries(opts),
     ]);
-    return [stale, duplicates, orphaned, notQueued, stuckConflictFailed];
+    return [stale, duplicates, orphaned, notQueued, resolved, stuckConflictFailed];
   }
 
   /**

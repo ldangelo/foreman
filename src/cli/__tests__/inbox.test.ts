@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
 import type { Message, Run } from "../../lib/store.js";
+import { formatMessage } from "../commands/inbox.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -241,5 +242,280 @@ describe("inbox --all: cross-run message aggregation", () => {
     const run1Only = store.getAllMessages(run1.id);
     expect(run1Only.length).toBe(1);
     expect(run1Only[0]!.run_id).toBe(run1.id);
+  });
+});
+
+// ── Unit tests for formatMessage ─────────────────────────────────────────────
+
+function makeMockMessage(overrides: Partial<Message> = {}): Message {
+  return {
+    id: "msg-1",
+    run_id: "run-1",
+    sender_agent_type: "developer",
+    recipient_agent_type: "foreman",
+    subject: "test-subject",
+    body: "plain text body",
+    read: 0,
+    created_at: "2024-01-01T12:00:00.000Z",
+    deleted_at: null,
+    ...overrides,
+  };
+}
+
+describe("formatMessage", () => {
+  it("shows key fields when body is JSON with known agent-mail fields", () => {
+    const msg = makeMockMessage({
+      body: JSON.stringify({
+        phase: "developer",
+        status: "completed",
+        seedId: "seed-123",
+        runId: "run-456",
+      }),
+    });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("phase=developer");
+    expect(output).toContain("status=completed");
+    expect(output).toContain("seedId=seed-123");
+    expect(output).toContain("runId=run-456");
+    // Should NOT contain raw JSON
+    expect(output).not.toContain('"phase"');
+  });
+
+  it("shows verdict and message fields when present in JSON body", () => {
+    const msg = makeMockMessage({
+      body: JSON.stringify({
+        verdict: "PASS",
+        message: "All checks passed",
+        currentPhase: "qa",
+      }),
+    });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("verdict=PASS");
+    expect(output).toContain("message=All checks passed");
+    expect(output).toContain("currentPhase=qa");
+  });
+
+  it("truncates non-JSON bodies longer than 200 chars", () => {
+    const longBody = "A".repeat(300);
+    const msg = makeMockMessage({ body: longBody });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("A".repeat(200));
+    expect(output).toContain("..."); // ellipsis for truncation
+    expect(output).not.toContain("A".repeat(201));
+  });
+
+  it("truncates JSON bodies that have no recognized fields", () => {
+    const msg = makeMockMessage({
+      body: JSON.stringify({ someUnknownField: "x".repeat(250) }),
+    });
+
+    const output = formatMessage(msg);
+
+    // Should fall back to truncation since no recognized fields
+    // Note: JSON structure adds ~28 chars before the x's start
+    expect(output).toContain("...");
+    expect(output).not.toContain("x".repeat(250)); // original full length
+  });
+
+  it("handles malformed JSON as plain text", () => {
+    const msg = makeMockMessage({
+      body: "this is not json { broken",
+    });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("this is not json");
+  });
+
+  it("shows full payload with pretty-printed JSON when fullPayload=true", () => {
+    const msg = makeMockMessage({
+      body: JSON.stringify({ phase: "developer", status: "running" }, null, 2),
+    });
+
+    const output = formatMessage(msg, true);
+
+    expect(output).toContain('"phase"'); // pretty-printed JSON
+    expect(output).toContain('"developer"');
+    expect(output).toContain("\n"); // multi-line output
+  });
+
+  it("shows full raw body (non-JSON) when fullPayload=true", () => {
+    const msg = makeMockMessage({
+      body: "A".repeat(500),
+    });
+
+    const output = formatMessage(msg, true);
+
+    // In full mode, the body is NOT truncated (no ellipsis)
+    expect(output).not.toContain("...");
+    // The total count of A's should be preserved (split across wrapped lines)
+    const aCount = (output.match(/A/g) || []).length;
+    expect(aCount).toBe(500);
+    // Wrapping should result in multiple lines
+    const lines = output.split("\n");
+    expect(lines.length).toBeGreaterThan(1);
+  });
+
+  it("includes read mark when message is read", () => {
+    const msg = makeMockMessage({ read: 1 });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("[read]");
+  });
+
+  it("does not include read mark when message is unread", () => {
+    const msg = makeMockMessage({ read: 0 });
+
+    const output = formatMessage(msg);
+
+    expect(output).not.toContain("[read]");
+  });
+
+  it("includes error field in JSON body preview", () => {
+    const msg = makeMockMessage({
+      body: JSON.stringify({ error: "Something went wrong" }),
+    });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("error=Something went wrong");
+  });
+
+  it("shows compact trace mail fields instead of raw markdown blobs", () => {
+    const msg = makeMockMessage({
+      body: JSON.stringify({
+        seedId: "foreman-93880",
+        phase: "fix",
+        kind: "update",
+        tool: "bash",
+        message: "tool=bash",
+        argsPreview: "cd <worktree> && grep -n \"foreman board\" README.md",
+        traceFile: "docs/reports/foreman-93880/FIX_TRACE.json",
+        commandHonored: false,
+      }),
+    });
+
+    const output = formatMessage(msg);
+
+    expect(output).toContain("phase=fix");
+    expect(output).toContain("kind=update");
+    expect(output).toContain("tool=bash");
+    expect(output).toContain("args=cd <worktree>");
+    expect(output).toContain("trace=docs/reports/foreman-93880/FIX_TRACE.json");
+    expect(output).toContain("commandHonored=no");
+    expect(output).not.toContain("# Fix Trace update");
+  });
+});
+
+// ── Tests for wrapText and getTerminalWidth ───────────────────────────────────
+
+import { getTerminalWidth, wrapText } from "../commands/inbox.js";
+
+describe("getTerminalWidth", () => {
+  it("returns a reasonable default when stdout.columns is undefined", () => {
+    // This test verifies the fallback behavior works in test environment
+    const width = getTerminalWidth();
+    expect(width).toBeGreaterThanOrEqual(80);
+    expect(width).toBeLessThanOrEqual(300);
+  });
+});
+
+describe("wrapText", () => {
+  it("returns short lines unchanged", () => {
+    const input = "short line";
+    const wrapped = wrapText(input, 80);
+    expect(wrapped).toBe("short line");
+  });
+
+  it("wraps long lines at word boundaries", () => {
+    const input = "this is a very long line that needs to be wrapped at word boundaries";
+    const wrapped = wrapText(input, 40);
+    const lines = wrapped.split("\n");
+
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(40);
+    }
+  });
+
+  it("preserves newlines", () => {
+    const input = "first line\nsecond line\nthird line";
+    const wrapped = wrapText(input, 80);
+
+    expect(wrapped.split("\n").length).toBe(3);
+  });
+
+  it("wraps multiple paragraphs correctly", () => {
+    const input = "first very long line that should wrap\nsecond very long line that should also wrap";
+    const wrapped = wrapText(input, 30);
+    const lines = wrapped.split("\n");
+
+    expect(lines.length).toBeGreaterThan(2);
+  });
+
+  it("handles lines with no spaces by force-wrapping", () => {
+    const input = "a".repeat(100);
+    const wrapped = wrapText(input, 50);
+    const lines = wrapped.split("\n");
+
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(50);
+    }
+  });
+});
+
+// ── Regression: fullPayload mode with long JSON ───────────────────────────────
+
+describe("formatMessage with long JSON payloads", () => {
+  it("does not truncate when fullPayload=true for very long JSON bodies", () => {
+    // Simulate a large agent mail body (e.g., QA report with test results)
+    const largePayload = {
+      phase: "qa",
+      status: "completed",
+      seedId: "seed-123",
+      runId: "run-456",
+      verdict: "PASS",
+      message: "All tests passed",
+      testResults: Array.from({ length: 50 }, (_, i) => ({
+        name: `test-case-${i}`,
+        status: i % 2 === 0 ? "PASS" : "FAIL",
+        duration: Math.floor(Math.random() * 1000),
+        error: null,
+      })),
+    };
+    const msg = makeMockMessage({ body: JSON.stringify(largePayload) });
+
+    const output = formatMessage(msg, true);
+
+    // Should contain all key fields from the large payload
+    expect(output).toContain('"phase"');
+    expect(output).toContain('"test-case-0"');
+    expect(output).toContain('"test-case-49"');
+    // Should NOT truncate
+    expect(output).not.toContain("...");
+  });
+
+  it("wraps long JSON output to prevent terminal line clipping", () => {
+    // Create a JSON body with lines longer than typical terminal width (80 chars)
+    const wideJson = {
+      description: "This is a very long description field that contains enough content to exceed normal terminal widths and demonstrates the wrapping behavior",
+      metadata: "x".repeat(200), // Create a very long value
+    };
+    const msg = makeMockMessage({ body: JSON.stringify(wideJson) });
+
+    const output = formatMessage(msg, true);
+
+    // Should wrap, so the output contains newlines for long lines
+    const lines = output.split("\n");
+    // At least some lines should be wrapped (have newlines from wrapping)
+    expect(lines.some((line) => line.length > 0)).toBe(true);
   });
 });

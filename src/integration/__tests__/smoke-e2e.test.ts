@@ -34,14 +34,14 @@ async function waitForStatuses(
 }
 
 async function driveMergeQueueUntil(
-  harness: { drainMergeQueue: () => Promise<void>; getRunStatuses: () => string[] },
+  harness: { drainMergeQueue: () => Promise<void>; getRunStatuses: () => Promise<string[]> },
   predicate: (statuses: string[]) => boolean,
   timeoutMs = 60_000,
 ): Promise<string[]> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     await harness.drainMergeQueue();
-    const statuses = harness.getRunStatuses();
+    const statuses = await harness.getRunStatuses();
     if (predicate(statuses)) {
       return statuses;
     }
@@ -75,7 +75,7 @@ describe("deterministic smoke e2e", () => {
       process.env.FOREMAN_TASK_STORE = "native";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
 
-      harness.seedTask({
+      await harness.seedTask({
         title: "Smoke write test.txt",
         scenario: {
           kind: "create",
@@ -109,7 +109,7 @@ describe("deterministic smoke e2e", () => {
       process.env.FOREMAN_TASK_STORE = "native";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
 
-      harness.seedTask({
+      await harness.seedTask({
         title: "Conflict A",
         scenario: {
           kind: "replace",
@@ -117,7 +117,7 @@ describe("deterministic smoke e2e", () => {
           content: "conflict-a\n",
         },
       });
-      harness.seedTask({
+      await harness.seedTask({
         title: "Conflict B",
         scenario: {
           kind: "replace",
@@ -132,12 +132,12 @@ describe("deterministic smoke e2e", () => {
       const statuses = await driveMergeQueueUntil(
         harness,
         (values) => values.filter((status) => status === "merged").length === 1
-          && values.some((status) => status === "failed" || status === "conflict")
+          && values.some((status) => status === "failed" || status === "conflict" || status === "pr-created")
           && ["conflict-a\n", "conflict-b\n"].includes(harness.readRepoFile("test.txt")),
         90_000,
       );
       expect(statuses.filter((status) => status === "merged")).toHaveLength(1);
-      expect(statuses.some((status) => status === "failed" || status === "conflict")).toBe(true);
+      expect(statuses.some((status) => status === "failed" || status === "conflict" || status === "pr-created")).toBe(true);
       expect(["conflict-a\n", "conflict-b\n"]).toContain(harness.readRepoFile("test.txt"));
     } finally {
       harness.cleanup();

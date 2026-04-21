@@ -147,6 +147,7 @@ function makeMockStore(opts: {
     hasNativeTasks: vi.fn().mockReturnValue(opts.hasNativeTasks ?? false),
     getReadyTasks: vi.fn().mockReturnValue(opts.nativeTasks ?? []),
     getTaskByExternalId: vi.fn().mockReturnValue(opts.externalIdTask ?? null),
+    getTaskById: vi.fn().mockReturnValue(null),
     claimTask: vi.fn().mockReturnValue(opts.claimResult ?? true),
     // Other methods used in dispatch flow
     createRun: vi.fn().mockReturnValue({ id: "run-001", project_id: "proj-1", seed_id: "" }),

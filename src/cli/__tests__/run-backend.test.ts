@@ -41,9 +41,23 @@ const {
       activeAgents: 0,
     });
   });
+  // Instance + static methods needed by task-client-factory.ts
+  // hasNativeTasks returns false so selectTaskReadBackend picks 'beads' backend
+  const mockInstance = {
+    close: vi.fn(),
+    isOpen: vi.fn().mockReturnValue(true),
+    hasNativeTasks: vi.fn().mockReturnValue(false),
+  };
   const MockForemanStore = vi.fn(function MockForemanStoreImpl(this: Record<string, unknown>) {
+    Object.assign(this, mockInstance);
     this.close = vi.fn();
-  });
+  }) as unknown as ReturnType<typeof vi.fn> & {
+    forProject: ReturnType<typeof vi.fn>;
+    open: ReturnType<typeof vi.fn>;
+  };
+  // Static methods called by task-client-factory.ts during backend selection
+  MockForemanStore.forProject = vi.fn().mockReturnValue(mockInstance);
+  MockForemanStore.open = vi.fn().mockReturnValue(mockInstance);
   const mockVcsCreate = vi.fn().mockResolvedValue({
     getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
   });

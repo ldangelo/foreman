@@ -151,14 +151,14 @@ Pipeline Integration:
 **3h** | [satisfies REQ-003, REQ-006]
 - Validates PRD ACs: AC-003.1, AC-003.2, AC-003.3, AC-006.1, AC-006.2, AC-006.3
 - Implementation ACs:
-  - Given valid task fields, when `NativeTaskStore.create({title, description, type, priority})` is called, then a UUID v4 is generated, the task is inserted with `status='backlog'`, and the created task is returned
+  - Given valid task fields, when `NativeTaskStore.create({title, description, type, priority})` is called, then a compact `<project-id>-<5 hex>` ID is generated, the task is inserted with `status='backlog'`, and the created task is returned
   - Given an invalid status value, when an insert or update is attempted, then an `InvalidTaskStatusError` is thrown before the SQL executes (TypeScript-layer validation using a const enum of valid statuses)
   - Given a priority outside 0-4, when `create()` is called, then an `InvalidPriorityError` is thrown
   - Given a type not in the valid set, when `create()` is called, then an `InvalidTaskTypeError` is thrown
 
 #### TRD-003-TEST: Unit tests for NativeTaskStore.create() and validation
 **2h** | [verifies TRD-003] [satisfies REQ-003, REQ-006] [depends: TRD-003]
-- Test: create() generates UUID v4 and inserts with `status='backlog'`
+- Test: create() generates a compact project-prefixed ID and inserts with `status='backlog'`
 - Test: create() with all optional fields populates them correctly
 - Test: invalid status throws `InvalidTaskStatusError`
 - Test: priority outside 0-4 throws `InvalidPriorityError`

@@ -72,6 +72,8 @@ export interface Run {
   tmux_session?: string | null;
   /** Branch that this seed's worktree was branched from (null = default branch). Used for branch stacking. */
   base_branch?: string | null;
+  /** Per-run merge strategy: 'auto' (refinery), 'pr' (gh pr create), or 'none' (skip). */
+  merge_strategy?: "auto" | "pr" | "none" | null;
 }
 
 export interface Cost {
@@ -100,9 +102,17 @@ export type EventType =
   | "merge-queue-dequeue"
   | "merge-queue-resolve"
   | "merge-queue-fallback"
+  | "merge-cleanup-fallback"
   | "sentinel-start"
   | "sentinel-pass"
-  | "sentinel-fail";
+  | "sentinel-fail"
+  | "heartbeat"
+  | "guardrail-veto"
+  | "guardrail-corrected"
+  | "worktree-rebased"
+  | "worktree-rebase-failed"
+  | "phase-start"
+  | "phase-complete";
 
 export interface Event {
   id: string;
@@ -348,6 +358,7 @@ CREATE TABLE IF NOT EXISTS merge_queue (
   branch_name TEXT NOT NULL,
   seed_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
+  operation TEXT NOT NULL DEFAULT 'auto_merge',
   agent_name TEXT,
   files_modified TEXT DEFAULT '[]',
   enqueued_at TEXT NOT NULL,
@@ -514,6 +525,7 @@ const MIGRATIONS = [
   `ALTER TABLE runs ADD COLUMN progress TEXT DEFAULT NULL`,
   `ALTER TABLE runs RENAME COLUMN bead_id TO seed_id`,
   `ALTER TABLE runs ADD COLUMN tmux_session TEXT DEFAULT NULL`,
+  `ALTER TABLE runs ADD COLUMN merge_strategy TEXT DEFAULT 'auto'`,
   `CREATE TABLE IF NOT EXISTS sentinel_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL UNIQUE,
@@ -544,6 +556,7 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS idx_sentinel_runs_project ON sentinel_runs (project_id, started_at DESC)`,
   `ALTER TABLE merge_queue ADD COLUMN retry_count INTEGER DEFAULT 0`,
   `ALTER TABLE merge_queue ADD COLUMN last_attempted_at TEXT DEFAULT NULL`,
+  `ALTER TABLE merge_queue ADD COLUMN operation TEXT DEFAULT 'auto_merge'`,
   `CREATE TABLE IF NOT EXISTS merge_agent_config (
     id TEXT PRIMARY KEY DEFAULT 'default',
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -787,6 +800,10 @@ export class ForemanStore {
     return this.db;
   }
 
+  isOpen(): boolean {
+    return (this.db as unknown as { open: boolean }).open;
+  }
+
   close(): void {
     this.db.close();
   }
@@ -902,7 +919,7 @@ export class ForemanStore {
     seedId: string,
     agentType: Run["agent_type"],
     worktreePath?: string,
-    opts?: { baseBranch?: string | null },
+    opts?: { baseBranch?: string | null; mergeStrategy?: Run["merge_strategy"] },
   ): Run {
     const now = new Date().toISOString();
     const run: Run = {
@@ -919,11 +936,12 @@ export class ForemanStore {
       progress: null,
       tmux_session: null,
       base_branch: opts?.baseBranch ?? null,
+      merge_strategy: opts?.mergeStrategy ?? 'auto',
     };
     this.db
       .prepare(
-        `INSERT INTO runs (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch)
-         VALUES (@id, @project_id, @seed_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at, @base_branch)`
+        `INSERT INTO runs (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch, merge_strategy)
+         VALUES (@id, @project_id, @seed_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at, @base_branch, @merge_strategy)`
       )
       .run(run);
     return run;
@@ -931,7 +949,7 @@ export class ForemanStore {
 
   updateRun(
     id: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch">>
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch" | "merge_strategy">>
   ): void {
     const fields: string[] = [];
     const values: Record<string, unknown> = { id };
@@ -1902,6 +1920,23 @@ export class ForemanStore {
       return (row?.cnt ?? 0) > 0;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Look up a native task by its `id` column.
+   *
+   * Falls back when getTaskByExternalId misses because the task has no external_id set.
+   */
+  getTaskById(id: string): NativeTask | null {
+    try {
+      return (
+        (this.db
+          .prepare("SELECT * FROM tasks WHERE id = ? LIMIT 1")
+          .get(id) as NativeTask | undefined) ?? null
+      );
+    } catch {
+      return null;
     }
   }
 

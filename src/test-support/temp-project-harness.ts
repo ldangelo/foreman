@@ -20,10 +20,10 @@ interface SeedTaskOptions {
 export interface TempProjectHarness {
   projectPath: string;
   cleanup(): void;
-  seedTask(opts: SeedTaskOptions): string;
-  addDependency(blockedTaskId: string, blockerTaskId: string): void;
-  getTaskStatus(taskId: string): string | null;
-  getRunStatuses(): string[];
+  seedTask(opts: SeedTaskOptions): Promise<string>;
+  addDependency(blockedTaskId: string, blockerTaskId: string): Promise<void>;
+  getTaskStatus(taskId: string): Promise<string | null>;
+  getRunStatuses(): Promise<string[]>;
   waitForRunCount(count: number, timeoutMs?: number): Promise<void>;
   waitForTerminalRuns(count: number, timeoutMs?: number): Promise<void>;
   drainMergeQueue(): Promise<void>;
@@ -32,6 +32,11 @@ export interface TempProjectHarness {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableStoreError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /disk I\/O error|database is locked|SQLITE_BUSY|SQLITE_IOERR/i.test(message);
 }
 
 function readLogTail(homeDir: string | undefined): string {
@@ -47,13 +52,25 @@ function readLogTail(homeDir: string | undefined): string {
   }).join("\n");
 }
 
-function withStore<T>(projectPath: string, fn: (store: ForemanStore, taskStore: NativeTaskStore) => T): T {
-  const store = ForemanStore.forProject(projectPath);
-  try {
-    return fn(store, new NativeTaskStore(store.getDb()));
-  } finally {
-    store.close();
+async function withStore<T>(projectPath: string, fn: (store: ForemanStore, taskStore: NativeTaskStore) => T | Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const store = ForemanStore.forProject(projectPath);
+      try {
+        return await fn(store, new NativeTaskStore(store.getDb()));
+      } finally {
+        store.close();
+      }
+    } catch (err) {
+      lastError = err;
+      if (attempt === 5 || !isRetryableStoreError(err)) {
+        throw err;
+      }
+      await sleep(200);
+    }
   }
+  throw lastError;
 }
 
 function initGitRepo(projectPath: string): void {
@@ -90,7 +107,7 @@ export function createTempProjectHarness(): TempProjectHarness {
   installBundledPrompts(projectPath, true);
   installBundledWorkflows(projectPath, true);
 
-  withStore(projectPath, (store) => {
+  void withStore(projectPath, (store) => {
     store.registerProject("temp-project", projectPath);
   });
 
@@ -117,7 +134,7 @@ export function createTempProjectHarness(): TempProjectHarness {
       });
     },
     addDependency(blockedTaskId, blockerTaskId) {
-      withStore(projectPath, (_store, taskStore) => {
+      return withStore(projectPath, (_store, taskStore) => {
         taskStore.update(blockedTaskId, { status: "blocked", force: true });
         taskStore.addDependency(blockedTaskId, blockerTaskId, "blocks");
       });
@@ -139,7 +156,7 @@ export function createTempProjectHarness(): TempProjectHarness {
           projectPath,
           (store) => (store.getDb().prepare("SELECT COUNT(*) as count FROM runs").get() as { count: number }).count,
         );
-        if (runCount >= count) return;
+        if (await runCount >= count) return;
         await sleep(200);
       }
       throw new Error(
@@ -154,27 +171,25 @@ export function createTempProjectHarness(): TempProjectHarness {
           projectPath,
           (store) => store.getDb().prepare("SELECT status FROM runs ORDER BY created_at ASC, rowid ASC").all() as Array<{ status: string }>,
         );
-        if (runs.length >= count && runs.slice(0, count).every((run) => terminalStatuses.has(run.status))) {
+        const resolvedRuns = await runs;
+        if (resolvedRuns.length >= count && resolvedRuns.slice(0, count).every((run) => terminalStatuses.has(run.status))) {
           return;
         }
         await sleep(250);
       }
-      const currentStatuses = this.getRunStatuses().join(", ");
+      const resolvedStatuses = (await this.getRunStatuses()).join(", ");
       throw new Error(
-        `Timed out waiting for ${count} terminal run(s). Current statuses: ${currentStatuses}\n${readLogTail(process.env.HOME)}`,
+        `Timed out waiting for ${count} terminal run(s). Current statuses: ${resolvedStatuses}\n${readLogTail(process.env.HOME)}`,
       );
     },
     async drainMergeQueue() {
-      const store = ForemanStore.forProject(projectPath);
-      try {
+      await withStore(projectPath, async (store) => {
         await autoMerge({
           store,
           taskClient: new NativeTaskClient(projectPath),
           projectPath,
         });
-      } finally {
-        store.close();
-      }
+      });
     },
     readRepoFile(relativePath) {
       return readFileSync(join(projectPath, relativePath), "utf-8");

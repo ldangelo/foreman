@@ -68,6 +68,15 @@ const {
 });
 
 vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient }));
+// Skip runtime asset preflight — no prompts/workflows in test env
+vi.mock("../../lib/prompt-loader.js", () => ({
+  findMissingPrompts: () => [],
+  findStalePrompts: () => [],
+}));
+vi.mock("../../lib/workflow-loader.js", () => ({
+  findMissingWorkflows: () => [],
+  findStaleWorkflows: () => [],
+}));
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));

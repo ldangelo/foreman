@@ -878,6 +878,77 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.testFailures).toHaveLength(1);
     expect(enqueueCloseSeed).not.toHaveBeenCalled();
   });
+
+  // ── Race condition fix: overrideRun bypasses query ─────────────────────────
+
+  it("uses overrideRun to bypass query entirely when provided", async () => {
+    // This tests the fix for the auto-merge race condition where finalize marks
+    // a run as completed but the query hasn't seen the update yet.
+    // Using overrideRun bypasses the getCompletedRuns() query entirely.
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-override", seed_id: "seed-override", status: "completed" });
+
+    // getRunsByStatuses returns nothing (race condition scenario)
+    store.getRunsByStatuses.mockReturnValue([]);
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    // Pass overrideRun directly - this bypasses the query
+    const report = await refinery.mergeCompleted({
+      runTests: false,
+      projectId: "proj-1",
+      seedId: "seed-override",
+      overrideRun: run,
+    });
+
+    // Should successfully find and merge the run via overrideRun
+    expect(report.merged).toHaveLength(1);
+    expect(report.merged[0].seedId).toBe("seed-override");
+    // getRunsByStatuses should NOT be called when overrideRun is provided
+    expect(store.getRunsByStatuses).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call getRunsByStatuses when overrideRun is provided", async () => {
+    // When overrideRun is provided, the normal query should be skipped entirely
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-skip-query", seed_id: "seed-skip-query", status: "completed" });
+
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    const report = await refinery.mergeCompleted({
+      runTests: false,
+      seedId: "seed-skip-query",
+      overrideRun: run,
+    });
+
+    expect(report.merged).toHaveLength(1);
+    // getRunsByStatuses should NOT be called when overrideRun is provided
+    expect(store.getRunsByStatuses).not.toHaveBeenCalled();
+    // getRun should NOT be called when overrideRun is provided
+    expect(store.getRun).not.toHaveBeenCalled();
+  });
+
+  it("skips query and uses overrideRun even when seedId differs", async () => {
+    // When overrideRun is provided, the seedId parameter is still used for
+    // other purposes (like target branch resolution), but the run lookup is
+    // bypassed entirely.
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-seed-a", seed_id: "seed-a", status: "completed" });
+
+    // getRunsByStatuses returns nothing
+    store.getRunsByStatuses.mockReturnValue([]);
+    (removeWorktree as any).mockResolvedValue(undefined);
+
+    // seedId differs from run's seed_id, but overrideRun bypasses the check
+    const report = await refinery.mergeCompleted({
+      runTests: false,
+      seedId: "seed-b",
+      overrideRun: run,
+    });
+
+    // Should still merge because overrideRun bypasses seedId matching
+    expect(report.merged).toHaveLength(1);
+    expect(report.merged[0].seedId).toBe("seed-a");
+  });
 });
 
 // ── resolveConflict() bead close tests (bd-jpt4 fix) ─────────────────────────

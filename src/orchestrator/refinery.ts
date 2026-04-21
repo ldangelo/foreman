@@ -54,6 +54,18 @@ async function gh(args: string[], cwd: string): Promise<string> {
   return stdout.trim();
 }
 
+function shouldCreateFreshPrAfterReopenFailure(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("Could not open the pull request")
+    || message.includes("reopenPullRequest");
+}
+
+function shouldTreatLocalBranchDeleteFailureAsNonFatal(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("cannot delete branch")
+    && message.includes("used by worktree");
+}
+
 async function runTestCommand(command: string, cwd: string): Promise<{ ok: boolean; output: string }> {
   const [cmd, ...args] = command.split(/\s+/);
   try {
@@ -221,6 +233,296 @@ export class Refinery {
     } catch {
       // Non-fatal — mail is optional infrastructure
     }
+  }
+
+  private isTestRuntime(): boolean {
+    return (process.env.FOREMAN_RUNTIME_MODE ?? "").trim().toLowerCase() === "test";
+  }
+
+  private async getSeedContext(seedId: string): Promise<{ title: string; description: string }> {
+    let seedTitle = seedId;
+    let seedDescription = "";
+    try {
+      const seedInfo = await this.seeds.show(seedId);
+      if (seedInfo) {
+        seedTitle = seedInfo.title ?? seedId;
+        seedDescription = seedInfo.description ?? "";
+      }
+    } catch {
+      // Non-fatal — use defaults
+    }
+    return { title: seedTitle, description: seedDescription };
+  }
+
+  private async getExistingPrUrl(branchName: string): Promise<string | null> {
+    try {
+      const prUrl = await gh(["pr", "view", branchName, "--json", "url", "--jq", ".url"], this.projectPath);
+      return prUrl.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async getExistingPrState(branchName: string): Promise<{ state: string; headRefName?: string; url?: string } | null> {
+    try {
+      const prRaw = await gh(["pr", "view", branchName, "--json", "state,headRefName,url", "--jq", "."], this.projectPath);
+      const parsed = JSON.parse(prRaw) as { state?: string; headRefName?: string; url?: string };
+      if (!parsed.state) return null;
+      return {
+        state: parsed.state,
+        headRefName: parsed.headRefName,
+        url: parsed.url,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async finalizeSuccessfulMerge(run: import("../lib/store.js").Run, branchName: string, targetBranch: string): Promise<void> {
+    if (run.worktree_path) {
+      try {
+        await archiveWorktreeReports(this.projectPath, run.worktree_path, run.seed_id);
+      } catch {
+        // Archive is best-effort — don't block worktree removal
+      }
+      try {
+        await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
+      } catch {
+        // Non-fatal — worktree may already be gone
+      }
+    }
+
+    this.store.updateRun(run.id, {
+      status: "merged",
+      completed_at: new Date().toISOString(),
+    });
+    this.store.logEvent(
+      run.project_id,
+      "merge",
+      { seedId: run.seed_id, branchName, targetBranch },
+      run.id,
+    );
+
+    this.sendMail(run.id, "merge-complete", {
+      seedId: run.seed_id,
+      branchName,
+      targetBranch,
+    });
+
+    enqueueCloseSeed(this.store, run.seed_id, "refinery");
+    await this.closeNativeTaskPostMerge(run.id, run.seed_id);
+
+    this.sendMail(run.id, "bead-closed", {
+      seedId: run.seed_id,
+      branchName,
+      targetBranch,
+    });
+
+    await this.rebaseStackedBranches(branchName, targetBranch);
+  }
+
+  async ensurePullRequestForRun(opts: {
+    runId: string;
+    baseBranch?: string;
+    draft?: boolean;
+    updateRunStatus?: boolean;
+    bodyNote?: string;
+    existingOk?: boolean;
+  }): Promise<CreatedPr> {
+    const run = this.store.getRun(opts.runId);
+    if (!run) throw new Error(`Run ${opts.runId} not found`);
+
+    const baseBranch = opts.baseBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
+    const branchName = `foreman/${run.seed_id}`;
+
+    if (!this.isTestRuntime()) {
+      await this.vcsBackend.push(this.projectPath, branchName);
+    }
+
+    if (opts.existingOk !== false && !this.isTestRuntime()) {
+      const existingPr = await this.getExistingPrState(branchName);
+      if (existingPr?.headRefName === branchName && existingPr.url) {
+        let reopenedExistingPr = false;
+        if (existingPr.state === "CLOSED") {
+          try {
+            await gh(["pr", "reopen", existingPr.url], this.projectPath);
+            reopenedExistingPr = true;
+          } catch (err: unknown) {
+            if (!shouldCreateFreshPrAfterReopenFailure(err)) {
+              throw err;
+            }
+          }
+        }
+        if (existingPr.state !== "CLOSED" || reopenedExistingPr) {
+          this.store.logEvent(
+            run.project_id,
+            "pr-created",
+            {
+              seedId: run.seed_id,
+              branchName,
+              baseBranch,
+              prUrl: existingPr.url,
+              existing: true,
+              reopened: reopenedExistingPr,
+              draft: opts.draft ?? false,
+            },
+            run.id,
+          );
+          if (opts.updateRunStatus) {
+            this.store.updateRun(run.id, { status: "pr-created" });
+          }
+          return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPr.url };
+        }
+      }
+    }
+
+    const { title: seedTitle, description: seedDescription } = await this.getSeedContext(run.seed_id);
+    let commitLog = "";
+    try {
+      commitLog = await gitSpecial(
+        ["log", `${baseBranch}..${branchName}`, "--oneline"],
+        this.projectPath,
+      );
+    } catch {
+      // Non-fatal
+    }
+
+    const prTitle = `${seedTitle} (${run.seed_id})`;
+    const body = [
+      "## Summary",
+      seedDescription || `Agent work for ${run.seed_id}`,
+      opts.bodyNote ? `\n> ${opts.bodyNote}` : "",
+      "",
+      "## Commits",
+      commitLog ? `\`\`\`\n${commitLog}\n\`\`\`` : "(no commits)",
+      "",
+      `Foreman run: \`${run.id}\``,
+    ].join("\n");
+
+    const prUrl = this.isTestRuntime()
+      ? `foreman://pr/${run.seed_id}`
+      : await gh((() => {
+        const ghArgs = [
+          "pr", "create",
+          "--base", baseBranch,
+          "--head", branchName,
+          "--title", prTitle,
+          "--body", body,
+        ];
+        if (opts.draft) ghArgs.push("--draft");
+        return ghArgs;
+      })(), this.projectPath);
+
+    this.store.logEvent(
+      run.project_id,
+      "pr-created",
+      { seedId: run.seed_id, branchName, baseBranch, prUrl, draft: opts.draft ?? false, existing: false },
+      run.id,
+    );
+    if (opts.updateRunStatus) {
+      this.store.updateRun(run.id, { status: "pr-created" });
+    }
+
+    return { runId: run.id, seedId: run.seed_id, branchName, prUrl };
+  }
+
+  async mergePullRequest(opts: {
+    runId: string;
+    targetBranch?: string;
+  }): Promise<MergeReport> {
+    const merged: MergedRun[] = [];
+    const conflicts: ConflictRun[] = [];
+    const testFailures: FailedRun[] = [];
+    const unexpectedErrors: FailedRun[] = [];
+    const prsCreated: CreatedPr[] = [];
+
+    const run = this.store.getRun(opts.runId);
+    if (!run) {
+      unexpectedErrors.push({
+        runId: opts.runId,
+        seedId: "(unknown)",
+        branchName: "(unknown)",
+        error: "Run not found",
+      });
+      return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
+    }
+
+    const targetBranch = opts.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
+    const branchName = `foreman/${run.seed_id}`;
+
+    try {
+      const pr = await this.ensurePullRequestForRun({
+        runId: run.id,
+        baseBranch: targetBranch,
+        updateRunStatus: false,
+      });
+      prsCreated.push(pr);
+
+      if (this.isTestRuntime()) {
+        const report = await this.mergeCompleted({
+          targetBranch,
+          runTests: false,
+          projectId: run.project_id,
+          seedId: run.seed_id,
+          runId: run.id,
+        });
+        merged.push(...report.merged);
+        conflicts.push(...report.conflicts);
+        testFailures.push(...report.testFailures);
+        unexpectedErrors.push(...report.unexpectedErrors);
+      } else {
+        await gh(["pr", "merge", branchName, "--squash"], this.projectPath);
+
+        await this.finalizeSuccessfulMerge(run, branchName, targetBranch);
+
+        merged.push({
+          runId: run.id,
+          seedId: run.seed_id,
+          branchName,
+        });
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!this.isTestRuntime() && shouldTreatLocalBranchDeleteFailureAsNonFatal(err)) {
+        const existingPr = await this.getExistingPrState(branchName);
+        if (existingPr?.state === "MERGED") {
+          this.store.logEvent(
+            run.project_id,
+            "merge-cleanup-fallback",
+            { seedId: run.seed_id, branchName, error: message.slice(0, 400) },
+            run.id,
+          );
+          await this.finalizeSuccessfulMerge(run, branchName, targetBranch);
+          merged.push({
+            runId: run.id,
+            seedId: run.seed_id,
+            branchName,
+          });
+          return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
+        }
+      }
+      this.store.updateRun(run.id, { status: "failed" });
+      this.store.logEvent(
+        run.project_id,
+        "fail",
+        { seedId: run.seed_id, branchName, error: message },
+        run.id,
+      );
+      this.sendMail(run.id, "merge-failed", {
+        seedId: run.seed_id,
+        branchName,
+        reason: "unexpected-error",
+        error: message.slice(0, 400),
+      });
+      unexpectedErrors.push({
+        runId: run.id,
+        seedId: run.seed_id,
+        branchName,
+        error: message,
+      });
+    }
+
+    return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
   }
 
   /**
@@ -494,6 +796,20 @@ export class Refinery {
     testCommand?: string;
     projectId?: string;
     seedId?: string;
+    /**
+     * Optional pre-fetched run to bypass the getCompletedRuns() query entirely.
+     * When provided (e.g. from autoMerge's queue entry), this run is used directly
+     * instead of querying for completed runs. This eliminates the race condition
+     * where finalize marks a run completed but the query hasn't yet seen the update.
+     */
+    overrideRun?: import("../lib/store.js").Run;
+    /**
+     * Optional run ID to fetch the run directly by ID.
+     * When provided, the run is fetched using store.getRun(runId) which doesn't
+     * filter by status. This eliminates the race condition where the run status
+     * hasn't been updated to 'completed' yet when autoMerge queries.
+     */
+    runId?: string;
   }): Promise<MergeReport> {
     const defaultTargetBranch = normalizeBranchLabel(
       opts?.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath),
@@ -501,7 +817,24 @@ export class Refinery {
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
 
-    const rawRuns = this.getCompletedRuns(opts?.projectId, opts?.seedId);
+    // Determine the runs to process:
+    // 1. If runId is provided, fetch the run by ID directly (no status filter) - most reliable
+    // 2. Else if overrideRun is provided, use it directly
+    // 3. Else fall back to querying for completed runs
+    let rawRuns: import("../lib/store.js").Run[];
+    if (opts?.runId) {
+      // Fetch by ID directly - bypasses status check entirely.
+      // This is the most reliable path for immediate autoMerge calls because
+      // the status update happens before autoMerge is called, but due to SQLite
+      // WAL timing, the query might not see it immediately.
+      const fetchedRun = this.store.getRun(opts.runId);
+      rawRuns = fetchedRun ? [fetchedRun] : [];
+    } else if (opts?.overrideRun) {
+      rawRuns = [opts.overrideRun];
+    } else {
+      rawRuns = this.getCompletedRuns(opts?.projectId, opts?.seedId);
+    }
+
     const completedRuns = await this.orderByDependencies(rawRuns);
 
     const merged: MergedRun[] = [];
@@ -687,7 +1020,11 @@ export class Refinery {
         const squashMergeOk = true;
         try {
           await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
-          await this.vcsBackend.mergeWithoutCommit(this.projectPath, branchName, targetBranch);
+          const mergeResult = await this.vcsBackend.mergeWithoutCommit(this.projectPath, branchName, targetBranch);
+          if (!mergeResult.success) {
+            const conflictSummary = mergeResult.conflicts?.join(", ") || "merge conflict";
+            throw new Error(`Merge conflict: ${conflictSummary}`);
+          }
         } catch (mergeErr: unknown) {
           const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
 

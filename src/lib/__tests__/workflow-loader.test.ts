@@ -85,7 +85,7 @@ describe("validateWorkflowConfig", () => {
   });
 
   it("ignores unknown phase fields", () => {
-    const raw = { name: "w", phases: [{ name: "explorer", unknown: "field" }] };
+    const raw = { name: "w", phases: [{ name: "explorer", prompt: "explorer.md", unknown: "field" }] };
     const config = validateWorkflowConfig(raw, "w");
     expect(config.phases[0].name).toBe("explorer");
     // unknown fields are simply not included
@@ -409,16 +409,16 @@ describe("resolveWorkflowName", () => {
     expect(resolveWorkflowName("epic")).toBe("epic");
   });
 
-  it("returns 'default' for feature bead type", () => {
-    expect(resolveWorkflowName("feature")).toBe("default");
+  it("returns 'feature' for feature bead type (feature.yaml exists)", () => {
+    expect(resolveWorkflowName("feature")).toBe("feature");
   });
 
-  it("returns 'default' for bug bead type", () => {
-    expect(resolveWorkflowName("bug")).toBe("default");
+  it("returns 'bug' for bug bead type (bug.yaml exists — TRD-008)", () => {
+    expect(resolveWorkflowName("bug")).toBe("bug");
   });
 
-  it("returns 'default' for task bead type", () => {
-    expect(resolveWorkflowName("task")).toBe("default");
+  it("returns 'task' for task bead type (task.yaml exists)", () => {
+    expect(resolveWorkflowName("task")).toBe("task");
   });
 
   it("returns workflow label override when present", () => {
@@ -431,15 +431,24 @@ describe("resolveWorkflowName", () => {
   });
 
   it("ignores non-workflow labels", () => {
-    expect(resolveWorkflowName("feature", ["phase:explorer", "priority:high"])).toBe("default");
+    expect(resolveWorkflowName("feature", ["phase:explorer", "priority:high"])).toBe("feature");
   });
 
-  it("returns 'default' when labels array is empty", () => {
-    expect(resolveWorkflowName("feature", [])).toBe("default");
+  it("returns workflow when labels array is empty", () => {
+    expect(resolveWorkflowName("feature", [])).toBe("feature");
   });
 
-  it("returns 'default' when labels is undefined", () => {
-    expect(resolveWorkflowName("feature", undefined)).toBe("default");
+  it("returns workflow when labels is undefined", () => {
+    expect(resolveWorkflowName("feature", undefined)).toBe("feature");
+  });
+
+  it("ignores optional routing hints — uses type-based workflow when no workflow label", () => {
+    // bug.yaml exists → bug workflow
+    expect(resolveWorkflowName("bug", ["priority:high"])).toBe("bug");
+    // feature.yaml exists → feature workflow
+    expect(resolveWorkflowName("feature", ["priority:high"])).toBe("feature");
+    // no workflow label, no matching file → default
+    expect(resolveWorkflowName("unknown", ["priority:high"])).toBe("default");
   });
 });
 
@@ -454,6 +463,7 @@ describe("validateWorkflowConfig — models map", () => {
       phases: [
         {
           name: "developer",
+          prompt: "developer.md",
           models: { default: "sonnet", P0: "opus", P1: "sonnet" },
         },
         ...minimalPhases,
@@ -470,7 +480,7 @@ describe("validateWorkflowConfig — models map", () => {
   it("accepts models map with only 'default' key", () => {
     const raw = {
       name: "w",
-      phases: [{ name: "explorer", models: { default: "haiku" } }],
+      phases: [{ name: "explorer", prompt: "explorer.md", models: { default: "haiku" } }],
     };
     const config = validateWorkflowConfig(raw, "w");
     expect(config.phases[0].models).toEqual({ default: "haiku" });
@@ -503,7 +513,7 @@ describe("validateWorkflowConfig — models map", () => {
   it("coexists with legacy 'model' field (models takes precedence)", () => {
     const raw = {
       name: "w",
-      phases: [{ name: "developer", model: "haiku", models: { default: "sonnet" } }],
+      phases: [{ name: "developer", prompt: "developer.md", model: "haiku", models: { default: "sonnet" } }],
     };
     const config = validateWorkflowConfig(raw, "w");
     // Both fields are preserved; resolvePhaseModel() determines precedence
@@ -739,7 +749,9 @@ describe("validateWorkflowConfig — epic mode", () => {
     expect(config.phases.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("includes 'epic' in BUNDLED_WORKFLOW_NAMES", () => {
+  it("includes the bundled default/smoke/epic workflows", () => {
+    expect(BUNDLED_WORKFLOW_NAMES).toContain("default");
+    expect(BUNDLED_WORKFLOW_NAMES).toContain("smoke");
     expect(BUNDLED_WORKFLOW_NAMES).toContain("epic");
   });
 });

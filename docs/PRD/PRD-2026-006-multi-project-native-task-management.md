@@ -299,7 +299,7 @@ The system shall add a `tasks` table to each project's `.foreman/foreman.db` SQL
 
 ```sql
 CREATE TABLE IF NOT EXISTS tasks (
-  id          TEXT PRIMARY KEY,           -- UUID v4
+  id          TEXT PRIMARY KEY,           -- compact project-prefixed ID (e.g. foreman-abc12)
   title       TEXT NOT NULL,
   description TEXT,
   type        TEXT NOT NULL DEFAULT 'task',  -- task | bug | feature | epic | chore | docs | question
@@ -322,7 +322,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 - AC-003.1: `foreman init` (and any path that creates `.foreman/foreman.db`) runs the `tasks` and `task_dependencies` DDL migrations idempotently. Running `foreman init` on an existing project with an existing database adds the new tables without modifying existing data.
 - AC-003.2: The `status` column is constrained to the enumerated values listed above. Attempting to insert or update with an unknown status value raises a SQLite constraint error that propagates as a typed `InvalidTaskStatusError` in TypeScript.
-- AC-003.3: Task IDs are UUID v4 strings generated at creation time. The `id` field is immutable after creation.
+- AC-003.3: Task IDs use the compact `<project-id>-<5 hex>` format generated at creation time (for example `foreman-abc12`). The `id` field is immutable after creation.
 
 ---
 

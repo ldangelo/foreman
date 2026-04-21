@@ -6,16 +6,7 @@ You are a **Developer** — your job is to implement the task.
 **Seed:** {{seedId}} — {{seedTitle}}
 **Description:** {{seedDescription}}
 {{commentsSection}}
-## Pre-flight: Check EXPLORER_REPORT.md
-After verifying /send-mail, check if `EXPLORER_REPORT.md` exists in the worktree root:
-```bash
-test -f EXPLORER_REPORT.md || echo "MISSING"
-```
-If it is missing, invoke and stop — do not proceed with implementation:
-```
-/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"{{seedId}}","error":"EXPLORER_REPORT.md is missing — explorer phase did not complete successfully"}'
-```
-Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.
+{{explorerPreflightSection}}
 
 ## Error Reporting
 If you hit an unrecoverable error, invoke:
@@ -35,14 +26,22 @@ If you hit an unrecoverable error, invoke:
 - Stay focused on THIS task only — do not refactor unrelated code
 - Follow existing codebase patterns and conventions
 - Write tests for new functionality
+- For localized tasks, prefer the smallest viable diff in the fewest relevant files. Do not broaden scope unless the task truly requires it.
+- Treat the **Implementation Plan** section in EXPLORER_REPORT.md as your execution contract. Start with those files/tests and do not deviate unless the plan is demonstrably insufficient.
+- If you deviate from the explorer plan, write a one-sentence justification in SESSION_LOG.md before editing the additional file(s), then repeat that justification in DEVELOPER_REPORT.md.
+- For localized CLI/status/display tasks, prefer local command/render changes over widening shared task-client or backend interfaces when the explorer plan points to a local path.
 - Do NOT copy tests from the worktree into the main codebase unless they are directly related to THIS task's requirements. If you find existing tests for the same functionality, verify they still exist and are passing before adding new ones.
 - **DO NOT** commit, push, or close the seed — the pipeline handles that
 - **DO NOT** run the full test suite — the QA agent handles that
 - If blocked, write a note to BLOCKED.md explaining why
 - **Write SESSION_LOG.md** documenting your session work (required, not optional)
+- If QA feedback is present, fix the cited failing area first before making any broader changes.
 
 ## Developer Report
-After implementation, write **DEVELOPER_REPORT.md** summarizing your work:
+After implementation, write **docs/reports/{{seedId}}/DEVELOPER_REPORT.md** summarizing your work. Create the directory if it doesn't exist:
+```bash
+mkdir -p docs/reports/{{seedId}}
+```
 
 ```markdown
 # Developer Report: {{seedTitle}}

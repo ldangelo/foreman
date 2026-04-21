@@ -18,15 +18,15 @@
  */
 
 import { Command } from "commander";
-import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import {
   NativeTaskStore,
   parsePriority,
   priorityLabel,
+  formatTaskIdDisplay,
   TaskNotFoundError,
   InvalidStatusTransitionError,
   CircularDependencyError,
@@ -38,29 +38,37 @@ import { resolveProjectPathFromOptions } from "./project-task-support.js";
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Column widths for the task table. */
-const COL_ID = 10;
+const COL_ID = 16;
 const COL_TITLE = 40;
 const COL_TYPE = 10;
-const COL_PRI = 12;
+const COL_PRI = 14;
 const COL_STATUS = 14;
+const COL_GAP = "  ";
 
 function pad(str: string, width: number): string {
   return str.length >= width ? str.slice(0, width - 1) + "…" : str.padEnd(width);
 }
 
-function priorityChalk(priority: number): string {
-  const label = priorityLabel(priority);
+function renderColumn(
+  value: string,
+  width: number,
+  style: (text: string) => string = (text) => text,
+): string {
+  return style(pad(value, width));
+}
+
+function colorPriority(text: string, priority: number): string {
   switch (priority) {
     case 0:
-      return chalk.red(label);
+      return chalk.red(text);
     case 1:
-      return chalk.yellow(label);
+      return chalk.yellow(text);
     case 2:
-      return chalk.cyan(label);
+      return chalk.cyan(text);
     case 3:
-      return chalk.dim(label);
+      return chalk.dim(text);
     default:
-      return chalk.dim(label);
+      return chalk.dim(text);
   }
 }
 
@@ -99,30 +107,39 @@ function printTaskTable(rows: TaskRow[]): void {
   // Header
   console.log(
     chalk.bold(pad("ID", COL_ID)) +
+      COL_GAP +
       chalk.bold(pad("TITLE", COL_TITLE)) +
+      COL_GAP +
       chalk.bold(pad("TYPE", COL_TYPE)) +
+      COL_GAP +
       chalk.bold(pad("PRIORITY", COL_PRI)) +
+      COL_GAP +
       chalk.bold("STATUS"),
   );
-  console.log("─".repeat(COL_ID + COL_TITLE + COL_TYPE + COL_PRI + COL_STATUS));
+  console.log("─".repeat(COL_ID + COL_TITLE + COL_TYPE + COL_PRI + COL_STATUS + (COL_GAP.length * 4)));
 
   for (const t of rows) {
-    const shortId = t.id.slice(0, 8);
-    const priStr = priorityChalk(t.priority);
-    const priPadded = pad(priStr + " ".repeat(Math.max(0, COL_PRI - priorityLabel(t.priority).length)), COL_PRI);
+    const shortId = formatTaskIdDisplay(t.id);
     console.log(
-      chalk.dim(pad(shortId, COL_ID)) +
-        pad(t.title, COL_TITLE) +
-        chalk.dim(pad(t.type, COL_TYPE)) +
-        priPadded +
-        statusChalk(t.status),
+      renderColumn(shortId, COL_ID, chalk.dim) +
+        COL_GAP +
+        renderColumn(t.title, COL_TITLE) +
+        COL_GAP +
+        renderColumn(t.type, COL_TYPE, chalk.dim) +
+        COL_GAP +
+        renderColumn(priorityLabel(t.priority), COL_PRI, (text) => colorPriority(text, t.priority)) +
+        COL_GAP +
+        renderColumn(t.status, COL_STATUS, statusChalk),
     );
   }
 }
 
 function getTaskStore(projectPath: string): { store: ForemanStore; taskStore: NativeTaskStore } {
   const store = ForemanStore.forProject(projectPath);
-  const taskStore = new NativeTaskStore(store.getDb());
+  const project = store.getProjectByPath(projectPath);
+  const taskStore = new NativeTaskStore(store.getDb(), {
+    projectKey: project?.name ?? basename(projectPath),
+  });
   return { store, taskStore };
 }
 
@@ -250,7 +267,7 @@ function summarizeImportPreview(records: PreparedImportRecord[]): void {
   console.log(chalk.bold("\n  Dry-run preview (first 5 tasks)\n"));
   for (const record of records.slice(0, 5)) {
     console.log(
-      `  ${chalk.dim(record.bead.id)} → ${record.nativeId.slice(0, 8)} ` +
+      `  ${chalk.dim(record.bead.id)} → ${formatTaskIdDisplay(record.nativeId)} ` +
         `${chalk.cyan(record.status)} ` +
         `${chalk.dim(`[${record.type}, ${priorityLabel(record.priority)}]`)} ` +
         `${record.bead.title}`,
@@ -312,7 +329,7 @@ export function performBeadsImport(
       const approvedAt = mappedStatus === "ready" ? updatedAt : null;
       const closedAt = mappedStatus === "merged" ? bead.closed_at ?? updatedAt : null;
       const record: PreparedImportRecord = {
-        nativeId: randomUUID(),
+        nativeId: taskStore.allocateTaskId(),
         bead,
         type: normalizeImportedBeadType(bead),
         priority,
@@ -331,7 +348,16 @@ export function performBeadsImport(
       const insertTask = db.prepare(
         `INSERT INTO tasks
            (id, title, description, type, priority, status, external_id, created_at, updated_at, approved_at, closed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, 'backlog', ?, ?, ?, NULL, NULL)`,
+      );
+      const updateImportedTask = db.prepare(
+        `UPDATE tasks
+            SET status = ?,
+                created_at = ?,
+                updated_at = ?,
+                approved_at = ?,
+                closed_at = ?
+          WHERE id = ?`,
       );
       const insertDependency = db.prepare(
         `INSERT OR IGNORE INTO task_dependencies (from_task_id, to_task_id, type)
@@ -346,12 +372,18 @@ export function performBeadsImport(
             record.bead.description ?? null,
             record.type,
             record.priority,
-            record.status,
             record.bead.id,
+            record.createdAt,
+            record.updatedAt,
+          );
+
+          updateImportedTask.run(
+            record.status,
             record.createdAt,
             record.updatedAt,
             record.approvedAt,
             record.closedAt,
+            record.nativeId,
           );
         }
 
@@ -451,7 +483,7 @@ const createCommand = new Command("create")
         });
 
         console.log(
-          chalk.green(`✓ Task created`) + chalk.dim(` [${task.id.slice(0, 8)}]`),
+          chalk.green(`✓ Task created`) + chalk.dim(` [${task.id}]`),
         );
         console.log(`  Title:    ${task.title}`);
         console.log(`  Type:     ${task.type}`);
@@ -472,10 +504,11 @@ const createCommand = new Command("create")
 const listCommand = new Command("list")
   .description("List tasks in the native task store")
   .option("--status <status>", "Filter by status (e.g. ready, backlog, in-progress)")
+  .option("--type <type>", "Filter by type (e.g. epic, bug, feature, task)")
   .option("--all", "Include closed and merged tasks (excluded by default)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action((opts: { status?: string; all?: boolean; project?: string; projectPath?: string }) => {
+  .action((opts: { status?: string; type?: string; all?: boolean; project?: string; projectPath?: string }) => {
     const projectPath = resolveProjectPathFromOptions(opts);
 
     try {
@@ -501,6 +534,11 @@ const listCommand = new Command("list")
         conditions.push("status NOT IN ('closed', 'merged')");
       }
 
+      if (opts.type) {
+        conditions.push("type = ?");
+        params.push(opts.type);
+      }
+
       if (conditions.length > 0) {
         sql += " WHERE " + conditions.join(" AND ");
       }
@@ -511,8 +549,12 @@ const listCommand = new Command("list")
       ) as TaskRow[];
 
       if (rows.length === 0) {
-        if (opts.status) {
+        if (opts.status && opts.type) {
+          console.log(chalk.dim(`No tasks with status '${opts.status}' and type '${opts.type}'.`));
+        } else if (opts.status) {
           console.log(chalk.dim(`No tasks with status '${opts.status}'.`));
+        } else if (opts.type) {
+          console.log(chalk.dim(`No tasks with type '${opts.type}'.`));
         } else {
           console.log(
             chalk.dim("No tasks found. Use 'foreman task create' to add tasks."),
@@ -522,10 +564,14 @@ const listCommand = new Command("list")
       }
 
       const label = opts.status
-        ? `Tasks (status: ${opts.status})`
-        : opts.all
-          ? `All Tasks`
-          : `Active Tasks`;
+        ? opts.type
+          ? `Tasks (status: ${opts.status}, type: ${opts.type})`
+          : `Tasks (status: ${opts.status})`
+        : opts.type
+          ? `Tasks (type: ${opts.type})`
+          : opts.all
+            ? `All Tasks`
+            : `Active Tasks`;
       console.log(chalk.bold(`\n  ${label} (${rows.length})\n`));
       printTaskTable(rows);
       console.log();
@@ -546,32 +592,12 @@ const showCommand = new Command("show")
     const projectPath = resolveProjectPathFromOptions(opts);
 
     try {
-      const { store, taskStore } = getTaskStore(projectPath);
-      const db = store.getDb();
-
-      // Support short ID prefix (first 8 chars)
-      let task: TaskRow | null;
-      if (id.length < 36) {
-        const rows = db
-          .prepare("SELECT * FROM tasks WHERE id LIKE ? LIMIT 2")
-          .all(`${id}%`) as TaskRow[];
-        if (rows.length === 0) {
-          console.error(chalk.red(`Error: Task '${id}' not found.`));
-          process.exit(1);
-        }
-        if (rows.length > 1) {
-          console.error(
-            chalk.red(`Error: Ambiguous ID prefix '${id}' matches multiple tasks.`),
-          );
-          process.exit(1);
-        }
-        task = rows[0];
-      } else {
-        task = taskStore.get(id);
-        if (!task) {
-          console.error(chalk.red(`Error: Task '${id}' not found.`));
-          process.exit(1);
-        }
+      const { taskStore } = getTaskStore(projectPath);
+      const resolvedId = taskStore.resolveTaskId(id);
+      const task = taskStore.get(resolvedId);
+      if (!task) {
+        console.error(chalk.red(`Error: Task '${id}' not found.`));
+        process.exit(1);
       }
 
       console.log(chalk.bold(`\n  Task: ${task.title}`));
@@ -607,14 +633,14 @@ const showCommand = new Command("show")
       if (incoming.length > 0) {
         console.log(chalk.bold("\n  Blocked by:"));
         for (const dep of incoming) {
-          console.log(chalk.yellow(`    [${dep.type}] ← ${dep.from_task_id.slice(0, 8)}`));
+          console.log(chalk.yellow(`    [${dep.type}] ← ${formatTaskIdDisplay(dep.from_task_id)}`));
         }
       }
 
       if (outgoing.length > 0) {
         console.log(chalk.bold("\n  Blocking:"));
         for (const dep of outgoing) {
-          console.log(chalk.dim(`    [${dep.type}] → ${dep.to_task_id.slice(0, 8)}`));
+          console.log(chalk.dim(`    [${dep.type}] → ${formatTaskIdDisplay(dep.to_task_id)}`));
         }
       }
       console.log();
@@ -636,16 +662,17 @@ const approveCommand = new Command("approve")
 
     try {
       const { taskStore } = getTaskStore(projectPath);
-      taskStore.approve(id);
+      const resolvedId = taskStore.resolveTaskId(id);
+      taskStore.approve(resolvedId);
 
       // Check what status it transitioned to
-      const task = taskStore.get(id);
+      const task = taskStore.get(resolvedId);
       if (task?.status === "ready") {
         console.log(
-          chalk.green(`✓ Task '${id.slice(0, 8)}' approved and ready for dispatch.`),
+          chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' approved and ready for dispatch.`),
         );
       } else {
-        console.log(chalk.green(`✓ Task '${id.slice(0, 8)}' approved.`));
+        console.log(chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' approved.`));
         if (task?.status) {
           console.log(chalk.dim(`  Status: ${task.status}`));
         }
@@ -658,7 +685,7 @@ const approveCommand = new Command("approve")
       if (err instanceof InvalidStatusTransitionError) {
         console.error(
           chalk.red(
-            `Error: Task '${id.slice(0, 8)}' cannot be approved — it is currently '${err.fromStatus}'.`,
+            `Error: Task '${formatTaskIdDisplay(err.taskId)}' cannot be approved — it is currently '${err.fromStatus}'.`,
           ),
         );
         console.error(chalk.dim("  Only 'backlog' tasks can be approved."));
@@ -732,9 +759,10 @@ const updateCommand = new Command("update")
 
       try {
         const { taskStore } = getTaskStore(projectPath);
-        const task = taskStore.update(id, updateOpts);
+        const resolvedId = taskStore.resolveTaskId(id);
+        const task = taskStore.update(resolvedId, updateOpts);
 
-        console.log(chalk.green(`✓ Task '${id.slice(0, 8)}' updated.`));
+        console.log(chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' updated.`));
         console.log(`  Title:    ${task.title}`);
         console.log(`  Type:     ${task.type}`);
         console.log(`  Priority: ${priorityLabel(task.priority)}`);
@@ -750,7 +778,7 @@ const updateCommand = new Command("update")
         if (err instanceof InvalidStatusTransitionError) {
           console.error(
             chalk.red(
-              `Error: Task '${id.slice(0, 8)}' cannot transition from '${err.fromStatus}' to '${err.toStatus}'.`,
+              `Error: Task '${formatTaskIdDisplay(err.taskId)}' cannot transition from '${err.fromStatus}' to '${err.toStatus}'.`,
             ),
           );
           console.error(
@@ -776,9 +804,10 @@ const closeCommand = new Command("close")
 
     try {
       const { taskStore } = getTaskStore(projectPath);
-      taskStore.close(id);
+      const resolvedId = taskStore.resolveTaskId(id);
+      taskStore.close(resolvedId);
 
-      console.log(chalk.green(`✓ Task '${id.slice(0, 8)}' closed.`));
+      console.log(chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' closed.`));
     } catch (err) {
       if (err instanceof TaskNotFoundError) {
         console.error(chalk.red(`Error: Task '${id}' not found.`));
@@ -849,11 +878,13 @@ const depAddCommand = new Command("add")
 
       try {
         const { taskStore } = getTaskStore(projectPath);
-        taskStore.addDependency(fromId, toId, opts.type as "blocks" | "parent-child");
+        const resolvedFromId = taskStore.resolveTaskId(fromId);
+        const resolvedToId = taskStore.resolveTaskId(toId);
+        taskStore.addDependency(resolvedFromId, resolvedToId, opts.type as "blocks" | "parent-child");
         const verb = opts.type === "blocks" ? "blocks" : "is parent of";
         console.log(
           chalk.green(
-            `✓ Dependency added: '${fromId.slice(0, 8)}' ${verb} '${toId.slice(0, 8)}'.`,
+            `✓ Dependency added: '${formatTaskIdDisplay(resolvedFromId)}' ${verb} '${formatTaskIdDisplay(resolvedToId)}'.`,
           ),
         );
       } catch (err) {
@@ -883,26 +914,27 @@ const depListCommand = new Command("list")
 
     try {
       const { taskStore } = getTaskStore(projectPath);
+      const resolvedId = taskStore.resolveTaskId(id);
 
-      const blockedBy = taskStore.getDependencies(id, "incoming") as DependencyRow[];
-      const blocking = taskStore.getDependencies(id, "outgoing") as DependencyRow[];
+      const blockedBy = taskStore.getDependencies(resolvedId, "incoming") as DependencyRow[];
+      const blocking = taskStore.getDependencies(resolvedId, "outgoing") as DependencyRow[];
 
       if (blockedBy.length === 0 && blocking.length === 0) {
-        console.log(chalk.dim(`Task '${id.slice(0, 8)}' has no dependencies.`));
+        console.log(chalk.dim(`Task '${formatTaskIdDisplay(resolvedId)}' has no dependencies.`));
         return;
       }
 
       if (blockedBy.length > 0) {
         console.log(chalk.bold("\n  Blocked by:"));
         for (const dep of blockedBy) {
-          console.log(chalk.yellow(`    [${dep.type}] ← ${dep.from_task_id.slice(0, 8)}`));
+          console.log(chalk.yellow(`    [${dep.type}] ← ${formatTaskIdDisplay(dep.from_task_id)}`));
         }
       }
 
       if (blocking.length > 0) {
         console.log(chalk.bold("\n  Blocking:"));
         for (const dep of blocking) {
-          console.log(chalk.dim(`    [${dep.type}] → ${dep.to_task_id.slice(0, 8)}`));
+          console.log(chalk.dim(`    [${dep.type}] → ${formatTaskIdDisplay(dep.to_task_id)}`));
         }
       }
       console.log();
@@ -929,10 +961,12 @@ const depRemoveCommand = new Command("remove")
 
       try {
         const { taskStore } = getTaskStore(projectPath);
-        taskStore.removeDependency(fromId, toId, opts.type as "blocks" | "parent-child");
+        const resolvedFromId = taskStore.resolveTaskId(fromId);
+        const resolvedToId = taskStore.resolveTaskId(toId);
+        taskStore.removeDependency(resolvedFromId, resolvedToId, opts.type as "blocks" | "parent-child");
         console.log(
           chalk.green(
-            `✓ Dependency removed: '${fromId.slice(0, 8)}' → '${toId.slice(0, 8)}'.`,
+            `✓ Dependency removed: '${formatTaskIdDisplay(resolvedFromId)}' → '${formatTaskIdDisplay(resolvedToId)}'.`,
           ),
         );
       } catch (err) {

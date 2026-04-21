@@ -19,7 +19,7 @@ If you hit an unrecoverable error, invoke:
 1. Read TASK.md for the original task description
 2. Read EXPLORER_REPORT.md (if exists) for architecture context
 3. Read QA_REPORT.md for test results
-4. Review ALL changed files (use git diff against the base branch)
+4. Review the changed files for this task (use git diff against the base branch). For narrow tasks, keep review scoped to the task-relevant changed files plus any directly affected neighbors.
 5. Check for:
    - Bugs, logic errors, off-by-one errors
    - Security vulnerabilities (injection, XSS, etc.)

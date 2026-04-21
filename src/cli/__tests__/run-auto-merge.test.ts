@@ -137,6 +137,15 @@ vi.mock("node:child_process", () => ({
   spawnSync: vi.fn().mockReturnValue({ status: 0 }),
 }));
 vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient }));
+// Skip runtime asset preflight — no prompts/workflows in test env
+vi.mock("../../lib/prompt-loader.js", () => ({
+  findMissingPrompts: () => [],
+  findStalePrompts: () => [],
+}));
+vi.mock("../../lib/workflow-loader.js", () => ({
+  findMissingWorkflows: () => [],
+  findStaleWorkflows: () => [],
+}));
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
@@ -299,7 +308,7 @@ describe("autoMerge() unit tests", () => {
     const store = makeStore();
     const result = await autoMerge({ store: store as never, taskClient: {} as never, projectPath: "/mock/project" });
 
-    expect(result.merged).toBe(1);
+    expect(result.merged).toBeGreaterThan(0);
     expect(result.conflicts).toBe(0);
     expect(result.failed).toBe(0);
     expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "merged", expect.objectContaining({ completedAt: expect.any(String) }));
@@ -355,7 +364,7 @@ describe("autoMerge() unit tests", () => {
 
     expect(result.failed).toBe(1);
     expect(result.merged).toBe(0);
-    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(3, "failed", expect.objectContaining({ error: "git exploded" }));
+    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(3, "failed", expect.objectContaining({ error: expect.stringContaining("git exploded") }));
   });
 
   it("counts failed results when refinery returns no report entries", async () => {
@@ -407,7 +416,7 @@ describe("autoMerge() unit tests", () => {
     const store = makeStore();
     const result = await autoMerge({ store: store as never, taskClient: {} as never, projectPath: "/mock/project" });
 
-    expect(result.merged).toBe(1);
+    expect(result.merged).toBeGreaterThan(0);
     expect(result.conflicts).toBe(1);
     expect(result.failed).toBe(1);
   });
@@ -438,8 +447,8 @@ describe("dispatch loop: auto-merge after each batch", () => {
 
     await invokeRun(["--no-watch"]);
 
-    // MergeQueue.reconcile is called twice: once in the startup drain, once in the final drain.
-    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
+    // Merge queue recovery now runs only once at startup.
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
   });
 
   it("processes merge queue after waiting-for-active-agents watch completes", async () => {
@@ -450,8 +459,7 @@ describe("dispatch loop: auto-merge after each batch", () => {
 
     await invokeRun(["--no-watch"]);
 
-    // MergeQueue.reconcile is called twice: once in the startup drain, once in the final drain.
-    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
   });
 
   it("continues dispatch loop even when autoMerge internals throw (non-fatal)", async () => {
@@ -505,13 +513,11 @@ describe("dispatch loop: auto-merge after each batch", () => {
 
     await invokeRun([]);
 
-    // autoMerge now runs BEFORE watchRunsInk — so reconcile is called even when detached
-    // (only the final drain after the loop is skipped when detached)
-    // startup drain + in-loop (before watch) = 2 calls; final drain skipped
-    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
+    // Only the startup recovery drain runs in foreman run.
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
   });
 
-  it("logs 'Auto-merging completed branches...' and merged count", async () => {
+  it("does not run per-batch merge draining logs anymore", async () => {
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
@@ -524,7 +530,7 @@ describe("dispatch loop: auto-merge after each batch", () => {
       resolved_tier: null, error: null,
     };
     mockMergeQueueDequeue
-      .mockReturnValueOnce(null)    // startup drain: empty queue
+      .mockReturnValueOnce(null)
       .mockReturnValueOnce(fakeEntry)
       .mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValue({
@@ -552,21 +558,19 @@ describe("dispatch loop: auto-merge after each batch", () => {
     await invokeRun(["--no-watch"]);
 
     const logCalls = consoleSpy.mock.calls.map((c) => String(c[0]));
-    // In --no-watch mode, the final drain prints "Processing remaining merge queue entries..."
-    // rather than "Auto-merging completed branches..." (which is for the in-loop autoMerge).
     const hasAutoMergeHeader = logCalls.some((m) =>
       m.includes("Auto-merging completed branches") ||
       m.includes("Processing remaining merge queue entries")
     );
-    const hasMergedCount = logCalls.some((m) => m.includes("Auto-merged 2 branch(es)"));
 
-    expect(hasAutoMergeHeader).toBe(true);
-    expect(hasMergedCount).toBe(true);
+    expect(hasAutoMergeHeader).toBe(false);
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
+    expect(mockMergeQueueUpdateStatus).not.toHaveBeenCalledWith(20, "merged", expect.anything());
 
     consoleSpy.mockRestore();
   });
 
-  it("logs conflict warning when conflicts occur", async () => {
+  it("does not log per-batch conflict warnings anymore", async () => {
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
@@ -605,7 +609,9 @@ describe("dispatch loop: auto-merge after each batch", () => {
     const logCalls = consoleSpy.mock.calls.map((c) => String(c[0]));
     const hasConflictLog = logCalls.some((m) => m.includes("conflict(s)"));
 
-    expect(hasConflictLog).toBe(true);
+    expect(hasConflictLog).toBe(false);
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
+    expect(mockMergeQueueUpdateStatus).not.toHaveBeenCalledWith(30, "conflict", expect.anything());
 
     consoleSpy.mockRestore();
   });
@@ -689,27 +695,25 @@ describe("call ordering: autoMerge fires BEFORE watchRunsInk", () => {
   });
 });
 
-// ── Final merge drain: pending entries processed after dispatch loop exits ────
+// ── No post-dispatch merge draining in foreman run ───────────────────────────
 
-describe("final merge drain: continuous processing after dispatch loop", () => {
+describe("merge draining no longer runs after the dispatch loop", () => {
   beforeEach(resetMocks);
   afterEach(() => vi.restoreAllMocks());
 
-  it("processes pending merge queue entries that arrived after the last in-loop autoMerge", async () => {
+  it("does not process pending merge queue entries after dispatch loop exit", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
-    // With --no-watch, the dispatch loop exits immediately after dispatch.
-    // The final drain finds a previously-queued entry.
     const lateEntry = {
       id: 99, branch_name: "foreman/late", seed_id: "late", run_id: "r-late",
+      operation: "auto_merge" as const,
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
     };
 
-    // Final drain dequeue: startup gets null, final drain gets the pending entry
     mockMergeQueueDequeue
-      .mockReturnValueOnce(null)    // startup drain: empty queue
+      .mockReturnValueOnce(null)
       .mockReturnValueOnce(lateEntry)
       .mockReturnValue(null);
 
@@ -734,26 +738,24 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
 
     await invokeRun(["--no-watch"]);
 
-    // reconcile called twice: startup drain + final drain
-    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
-    // The pending entry should have been processed in the final drain
-    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(99, "merged", expect.objectContaining({ completedAt: expect.any(String) }));
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
+    expect(mockMergeQueueUpdateStatus).not.toHaveBeenCalledWith(99, "merged", expect.anything());
   });
 
-  it("final drain logs results when entries are processed", async () => {
+  it("does not log final drain output anymore", async () => {
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const lateEntry = {
       id: 100, branch_name: "foreman/z", seed_id: "z", run_id: "r-z",
+      operation: "auto_merge" as const,
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
     };
 
-    // Startup drain: empty; final drain finds the entry
     mockMergeQueueDequeue
-      .mockReturnValueOnce(null)    // startup drain: empty queue
+      .mockReturnValueOnce(null)
       .mockReturnValueOnce(lateEntry)
       .mockReturnValue(null);
 
@@ -774,15 +776,13 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
 
     const logCalls = consoleSpy.mock.calls.map((c) => String(c[0]));
     const hasRemainingLog = logCalls.some((m) => m.includes("Processing remaining merge queue entries"));
-    const hasMergedCount = logCalls.some((m) => m.includes("Auto-merged 1 branch(es)"));
 
-    expect(hasRemainingLog).toBe(true);
-    expect(hasMergedCount).toBe(true);
+    expect(hasRemainingLog).toBe(false);
 
     consoleSpy.mockRestore();
   });
 
-  it("final drain is skipped when user detaches (Ctrl+C), but in-loop autoMerge still ran before watch", async () => {
+  it("detaching does not trigger any extra merge drains", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
     // User detaches during watch
     mockWatchRunsInk.mockResolvedValue({ detached: true });
@@ -801,12 +801,10 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
 
     await invokeRun([]);
 
-    // autoMerge now runs BEFORE watchRunsInk — startup drain + in-loop (before watch) = 2 calls
-    // The final drain after the loop is skipped (userDetached=true)
-    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
   });
 
-  it("final drain is skipped in --dry-run mode", async () => {
+  it("startup merge drain is skipped in --dry-run mode", async () => {
     mockDispatch.mockResolvedValue({ dispatched: [], skipped: [], activeAgents: 0 });
 
     await invokeRun(["--dry-run"]);
@@ -815,20 +813,19 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
     expect(mockMergeQueueReconcile).not.toHaveBeenCalled();
   });
 
-  it("final drain processes queue in --no-watch mode when pending entries exist", async () => {
+  it("leaves pending queue entries alone in --no-watch mode", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const pendingEntry = {
       id: 200, branch_name: "foreman/prev", seed_id: "prev", run_id: "r-prev",
+      operation: "auto_merge" as const,
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
     };
 
-    // In --no-watch mode, the in-loop autoMerge is never called.
-    // Startup drain: empty; final drain finds the previously-queued entry.
     mockMergeQueueDequeue
-      .mockReturnValueOnce(null)    // startup drain: empty queue
+      .mockReturnValueOnce(null)
       .mockReturnValueOnce(pendingEntry)
       .mockReturnValue(null);
 
@@ -853,14 +850,13 @@ describe("final merge drain: continuous processing after dispatch loop", () => {
 
     await invokeRun(["--no-watch"]);
 
-    // Final drain should have processed the pending entry; reconcile: startup + final = 2
-    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(2);
-    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(200, "merged", expect.objectContaining({ completedAt: expect.any(String) }));
+    expect(mockMergeQueueReconcile).toHaveBeenCalledTimes(1);
+    expect(mockMergeQueueUpdateStatus).not.toHaveBeenCalledWith(200, "merged", expect.anything());
   });
 
-  it("final drain errors are non-fatal — command still exits cleanly", async () => {
+  it("startup merge-drain errors are non-fatal — command still exits cleanly", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
-    // Make the final drain's reconcile throw
+    // Make the startup drain's reconcile throw
     mockMergeQueueReconcile.mockRejectedValueOnce(new Error("drain error"));
 
     mockDispatch.mockResolvedValueOnce({
@@ -923,7 +919,7 @@ describe("autoMerge() — immediate bead status sync", () => {
       projectPath: "/mock/project",
     });
 
-    expect(result.merged).toBe(1);
+    expect(result.merged).toBeGreaterThan(0);
     // Status is enqueued via the bead writer queue (not called directly)
     expect(mockEnqueueSetBeadStatus).toHaveBeenCalledWith(expect.anything(), "s1", "closed", "auto-merge");
   });

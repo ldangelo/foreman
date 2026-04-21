@@ -20,10 +20,16 @@ Do NOT run tests if conflict markers are found.
 ## Instructions
 1. Read TASK.md and EXPLORER_REPORT.md (if exists) for context
 2. Review what the Developer changed (check git diff)
-3. Run the existing test suite with `npm test -- --reporter=dot 2>&1`
-4. If tests fail due to the changes, attempt to fix them
-5. Write any additional tests needed for uncovered edge cases
-6. Write your findings to **QA_REPORT.md**
+3. Choose the narrowest verification that can prove the task:
+   - For localized CLI/status/output/display changes, run targeted tests or targeted command-level verification first
+   - Only broaden to `npm test -- --reporter=dot 2>&1` when the task is broad, when targeted verification is insufficient, or when targeted checks reveal broader regression risk
+4. If tests fail due to the changes, do not modify source code. Report the failure clearly and route the task back to Developer.
+5. If the full test suite has pre-existing failures unrelated to this implementation, verify they existed BEFORE your changes by checking git stash state. If pre-existing failures are the ONLY failures, set verdict to PASS and note the pre-existing failures in the report.
+6. Write any additional test recommendations needed for uncovered edge cases, but do not implement source changes in QA
+6. Write your findings to **docs/reports/{{seedId}}/QA_REPORT.md**. Create the directory if it doesn't exist:
+   ```bash
+   mkdir -p docs/reports/{{seedId}}
+   ```
 7. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 
 ## QA_REPORT.md Format
@@ -33,22 +39,24 @@ Do NOT run tests if conflict markers are found.
 ## Verdict: PASS | FAIL
 
 ## Test Results
-- Command run: `npm test -- --reporter=dot 2>&1`
-- Test suite: X passed, Y failed
-- Raw summary: <copy the pass/fail count lines from npm test output>
+- Targeted command(s) run: <specific command(s) or manual verification used first>
+- Full suite command (if run): `npm test -- --reporter=dot 2>&1`
+- Test suite: X passed, Y failed | SKIPPED
+- Raw summary: <copy the pass/fail count lines from the command actually used>
 - New tests added: N
 
 ## Issues Found
 - (list any test failures, type errors, or regressions)
 
 ## Files Modified
-- (list any test files you created or fixed)
+- (list files inspected; QA should normally be read-only)
 ```
 
 ## Rules
-- You may modify test files and fix minor issues in source code
+- QA is verification-only. Do not modify source code or tests in this phase.
 - Focus on correctness and regressions, not style
 - Be specific about failures — include error messages
-- QA_REPORT.md MUST include the actual `npm test` command and pass/fail count lines from the test output; reports without real test evidence are invalid
+- Prefer targeted verification first for narrow tasks; do not default to the broadest possible test run.
+- QA_REPORT.md MUST include the actual command(s) run and real pass/fail evidence; reports without real test evidence are invalid
 - **DO NOT** commit, push, or close the seed
 - **Write SESSION_LOG.md** documenting your session work (required, not optional)

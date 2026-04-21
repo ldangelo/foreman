@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS merge_queue (
   branch_name TEXT NOT NULL,
   seed_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
+  operation TEXT NOT NULL DEFAULT 'auto_merge',
   agent_name TEXT,
   files_modified TEXT DEFAULT '[]',
   enqueued_at TEXT NOT NULL,
@@ -156,6 +157,7 @@ describe("MergeQueue", () => {
       expect(entry.branch_name).toBe("foreman/seed-1");
       expect(entry.seed_id).toBe("seed-1");
       expect(entry.run_id).toBe("run-1");
+      expect(entry.operation).toBe("auto_merge");
       expect(entry.agent_name).toBe("developer");
       expect(entry.files_modified).toEqual(["src/foo.ts", "src/bar.ts"]);
       expect(entry.status).toBe("pending");
@@ -194,6 +196,18 @@ describe("MergeQueue", () => {
       expect(second.id).toBe(first.id);
       // Should return the original, not update it
       expect(second.agent_name).toBe("developer");
+    });
+
+    it("stores create_pr operation when requested", () => {
+      const entry = queue.enqueue({
+        branchName: "foreman/seed-1",
+        seedId: "seed-1",
+        runId: "run-1",
+        operation: "create_pr",
+      });
+
+      expect(entry.operation).toBe("create_pr");
+      expect(queue.list()[0]!.operation).toBe("create_pr");
     });
   });
 
@@ -316,6 +330,17 @@ describe("MergeQueue", () => {
 
       const failed = queue.list("failed");
       expect(failed).toHaveLength(1);
+    });
+
+    it("does not downgrade a merged entry back to conflict", () => {
+      const entry = queue.enqueue({ branchName: "foreman/seed-1", seedId: "seed-1", runId: "run-1" });
+      queue.updateStatus(entry.id, "merged", { completedAt: "2026-01-01T00:00:00Z" });
+      queue.updateStatus(entry.id, "conflict", { error: "late conflict" });
+
+      const merged = queue.list("merged");
+      expect(merged).toHaveLength(1);
+      expect(merged[0]!.error).toBeNull();
+      expect(queue.list("conflict")).toHaveLength(0);
     });
   });
 

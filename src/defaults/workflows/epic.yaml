@@ -1,15 +1,23 @@
-# Epic workflow: Developer ⇄ QA per task, then Finalize once at the end.
+# Epic workflow: Skill-driven planning and implementation pipeline.
 #
-# Used when a bead of type "epic" is dispatched. The pipeline executor
-# iterates child tasks in dependency order, running taskPhases for each.
-# After all tasks pass, finalPhases execute once to rebase, test, and push.
+# When epic has child tasks (beads mode): iterates child tasks via taskPhases,
+# then finalPhases once at the end.
 #
-# Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
-# Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
+# When epic has no children (native mode): runs skill phases directly as a
+# single-agent pipeline:
+#   prd → trd → implement → developer → qa → finalize
+#
+# Skill invocation: `command:` sends /ensemble:<skill-name> as the agent prompt.
+# The Pi SDK agent recognizes skill invocations and loads the SKILL.md.
+#
+# Artifact path conventions:
+#   - PRD/TRD: docs/PRD/PRD-{yyyymm}-{title-slug}.md (project docs, committed)
+#   - Phase reports: docs/reports/{seedId}/{REPORT}.md (execution reports, committed)
+#
+# skipIfArtifact: checked at phase start to skip if report already exists.
+
 name: epic
 onError: stop
-# Per-task timeout in seconds. If a task's phases exceed this, the task fails.
-# Default: 300 (5 minutes). Set to 0 to disable.
 taskTimeout: 300
 
 setup:
@@ -20,37 +28,87 @@ setupCache:
   key: package-lock.json
   path: node_modules
 
-# Per-task phases: run for each child task in the epic
+# Per-task phases: run for each child task in the epic (beads mode)
 taskPhases:
   - developer
   - qa
 
-# Final phases: run once after all tasks complete
+# Final phases: run once after all tasks complete (beads mode)
 finalPhases:
   - finalize
 
 phases:
-  - name: developer
-    prompt: developer.md
+  # ── Phase 1: PRD ──────────────────────────────────────────────────────────
+  # PRD skill writes to docs/PRD/PRD-{yyyymm}-{title-slug}.md
+  # skipIfArtifact checks for docs/PRD/PRD-{yyyymm}-{title-slug}.md (skill's output path)
+  - name: prd
+    command: "/ensemble:create-prd {task.title}"
     models:
-      default: sonnet
-      P0: opus
-    maxTurns: 80
-    artifact: DEVELOPER_REPORT.md
+      default: MiniMax
+      P0: MiniMax
+    maxTurns: 40
+    verdict: false
     mail:
       onStart: true
       onComplete: true
-    files:
-      reserve: true
-      leaseSecs: 600
 
+  # ── Phase 2: TRD ──────────────────────────────────────────────────────────
+  # TRD skill writes to docs/TRD/TRD-{yyyymm}-{title-slug}.md
+  # skipIfArtifact checks for docs/TRD/TRD-{yyyymm}-{title-slug}.md (skill's output path)
+  - name: trd
+    command: "/ensemble:create-trd"
+    models:
+      default: MiniMax
+      P0: MiniMax
+    maxTurns: 60
+    verdict: false
+    retryWith: prd
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 3: Implement ────────────────────────────────────────────────────
+  # Implement skill writes an IMPLEMENT_REPORT.md to the current working directory.
+  # We anchor it to docs/reports/{seedId}/ so it's committed with the worktree.
+  - name: implement
+    command: "mkdir -p docs/reports/{task.id} && /ensemble:implement-trd && mv IMPLEMENT_REPORT.md docs/reports/{task.id}/IMPLEMENT_REPORT.md 2>/dev/null || true"
+    models:
+      default: MiniMax
+      P0: MiniMax
+    maxTurns: 120
+    artifact: docs/reports/{task.id}/IMPLEMENT_REPORT.md
+    skipIfArtifact: docs/reports/{task.id}/IMPLEMENT_REPORT.md
+    verdict: false
+    retryWith: trd
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 4: Developer (fix issues from finalize / qa) ──────────────────
+  - name: developer
+    prompt: developer.md
+    models:
+      default: MiniMax
+      P0: MiniMax
+    maxTurns: 80
+    artifact: docs/reports/{task.id}/DEVELOPER_REPORT.md
+    verdict: false
+    retryWith: implement
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 5: QA ──────────────────────────────────────────────────────────
   - name: qa
     prompt: qa.md
     models:
-      default: sonnet
-      P0: opus
+      default: MiniMax
+      P0: MiniMax
     maxTurns: 30
-    artifact: QA_REPORT.md
+    artifact: docs/reports/{task.id}/QA_REPORT.md
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -59,19 +117,19 @@ phases:
       onComplete: true
       onFail: developer
 
+  # ── Phase 6: finalize ───────────────────────────────────────────────────
   - name: finalize
     prompt: finalize.md
     models:
-      default: haiku
+      default: MiniMax
     maxTurns: 30
-    artifact: FINALIZE_VALIDATION.md
+    artifact: docs/reports/{task.id}/FINALIZE_VALIDATION.md
     verdict: true
     retryWith: developer
     retryOnFail: 1
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
 
 onFailure:
   name: troubleshooter
@@ -80,4 +138,4 @@ onFailure:
     default: sonnet
     P0: opus
   maxTurns: 20
-  artifact: TROUBLESHOOT_REPORT.md
+  artifact: docs/reports/{task.id}/TROUBLESHOOT_REPORT.md

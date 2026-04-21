@@ -9,11 +9,13 @@
  * This replaces the ~450-line hardcoded runPipeline() in agent-worker.ts.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { execFile, execSync } from "node:child_process";
 import { appendFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader.js";
+import type { TaskMeta } from "../lib/interpolate.js";
+import { interpolateTaskPlaceholders } from "../lib/interpolate.js";
 import { resolvePhaseModel } from "../lib/workflow-loader.js";
 import { ROLE_CONFIGS } from "./roles.js";
 import {
@@ -31,6 +33,8 @@ import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import type { ForemanStore, RunProgress } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
+import { HeartbeatManager, createHeartbeatManager, type HeartbeatConfig } from "./heartbeat-manager.js";
+import { createPhaseRecord, finalizePhaseRecord, generateActivityLog, writeIncrementalPipelineReport, type PhaseRecord as ActivityPhaseRecord } from "./activity-logger.js";
 import type { NativeTaskStore } from "../lib/task-store.js";
 import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs } from "../lib/config.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
@@ -50,6 +54,7 @@ export type RunPhaseFn = (
   store: ForemanStore,
   notifyClient: any,
   agentMailClient?: AnyMailClient | null,
+  observability?: PhaseObservabilityInput,
 ) => Promise<PhaseResult>;
 
 export interface PhaseResult {
@@ -59,6 +64,19 @@ export interface PhaseResult {
   tokensIn: number;
   tokensOut: number;
   error?: string;
+  outputText?: string;
+  traceFile?: string;
+  traceMarkdownFile?: string;
+  traceWarnings?: string[];
+  commandHonored?: boolean;
+}
+
+export interface PhaseObservabilityInput {
+  phaseType?: "prompt" | "command" | "bash" | "builtin";
+  expectedArtifact?: string;
+  resolvedCommand?: string;
+  workflowName?: string;
+  workflowPath?: string;
 }
 
 /** A child task within an epic pipeline run. */
@@ -111,6 +129,14 @@ export interface PipelineRunConfig {
    * Used to link child task results back to the parent epic.
    */
   epicId?: string;
+  /** Task metadata for placeholder interpolation in bash/command phases (REQ-008). */
+  taskMeta?: TaskMeta;
+  /** Directory guardrail config (FR-1). Passed through to PiRunOptions.guardrailConfig. */
+  guardrailConfig?: {
+    mode?: "auto-correct" | "veto" | "disabled";
+    expectedCwd?: string;
+    allowedPaths?: string[];
+  };
 }
 
 export interface PipelineContext {
@@ -188,6 +214,22 @@ export interface PipelineContext {
     retryCounts: Record<string, number>;
     success: boolean;
   }) => Promise<void>;
+  /**
+   * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
+   * Passed from the dispatcher via WorkerConfig.taskMeta.
+   * Undefined for legacy runs without taskMeta.
+   */
+  taskMeta?: TaskMeta;
+  /**
+   * Heartbeat manager for periodic observability events during active phases (FR-3).
+   * Created in executePipeline when vcsBackend is available and heartbeat is enabled.
+   */
+  heartbeatManager?: HeartbeatManager;
+  /**
+   * Activity log phase records accumulated during pipeline execution (FR-4).
+   * Finalized and written as ACTIVITY_LOG.json at pipeline end.
+   */
+  activityPhases?: ActivityPhaseRecord[];
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -195,6 +237,30 @@ export interface PipelineContext {
 function readReport(worktreePath: string, filename: string): string | null {
   const p = join(worktreePath, filename);
   try { return readFileSync(p, "utf-8"); } catch { return null; }
+}
+
+function readRelativeFile(worktreePath: string, relativePath?: string): string | null {
+  if (!relativePath) return null;
+  const path = join(worktreePath, relativePath);
+  try { return readFileSync(path, "utf-8"); } catch { return null; }
+}
+
+function sendTraceMail(
+  ctx: PipelineContext,
+  client: AnyMailClient | null,
+  phaseName: string,
+  seedId: string,
+  worktreePath: string,
+  result: PhaseResult,
+): void {
+  const traceMarkdown = readRelativeFile(worktreePath, result.traceMarkdownFile);
+  if (!traceMarkdown) return;
+  ctx.sendMailText(
+    client,
+    "foreman",
+    `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Trace`,
+    traceMarkdown,
+  );
 }
 
 /**
@@ -258,7 +324,162 @@ interface PhaseSequenceResult {
   retriesExhausted?: boolean;
 }
 
+function isGeneratedWorkflowArtifact(filePath: string): boolean {
+  const name = basename(filePath);
+  return (
+    name.endsWith("_REPORT.md") ||
+    name.endsWith("_SESSION_SUMMARY.md") ||
+    name === "SESSION_LOG.md" ||
+    name === "RUN_LOG.md" ||
+    name === "FINALIZE_VALIDATION.md" ||
+    name === "TASK.md" ||
+    name === "AGENT.md" ||
+    name === "AGENTS.md" ||
+    name === "BLOCKED.md"
+  );
+}
+
 // ── Generic Pipeline Executor ───────────────────────────────────────────────
+
+// ── Bash Phase Execution (TRD-004) ─────────────────────────────────────────────
+
+const BASH_PHASE_TIMEOUT_MS = 120_000; // 120 seconds
+
+/**
+ * Result of a bash phase execution.
+ * Mirrors PhaseResult but includes stdout/stderr for artifact writing.
+ */
+export interface BashPhaseResult extends PhaseResult {
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Execute a bash phase via `/bin/sh -c` in the worktree directory.
+ *
+ * 1. Interpolate `{task.*}` placeholders using taskMeta from PipelineContext
+ * 2. Run via execFile with cwd=worktreePath, timeout=120s
+ * 3. Capture stdout + stderr
+ * 4. Write artifact file if specified
+ * 5. Return PASS (exit 0) or FAIL (non-zero exit code or timeout)
+ */
+export async function runBashPhase(
+  bashCommand: string,
+  taskMeta: TaskMeta | undefined,
+  cwd: string,
+  artifactFile?: string,
+  timeoutMs = BASH_PHASE_TIMEOUT_MS,
+): Promise<BashPhaseResult> {
+  // Interpolate placeholders
+  const interpolated = taskMeta
+    ? interpolateTaskPlaceholders(bashCommand, taskMeta)
+    : bashCommand;
+
+  // Interpolate artifact path too (e.g. docs/reports/{task.id}/IMPLEMENT_REPORT.md)
+  const interpolatedArtifact = artifactFile
+    ? interpolateTaskPlaceholders(artifactFile, taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 })
+    : undefined;
+
+  let stdout = '';
+  let stderr = '';
+  let exitCode: number | null = null;
+  let timedOut = false;
+
+  try {
+    const result = await execFilePromise('/bin/sh', ['-c', interpolated], {
+      cwd,
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024, // 10 MB
+    });
+    stdout = result.stdout ?? '';
+    stderr = result.stderr ?? '';
+    exitCode = result.status ?? 0;
+  } catch (err: unknown) {
+    timedOut = err instanceof Error && err.message.includes('timed out');
+    if (timedOut) {
+      stderr = `Bash phase timed out after ${timeoutMs}ms: ${interpolated}`;
+      exitCode = 124; // standard timeout exit code
+    } else if (err instanceof Error) {
+      // execFile throws NodeJS.ErrnoException with numeric code property
+      const code = (err as NodeJS.ErrnoException).code;
+      exitCode = typeof code === 'number' ? code : 1;
+      stderr = err.message;
+    } else {
+      stderr = String(err);
+      exitCode = 1;
+    }
+  }
+
+  const success = exitCode === 0 && !timedOut;
+
+  // Write artifact file if specified
+  if (interpolatedArtifact && stdout) {
+    try {
+      writeFileSync(interpolatedArtifact, stdout, 'utf8');
+    } catch {
+      // Non-fatal: artifact write failure doesn't fail the phase
+    }
+  }
+
+  return {
+    success,
+    costUsd: 0,
+    turns: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    error: timedOut
+      ? `Timeout after ${timeoutMs}ms`
+      : exitCode !== 0
+        ? `Exit code ${exitCode}`
+        : undefined,
+    outputText: stdout || stderr,
+    stdout,
+    stderr,
+  };
+}
+
+/**
+ * Promise wrapper around execFile with timeout support.
+ * Uses child_process execFile with a race between the command and a timeout.
+ */
+function execFilePromise(
+  command: string,
+  args: string[],
+  options: { cwd?: string; timeout?: number; maxBuffer?: number },
+): Promise<{ stdout: string; stderr: string; status: number | null }> {
+  const { timeout: timeoutMs, ...restOptions } = options;
+
+  const execPromise: Promise<{ stdout: string; stderr: string; status: number | null }> =
+    new Promise((resolve, reject) => {
+      const proc = execFile(command, args, restOptions, (error, stdout, stderr) => {
+        // error is null on clean exit; Error with numeric code on non-zero exit; Error without code on fatal errors
+        if (error && !('code' in error)) {
+          reject(error); // fatal error (no exit code)
+        } else {
+          // Non-zero exit code → resolve with status; zero exit → status 0
+          const rawCode = error ? (error as NodeJS.ErrnoException).code : null;
+          const status: number | null = typeof rawCode === 'number' ? (rawCode as number) : null;
+          resolve({ stdout: stdout ?? '', stderr: stderr ?? '', status });
+        }
+      });
+      if (timeoutMs) {
+        proc.on('error', (err) => reject(err));
+      }
+    });
+
+  if (!timeoutMs) return execPromise;
+
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => {
+      reject(Object.assign(
+        new Error(`ETIMEDOUT: ${command} timed out after ${timeoutMs}ms`),
+        { code: 'ETIMEDOUT' },
+      ));
+    }, timeoutMs),
+  );
+
+  return Promise.race([execPromise, timeoutPromise]);
+}
 
 /**
  * Execute a workflow pipeline driven entirely by the YAML config.
@@ -332,6 +553,7 @@ function detectCompletedTasks(worktreePath: string): Set<string> {
     const output = execSync("git log --oneline", {
       cwd: worktreePath,
       encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
       timeout: 10_000,
     });
     return parseCompletedTaskIds(output);
@@ -601,10 +823,40 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
   ctx.log(`[PIPELINE] Phase sequence: ${phaseNames}`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n[PIPELINE] Phase sequence: ${phaseNames}\n`);
 
+  // FR-3: Initialize HeartbeatManager for periodic observability events
+  const heartbeatConfig: HeartbeatConfig = {
+    enabled: true,
+    intervalSeconds: 60,
+  };
+  const worktreePath = config.worktreePath;
+  ctx.heartbeatManager = config.vcsBackend
+    ? createHeartbeatManager(heartbeatConfig, store, config.projectId, config.runId, config.vcsBackend, worktreePath) ?? undefined
+    : undefined;
+  ctx.activityPhases = [];
+
   const result = await runPhaseSequence(ctx, workflowConfig.phases, progress);
 
   // Session log
   await writeSessionLogSafe(ctx, result.progress, result.phaseRecords, result.retryCounts, result.qaVerdictForLog);
+
+  // FR-4: Generate ACTIVITY_LOG.json for self-documenting commits
+  if (config.vcsBackend && ctx.activityPhases) {
+    try {
+      await generateActivityLog({
+        worktreePath,
+        runId: config.runId,
+        seedId: config.seedId,
+        phases: ctx.activityPhases,
+        vcs: config.vcsBackend,
+        targetBranch: config.targetBranch ?? "main",
+        includeGitDiffStat: true,
+      });
+      ctx.log(`[PIPELINE] ACTIVITY_LOG.json written`);
+    } catch (err) {
+      // Non-fatal — don't fail the pipeline over activity log
+      ctx.log(`[PIPELINE] ACTIVITY_LOG.json failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   // Pipeline completion callback
   // P0 fix: Pass result.success to prevent branch-ready on pipeline failure.
@@ -631,7 +883,7 @@ async function runPhaseSequence(
   /** When true (epic task mode), exhausted retries return failure instead of continuing. */
   failOnRetriesExhausted: boolean = false,
 ): Promise<PhaseSequenceResult> {
-  const { config, store, logFile, notifyClient, agentMailClient } = ctx;
+  const { config, workflowConfig, store, logFile, notifyClient, agentMailClient } = ctx;
   const { runId, projectId, seedId, seedTitle, worktreePath } = config;
   const description = config.seedDescription ?? "(no description)";
   const comments = config.seedComments;
@@ -641,7 +893,6 @@ async function runPhaseSequence(
   let feedbackContext: string | undefined;
   let qaVerdictForLog: "pass" | "fail" | "unknown" = "unknown";
   const retryCounts: Record<string, number> = {};
-
   // P1: Explorer circuit breaker - track Explorer failures to fail fast after 3
   const explorerFailures: string[] = [];
   // P1/P2: Rate limit tracking per phase
@@ -659,16 +910,30 @@ async function runPhaseSequence(
     const phaseName = phase.name;
     const agentName = `${phaseName}-${seedId}`;
     const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
+    const phaseType = phase.bash
+      ? "bash"
+      : phase.command
+        ? "command"
+        : phase.builtin
+          ? "builtin"
+          : "prompt";
+    const phaseMeta = ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 };
 
     progress.currentPhase = phaseName;
     store.updateRunProgress(runId, progress);
 
     // 1. Skip if artifact already exists (resume from crash)
+    // Interpolate {task.*} placeholders so skipIfArtifact can use
+    // {task.projectReportsDir}/{task.id}/PRD.md patterns.
     if (phase.skipIfArtifact) {
-      const artifactPath = join(worktreePath, phase.skipIfArtifact);
+      const interpolatedSkip = interpolateTaskPlaceholders(
+        phase.skipIfArtifact,
+        phaseMeta,
+      );
+      const artifactPath = join(worktreePath, interpolatedSkip);
       if (existsSync(artifactPath)) {
-        ctx.log(`[${phaseName.toUpperCase()}] Skipping — ${phase.skipIfArtifact} already exists`);
-        await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] SKIPPED (artifact already present)\n`);
+        ctx.log(`[${phaseName.toUpperCase()}] Skipping — ${phase.skipIfArtifact} already exists at ${artifactPath}`);
+        await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] SKIPPED (artifact already present: ${artifactPath})\n`);
         phaseRecords.push({ name: phaseName, skipped: true });
         i++;
         continue;
@@ -689,8 +954,12 @@ async function runPhaseSequence(
     }
 
     // 5. Rotate and run phase
-    if (phase.artifact) {
-      rotateReport(worktreePath, phase.artifact);
+    // Interpolate {task.*} placeholders in artifact path before use.
+    const interpolatedArtifact = phase.artifact
+      ? interpolateTaskPlaceholders(phase.artifact, phaseMeta)
+      : undefined;
+    if (interpolatedArtifact) {
+      rotateReport(worktreePath, interpolatedArtifact);
     }
 
     // Compute VCS-specific prompt variables for finalize and reviewer phases (TRD-026, TRD-027).
@@ -762,23 +1031,58 @@ async function runPhaseSequence(
       }
     }
 
-    const prompt = buildPhasePrompt(phaseName, {
-      seedId,
-      seedTitle,
-      seedDescription: description,
-      seedComments: comments,
-      seedType: config.seedType,
-      runId,
-      hasExplorerReport,
-      feedbackContext,
-      worktreePath,
-      baseBranch: config.targetBranch,
-      ...vcsPromptVars,
-    }, ctx.promptOpts);
+    // TRD-004/TRD-005: Build prompt only for prompt:-based phases.
+    // Bash and command phases handle their own execution without buildPhasePrompt.
+    let prompt = "";
+    if (!phase.bash) {
+      prompt = phase.command
+        ? interpolateTaskPlaceholders(phase.command, phaseMeta)
+        : buildPhasePrompt(phaseName, {
+        seedId,
+        seedTitle,
+        seedDescription: description,
+        seedComments: comments,
+        seedType: config.seedType,
+        runId,
+        hasExplorerReport,
+        requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
+        feedbackContext,
+        worktreePath,
+        baseBranch: config.targetBranch,
+        ...vcsPromptVars,
+      }, ctx.promptOpts);
+    }
 
     const roleConfigFallback = (ROLE_CONFIGS as Record<string, { model: string } | undefined>)[phaseName];
     const fallbackModel = roleConfigFallback?.model ?? config.model;
     let phaseModel = resolvePhaseModel(phase, config.seedPriority, fallbackModel);
+
+    // FR-2: Write phase-start event to store before agent spawns
+    store.logEvent(projectId, "phase-start", {
+      seedId,
+      phase: phaseName,
+      worktreePath,
+      expectedWorktree: worktreePath,
+      model: phaseModel,
+      runId,
+      targetBranch: config.targetBranch,
+    }, runId);
+
+    // FR-3: Start heartbeat for this phase
+    ctx.heartbeatManager?.start(phaseName);
+
+    // FR-4: Create initial activity phase record
+    const activityPhase = createPhaseRecord(phaseName, phaseModel, {
+      phaseType,
+      commandsRun: phase.bash
+        ? [interpolateTaskPlaceholders(phase.bash, phaseMeta)]
+        : phase.command
+          ? [prompt]
+          : undefined,
+      artifactExpected: interpolatedArtifact,
+      workflowName: workflowConfig.name,
+      workflowPath: workflowConfig.sourcePath,
+    });
 
     // P1: Explorer circuit breaker - fail fast if Explorer has failed 3 times
     // This prevents empty branch pollution when Explorer keeps failing
@@ -809,8 +1113,75 @@ async function runPhaseSequence(
 
     const phaseConfig = { ...config, model: phaseModel };
 
+    // TRD-004: Bash phase — execute via execFile instead of SDK agent
+    if (phase.bash) {
+      const resolvedBashCommand = interpolateTaskPlaceholders(phase.bash, phaseMeta);
+      const bashResult = await runBashPhase(
+        phase.bash,
+        ctx.taskMeta,
+        worktreePath,
+        phase.artifact,
+      );
+      // TRD-004: record phase result (same structure as ctx.runPhase result)
+      const result: PhaseResult = {
+        success: bashResult.success,
+        costUsd: 0,
+        turns: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        error: bashResult.error,
+        outputText: bashResult.stdout || bashResult.stderr,
+      };
+      phaseRecords.push({
+        name: phaseName,
+        phaseType,
+        skipped: false,
+        success: result.success,
+        costUsd: 0,
+        turns: 0,
+        error: result.error,
+        commandsRun: [resolvedBashCommand],
+        artifactExpected: interpolatedArtifact,
+        artifactPresent: interpolatedArtifact ? existsSync(join(worktreePath, interpolatedArtifact)) : undefined,
+      });
+      progress.costUsd += 0;
+      store.updateRunProgress(runId, progress);
+      // Continue to verdict handling below (same as ctx.runPhase path)
+      if (!result.success) {
+        const errorMsg = result.error ?? `${phaseName} failed`;
+        ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${errorMsg}`);
+        await appendFile(logFile, `\n[PIPELINE] ${phaseName} FAIL: ${errorMsg}\n`);
+        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: phaseName, error: errorMsg, retryable: false,
+        });
+        if (phase.retryWith && retryCounts[phaseName] < (phase.retryOnFail ?? 0)) {
+          retryCounts[phaseName] = (retryCounts[phaseName] ?? 0) + 1;
+          ctx.log(`[${phaseName.toUpperCase()}] Retry ${retryCounts[phaseName]}/${phase.retryOnFail}`);
+          await appendFile(logFile, `\n[PIPELINE] ${phaseName} retry ${retryCounts[phaseName]}\n`);
+          // fall through to retry
+        } else {
+          await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, notifyClient, config.projectPath);
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+        }
+      }
+      // Handle verdict if configured
+      if (phase.verdict && result.outputText) {
+        qaVerdictForLog = parseVerdict(result.outputText);
+      }
+      // Increment i and continue to next phase
+      i++;
+      continue;
+    }
+
     const result = await ctx.runPhase(
       phaseName, prompt, phaseConfig, progress, logFile, store, notifyClient, agentMailClient,
+      {
+        phaseType,
+        expectedArtifact: interpolatedArtifact,
+        resolvedCommand: phase.command ? prompt : undefined,
+        workflowName: workflowConfig.name,
+        workflowPath: workflowConfig.sourcePath,
+      },
     );
 
     // 6. Release files
@@ -818,15 +1189,89 @@ async function runPhaseSequence(
       ctx.releaseFiles(agentMailClient, [worktreePath], agentName);
     }
 
+    const artifactPresent = interpolatedArtifact ? existsSync(join(worktreePath, interpolatedArtifact)) : undefined;
+    activityPhase.artifactPresent = artifactPresent;
+    activityPhase.traceFile = result.traceFile;
+    activityPhase.traceMarkdownFile = result.traceMarkdownFile;
+    activityPhase.phaseWarnings = result.traceWarnings;
+    activityPhase.commandHonored = result.commandHonored;
+    if (phase.command && result.success && interpolatedArtifact && artifactPresent === false) {
+      const artifactWarning = `[PIPELINE] WARNING — command phase ${phaseName} succeeded without artifact ${interpolatedArtifact}`;
+      ctx.log(artifactWarning);
+      await appendFile(logFile, `\n${artifactWarning}\n`);
+    }
+
     // Record phase result
     phaseRecords.push({
       name: feedbackContext ? `${phaseName} (retry)` : phaseName,
+      phaseType,
       skipped: false,
       success: result.success,
       costUsd: result.costUsd,
       turns: result.turns,
       error: result.error,
+      commandsRun: phase.command ? [prompt] : undefined,
+      artifactExpected: interpolatedArtifact,
+      artifactPresent,
+      traceFile: result.traceFile,
+      traceMarkdownFile: result.traceMarkdownFile,
+      phaseWarnings: result.traceWarnings,
+      commandHonored: result.commandHonored,
     });
+
+    // FR-3: Update heartbeat with final phase stats before stopping
+    ctx.heartbeatManager?.update({
+      turns: result.turns,
+      toolCalls: progress.toolCalls,
+      toolBreakdown: progress.toolBreakdown,
+      costUsd: progress.costUsd,
+      tokensIn: progress.tokensIn,
+      tokensOut: progress.tokensOut,
+      lastFileEdited: progress.lastToolCall ?? null,
+      lastActivity: new Date().toISOString(),
+    });
+    // FR-3: Stop heartbeat after phase completes
+    ctx.heartbeatManager?.stop();
+    // FR-4: Finalize and record activity phase
+    if (ctx.activityPhases) {
+      const completedActivityPhase = finalizePhaseRecord(activityPhase, {
+        success: result.success,
+        costUsd: result.costUsd,
+        turns: result.turns,
+        tokensIn: result.tokensIn,
+        tokensOut: result.tokensOut,
+        error: result.error,
+        toolCalls: progress.toolCalls,
+        toolBreakdown: progress.toolBreakdown,
+        filesChanged: progress.filesChanged ?? [],
+        traceFile: result.traceFile,
+        traceMarkdownFile: result.traceMarkdownFile,
+        traceWarnings: result.traceWarnings,
+        commandHonored: result.commandHonored,
+        workflowName: workflowConfig.name,
+        workflowPath: workflowConfig.sourcePath,
+      });
+      ctx.activityPhases.push(completedActivityPhase);
+
+      // Write incremental pipeline report after each phase — provides real-time traceability
+      // while pipeline is running, not just at the end.
+      let branchName: string | undefined;
+      try {
+        branchName = config.vcsBackend?.getCurrentBranch ? await config.vcsBackend.getCurrentBranch(worktreePath) : undefined;
+      } catch {
+        branchName = undefined;
+      }
+      writeIncrementalPipelineReport({
+        worktreePath,
+        seedId,
+        runId,
+        completedPhases: ctx.activityPhases,
+        targetBranch: config.targetBranch,
+        vcsBranchName: branchName,
+      }).catch((err) => {
+        ctx.log(`[PIPELINE] Warning: failed to write incremental report: ${String(err)}`);
+      });
+    }
 
     progress.costUsd += result.costUsd;
     progress.tokensIn += result.tokensIn;
@@ -834,6 +1279,11 @@ async function runPhaseSequence(
     progress.costByPhase ??= {};
     progress.costByPhase[phaseName] = (progress.costByPhase[phaseName] ?? 0) + result.costUsd;
     store.updateRunProgress(runId, progress);
+
+    // NOTE: Missing artifact after a successful phase run is no longer treated as
+    // a failure here. The phase returned success so we continue. Artifact existence is
+    // checked at the START of a run (skipIfArtifact) rather than blocking on absence
+    // after a successful run. This avoids false failures in test/deterministic modes.
 
     // 7. Handle failure
     if (!result.success) {
@@ -913,7 +1363,11 @@ async function runPhaseSequence(
               ctx.taskStore?.updatePhase(config.taskId ?? null, phaseName);
 
               if (phase.mail?.forwardArtifactTo && phase.artifact) {
-                const artifactContent = readReport(worktreePath, phase.artifact);
+                const interpolatedArtifact = interpolateTaskPlaceholders(
+                  phase.artifact,
+                  ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 },
+                );
+                const artifactContent = readReport(worktreePath, interpolatedArtifact);
                 if (artifactContent) {
                   const targetAgent = phase.mail.forwardArtifactTo === "foreman"
                     ? "foreman"
@@ -959,13 +1413,17 @@ async function runPhaseSequence(
 
     // 8. Verdict handling: parse PASS/FAIL, retry if needed.
     if (phase.verdict && phase.artifact) {
-      const report = readReport(worktreePath, phase.artifact);
+      const interpolatedArtifact = interpolateTaskPlaceholders(
+        phase.artifact,
+        ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 },
+      );
+      const report = readReport(worktreePath, interpolatedArtifact);
       let verdict = report ? parseVerdict(report) : "unknown";
 
       if (phaseName === "qa" && report && !qaReportHasTestEvidence(report)) {
         verdict = "fail";
-        feedbackContext = "QA report invalid: missing explicit `npm test` command/output evidence with pass/fail counts.";
-        ctx.log(`[QA] FAIL — report missing npm test evidence`);
+        feedbackContext = "QA report invalid: missing explicit test command/output evidence with pass/fail counts.";
+        ctx.log("[QA] FAIL — report missing test command evidence");
       }
 
       if (phaseName === "finalize" && report) {

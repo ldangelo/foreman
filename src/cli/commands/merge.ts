@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
+import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../../lib/project-config.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
@@ -63,12 +63,17 @@ export const mergeCommand = new Command("merge")
     try {
       const startupVcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
       const projectPath = await startupVcs.getRepoRoot(process.cwd());
+      const projectCfg = loadProjectConfig(projectPath);
       const vcs = await createMergeVcsBackend(projectPath);
 
       // Resolve the target branch: use the explicit --target-branch flag if provided,
       // otherwise auto-detect the repository's default branch.
       const targetBranch: string = (opts.targetBranch as string | undefined)
-        ?? await vcs.detectDefaultBranch(projectPath);
+        ?? await resolveDefaultBranch(
+          projectPath,
+          (path) => vcs.detectDefaultBranch(path),
+          projectCfg,
+        );
 
       const seeds = await createMergeTaskClient(projectPath);
       const store = ForemanStore.forProject(projectPath);
@@ -326,12 +331,17 @@ export const mergeCommand = new Command("merge")
         // Track failure reason for immediate bead note (declared outside try for finally access)
         let mergeFailureReason: string | undefined;
         try {
+          // Fetch the run directly to bypass the getCompletedRuns() query and eliminate
+          // the race condition where finalize marks a run completed but the query hasn't
+          // seen the update yet.
+          const run = store.getRun(entry.run_id);
           const report = await refinery.mergeCompleted({
             targetBranch,
             runTests: opts.tests,
             testCommand: opts.testCommand,
             projectId: project.id,
             seedId: entry.seed_id,
+            overrideRun: run ?? undefined,
           });
 
           if (report.merged.length > 0) {
@@ -417,12 +427,17 @@ export const mergeCommand = new Command("merge")
 
               let retryFailureReason: string | undefined;
               try {
+                // Fetch the run directly to bypass the getCompletedRuns() query and eliminate
+                // the race condition where finalize marks a run completed but the query hasn't
+                // seen the update yet.
+                const run = store.getRun(toProcess.run_id);
                 const report = await refinery.mergeCompleted({
                   targetBranch,
                   runTests: opts.tests,
                   testCommand: opts.testCommand,
                   projectId: project.id,
                   seedId: toProcess.seed_id,
+                  overrideRun: run ?? undefined,
                 });
 
                 if (report.merged.length > 0) {

@@ -1,0 +1,69 @@
+# Task workflow: Explorer → Developer ⇄ QA → Finalize
+#
+# Standard task pipeline. Slightly lighter than feature: skips the dedicated
+# reviewer phase. Appropriate for well-scoped implementation tasks, improvements,
+# and non-feature work that still benefits from QA validation.
+#
+# Auto-selected when bead type is "task".
+
+name: task
+merge: auto
+onError: stop
+setup:
+  - command: npm install --prefer-offline --no-audit
+    description: Install Node.js dependencies
+    failFatal: true
+setupCache:
+  key: package-lock.json
+  path: node_modules
+rebaseAfterPhase: developer
+
+phases:
+  - name: fix
+    command: "/ensemble:fix-issue {task.title} {task.description}"
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 80
+    artifact: DEVELOPER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 2: test (bash phase — TRD-004) ────────────────────────────────
+  # Executes `npm run test` via /bin/sh -c in the worktree directory.
+  # {task.*} placeholders are interpolated before execution.
+  # Artifact is written from stdout; verdict is parsed from output.
+  - name: test
+    bash: "npm run test"
+    artifact: TEST_RESULTS.md
+    verdict: true
+    retryWith: fix
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 3: finalize (prompt phase) ───────────────────────────────────
+  # Standard finalize with human-readable summary for auto-merge context.
+  - name: finalize
+    prompt: finalize.md
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 30
+    artifact: FINALIZE_VALIDATION.md
+    verdict: true
+    retryWith: fix
+    retryOnFail: 1
+    mail:
+      onStart: false
+      onComplete: true
+onFailure:
+  name: troubleshooter
+  prompt: troubleshooter.md
+  models:
+    default: MiniMax
+    P0: MiniMax-highspeed
+  maxTurns: 20
+  artifact: TROUBLESHOOT_REPORT.md

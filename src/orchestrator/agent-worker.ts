@@ -16,7 +16,7 @@ import { request as httpRequest } from "node:http";
 import { runPhaseSession } from "./phase-runner.js";
 import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
-import type { EpicTask } from "./pipeline-executor.js";
+import type { EpicTask, PhaseObservabilityInput } from "./pipeline-executor.js";
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import { NativeTaskStore } from "../lib/task-store.js";
@@ -33,10 +33,12 @@ import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { autoMerge } from "./auto-merge.js";
+import { Refinery } from "./refinery.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { NativeTaskClient } from "../lib/native-task-client.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
+import type { TaskMeta } from "../lib/interpolate.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -122,6 +124,60 @@ function sendMailText(
     const msg = err instanceof Error ? err.message : String(err);
     log(`[agent-mail] send failed (non-fatal): ${msg}`);
   });
+}
+
+function compactTraceValue(value: string): string {
+  let compact = value
+    .replace(/\/Users\/ldangelo\/Development\/Fortium\/\.foreman-worktrees\/foreman\/foreman-[^/\s]+/g, "<worktree>")
+    .replace(/\/Users\/ldangelo\/Development\/Fortium\/foreman/g, "<repo>")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (compact.length > 160) {
+    compact = `${compact.slice(0, 157)}…`;
+  }
+  return compact;
+}
+
+function buildTraceMailPayload(event: {
+  kind: "start" | "update" | "warning" | "complete";
+  phase: string;
+  seedId: string;
+  message: string;
+  toolName?: string;
+  argsPreview?: string;
+  traceFile?: string;
+  traceMarkdownFile?: string;
+  commandHonored?: boolean;
+}): Record<string, unknown> {
+  return {
+    seedId: event.seedId,
+    phase: event.phase,
+    kind: event.kind,
+    message: compactTraceValue(event.message),
+    tool: event.toolName,
+    argsPreview: event.argsPreview ? compactTraceValue(event.argsPreview) : undefined,
+    traceFile: event.traceFile,
+    traceMarkdownFile: event.traceMarkdownFile,
+    commandHonored: event.commandHonored,
+  };
+}
+
+function sendTraceMail(
+  client: AnyMailClient | null,
+  event: {
+    kind: "start" | "update" | "warning" | "complete";
+    phase: string;
+    seedId: string;
+    message: string;
+    toolName?: string;
+    argsPreview?: string;
+    traceFile?: string;
+    traceMarkdownFile?: string;
+    commandHonored?: boolean;
+  },
+): void {
+  const subject = `${event.phase.charAt(0).toUpperCase() + event.phase.slice(1)} Trace ${event.kind}`;
+  sendMail(client, "foreman", subject, buildTraceMailPayload(event));
 }
 
 /**
@@ -262,6 +318,19 @@ interface WorkerConfig {
    * When set, this run is an epic execution.
    */
   epicId?: string;
+  /**
+   * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
+   */
+  taskMeta?: TaskMeta;
+  /**
+   * Directory guardrail config (FR-1). When set, wraps tool factories with
+   * cwd verification in the Pi SDK session.
+   */
+  guardrailConfig?: {
+    mode?: "auto-correct" | "veto" | "disabled";
+    expectedCwd?: string;
+    allowedPaths?: string[];
+  };
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -384,12 +453,23 @@ async function main(): Promise<void> {
       logFile,
       context: {
         phaseName: "worker",
+        runId,
         seedId,
         seedTitle,
         seedType: config.seedType,
         seedDescription: config.seedDescription,
         worktreePath,
         targetBranch: config.targetBranch,
+      },
+      observability: {
+        runId,
+        seedId,
+        phase: "worker",
+        phaseType: "prompt",
+        model,
+        worktreePath,
+        rawPrompt: prompt,
+        systemPrompt: `You are an agent working on task: ${seedTitle}`,
       },
       onToolCall: (name: string, input: Record<string, unknown>) => {
         progress.toolCalls++;
@@ -493,6 +573,11 @@ interface PhaseResult {
   tokensIn: number;
   tokensOut: number;
   error?: string;
+  outputText?: string;
+  traceFile?: string;
+  traceMarkdownFile?: string;
+  traceWarnings?: string[];
+  commandHonored?: boolean;
 }
 
 /**
@@ -507,6 +592,7 @@ async function runPhase(
   store: ForemanStore,
   notifyClient: NotificationClient,
   agentMailClient?: AnyMailClient | null,
+  observability?: PhaseObservabilityInput,
 ): Promise<PhaseResult> {
   const roleConfig = ROLE_CONFIGS[role];
   // Use the model resolved by the pipeline executor (from workflow YAML + bead priority).
@@ -537,12 +623,30 @@ async function runPhase(
       logFile,
       context: {
         phaseName: role,
+        runId: config.runId,
         seedId: config.seedId,
         seedTitle: config.seedTitle,
         seedType: config.seedType,
         seedDescription: config.seedDescription,
         worktreePath: config.worktreePath,
         targetBranch: config.targetBranch,
+      },
+      observability: {
+        runId: config.runId,
+        seedId: config.seedId,
+        phase: role,
+        phaseType: observability?.phaseType ?? "prompt",
+        model: resolvedModel,
+        worktreePath: config.worktreePath,
+        rawPrompt: prompt,
+        systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
+        expectedArtifact: observability?.expectedArtifact,
+        resolvedCommand: observability?.resolvedCommand,
+        workflowName: observability?.workflowName,
+        workflowPath: observability?.workflowPath,
+      },
+      onTraceEvent: (event) => {
+        sendTraceMail(agentMailClient ?? null, event);
       },
       onToolCall: (name, input) => {
         progress.toolCalls++;
@@ -568,6 +672,11 @@ async function runPhase(
           timestamp: new Date().toISOString(),
         });
       },
+      // FR-1: Directory guardrail — verify cwd before each tool call
+      guardrailConfig: config.guardrailConfig ? {
+        ...config.guardrailConfig,
+        expectedCwd: config.guardrailConfig.expectedCwd ?? config.worktreePath,
+      } : undefined,
     });
 
     progress.costUsd += phaseResult.costUsd;
@@ -585,12 +694,35 @@ async function runPhase(
     if (phaseResult.success) {
       log(`[${role.toUpperCase()}] Completed (${phaseResult.turns} turns, $${phaseResult.costUsd.toFixed(4)})`);
       await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] COMPLETED ($${phaseResult.costUsd.toFixed(4)})\n`);
-      return { success: true, costUsd: phaseResult.costUsd, turns: phaseResult.turns, tokensIn: phaseResult.tokensIn, tokensOut: phaseResult.tokensOut };
+      return {
+        success: true,
+        costUsd: phaseResult.costUsd,
+        turns: phaseResult.turns,
+        tokensIn: phaseResult.tokensIn,
+        tokensOut: phaseResult.tokensOut,
+        outputText: phaseResult.outputText,
+        traceFile: phaseResult.traceFile,
+        traceMarkdownFile: phaseResult.traceMarkdownFile,
+        traceWarnings: phaseResult.traceWarnings,
+        commandHonored: phaseResult.commandHonored,
+      };
     } else {
       const reason = phaseResult.errorMessage ?? "Pi agent ended without success";
       log(`[${role.toUpperCase()}] Failed: ${reason.slice(0, 200)}`);
       await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] FAILED: ${reason}\n`);
-      return { success: false, costUsd: phaseResult.costUsd, turns: phaseResult.turns, tokensIn: phaseResult.tokensIn, tokensOut: phaseResult.tokensOut, error: reason };
+      return {
+        success: false,
+        costUsd: phaseResult.costUsd,
+        turns: phaseResult.turns,
+        tokensIn: phaseResult.tokensIn,
+        tokensOut: phaseResult.tokensOut,
+        error: reason,
+        outputText: phaseResult.outputText,
+        traceFile: phaseResult.traceFile,
+        traceMarkdownFile: phaseResult.traceMarkdownFile,
+        traceWarnings: phaseResult.traceWarnings,
+        commandHonored: phaseResult.commandHonored,
+      };
     }
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -666,12 +798,24 @@ async function runTroubleshooterPhase(
       logFile,
       context: {
         phaseName: "troubleshooter",
+        runId,
         seedId: beadId,
         seedTitle: beadTitle,
         seedType: config.seedType,
         seedDescription: config.seedDescription,
         worktreePath: config.worktreePath,
         targetBranch: config.targetBranch,
+      },
+      observability: {
+        runId,
+        seedId: beadId,
+        phase: "troubleshooter",
+        phaseType: "prompt",
+        model: resolvedModel,
+        worktreePath: config.worktreePath,
+        rawPrompt: prompt,
+        systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for bead: ${beadTitle}`,
+        expectedArtifact: "TROUBLESHOOT_REPORT.md",
       },
       onToolCall: () => { /* no-op */ },
       onTurnEnd: () => { /* no-op */ },
@@ -708,7 +852,10 @@ async function runTroubleshooterPhase(
  */
 async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: string, notifyClient: NotificationClient, agentMailClient: AnyMailClient | null): Promise<void> {
   const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(config.worktreePath);
-  const resolvedWorkflow = resolveWorkflowName(config.seedType ?? "feature", config.seedLabels);
+  const resolvedWorkflow = resolveWorkflowName(
+    config.seedType ?? "feature",
+    config.seedLabels,
+  );
   // Load the workflow config (phase sequence + per-phase overrides).
   let workflowConfig: WorkflowConfig;
   try {
@@ -767,6 +914,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
     markStuck,
     log,
     promptOpts: { projectRoot: pipelineProjectPath, workflow: resolvedWorkflow },
+    taskMeta: config.taskMeta,
 
     // Epic mode: sync child task bead status into br as the pipeline progresses.
     async onTaskStatusChange(taskSeedId, status) {
@@ -967,6 +1115,37 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         store.updateRun(runId, { status: "completed", completed_at: now });
         notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
 
+        let prCreated = false;
+        try {
+          const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
+          const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend);
+          const pr = await refinery.ensurePullRequestForRun({
+            runId,
+            baseBranch: config.targetBranch,
+            updateRunStatus: false,
+            bodyNote: workflowConfig.merge === "auto"
+              ? "Automatically published before refinery PR merge."
+              : "Published by finalize for operator review.",
+          });
+          prCreated = true;
+          log(`[FINALIZE] PR ready: ${pr.prUrl}`);
+          sendMail(agentMailClient, "foreman", "pr-created", {
+            seedId,
+            runId,
+            branchName: pr.branchName,
+            prUrl: pr.prUrl,
+            strategy: workflowConfig.merge ?? "auto",
+          });
+
+          if ((workflowConfig.merge ?? "auto") !== "auto") {
+            store.updateRun(runId, { status: "pr-created", completed_at: now });
+            notifyClient.send({ type: "status", runId, status: "pr-created", timestamp: now });
+          }
+        } catch (prErr: unknown) {
+          const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
+          log(`[FINALIZE] PR creation failed (will rely on queue/retry path): ${prMsg}`);
+        }
+
         let skipMergeQueue = false;
         if (troubleshooterResolved) {
           try {
@@ -984,7 +1163,8 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           }
         }
 
-        if (!skipMergeQueue) {
+        const mergeStrategy = workflowConfig.merge ?? "auto";
+        if (!skipMergeQueue && mergeStrategy === "auto") {
           try {
             const enqueueStore = ForemanStore.forProject(pipelineProjectPath);
             // Pre-compute modified files via VcsBackend (async) before calling
@@ -1001,6 +1181,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
               db: enqueueStore.getDb(),
               seedId,
               runId,
+              operation: "auto_merge",
               worktreePath,
               getFilesModified: () => enqueueFiles,
             });
@@ -1013,23 +1194,23 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
                 seedId, runId, branch: `foreman/${seedId}`, worktreePath,
               });
 
-              // Trigger autoMerge immediately so the branch is merged even if
-              // `foreman run` is no longer active (fixes: bd-0qv2).
               try {
-                const mergeStore = ForemanStore.forProject(pipelineProjectPath);
-                const mergeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
-                log(`[FINALIZE] Triggering immediate autoMerge for ${seedId}${config.targetBranch ? ` → ${config.targetBranch}` : ""}`);
+                const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
+                const currentRun = store.getRun(runId) ?? undefined;
                 const mergeResult = await autoMerge({
-                  store: mergeStore,
-                  taskClient: mergeTaskClient,
+                  store,
+                  taskClient: runtimeTaskClient,
                   projectPath: pipelineProjectPath,
                   targetBranch: config.targetBranch,
+                  runId,
+                  ...(currentRun ? { overrideRun: currentRun } : {}),
                 });
-                mergeStore.close();
-                log(`[FINALIZE] autoMerge result: merged=${mergeResult.merged} conflicts=${mergeResult.conflicts} failed=${mergeResult.failed}`);
-              } catch (mergeErr: unknown) {
-                const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-                log(`[FINALIZE] autoMerge failed (non-fatal): ${mergeMsg}`);
+                log(
+                  `[FINALIZE] Immediate merge drain result: merged=${mergeResult.merged}, conflicts=${mergeResult.conflicts}, failed=${mergeResult.failed}`,
+                );
+              } catch (drainErr: unknown) {
+                const drainMsg = drainErr instanceof Error ? drainErr.message : String(drainErr);
+                log(`[FINALIZE] Immediate merge drain failed (non-fatal): ${drainMsg}`);
               }
             } else {
               log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error ?? "(unknown)"}`);
@@ -1038,8 +1219,37 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
             const enqMsg = enqErr instanceof Error ? enqErr.message : String(enqErr);
             log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqMsg}`);
           }
+        } else if (mergeStrategy !== "auto") {
+          if (prCreated) {
+            log(`[FINALIZE] Workflow merge strategy is ${mergeStrategy} — PR created, skipping merge queue enqueue`);
+          } else {
+            log(`[FINALIZE] Workflow merge strategy is ${mergeStrategy} but PR was not created — no merge queue enqueue`);
+          }
         }
       } else {
+        try {
+          const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
+          const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend);
+          const pr = await refinery.ensurePullRequestForRun({
+            runId,
+            baseBranch: config.targetBranch,
+            updateRunStatus: false,
+            bodyNote: `Pipeline finished with failure: ${finalizeFailureReason || "unknown error"}`,
+            existingOk: true,
+          });
+          log(`[FINALIZE] Failure PR ready: ${pr.prUrl}`);
+          sendMail(agentMailClient, "foreman", "pr-created", {
+            seedId,
+            runId,
+            branchName: pr.branchName,
+            prUrl: pr.prUrl,
+            strategy: "failure-review",
+          });
+        } catch (prErr: unknown) {
+          const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
+          log(`[FINALIZE] Failed to publish PR after finalize failure: ${prMsg}`);
+        }
+
         let alreadyLandedOnTarget = false;
         if (!finalizeRetryable && finalizeFailureReason === "tests_failed_pre_existing_issues") {
           try {

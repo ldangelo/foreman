@@ -100,12 +100,14 @@ describe("prompt templates", () => {
     expect(prompt).toContain("JWT token refresh");
     expect(prompt).toContain("DO NOT modify");
     expect(prompt).toContain("EXPLORER_REPORT.md");
+    expect(prompt).toContain("## Implementation Plan");
   });
 
   it("developerPrompt includes seed context", () => {
     const prompt = developerPrompt("bd-123", "Fix auth", "JWT refresh", true);
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("EXPLORER_REPORT.md");
+    expect(prompt).toContain("Implementation Plan");
   });
 
   it("developerPrompt includes feedback when provided", () => {
@@ -316,7 +318,11 @@ describe("qaReportHasTestEvidence", () => {
     expect(qaReportHasTestEvidence("Command run: npm test -- --reporter=dot\nTest suite: 10 passed, 0 failed\nRaw summary: 10 passed, 0 failed")).toBe(true);
   });
 
-  it("returns false when npm test is missing", () => {
+  it("returns true when targeted vitest command and pass/fail counts are present", () => {
+    expect(qaReportHasTestEvidence("Command run: npx vitest run src/cli/__tests__/status-display.test.ts\nTest suite: 10 passed, 0 failed\nRaw summary: 10 passed, 0 failed")).toBe(true);
+  });
+
+  it("returns false when test command is missing", () => {
     expect(qaReportHasTestEvidence("Test suite: 10 passed, 0 failed")).toBe(false);
   });
 

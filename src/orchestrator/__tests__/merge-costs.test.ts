@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS merge_queue (
   branch_name TEXT NOT NULL,
   seed_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
+  operation TEXT NOT NULL DEFAULT 'auto_merge',
   agent_name TEXT,
   files_modified TEXT DEFAULT '[]',
   enqueued_at TEXT NOT NULL,

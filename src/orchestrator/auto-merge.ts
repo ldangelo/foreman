@@ -10,7 +10,7 @@
  * for `foreman run` to be running and call autoMerge() in its dispatch loop.
  */
 
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -25,8 +25,6 @@ import { Refinery } from "./refinery.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
 import { enqueueAddNotesToBead, enqueueMarkBeadFailed, enqueueSetBeadStatus } from "./task-backend-ops.js";
-
-const execFileAsync = promisify(execFile);
 
 async function createAutoMergeVcsBackend(projectPath: string): Promise<VcsBackend> {
   const projectCfg = loadProjectConfig(projectPath);
@@ -112,6 +110,23 @@ export interface AutoMergeOpts {
   projectPath: string;
   /** Merge target branch. When omitted, auto-detected via detectDefaultBranch(). */
   targetBranch?: string;
+  /**
+   * Optional run ID for the immediate auto-merge case (agent-worker finalize).
+   * When provided, this is passed to mergeCompleted's runId path, which fetches
+   * the run directly by ID without status filtering. This is the most reliable
+   * approach for immediate auto-merge calls where timing is critical.
+   *
+   * The runId should match the queue entry's run_id so mergeCompleted can locate
+   * the run even if the status update hasn't been fully committed/visible yet.
+   */
+  runId?: string;
+  /**
+   * Optional pre-fetched run to bypass the getRun() query entirely.
+   * When provided, this run is used directly instead of querying by runId.
+   * This eliminates the race condition where the run status update hasn't been
+   * committed/visible when autoMerge queries for the run by ID.
+   */
+  overrideRun?: import("../lib/store.js").Run;
 }
 
 /** Result summary returned by autoMerge(). */
@@ -144,7 +159,7 @@ export interface AutoMergeResult {
  *     succeeds (new behaviour, fixes the "foreman run exits early" bug)
  */
 export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
-  const { store, taskClient, projectPath } = opts;
+  const { store, taskClient, projectPath, overrideRun, runId: optsRunId } = opts;
   const vcs = await createAutoMergeVcsBackend(projectPath);
   const targetBranch = opts.targetBranch ?? await vcs.detectDefaultBranch(projectPath);
 
@@ -173,14 +188,77 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
     // Track whether this queue entry resulted in a successful merge so that
     // bead-closed mail is only sent on actual success (Fix 2).
     let mergeSucceeded = false;
+
+    // Determine merge intent from the queue entry first, falling back to the
+    // run's merge_strategy for legacy queue rows that predate operation.
+    const run = overrideRun?.id === currentEntry.run_id
+      ? overrideRun
+      : store.getRun(currentEntry.run_id);
+    const mergeStrategy: 'auto' | 'pr' | 'none' = (run?.merge_strategy as 'auto' | 'pr' | 'none') ?? 'auto';
+    const mergeOperation = currentEntry.operation
+      ?? (mergeStrategy === 'pr' ? 'create_pr' : 'auto_merge');
+
+    if (!currentEntry.operation && mergeStrategy === 'none') {
+      // Skip merge entirely — mark as completed
+      mq.updateStatus(currentEntry.id, 'merged', { completedAt: new Date().toISOString() });
+      store.updateRun(currentEntry.run_id, { status: 'completed' });
+      mergedCount += 1;
+      mergeSucceeded = true;
+      entry = mq.dequeue();
+      continue;
+    }
+
+    if (mergeOperation === 'create_pr') {
+      try {
+        const pr = await refinery.ensurePullRequestForRun({
+          runId: currentEntry.run_id,
+          baseBranch: targetBranch,
+          updateRunStatus: true,
+          bodyNote: "Manual PR created by Foreman",
+        });
+        mq.updateStatus(currentEntry.id, 'merged', { completedAt: new Date().toISOString() });
+        await syncBeadStatusAfterMerge(
+          store,
+          taskClient,
+          currentEntry.run_id,
+          currentEntry.seed_id,
+          projectPath,
+          `PR created for manual review.\nPR URL: ${pr.prUrl}`,
+        );
+        sendMail(store, currentEntry.run_id, "merge-conflict", {
+          seedId: currentEntry.seed_id,
+          branchName: pr.branchName,
+          prUrl: pr.prUrl,
+          prCreated: true,
+        });
+        conflictCount += 1;
+        entry = mq.dequeue();
+        continue;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        mergeFailureReason = `Failed to create PR: ${message}`;
+        mq.updateStatus(currentEntry.id, 'failed', { error: message });
+        failedCount += 1;
+        entry = mq.dequeue();
+        continue;
+      }
+    }
+
     try {
-      const report = await refinery.mergeCompleted({
-        targetBranch,
-        runTests: true,
-        testCommand: "npm test",
-        projectId: project.id,
-        seedId: currentEntry.seed_id,
-      });
+      const effectiveRunId = optsRunId ?? overrideRun?.id ?? currentEntry.run_id;
+      const report = typeof (refinery as Refinery & { mergePullRequest?: typeof refinery.mergePullRequest }).mergePullRequest === "function"
+        ? await refinery.mergePullRequest({
+          targetBranch,
+          runId: effectiveRunId,
+        })
+        : await refinery.mergeCompleted({
+          targetBranch,
+          runTests: false,
+          projectId: project.id,
+          seedId: currentEntry.seed_id,
+          runId: effectiveRunId,
+          ...(overrideRun && overrideRun.id === currentEntry.run_id ? { overrideRun } : {}),
+        });
 
 
       if (report.merged.length > 0) {
@@ -204,11 +282,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         if (report.conflicts.length > 0) {
           const files = report.conflicts.flatMap((c) => c.conflictFiles).slice(0, 10);
           mergeFailureReason = `Merge conflict detected in branch foreman/${currentEntry.seed_id}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
-        } else if (report.prsCreated.length > 0) {
-          const pr = report.prsCreated[0];
-          mergeFailureReason = `Merge conflict: a PR was created for manual review.\nPR URL: ${pr.prUrl}\nBranch: ${pr.branchName}`;
         }
-
         // Send merge-conflict mail for each conflicted run
         for (const conflictRun of report.conflicts) {
           sendMail(store, currentEntry.run_id, "merge-conflict", {
@@ -218,7 +292,6 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
             prCreated: false,
           });
         }
-        // Send merge-conflict mail for PRs created on conflict
         for (const pr of report.prsCreated) {
           sendMail(store, currentEntry.run_id, "merge-conflict", {
             seedId: pr.seedId,
@@ -273,26 +346,14 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
           });
         }
       } else if (report.unexpectedErrors && report.unexpectedErrors.length > 0) {
-        // Git/shell command failures captured by refinery's outer catch (Fix 3).
-        // These are NOT test runner failures — use reason "unexpected-error".
-        mq.updateStatus(currentEntry.id, "failed", { error: "Unexpected git/shell error" });
-        failedCount += report.unexpectedErrors.length;
-
         const firstError = report.unexpectedErrors[0];
-        mergeFailureReason = `Merge failed due to unexpected error: ${firstError.error.slice(0, 800)}`;
-
-        for (const errRun of report.unexpectedErrors) {
-          sendMail(store, currentEntry.run_id, "merge-failed", {
-            seedId: errRun.seedId,
-            branchName: errRun.branchName,
-            reason: "unexpected-error",
-            error: errRun.error.slice(0, 400),
-          });
-        }
+        mergeFailureReason = `PR merge failed: ${firstError.error.slice(0, 400)}`;
+        mq.updateStatus(currentEntry.id, 'failed', { error: mergeFailureReason });
+        failedCount += 1;
       } else {
         mq.updateStatus(currentEntry.id, "failed", { error: "No completed run found" });
         failedCount++;
-        mergeFailureReason = `Merge failed: no completed run found for seed ${currentEntry.seed_id}. The run may have been deleted or not yet finalized.`;
+        mergeFailureReason = `Merge failed: no mergeable run found for seed ${currentEntry.seed_id}. The run may have been deleted or not yet finalized.`;
 
         // Send merge-failed mail when no completed run was found in the queue
         sendMail(store, currentEntry.run_id, "merge-failed", {
@@ -302,16 +363,13 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      mq.updateStatus(currentEntry.id, "failed", { error: message });
-      failedCount++;
+      mergeFailureReason = `PR merge error: ${message.slice(0, 800)}`;
+      mq.updateStatus(currentEntry.id, 'failed', { error: mergeFailureReason });
+      failedCount += 1;
 
-      // Capture the failure reason so the finally block can add it as a bead note
-      mergeFailureReason = `Unexpected error during merge: ${message.slice(0, 800)}`;
-
-      // Send merge-failed mail when an unexpected error occurs in the merge pipeline
-      sendMail(store, currentEntry.run_id, "merge-failed", {
+      sendMail(store, currentEntry.run_id, 'merge-failed', {
         seedId: currentEntry.seed_id,
-        reason: "unexpected-error",
+        reason: 'unexpected-error',
         error: message.slice(0, 400),
       });
     } finally {

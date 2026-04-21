@@ -6,12 +6,13 @@
  *   AC-T-025-2: Resolve VCS config (workflow > project > auto)
  *   AC-T-025-3: Handle missing config gracefully (return null)
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   loadProjectConfig,
+  resolveDefaultBranch,
   resolveVcsConfig,
   ProjectConfigError,
   type ProjectConfig,
@@ -115,6 +116,12 @@ describe("loadProjectConfig", () => {
     expect(cfg!.vcs?.git?.useTown).toBe(true);
   });
 
+  it("loads top-level defaultBranch from config.yaml", () => {
+    writeForemanConfig(tmpDir, "defaultBranch: dev\nvcs:\n  backend: jujutsu");
+    const cfg = loadProjectConfig(tmpDir);
+    expect(cfg!.defaultBranch).toBe("dev");
+  });
+
   // JSON fallback
   it("falls back to .foreman/config.json when config.yaml is absent", () => {
     writeForemanConfig(
@@ -164,6 +171,12 @@ describe("loadProjectConfig", () => {
     );
     expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
     expect(() => loadProjectConfig(tmpDir)).toThrow(/useTown.*boolean/);
+  });
+
+  it("throws ProjectConfigError for invalid defaultBranch type", () => {
+    writeForemanConfig(tmpDir, "defaultBranch: 123");
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/defaultBranch/);
   });
 
   it("throws ProjectConfigError for malformed YAML", () => {
@@ -281,5 +294,30 @@ describe("resolveVcsConfig", () => {
     const projectVcs: ProjectConfig["vcs"] = { backend: "jujutsu" };
     const result = resolveVcsConfig(undefined, projectVcs);
     expect(result.jujutsu).toBeUndefined();
+  });
+});
+
+describe("resolveDefaultBranch", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("prefers configured defaultBranch over auto-detection", async () => {
+    writeForemanConfig(tmpDir, "defaultBranch: dev");
+    const detect = vi.fn().mockResolvedValue("main");
+    await expect(resolveDefaultBranch(tmpDir, detect)).resolves.toBe("dev");
+    expect(detect).not.toHaveBeenCalled();
+  });
+
+  it("falls back to VCS detection when defaultBranch is not configured", async () => {
+    const detect = vi.fn().mockResolvedValue("main");
+    await expect(resolveDefaultBranch(tmpDir, detect)).resolves.toBe("main");
+    expect(detect).toHaveBeenCalledOnce();
   });
 });

@@ -2,8 +2,7 @@
  * JujutsuBackend — Jujutsu (jj) VCS backend implementation.
  *
  * Implements the `VcsBackend` interface using the `jj` CLI.
- * Assumes a **colocated** Jujutsu repository (`.jj/` + `.git/` both present),
- * which is the only mode supported by Foreman.
+ * Supports Jujutsu repositories in both colocated and non-colocated layouts.
  *
  * Key differences from GitBackend:
  * - Workspaces use `jj workspace add` / `jj workspace forget`.
@@ -46,8 +45,8 @@ const execFileAsync = promisify(execFile);
 /**
  * JujutsuBackend encapsulates jj-specific VCS operations for a Foreman project.
  *
- * Foreman assumes a colocated jj repository so that git-based tooling
- * (GitHub Actions, gh CLI, etc.) continues to work alongside jj.
+ * Foreman prefers colocated jj repositories when git-native tooling is needed,
+ * but repository introspection should also work for non-colocated jj repos.
  */
 export class JujutsuBackend implements VcsBackend {
   readonly name = 'jujutsu' as const;
@@ -91,8 +90,7 @@ export class JujutsuBackend implements VcsBackend {
 
   /**
    * Execute a git command in the given working directory.
-   * Used for operations that still need git in colocated mode
-   * (e.g. getRepoRoot, getMainRepoRoot).
+   * Used for operations that still need git metadata when it exists.
    */
   private async git(args: string[], cwd: string): Promise<string> {
     try {
@@ -123,23 +121,18 @@ export class JujutsuBackend implements VcsBackend {
 
   /**
    * Find the root of the jj repository containing `path`.
-   * In colocated mode this delegates to git rev-parse since both .jj and .git exist.
+   * Uses `jj root`, which works in both colocated and non-colocated repos.
    */
   async getRepoRoot(path: string): Promise<string> {
-    // In colocated mode, use git rev-parse for compatibility
-    return this.git(["rev-parse", "--show-toplevel"], path);
+    return this.jj(["root"], path);
   }
 
   /**
    * Find the main (primary) repository root from any workspace.
-   * In colocated mode, delegates to git rev-parse --git-common-dir.
+   * For jj this is the same as the workspace root regardless of repository layout.
    */
   async getMainRepoRoot(path: string): Promise<string> {
-    const commonDir = await this.git(["rev-parse", "--git-common-dir"], path);
-    if (commonDir.endsWith("/.git")) {
-      return commonDir.slice(0, -5);
-    }
-    return this.git(["rev-parse", "--show-toplevel"], path);
+    return this.getRepoRoot(path);
   }
 
   /**
@@ -334,8 +327,10 @@ export class JujutsuBackend implements VcsBackend {
   /**
    * Create a jj workspace for a seed.
    *
-   * Creates a workspace in Foreman's external workspace root and sets up
-   * a bookmark `foreman/<seedId>` pointing to the new workspace's revision.
+ * Creates a workspace in Foreman's external workspace root and sets up
+ * a bookmark `foreman/<seedId>` pointing to the new workspace's revision.
+ * When `baseBranch` is provided, the new workspace is created directly from
+ * that branch/revision instead of inheriting the controller workspace parent.
    *
    * Handles existing workspaces by rebasing onto the base branch.
    */
@@ -365,10 +360,21 @@ export class JujutsuBackend implements VcsBackend {
     await fs.mkdir(worktreesDir, { recursive: true });
     await fs.mkdir(dirname(workspacePath), { recursive: true });
 
-    // Create new workspace
+    // Create new workspace pinned to the requested base. Without --revision,
+    // JJ creates the new workspace on top of the parent(s) of the current
+    // working-copy commit, which can accidentally inherit unrelated local
+    // controller changes.
     try {
       await this.jj(
-        ["workspace", "add", "--name", `foreman-${seedId}`, workspacePath],
+        [
+          "workspace",
+          "add",
+          "--name",
+          `foreman-${seedId}`,
+          "--revision",
+          base,
+          workspacePath,
+        ],
         repoPath,
       );
     } catch (err: unknown) {
@@ -379,7 +385,15 @@ export class JujutsuBackend implements VcsBackend {
         if (!existsSync(workspacePath)) {
           await this.jj(["workspace", "forget", `foreman-${seedId}`], repoPath);
           await this.jj(
-            ["workspace", "add", "--name", `foreman-${seedId}`, workspacePath],
+            [
+              "workspace",
+              "add",
+              "--name",
+              `foreman-${seedId}`,
+              "--revision",
+              base,
+              workspacePath,
+            ],
             repoPath,
           );
         }

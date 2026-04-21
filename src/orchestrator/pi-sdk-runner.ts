@@ -14,6 +14,7 @@
 
 import {
   createAgentSession,
+  DefaultResourceLoader,
   SessionManager,
   SettingsManager,
   AuthStorage,
@@ -28,9 +29,17 @@ import {
   type AgentSessionEvent,
   type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
+import { createDirectoryGuardrail, wrapToolWithGuardrail, type GuardrailConfig } from "./guardrails.js";
 import { getModel } from "@mariozechner/pi-ai";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  createPhaseTrace,
+  createPiObservabilityExtensionWithEmitter,
+  finalizePhaseTrace,
+} from "./pi-observability-extension.js";
+import type { PhaseTraceLiveEvent, PhaseTraceMetadata } from "./pi-observability-types.js";
+import { writePhaseTrace } from "./pi-observability-writer.js";
 
 // ── Public interface (compatible with pi-runner.ts) ─────────────────────
 
@@ -45,6 +54,14 @@ export interface PiRunResult {
   errorMessage?: string;
   /** Captured assistant text output (concatenated from all text deltas). */
   outputText?: string;
+  /** Relative path to the JSON phase trace, when observability is enabled. */
+  traceFile?: string;
+  /** Relative path to the markdown phase trace, when observability is enabled. */
+  traceMarkdownFile?: string;
+  /** Observability warnings emitted for this phase. */
+  traceWarnings?: string[];
+  /** Heuristic for whether a command workflow appears to have been honored. */
+  commandHonored?: boolean;
 }
 
 export interface PiRunOptions {
@@ -62,6 +79,12 @@ export interface PiRunOptions {
   onTurnEnd?: (turn: number) => void;
   /** Called with text deltas as the assistant streams output. */
   onText?: (text: string) => void;
+  /** Directory guardrail config. When set, wraps tool factories with cwd verification (FR-1). */
+  guardrailConfig?: GuardrailConfig;
+  /** Optional phase-level observability metadata used to emit Pi hook traces. */
+  observability?: PhaseTraceMetadata;
+  /** Live observability callback fired from Pi extension hooks. */
+  onTraceEvent?: (event: PhaseTraceLiveEvent) => void;
 }
 
 // ── Tool name → factory mapping ─────────────────────────────────────────
@@ -83,11 +106,40 @@ const TOOL_FACTORIES: Record<string, ToolFactory> = {
  * Build the tool array from allowed tool names.
  * Unknown names are silently skipped (they may be custom tools registered separately).
  */
-function buildTools(allowedNames: readonly string[], cwd: string) {
+function buildTools(
+  allowedNames: readonly string[],
+  cwd: string,
+  guardrailConfig?: GuardrailConfig,
+) {
   const tools = [];
+
+  // If guardrail config is provided, create a pre-tool hook and wrap factories
+  const guardrailHook = guardrailConfig
+    ? createDirectoryGuardrail(
+        guardrailConfig,
+        // Use a no-op logger in pi-sdk-runner since store.logEvent isn't available here.
+        // The guardrail-corrected/veto events are still emitted via the hook's return value.
+        (_eventType: string, _details: Record<string, unknown>) => { /* no-op in pi-sdk context */ },
+        "pi-sdk-runner",
+        "",
+      )
+    : null;
+
   for (const name of allowedNames) {
     const factory = TOOL_FACTORIES[name];
-    if (factory) tools.push(factory(cwd));
+    if (!factory) continue;
+
+    if (guardrailHook) {
+      // Wrap the factory with guardrail — intercepts tool calls before execution
+      const wrappedFactory = wrapToolWithGuardrail(
+        factory as (...args: unknown[]) => unknown,
+        guardrailHook,
+        () => process.cwd(),
+      );
+      tools.push(wrappedFactory(cwd));
+    } else {
+      tools.push(factory(cwd));
+    }
   }
   return tools;
 }
@@ -124,8 +176,8 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
 
   // Build tool set from allowed names
   const tools = opts.allowedTools
-    ? buildTools(opts.allowedTools, opts.cwd)
-    : buildTools(["Read", "Bash", "Edit", "Write", "Grep", "Find", "LS"], opts.cwd);
+    ? buildTools(opts.allowedTools, opts.cwd, opts.guardrailConfig)
+    : buildTools(["Read", "Bash", "Edit", "Write", "Grep", "Find", "LS"], opts.cwd, opts.guardrailConfig);
 
   // Accumulators
   let totalTurns = 0;
@@ -134,6 +186,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
   let success = true;
   let errorMessage: string | undefined;
   const textChunks: string[] = [];
+  const phaseTrace = opts.observability ? createPhaseTrace(opts.observability) : undefined;
 
   const writeLog = (line: string): void => {
     if (!opts.logFile) return;
@@ -144,6 +197,13 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
     // Explicitly set agentDir and auth so detached worker processes find credentials.
     const agentDir = getAgentDir();
     const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: opts.cwd,
+      agentDir,
+      settingsManager: SettingsManager.create(opts.cwd, agentDir),
+      extensionFactories: phaseTrace ? [createPiObservabilityExtensionWithEmitter(phaseTrace, opts.onTraceEvent)] : [],
+    });
+    await resourceLoader.reload();
 
     const { session } = await createAgentSession({
       cwd: opts.cwd,
@@ -153,8 +213,9 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       thinkingLevel: "medium",
       tools,
       customTools: opts.customTools,
+      resourceLoader,
       sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory(),
+      settingsManager: SettingsManager.create(opts.cwd, agentDir),
     });
 
     // Subscribe to events for tracking
@@ -238,6 +299,25 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       `[pi-sdk-runner] success=${success} turns=${totalTurns} tools=${totalToolCalls} cost=$${costUsd.toFixed(4)} tokensIn=${tokensIn} tokensOut=${tokensOut}`,
     );
 
+    let tracePaths;
+    if (phaseTrace) {
+      finalizePhaseTrace(phaseTrace, {
+        success,
+        error: success ? undefined : errorMessage,
+        finalMessage: textChunks.length > 0 ? textChunks.join("") : undefined,
+      });
+      tracePaths = await writePhaseTrace(phaseTrace);
+      opts.onTraceEvent?.({
+        kind: "complete",
+        phase: phaseTrace.phase,
+        seedId: phaseTrace.seedId,
+        message: `phase=${phaseTrace.phase} success=${String(success)} artifactPresent=${String(phaseTrace.artifactPresent)} commandHonored=${String(phaseTrace.commandHonored)}`,
+        traceFile: tracePaths.relativeJsonPath,
+        traceMarkdownFile: tracePaths.relativeMarkdownPath,
+        commandHonored: phaseTrace.commandHonored,
+      });
+    }
+
     return {
       success,
       costUsd,
@@ -248,10 +328,32 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       tokensOut,
       errorMessage: success ? undefined : errorMessage,
       outputText: textChunks.length > 0 ? textChunks.join("") : undefined,
+      traceFile: tracePaths?.relativeJsonPath,
+      traceMarkdownFile: tracePaths?.relativeMarkdownPath,
+      traceWarnings: phaseTrace?.warnings,
+      commandHonored: phaseTrace?.commandHonored,
     };
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
     writeLog(`[pi-sdk-runner] ERROR: ${reason}`);
+    let tracePaths;
+    if (phaseTrace) {
+      finalizePhaseTrace(phaseTrace, {
+        success: false,
+        error: reason,
+        finalMessage: textChunks.length > 0 ? textChunks.join("") : undefined,
+      });
+      tracePaths = await writePhaseTrace(phaseTrace);
+      opts.onTraceEvent?.({
+        kind: "complete",
+        phase: phaseTrace.phase,
+        seedId: phaseTrace.seedId,
+        message: `phase=${phaseTrace.phase} success=false error=${reason}`,
+        traceFile: tracePaths.relativeJsonPath,
+        traceMarkdownFile: tracePaths.relativeMarkdownPath,
+        commandHonored: phaseTrace.commandHonored,
+      });
+    }
     return {
       success: false,
       costUsd: 0,
@@ -261,6 +363,10 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       tokensIn: 0,
       tokensOut: 0,
       errorMessage: reason,
+      traceFile: tracePaths?.relativeJsonPath,
+      traceMarkdownFile: tracePaths?.relativeMarkdownPath,
+      traceWarnings: phaseTrace?.warnings,
+      commandHonored: phaseTrace?.commandHonored,
     };
   }
 }

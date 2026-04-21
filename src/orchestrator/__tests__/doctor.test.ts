@@ -1403,7 +1403,7 @@ describe("Doctor.checkPrompts", () => {
       const doctor = new Doctor(store as any, tmpDir);
       const result = await doctor.checkPrompts();
       expect(result.status).toBe("fail");
-      expect(result.message).toContain("missing prompt file");
+      expect(result.message).toContain("missing:");
       expect(result.message).toContain("foreman init");
     } finally {
       await rm(tmpDir, { recursive: true, force: true });

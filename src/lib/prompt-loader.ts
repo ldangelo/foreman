@@ -3,8 +3,9 @@
  *
  * Single resolution chain for agent phase prompts:
  *   1. <projectRoot>/.foreman/prompts/{workflow}/{phase}.md  (project-local override)
- *   2. ~/.foreman/prompts/{phase}.md                         (user global override)
- *   3. Error — no silent fallback to bundled defaults at runtime
+ *   2. <projectRoot>/.foreman/prompts/default/{phase}.md     (shared project-local fallback)
+ *   3. ~/.foreman/prompts/{phase}.md                         (user global override)
+ *   4. Error — no silent fallback to bundled defaults at runtime
  *
  * Bundled defaults live in src/defaults/prompts/{workflow}/{phase}.md and are
  * installed into a project by `foreman init` (or `foreman doctor --fix`).
@@ -43,6 +44,17 @@ export const REQUIRED_PHASES: Readonly<Record<string, ReadonlyArray<string>>> =
     ],
     smoke: ["explorer", "developer", "qa", "reviewer", "finalize"],
   };
+
+/**
+ * Critical markers that project-local prompt overrides must preserve in order
+ * to remain compatible with current runtime contracts.
+ */
+const REQUIRED_PROMPT_MARKERS: Readonly<Record<string, Readonly<Record<string, ReadonlyArray<string>>>>> = {
+  default: {
+    developer: ["EXPLORER_REPORT.md", "Implementation Plan"],
+    explorer: ["## Implementation Plan", "Likely Edit Files"],
+  },
+};
 
 /** Bundled defaults directory (relative to this source file). */
 const BUNDLED_DEFAULTS_DIR = join(
@@ -89,8 +101,9 @@ export function renderTemplate(
  *
  * Resolution order:
  *   1. <projectRoot>/.foreman/prompts/{workflow}/{phase}.md
- *   2. ~/.foreman/prompts/{phase}.md
- *   3. Throws PromptNotFoundError
+ *   2. <projectRoot>/.foreman/prompts/default/{phase}.md
+ *   3. ~/.foreman/prompts/{phase}.md
+ *   4. Throws PromptNotFoundError
  *
  * @param phase       - Phase name: "explorer" | "developer" | "qa" | "reviewer" | ...
  * @param vars        - Template variables for {{placeholder}} substitution.
@@ -104,23 +117,21 @@ export function loadPrompt(
   workflow: string,
   projectRoot: string,
 ): string {
-  // Tier 1: project-local prompt
-  const projectPromptPath = join(
-    projectRoot,
-    ".foreman",
-    "prompts",
-    workflow,
-    `${phase}.md`,
-  );
-  if (existsSync(projectPromptPath)) {
+  const projectPromptCandidates = [
+    join(projectRoot, ".foreman", "prompts", workflow, `${phase}.md`),
+    join(projectRoot, ".foreman", "prompts", "default", `${phase}.md`),
+  ];
+
+  for (const projectPromptPath of projectPromptCandidates) {
+    if (!existsSync(projectPromptPath)) continue;
     try {
       return renderTemplate(readFileSync(projectPromptPath, "utf-8"), vars);
     } catch {
-      // Fall through to next tier
+      // Fall through to next tier/candidate
     }
   }
 
-  // Tier 2: user global prompt
+  // Tier 3: user global prompt
   const userPromptPath = join(homedir(), ".foreman", "prompts", `${phase}.md`);
   if (existsSync(userPromptPath)) {
     try {
@@ -130,7 +141,7 @@ export function loadPrompt(
     }
   }
 
-  // Tier 3: error
+  // Tier 4: error
   throw new PromptNotFoundError(phase, workflow, projectRoot);
 }
 
@@ -244,20 +255,61 @@ export function findMissingPrompts(projectRoot: string): string[] {
 
   for (const [workflow, phases] of Object.entries(REQUIRED_PHASES)) {
     for (const phase of phases) {
-      const p = join(
+      const workflowPrompt = join(
         projectRoot,
         ".foreman",
         "prompts",
         workflow,
         `${phase}.md`,
       );
-      if (!existsSync(p)) {
+      const defaultPrompt = join(
+        projectRoot,
+        ".foreman",
+        "prompts",
+        "default",
+        `${phase}.md`,
+      );
+      if (!existsSync(workflowPrompt) && !existsSync(defaultPrompt)) {
         missing.push(`${workflow}/${phase}.md`);
       }
     }
   }
 
   return missing;
+}
+
+/**
+ * Find project-local prompt overrides that are present but stale relative to
+ * current runtime expectations (e.g. missing critical placeholder markers that
+ * newer pipeline code depends on).
+ */
+export function findStalePrompts(projectRoot: string): string[] {
+  const stale: string[] = [];
+
+  for (const [workflow, phases] of Object.entries(REQUIRED_PROMPT_MARKERS)) {
+    for (const [phase, markers] of Object.entries(phases)) {
+      const localPromptPath = join(
+        projectRoot,
+        ".foreman",
+        "prompts",
+        workflow,
+        `${phase}.md`,
+      );
+      if (!existsSync(localPromptPath)) continue;
+
+      try {
+        const content = readFileSync(localPromptPath, "utf-8");
+        const missingMarker = markers.find((marker) => !content.includes(marker));
+        if (missingMarker) {
+          stale.push(`${workflow}/${phase}.md`);
+        }
+      } catch {
+        // Let missing/parse issues be surfaced by the existing prompt checks.
+      }
+    }
+  }
+
+  return stale;
 }
 
 // ── Pi skill management ───────────────────────────────────────────────────────

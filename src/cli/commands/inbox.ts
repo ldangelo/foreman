@@ -18,6 +18,44 @@ import { VcsBackendFactory } from "../../lib/vcs/index.js";
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
+/**
+ * Get the terminal width for output wrapping.
+ * Falls back to 80 columns when stdout is not a TTY.
+ */
+export function getTerminalWidth(): number {
+  return process.stdout.columns || 80;
+}
+
+/**
+ * Wrap text to fit within a maximum width, breaking at word boundaries.
+ * Preserves existing newlines and indents continuation lines.
+ */
+export function wrapText(text: string, maxWidth: number): string {
+  const lines = text.split("\n");
+  return lines
+    .map((line) => {
+      if (line.length <= maxWidth) return line;
+      // Word wrap: break at maxWidth, then continue at indent
+      let result = "";
+      let remaining = line;
+      while (remaining.length > maxWidth) {
+        // Find last space before maxWidth
+        const slice = remaining.slice(0, maxWidth);
+        const lastSpace = slice.lastIndexOf(" ");
+        if (lastSpace > 0) {
+          result += slice.slice(0, lastSpace) + "\n";
+          remaining = remaining.slice(lastSpace + 1);
+        } else {
+          // No space found, force break
+          result += slice + "\n";
+          remaining = remaining.slice(maxWidth);
+        }
+      }
+      return result + remaining;
+    })
+    .join("\n");
+}
+
 function formatTimestamp(isoStr: string): string {
   try {
     const d = new Date(isoStr);
@@ -31,13 +69,58 @@ function formatTimestamp(isoStr: string): string {
   }
 }
 
-function formatMessage(msg: Message): string {
+function formatMessage(msg: Message, fullPayload = false): string {
   const ts = formatTimestamp(msg.created_at);
   const readMark = msg.read === 1 ? " [read]" : "";
   const header = `[${ts}] ${msg.sender_agent_type} → ${msg.recipient_agent_type}  |  ${msg.subject}${readMark}`;
-  const preview = msg.body.slice(0, 120).replace(/\n/g, " ");
-  const ellipsis = msg.body.length > 120 ? "..." : "";
-  return `${header}\n  ${preview}${ellipsis}`;
+
+  if (fullPayload) {
+    // Show full body — try to pretty-print JSON, otherwise show raw
+    let bodyDisplay: string;
+    try {
+      const parsed = JSON.parse(msg.body);
+      bodyDisplay = JSON.stringify(parsed, null, 2);
+    } catch {
+      bodyDisplay = msg.body;
+    }
+    // Wrap at terminal width to prevent line clipping on long JSON payloads
+    const terminalWidth = getTerminalWidth();
+    const wrappedBody = wrapText(bodyDisplay, terminalWidth - 2); // -2 for indentation
+    return `${header}\n${wrappedBody.split("\n").map((l) => `  ${l}`).join("\n")}`;
+  }
+
+  // Default: try to parse JSON and show key fields for readability
+  let preview: string;
+  try {
+    const parsed = JSON.parse(msg.body) as Record<string, unknown>;
+    const parts: string[] = [];
+    if (typeof parsed["phase"] === "string") parts.push(`phase=${parsed["phase"]}`);
+    if (typeof parsed["status"] === "string") parts.push(`status=${parsed["status"]}`);
+    if (typeof parsed["error"] === "string") parts.push(`error=${parsed["error"]}`);
+    if (typeof parsed["currentPhase"] === "string") parts.push(`currentPhase=${parsed["currentPhase"]}`);
+    if (typeof parsed["seedId"] === "string") parts.push(`seedId=${parsed["seedId"]}`);
+    if (typeof parsed["runId"] === "string") parts.push(`runId=${parsed["runId"]}`);
+    if (typeof parsed["message"] === "string") parts.push(`message=${parsed["message"]}`);
+    if (typeof parsed["kind"] === "string") parts.push(`kind=${parsed["kind"]}`);
+    if (typeof parsed["tool"] === "string") parts.push(`tool=${parsed["tool"]}`);
+    if (typeof parsed["argsPreview"] === "string") parts.push(`args=${parsed["argsPreview"]}`);
+    if (typeof parsed["traceFile"] === "string") parts.push(`trace=${parsed["traceFile"]}`);
+    if (typeof parsed["commandHonored"] === "boolean") parts.push(`commandHonored=${parsed["commandHonored"] ? "yes" : "no"}`);
+    if (typeof parsed["verdict"] === "string") parts.push(`verdict=${parsed["verdict"]}`);
+    if (parts.length > 0) {
+      preview = parts.join(", ");
+    } else {
+      // No recognized fields — fall back to truncated raw body
+      preview = msg.body.slice(0, 200).replace(/\n/g, " ");
+      if (msg.body.length > 200) preview += "...";
+    }
+  } catch {
+    // Not JSON — truncate with ellipsis
+    preview = msg.body.slice(0, 200).replace(/\n/g, " ");
+    if (msg.body.length > 200) preview += "...";
+  }
+
+  return `${header}\n  ${preview}`;
 }
 
 // ── Run status formatting ─────────────────────────────────────────────────────
@@ -80,6 +163,9 @@ function resolveRunIdBySeed(store: ForemanStore, seedId: string): string | null 
 
 // ── Main command ──────────────────────────────────────────────────────────────
 
+// Exported for unit testing
+export { formatMessage };
+
 export const inboxCommand = new Command("inbox")
   .description("View the SQLite message inbox for agents in a pipeline run")
   .option("--agent <name>", "Filter to a specific agent/role (default: show all)")
@@ -90,6 +176,7 @@ export const inboxCommand = new Command("inbox")
   .option("--unread", "Show only unread messages")
   .option("--limit <n>", "Max messages to show", "50")
   .option("--ack", "Mark shown messages as read after displaying them")
+  .option("--full", "Show full message payloads (no truncation, JSON pretty-printed)")
   .action(async (options: {
     agent?: string;
     run?: string;
@@ -99,7 +186,9 @@ export const inboxCommand = new Command("inbox")
     unread?: boolean;
     limit?: string;
     ack?: boolean;
+    full?: boolean;
   }) => {
+    const fullPayload = options.full ?? false;
     const limit = parseInt(options.limit ?? "50", 10);
 
     // Resolve the project root so we can open the correct store
@@ -133,7 +222,7 @@ export const inboxCommand = new Command("inbox")
         } else {
           console.log(`\nInbox — all runs${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
           for (const msg of messages) {
-            console.log(formatMessage(msg));
+            console.log(formatMessage(msg, fullPayload));
             console.log("");
           }
           console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
@@ -156,7 +245,7 @@ export const inboxCommand = new Command("inbox")
         const initialGlobal = store.getAllMessagesGlobal(limit);
         if (initialGlobal.length > 0) {
           console.log(`── past messages ${"─".repeat(53)}`);
-          for (const m of initialGlobal) { console.log(formatMessage(m)); console.log(""); seenIds.add(m.id); }
+          for (const m of initialGlobal) { console.log(formatMessage(m, fullPayload)); console.log(""); seenIds.add(m.id); }
           console.log(`── live ─────────────────────────────────────────────────────────────\n`);
         }
         const initRuns = store.getRunsByStatuses(["completed", "failed", "running"]);
@@ -168,7 +257,7 @@ export const inboxCommand = new Command("inbox")
           }
           const msgs = store.getAllMessagesGlobal(limit);
           for (const msg of msgs.filter((m) => !seenIds.has(m.id))) {
-            seenIds.add(msg.id); console.log(formatMessage(msg)); console.log("");
+            seenIds.add(msg.id); console.log(formatMessage(msg, fullPayload)); console.log("");
           }
         };
         pollAll();
@@ -207,7 +296,7 @@ export const inboxCommand = new Command("inbox")
         } else {
           console.log(`\nInbox — run: ${runId}${seedLabel}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
           for (const msg of messages) {
-            console.log(formatMessage(msg));
+            console.log(formatMessage(msg, fullPayload));
             console.log("");
           }
           console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
@@ -232,7 +321,7 @@ export const inboxCommand = new Command("inbox")
       if (initial.length > 0) {
         console.log(`── past messages ${"─".repeat(53)}`);
         for (const m of initial) {
-          console.log(formatMessage(m));
+          console.log(formatMessage(m, fullPayload));
           console.log("");
           seenIds.add(m.id);
         }
@@ -259,7 +348,7 @@ export const inboxCommand = new Command("inbox")
         const newMsgs = msgs.filter((m) => !seenIds.has(m.id));
         for (const msg of newMsgs) {
           seenIds.add(msg.id);
-          console.log(formatMessage(msg));
+          console.log(formatMessage(msg, fullPayload));
           console.log("");
           if (options.ack) {
             store.markMessageRead(msg.id);

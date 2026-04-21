@@ -2,7 +2,7 @@
 
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import { Command } from "commander";
 
 /**
@@ -44,6 +44,7 @@ import { monitorCommand } from "./commands/monitor.js";
 import { resetCommand } from "./commands/reset.js";
 import { attachCommand } from "./commands/attach.js";
 import { doctorCommand } from "./commands/doctor.js";
+import { boardCommand } from "./commands/board.js";
 import { dashboardCommand } from "./commands/dashboard.js";
 import { beadCommand } from "./commands/bead.js";
 import { worktreeCommand } from "./commands/worktree.js";
@@ -61,7 +62,19 @@ import { projectCommand } from "./commands/project.js";
 import { taskCommand } from "./commands/task.js";
 import { recoverCommand } from "./commands/recover.js";
 
-const program = new Command();
+function isCliEntrypoint(): boolean {
+  try {
+    const invokedPath = process.argv[1];
+    if (!invokedPath) {
+      return false;
+    }
+    return resolve(invokedPath) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+export const program = new Command();
 
 program
   .name("foreman")
@@ -78,6 +91,7 @@ program.addCommand(monitorCommand);
 program.addCommand(resetCommand);
 program.addCommand(attachCommand);
 program.addCommand(doctorCommand);
+program.addCommand(boardCommand);
 program.addCommand(dashboardCommand);
 program.addCommand(beadCommand);
 program.addCommand(worktreeCommand);
@@ -95,4 +109,6 @@ program.addCommand(projectCommand);
 program.addCommand(taskCommand);
 program.addCommand(recoverCommand);
 
-program.parse();
+if (isCliEntrypoint()) {
+  program.parse();
+}

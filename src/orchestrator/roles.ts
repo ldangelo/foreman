@@ -170,6 +170,11 @@ const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker" | "se
   reviewer: getDefaultModel() as ModelSelection,
   finalize: getDefaultModel() as ModelSelection,
   troubleshooter: getDefaultModel() as ModelSelection,
+  fix: getDefaultModel() as ModelSelection,
+  test: getDefaultModel() as ModelSelection,
+  prd: getDefaultModel() as ModelSelection,
+  trd: getDefaultModel() as ModelSelection,
+  implement: getDefaultModel() as ModelSelection,
 };
 
 /**
@@ -236,6 +241,58 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
       permissionMode: "acceptEdits",
       reportFile: "TROUBLESHOOT_REPORT.md",
       allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "Write"],
+    },
+    fix: {
+      role: "fix",
+      model: resolveModel("FOREMAN_FIX_MODEL", DEFAULT_MODELS.fix),
+      maxBudgetUsd: getDeveloperBudget(),
+      permissionMode: "acceptEdits",
+      reportFile: "DEVELOPER_REPORT.md",
+      allowedTools: [
+        "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+        "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+      ],
+    },
+    test: {
+      role: "test",
+      model: resolveModel("FOREMAN_TEST_MODEL", DEFAULT_MODELS.test),
+      maxBudgetUsd: getQaBudget(),
+      permissionMode: "acceptEdits",
+      reportFile: "TEST_RESULTS.md",
+      allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
+    },
+    prd: {
+      role: "prd",
+      model: DEFAULT_MODELS.prd,
+      maxBudgetUsd: 5.00,
+      permissionMode: "acceptEdits",
+      reportFile: "PRD.md",
+      allowedTools: [
+        "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+        "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+      ],
+    },
+    trd: {
+      role: "trd",
+      model: DEFAULT_MODELS.trd,
+      maxBudgetUsd: 8.00,
+      permissionMode: "acceptEdits",
+      reportFile: "TRD.md",
+      allowedTools: [
+        "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+        "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+      ],
+    },
+    implement: {
+      role: "implement",
+      model: DEFAULT_MODELS.implement,
+      maxBudgetUsd: 10.00,
+      permissionMode: "acceptEdits",
+      reportFile: "IMPLEMENT_REPORT.md",
+      allowedTools: [
+        "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+        "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+      ],
     },
   };
 }
@@ -310,6 +367,58 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
         reportFile: "TROUBLESHOOT_REPORT.md",
         allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "Write"],
       },
+      fix: {
+        role: "fix",
+        model: DEFAULT_MODELS.fix,
+        maxBudgetUsd: 5.00,
+        permissionMode: "acceptEdits",
+        reportFile: "DEVELOPER_REPORT.md",
+        allowedTools: [
+          "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+          "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+        ],
+      },
+      test: {
+        role: "test",
+        model: DEFAULT_MODELS.test,
+        maxBudgetUsd: 3.00,
+        permissionMode: "acceptEdits",
+        reportFile: "TEST_RESULTS.md",
+        allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
+      },
+      prd: {
+        role: "prd",
+        model: DEFAULT_MODELS.prd,
+        maxBudgetUsd: 5.00,
+        permissionMode: "acceptEdits",
+        reportFile: "PRD.md",
+        allowedTools: [
+          "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+          "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+        ],
+      },
+      trd: {
+        role: "trd",
+        model: DEFAULT_MODELS.trd,
+        maxBudgetUsd: 8.00,
+        permissionMode: "acceptEdits",
+        reportFile: "TRD.md",
+        allowedTools: [
+          "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+          "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+        ],
+      },
+      implement: {
+        role: "implement",
+        model: DEFAULT_MODELS.implement,
+        maxBudgetUsd: 10.00,
+        permissionMode: "acceptEdits",
+        reportFile: "IMPLEMENT_REPORT.md",
+        allowedTools: [
+          "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
+          "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
+        ],
+      },
     };
   }
 })();
@@ -377,10 +486,11 @@ export function buildPhasePrompt(
     /** Bead type (e.g. "test", "task", "bug"). Used by finalize to handle
      *  "nothing to commit" as success for verification beads. */
     seedType?: string;
-    runId?: string;
-    hasExplorerReport?: boolean;
-    feedbackContext?: string;
-    baseBranch?: string;
+  runId?: string;
+  hasExplorerReport?: boolean;
+  requiresExplorerReport?: boolean;
+  feedbackContext?: string;
+  baseBranch?: string;
     /** Absolute path to the worktree. Passed to finalize prompt so it can cd
      *  to the correct directory before running git commands. */
     worktreePath?: string;
@@ -415,8 +525,20 @@ export function buildPhasePrompt(
 ): string {
   const commentsSection = context.seedComments ? `\n## Additional Context\n${context.seedComments}\n` : "";
   const explorerInstruction = context.hasExplorerReport
-    ? `2. Read **EXPLORER_REPORT.md** for codebase context and recommended approach`
+    ? `2. Read **EXPLORER_REPORT.md** for codebase context and follow its **Implementation Plan** unless you document a justified deviation`
     : `2. Explore the codebase to understand the relevant architecture`;
+  const explorerPreflightSection = context.requiresExplorerReport
+    ? `## Pre-flight: Check EXPLORER_REPORT.md
+After verifying /send-mail, check if \`EXPLORER_REPORT.md\` exists in the worktree root:
+\`\`\`bash
+test -f EXPLORER_REPORT.md || echo "MISSING"
+\`\`\`
+If it is missing, invoke and stop — do not proceed with implementation:
+\`\`\`
+/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"{{seedId}}","error":"EXPLORER_REPORT.md is missing — explorer phase did not complete successfully"}'
+\`\`\`
+Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
+    : "";
   const feedbackSection = context.feedbackContext
     ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${context.feedbackContext}\n`
     : "";
@@ -427,6 +549,7 @@ export function buildPhasePrompt(
     seedDescription: context.seedDescription,
     commentsSection,
     explorerInstruction,
+    explorerPreflightSection,
     feedbackSection,
     runId: context.runId ?? "",
     agentRole: phaseName,
@@ -480,7 +603,7 @@ export function developerPrompt(
   // "2. " to keep the list sequential. If a new step is added before the placeholder
   // in the template, update the numbering here to match.
   const explorerInstruction = hasExplorerReport
-    ? `2. Read **EXPLORER_REPORT.md** for codebase context and recommended approach`
+    ? `2. Read **EXPLORER_REPORT.md** for codebase context and follow its **Implementation Plan** unless you document a justified deviation`
     : `2. Explore the codebase to understand the relevant architecture`;
 
   const feedbackSection = feedbackContext
@@ -625,7 +748,7 @@ export function parseFinalizeIntegrationStatus(reportContent: string): FinalizeI
 }
 
 export function qaReportHasTestEvidence(reportContent: string): boolean {
-  const hasCommand = /npm test/i.test(reportContent);
+  const hasCommand = /(npm test|npx\s+vitest(?:\s+run)?|pnpm\s+vitest(?:\s+run)?|yarn\s+vitest(?:\s+run)?|vitest\s+run)/i.test(reportContent);
   const hasCounts = /(\b\d+\s+passed\b|\b\d+\s+failed\b|\btests? failed out of\b|\btests?:\s*\d+\s+passed[, ]+\d+\s+failed\b)/i.test(reportContent);
   return hasCommand && hasCounts;
 }

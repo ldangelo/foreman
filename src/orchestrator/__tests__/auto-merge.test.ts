@@ -28,6 +28,7 @@ const {
   mockMergeQueueUpdateStatus,
   MockMergeQueue,
   mockRefineryMergeCompleted,
+  mockRefineryEnsurePullRequest,
   MockRefinery,
   mockDetectDefaultBranch,
   mockCreateVcsBackend,
@@ -69,8 +70,16 @@ const {
     unexpectedErrors: [],
     prsCreated: [],
   });
+  const mockRefineryEnsurePullRequest = vi.fn().mockResolvedValue({
+    runId: "run-001",
+    seedId: "bd-test-001",
+    branchName: "foreman/bd-test-001",
+    prUrl: "https://github.com/x/y/pull/1",
+  });
   const MockRefinery = vi.fn(function (this: Record<string, unknown>) {
     this.mergeCompleted = mockRefineryMergeCompleted;
+    this.mergePullRequest = mockRefineryMergeCompleted;
+    this.ensurePullRequestForRun = mockRefineryEnsurePullRequest;
   });
 
   const mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
@@ -93,6 +102,7 @@ const {
     mockMergeQueueUpdateStatus,
     MockMergeQueue,
     mockRefineryMergeCompleted,
+    mockRefineryEnsurePullRequest,
     MockRefinery,
     mockDetectDefaultBranch,
     mockCreateVcsBackend,
@@ -189,6 +199,12 @@ function resetMocks(): void {
     testFailures: [],
     unexpectedErrors: [],
     prsCreated: [],
+  });
+  mockRefineryEnsurePullRequest.mockResolvedValue({
+    runId: "run-001",
+    seedId: "bd-test-001",
+    branchName: "foreman/bd-test-001",
+    prUrl: "https://github.com/x/y/pull/1",
   });
   mockTaskClientUpdate.mockResolvedValue(undefined);
   mockAddNotesToBead.mockReturnValue(undefined);
@@ -322,22 +338,18 @@ describe("autoMerge() — merge outcomes", () => {
     expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "conflict", expect.any(Object));
   });
 
-  it("increments conflictCount for prsCreated entries", async () => {
-    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
-    mockRefineryMergeCompleted.mockResolvedValueOnce({
-      merged: [],
-      conflicts: [],
-      testFailures: [],
-      unexpectedErrors: [],
-      prsCreated: [{ seedId: "bd-test-001", url: "https://github.com/x/y/pull/1" }],
-    });
+  it("marks create_pr queue entries processed after publishing a PR", async () => {
+    mockMergeQueueDequeue
+      .mockReturnValueOnce({ ...makeEntry(), operation: "create_pr" })
+      .mockReturnValue(null);
 
     const result = await autoMerge(makeOpts({
-      store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+      store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", seed_id: "bd-test-001", project_id: "proj-1" }) }) as never,
     }));
 
     expect(result.conflicts).toBe(1);
-    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "conflict", expect.any(Object));
+    expect(mockRefineryEnsurePullRequest).toHaveBeenCalled();
+    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "merged", expect.any(Object));
   });
 
   it("increments failedCount when report.testFailures is non-empty", async () => {
@@ -374,6 +386,200 @@ describe("autoMerge() — merge outcomes", () => {
 
     expect(result.failed).toBe(1);
     expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "failed", { error: "No completed run found" });
+  });
+
+  // ── autoMerge() — race condition fix (overrideRun) ──────────────────────────
+
+  describe("autoMerge() — race condition fix (runId)", () => {
+    beforeEach(() => {
+      resetMocks();
+      mockGetProjectByPath.mockReturnValue({ id: "proj-1" });
+    });
+
+    it("passes runId to mergeCompleted to fetch by ID (no status filter)", async () => {
+      const entry = makeEntry(1);
+      const mockRun = { id: entry.run_id, seed_id: entry.seed_id, status: "completed" };
+      mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
+      mockGetRun.mockReturnValueOnce(mockRun);
+      mockRefineryMergeCompleted.mockResolvedValueOnce({
+        merged: [{ seedId: "bd-test-001" }],
+        conflicts: [],
+        testFailures: [],
+        unexpectedErrors: [],
+        prsCreated: [],
+      });
+
+      await autoMerge(makeOpts({
+        store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+      }));
+
+      // Verify runId was passed to mergeCompleted to fetch by ID directly.
+      // This is the most reliable approach because:
+      // 1. It bypasses status filtering entirely
+      // 2. Eliminates the race condition where status update hasn't been
+      //    committed/visible when the query runs
+      expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: entry.run_id })
+      );
+    });
+  });
+
+  describe("autoMerge() — overrideRun bypasses getRun query", () => {
+    beforeEach(() => {
+      resetMocks();
+      mockGetProjectByPath.mockReturnValue({ id: "proj-1" });
+      // Reset call counts for each test
+      mockGetRun.mockClear();
+      mockRefineryMergeCompleted.mockClear();
+    });
+
+    it("passes overrideRun and runId when both are available (race condition fix)", async () => {
+      const entry = makeEntry(1);
+      // Simulate the run that was just updated in the agent-worker before calling autoMerge.
+      // This is the race condition fix: by passing the run directly, we bypass the getRun()
+      // query that might fail due to SQLite WAL timing issues.
+      const completedRun = {
+        id: entry.run_id,
+        seed_id: entry.seed_id,
+        status: "completed" as const,
+        project_id: "proj-1",
+        agent_type: "worker",
+        session_key: null,
+        worktree_path: null,
+        started_at: null,
+        progress: null,
+        created_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      } as import("../../lib/store.js").Run;
+      mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
+      mockRefineryMergeCompleted.mockResolvedValueOnce({
+        merged: [{ seedId: entry.seed_id }],
+        conflicts: [],
+        testFailures: [],
+        unexpectedErrors: [],
+        prsCreated: [],
+      });
+
+      await autoMerge(makeOpts({
+        store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+        overrideRun: completedRun,
+        runId: entry.run_id,
+      }));
+
+      // Verify runId is passed to the PR-merge path.
+      expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: entry.run_id, targetBranch: "main" })
+      );
+    });
+
+    it("uses optsRunId when available (preferred path for immediate autoMerge)", async () => {
+      const entry = makeEntry(1);
+      const completedRun = {
+        id: entry.run_id,
+        seed_id: entry.seed_id,
+        status: "completed" as const,
+        project_id: "proj-1",
+        agent_type: "worker",
+        session_key: null,
+        worktree_path: null,
+        started_at: null,
+        progress: null,
+        created_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      } as import("../../lib/store.js").Run;
+      mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
+      mockRefineryMergeCompleted.mockResolvedValueOnce({
+        merged: [{ seedId: entry.seed_id }],
+        conflicts: [],
+        testFailures: [],
+        unexpectedErrors: [],
+        prsCreated: [],
+      });
+
+      await autoMerge(makeOpts({
+        store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+        overrideRun: completedRun,
+        runId: entry.run_id, // Explicit runId takes precedence
+      }));
+
+      // optsRunId should be used as the effective runId
+      expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: entry.run_id, targetBranch: "main" })
+      );
+    });
+
+    it("falls back to overrideRun.id when optsRunId not provided but overrideRun matches", async () => {
+      const entry = makeEntry(1);
+      const completedRun = {
+        id: entry.run_id,
+        seed_id: entry.seed_id,
+        status: "completed" as const,
+        project_id: "proj-1",
+        agent_type: "worker",
+        session_key: null,
+        worktree_path: null,
+        started_at: null,
+        progress: null,
+        created_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      } as import("../../lib/store.js").Run;
+      mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
+      mockRefineryMergeCompleted.mockResolvedValueOnce({
+        merged: [{ seedId: entry.seed_id }],
+        conflicts: [],
+        testFailures: [],
+        unexpectedErrors: [],
+        prsCreated: [],
+      });
+
+      await autoMerge(makeOpts({
+        store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+        overrideRun: completedRun,
+        // No runId provided - should use overrideRun.id
+      }));
+
+      // When optsRunId not provided, should fall back to overrideRun.id
+      expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: entry.run_id })
+      );
+    });
+
+    it("falls back to currentEntry.run_id when neither optsRunId nor overrideRun available", async () => {
+      const entry = makeEntry(1);
+      const matchingRun = {
+        id: entry.run_id,
+        seed_id: entry.seed_id,
+        status: "completed" as const,
+        project_id: "proj-1",
+        agent_type: "worker",
+        session_key: null,
+        worktree_path: null,
+        started_at: null,
+        progress: null,
+        created_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      } as import("../../lib/store.js").Run;
+      mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
+      // First call is for merge strategy check, second is the fallback
+      mockGetRun.mockReturnValueOnce(matchingRun);
+      mockRefineryMergeCompleted.mockResolvedValueOnce({
+        merged: [{ seedId: entry.seed_id }],
+        conflicts: [],
+        testFailures: [],
+        unexpectedErrors: [],
+        prsCreated: [],
+      });
+
+      await autoMerge(makeOpts({
+        store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+        // No overrideRun or runId provided - should fall back to currentEntry.run_id
+      }));
+
+      // When neither optsRunId nor overrideRun available, runId should be currentEntry.run_id
+      expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: entry.run_id })
+      );
+    });
   });
 
   it("handles multiple queue entries correctly", async () => {
@@ -414,7 +620,7 @@ describe("autoMerge() — refinery errors are non-fatal", () => {
     }));
 
     expect(result.failed).toBe(1);
-    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "failed", { error: "git rebase failed" });
+    expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "failed", { error: expect.stringContaining("git rebase failed") });
   });
 
   it("does not throw to caller when refinery throws", async () => {
@@ -607,13 +813,14 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
   });
 
   it("calls addNotesToBead with PR URL when PR was created on conflict", async () => {
-    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
-    mockRefineryMergeCompleted.mockResolvedValueOnce({
-      merged: [],
-      conflicts: [],
-      testFailures: [],
-      unexpectedErrors: [],
-      prsCreated: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", prUrl: "https://github.com/x/y/pull/42" }],
+    mockMergeQueueDequeue
+      .mockReturnValueOnce({ ...makeEntry(), operation: "create_pr" })
+      .mockReturnValue(null);
+    mockRefineryEnsurePullRequest.mockResolvedValueOnce({
+      runId: "run-001",
+      seedId: "bd-test-001",
+      branchName: "foreman/bd-test-001",
+      prUrl: "https://github.com/x/y/pull/42",
     });
 
     await autoMerge(makeOpts({

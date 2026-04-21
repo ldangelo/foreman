@@ -15,6 +15,7 @@ import { deleteWorkerConfigFile } from "../../orchestrator/dispatcher.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import type { StateMismatch } from "../../lib/run-status.js";
 import { getWorkspaceRoot } from "../../lib/workspace-paths.js";
+import { loadProjectConfig, resolveDefaultBranch } from "../../lib/project-config.js";
 // Re-export for callers that import these from this module (backward compatibility).
 export { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 export type { StateMismatch } from "../../lib/run-status.js";
@@ -23,7 +24,9 @@ export type { StateMismatch } from "../../lib/run-status.js";
  * Minimal interface capturing the subset of task-client methods used by
  * detectAndFixMismatches.
  */
-export type IShowUpdateClient = Pick<ITaskClient, "show" | "update">;
+export type IShowUpdateClient = Pick<ITaskClient, "show" | "update"> & {
+  resetToReady?: ITaskClient["resetToReady"];
+};
 
 // ── Stale-branch detection types ─────────────────────────────────────────────
 
@@ -36,6 +39,66 @@ export type ExecFileAsyncFn = (
   args: string[],
   options?: { cwd?: string },
 ) => Promise<{ stdout: string; stderr: string }>;
+
+export interface PullRequestCleanupResult {
+  action: "closed" | "none" | "dry-run";
+  prUrl?: string;
+  reason?: string;
+}
+
+export async function closeForemanPullRequest(
+  projectPath: string,
+  branchName: string,
+  opts?: {
+    dryRun?: boolean;
+    execFileAsync?: ExecFileAsyncFn;
+  },
+): Promise<PullRequestCleanupResult> {
+  const execFn = opts?.execFileAsync ?? (await getDefaultExecFileAsync());
+
+  let prStateRaw = "";
+  try {
+    const { stdout } = await execFn(
+      "gh",
+      ["pr", "view", branchName, "--json", "state,headRefName,url", "--jq", "."],
+      { cwd: projectPath },
+    );
+    prStateRaw = stdout.trim();
+  } catch {
+    return { action: "none", reason: "no-associated-pr" };
+  }
+
+  let prState: { state?: string; headRefName?: string; url?: string } = {};
+  try {
+    prState = JSON.parse(prStateRaw) as { state?: string; headRefName?: string; url?: string };
+  } catch {
+    return { action: "none", reason: "unparseable-pr-state" };
+  }
+
+  if (prState.headRefName !== branchName) {
+    return { action: "none", prUrl: prState.url, reason: "head-branch-mismatch" };
+  }
+  if (prState.state !== "OPEN") {
+    return { action: "none", prUrl: prState.url, reason: "pr-not-open" };
+  }
+  if (opts?.dryRun) {
+    return { action: "dry-run", prUrl: prState.url, reason: "would-close-open-pr" };
+  }
+
+  await execFn(
+    "gh",
+    [
+      "pr",
+      "close",
+      branchName,
+      "--comment",
+      "Closed automatically by `foreman reset` before rerun.",
+    ],
+    { cwd: projectPath },
+  );
+
+  return { action: "closed", prUrl: prState.url };
+}
 
 /**
  * Result of stale-branch analysis for a single completed run.
@@ -179,7 +242,11 @@ export async function detectAndHandleStaleBranches(
   let targetBranch: string;
   try {
     const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
-    targetBranch = await vcs.detectDefaultBranch(projectPath);
+    targetBranch = await resolveDefaultBranch(
+      projectPath,
+      (path) => vcs.detectDefaultBranch(path),
+      loadProjectConfig(projectPath),
+    );
   } catch {
     targetBranch = "dev";
   }
@@ -232,7 +299,12 @@ export async function detectAndHandleStaleBranches(
             await seeds.update(run.seed_id, { status: "closed" });
             closed++;
           } else {
-            await seeds.update(run.seed_id, { status: "open" });
+            // Try "open" first (beads), fall back to "ready" (native task store)
+            try {
+              await seeds.update(run.seed_id, { status: "open" });
+            } catch {
+              await seeds.update(run.seed_id, { status: "ready" });
+            }
             reset++;
           }
         } catch (err: unknown) {
@@ -441,22 +513,51 @@ export interface ResetSeedResult {
   action: "reset" | "skipped-closed" | "already-open" | "not-found" | "error";
   seedId: string;
   previousStatus?: string;
+  targetStatus?: string;
   error?: string;
 }
 
+const RETRY_READY_STATUSES = new Set([
+  "backlog",
+  "ready",
+  "in-progress",
+  "blocked",
+  "conflict",
+  "failed",
+  "stuck",
+  "explorer",
+  "developer",
+  "qa",
+  "reviewer",
+  "finalize",
+]);
+
+function getResetTargetStatus(currentStatus: string): "open" | "ready" | null {
+  if (currentStatus === "open" || currentStatus === "ready") {
+    return currentStatus === "ready" ? "ready" : "open";
+  }
+
+  if (currentStatus === "closed" || currentStatus === "completed" || currentStatus === "merged") {
+    return null;
+  }
+
+  if (RETRY_READY_STATUSES.has(currentStatus)) {
+    return "ready";
+  }
+
+  return "open";
+}
+
 /**
- * Reset a single seed back to "open" status.
+ * Reset a single seed back to a retryable status.
  *
- * - ALL non-open seeds are re-opened, including "closed" ones — this ensures
- *   that `foreman reset` always makes a seed retryable regardless of its
- *   previous state.
- * - If the seed is already "open", the update is skipped (idempotent).
+ * - Native tasks are reset to "ready"; beads are reset to "open".
+ * - Closed/completed tasks are left unchanged.
+ * - If the seed is already retryable ("open" or "ready"), the update is skipped
+ *   (idempotent).
  * - If the seed is not found, returns "not-found" without throwing.
  * - In dry-run mode, the `show()` check still runs (read-only) but `update()`
  *   is skipped — the returned `action` accurately reflects what would happen.
- *
- * Note: The `force` parameter is retained for API compatibility but no longer
- * changes behaviour (closed seeds are always reopened).
  */
 export async function resetSeedToOpen(
   seedId: string,
@@ -466,15 +567,24 @@ export async function resetSeedToOpen(
   const dryRun = opts?.dryRun ?? false;
   try {
     const seedDetail = await seeds.show(seedId);
+    const targetStatus = getResetTargetStatus(seedDetail.status);
 
-    if (seedDetail.status === "open") {
-      return { action: "already-open", seedId, previousStatus: seedDetail.status };
+    if (targetStatus == null) {
+      return { action: "skipped-closed", seedId, previousStatus: seedDetail.status };
+    }
+
+    if (seedDetail.status === targetStatus) {
+      return { action: "already-open", seedId, previousStatus: seedDetail.status, targetStatus };
     }
 
     if (!dryRun) {
-      await seeds.update(seedId, { status: "open" });
+      if (targetStatus === "ready" && typeof seeds.resetToReady === "function") {
+        await seeds.resetToReady(seedId);
+      } else {
+        await seeds.update(seedId, { status: targetStatus });
+      }
     }
-    return { action: "reset", seedId, previousStatus: seedDetail.status };
+    return { action: "reset", seedId, previousStatus: seedDetail.status, targetStatus };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("not found")) {
@@ -485,7 +595,7 @@ export async function resetSeedToOpen(
 }
 
 export const resetCommand = new Command("reset")
-  .description("Reset failed/stuck runs: kill agents, remove worktrees, reset beads to open")
+  .description("Reset failed/stuck runs: kill agents, remove worktrees, and reset tasks to a retryable status")
   .option("--bead <id>", "Reset a specific bead by ID (clears all runs for that bead, including stale pending ones)")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
   .option("--detect-stuck", "Run stuck detection first, adding newly-detected stuck runs to the reset list")
@@ -603,13 +713,33 @@ export const resetCommand = new Command("reset")
       let runsMarkedFailed = 0;
       let mqEntriesRemoved = 0;
       let seedsReset = 0;
+      let prsClosed = 0;
       const errors: string[] = [];
+      const closedPrSeeds = new Set<string>();
 
       for (const run of runs) {
         const pid = extractPid(run.session_key);
         const branchName = `foreman/${run.seed_id}`;
 
         console.log(`  ${chalk.cyan(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)} status=${run.status}`);
+
+        if (!closedPrSeeds.has(run.seed_id)) {
+          console.log(`    ${chalk.yellow("close")} PR for branch ${branchName}`);
+          try {
+            const result = await closeForemanPullRequest(projectPath, branchName, { dryRun });
+            if (result.action === "closed") {
+              prsClosed++;
+              console.log(`    ${chalk.green("closed")} PR ${result.prUrl ?? ""}`.trim());
+            } else if (result.action === "dry-run") {
+              console.log(`    ${chalk.dim("would close")} PR ${result.prUrl ?? ""}`.trim());
+            }
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            errors.push(`Failed to close PR for ${run.seed_id}: ${msg}`);
+            console.log(`    ${chalk.red("error")} closing PR: ${msg}`);
+          }
+          closedPrSeeds.add(run.seed_id);
+        }
 
         // 1. Kill the agent process if alive
         if (pid && isAlive(pid)) {
@@ -721,23 +851,24 @@ export const resetCommand = new Command("reset")
         console.log();
       }
 
-      // 5. Reset seeds to open (force-reopen if --seed was explicitly provided)
+      // 5. Reset seeds to a retryable status
       for (const seedId of seedIds) {
         const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!beadFilter });
         switch (result.action) {
           case "skipped-closed":
-            // This case is no longer reachable — resetSeedToOpen now always reopens
-            // closed seeds. Kept to satisfy the exhaustive switch type check.
             console.log(
               `  ${chalk.dim("skip")} seed ${chalk.cyan(seedId)} is already closed — not reopening`,
             );
             break;
           case "already-open":
-            // Bead was already open — no update was made (or would be made).
-            console.log(`  ${chalk.dim("skip")} bead ${chalk.cyan(seedId)} is already open`);
+            console.log(
+              `  ${chalk.dim("skip")} bead ${chalk.cyan(seedId)} is already ${result.targetStatus ?? "retryable"}`,
+            );
             break;
           case "reset":
-            console.log(`  ${chalk.yellow("reset")} bead ${chalk.cyan(seedId)} → open`);
+            console.log(
+              `  ${chalk.yellow("reset")} bead ${chalk.cyan(seedId)} → ${result.targetStatus ?? "retryable"}`,
+            );
             seedsReset++;
             break;
           case "not-found":
@@ -920,6 +1051,7 @@ export const resetCommand = new Command("reset")
         console.log(`  Branches deleted:   ${branchesDeleted}`);
         console.log(`  Runs marked reset:   ${runsMarkedFailed}`);
         console.log(`  MQ entries removed:  ${mqEntriesRemoved}`);
+        console.log(`  PRs closed:         ${prsClosed}`);
         console.log(`  Beads reset:        ${seedsReset}`);
         console.log(`  Mismatches fixed:   ${mismatchResult.fixed}`);
         console.log(`  Beads closed (merged): ${staleResult.closed}`);

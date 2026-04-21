@@ -227,6 +227,256 @@ describe("MQ-T058d: PR creation strategy decision", () => {
     });
   });
 
+  describe("Refinery.mergePullRequest() cleanup behavior", () => {
+    it("merges without asking gh to delete the local branch", async () => {
+      const mockDb = {
+        prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+      };
+      const store = {
+        getRun: vi.fn().mockReturnValue(makeRun({ id: "run-merge", seed_id: "seed-merge", worktree_path: "/tmp/worktrees/seed-merge" })),
+        updateRun: vi.fn(),
+        logEvent: vi.fn(),
+        getDb: vi.fn(() => mockDb),
+      };
+      const seeds = {
+        getGraph: vi.fn(async () => ({ edges: [] })),
+        show: vi.fn(async () => null),
+      };
+      const vcsBackend = {
+        detectDefaultBranch: vi.fn(async () => "dev"),
+        push: vi.fn(async () => undefined),
+        removeWorkspace: vi.fn(async () => undefined),
+        diff: vi.fn(async () => ""),
+      };
+      const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcsBackend as any);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+          (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+              callback(null, {
+                stdout: JSON.stringify({
+                  state: "OPEN",
+                  headRefName: "foreman/seed-merge",
+                  url: "https://github.com/org/repo/pull/55",
+                }),
+                stderr: "",
+              });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "merge") {
+              callback(null, { stdout: "", stderr: "" });
+              return;
+            }
+            callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+          },
+        );
+
+        const report = await refinery.mergePullRequest({ runId: "run-merge", targetBranch: "dev" });
+
+        expect(report.unexpectedErrors).toHaveLength(0);
+        expect(report.merged).toEqual([
+          expect.objectContaining({ runId: "run-merge", seedId: "seed-merge", branchName: "foreman/seed-merge" }),
+        ]);
+        const mergeCall = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "merge",
+        );
+        expect(mergeCall).toBeDefined();
+        expect(mergeCall?.[1]).not.toContain("--delete-branch");
+        expect(vcsBackend.removeWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/worktrees/seed-merge");
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+
+    it("treats local branch deletion cleanup failures as success when the PR is already merged", async () => {
+      const mockDb = {
+        prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
+      };
+      const store = {
+        getRun: vi.fn().mockReturnValue(makeRun({ id: "run-merge-fallback", seed_id: "seed-merge-fallback", worktree_path: "/tmp/worktrees/seed-merge-fallback" })),
+        updateRun: vi.fn(),
+        logEvent: vi.fn(),
+        getDb: vi.fn(() => mockDb),
+      };
+      const seeds = {
+        getGraph: vi.fn(async () => ({ edges: [] })),
+        show: vi.fn(async () => null),
+      };
+      const vcsBackend = {
+        detectDefaultBranch: vi.fn(async () => "dev"),
+        push: vi.fn(async () => undefined),
+        removeWorkspace: vi.fn(async () => undefined),
+        diff: vi.fn(async () => ""),
+      };
+      const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcsBackend as any);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+      let viewCount = 0;
+
+      try {
+        (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+          (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+              viewCount += 1;
+              callback(null, {
+                stdout: JSON.stringify({
+                  state: viewCount === 1 ? "OPEN" : "MERGED",
+                  headRefName: "foreman/seed-merge-fallback",
+                  url: "https://github.com/org/repo/pull/56",
+                }),
+                stderr: "",
+              });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "merge") {
+              callback(
+                new Error("Command failed: gh pr merge foreman/seed-merge-fallback --squash\nfailed to delete local branch foreman/seed-merge-fallback: failed to run git: error: cannot delete branch 'foreman/seed-merge-fallback' used by worktree at '/tmp/worktrees/seed-merge-fallback'\n"),
+                { stdout: "", stderr: "failed to delete local branch foreman/seed-merge-fallback: failed to run git: error: cannot delete branch 'foreman/seed-merge-fallback' used by worktree at '/tmp/worktrees/seed-merge-fallback'\n" },
+              );
+              return;
+            }
+            callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+          },
+        );
+
+        const report = await refinery.mergePullRequest({ runId: "run-merge-fallback", targetBranch: "dev" });
+
+        expect(report.unexpectedErrors).toHaveLength(0);
+        expect(report.merged).toEqual([
+          expect.objectContaining({ runId: "run-merge-fallback", seedId: "seed-merge-fallback", branchName: "foreman/seed-merge-fallback" }),
+        ]);
+        expect(store.updateRun).toHaveBeenCalledWith("run-merge-fallback", expect.objectContaining({ status: "merged" }));
+        expect(store.logEvent).toHaveBeenCalledWith(
+          "proj-1",
+          "merge-cleanup-fallback",
+          expect.objectContaining({ seedId: "seed-merge-fallback", branchName: "foreman/seed-merge-fallback" }),
+          "run-merge-fallback",
+        );
+        expect(vcsBackend.removeWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/worktrees/seed-merge-fallback");
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+  });
+
+  describe("Refinery.ensurePullRequestForRun() reuses existing PRs correctly", () => {
+    it("reopens a closed PR by URL when reusing the same branch", async () => {
+      const { store, refinery } = createTestRefinery();
+      const run = makeRun({ id: "run-77", seed_id: "seed-reopen" });
+      store.getRun.mockReturnValue(run);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+          (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+            if (cmd === "git") {
+              callback(null, { stdout: "", stderr: "" });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+              callback(null, {
+                stdout: JSON.stringify({
+                  state: "CLOSED",
+                  headRefName: "foreman/seed-reopen",
+                  url: "https://github.com/org/repo/pull/77",
+                }),
+                stderr: "",
+              });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "reopen") {
+              callback(null, { stdout: "", stderr: "" });
+              return;
+            }
+            callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+          },
+        );
+
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-77", baseBranch: "main" });
+
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/77");
+        const calls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls;
+        const reopenCall = calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "reopen",
+        );
+        expect(reopenCall).toBeDefined();
+        expect(reopenCall?.[1]).toContain("https://github.com/org/repo/pull/77");
+        expect(store.logEvent).toHaveBeenCalledWith(
+          "proj-1",
+          "pr-created",
+          expect.objectContaining({ existing: true, reopened: true, prUrl: "https://github.com/org/repo/pull/77" }),
+          "run-77",
+        );
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+
+    it("creates a fresh PR when GitHub refuses to reopen the old closed PR", async () => {
+      const { store, refinery } = createTestRefinery();
+      const run = makeRun({ id: "run-88", seed_id: "seed-reopen-fallback" });
+      store.getRun.mockReturnValue(run);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+          (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+            if (cmd === "git") {
+              callback(null, { stdout: args.includes("log") ? "abc123 refresh branch" : "", stderr: "" });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+              callback(null, {
+                stdout: JSON.stringify({
+                  state: "CLOSED",
+                  headRefName: "foreman/seed-reopen-fallback",
+                  url: "https://github.com/org/repo/pull/88",
+                }),
+                stderr: "",
+              });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "reopen") {
+              callback(new Error("Command failed: gh pr reopen https://github.com/org/repo/pull/88\nAPI call failed: GraphQL: Could not open the pull request. (reopenPullRequest)\n"), { stdout: "", stderr: "API call failed: GraphQL: Could not open the pull request. (reopenPullRequest)\n" });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "create") {
+              callback(null, { stdout: "https://github.com/org/repo/pull/99", stderr: "" });
+              return;
+            }
+            callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+          },
+        );
+
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-88", baseBranch: "main" });
+
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/99");
+        const calls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls;
+        const reopenCall = calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "reopen",
+        );
+        const createCall = calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "create",
+        );
+        expect(reopenCall).toBeDefined();
+        expect(createCall).toBeDefined();
+        expect(store.logEvent).toHaveBeenCalledWith(
+          "proj-1",
+          "pr-created",
+          expect.objectContaining({ existing: false, prUrl: "https://github.com/org/repo/pull/99" }),
+          "run-88",
+        );
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+  });
+
   describe("Decision rationale documentation", () => {
     it("documents that git town propose is unsuitable for automation", () => {
       // This test serves as living documentation of the MQ-T058d findings.

@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-import { createTaskClient } from "../../lib/task-client-factory.js";
+import { createTaskClient, type TaskClientBackend } from "../../lib/task-client-factory.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { ITaskClient } from "../../lib/task-client.js";
@@ -14,6 +14,56 @@ export interface RetryOpts {
   dispatch?: boolean;
   model?: ModelSelection;
   dryRun?: boolean;
+}
+
+const RETRYABLE_NATIVE_STATUSES = new Set([
+  "backlog",
+  "ready",
+  "in-progress",
+  "blocked",
+  "conflict",
+  "failed",
+  "stuck",
+  "explorer",
+  "developer",
+  "qa",
+  "reviewer",
+  "finalize",
+]);
+
+function getRetryTargetStatus(
+  currentStatus: string,
+  backendType: TaskClientBackend,
+): "open" | "ready" | null {
+  if (backendType === "native") {
+    if (currentStatus === "closed" || currentStatus === "completed" || currentStatus === "merged") {
+      return null;
+    }
+
+    if (currentStatus === "ready") {
+      return "ready";
+    }
+
+    if (RETRYABLE_NATIVE_STATUSES.has(currentStatus)) {
+      return "ready";
+    }
+
+    return null;
+  }
+
+  if (currentStatus === "open") {
+    return "open";
+  }
+
+  if (currentStatus === "closed" || currentStatus === "completed" || currentStatus === "merged") {
+    return null;
+  }
+
+  if (currentStatus === "in_progress" || currentStatus === "blocked") {
+    return "open";
+  }
+
+  return null;
 }
 
 // ── Core action (exported for testing) ───────────────────────────────
@@ -29,6 +79,7 @@ export async function retryAction(
   store: ForemanStore,
   projectPath: string,
   dispatcher?: Dispatcher,
+  backendType: TaskClientBackend = "beads",
 ): Promise<number> {
   const dryRun = opts.dryRun ?? false;
 
@@ -79,11 +130,9 @@ export async function retryAction(
   }
 
   // 4. Determine what needs to be reset
-  const beadNeedsReset =
-    bead.status === "completed" ||
-    bead.status === "closed" ||
-    bead.status === "in_progress" ||
-    bead.status === "blocked";
+  const beadResetTarget = getRetryTargetStatus(bead.status, backendType);
+  const beadNeedsReset = beadResetTarget !== null && beadResetTarget !== bead.status;
+  const beadIsAlreadyRetryable = beadResetTarget !== null && beadResetTarget === bead.status;
 
   const runNeedsReset =
     latestRun !== null &&
@@ -102,18 +151,22 @@ export async function retryAction(
 
   // 5. Apply resets
   if (!dryRun) {
-    // Reset bead status to "open" so it can be picked up again
+    // Reset bead status to a retryable state when appropriate.
     if (beadNeedsReset) {
       console.log(
-        `  ${chalk.yellow("reset")} bead status: ${bead.status} → open`,
+        `  ${chalk.yellow("reset")} bead status: ${bead.status} → ${beadResetTarget}`,
       );
-      await beadsClient.update(beadId, { status: "open" });
-    } else if (bead.status !== "open") {
-      console.log(
-        `  ${chalk.dim("skip")} bead status already: ${bead.status}`,
-      );
+      if (beadResetTarget === "ready" && typeof beadsClient.resetToReady === "function") {
+        await beadsClient.resetToReady(beadId);
+      } else {
+        await beadsClient.update(beadId, { status: beadResetTarget! });
+      }
+    } else if (beadIsAlreadyRetryable) {
+      console.log(`  ${chalk.dim("ok")} bead status is already "${bead.status}"`);
     } else {
-      console.log(`  ${chalk.dim("ok")} bead status is already "open"`);
+      console.log(
+        `  ${chalk.dim("skip")} bead status is terminal: ${bead.status}`,
+      );
     }
 
     // Mark latest run as failed so it won't block a new dispatch
@@ -156,7 +209,13 @@ export async function retryAction(
     if (beadNeedsReset) {
       console.log(
         chalk.dim(
-          `  Would reset bead status: ${bead.status} → open`,
+          `  Would reset bead status: ${bead.status} → ${beadResetTarget}`,
+        ),
+      );
+    } else if (beadResetTarget == null) {
+      console.log(
+        chalk.dim(
+          `  Would leave bead status unchanged: ${bead.status} is terminal`,
         ),
       );
     }
@@ -249,7 +308,7 @@ export const retryCommand = new Command("retry")
     }
 
     const store = ForemanStore.forProject(projectPath);
-    const { taskClient } = await createTaskClient(projectPath);
+    const { taskClient, backendType } = await createTaskClient(projectPath);
 
     try {
       const exitCode = await retryAction(
@@ -258,6 +317,8 @@ export const retryCommand = new Command("retry")
         taskClient,
         store,
         projectPath,
+        undefined,
+        backendType,
       );
       store.close();
       process.exit(exitCode);

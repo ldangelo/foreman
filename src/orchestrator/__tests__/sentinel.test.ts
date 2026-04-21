@@ -11,6 +11,7 @@ function makeMocks(existingBeads: Array<{ id: string; title: string }> = []) {
     updateSentinelRun: vi.fn(),
     upsertSentinelConfig: vi.fn(),
     getSentinelConfig: vi.fn(() => null as SentinelConfigRow | null),
+    isOpen: vi.fn(() => true),
   };
   const seeds = {
     create: vi.fn(async () => ({ id: "bd-001", title: "bug" })),

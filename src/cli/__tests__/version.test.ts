@@ -10,9 +10,6 @@ import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
-import { runTsxModule } from "../../test-support/tsx-subprocess.js";
-const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
-
 /** Read the actual version string from package.json */
 function packageVersion(): string {
   const pkgPath = path.resolve(__dirname, "../../../package.json");
@@ -22,32 +19,20 @@ function packageVersion(): string {
 
 describe("foreman --version (dynamic version resolution)", () => {
   it("reports a non-empty version string", async () => {
-    const { stdout, exitCode } = await runTsxModule(CLI, ["--version"], {
-      cwd: path.resolve(__dirname, "../../../"),
-      timeout: 15_000,
-    });
-    expect(exitCode).toBe(0);
-    expect(stdout.trim()).not.toBe("");
+    const { program } = await import("../index.js");
+    expect(program.version()).not.toBe("");
   });
 
   it("version matches package.json at runtime", async () => {
     const expected = packageVersion();
-    const { stdout, exitCode } = await runTsxModule(CLI, ["--version"], {
-      cwd: path.resolve(__dirname, "../../../"),
-      timeout: 15_000,
-    });
-    expect(exitCode).toBe(0);
-    expect(stdout.trim()).toBe(expected);
+    const { program } = await import("../index.js");
+    expect(program.version()).toBe(expected);
   });
 
   it("version follows semver format (X.Y.Z or X.Y.Z-pre)", async () => {
-    const { stdout, exitCode } = await runTsxModule(CLI, ["--version"], {
-      cwd: path.resolve(__dirname, "../../../"),
-      timeout: 15_000,
-    });
-    expect(exitCode).toBe(0);
     const semverRe = /^\d+\.\d+\.\d+(-[\w.]+)?$/;
-    expect(stdout.trim()).toMatch(semverRe);
+    const { program } = await import("../index.js");
+    expect(program.version()).toMatch(semverRe);
   });
 });
 

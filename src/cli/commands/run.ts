@@ -9,11 +9,14 @@ import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
-import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
+import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../../lib/project-config.js";
+import type { ProjectConfig } from "../../lib/project-config.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
+import { findMissingPrompts, findStalePrompts } from "../../lib/prompt-loader.js";
+import { findMissingWorkflows, findStaleWorkflows } from "../../lib/workflow-loader.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk } from "../watch-ui.js";
@@ -27,6 +30,8 @@ import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
 import { autoMerge } from "../../orchestrator/auto-merge.js";
 export { autoMerge } from "../../orchestrator/auto-merge.js";
 export type { AutoMergeOpts, AutoMergeResult } from "../../orchestrator/auto-merge.js";
+import { RefineryAgent } from "../../orchestrator/refinery-agent.js";
+import { MergeQueue } from "../../orchestrator/merge-queue.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
 
@@ -71,9 +76,12 @@ export async function createTaskClients(
   projectPath: string,
   runtimeMode: RuntimeMode = resolveRuntimeMode(),
 ): Promise<TaskClientResult> {
+  // In normal mode: auto-detect (pass undefined so selectTaskReadBackend uses
+  // projectHasNativeTasks). In test mode: force beads (pass true to override).
+  const autoSelectNative = runtimeMode === "test" ? true : undefined;
   const { taskClient, backendType } = await createTaskClient(projectPath, {
     ensureBrInstalled: true,
-    autoSelectNativeWhenAvailable: runtimeMode === "test",
+    autoSelectNativeWhenAvailable: autoSelectNative,
   });
 
   return {
@@ -81,6 +89,29 @@ export async function createTaskClients(
     bvClient: backendType === "beads" ? new BvClient(projectPath) : null,
     backendType,
   };
+}
+
+/**
+ * Run the Refinery Agent to process the merge queue.
+ * Replaces the legacy autoMerge() with an agentic approach.
+ */
+async function runRefineryMerge(store: ForemanStore, projectPath: string): Promise<{ merged: number; conflicts: number; failed: number }> {
+  try {
+    const db = store.getDb();
+    const mergeQueue = new MergeQueue(db);
+    const vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+    const agent = new RefineryAgent(mergeQueue, vcsBackend, projectPath);
+    const results = await agent.processOnce();
+
+    return {
+      merged: results.filter((r) => r.action === "merged").length,
+      conflicts: results.filter((r) => r.action === "escalated").length,
+      failed: results.filter((r) => r.action === "error" || r.action === "skipped").length,
+    };
+  } catch {
+    // Fallback to legacy autoMerge if RefineryAgent fails (e.g., in test environments)
+    return autoMerge({ store, taskClient: undefined as never, projectPath });
+  }
 }
 
 // ── Branch Mismatch Detection ────────────────────────────────────────────────
@@ -141,6 +172,7 @@ export interface OwnedBranchResolution {
 export async function resolveOwnedControllerBranch(
   vcs: VcsBackend,
   projectPath: string,
+  preferredDefaultBranch?: string,
 ): Promise<OwnedBranchResolution> {
   const maybeVcs = vcs as Partial<VcsBackend>;
   if (
@@ -158,7 +190,9 @@ export async function resolveOwnedControllerBranch(
   }
 
   const currentBranch = normalizeBranchLabel(await vcs.getCurrentBranch(projectPath)) ?? "";
-  const defaultBranch = normalizeBranchLabel(await vcs.detectDefaultBranch(projectPath)) ?? "";
+  const defaultBranch = normalizeBranchLabel(
+    preferredDefaultBranch ?? await vcs.detectDefaultBranch(projectPath),
+  ) ?? "";
   const currentIsAnonymousRevision = await isAnonymousJujutsuRevision(vcs, projectPath, currentBranch);
 
   const shouldUseOwnedBranch =
@@ -225,6 +259,43 @@ async function createRunVcsBackend(projectPath: string): Promise<VcsBackend> {
   const projectCfg = loadProjectConfig(projectPath);
   const vcsConfig = resolveVcsConfig(undefined, projectCfg?.vcs);
   return VcsBackendFactory.create(vcsConfig, projectPath);
+}
+
+export function collectRuntimeAssetIssues(
+  projectPath: string,
+  projectCfg?: ProjectConfig | null,
+): string[] {
+  const issues: string[] = [];
+
+  try {
+    if (projectCfg === undefined) {
+      loadProjectConfig(projectPath);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    issues.push(`project config invalid: ${msg}`);
+    return issues;
+  }
+
+  const missingPrompts = findMissingPrompts(projectPath);
+  const stalePrompts = findStalePrompts(projectPath);
+  const missingWorkflows = findMissingWorkflows(projectPath);
+  const staleWorkflows = findStaleWorkflows(projectPath);
+
+  if (missingPrompts.length > 0) {
+    issues.push(`missing prompts: ${missingPrompts.join(", ")}`);
+  }
+  if (stalePrompts.length > 0) {
+    issues.push(`stale prompts: ${stalePrompts.join(", ")}`);
+  }
+  if (missingWorkflows.length > 0) {
+    issues.push(`missing workflows: ${missingWorkflows.map((name) => `${name}.yaml`).join(", ")}`);
+  }
+  if (staleWorkflows.length > 0) {
+    issues.push(`stale workflows: ${staleWorkflows.map((name) => `${name}.yaml`).join(", ")}`);
+  }
+
+  return issues;
 }
 
 export async function checkBranchMismatch(
@@ -376,6 +447,22 @@ export const runCommand = new Command("run")
 
     try {
       const projectPath = await resolveRepoRootProjectPath(opts);
+      const projectCfg = loadProjectConfig(projectPath);
+      if (!dryRun && !resume && !resumeFailed) {
+        const assetIssues = collectRuntimeAssetIssues(projectPath, projectCfg);
+        if (assetIssues.length > 0) {
+          console.error(chalk.red("\nRun preflight failed: Foreman runtime assets are out of date.\n"));
+          for (const issue of assetIssues) {
+            console.error(chalk.yellow(`  - ${issue}`));
+          }
+          console.error(
+            chalk.dim(
+              "\nRun 'foreman doctor --fix' (or reinstall prompts/workflows) before dispatching agents.\n",
+            ),
+          );
+          process.exit(1);
+        }
+      }
       const startupVcs = await createRunVcsBackend(projectPath);
 
       // ── Pi Extensions check ──────────────────────────────────────────────────
@@ -523,7 +610,16 @@ export const runCommand = new Command("run")
       let targetBranch: string | undefined;
       if (!dryRun) {
         try {
-          const controller = await resolveOwnedControllerBranch(startupVcs, projectPath);
+          const configuredDefaultBranch = await resolveDefaultBranch(
+            projectPath,
+            (path) => startupVcs.detectDefaultBranch(path),
+            projectCfg,
+          );
+          const controller = await resolveOwnedControllerBranch(
+            startupVcs,
+            projectPath,
+            configuredDefaultBranch,
+          );
           if (controller.usedOwnedBranch) {
             targetBranch = controller.targetBranch;
             console.log(
@@ -533,7 +629,15 @@ export const runCommand = new Command("run")
             );
           }
           const cb = targetBranch ? undefined : normalizeBranchLabel(await startupVcs.getCurrentBranch(projectPath));
-          const db = targetBranch ? undefined : normalizeBranchLabel(await startupVcs.detectDefaultBranch(projectPath));
+          const db = targetBranch
+            ? undefined
+            : normalizeBranchLabel(
+                await resolveDefaultBranch(
+                  projectPath,
+                  (path) => startupVcs.detectDefaultBranch(path),
+                  projectCfg,
+                ),
+              );
           if (cb && db && cb !== db) {
             const question = chalk.yellow(
               `\nYou are on branch ${chalk.green(cb)}, ` +
@@ -644,12 +748,12 @@ export const runCommand = new Command("run")
 
       // ── Startup merge drain ─────────────────────────────────────────────────
       // Drain any completed-but-unmerged runs from previous interrupted sessions
-      // BEFORE dispatching new work. Non-fatal. Merge is always-on — the
-      // MergeAgentDaemon runs continuously alongside sentinel, and per-dispatch
-      // drains here provide an additional safety net.
+      // BEFORE dispatching new work. Finalize now owns merge queue production,
+      // so foreman run only performs this startup recovery pass rather than
+      // re-processing merge work after every batch.
       if (!dryRun && project) {
         try {
-          const startupMerge = await autoMerge({ store, taskClient, projectPath, targetBranch });
+          const startupMerge = await runRefineryMerge(store, projectPath);
           if (startupMerge.merged > 0) {
             console.log(chalk.green(`[startup] Merged ${startupMerge.merged} previously completed branch(es).`));
           }
@@ -735,25 +839,6 @@ export const runCommand = new Command("run")
             );
             const activeRuns = store.getActiveRuns();
             const runIds = activeRuns.map((r) => r.id);
-            // Auto-merge completed branches BEFORE blocking on watch
-            {
-              console.log(chalk.dim("Auto-merging completed branches..."));
-              try {
-                const mergeResult = await autoMerge({ store, taskClient, projectPath, targetBranch });
-                if (mergeResult.merged > 0) {
-                  console.log(chalk.green(`  Auto-merged ${mergeResult.merged} branch(es).`));
-                }
-                if (mergeResult.conflicts > 0) {
-                  console.log(chalk.yellow(`  ${mergeResult.conflicts} conflict(s) — run 'foreman merge' to resolve.`));
-                }
-                if (mergeResult.failed > 0) {
-                  console.log(chalk.dim(`  ${mergeResult.failed} merge(s) failed — run 'foreman merge' for details.`));
-                }
-              } catch (mergeErr: unknown) {
-                const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-                console.error(chalk.yellow(`  Auto-merge error (non-fatal): ${msg}`));
-              }
-            }
             if (runIds.length > 0) {
               const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
               if (detached) {
@@ -814,25 +899,6 @@ export const runCommand = new Command("run")
 
         // Watch mode: wait for this batch to finish, then loop to check for more
         if (watch) {
-          // Auto-merge completed branches BEFORE blocking on watch
-          {
-            console.log(chalk.dim("Auto-merging completed branches..."));
-            try {
-              const mergeResult = await autoMerge({ store, taskClient, projectPath, targetBranch });
-              if (mergeResult.merged > 0) {
-                console.log(chalk.green(`  Auto-merged ${mergeResult.merged} branch(es).`));
-              }
-              if (mergeResult.conflicts > 0) {
-                console.log(chalk.yellow(`  ${mergeResult.conflicts} conflict(s) — run 'foreman merge' to resolve.`));
-              }
-              if (mergeResult.failed > 0) {
-                console.log(chalk.dim(`  ${mergeResult.failed} merge(s) failed — run 'foreman merge' for details.`));
-              }
-            } catch (mergeErr: unknown) {
-              const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-              console.error(chalk.yellow(`  Auto-merge error (non-fatal): ${msg}`));
-            }
-          }
           const runIds = result.dispatched.map((t) => t.runId);
           const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
           if (detached) {
@@ -845,37 +911,6 @@ export const runCommand = new Command("run")
 
         // No-watch mode: dispatch once and exit
         break;
-      }
-
-      // ── Final merge drain ───────────────────────────────────────────────────
-      // After the dispatch loop exits, process any merge queue entries that
-      // accumulated while agents were running. This covers two scenarios:
-      //   1. Race window: an agent completed after the last in-loop autoMerge call
-      //      but before the loop exit, leaving an entry in the queue.
-      //   2. No-watch mode: autoMerge was never called during the loop, but
-      //      previously-completed agents may have pending queue entries.
-      //
-      // Skipped when the user detached (Ctrl+C) — agents are still running in
-      // the background and the user did not intend to block on merging.
-      if (!dryRun && !userDetached) {
-        console.log(chalk.dim("Processing remaining merge queue entries..."));
-        try {
-          const mergeResult = await autoMerge({ store, taskClient, projectPath, targetBranch });
-          if (mergeResult.merged > 0 || mergeResult.conflicts > 0 || mergeResult.failed > 0) {
-            if (mergeResult.merged > 0) {
-              console.log(chalk.green(`  Auto-merged ${mergeResult.merged} branch(es).`));
-            }
-            if (mergeResult.conflicts > 0) {
-              console.log(chalk.yellow(`  ${mergeResult.conflicts} conflict(s) — run 'foreman merge' to resolve.`));
-            }
-            if (mergeResult.failed > 0) {
-              console.log(chalk.dim(`  ${mergeResult.failed} merge(s) failed — run 'foreman merge' for details.`));
-            }
-          }
-        } catch (mergeErr: unknown) {
-          const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-          console.error(chalk.yellow(`  Auto-merge error (non-fatal): ${msg}`));
-        }
       }
 
       await stopSentinel();

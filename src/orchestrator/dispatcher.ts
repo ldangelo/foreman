@@ -25,6 +25,8 @@ import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import { getWorkspacePath } from "../lib/workspace-paths.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
+import { checkAndRebaseStaleWorktree } from "./stale-worktree-check.js";
+import type { TaskMeta } from "../lib/interpolate.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -285,7 +287,12 @@ export class Dispatcher {
       }
       let target = readySeeds.find((b) => b.id === opts.seedId);
       if (usingNativeStore && !target) {
-        const nativeMatch = this.store.getTaskByExternalId(opts.seedId);
+        // Try external_id first (for tasks that have it set)
+        let nativeMatch = this.store.getTaskByExternalId(opts.seedId);
+        // Fall back to id lookup when external_id is not set (common for native tasks)
+        if (!nativeMatch) {
+          nativeMatch = this.store.getTaskById(opts.seedId);
+        }
         if (nativeMatch) {
           if (nativeMatch.status === "ready") {
             target = nativeTaskToIssue(nativeMatch);
@@ -462,7 +469,8 @@ export class Dispatcher {
       // ── Epic beads: dispatch through epic pipeline or auto-close ──────────
       // Epic beads with children are dispatched as a single epic runner that
       // executes all child tasks sequentially within one worktree.
-      // Epic beads with 0 children are auto-closed.
+      // Epic beads with 0 children: if using native store (no children support),
+      // fall through to regular dispatch so the epic runs as a single-agent task.
       if (seed.type === "epic") {
         try {
           const detail = await this.seeds.show(seed.id);
@@ -470,46 +478,53 @@ export class Dispatcher {
           const childIds = detailWithChildren.children ?? [];
 
           if (childIds.length === 0) {
-            // No children — auto-close the epic
-            await this.seeds.close(seed.id, "Auto-closed: no children (empty epic)");
-            log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no children`);
-            skipped.push({
-              seedId: seed.id,
-              title: seed.title,
-              reason: "Type 'epic' auto-closed — no children",
-            });
-            continue;
+            if (usingNativeStore) {
+              // Native task store has no children support — dispatch the epic
+              // as a single-agent task through the regular pipeline. The epic's
+              // phases (developer → qa → finalize) run as a single worktree.
+              log(`[dispatch] Epic ${seed.id} has no children (native store) — dispatching as single-agent task`);
+            } else {
+              // Beads store: no children means truly empty epic — auto-close.
+              await this.seeds.close(seed.id, "Auto-closed: no children (empty epic)");
+              log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no children`);
+              skipped.push({
+                seedId: seed.id,
+                title: seed.title,
+                reason: "Type 'epic' auto-closed — no children",
+              });
+              continue;
+            }
+          } else {
+            // Epic has children — query task order and dispatch through epic path.
+            // getTaskOrder returns only actionable child types (task, bug, chore).
+            const brClient = this.seeds as unknown as TaskOrderingClient;
+            const epicTasks: EpicTask[] = await getTaskOrder(
+              seed.id,
+              brClient,
+              this.projectPath,
+            );
+
+            if (epicTasks.length === 0) {
+              // All children are non-actionable types (e.g. all feature/story containers)
+              // or all children are already closed. Auto-close.
+              await this.seeds.close(seed.id, "Auto-closed: no actionable child tasks");
+              log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no actionable child tasks`);
+              skipped.push({
+                seedId: seed.id,
+                title: seed.title,
+                reason: "Type 'epic' auto-closed — no actionable child tasks",
+              });
+              continue;
+            }
+
+            log(`[dispatch] Epic ${seed.id} has ${epicTasks.length} ordered tasks — dispatching epic runner`);
+
+            // Store epicTasks for use by the dispatch logic below.
+            // We set a marker on the seed object so the dispatch code further down
+            // can include epicTasks in the worker config.
+            (seed as unknown as Record<string, unknown>).__epicTasks = epicTasks;
+            // Fall through to normal dispatch logic (worktree creation, spawn, etc.)
           }
-
-          // Epic has children — query task order and dispatch through epic path.
-          // getTaskOrder returns only actionable child types (task, bug, chore).
-          const brClient = this.seeds as unknown as TaskOrderingClient;
-          const epicTasks: EpicTask[] = await getTaskOrder(
-            seed.id,
-            brClient,
-            this.projectPath,
-          );
-
-          if (epicTasks.length === 0) {
-            // All children are non-actionable types (e.g. all feature/story containers)
-            // or all children are already closed. Auto-close.
-            await this.seeds.close(seed.id, "Auto-closed: no actionable child tasks");
-            log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no actionable child tasks`);
-            skipped.push({
-              seedId: seed.id,
-              title: seed.title,
-              reason: "Type 'epic' auto-closed — no actionable child tasks",
-            });
-            continue;
-          }
-
-          log(`[dispatch] Epic ${seed.id} has ${epicTasks.length} ordered tasks — dispatching epic runner`);
-
-          // Store epicTasks for use by the dispatch logic below.
-          // We set a marker on the seed object so the dispatch code further down
-          // can include epicTasks in the worker config.
-          (seed as unknown as Record<string, unknown>).__epicTasks = epicTasks;
-          // Fall through to normal dispatch logic (worktree creation, spawn, etc.)
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           log(`[dispatch] Failed to prepare epic ${seed.id}: ${msg}`);
@@ -670,10 +685,13 @@ export class Dispatcher {
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
         let setupCache: import("../lib/workflow-loader.js").WorkflowSetupCache | undefined;
         let vcsBackendName: 'git' | 'jujutsu' = 'git'; // default to git
+        // TRD-007: capture merge strategy from workflow config
+        let workflowMerge: 'auto' | 'pr' | 'none' = 'auto';
         try {
           const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
           setupSteps = wfConfig.setup;
           setupCache = wfConfig.setupCache;
+          workflowMerge = wfConfig.merge ?? 'auto';
 
           // Load project-level config (optional — returns null if .foreman/config.yaml absent)
           let projectVcs: import("../lib/project-config.js").ProjectConfig["vcs"] | undefined;
@@ -746,12 +764,13 @@ export class Dispatcher {
         await writeFile(join(worktreePath, "TASK.md"), taskMd, "utf-8");
 
         // 4. Record run in store (include base_branch for stacking awareness)
+        // TRD-007: pass merge_strategy from workflow config
         const run = this.store.createRun(
           projectId,
           seed.id,
           model,
           worktreePath,
-          { baseBranch: baseBranch ?? null },
+          { baseBranch: baseBranch ?? null, mergeStrategy: workflowMerge },
         );
 
         // 5. Log dispatch event
@@ -1195,6 +1214,27 @@ export class Dispatcher {
 
     const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
 
+    // FR-5: Check if worktree is stale and auto-rebase before spawning
+    if (vcsBackend && targetBranch) {
+      try {
+        await checkAndRebaseStaleWorktree(
+          vcsBackend,
+          worktreePath,
+          targetBranch,
+          this.store,
+          this.resolveProjectId(),
+          runId,
+          seed.id,
+          { autoRebase: true, failOnConflict: true },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`[dispatch] Stale worktree check failed for ${seed.id}: ${msg}`);
+        // Re-throw so the dispatch fails cleanly rather than spawning a broken worker
+        throw err;
+      }
+    }
+
     await spawnWorkerProcess({
       runId,
       projectId: this.resolveProjectId(),
@@ -1217,6 +1257,18 @@ export class Dispatcher {
       targetBranch,
       epicTasks,
       epicId,
+      taskMeta: {
+        id: seed.id,
+        title: seed.title,
+        description: seed.description ?? '',
+        type: seed.type ?? '',
+        priority: typeof seed.priority === 'number' ? seed.priority : 2,
+      },
+      // FR-1: Directory guardrail — verify agent cwd matches expected worktree
+      guardrailConfig: {
+        expectedCwd: worktreePath,
+        mode: "auto-correct",
+      },
     });
 
     return { sessionKey };
@@ -1601,6 +1653,24 @@ export interface WorkerConfig {
    * epicTasks within a single worktree.
    */
   epicId?: string;
+  /**
+   * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
+   * Populated from the bead/seed that triggered this run.
+   */
+  taskMeta?: TaskMeta;
+  /**
+   * Directory guardrail config (FR-1). When set, wraps tool factories with
+   * cwd verification in the Pi SDK session. Prevents agents from operating
+   * in the wrong worktree.
+   */
+  guardrailConfig?: {
+    /** Guardrail enforcement mode. Default: `auto-correct`. */
+    mode?: "auto-correct" | "veto" | "disabled";
+    /** Expected working directory for this agent session. */
+    expectedCwd?: string;
+    /** Optional list of allowed path prefixes. */
+    allowedPaths?: string[];
+  };
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────
@@ -1617,14 +1687,31 @@ export interface SpawnStrategy {
 /**
  * Resolve common paths needed by both spawn strategies.
  */
-function resolveWorkerPaths(homeDir?: string): { tsxBin: string; workerScript: string; logDir: string } {
+export function resolveWorkerPaths(
+  homeDir?: string,
+  orchestratorDirOverride?: string,
+): {
+  tsxBin: string;
+  workerScript: string;
+  logDir: string;
+  projectRoot: string;
+  runnerArgs: string[];
+} {
   const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
+  const __dirname = orchestratorDirOverride ?? dirname(__filename);
   const projectRoot = join(__dirname, "..", "..");
+  const tsWorkerScript = join(__dirname, "agent-worker.ts");
+  const jsWorkerScript = join(__dirname, "agent-worker.js");
+  const workerScript = existsSync(tsWorkerScript) ? tsWorkerScript : jsWorkerScript;
+  const runnerArgs = workerScript.endsWith(".ts")
+    ? ["--import", join(projectRoot, "node_modules", "tsx", "dist", "loader.mjs"), workerScript]
+    : [workerScript];
   return {
     tsxBin: process.execPath,
-    workerScript: join(__dirname, "agent-worker.ts"),
+    workerScript,
     logDir: join(homeDir ?? process.env.HOME ?? "/tmp", ".foreman", "logs"),
+    projectRoot,
+    runnerArgs,
   };
 }
 
@@ -1635,7 +1722,7 @@ function resolveWorkerPaths(homeDir?: string): { tsxBin: string; workerScript: s
 export class DetachedSpawnStrategy implements SpawnStrategy {
   async spawn(config: WorkerConfig): Promise<SpawnResult> {
     const homeDir = config.env.HOME ?? process.env.HOME ?? "/tmp";
-    const { tsxBin, workerScript, logDir } = resolveWorkerPaths(homeDir);
+    const { tsxBin, logDir, projectRoot, runnerArgs } = resolveWorkerPaths(homeDir);
 
     // Write config to temp file (worker reads + deletes it)
     const configDir = join(homeDir, ".foreman", "tmp");
@@ -1652,17 +1739,13 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     const spawnEnv: Record<string, string | undefined> = { ...config.env };
     delete spawnEnv.CLAUDECODE;
 
-    // Spawn from the project root (where dist/ and node_modules/ live),
-    // not the worktree. The worktree path is passed in config and used by
-    // the agent for git operations. tsx resolves imports relative to the
-    // script's location, but ESM resolution still checks cwd for some paths.
-    const __filename = fileURLToPath(import.meta.url);
-    const projectRoot = join(dirname(__filename), "..", "..");
-    const tsxLoader = join(projectRoot, "node_modules", "tsx", "dist", "loader.mjs");
-    const child = spawn(tsxBin, ["--import", tsxLoader, workerScript, configPath], {
+    // Spawn with cwd = worktree. The agent works from the worktree, so npm ci,
+    // npm run build, npm test, and git operations all target the correct tree.
+    // runnerArgs uses absolute paths to agent-worker.ts so this works regardless of cwd.
+    const child = spawn(tsxBin, [...runnerArgs, configPath], {
       detached: true,
       stdio: ["ignore", outFd.fd, errFd.fd],
-      cwd: projectRoot,
+      cwd: config.worktreePath,
       env: spawnEnv,
     });
 

@@ -23,6 +23,8 @@ import { join } from "node:path";
 export interface PhaseRecord {
   /** Phase name (e.g., "explorer", "developer", "qa", "reviewer") */
   name: string;
+  /** Execution surface used for this phase. */
+  phaseType?: "prompt" | "command" | "bash" | "builtin";
   /** True if this phase was skipped (e.g., --skip-explore or artifact already exists) */
   skipped: boolean;
   /** Whether the phase succeeded (undefined if skipped) */
@@ -33,6 +35,24 @@ export interface PhaseRecord {
   turns?: number;
   /** Error message if the phase failed */
   error?: string;
+  /** Commands run or prompts injected for this phase. */
+  commandsRun?: string[];
+  /** Expected artifact filename for this phase. */
+  artifactExpected?: string;
+  /** Whether the expected artifact existed when the phase finished. */
+  artifactPresent?: boolean;
+  /** Relative JSON trace path for this phase. */
+  traceFile?: string;
+  /** Relative markdown trace path for this phase. */
+  traceMarkdownFile?: string;
+  /** Observability warnings recorded for this phase. */
+  phaseWarnings?: string[];
+  /** Heuristic for whether a command workflow was actually honored. */
+  commandHonored?: boolean;
+  /** Workflow name used for this phase. */
+  workflowName?: string;
+  /** Workflow YAML source path used for this phase. */
+  workflowPath?: string;
 }
 
 /**
