@@ -20,6 +20,7 @@ import { homedir } from "node:os";
 import { initPool, healthCheck, destroyPool } from "../lib/db/pool-manager.js";
 import { createContext } from "./router.js";
 import { appRouter } from "./router.js";
+import { createWebhookHandler } from "./webhook-handler.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -112,6 +113,24 @@ export class ForemanDaemon {
 
     // 4. Health endpoint (no tRPC).
     this.fastify.get("/health", async () => ({ status: "ok" }));
+
+    // 5. Webhook endpoint (TRD-061/062/063/064).
+    // Reads FOREMAN_WEBHOOK_SECRET from env; skips if not set (daemon still starts).
+    const webhookSecret = process.env.FOREMAN_WEBHOOK_SECRET;
+    if (webhookSecret) {
+      const { createContext: makeContext } = await import("./router.js");
+      const ctx = await makeContext({ req: {} as never, res: {} as never });
+      const webhookHandler = createWebhookHandler(
+        { adapter: ctx.adapter, registry: ctx.registry },
+        { secret: webhookSecret },
+      );
+      this.fastify.post("/webhook", webhookHandler);
+      this.fastify.log.info("[ForemanDaemon] Webhook endpoint enabled at /webhook");
+    } else {
+      this.fastify.log.info(
+        "[ForemanDaemon] FOREMAN_WEBHOOK_SECRET not set — webhook endpoint disabled",
+      );
+    }
 
     // 5. Attempt Unix socket first.
     await this.#listenOnSocket();
