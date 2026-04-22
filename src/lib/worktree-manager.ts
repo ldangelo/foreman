@@ -38,7 +38,9 @@ export interface ListWorktreesResult {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const FOREMAN_WORKTREES_ROOT = join(homedir(), ".foreman", "worktrees");
+function getDefaultWorktreesRoot(): string {
+  return join(homedir(), ".foreman", "worktrees");
+}
 
 // ── WorktreeManager ──────────────────────────────────────────────────────────
 
@@ -50,7 +52,7 @@ export class WorktreeManager {
   readonly root: string;
 
   constructor(options: { root?: string } = {}) {
-    this.root = options.root ?? FOREMAN_WORKTREES_ROOT;
+    this.root = options.root ?? getDefaultWorktreesRoot();
   }
 
   /**
