@@ -310,7 +310,7 @@ describe("TRD-020: Doctor.checkSystem() checks (br backend only)", () => {
     store.close();
   });
 
-  it("checkSystem() returns exactly 8 results (br + bv + git + jj-binary + jj-colocated + git-town-installed + git-town-main-branch + old-logs)", async () => {
+  it("checkSystem() returns exactly 11 results (daemon + postgres + gh-auth + br + bv + git + jj-binary + jj-colocated + git-town-installed + git-town-main-branch + old-logs)", async () => {
     const { Doctor } = await import("../../orchestrator/doctor.js");
     const { ForemanStore } = await import("../../lib/store.js");
 
@@ -321,8 +321,9 @@ describe("TRD-020: Doctor.checkSystem() checks (br backend only)", () => {
 
     const results = await doctor.checkSystem();
 
-    // TRD-028 added checkJujutsuBinary() and checkJujutsuColocated() to checkSystem()
-    expect(results).toHaveLength(8);
+    // TRD-028 added checkJujutsuBinary() and checkJujutsuColocated()
+    // TRD-067 added checkDaemonHealth(), checkPostgresConnectivity(), checkGhAuth()
+    expect(results).toHaveLength(11);
     store.close();
   });
 });

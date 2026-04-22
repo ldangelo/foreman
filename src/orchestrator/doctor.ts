@@ -18,6 +18,8 @@ import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
+import { GhCli } from "../lib/gh-cli.js";
+import { healthCheck } from "../lib/db/pool-manager.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -393,10 +395,120 @@ export class Doctor {
     };
   }
 
+  // TRD-067: Daemon / Postgres / gh auth checks
+
+  /**
+   * Check if ForemanDaemon is running and responding on its health endpoint.
+   * Tries Unix socket first, then localhost HTTP fallback.
+   */
+  async checkDaemonHealth(): Promise<CheckResult> {
+    const socketPath = join(homedir(), ".foreman", "daemon.sock");
+    const httpPort = 3847;
+
+    // Try Unix socket first
+    if (existsSync(socketPath)) {
+      try {
+        const response = await fetch(`unix+http://${socketPath}/health`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        if (response.ok) {
+          return {
+            name: "daemon health",
+            status: "pass",
+            message: "ForemanDaemon is running and healthy",
+          };
+        }
+      } catch {
+        // fall through to HTTP check
+      }
+    }
+
+    // Try HTTP fallback
+    try {
+      const response = await fetch(`http://localhost:${httpPort}/health`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (response.ok) {
+        return {
+          name: "daemon health",
+          status: "pass",
+          message: "ForemanDaemon is running and healthy (HTTP)",
+        };
+      }
+    } catch {
+      // fall through to fail
+    }
+
+    return {
+      name: "daemon health",
+      status: "warn",
+      message: "ForemanDaemon is not running. Start with: foreman daemon start",
+    };
+  }
+
+  /**
+   * Check Postgres connectivity via the connection pool.
+   */
+  async checkPostgresConnectivity(): Promise<CheckResult> {
+    try {
+      await healthCheck();
+      return {
+        name: "postgres connectivity",
+        status: "pass",
+        message: "Postgres connection is healthy",
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        name: "postgres connectivity",
+        status: "fail",
+        message: `Postgres connection failed: ${msg.slice(0, 200)}`,
+      };
+    }
+  }
+
+  /**
+   * Check gh CLI authentication status.
+   */
+  async checkGhAuth(): Promise<CheckResult> {
+    const gh = new GhCli();
+    try {
+      const authenticated = await gh.authStatus();
+      if (authenticated) {
+        return {
+          name: "gh auth",
+          status: "pass",
+          message: "GitHub CLI is authenticated",
+        };
+      } else {
+        return {
+          name: "gh auth",
+          status: "fail",
+          message: "GitHub CLI is not authenticated. Run: gh auth login",
+        };
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("not installed")) {
+        return {
+          name: "gh auth",
+          status: "fail",
+          message: "GitHub CLI (gh) is not installed. Install from: https://cli.github.com",
+        };
+      }
+      return {
+        name: "gh auth",
+        status: "fail",
+        message: `GitHub auth check failed: ${msg.slice(0, 200)}`,
+      };
+    }
+  }
+
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.
     // TRD-028: Add Jujutsu binary and colocated mode checks.
-    const [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult] = await Promise.all([
+    // TRD-067: Add daemon health, Postgres connectivity, and gh auth checks.
+    const [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult, daemonResult, postgresResult, ghAuthResult] = await Promise.all([
       this.checkBrBinary(),
       this.checkBvBinary(),
       this.checkGitBinary(),
@@ -405,8 +517,23 @@ export class Doctor {
       this.checkGitTownInstalled(),
       this.checkGitTownMainBranch(),
       this.checkOldLogs(),
+      this.checkDaemonHealth(),
+      this.checkPostgresConnectivity(),
+      this.checkGhAuth(),
     ]);
-    return [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult];
+    return [
+      daemonResult,
+      postgresResult,
+      ghAuthResult,
+      brResult,
+      bvResult,
+      gitResult,
+      jjBinaryResult,
+      jjColocatedResult,
+      gitTownInstalled,
+      gitTownMainBranch,
+      oldLogsResult,
+    ];
   }
 
   /**
