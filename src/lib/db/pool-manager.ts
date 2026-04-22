@@ -73,6 +73,19 @@ function resolveDatabaseUrl(): string {
   );
 }
 
+/** Default number of retries for transient connection errors (TRD-068). */
+export const MAX_RETRIES = 3;
+
+/**
+ * Agent continues on Postgres disconnect, resumes on reconnect.
+ * Transient errors (ECONNREFUSED, connection terminated) are retried up to
+ * MAX_RETRIES times with exponential backoff.
+ */
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ---------------------------------------------------------------------------
 // PoolManager
 // ---------------------------------------------------------------------------
@@ -176,8 +189,12 @@ export async function destroyPool(): Promise<void> {
 // ---------------------------------------------------------------------------
 // Query helpers
 // ---------------------------------------------------------------------------
-
-/** Execute a parameterised SELECT query.
+/**
+ * Execute a parameterised SELECT query with retry on transient errors.
+ *
+ * Transient errors (ECONNREFUSED, ENOTFOUND, connection lost) are retried up to
+ * MAX_RETRIES times with exponential backoff. This allows the pool to recover from
+ * brief network interruptions without callers needing to implement retry logic.
  *
  * @param text - SQL with $1, $2, … placeholders.
  * @param params - Values for the placeholders.
@@ -185,22 +202,43 @@ export async function destroyPool(): Promise<void> {
  */
 export async function query<T extends QueryResultRow = Record<string, unknown>>(
   text: string,
-  params?: unknown[]
+  params?: unknown[],
+  maxRetries = MAX_RETRIES,
 ): Promise<T[]> {
-  const pool = getPool();
-  try {
-    const result = await pool.query<T>(text, params);
-    return result.rows;
-  } catch (err: unknown) {
-    throw new DatabaseError(
-      `Query failed: ${(err as Error).message}`,
-      (err as { code?: string }).code ?? "UNKNOWN",
-      err
-    );
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const pool = getPool();
+      const result = await pool.query<T>(text, params);
+      return result.rows;
+    } catch (err: unknown) {
+      lastError = err;
+      const code = (err as { code?: string }).code;
+      // Transient errors worth retrying
+      const isTransient =
+        code === "ECONNREFUSED" ||
+        code === "ENOTFOUND" ||
+        code === "ETIMEDOUT" ||
+        code === "ENETUNREACH" ||
+        (err as Error).message?.includes("Connection terminated") ||
+        (err as Error).message?.includes("connection to remote host refused") ||
+        (err as Error).message?.includes("Connection lost");
+      if (isTransient && attempt < maxRetries) {
+        const delay = Math.min(100 * 2 ** attempt, 2000);
+        await sleep(delay);
+        continue;
+      }
+    }
   }
+  throw new DatabaseError(
+    `Query failed after ${maxRetries + 1} attempts: ${(lastError as Error).message}`,
+    (lastError as { code?: string }).code ?? "UNKNOWN",
+    lastError
+  );
 }
 
-/** Execute a parameterised INSERT/UPDATE/DELETE query.
+/**
+ * Execute a parameterised INSERT/UPDATE/DELETE query with retry on transient errors.
  *
  * @param text - SQL with $1, $2, … placeholders.
  * @param params - Values for the placeholders.
@@ -208,20 +246,40 @@ export async function query<T extends QueryResultRow = Record<string, unknown>>(
  */
 export async function execute(
   text: string,
-  params?: unknown[]
+  params?: unknown[],
+  maxRetries = MAX_RETRIES,
 ): Promise<number> {
-  const pool = getPool();
-  try {
-    const result = await pool.query(text, params);
-    return result.rowCount ?? 0;
-  } catch (err: unknown) {
-    throw new DatabaseError(
-      `Execute failed: ${(err as Error).message}`,
-      (err as { code?: string }).code ?? "UNKNOWN",
-      err
-    );
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const pool = getPool();
+      const result = await pool.query(text, params);
+      return result.rowCount ?? 0;
+    } catch (err: unknown) {
+      lastError = err;
+      const code = (err as { code?: string }).code;
+      const isTransient =
+        code === "ECONNREFUSED" ||
+        code === "ENOTFOUND" ||
+        code === "ETIMEDOUT" ||
+        code === "ENETUNREACH" ||
+        (err as Error).message?.includes("Connection terminated") ||
+        (err as Error).message?.includes("connection to remote host refused") ||
+        (err as Error).message?.includes("Connection lost");
+      if (isTransient && attempt < maxRetries) {
+        const delay = Math.min(100 * 2 ** attempt, 2000);
+        await sleep(delay);
+        continue;
+      }
+    }
   }
+  throw new DatabaseError(
+    `Execute failed after ${maxRetries + 1} attempts: ${(lastError as Error).message}`,
+    (lastError as { code?: string }).code ?? "UNKNOWN",
+    lastError
+  );
 }
+
 
 /** Acquire a client for a transaction.
  *
