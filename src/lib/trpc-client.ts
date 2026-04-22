@@ -227,6 +227,8 @@ export interface TRPCProjectsClient {
     force?: boolean;
   }): Promise<unknown>;
   sync(input: { id: string }): Promise<unknown>;
+  stats(input: { projectId: string }): Promise<unknown>;
+  listNeedsHuman(input: { projectId: string }): Promise<unknown>;
 }
 
 /** Runs / events / messages sub-router client (TRD-033/034/035). */
@@ -311,6 +313,8 @@ export function createTrpcClient(
       update: (input) => untypedClient.mutation("projects.update", input),
       remove: (input) => untypedClient.mutation("projects.remove", input),
       sync: (input) => untypedClient.mutation("projects.sync", input),
+      stats: (input) => untypedClient.query("projects.stats", input),
+      listNeedsHuman: (input) => untypedClient.query("projects.listNeedsHuman", input),
     },
     tasks: {
       list: (input) => untypedClient.query("tasks.list", input),

@@ -578,6 +578,65 @@ const projectsRouter = t.router({
     }),
 
   /**
+   * Get aggregate task counts for a project.
+   * GET /trpc/projects.stats
+   */
+  stats: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const [backlog, ready, inProgress, approved, merged, closed] = await Promise.all([
+        ctx.adapter.listTasks(input.projectId, { status: ["backlog"] }),
+        ctx.adapter.listTasks(input.projectId, { status: ["ready"] }),
+        ctx.adapter.listTasks(input.projectId, { status: ["in-progress"] }),
+        ctx.adapter.listTasks(input.projectId, { status: ["approved"] }),
+        ctx.adapter.listTasks(input.projectId, { status: ["merged"] }),
+        ctx.adapter.listTasks(input.projectId, { status: ["closed"] }),
+      ]);
+
+      const activeRuns = await ctx.adapter.listPipelineRuns(input.projectId, { status: "running" });
+      const pendingRuns = await ctx.adapter.listPipelineRuns(input.projectId, { status: "pending" });
+
+      return {
+        tasks: {
+          backlog: backlog.length,
+          ready: ready.length,
+          inProgress: inProgress.length,
+          approved: approved.length,
+          merged: merged.length,
+          closed: closed.length,
+          total: backlog.length + ready.length + inProgress.length + approved.length + merged.length + closed.length,
+        },
+        runs: {
+          active: activeRuns.length,
+          pending: pendingRuns.length,
+        },
+      };
+    }),
+
+  /**
+   * List tasks needing human attention for a project.
+   * GET /trpc/projects.listNeedsHuman
+   */
+  listNeedsHuman: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const [conflict, failed, stuck] = await Promise.all([
+        ctx.adapter.listTasks(input.projectId, { status: ["conflict"] }),
+        ctx.adapter.listTasks(input.projectId, { status: ["failed"] }),
+        ctx.adapter.listTasks(input.projectId, { status: ["stuck"] }),
+      ]);
+      return [...conflict, ...failed, ...stuck];
+    }),
+
+  /**
    * Add a project from a GitHub URL.
    * POST /trpc/projects.add
    *
