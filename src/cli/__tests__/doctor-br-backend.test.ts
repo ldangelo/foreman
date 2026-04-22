@@ -323,7 +323,8 @@ describe("TRD-020: Doctor.checkSystem() checks (br backend only)", () => {
 
     // TRD-028 added checkJujutsuBinary() and checkJujutsuColocated()
     // TRD-067 added checkDaemonHealth(), checkPostgresConnectivity(), checkGhAuth()
-    expect(results).toHaveLength(11);
+    // TRD-070 added checkPoolCapacity()
+    expect(results).toHaveLength(12);
     store.close();
   });
 });

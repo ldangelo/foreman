@@ -397,3 +397,52 @@ describe("PoolManager named export", () => {
     expect(PoolManager.DatabaseError).toBe(DatabaseError);
   });
 });
+
+/**
+ * TRD-069 | Performance: 20 concurrent ops × 5 rounds = 100 ops, p95 < 200ms
+ */
+describe("TRD-069: PoolManager concurrent query performance", () => {
+  beforeEach(() => {
+    destroyPool();
+  });
+  afterEach(() => {
+    destroyPool();
+  });
+
+  it("100 concurrent queries complete within 200ms p95", async () => {
+    const pool = createMockPool();
+    const mockResolve = { rows: [{ id: 1 }], rowCount: 1 };
+    (pool.query as ReturnType<typeof vi.fn>).mockResolvedValue(mockResolve);
+    initPool({ poolOverride: pool });
+
+    const ROUNDS = 5;
+    const CONCURRENCY = 20;
+    const allDurations: number[] = [];
+
+    for (let round = 0; round < ROUNDS; round++) {
+      const promises: Promise<number>[] = [];
+      const roundStart = Date.now();
+
+      for (let i = 0; i < CONCURRENCY; i++) {
+        promises.push(
+          (async () => {
+            const start = Date.now();
+            await query("SELECT $1 AS id", [i]);
+            return Date.now() - start;
+          })()
+        );
+      }
+
+      const durations = await Promise.all(promises);
+      allDurations.push(...durations);
+      const roundDuration = Date.now() - roundStart;
+      expect(roundDuration).toBeLessThan(500); // sanity: full round should be fast
+    }
+
+    allDurations.sort((a, b) => a - b);
+    const p95Index = Math.floor(allDurations.length * 0.95);
+    const p95 = allDurations[p95Index];
+    expect(p95).toBeLessThan(200);
+    expect(allDurations.length).toBe(ROUNDS * CONCURRENCY);
+  });
+});

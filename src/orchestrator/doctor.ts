@@ -19,7 +19,7 @@ import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.j
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
 import { GhCli } from "../lib/gh-cli.js";
-import { healthCheck } from "../lib/db/pool-manager.js";
+import { healthCheck, getPool } from "../lib/db/pool-manager.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -504,11 +504,44 @@ export class Doctor {
     }
   }
 
+  /**
+   * Check Postgres pool capacity. Warns at 80% utilization (TRD-070).
+   */
+  async checkPoolCapacity(): Promise<CheckResult> {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pool = getPool() as any;
+      const total = pool.totalCount ?? 0;
+      const idle = pool.idleCount ?? 0;
+      const used = total - idle;
+      const utilization = total > 0 ? (used / total) * 100 : 0;
+      if (utilization >= 80) {
+        return {
+          name: "postgres pool capacity",
+          status: "warn",
+          message: `Pool at ${utilization.toFixed(0)}% (${used}/${total} connections in use). Consider increasing pool_size.`,
+        };
+      }
+      return {
+        name: "postgres pool capacity",
+        status: "pass",
+        message: `Pool at ${utilization.toFixed(0)}% (${used}/${total} connections in use`,
+      };
+    } catch {
+      return {
+        name: "postgres pool capacity",
+        status: "pass",
+        message: "Pool not initialized (no check possible",
+      };
+    }
+  }
+
+
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.
     // TRD-028: Add Jujutsu binary and colocated mode checks.
     // TRD-067: Add daemon health, Postgres connectivity, and gh auth checks.
-    const [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult, daemonResult, postgresResult, ghAuthResult] = await Promise.all([
+    const [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult, daemonResult, postgresResult, ghAuthResult, poolCapacityResult] = await Promise.all([
       this.checkBrBinary(),
       this.checkBvBinary(),
       this.checkGitBinary(),
@@ -520,6 +553,7 @@ export class Doctor {
       this.checkDaemonHealth(),
       this.checkPostgresConnectivity(),
       this.checkGhAuth(),
+      this.checkPoolCapacity(),
     ]);
     return [
       daemonResult,
@@ -532,6 +566,7 @@ export class Doctor {
       jjColocatedResult,
       gitTownInstalled,
       gitTownMainBranch,
+      poolCapacityResult,
       oldLogsResult,
     ];
   }
