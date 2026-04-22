@@ -55,6 +55,20 @@ vi.mock("../../lib/vcs/git-backend.js", () => ({
   },
 }));
 
+vi.mock("../../lib/worktree-manager.js", () => ({
+  WorktreeManager: class {
+    async createWorktree(opts: { projectId: string; beadId: string; repoPath: string; baseBranch?: string }) {
+      return {
+        projectId: opts.projectId,
+        beadId: opts.beadId,
+        branchName: `foreman/${opts.beadId}`,
+        path: `/tmp/worktrees/${opts.projectId}/${opts.beadId}`,
+        exists: false,
+      };
+    }
+  },
+}));
+
 vi.mock("../../lib/beads-rust.js", () => ({
   BeadsRustClient: class {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -406,14 +420,14 @@ describe("buildWorkerEnv — FOREMAN_VCS_BACKEND propagation via VcsBackend.name
   });
 });
 
-// ── Tests: VcsBackend.createWorkspace() used instead of createWorktree shim (TRD-015) ──
+// ── Tests: WorktreeManager.createWorktree() used for workspace creation (TRD-037) ──
 
-describe("Dispatcher — uses VcsBackend.createWorkspace() instead of createWorktree shim", () => {
+describe("Dispatcher — uses WorktreeManager.createWorktree() for workspace creation (TRD-037)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("calls vcsBackend.createWorkspace() when dispatching a seed (TRD-015)", async () => {
+  it("calls WorktreeManager.createWorktree() when dispatching a seed (TRD-037)", async () => {
     const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
     vi.mocked(loadWorkflowConfig).mockReturnValue({
       name: "default",
@@ -421,21 +435,25 @@ describe("Dispatcher — uses VcsBackend.createWorkspace() instead of createWork
       vcs: { backend: "git" },
     } as unknown as ReturnType<typeof loadWorkflowConfig>);
 
-    const gitBackend = makeGitBackend();
-    vi.mocked(VcsBackendFactory.create).mockResolvedValue(gitBackend);
+    vi.mocked(VcsBackendFactory.create).mockResolvedValue(makeGitBackend());
 
     const store = makeStore();
     const seeds = makeSeeds();
     const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
     vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
 
+    // Spy on the WorktreeManager module
+    const { WorktreeManager } = await import("../../lib/worktree-manager.js");
+    const createWorktreeSpy = vi.spyOn(WorktreeManager.prototype, "createWorktree");
+
     await dispatcher.dispatch({ dryRun: false });
 
-    // VcsBackend.createWorkspace() should be called instead of the old createWorktree shim
-    expect(gitBackend.createWorkspace).toHaveBeenCalledWith(
-      "/tmp/project",
-      "test-seed",
-      undefined, // baseBranch
-    );
+    // WorktreeManager.createWorktree() should be called with projectId, beadId, repoPath, baseBranch
+    expect(createWorktreeSpy).toHaveBeenCalledWith({
+      projectId: "proj-001",
+      beadId: "test-seed",
+      repoPath: "/tmp/project",
+      baseBranch: undefined,
+    });
   });
 });

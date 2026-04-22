@@ -44,6 +44,20 @@ vi.mock("../../lib/vcs/git-backend.js", () => ({
   },
 }));
 
+vi.mock("../../lib/worktree-manager.js", () => ({
+  WorktreeManager: class {
+    async createWorktree(opts: { projectId: string; beadId: string; repoPath: string; baseBranch?: string }) {
+      return {
+        projectId: opts.projectId,
+        beadId: opts.beadId,
+        branchName: `foreman/${opts.beadId}`,
+        path: `/tmp/worktrees/${opts.projectId}/${opts.beadId}`,
+        exists: false,
+      };
+    }
+  },
+}));
+
 vi.mock("../../lib/setup.js", () => ({
   installDependencies: vi.fn().mockResolvedValue(undefined),
   runSetupWithCache: vi.fn().mockResolvedValue(undefined),
