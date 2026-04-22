@@ -26,6 +26,7 @@ import { getWorkspacePath } from "../lib/workspace-paths.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { checkAndRebaseStaleWorktree } from "./stale-worktree-check.js";
+import { WorktreeManager } from "../lib/worktree-manager.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import type {
   SeedInfo,
@@ -739,16 +740,16 @@ export class Dispatcher {
           log(`[foreman] VcsBackend creation failed: ${vcsMsg} — continuing without VcsBackend instance`);
         }
 
-        // 2. Create workspace via VcsBackend (TRD-015: replaces createWorktree shim)
-        // Falls back to GitBackend if vcsBackend creation failed (non-fatal).
-        const workspaceBackend = vcsBackend ?? new GitBackend(this.projectPath);
-        const workspaceResult = await workspaceBackend.createWorkspace(
-          this.projectPath,
-          seed.id,
+        // 2. Create worktree at ~/.foreman/worktrees/<projectId>/<beadId> via WorktreeManager (TRD-037)
+        const worktreeManager = new WorktreeManager();
+        const worktreeInfo = await worktreeManager.createWorktree({
+          projectId,
+          beadId: seed.id,
+          repoPath: this.projectPath,
           baseBranch,
-        );
-        const worktreePath = workspaceResult.workspacePath;
-        const branchName = workspaceResult.branchName;
+        });
+        const worktreePath = worktreeInfo.path;
+        const branchName = worktreeInfo.branchName;
 
         // Run setup steps / install dependencies (not part of VcsBackend interface)
         if (opts?.runtimeMode === "test") {

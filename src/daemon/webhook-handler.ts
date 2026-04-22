@@ -2,7 +2,7 @@
  * GitHub webhook handler for ForemanDaemon.
  *
  * Handles:
- * - push events: record bead:synced events for active runs on the pushed branch
+ * - push events: record bead:synced events and rebase active worktrees (TRD-063)
  * - pull_request events: record bead:synced when PR is closed+merged
  *
  * HMAC-SHA256 verification uses the webhook secret from FOREMAN_WEBHOOK_SECRET.
@@ -14,6 +14,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import { ProjectRegistry } from "../lib/project-registry.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
+import { WorktreeManager } from "../lib/worktree-manager.js";
 
 export interface WebhookContext {
   adapter: PostgresAdapter;
@@ -139,10 +141,8 @@ export function createWebhookHandler(
  * Handle GitHub push events: record bead:synced events for active runs on the pushed branch.
  *
  * For each project whose clone URL matches the repository, find active runs
- * with a worktree on the pushed branch and record a bead:synced event.
- * The sentinel uses these events to detect stale worktrees on next poll cycle.
- *
- * Note: Actual worktree rebase is deferred to the sentinel/dispatcher cycle.
+ * with a worktree on the pushed branch, record a bead:synced event, and
+ * rebase the worktree onto the updated base branch (TRD-063).
  */
 async function handlePush(
   ctx: WebhookContext,
@@ -165,8 +165,21 @@ async function handlePush(
   );
 
   let eventsRecorded = 0;
+  let rebasesAttempted = 0;
+  let rebasesSucceeded = 0;
+
   for (const project of matching) {
     try {
+      // Create VcsBackend for the project repo (TRD-063)
+      let vcsBackend: Awaited<ReturnType<typeof VcsBackendFactory.create>> | null = null;
+      try {
+        vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, project.path);
+      } catch {
+        request.log.warn({ project: project.name }, "[webhook:push] Could not create VcsBackend — skipping rebase");
+      }
+
+      const worktreeManager = new WorktreeManager();
+
       // Find runs that are pending/running on this branch
       const runs = await ctx.adapter.listPipelineRuns(project.id, {
         beadId: undefined,
@@ -175,6 +188,7 @@ async function handlePush(
 
       for (const run of runs) {
         if (run.branch === branch && (run.status === "pending" || run.status === "running")) {
+          // Record bead:synced event
           await ctx.adapter.recordPipelineEvent({
             projectId: project.id,
             runId: run.id,
@@ -187,15 +201,57 @@ async function handlePush(
             },
           });
           eventsRecorded++;
+
+          // TRD-063: Auto-rebase the worktree onto the updated base branch
+          if (vcsBackend) {
+            let rebaseSuccess = false;
+            let worktreePath: string | null = null;
+            try {
+              worktreePath = worktreeManager.getWorktreePath(project.id, run.bead_id);
+              const rebaseResult = await vcsBackend.rebase(worktreePath, branch);
+              rebasesAttempted++;
+
+              if (rebaseResult.success) {
+                rebasesSucceeded++;
+                rebaseSuccess = true;
+                request.log.info(
+                  { runId: run.id, worktreePath, branch },
+                  "[webhook:push] Worktree rebased successfully",
+                );
+              } else if (rebaseResult.hasConflicts) {
+                request.log.warn(
+                  { runId: run.id, worktreePath, branch, conflictingFiles: rebaseResult.conflictingFiles },
+                  "[webhook:push] Rebase conflict — marking run as conflicted",
+                );
+                // Record conflict event so dispatcher can handle it
+                await ctx.adapter.recordPipelineEvent({
+                  projectId: project.id,
+                  runId: run.id,
+                  eventType: "bead:rebase-conflict",
+                  payload: {
+                    worktreePath,
+                    branch,
+                    conflictingFiles: rebaseResult.conflictingFiles ?? [],
+                  },
+                });
+              }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              request.log.error(
+                { runId: run.id, worktreePath: worktreePath ?? "unknown", branch, err: msg },
+                "[webhook:push] Rebase failed",
+              );
+            }
+          }
         }
       }
     } catch (err) {
-      request.log.error({ project: project.name, err }, "[webhook:push] Error recording event");
+      request.log.error({ project: project.name, err }, "[webhook:push] Error processing push");
     }
   }
 
   request.log.info(
-    { branch, repo: repoName, forced, eventsRecorded },
+    { branch, repo: repoName, forced, eventsRecorded, rebasesAttempted, rebasesSucceeded },
     "[webhook:push] Push event processed",
   );
 
@@ -205,6 +261,8 @@ async function handlePush(
     branch,
     forced,
     eventsRecorded,
+    rebasesAttempted,
+    rebasesSucceeded,
   });
 }
 
