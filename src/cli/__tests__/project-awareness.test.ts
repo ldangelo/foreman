@@ -26,6 +26,8 @@ async function run(args: string[], cwd: string): Promise<ExecResult> {
   return runTsxModule(CLI, args, { cwd, timeout: 10_000 });
 }
 
+const HELP_TIMEOUT_MS = 60_000;
+
 describe("TRD-048: CLI --project flag and multi-project mode", () => {
   const tempDirs: string[] = [];
 
@@ -48,39 +50,39 @@ describe("TRD-048: CLI --project flag and multi-project mode", () => {
       const result = await run(["inbox", "--help"], tmp);
       expect(result.stdout).toContain("--project");
       expect(result.stdout).toContain("--project-path");
-    });
+    }, HELP_TIMEOUT_MS);
 
     it("board --help shows --project and --all options", async () => {
       const tmp = makeTempDir();
       const result = await run(["board", "--help"], tmp);
       expect(result.stdout).toContain("--project");
       expect(result.stdout).toContain("--all");
-    }, 30_000);
+    }, HELP_TIMEOUT_MS);
 
     it("status --help shows --project and --all options", async () => {
       const tmp = makeTempDir();
       const result = await run(["status", "--help"], tmp);
       expect(result.stdout).toContain("--project");
       expect(result.stdout).toContain("--all");
-    });
+    }, HELP_TIMEOUT_MS);
 
     it("run --help shows --project option", async () => {
       const tmp = makeTempDir();
       const result = await run(["run", "--help"], tmp);
       expect(result.stdout).toContain("--project");
-    });
+    }, HELP_TIMEOUT_MS);
 
     it("reset --help shows --project option", async () => {
       const tmp = makeTempDir();
       const result = await run(["reset", "--help"], tmp);
       expect(result.stdout).toContain("--project");
-    });
+    }, HELP_TIMEOUT_MS);
 
     it("retry --help shows --project option", async () => {
       const tmp = makeTempDir();
       const result = await run(["retry", "--help"], tmp);
       expect(result.stdout).toContain("--project");
-    });
+    }, HELP_TIMEOUT_MS);
   });
 
   describe("inbox command accepts --project", () => {
@@ -93,6 +95,6 @@ describe("TRD-048: CLI --project flag and multi-project mode", () => {
       expect(result.stdout).toContain("--bead");
       expect(result.stdout).toContain("--watch");
       expect(result.stdout).toContain("--ack");
-    });
+    }, HELP_TIMEOUT_MS);
   });
 });

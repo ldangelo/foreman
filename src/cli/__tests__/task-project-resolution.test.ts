@@ -15,7 +15,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, rmSync, writeFileSync, rmSync as rmSyncAlt } from "node:fs";
 import { join, resolve } from "node:path";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 import chalk from "chalk";
 import { ProjectRegistry } from "../../lib/project-registry.js";
 import { resolveProjectPath } from "../../lib/project-path.js";
@@ -45,9 +45,8 @@ function mkProjectDir(baseDir: string, name: string): string {
  * Returns the path to the registry file.
  */
 function buildRegistry(tmpBase: string, projects: Array<{ name: string; path: string }>): string {
-  // Write to the actual home directory path that ProjectRegistry uses.
-  // We use the real homedir() since it cannot be stubbed in vitest.
-  const registryDir = join(homedir(), ".foreman", "projects");
+  const registryBaseDir = process.env["FOREMAN_REGISTRY_BASE_DIR"] ?? join(tmpBase, ".foreman");
+  const registryDir = join(registryBaseDir, "projects");
   mkdirSync(registryDir, { recursive: true });
   const registryPath = join(registryDir, "projects.json");
   writeFileSync(
@@ -69,7 +68,6 @@ function buildRegistry(tmpBase: string, projects: Array<{ name: string; path: st
 
 describe("resolveProjectPath (--project flag resolution)", () => {
   let tmpBase: string;
-  let originalHome: string | undefined;
   let originalExit: typeof process.exit;
   let originalError: typeof console.error;
   let originalWarn: typeof console.warn;
@@ -79,6 +77,7 @@ describe("resolveProjectPath (--project flag resolution)", () => {
     originalExit = process.exit;
     originalError = console.error;
     originalWarn = console.warn;
+    vi.stubEnv("FOREMAN_REGISTRY_BASE_DIR", join(tmpBase, ".foreman"));
 
     // Capture exit calls instead of actually exiting
     vi.stubGlobal("process", {
@@ -97,11 +96,11 @@ describe("resolveProjectPath (--project flag resolution)", () => {
     console.error = originalError;
     console.warn = originalWarn;
     rmSync(tmpBase, { recursive: true, force: true });
-    // Clean up real home directory registry
-    rmSyncAlt(join(homedir(), ".foreman", "projects"), {
+    rmSyncAlt(process.env["FOREMAN_REGISTRY_BASE_DIR"] ?? join(tmpBase, ".foreman"), {
       recursive: true,
       force: true,
     });
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
