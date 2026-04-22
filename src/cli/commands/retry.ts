@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { createTaskClient, type TaskClientBackend } from "../../lib/task-client-factory.js";
-import { resolveRepoRootProjectPath } from "./project-task-support.js";
+import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
@@ -295,6 +295,9 @@ export const retryCommand = new Command("retry")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (beadId: string, opts: RetryOpts & { project?: string; projectPath?: string }) => {
+    // Require --project in multi-project mode
+    await requireProjectOrAllInMultiMode(opts.project, false);
+
     let projectPath: string;
     try {
       projectPath = await resolveRepoRootProjectPath(opts);

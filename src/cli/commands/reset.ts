@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { createTaskClient } from "../../lib/task-client-factory.js";
-import { resolveRepoRootProjectPath } from "./project-task-support.js";
+import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
@@ -627,6 +627,8 @@ export const resetCommand = new Command("reset")
     }
 
     try {
+      // Require --project in multi-project mode
+      await requireProjectOrAllInMultiMode(opts.project, opts.all ?? false);
       const projectPath = await resolveRepoRootProjectPath(opts);
       const vcs = await VcsBackendFactory.create({ backend: 'auto' }, projectPath);
       // Save current branch so we can restore it after worktree/branch cleanup,
