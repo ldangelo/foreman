@@ -12,6 +12,7 @@
 
 import { httpBatchLink } from "@trpc/client";
 import { createTRPCUntypedClient } from "@trpc/client";
+import * as http from "node:http";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { appRouter } from "../daemon/router.js";
@@ -70,9 +71,6 @@ async function unixSocketFetch(
       : undefined;
 
   return new Promise<Response>((resolve, reject) => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const http = require("http") as typeof import("node:http");
-
     const options: import("node:http").RequestOptions = {
       socketPath,
       path: trpcPath,
