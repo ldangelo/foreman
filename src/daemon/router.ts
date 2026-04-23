@@ -524,7 +524,8 @@ const projectsRouter = t.router({
    * List all projects with health status.
    * GET /trpc/projects.list
    *
-   * Returns projects from the registry (source of truth), enriched with health status.
+   * Returns projects from the daemon-backed registry source of truth, enriched
+   * with health status.
    * Tasks counts (running, ready, needs human) come from the task store.
    */
   list: t.procedure
@@ -537,7 +538,8 @@ const projectsRouter = t.router({
     .query(async ({ input, ctx }) => {
       const records = await ctx.registry.list();
 
-      // Filter in memory after loading from the registry source of truth.
+      // Filter in memory after loading from the daemon-backed registry source
+      // of truth.
       let filtered = records;
       if (input?.status) {
         filtered = filtered.filter((p) => p.status === input.status);
@@ -734,7 +736,7 @@ const projectsRouter = t.router({
         throw err;
       }
 
-      // Step 7: Persist in the project registry source of truth.
+      // Step 7: Persist in the daemon-backed project registry source of truth.
       const record = await registry.add({
         name: displayName,
         path: clonePath,

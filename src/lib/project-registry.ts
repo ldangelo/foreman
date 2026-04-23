@@ -2,15 +2,15 @@
  * ProjectRegistry — project metadata store with JSON + Postgres dual-write.
  *
  * Architecture:
- * - JSON file at `~/.foreman/projects/projects.json` is the source of truth.
- *   All reads and writes go through this file.
- * - Postgres (via PostgresAdapter) is a query mirror for fast listing and filtering.
- *   It is updated after JSON write succeeds, but Postgres failure is non-fatal.
+ * - Legacy JSON file at `~/.foreman/projects/projects.json` is retained as a
+ *   compatibility mirror and recovery artifact.
+ * - When PostgresAdapter is provided, Postgres is the source of truth and the
+ *   JSON file is best-effort mirrored after successful DB writes.
+ * - Without PostgresAdapter, the registry falls back to the legacy JSON-only mode.
  *
  * Design decisions:
- * - Dual-write: JSON first (must succeed), Postgres second (warning on failure).
- *   This means the file system is always authoritative — a corrupted Postgres
- *   can be rebuilt from JSON, but not vice versa.
+ * - In Postgres-backed mode, writes go to Postgres first and then mirror to
+ *   JSON opportunistically for compatibility with remaining sync-only helpers.
  * - In-memory cache invalidated on every write — no TTL, no background refresh.
  *   Registry writes are infrequent (add/remove/sync), so this is acceptable.
  * - Project IDs are deterministic from the normalized name + random hex suffix.
@@ -372,9 +372,8 @@ export class ProjectRegistry {
    * Supports both the new API (ProjectMetadata object) and the old API
    * (path string with optional name override) for backward compatibility.
    *
-   * Writes to JSON first (source of truth), then Postgres (query mirror).
-   * Throws if JSON write fails (source of truth would be inconsistent).
-   * Logs a warning (does not throw) if Postgres write fails.
+   * In Postgres-backed mode, writes to Postgres first and mirrors JSON for
+   * compatibility. In legacy mode, writes directly to JSON.
    *
    * @param metadata - Project metadata (new API)
    * @param name - Optional name override (old API second arg — ignored when metadata is object)
@@ -475,8 +474,9 @@ export class ProjectRegistry {
   }
 
   /**
-   * List all registered projects. Reads from JSON (source of truth).
-   * Results are cached in memory for the lifetime of the registry instance.
+   * List all registered projects.
+   * In Postgres-backed mode this reads from Postgres; otherwise it falls back
+   * to the legacy JSON registry. Results are cached in memory per instance.
    */
   async list(): Promise<ProjectRecord[]> {
     if (this.pg) {
