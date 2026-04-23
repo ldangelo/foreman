@@ -26,6 +26,7 @@ import { ForemanStore } from "../lib/store.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
 import { Dispatcher } from "../orchestrator/dispatcher.js";
 import { BvClient } from "../lib/bv.js";
+import { createTrpcClient } from "../lib/trpc-client.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -264,8 +265,17 @@ export class ForemanDaemon {
 
   /** Dispatch ready tasks for all registered projects. */
   async #dispatchAllProjects(maxAgents: number): Promise<void> {
-    const registry = new ProjectRegistry();
-    const projects = await registry.list();
+    // Use tRPC client to get projects (same as listRegisteredProjects in CLI)
+    let projects: Array<{ id: string; name: string; path: string; status: string }> = [];
+    try {
+      const client = createTrpcClient();
+      projects = await client.projects.list() as typeof projects;
+    } catch (err) {
+      this.fastify.log.warn(
+        `[ForemanDaemon] Failed to fetch projects via tRPC: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return;
+    }
 
     for (const project of projects) {
       if (project.status !== "active") continue;
