@@ -12,6 +12,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { existsSync, readFileSync } from "node:fs";
 import {
   DaemonManager,
   DaemonAlreadyRunningError,
@@ -39,6 +40,13 @@ function formatStatus(status: DaemonStatus): void {
   console.log();
 }
 
+function readDaemonLogExcerpt(path: string): string | null {
+  if (!existsSync(path)) return null;
+  const content = readFileSync(path, "utf-8").trim();
+  if (!content) return null;
+  return content.split("\n").slice(-5).join("\n");
+}
+
 // ── foreman daemon start ─────────────────────────────────────────────────────
 
 const startCommand = new Command("start")
@@ -64,6 +72,18 @@ const startCommand = new Command("start")
       mgr.start();
       // Give the daemon a moment to open its socket before we confirm.
       await new Promise<void>((resolve) => setTimeout(resolve, 500));
+      if (!mgr.isRunning()) {
+        const stderrExcerpt = readDaemonLogExcerpt(mgr.stderrPath);
+        console.error(
+          chalk.red("Error: daemon exited before startup completed.") +
+            chalk.dim("\n  Check DATABASE_URL / Postgres connectivity and retry.") +
+            (stderrExcerpt
+              ? chalk.dim(`\n  Daemon stderr:\n${stderrExcerpt}`)
+              : "") +
+            chalk.dim("\n  For full startup logs, run: node dist/daemon/index.js\n"),
+        );
+        process.exit(1);
+      }
       console.log(chalk.green("✓ Daemon started."));
       console.log(chalk.dim(`  Socket: ${mgr.socketPath}`));
       console.log();

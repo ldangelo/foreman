@@ -163,8 +163,7 @@ export class ForemanDaemon {
     try {
       await this.fastify.listen({
         path: this._socketPath,
-        port: 0, // unused for socket listeners, but required by Fastify types
-      });
+      } as never);
       chmodSync(this._socketPath, 0o600);
       this.fastify.log.info(
         `[ForemanDaemon] Listening on Unix socket: ${this._socketPath}`

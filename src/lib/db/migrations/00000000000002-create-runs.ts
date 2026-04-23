@@ -16,7 +16,7 @@ export async function up(migration: MigrationBuilder): Promise<void> {
       type: "uuid",
       notNull: true,
       primaryKey: true,
-      default: "gen_random_uuid()",
+      default: migration.func("gen_random_uuid()"),
     },
     project_id: {
       type: "uuid",
@@ -90,13 +90,23 @@ export async function up(migration: MigrationBuilder): Promise<void> {
   migration.createIndex("runs", "bead_id", { ifNotExists: true });
   migration.createIndex("runs", "status", { ifNotExists: true });
 
+  // Tasks table exists from the previous migration, but its run_id foreign key
+  // must be added here because runs is created in this migration.
+  migration.addConstraint("tasks", "tasks_run_id_fkey", {
+    foreignKeys: {
+      columns: ["run_id"],
+      references: "runs(id)",
+      onDelete: "SET NULL",
+    },
+  });
+
   // ── events ────────────────────────────────────────────────────────────────
   migration.createTable("events", {
     id: {
       type: "uuid",
       notNull: true,
       primaryKey: true,
-      default: "gen_random_uuid()",
+      default: migration.func("gen_random_uuid()"),
     },
     project_id: {
       type: "uuid",
@@ -118,7 +128,7 @@ export async function up(migration: MigrationBuilder): Promise<void> {
     payload: {
       type: "jsonb",
       notNull: false,
-      default: "'{}'",
+      default: migration.func("'{}'::jsonb"),
     },
     created_at: {
       type: "timestamp with time zone",
@@ -154,7 +164,7 @@ export async function up(migration: MigrationBuilder): Promise<void> {
       type: "uuid",
       notNull: true,
       primaryKey: true,
-      default: "gen_random_uuid()",
+      default: migration.func("gen_random_uuid()"),
     },
     run_id: {
       type: "uuid",

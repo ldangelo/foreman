@@ -50,9 +50,9 @@
     "bundle:cjs": "tsx scripts/bundle-cjs.ts",
     "lint": "eslint src/ scripts/ --ext .ts",
     "lint:fix": "eslint src/ scripts/ --ext .ts --fix",
-    "db:migrate": "node-pg-migrate -m src/lib/db/migrations/ up",
-    "db:migrate:down": "node-pg-migrate -m src/lib/db/migrations/ down",
-    "db:migrate:create": "node-pg-migrate -m src/lib/db/migrations/ create"
+    "db:migrate": "node scripts/run-pg-migrate.mjs -m src/lib/db/migrations/ up --tsx",
+    "db:migrate:down": "node scripts/run-pg-migrate.mjs -m src/lib/db/migrations/ down --tsx",
+    "db:migrate:create": "node scripts/run-pg-migrate.mjs -m src/lib/db/migrations/ create --tsx --migration-file-language ts"
   },
   "keywords": [
     "ai",

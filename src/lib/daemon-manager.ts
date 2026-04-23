@@ -17,11 +17,13 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import {
   existsSync,
+  openSync,
   readFileSync,
   writeFileSync,
   unlinkSync,
   chmodSync,
   mkdirSync,
+  closeSync,
 } from "node:fs";
 
 const DEFAULT_SOCKET_PATH = join(homedir(), ".foreman", "daemon.sock");
@@ -75,9 +77,13 @@ export class DaemonManager {
   constructor(options?: {
     socketPath?: string;
     pidPath?: string;
+    stdoutPath?: string;
+    stderrPath?: string;
   }) {
     this.__socketPath = options?.socketPath ?? DEFAULT_SOCKET_PATH;
     this.__pidPath = options?.pidPath ?? DEFAULT_PID_PATH;
+    this.__stdoutPath = options?.stdoutPath ?? join(dirname(this.__pidPath), "daemon.out");
+    this.__stderrPath = options?.stderrPath ?? join(dirname(this.__pidPath), "daemon.err");
   }
 
   /** Path to the PID file. */
@@ -92,11 +98,31 @@ export class DaemonManager {
   }
   private readonly __socketPath: string;
 
+  /** Path to the daemon stdout log. */
+  get stdoutPath(): string {
+    return this.__stdoutPath;
+  }
+  private readonly __stdoutPath: string;
+
+  /** Path to the daemon stderr log. */
+  get stderrPath(): string {
+    return this.__stderrPath;
+  }
+  private readonly __stderrPath: string;
+
   /** Check if a daemon is currently running (PID exists + socket exists). */
   isRunning(): boolean {
     const pid = this.#readPid();
     if (pid === null) return false;
-    if (!existsSync(this.socketPath)) return false;
+    if (!existsSync(this.socketPath)) {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        this.#removePidFile();
+        return false;
+      }
+    }
     try {
       // Signal 0 checks if the process exists without sending a signal.
       process.kill(pid, 0);
@@ -144,11 +170,15 @@ export class DaemonManager {
     }
 
     try {
+      const stdoutFd = openSync(this.stdoutPath, "a");
+      const stderrFd = openSync(this.stderrPath, "a");
       this.childProcess = spawn(process.execPath, [DAEMON_ENTRY], {
         detached: true,
-        stdio: "ignore",
+        stdio: ["ignore", stdoutFd, stderrFd],
         env: { ...process.env },
       });
+      closeSync(stdoutFd);
+      closeSync(stderrFd);
 
       this.childProcess.on("error", (err) => {
         // Child failed to start — clean up PID file.

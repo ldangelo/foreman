@@ -5,6 +5,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   initPool,
   destroyPool,
@@ -54,7 +57,10 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await destroyPool();
+  process.chdir(originalCwd);
 });
+
+const originalCwd = process.cwd();
 
 // ---------------------------------------------------------------------------
 // init / destroy lifecycle
@@ -91,11 +97,20 @@ describe("PoolManager.init / destroy lifecycle", () => {
   });
 
   it("defaults to postgresql://localhost/foreman", async () => {
+    const prev = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    const tempDir = mkdtempSync(join(tmpdir(), "pool-manager-default-"));
+    process.chdir(tempDir);
     const mockPool = createMockPool();
-    initPool({ poolOverride: mockPool });
-    expect(getPoolConfig()?.connectionString).toBe(
-      "postgresql://localhost/foreman"
-    );
+    try {
+      initPool({ poolOverride: mockPool });
+      expect(getPoolConfig()?.connectionString).toBe(
+        "postgresql://localhost/foreman"
+      );
+    } finally {
+      process.env.DATABASE_URL = prev;
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("uses DATABASE_URL env var when set", async () => {
@@ -109,6 +124,28 @@ describe("PoolManager.init / destroy lifecycle", () => {
       );
     } finally {
       process.env.DATABASE_URL = prev;
+    }
+  });
+
+  it("uses DATABASE_URL from a local .env file when env var is unset", async () => {
+    const prev = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    const tempDir = mkdtempSync(join(tmpdir(), "pool-manager-dotenv-"));
+    process.chdir(tempDir);
+    writeFileSync(
+      join(tempDir, ".env"),
+      "DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/foreman\n",
+      "utf8",
+    );
+    try {
+      const mockPool = createMockPool();
+      initPool({ poolOverride: mockPool });
+      expect(getPoolConfig()?.connectionString).toBe(
+        "postgresql://postgres:postgres@127.0.0.1:5432/foreman"
+      );
+    } finally {
+      process.env.DATABASE_URL = prev;
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 

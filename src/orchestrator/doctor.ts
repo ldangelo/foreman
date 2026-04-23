@@ -19,7 +19,7 @@ import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.j
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
 import { GhCli } from "../lib/gh-cli.js";
-import { healthCheck, getPool } from "../lib/db/pool-manager.js";
+import { healthCheck, getPool, initPool, destroyPool, isPoolInitialised } from "../lib/db/pool-manager.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -450,7 +450,11 @@ export class Doctor {
    * Check Postgres connectivity via the connection pool.
    */
   async checkPostgresConnectivity(): Promise<CheckResult> {
+    const hadPool = isPoolInitialised();
     try {
+      if (!hadPool) {
+        initPool();
+      }
       await healthCheck();
       return {
         name: "postgres connectivity",
@@ -464,6 +468,10 @@ export class Doctor {
         status: "fail",
         message: `Postgres connection failed: ${msg.slice(0, 200)}`,
       };
+    } finally {
+      if (!hadPool && isPoolInitialised()) {
+        await destroyPool();
+      }
     }
   }
 

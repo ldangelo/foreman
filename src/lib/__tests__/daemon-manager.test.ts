@@ -141,6 +141,19 @@ describe("isRunning / status", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("removes stale PID file when socket is missing and process is dead", () => {
+    const { dir, socketPath, pidPath } = makeTempDirs();
+    try {
+      writeFileSync(pidPath, "999999", "utf-8");
+      const mgr = new DaemonManager({ socketPath, pidPath });
+
+      expect(mgr.isRunning()).toBe(false);
+      expect(existsSync(pidPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

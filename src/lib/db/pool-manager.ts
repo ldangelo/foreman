@@ -6,7 +6,8 @@
  *
  * Design decisions:
  * - Singleton via module-level instance (one per Node.js process lifetime).
- * - Falls back to DATABASE_URL env var, then postgresql://localhost/foreman default.
+ * - Falls back to DATABASE_URL env var, then project-local `.env`, then
+ *   postgresql://localhost/foreman default.
  * - All queries use parameterized placeholders ($1, $2, …) — caller is responsible
  *   for passing only trusted values; PoolManager does NOT re-parameterize strings.
  * - pool_size, idle_timeout_ms, connection_timeout_ms are configurable via
@@ -18,6 +19,8 @@
  */
 
 import { Pool, PoolConfig, PoolClient, QueryResultRow } from "pg";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** Minimal pool interface used internally — covers what PoolManager needs. */
 export interface PoolLike {
@@ -67,8 +70,17 @@ const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
 const DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
 
 function resolveDatabaseUrl(): string {
+  const dotEnvPath = join(process.cwd(), ".env");
+  if (process.env.DATABASE_URL) {
+    return process.env.DATABASE_URL;
+  }
+  if (existsSync(dotEnvPath)) {
+    const match = readFileSync(dotEnvPath, "utf8").match(/^\s*DATABASE_URL=(.+)\s*$/m);
+    if (match?.[1]) {
+      return match[1].trim().replace(/^['"]|['"]$/g, "");
+    }
+  }
   return (
-    process.env.DATABASE_URL ??
     "postgresql://localhost/foreman"
   );
 }

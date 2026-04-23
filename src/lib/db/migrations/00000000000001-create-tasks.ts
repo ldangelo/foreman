@@ -69,10 +69,8 @@ export const up = (pgm: MigrationBuilder) => {
       comment: "Lifecycle status",
     },
     run_id: {
-      type: "text",
+      type: "uuid",
       notNull: false,
-      references: "runs",
-      onDelete: "SET NULL",
       comment: "Run executing this task. Null when not claimed.",
     },
     branch: {
