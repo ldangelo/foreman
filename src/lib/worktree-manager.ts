@@ -13,7 +13,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { join, basename } from "node:path";
+import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
 
 export interface WorktreeInfo {
@@ -56,6 +56,66 @@ export class WorktreeManager {
   }
 
   /**
+   * Find the git repository root by searching:
+   * 1. Up from the given path
+   * 2. In sibling directories with the project name
+   *
+   * Returns null if no .git directory is found.
+   */
+  #findGitRepo(startPath: string): string | null {
+    // 1. Search upward from the given path
+    let dir = startPath;
+    for (let i = 0; i < 20; i++) {
+      if (existsSync(join(dir, ".git"))) {
+        return dir;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+
+    // 2. Search sibling directories that might contain the git repo
+    // Common pattern: ~/.foreman/projects/<store>/ -> ~/Development/Fortium/<repo>
+    // Extract project name from the store path (e.g., "foreman-849f2" -> "foreman")
+    const storeName = startPath.match(/[^\\/]+$/)?.[0];
+    if (storeName) {
+      // Extract the base project name (e.g., "foreman-849f2" -> "foreman", "ensemble-42e5a" -> "ensemble")
+      const projectName = storeName.replace(/-\w+$/, "");
+      
+      // Go up from the store path to find the home directory, stopping at root
+      const homeDir = homedir();
+      let checkDir = dirname(startPath);
+      while (checkDir !== "/" && checkDir !== dirname(homeDir)) {
+        const parent = dirname(checkDir);
+        if (parent === checkDir) break;
+        checkDir = parent;
+        // Stop when we reach home or above
+        if (checkDir === homeDir || checkDir === dirname(homeDir)) {
+          break;
+        }
+      }
+      
+      // First, look for a directory with the project name at the checkDir level
+      const candidate = join(checkDir, projectName);
+      if (existsSync(join(candidate, ".git"))) {
+        return candidate;
+      }
+      
+      // If not found, look in sibling directories of checkDir (e.g., ~/Development/Fortium/foreman)
+      const checkDirContents = readdirSync(checkDir).filter(d => !d.startsWith("."));
+      for (const sibling of checkDirContents) {
+        const siblingPath = join(checkDir, sibling);
+        // Check if the sibling has a subdirectory with the project name
+        if (existsSync(join(siblingPath, projectName, ".git"))) {
+          return join(siblingPath, projectName);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Get the worktree directory for a specific project+bead.
    */
   getWorktreePath(projectId: string, beadId: string): string {
@@ -85,6 +145,10 @@ export class WorktreeManager {
     const branchName = `foreman/${beadId}`;
     const worktreePath = this.getWorktreePath(projectId, beadId);
 
+    // Resolve the actual git repo path. The provided repoPath may be a store
+    // directory rather than the git repo root. Search up the tree for .git.
+    const resolvedRepoPath = this.#findGitRepo(repoPath) ?? repoPath;
+
     // Ensure parent directory exists
     mkdirSync(this.getProjectRoot(projectId), { recursive: true, mode: 0o700 });
 
@@ -97,7 +161,7 @@ export class WorktreeManager {
     // Branch may exist without a worktree — try to attach worktree
     try {
       execFileSync("git", ["worktree", "add", "-b", branchName, worktreePath, baseBranch ?? "HEAD"], {
-        cwd: repoPath,
+        cwd: resolvedRepoPath,
         stdio: "pipe",
       });
     } catch (err: unknown) {
@@ -105,7 +169,7 @@ export class WorktreeManager {
       if (msg.includes("already exists")) {
         // Branch exists, just attach worktree
         execFileSync("git", ["worktree", "add", worktreePath, branchName], {
-          cwd: repoPath,
+          cwd: resolvedRepoPath,
           stdio: "pipe",
         });
       } else if (msg.includes("fatal")) {

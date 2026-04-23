@@ -610,9 +610,49 @@ export class PostgresAdapter {
     );
   }
 
-  // -------------------------------------------------------------------------
+  /**
+   * Get a task by its external ID (e.g., bead ID).
+   */
+  async getTaskByExternalId(projectId: string, externalId: string): Promise<TaskRow | null> {
+    const rows = await query<TaskRow>(
+      `SELECT * FROM tasks WHERE project_id = $1 AND external_id = $2 LIMIT 1`,
+      [projectId, externalId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Check if any tasks exist for a project (native tasks).
+   */
+  async hasNativeTasks(projectId: string): Promise<boolean> {
+    const result = await query<{ cnt: string }>(
+      `SELECT COUNT(*) as cnt FROM tasks WHERE project_id = $1`,
+      [projectId],
+    );
+    return parseInt(result[0]?.cnt ?? "0", 10) > 0;
+  }
+
+  /**
+   * Get runs by multiple statuses since a given time.
+   */
+  async getRunsByStatusesSince(
+    projectId: string,
+    statuses: string[],
+    since: string,
+  ): Promise<RunRow[]> {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map((_, i) => `$${i + 2}`).join(", ");
+    return query<RunRow>(
+      `SELECT * FROM runs
+       WHERE project_id = $1 AND status IN (${placeholders}) AND created_at >= $${statuses.length + 2}
+       ORDER BY created_at DESC`,
+      [projectId, ...statuses, since],
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // Run operations
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
 
   /**
    * Create a new run.
