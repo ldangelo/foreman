@@ -34,7 +34,7 @@ import {
   parsePriority,
   type TaskRow,
 } from "../../lib/task-store.js";
-import { resolveProjectPathFromOptions } from "./project-task-support.js";
+import { listRegisteredProjects, resolveProjectPathFromOptions, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────────
 
@@ -1292,10 +1292,34 @@ export const boardCommand = new Command("board")
   .description("Terminal UI kanban board for managing Foreman tasks")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .option("--all", "Show board across all registered projects")
   .option("--limit <n>", "Maximum tasks per column to display (default: auto-fit terminal height)")
   .option("--filter <status>", "Filter by status (e.g., backlog, ready, in_progress)")
-  .action((opts: { project?: string; projectPath?: string; limit?: string; filter?: string }) => {
-    const projectPath = resolveProjectPathFromOptions(opts);
+  .action(async (opts: { project?: string; projectPath?: string; all?: boolean; limit?: string; filter?: string }) => {
+    // Require --project or --all in multi-project mode
+    if (!opts.all) {
+      await requireProjectOrAllInMultiMode(opts.project, opts.all ?? false);
+    }
+
+    if (opts.all) {
+      const projects = await listRegisteredProjects();
+      if (projects.length === 0) {
+        console.log(chalk.yellow("No registered projects found. Run 'foreman project add' to register projects."));
+        return;
+      }
+      for (const project of projects) {
+        const projectPath = project.path ?? await resolveProjectPathFromOptions({ project: project.name });
+        console.log(chalk.bold(`\n=== ${project.name} ===`));
+        try {
+          runBoard({ projectPath, projectName: project.name, limit: opts.limit ? parseInt(opts.limit, 10) : undefined, filter: opts.filter });
+        } catch (err) {
+          console.error(chalk.red(`Board error for ${project.name}: ${err instanceof Error ? err.message : String(err)}`));
+        }
+      }
+      return;
+    }
+
+    const projectPath = await resolveProjectPathFromOptions(opts);
     const projectName = opts.project ?? basename(projectPath);
     const parsedLimit = opts.limit == null ? undefined : parseInt(opts.limit, 10);
     const limit = parsedLimit == null || Number.isNaN(parsedLimit)

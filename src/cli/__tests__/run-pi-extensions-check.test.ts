@@ -87,6 +87,18 @@ vi.mock("node:fs", () => ({
   existsSync: (...args: unknown[]) => mockExistsSync(...args),
 }));
 
+vi.mock("../../lib/trpc-client.js", () => ({
+  createTrpcClient: () => ({
+    projects: {
+      list: vi.fn().mockResolvedValue([]),
+      add: vi.fn(),
+      get: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
+      sync: vi.fn(),
+    },
+  }),
+}));
 vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient }));
 // Needed so collectRuntimeAssetIssues() finds no missing/stale prompts/workflows
 // when FOREMAN_RUNTIME_MODE=normal (test overrides to run the Pi extension check).

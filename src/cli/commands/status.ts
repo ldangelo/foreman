@@ -8,8 +8,8 @@ import type { Metrics, Run, RunProgress } from "../../lib/store.js";
 import { renderAgentCard, formatSuccessRate } from "../watch-ui.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
 import { fetchTaskCounts } from "../../lib/task-client-factory.js";
-import { resolveRepoRootProjectPath } from "./project-task-support.js";
-import { ProjectRegistry } from "../../lib/project-registry.js";
+import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { listRegisteredProjects } from "./project-task-support.js";
 import { pollDashboard, renderDashboard } from "./dashboard.js";
 
 // ── Pi log activity helper ────────────────────────────────────────────────
@@ -222,9 +222,13 @@ export const statusCommand = new Command("status")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts: { watch?: boolean | string; json?: boolean; live?: boolean; project?: string; projectPath?: string; all?: boolean }) => {
+    // Require --project or --all in multi-project mode
+    if (!opts.all) {
+      await requireProjectOrAllInMultiMode(opts.project, opts.all ?? false);
+    }
+
     if (opts.all) {
-      const registry = new ProjectRegistry();
-      const projects = registry.list();
+      const projects = await listRegisteredProjects();
 
       if (projects.length === 0) {
         console.log(chalk.yellow("No registered projects found. Run 'foreman project add' to register projects."));

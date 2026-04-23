@@ -46,6 +46,7 @@ import { attachCommand } from "./commands/attach.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { boardCommand } from "./commands/board.js";
 import { dashboardCommand } from "./commands/dashboard.js";
+import { watchCommand } from "./commands/watch/index.js";
 import { beadCommand } from "./commands/bead.js";
 import { worktreeCommand } from "./commands/worktree.js";
 import { slingCommand } from "./commands/sling.js";
@@ -61,6 +62,7 @@ import { importCommand } from "./commands/import.js";
 import { projectCommand } from "./commands/project.js";
 import { taskCommand } from "./commands/task.js";
 import { recoverCommand } from "./commands/recover.js";
+import { daemonCommand } from "./commands/daemon.js";
 
 function isCliEntrypoint(): boolean {
   try {
@@ -93,6 +95,7 @@ program.addCommand(attachCommand);
 program.addCommand(doctorCommand);
 program.addCommand(boardCommand);
 program.addCommand(dashboardCommand);
+program.addCommand(watchCommand);
 program.addCommand(beadCommand);
 program.addCommand(worktreeCommand);
 program.addCommand(slingCommand);
@@ -108,6 +111,7 @@ program.addCommand(importCommand);
 program.addCommand(projectCommand);
 program.addCommand(taskCommand);
 program.addCommand(recoverCommand);
+program.addCommand(daemonCommand);
 
 if (isCliEntrypoint()) {
   program.parse();

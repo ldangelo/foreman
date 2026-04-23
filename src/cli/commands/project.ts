@@ -1,10 +1,12 @@
 /**
- * `foreman project` CLI commands — manage the global project registry.
+ * `foreman project` CLI commands — manage projects via ForemanDaemon.
  *
  * Sub-commands:
- *   foreman project add <path> [--name <alias>] [--force]
- *   foreman project list [--stale]
- *   foreman project remove <name> [--force] [--stale]
+ *   foreman project add <path> [--name <name>] [--force]
+ *   foreman project list [--status <active|paused|archived>]
+ *   foreman project remove <id> [--force]
+ *
+ * All commands connect to the daemon via TrpcClient (Unix socket).
  *
  * @module src/cli/commands/project
  */
@@ -12,25 +14,30 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { resolve } from "node:path";
-import {
-  ProjectRegistry,
-  DuplicateProjectError,
-  ProjectNotFoundError,
-  type ProjectEntry,
-} from "../../lib/project-registry.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /** Column widths for the project table. */
 const COL_NAME = 24;
-const COL_PATH = 50;
+const COL_ID = 14;
 const COL_STATUS = 12;
 
 function pad(str: string, width: number): string {
   return str.length >= width ? str.slice(0, width - 1) + "…" : str.padEnd(width);
 }
 
-function printProjectTable(projects: ProjectEntry[], label?: string): void {
+interface ProjectRow {
+  id: string;
+  name: string;
+  path?: string | null;
+  status?: string | null;
+  addedAt?: string | null;
+}
+
+function printProjectTable(projects: ProjectRow[], label?: string): void {
   if (projects.length === 0) {
     if (label) {
       console.log(chalk.dim(`No ${label} projects found.`));
@@ -43,155 +50,207 @@ function printProjectTable(projects: ProjectEntry[], label?: string): void {
   // Header
   console.log(
     chalk.bold(pad("NAME", COL_NAME)) +
-      chalk.bold(pad("PATH", COL_PATH)) +
-      chalk.bold(pad("ADDED", COL_STATUS)),
+      chalk.bold(pad("ID", COL_ID)) +
+      chalk.bold(pad("STATUS", COL_STATUS)),
   );
-  console.log("─".repeat(COL_NAME + COL_PATH + COL_STATUS));
+  console.log("─".repeat(COL_NAME + COL_ID + COL_STATUS));
 
   for (const p of projects) {
-    const addedDate = new Date(p.addedAt).toLocaleDateString();
+    const name = p.name ?? "(unnamed)";
+    const id = p.id ?? "(unknown)";
+    const status = p.status ?? "unknown";
+    const statusColor =
+      status === "active"
+        ? chalk.green(status)
+        : status === "paused"
+          ? chalk.yellow(status)
+          : chalk.dim(status);
+
     console.log(
-      chalk.cyan(pad(p.name, COL_NAME)) +
-        chalk.dim(pad(p.path, COL_PATH)) +
-        chalk.dim(pad(addedDate, COL_STATUS)),
+      chalk.cyan(pad(name, COL_NAME)) +
+        chalk.dim(pad(id, COL_ID)) +
+        statusColor,
     );
   }
 }
 
-// ── foreman project add ───────────────────────────────────────────────────────
+function getClient() {
+  return createTrpcClient();
+}
+
+function collectErrorDetails(err: unknown): string[] {
+  const seen = new Set<unknown>();
+  const details = new Set<string>();
+
+  const visit = (value: unknown): void => {
+    if (value == null || seen.has(value)) return;
+    if (typeof value === "object" || typeof value === "function") {
+      seen.add(value);
+    }
+
+    if (value instanceof AggregateError) {
+      const message = value.message?.trim();
+      if (message) details.add(message);
+      for (const nested of value.errors) {
+        visit(nested);
+      }
+      return;
+    }
+
+    if (value instanceof Error) {
+      const message = value.message?.trim();
+      if (message) details.add(message);
+      visit((value as Error & { cause?: unknown }).cause);
+      return;
+    }
+
+    if (typeof value === "string") {
+      const message = value.trim();
+      if (message) details.add(message);
+    }
+  };
+
+  visit(err);
+  return [...details];
+}
+
+function handleDaemonError(err: unknown): never {
+  const details = collectErrorDetails(err);
+  const message = details[0] ?? (err instanceof Error ? err.message : String(err));
+  const combined = details.join(" | ");
+  if (
+    combined.includes("ECONNREFUSED") ||
+    combined.includes("ENOENT") ||
+    combined.includes("EPERM") ||
+    combined.includes("connect")
+  ) {
+    console.error(
+      chalk.red("Error: Cannot connect to the Foreman daemon.") +
+        chalk.dim("\n  Make sure the daemon is running: foreman daemon start") +
+        (message
+          ? chalk.dim(`\n  Underlying error: ${message}`)
+          : ""),
+    );
+  } else {
+    console.error(chalk.red(`Error: ${message}`));
+  }
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// foreman project add
+// ---------------------------------------------------------------------------
 
 const addCommand = new Command("add")
-  .description("Register a project in the global registry")
-  .argument("<path>", "Path to the project root")
-  .option("--name <alias>", "Register under this alias (default: directory basename)")
-  .option("--force", "Overwrite existing registration with the same name")
-  .action(
-    async (
-      projectPath: string,
-      opts: { name?: string; force?: boolean },
-    ) => {
-      const resolvedPath = resolve(projectPath);
-      const registry = new ProjectRegistry();
-
-      try {
-        if (opts.force) {
-          // If forcing, remove any existing registration with the same name or path first
-          const projects = registry.list();
-          const targetName = opts.name ?? resolvedPath.split("/").pop() ?? resolvedPath;
-
-          const existingByName = projects.find((p) => p.name === targetName);
-          if (existingByName !== undefined) {
-            await registry.remove(existingByName.name);
-          }
-
-          const existingByPath = registry.list().find((p) => p.path === resolvedPath);
-          if (existingByPath !== undefined) {
-            await registry.remove(existingByPath.name);
-          }
-        }
-
-        await registry.add(resolvedPath, opts.name);
-        const name = opts.name ?? resolvedPath.split("/").pop() ?? resolvedPath;
-        console.log(chalk.green(`✓ Project '${name}' registered at: ${resolvedPath}`));
-      } catch (err) {
-        if (err instanceof DuplicateProjectError) {
-          if (err.field === "name") {
-            console.error(
-              chalk.red(`Error: Project '${err.value}' is already registered.`) +
-                chalk.dim("\n  Use --force to overwrite, or --name to choose a different alias."),
-            );
-          } else {
-            console.error(
-              chalk.red(`Error: Path '${err.value}' is already registered as a project.`) +
-                chalk.dim("\n  Use --force to overwrite."),
-            );
-          }
-          process.exit(1);
-        }
-        throw err;
-      }
-    },
-  );
-
-// ── foreman project list ──────────────────────────────────────────────────────
-
-const listCommand = new Command("list")
-  .description("List all registered projects")
-  .option("--stale", "Show only projects with inaccessible directories")
-  .action(async (opts: { stale?: boolean }) => {
-    const registry = new ProjectRegistry();
-
-    if (opts.stale) {
-      const staleProjects = registry.listStale();
-      if (staleProjects.length === 0) {
-        console.log(chalk.green("✓ No stale projects found — all registered paths are accessible."));
-        return;
-      }
-      console.log(chalk.yellow(`Found ${staleProjects.length} stale project(s):\n`));
-      printProjectTable(staleProjects, "stale");
-      console.log(
-        chalk.dim("\n  Run 'foreman project remove <name>' or 'foreman project remove --stale' to clean up."),
-      );
-      return;
-    }
-
-    const projects = registry.list();
-    if (projects.length === 0) {
-      console.log(chalk.dim("No projects registered yet."));
-      console.log(chalk.dim("  Run 'foreman project add <path>' to register a project."));
-      return;
-    }
-
-    console.log(chalk.bold(`\n  Registered Projects (${projects.length})\n`));
-    printProjectTable(projects);
-    console.log();
-  });
-
-// ── foreman project remove ────────────────────────────────────────────────────
-
-const removeCommand = new Command("remove")
-  .description("Remove a project from the global registry")
-  .argument("[name]", "Project name to remove")
-  .option("--force", "Remove even if the project has active agents")
-  .option("--stale", "Remove all stale (inaccessible) projects")
-  .action(async (name: string | undefined, opts: { force?: boolean; stale?: boolean }) => {
-    const registry = new ProjectRegistry();
-
-    // -- Handle --stale: bulk-remove all inaccessible projects
-    if (opts.stale) {
-      const removed = await registry.removeStale();
-      if (removed.length === 0) {
-        console.log(chalk.green("✓ No stale projects to remove."));
-      } else {
-        for (const n of removed) {
-          console.log(chalk.yellow(`  ✓ Removed stale project: ${n}`));
-        }
-        console.log(chalk.green(`\n✓ Removed ${removed.length} stale project(s).`));
-      }
-      return;
-    }
-
-    if (!name) {
-      console.error(chalk.red("Error: project name required (or use --stale to remove all stale)."));
-      process.exit(1);
-    }
+  .description("Clone a GitHub repository and register it as a project via ForemanDaemon")
+  .argument("<github-url>", "GitHub repository URL or owner/repo shorthand")
+  .description(`Examples:
+    foreman project add owner/repo
+    foreman project add https://github.com/owner/repo
+    foreman project add git@github.com:owner/repo.git`)
+  .option("--name <name>", "Project display name (default: repo name from GitHub)")
+  .option("--default-branch <branch>", "Override the default git branch")
+  .option("--status <status>", "Project status", "active")
+  .action(async (githubUrl: string, opts) => {
+    const client = getClient();
 
     try {
-      await registry.remove(name);
-      console.log(chalk.green(`✓ Project '${name}' removed from registry.`));
+      const result = (await client.projects.add({
+        githubUrl,
+        name: opts.name,
+        defaultBranch: opts.defaultBranch,
+        status: opts.status as "active" | "paused" | "archived",
+      })) as {
+        id: string;
+        name: string;
+        path: string | null;
+        default_branch: string | null;
+      };
+      console.log(
+        chalk.green(
+          `✓ Project '${result.name}' added as '${result.id}'`
+        )
+      );
+      console.log(
+        chalk.dim(`  Clone: ${result.path ?? "unknown"}`)
+      );
+      console.log(
+        chalk.dim(`  GitHub: ${githubUrl}`)
+      );
+      console.log(
+        chalk.dim(`  Branch: ${result.default_branch ?? "main"}`)
+      );
     } catch (err) {
-      if (err instanceof ProjectNotFoundError) {
-        console.error(chalk.red(`Error: Project '${name}' is not registered.`));
-        process.exit(1);
-      }
-      throw err;
+      handleDaemonError(err);
     }
   });
 
-// ── Parent command ────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// foreman project list
+// ---------------------------------------------------------------------------
+
+const listCommand = new Command("list")
+  .description("List all projects via ForemanDaemon")
+  .option("--status <status>", "Filter by status: active, paused, archived")
+  .option("--search <term>", "Search by name")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const client = getClient();
+
+    try {
+      const result = await client.projects.list({
+        status: opts.status as "active" | "paused" | "archived" | undefined,
+        search: opts.search,
+      });
+
+      const projects = result as ProjectRow[];
+
+      if (opts.json) {
+        console.log(JSON.stringify(projects, null, 2));
+        return;
+      }
+
+      if (projects.length === 0) {
+        console.log(chalk.dim("No projects found."));
+        return;
+      }
+
+      console.log(chalk.bold(`\n  Projects (${projects.length})\n`));
+      printProjectTable(projects);
+      console.log();
+    } catch (err) {
+      handleDaemonError(err);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// foreman project remove
+// ---------------------------------------------------------------------------
+
+const removeCommand = new Command("remove")
+  .description("Remove (archive) a project via ForemanDaemon")
+  .argument("<id>", "Project ID to remove")
+  .option("--force", "Force remove even if there are active agents")
+  .action(async (projectId: string, opts) => {
+    const client = getClient();
+
+    try {
+      await client.projects.remove({
+        id: projectId,
+        force: opts.force,
+      });
+      console.log(chalk.green(`✓ Project '${projectId}' removed.`));
+    } catch (err) {
+      handleDaemonError(err);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// Parent command
+// ---------------------------------------------------------------------------
 
 export const projectCommand = new Command("project")
-  .description("Manage the global project registry (~/.foreman/projects.json)")
+  .description("Manage projects via ForemanDaemon (list/add/remove)")
   .addCommand(addCommand)
   .addCommand(listCommand)
   .addCommand(removeCommand);

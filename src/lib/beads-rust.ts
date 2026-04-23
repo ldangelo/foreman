@@ -15,6 +15,12 @@ const BR_PATH = join(
 
 // ── Interfaces ──────────────────────────────────────────────────────────
 
+/**
+ * @deprecated BeadsRustClient is deprecated — use NativeTaskStore via
+ * `createTaskClient()` instead. The native task store requires no external binary
+ * and uses the Postgres backing store managed by the Foreman daemon.
+ * All native task operations are available via `src/lib/task-client.ts`.
+ */
 export interface BrIssue {
   id: string;
   title: string;
@@ -27,6 +33,10 @@ export interface BrIssue {
   updated_at: string;
 }
 
+/**
+ * @deprecated BeadsRustClient is deprecated — use NativeTaskStore instead.
+ * See deprecation note on `BrIssue`.
+ */
 export interface BrDepRef {
   id: string;
   title: string;
@@ -35,6 +45,10 @@ export interface BrDepRef {
   dependency_type: string;
 }
 
+/**
+ * @deprecated BeadsRustClient is deprecated — use NativeTaskStore instead.
+ * See deprecation note on `BrIssue`.
+ */
 export interface BrIssueDetail extends BrIssue {
   description: string | null;
   labels: string[];
@@ -48,6 +62,10 @@ export interface BrIssueDetail extends BrIssue {
   notes?: string | null;
 }
 
+/**
+ * @deprecated BeadsRustClient is deprecated — use NativeTaskStore instead.
+ * See deprecation note on `BrIssue`.
+ */
 export interface BrComment {
   id: number;
   issue_id: string;
@@ -73,10 +91,8 @@ function normalizeBead(item: unknown): unknown {
 }
 
 /**
- * Unwrap the br CLI JSON response.
- *
- * br returns objects directly (not wrapped in an envelope like sd).
- * Arrays are returned as-is.  On failure, br exits non-zero (caught in execBr).
+ * @deprecated BeadsRustClient is deprecated — use NativeTaskStore instead.
+ * See deprecation note on `BrIssue`.
  */
 export function unwrapBrResponse(raw: unknown): unknown {
   if (raw == null || typeof raw !== "object") return raw;
@@ -99,6 +115,10 @@ export function unwrapBrResponse(raw: unknown): unknown {
   return (raw as unknown[]).map(normalizeBead);
 }
 
+/**
+ * @deprecated BeadsRustClient is deprecated — use NativeTaskStore instead.
+ * See deprecation note on `BrIssue`.
+ */
 export async function execBr(
   args: string[],
   cwd?: string,
@@ -125,6 +145,19 @@ export async function execBr(
 
 // ── Client ──────────────────────────────────────────────────────────────
 
+/**
+ * @deprecated BeadsRustClient is deprecated — use NativeTaskStore via
+ * `createTaskClient()` instead. The native task store requires no external binary,
+ * uses the Postgres backing store managed by the Foreman daemon, and supports
+ * concurrent agents without SQLite lock contention.
+ *
+ * Migration guide:
+ *   Before: const client = new BeadsRustClient(projectPath);
+ *   After:  const { taskClient } = await createTaskClient(projectPath);
+ *
+ * The `taskClient` returned by `createTaskClient()` implements `ITaskClient`
+ * and uses the NativeTaskStore backed by the Foreman daemon's Postgres pool.
+ */
 export class BeadsRustClient implements ITaskClient {
   private projectPath: string;
 

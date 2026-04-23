@@ -15,6 +15,7 @@ import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Message, Run } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
+import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -177,6 +178,8 @@ export const inboxCommand = new Command("inbox")
   .option("--limit <n>", "Max messages to show", "50")
   .option("--ack", "Mark shown messages as read after displaying them")
   .option("--full", "Show full message payloads (no truncation, JSON pretty-printed)")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (options: {
     agent?: string;
     run?: string;
@@ -187,15 +190,22 @@ export const inboxCommand = new Command("inbox")
     limit?: string;
     ack?: boolean;
     full?: boolean;
+    project?: string;
+    projectPath?: string;
   }) => {
     const fullPayload = options.full ?? false;
     const limit = parseInt(options.limit ?? "50", 10);
 
-    // Resolve the project root so we can open the correct store
+    // Require --project or --all in multi-project mode
+    await requireProjectOrAllInMultiMode(options.project, options.all ?? false);
+
+    // Resolve the project root via --project flag or VCS auto-detection
     let projectPath: string;
     try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      projectPath = await vcs.getRepoRoot(process.cwd());
+      projectPath = await resolveRepoRootProjectPath({
+        project: options.project,
+        projectPath: options.projectPath,
+      });
     } catch {
       projectPath = process.cwd();
     }

@@ -106,6 +106,11 @@ const GIT_ALWAYS_ALLOWED: string[] = [
   "orchestrator/refinery.ts",
   // Doctor diagnostic tool — version checks, worktree prune
   "orchestrator/doctor.ts",
+  // ProjectRegistry — health check git fetch on project clones
+  "lib/project-registry.ts",
+  // WorktreeManager — manages ~/.foreman/worktrees/<project-id>/ path (distinct from
+  // VcsBackend's .foreman-worktrees/ path). Uses direct git for path-specific control.
+  "lib/worktree-manager.ts",
 ];
 
 /**

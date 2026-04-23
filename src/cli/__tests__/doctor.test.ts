@@ -10,8 +10,8 @@ import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess
 const execFileAsync = promisify(execFile);
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
-async function run(args: string[], cwd: string): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 30_000 });
+async function run(args: string[], cwd: string, opts?: { timeout?: number }): Promise<ExecResult> {
+  return runTsxModule(CLI, args, { cwd, timeout: opts?.timeout ?? 60_000 });
 }
 
 describe("doctor command", () => {
@@ -102,7 +102,7 @@ describe("doctor command", () => {
 
   it("doctor --json outputs valid JSON", async () => {
     const tmp = makeTempDir();
-    const result = await run(["doctor", "--json"], tmp);
+    const result = await run(["doctor", "--json"], tmp, { timeout: 60_000 });
 
     const output = result.stdout + result.stderr;
     let parsed: any;

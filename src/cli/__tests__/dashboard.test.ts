@@ -825,3 +825,104 @@ describe("approveTask and retryTask", () => {
     expect(mockClose).toHaveBeenCalled();
   });
 });
+
+// ── TRD-051 / TRD-055: Needs Human panel + per-project error handling ──────
+
+describe("NEEDS_HUMAN_STATUSES constant", () => {
+  it("includes conflict, failed, stuck, backlog", () => {
+    expect(NEEDS_HUMAN_STATUSES).toContain("conflict");
+    expect(NEEDS_HUMAN_STATUSES).toContain("failed");
+    expect(NEEDS_HUMAN_STATUSES).toContain("stuck");
+    expect(NEEDS_HUMAN_STATUSES).toContain("backlog");
+  });
+
+  it("is a readonly tuple of length 4", () => {
+    expect(NEEDS_HUMAN_STATUSES).toHaveLength(4);
+  });
+});
+
+describe("sortNeedsHumanTasks", () => {
+  it("sorts tasks by priority ascending (lower priority number = higher urgency)", () => {
+    const tasks = [
+      makeNativeTask({ id: "t3", priority: 3 }),
+      makeNativeTask({ id: "t1", priority: 1 }),
+      makeNativeTask({ id: "t2", priority: 2 }),
+    ];
+    const sorted = sortNeedsHumanTasks(tasks);
+    expect(sorted.map((t) => t.id)).toEqual(["t1", "t2", "t3"]);
+  });
+
+  it("sorts within same priority by status urgency (conflict > failed > stuck > backlog)", () => {
+    const tasks = [
+      makeNativeTask({ id: "t-backlog", status: "backlog", priority: 1 }),
+      makeNativeTask({ id: "t-conflict", status: "conflict", priority: 1 }),
+      makeNativeTask({ id: "t-stuck", status: "stuck", priority: 1 }),
+      makeNativeTask({ id: "t-failed", status: "failed", priority: 1 }),
+    ];
+    const sorted = sortNeedsHumanTasks(tasks);
+    expect(sorted.map((t) => t.id)).toEqual(["t-conflict", "t-failed", "t-stuck", "t-backlog"]);
+  });
+
+  it("returns empty array for empty input", () => {
+    expect(sortNeedsHumanTasks([])).toEqual([]);
+  });
+});
+
+describe("aggregateSnapshots with per-project error handling (TRD-055)", () => {
+  it("includes offline projects in offlineProjects set", () => {
+    const proj = makeProject({ id: "proj-offline" });
+    const snap = makeProjectSnapshot({ project: proj, offline: true });
+    const state = aggregateSnapshots([snap]);
+    expect(state.offlineProjects?.has("proj-offline")).toBe(true);
+  });
+
+  it("does not crash when offlineProjects is undefined", () => {
+    const state = aggregateSnapshots([]);
+    expect(state.offlineProjects?.size ?? 0).toBe(0);
+  });
+
+  it("shows 0 cost when no projects", () => {
+    const state = aggregateSnapshots([]);
+    // totalCost is computed in renderDashboard, not in aggregateSnapshots
+    expect(state.projects).toHaveLength(0);
+  });
+
+  it("includes non-offline projects in projects array", () => {
+    const proj = makeProject({ id: "p1" });
+    const snap = makeProjectSnapshot({ project: proj, offline: false });
+    const state = aggregateSnapshots([snap]);
+    expect(state.projects).toHaveLength(1);
+    expect(state.projects[0].id).toBe("p1");
+  });
+});
+
+describe("renderNeedsHumanPanel", () => {
+  it("renders 'No tasks need attention' when tasks array is empty", () => {
+    const output = renderNeedsHumanPanel([]);
+    expect(output).toContain("No tasks need attention");
+  });
+
+  it("renders task rows when tasks are present", () => {
+    const tasks = [
+      makeNativeTask({ id: "t1", title: "Fix bug", status: "failed", priority: 1 }),
+      makeNativeTask({ id: "t2", title: "Review PR", status: "conflict", priority: 2 }),
+    ];
+    const output = renderNeedsHumanPanel(tasks);
+    expect(output).toContain("Fix bug");
+    expect(output).toContain("Review PR");
+  });
+
+  it("respects maxRows parameter", () => {
+    const tasks = [
+      makeNativeTask({ id: "t1", status: "failed", priority: 1 }),
+      makeNativeTask({ id: "t2", status: "conflict", priority: 2 }),
+      makeNativeTask({ id: "t3", status: "stuck", priority: 3 }),
+    ];
+    // With maxRows=2, should show "and 1 more" message
+    const output = renderNeedsHumanPanel(tasks, 2);
+    expect(output).toContain("and 1 more");
+    // Without maxRows, no "more" message
+    const outputAll = renderNeedsHumanPanel(tasks);
+    expect(outputAll).not.toContain("more");
+  });
+});

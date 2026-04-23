@@ -1,9 +1,20 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createTempProjectHarness } from "../../test-support/temp-project-harness.js";
 import { runCommand } from "../../cli/commands/run.js";
+
+// Mock createTrpcClient to return a client whose projects.list() rejects.
+// This makes isMultiProjectMode() return false (error caught in try/catch),
+// bypassing the multi-project guard, without starting the daemon or holding connections.
+vi.mock("../../lib/trpc-client.js", () => ({
+  createTrpcClient: () => ({
+    projects: {
+      list: () => Promise.reject(new Error("daemon unavailable")),
+    },
+  }),
+}));
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 const PHASE_RUNNER_MODULE = join(

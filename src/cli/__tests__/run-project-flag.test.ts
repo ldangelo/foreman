@@ -63,7 +63,7 @@ describe("foreman run --project flag", () => {
     execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
-    const registryDir = join(tmpBase, ".foreman");
+    const registryDir = join(tmpBase, ".foreman", "projects");
     setupRegistryWithProject(registryDir, projectDir, "my-project");
 
     const result = await run(["run", "--project", "my-project", "--dry-run"], projectDir, {
@@ -83,7 +83,7 @@ describe("foreman run --project flag", () => {
     execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
-    const registryDir = join(tmpBase, ".foreman");
+    const registryDir = join(tmpBase, ".foreman", "projects");
     mkdirSync(registryDir, { recursive: true });
     writeFileSync(join(registryDir, "projects.json"), JSON.stringify({ version: 1, projects: [] }, null, 2) + "\n");
 

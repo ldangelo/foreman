@@ -11,7 +11,7 @@ import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
 import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../../lib/project-config.js";
 import type { ProjectConfig } from "../../lib/project-config.js";
-import { resolveRepoRootProjectPath } from "./project-task-support.js";
+import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
@@ -446,6 +446,8 @@ export const runCommand = new Command("run")
     }
 
     try {
+      // Require --project in multi-project mode
+      await requireProjectOrAllInMultiMode(opts.project, false);
       const projectPath = await resolveRepoRootProjectPath(opts);
       const projectCfg = loadProjectConfig(projectPath);
       if (!dryRun && !resume && !resumeFailed) {

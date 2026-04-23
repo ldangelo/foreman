@@ -26,6 +26,7 @@ import { getWorkspacePath } from "../lib/workspace-paths.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { checkAndRebaseStaleWorktree } from "./stale-worktree-check.js";
+import { WorktreeManager } from "../lib/worktree-manager.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import type {
   SeedInfo,
@@ -154,7 +155,7 @@ export class Dispatcher {
     } catch (drainErr: unknown) {
       // Non-fatal: log and continue — drain failures must not block dispatch
       const msg = drainErr instanceof Error ? drainErr.message : String(drainErr);
-      console.error(`[bead-writer] Warning: drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
+      console.error(`[bead-writer][${this.resolveProjectId()}] Warning: drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
     }
 
     // Clear br's blocked_issues_cache before querying ready seeds.
@@ -211,14 +212,14 @@ export class Dispatcher {
       console.error("[dispatch] FOREMAN_TASK_STORE=native — using native task store");
     } else if (taskStoreMode === "beads") {
       usingNativeStore = false;
-      console.error("[dispatch] FOREMAN_TASK_STORE=beads — using beads fallback");
+      console.error(`[dispatch][${projectId}] FOREMAN_TASK_STORE=beads — using beads fallback`);
     } else {
       // 'auto': use native if tasks exist, otherwise fall back to beads
       usingNativeStore = this.store.hasNativeTasks();
       if (usingNativeStore) {
         console.error("[dispatch] Native tasks detected — using native task store (AC-014.1)");
       } else {
-        console.error("[dispatch] No native tasks — using beads fallback (AC-014.1)");
+        console.error(`[dispatch][${projectId}] No native tasks — using beads fallback (AC-014.1)`);
       }
     }
 
@@ -739,16 +740,16 @@ export class Dispatcher {
           log(`[foreman] VcsBackend creation failed: ${vcsMsg} — continuing without VcsBackend instance`);
         }
 
-        // 2. Create workspace via VcsBackend (TRD-015: replaces createWorktree shim)
-        // Falls back to GitBackend if vcsBackend creation failed (non-fatal).
-        const workspaceBackend = vcsBackend ?? new GitBackend(this.projectPath);
-        const workspaceResult = await workspaceBackend.createWorkspace(
-          this.projectPath,
-          seed.id,
+        // 2. Create worktree at ~/.foreman/worktrees/<projectId>/<beadId> via WorktreeManager (TRD-037)
+        const worktreeManager = new WorktreeManager();
+        const worktreeInfo = await worktreeManager.createWorktree({
+          projectId,
+          beadId: seed.id,
+          repoPath: this.projectPath,
           baseBranch,
-        );
-        const worktreePath = workspaceResult.workspacePath;
-        const branchName = workspaceResult.branchName;
+        });
+        const worktreePath = worktreeInfo.path;
+        const branchName = worktreeInfo.branchName;
 
         // Run setup steps / install dependencies (not part of VcsBackend interface)
         if (opts?.runtimeMode === "test") {
@@ -824,7 +825,7 @@ export class Dispatcher {
             await this.seeds.update(seed.id, { status: "in_progress" });
           } catch (claimErr: unknown) {
             const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
-            console.error(`[dispatch] Warning: br claim failed for ${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+            console.error(`[dispatch][${projectId}] Warning: br claim failed for seed=${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
           }
         }
 
@@ -1427,7 +1428,7 @@ export class Dispatcher {
         try {
           payload = JSON.parse(entry.payload) as Record<string, unknown>;
         } catch {
-          console.error(`[bead-writer] Invalid JSON payload for entry ${entry.id} (${entry.operation}) — skipping`);
+          console.error(`[bead-writer][${this.resolveProjectId()}] Invalid JSON payload for entry ${entry.id} (${entry.operation}) — skipping`);
           this.store.markBeadWriteProcessed(entry.id);
           continue;
         }
@@ -1442,23 +1443,23 @@ export class Dispatcher {
           case "close-seed":
             // Use --no-db to write directly to JSONL, bypassing the SQLite blocked cache.
             execFileSync(bin, ["close", seedId, "--no-db", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
-            console.error(`[bead-writer] Closed seed ${seedId} via --no-db (from ${entry.sender})`);
+            console.error(`[bead-writer][${this.resolveProjectId()}] Closed seed ${seedId} via --no-db (from ${entry.sender})`);
             break;
 
           case "reset-seed":
             execFileSync(bin, ["update", seedId, "--status", "open", ...lockArgs], execOpts);
-            console.error(`[bead-writer] Reset seed ${seedId} to open (from ${entry.sender})`);
+            console.error(`[bead-writer][${this.resolveProjectId()}] Reset seed ${seedId} to open (from ${entry.sender})`);
             break;
 
           case "mark-failed":
             execFileSync(bin, ["update", seedId, "--status", "failed", ...lockArgs], execOpts);
-            console.error(`[bead-writer] Marked seed ${seedId} as failed (from ${entry.sender})`);
+            console.error(`[bead-writer][${this.resolveProjectId()}] Marked seed ${seedId} as failed (from ${entry.sender})`);
             break;
 
           case "set-status": {
             const targetStatus = payload.status as string;
             execFileSync(bin, ["update", seedId, "--status", targetStatus, ...lockArgs], execOpts);
-            console.error(`[bead-writer] Set seed ${seedId} to ${targetStatus} (from ${entry.sender})`);
+            console.error(`[bead-writer][${this.resolveProjectId()}] Set seed ${seedId} to ${targetStatus} (from ${entry.sender})`);
             break;
           }
 
