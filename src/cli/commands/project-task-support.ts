@@ -8,16 +8,23 @@ export interface RegisteredProjectSummary {
   id: string;
   name: string;
   path: string;
+  githubUrl?: string;
 }
 
 export async function listRegisteredProjects(): Promise<RegisteredProjectSummary[]> {
   try {
     const client = createTrpcClient();
-    const projects = await client.projects.list() as Array<{ id: string; name: string; path: string }>;
+    const projects = await client.projects.list() as Array<{
+      id: string;
+      name: string;
+      path: string;
+      githubUrl?: string;
+    }>;
     return projects.map((project) => ({
       id: project.id,
       name: project.name,
       path: project.path,
+      githubUrl: project.githubUrl,
     }));
   } catch {
     const registry = new ProjectRegistry();
@@ -26,6 +33,7 @@ export async function listRegisteredProjects(): Promise<RegisteredProjectSummary
       id: record.id,
       name: record.name,
       path: record.path,
+      githubUrl: record.githubUrl,
     }));
   }
 }
@@ -62,7 +70,43 @@ export async function resolveRepoRootProjectPath(
 
   const cwd = process.cwd();
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, cwd);
-  return vcs.getRepoRoot(cwd);
+  const repoRoot = await vcs.getRepoRoot(cwd);
+
+  // Check if the cwd's git origin URL matches a registered project by GitHub URL.
+  // This ensures commands like `foreman run` use the project's multi-project store
+  // when run from within a registered project's repo.
+  try {
+    const projects = await listRegisteredProjects();
+    const projectsByUrl = new Map(
+      projects
+        .filter((p) => p.githubUrl)
+        .map((p) => [p.githubUrl.replace(/\.git$/, ""), p]),
+    );
+    if (projectsByUrl.size > 0) {
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const execFileAsync = promisify(execFile);
+      try {
+        const { stdout } = await execFileAsync("git", ["ls-remote", "--get-url", "origin"], {
+          cwd: repoRoot,
+          timeout: 5000,
+        });
+        const rawUrl = stdout.trim().replace(/\.git$/, "");
+        // Normalize SSH (git@github.com:owner/repo) to HTTPS (https://github.com/owner/repo)
+        const remoteUrl = rawUrl.replace(/^git@([^:]+):/, "https://$1/");
+        const registered = projectsByUrl.get(remoteUrl);
+        if (registered) {
+          return registered.path;
+        }
+      } catch {
+        // git unavailable or no origin remote — fall through
+      }
+    }
+  } catch {
+    // Registry unavailable — fall through to repo root
+  }
+
+  return repoRoot;
 }
 
 // ── Multi-project mode detection (TRD-041/042) ───────────────────────────────
