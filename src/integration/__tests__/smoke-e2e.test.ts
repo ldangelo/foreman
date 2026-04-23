@@ -1,9 +1,23 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createTempProjectHarness } from "../../test-support/temp-project-harness.js";
 import { runCommand } from "../../cli/commands/run.js";
+
+// Prevent requireProjectInMultiMode from exiting when daemon has multiple projects
+vi.mock("../../lib/trpc-client.js", () => ({
+  createTrpcClient: () => ({
+    projects: {
+      list: vi.fn().mockResolvedValue([]),
+      add: vi.fn(),
+      get: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
+      sync: vi.fn(),
+    },
+  }),
+}));
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 const PHASE_RUNNER_MODULE = join(
