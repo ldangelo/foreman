@@ -77,6 +77,13 @@ vi.mock("../../lib/workflow-loader.js", () => ({
   findMissingWorkflows: () => [],
   findStaleWorkflows: () => [],
 }));
+// Mock node:fs/promises so that BeadsRustClient.ensureBrInstalled() (which calls
+// access(BR_PATH)) succeeds without actually checking the real br binary.
+// Without this, createTaskClients() throws "br not found" and runCommand calls process.exit(1),
+// which causes vi.runAllTimersAsync() to hang in fake-timer tests.
+vi.mock("node:fs/promises", () => ({
+  access: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
