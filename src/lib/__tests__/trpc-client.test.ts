@@ -37,6 +37,11 @@ describe("TrpcClient module exports", () => {
     expect(typeof createTrpcClient).toBe("function");
   });
 
+  it("decodeUnixSocketUrl is exported", async () => {
+    const { decodeUnixSocketUrl } = await import("../trpc-client.js");
+    expect(typeof decodeUnixSocketUrl).toBe("function");
+  });
+
   // Note: TypeScript interfaces (TrpcClientOptions, TrpcClient,
   // TRPCProjectsClient) and `export type` are erased at runtime.
   // AppRouter is a compile-time alias — not a runtime value.
@@ -159,6 +164,20 @@ describe("TrpcClient error handling", () => {
 // ---------------------------------------------------------------------------
 
 describe("Unix socket URL construction", () => {
+  it("decodes the socket path and request path from a unix+http URL", async () => {
+    const { decodeUnixSocketUrl } = await import("../trpc-client.js");
+    const parsed = decodeUnixSocketUrl(
+      new URL(
+        "unix+http:///Users/test/.foreman/daemon.sock/trpc/projects.add?batch=1&input=%7B%7D",
+      ),
+    );
+
+    expect(parsed).toEqual({
+      socketPath: "/Users/test/.foreman/daemon.sock",
+      requestPath: "/trpc/projects.add?batch=1&input=%7B%7D",
+    });
+  });
+
   it("uses unix+http:// protocol in socket URL", async () => {
     const { createTrpcClient } = await import("../trpc-client.js");
     const { socketPath } = makeTempSocketPath();

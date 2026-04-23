@@ -78,16 +78,58 @@ function getClient() {
   return createTrpcClient();
 }
 
+function collectErrorDetails(err: unknown): string[] {
+  const seen = new Set<unknown>();
+  const details = new Set<string>();
+
+  const visit = (value: unknown): void => {
+    if (value == null || seen.has(value)) return;
+    if (typeof value === "object" || typeof value === "function") {
+      seen.add(value);
+    }
+
+    if (value instanceof AggregateError) {
+      const message = value.message?.trim();
+      if (message) details.add(message);
+      for (const nested of value.errors) {
+        visit(nested);
+      }
+      return;
+    }
+
+    if (value instanceof Error) {
+      const message = value.message?.trim();
+      if (message) details.add(message);
+      visit((value as Error & { cause?: unknown }).cause);
+      return;
+    }
+
+    if (typeof value === "string") {
+      const message = value.trim();
+      if (message) details.add(message);
+    }
+  };
+
+  visit(err);
+  return [...details];
+}
+
 function handleDaemonError(err: unknown): never {
-  const message = err instanceof Error ? err.message : String(err);
+  const details = collectErrorDetails(err);
+  const message = details[0] ?? (err instanceof Error ? err.message : String(err));
+  const combined = details.join(" | ");
   if (
-    message.includes("ECONNREFUSED") ||
-    message.includes("ENOENT") ||
-    message.includes("connect")
+    combined.includes("ECONNREFUSED") ||
+    combined.includes("ENOENT") ||
+    combined.includes("EPERM") ||
+    combined.includes("connect")
   ) {
     console.error(
       chalk.red("Error: Cannot connect to the Foreman daemon.") +
-        chalk.dim("\n  Make sure the daemon is running: foreman daemon start"),
+        chalk.dim("\n  Make sure the daemon is running: foreman daemon start") +
+        (message
+          ? chalk.dim(`\n  Underlying error: ${message}`)
+          : ""),
     );
   } else {
     console.error(chalk.red(`Error: ${message}`));

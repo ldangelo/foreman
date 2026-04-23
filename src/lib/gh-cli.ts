@@ -157,7 +157,7 @@ export class GhCli {
    * token expired, network error, gh not installed).
    */
   async authStatus(): Promise<boolean> {
-    const result = await this.execGh(["auth", "status", "--json"], {
+    const result = await this.execGh(["auth", "status", "--json", "hosts"], {
       timeout: 10_000,
     });
     if (result.exitCode !== 0) {
@@ -167,8 +167,13 @@ export class GhCli {
     // but the structure differs; check for auth token presence
     try {
       const parsed = JSON.parse(result.stdout);
-      // If authenticated, gh returns an array with at least one entry
-      return Array.isArray(parsed) && parsed.length > 0;
+      const hosts = parsed?.hosts;
+      if (!hosts || typeof hosts !== "object") {
+        return false;
+      }
+      return Object.values(hosts).some((entries) =>
+        Array.isArray(entries) && entries.some((entry) => entry?.active === true || entry?.state === "success"),
+      );
     } catch {
       return false;
     }

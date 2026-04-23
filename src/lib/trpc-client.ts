@@ -52,11 +52,7 @@ async function unixSocketFetch(
     return fetch(url, init);
   }
 
-  // Decode socket path and tRPC path from the URL.
-  // Format: unix+http://<socket-path>/<tRPC-path>
-  // e.g.  unix+http:///home/user/.foreman/daemon.sock/trpc/projects.list/batch
-  const socketPath = url.hostname + url.pathname.split("/")[0];
-  const trpcPath = "/" + url.pathname.split("/").slice(1).join("/");
+  const { socketPath, requestPath: trpcPath } = decodeUnixSocketUrl(url);
   const method = (init?.method as string | undefined) ?? "GET";
   const headers = buildHeaders(init?.headers);
   const body =
@@ -66,7 +62,7 @@ async function unixSocketFetch(
         : init.body instanceof Uint8Array
           ? init.body
           : init.body instanceof ReadableStream
-            ? init.body
+            ? await readStreamBody(init.body)
             : JSON.stringify(init.body)
       : undefined;
 
@@ -104,17 +100,58 @@ async function unixSocketFetch(
 
     if (body !== undefined) {
       if (typeof body === "string") {
-        req.write(body, "utf-8");
+        req.end(body, "utf-8");
       } else if (body instanceof Uint8Array) {
-        req.write(body);
+        req.end(body);
       } else {
-        // ReadableStream — not supported for Unix socket HTTP without streaming.
         req.end();
       }
     } else {
       req.end();
     }
   });
+}
+
+export function decodeUnixSocketUrl(url: URL): {
+  socketPath: string;
+  requestPath: string;
+} {
+  // Format: unix+http:///<absolute-socket-path>/<tRPC-path>
+  // e.g. unix+http:///home/user/.foreman/daemon.sock/projects.list?batch=1
+  const socketMarker = ".sock";
+  const socketEnd = url.pathname.indexOf(socketMarker);
+  if (socketEnd === -1) {
+    throw new Error(`Invalid unix socket URL (missing ${socketMarker}): ${url.href}`);
+  }
+
+  const socketPath = url.pathname.slice(0, socketEnd + socketMarker.length);
+  const rawRequestPath = url.pathname.slice(socketEnd + socketMarker.length) || "/";
+  return {
+    socketPath,
+    requestPath: `${rawRequestPath}${url.search}`,
+  };
+}
+
+async function readStreamBody(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalLength = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    chunks.push(value);
+    totalLength += value.length;
+  }
+
+  const body = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return body;
 }
 
 /** Convert HeadersInit to a flat Record<string, string>. */
@@ -289,8 +326,8 @@ export function createTrpcClient(
   const socketPath = options.socketPath ?? DEFAULT_SOCKET_PATH;
 
   // Build the Unix-socket URL for httpBatchLink.
-  // Format: unix+http://<socket-path>/
-  const socketUrl = `unix+http://${socketPath}/`;
+  // Format: unix+http://<socket-path>/trpc
+  const socketUrl = `unix+http://${socketPath}/trpc`;
 
   const untypedClient = createTRPCUntypedClient<AppRouter>({
     links: [
