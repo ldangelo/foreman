@@ -168,6 +168,17 @@ export class GitBackend implements VcsBackend {
     return this.git(["rev-parse", "--abbrev-ref", "HEAD"], repoPath);
   }
 
+  /**
+   * Get the URL of a remote by name.
+   */
+  async getRemoteUrl(repoPath: string, remote = "origin"): Promise<string | null> {
+    try {
+      return await this.git(["ls-remote", "--get-url", remote], repoPath);
+    } catch {
+      return null;
+    }
+  }
+
   // ── Branch Operations ────────────────────────────────────────────────
 
   /**

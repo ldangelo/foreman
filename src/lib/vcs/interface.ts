@@ -57,6 +57,12 @@ export interface VcsBackend {
    */
   getCurrentBranch(repoPath: string): Promise<string>;
 
+  /**
+   * Get the URL of a remote by name (default: "origin").
+   * Returns null if the remote does not exist.
+   */
+  getRemoteUrl(repoPath: string, remote?: string): Promise<string | null>;
+
   // ── Branch / Bookmark Operations ────────────────────────────────────
 
   /**

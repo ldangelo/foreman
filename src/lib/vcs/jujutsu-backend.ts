@@ -229,6 +229,24 @@ export class JujutsuBackend implements VcsBackend {
     return this.jj(["log", "--no-graph", "-r", "@", "-T", "change_id.short()"], repoPath);
   }
 
+  /**
+   * Get the URL of a remote by name.
+   * For jujutsu, this delegates to the underlying git repository.
+   */
+  async getRemoteUrl(repoPath: string, remote = "origin"): Promise<string | null> {
+    try {
+      const { execFile: gitExec } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const execFileAsync = promisify(gitExec);
+      return (await execFileAsync("git", ["ls-remote", "--get-url", remote], {
+        cwd: repoPath,
+        timeout: 5000,
+      })).stdout.trim();
+    } catch {
+      return null;
+    }
+  }
+
   // ── Branch / Bookmark Operations ────────────────────────────────────
 
   /**

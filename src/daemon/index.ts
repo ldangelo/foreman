@@ -21,6 +21,11 @@ import { initPool, healthCheck, destroyPool } from "../lib/db/pool-manager.js";
 import { createContext } from "./router.js";
 import { appRouter } from "./router.js";
 import { createWebhookHandler } from "./webhook-handler.js";
+import { ProjectRegistry } from "../lib/project-registry.js";
+import { ForemanStore } from "../lib/store.js";
+import { createTaskClient } from "../lib/task-client-factory.js";
+import { Dispatcher } from "../orchestrator/dispatcher.js";
+import { BvClient } from "../lib/bv.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,6 +33,8 @@ import { createWebhookHandler } from "./webhook-handler.js";
 
 const DEFAULT_SOCKET_PATH = join(homedir(), ".foreman", "daemon.sock");
 const DEFAULT_HTTP_PORT = 3847;
+const DEFAULT_DISPATCH_INTERVAL_MS = 30_000; // 30 seconds
+const DEFAULT_MAX_AGENTS = 5;
 
 /**
  * Exit with a clear error when Postgres connection fails on startup.
@@ -55,6 +62,7 @@ export class ForemanDaemon {
   private _socketPath: string;
   private _httpPort: number;
   private _useSocket: boolean = true;
+  private _dispatchInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(options?: {
     socketPath?: string;
@@ -144,6 +152,9 @@ export class ForemanDaemon {
     process.on("SIGINT", () => shutdown("SIGINT"));
 
     this._running = true;
+
+    // Start background dispatch loop
+    await this.#startDispatchLoop();
   }
 
   /** Try to bind on the Unix socket. Fall back to HTTP on failure. */
@@ -209,8 +220,84 @@ export class ForemanDaemon {
       // ignore
     }
 
+    this.#stopDispatchLoop();
     this._running = false;
     this.fastify.log.info("[ForemanDaemon] Stopped");
+  }
+
+  /** Start the background dispatch loop for all registered projects. */
+  async #startDispatchLoop(): Promise<void> {
+    const intervalMs =
+      parseInt(process.env.FOREMAN_DISPATCH_INTERVAL_MS ?? "", 10) ||
+      DEFAULT_DISPATCH_INTERVAL_MS;
+    const maxAgents =
+      parseInt(process.env.FOREMAN_MAX_AGENTS ?? "", 10) ||
+      DEFAULT_MAX_AGENTS;
+
+    this.fastify.log.info(
+      `[ForemanDaemon] Starting dispatch loop (interval: ${intervalMs}ms, maxAgents: ${maxAgents})`
+    );
+
+    // Run once immediately, then on interval
+    await this.#dispatchAllProjects(maxAgents);
+
+    this._dispatchInterval = setInterval(async () => {
+      if (!this._running) return;
+      try {
+        await this.#dispatchAllProjects(maxAgents);
+      } catch (err) {
+        this.fastify.log.error(
+          `[ForemanDaemon] Dispatch loop error: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }, intervalMs);
+  }
+
+  /** Stop the background dispatch loop. */
+  #stopDispatchLoop(): void {
+    if (this._dispatchInterval) {
+      clearInterval(this._dispatchInterval);
+      this._dispatchInterval = null;
+      this.fastify.log.info("[ForemanDaemon] Dispatch loop stopped");
+    }
+  }
+
+  /** Dispatch ready tasks for all registered projects. */
+  async #dispatchAllProjects(maxAgents: number): Promise<void> {
+    const registry = new ProjectRegistry();
+    const projects = await registry.list();
+
+    for (const project of projects) {
+      if (project.status !== "active") continue;
+
+      try {
+        const { taskClient, backendType } = await createTaskClient(project.path);
+        const store = ForemanStore.forProject(project.path);
+
+        // Create BvClient if available (best effort)
+        let bvClient: BvClient | null = null;
+        try {
+          bvClient = new BvClient(project.path);
+        } catch {
+          // BvClient not available — continue without it
+        }
+
+        const dispatcher = new Dispatcher(taskClient, store, project.path, bvClient);
+        const result = await dispatcher.dispatch({ maxAgents });
+
+        if (result.dispatched.length > 0) {
+          this.fastify.log.info(
+            `[ForemanDaemon] Dispatched ${result.dispatched.length} task(s) for project "${project.name}"`
+          );
+        }
+
+        store.close();
+      } catch (err) {
+        this.fastify.log.error(
+          `[ForemanDaemon] Failed to dispatch for project "${project.name}": ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
   }
 }
 

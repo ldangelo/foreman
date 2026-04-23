@@ -79,27 +79,25 @@ export async function resolveRepoRootProjectPath(
     const projects = await listRegisteredProjects();
     const projectsByUrl = new Map(
       projects
-        .filter((p) => p.githubUrl)
+        .filter((p): p is RegisteredProjectSummary & { githubUrl: string } =>
+          Boolean(p.githubUrl),
+        )
         .map((p) => [p.githubUrl.replace(/\.git$/, ""), p]),
     );
     if (projectsByUrl.size > 0) {
-      const { execFile } = await import("node:child_process");
-      const { promisify } = await import("node:util");
-      const execFileAsync = promisify(execFile);
       try {
-        const { stdout } = await execFileAsync("git", ["ls-remote", "--get-url", "origin"], {
-          cwd: repoRoot,
-          timeout: 5000,
-        });
-        const rawUrl = stdout.trim().replace(/\.git$/, "");
-        // Normalize SSH (git@github.com:owner/repo) to HTTPS (https://github.com/owner/repo)
-        const remoteUrl = rawUrl.replace(/^git@([^:]+):/, "https://$1/");
-        const registered = projectsByUrl.get(remoteUrl);
-        if (registered) {
-          return registered.path;
+        const rawUrl = await vcs.getRemoteUrl(repoRoot, "origin");
+        if (rawUrl) {
+          const normalizedUrl = rawUrl.trim().replace(/\.git$/, "");
+          // Normalize SSH (git@github.com:owner/repo) to HTTPS (https://github.com/owner/repo)
+          const remoteUrl = normalizedUrl.replace(/^git@([^:]+):/, "https://$1/");
+          const registered = projectsByUrl.get(remoteUrl);
+          if (registered) {
+            return registered.path;
+          }
         }
       } catch {
-        // git unavailable or no origin remote — fall through
+        // VCS unavailable or no origin remote — fall through
       }
     }
   } catch {

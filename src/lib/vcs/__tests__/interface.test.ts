@@ -45,6 +45,7 @@ class MockVcsBackend implements VcsBackend {
   async getMainRepoRoot(_p: string): Promise<string> { return '/'; }
   async detectDefaultBranch(_p: string): Promise<string> { return 'main'; }
   async getCurrentBranch(_p: string): Promise<string> { return 'main'; }
+  async getRemoteUrl(_p: string, _r?: string): Promise<string | null> { return null; }
   async checkoutBranch(_p: string, _b: string): Promise<void> {}
   async branchExists(_p: string, _b: string): Promise<boolean> { return false; }
   async branchExistsOnRemote(_p: string, _b: string): Promise<boolean> { return false; }
