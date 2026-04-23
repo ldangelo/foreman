@@ -53,13 +53,15 @@ export async function createContext({
   req: FastifyRequest;
   res: FastifyReply;
 }): Promise<Context> {
+  const adapter = new PostgresAdapter();
+  const registry = new ProjectRegistry({ pg: adapter });
   return {
     req,
     res,
-    adapter: new PostgresAdapter(),
+    adapter,
     // Singleton instances shared across all requests in the daemon process
     gh: new GhCli(),
-    registry: new ProjectRegistry(),
+    registry,
   };
 }
 
@@ -535,7 +537,7 @@ const projectsRouter = t.router({
     .query(async ({ input, ctx }) => {
       const records = await ctx.registry.list();
 
-      // Filter in memory (source of truth is JSON, Postgres is query mirror)
+      // Filter in memory after loading from the registry source of truth.
       let filtered = records;
       if (input?.status) {
         filtered = filtered.filter((p) => p.status === input.status);
@@ -574,7 +576,7 @@ const projectsRouter = t.router({
   get: t.procedure
     .input(z.object({ id: PROJECT_ID_SCHEMA }))
     .query(async ({ input, ctx }) => {
-      return ctx.adapter.getProject(input.id);
+      return ctx.registry.get(input.id);
     }),
 
   /**
@@ -667,7 +669,7 @@ const projectsRouter = t.router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const { gh, registry, adapter } = ctx;
+      const { gh, registry } = ctx;
 
       // Step 1: Verify gh auth
       try {
@@ -688,6 +690,7 @@ const projectsRouter = t.router({
 
       // Step 2: Parse GitHub URL to extract owner/repo
       const parsed = parseGitHubUrl(input.githubUrl);
+      const repoKey = toRepoKey(parsed.owner, parsed.repo);
 
       // Step 3: Fetch repo metadata from GitHub API
       let defaultBranch = input.defaultBranch ?? "main";
@@ -705,10 +708,10 @@ const projectsRouter = t.router({
         throw err;
       }
 
-      // Step 4: Generate stable project ID and derive clone path
-      const projectId = registry.generateProjectId(displayName);
+      // Step 4: Generate a stable clone directory name
+      const cloneDirName = registry.generateProjectId(displayName);
       const projectsDir = join(homedir(), ".foreman", "projects");
-      const clonePath = join(projectsDir, projectId);
+      const clonePath = join(projectsDir, cloneDirName);
 
       // Step 5: Ensure projects directory exists
       const { mkdir } = await import("node:fs/promises");
@@ -731,22 +734,26 @@ const projectsRouter = t.router({
         throw err;
       }
 
-      // Step 7: Write to Postgres (idempotent — throws on duplicate path)
-      try {
-        const row = await adapter.createProject({
-          id: projectId,
-          name: displayName,
-          path: clonePath,
-          githubUrl: input.githubUrl,
-          defaultBranch,
-          status: input.status ?? "active",
-        });
-        return row;
-      } catch (err) {
-        // Postgres write failed — best effort cleanup of cloned repo
-        // (Leave the clone on disk; user can remove manually)
-        throw err;
-      }
+      // Step 7: Persist in the project registry source of truth.
+      const record = await registry.add({
+        name: displayName,
+        path: clonePath,
+        githubUrl: input.githubUrl,
+        repoKey,
+        defaultBranch,
+        status: input.status ?? "active",
+      });
+      return {
+        id: record.id,
+        name: record.name,
+        path: record.path,
+        github_url: record.githubUrl,
+        default_branch: record.defaultBranch,
+        status: record.status,
+        created_at: record.createdAt,
+        updated_at: record.updatedAt,
+        last_sync_at: record.lastSyncAt,
+      };
     }),
 
   /**
@@ -765,7 +772,11 @@ const projectsRouter = t.router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      return ctx.adapter.updateProject(input.id, input.updates);
+      return ctx.registry.update(input.id, {
+        ...(input.updates.name !== undefined ? { name: input.updates.name } : {}),
+        ...(input.updates.path !== undefined ? { path: input.updates.path } : {}),
+        ...(input.updates.status !== undefined ? { status: input.updates.status } : {}),
+      });
     }),
 
   /**
@@ -793,9 +804,8 @@ const projectsRouter = t.router({
           );
         }
       }
-      return ctx.adapter.removeProject(input.id, {
-        force: input.force ?? false,
-      });
+      await ctx.registry.remove(input.id);
+      return { removed: true };
     }),
 
   /**
@@ -866,6 +876,10 @@ function parseGitHubUrl(url: string): { owner: string; repo: string } {
     `Invalid GitHub URL '${url}'. Expected formats: ` +
       `"owner/repo", "https://github.com/owner/repo", or "git@github.com:owner/repo"`
   );
+}
+
+function toRepoKey(owner: string, repo: string): string {
+  return `${owner}/${repo}`.toLowerCase();
 }
 
 // ---------------------------------------------------------------------------

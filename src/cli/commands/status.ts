@@ -9,7 +9,7 @@ import { renderAgentCard, formatSuccessRate } from "../watch-ui.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
 import { fetchTaskCounts } from "../../lib/task-client-factory.js";
 import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
-import { ProjectRegistry } from "../../lib/project-registry.js";
+import { listRegisteredProjects } from "./project-task-support.js";
 import { pollDashboard, renderDashboard } from "./dashboard.js";
 
 // ── Pi log activity helper ────────────────────────────────────────────────
@@ -228,8 +228,7 @@ export const statusCommand = new Command("status")
     }
 
     if (opts.all) {
-      const registry = new ProjectRegistry();
-      const projects = await registry.list();
+      const projects = await listRegisteredProjects();
 
       if (projects.length === 0) {
         console.log(chalk.yellow("No registered projects found. Run 'foreman project add' to register projects."));

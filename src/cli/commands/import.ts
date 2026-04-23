@@ -9,8 +9,8 @@ export const importCommand = new Command("import")
   .option("--dry-run", "Preview the first 5 mappings without writing to the database")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action((opts: { dryRun?: boolean; project?: string; projectPath?: string }) => {
-    const projectPath = resolveProjectPathFromOptions(opts);
+  .action(async (opts: { dryRun?: boolean; project?: string; projectPath?: string }) => {
+    const projectPath = await resolveProjectPathFromOptions(opts);
 
     try {
       const result = performBeadsImport(projectPath, { dryRun: opts.dryRun });

@@ -2,14 +2,54 @@ import chalk from "chalk";
 import { resolveProjectPath } from "../../lib/project-path.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
 
-export function resolveProjectPathFromOptions(
+export interface RegisteredProjectSummary {
+  id: string;
+  name: string;
+  path: string;
+}
+
+export async function listRegisteredProjects(): Promise<RegisteredProjectSummary[]> {
+  try {
+    const client = createTrpcClient();
+    const projects = await client.projects.list() as Array<{ id: string; name: string; path: string }>;
+    return projects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      path: project.path,
+    }));
+  } catch {
+    const registry = new ProjectRegistry();
+    const records = await registry.list();
+    return records.map((record) => ({
+      id: record.id,
+      name: record.name,
+      path: record.path,
+    }));
+  }
+}
+
+export async function resolveProjectPathFromOptions(
   opts: { project?: string; projectPath?: string },
-): string {
+): Promise<string> {
+  if (opts.project && !opts.projectPath) {
+    try {
+      const projects = await listRegisteredProjects();
+      const match = projects.find((project) => project.id === opts.project || project.name === opts.project);
+      if (match?.path) {
+        return match.path;
+      }
+    } catch {
+      // Fall back to local resolver when the daemon is unavailable or the project
+      // is not managed by the daemon-backed registry.
+    }
+  }
+
   return resolveProjectPath(opts);
 }
 
-export function resolveProjectPathFromOption(project?: string): string {
+export async function resolveProjectPathFromOption(project?: string): Promise<string> {
   return resolveProjectPathFromOptions({ project });
 }
 
@@ -33,8 +73,7 @@ export async function resolveRepoRootProjectPath(
  */
 export async function isMultiProjectMode(): Promise<boolean> {
   try {
-    const registry = new ProjectRegistry();
-    const records = await registry.list();
+    const records = await listRegisteredProjects();
     return records.length >= 2;
   } catch {
     return false;

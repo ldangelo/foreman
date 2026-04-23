@@ -49,7 +49,7 @@ type SlingTargetingOptions = {
   projectPath?: string;
 };
 
-function resolveSlingProjectPath(opts: SlingTargetingOptions): string | null {
+async function resolveSlingProjectPath(opts: SlingTargetingOptions): Promise<string | null> {
   if (opts.project && opts.projectPath) {
     console.error(chalk.red("SLING-006: --project and --project-path cannot be used together."));
     return null;
@@ -416,7 +416,7 @@ const trdSubcommand = new Command("trd")
   .option("--no-risks", "Skip risk register parsing")
   .option("--no-quality", "Skip quality requirements parsing")
   .action(async (trdFile: string, opts: SlingCliOptions) => {
-    const projectPath = resolveSlingProjectPath({
+    const projectPath = await resolveSlingProjectPath({
       project: typeof opts.project === "string" ? opts.project : undefined,
       projectPath: typeof opts.projectPath === "string" ? opts.projectPath : undefined,
     });
@@ -451,7 +451,7 @@ const prdSubcommand = new Command("prd")
   .option("--no-risks", "Skip risk register parsing")
   .option("--no-quality", "Skip quality requirements parsing")
   .action(async (prdFile: string, opts: SlingCliOptions) => {
-    const projectPath = resolveSlingProjectPath({
+    const projectPath = await resolveSlingProjectPath({
       project: typeof opts.project === "string" ? opts.project : undefined,
       projectPath: typeof opts.projectPath === "string" ? opts.projectPath : undefined,
     });

@@ -13,7 +13,7 @@
  *   - Corrupt registry file: graceful recovery
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -356,5 +356,115 @@ describe("ProjectRegistry", () => {
     expect(Array.isArray(raw)).toBe(true);
     expect((raw as unknown[]).length).toBe(1);
     expect((raw as { id: string }[])[0]!.id).toBeDefined();
+  });
+});
+
+describe("ProjectRegistry with Postgres-backed source of truth", () => {
+  let tmpBase: string;
+  let registryFile: string;
+
+  beforeEach(() => {
+    tmpBase = mkTmpDir();
+    registryFile = join(tmpBase, ".foreman", "projects", "projects.json");
+  });
+
+  afterEach(() => {
+    rmSync(tmpBase, { recursive: true, force: true });
+  });
+
+  it("list() returns Postgres-backed projects and does not depend on JSON reads", async () => {
+    const pg = {
+      listProjects: vi.fn().mockResolvedValue([
+        {
+          id: "proj-1",
+          name: "ensemble",
+          path: "/tmp/ensemble",
+          github_url: "https://github.com/FortiumPartners/ensemble",
+          repo_key: "fortiumpartners/ensemble",
+          default_branch: "main",
+          status: "active",
+          created_at: "2026-04-23T00:00:00.000Z",
+          updated_at: "2026-04-23T00:00:00.000Z",
+          last_sync_at: null,
+        },
+      ]),
+    };
+
+    const registry = new ProjectRegistry({ jsonPath: registryFile, pg: pg as any });
+    const projects = await registry.list();
+
+    expect(projects).toHaveLength(1);
+    expect(projects[0]!.name).toBe("ensemble");
+    expect(projects[0]!.repoKey).toBe("fortiumpartners/ensemble");
+    expect(pg.listProjects).toHaveBeenCalledTimes(1);
+  });
+
+  it("add() persists to Postgres and writes a JSON mirror", async () => {
+    const createdRow = {
+      id: "proj-1",
+      name: "ensemble",
+      path: "/tmp/ensemble",
+      github_url: "https://github.com/FortiumPartners/ensemble",
+      repo_key: "fortiumpartners/ensemble",
+      default_branch: "main",
+      status: "active",
+      created_at: "2026-04-23T00:00:00.000Z",
+      updated_at: "2026-04-23T00:00:00.000Z",
+      last_sync_at: null,
+    };
+    const pg = {
+      listProjects: vi.fn().mockResolvedValue([]),
+      createProject: vi.fn().mockResolvedValue(createdRow),
+    };
+
+    const registry = new ProjectRegistry({ jsonPath: registryFile, pg: pg as any });
+    const record = await registry.add({
+      name: "ensemble",
+      path: "/tmp/ensemble",
+      githubUrl: "https://github.com/FortiumPartners/ensemble",
+      repoKey: "fortiumpartners/ensemble",
+      defaultBranch: "main",
+    });
+
+    expect(record.id).toBe("proj-1");
+    expect(pg.createProject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "ensemble",
+        repoKey: "fortiumpartners/ensemble",
+      }),
+    );
+    const mirror = JSON.parse(readFileSync(registryFile, "utf-8"));
+    expect(mirror[0].name).toBe("ensemble");
+    expect(mirror[0].repoKey).toBe("fortiumpartners/ensemble");
+  });
+
+  it("add() rejects a duplicate repoKey even when the display name changes", async () => {
+    const existingRow = {
+      id: "proj-1",
+      name: "ensemble",
+      path: "/tmp/ensemble",
+      github_url: "https://github.com/FortiumPartners/ensemble",
+      repo_key: "fortiumpartners/ensemble",
+      default_branch: "main",
+      status: "active",
+      created_at: "2026-04-23T00:00:00.000Z",
+      updated_at: "2026-04-23T00:00:00.000Z",
+      last_sync_at: null,
+    };
+    const pg = {
+      listProjects: vi.fn().mockResolvedValue([existingRow]),
+    };
+
+    const registry = new ProjectRegistry({ jsonPath: registryFile, pg: pg as any });
+
+    await expect(
+      registry.add({
+        name: "ensemble-copy",
+        path: "/tmp/ensemble-copy",
+        githubUrl: "https://github.com/FortiumPartners/ensemble",
+        repoKey: "fortiumpartners/ensemble",
+        defaultBranch: "main",
+      }),
+    ).rejects.toBeInstanceOf(DuplicateProjectError);
   });
 });

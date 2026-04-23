@@ -53,6 +53,8 @@ export interface ProjectRecord {
   path: string;
   /** GitHub repository URL. */
   githubUrl: string;
+  /** Canonical lowercased owner/repo key for GitHub-backed projects. */
+  repoKey?: string | null;
   /** Default branch name, e.g. `main`. */
   defaultBranch: string;
   /** Project lifecycle status. */
@@ -66,6 +68,7 @@ export interface ProjectMetadata {
   name: string;
   path: string;
   githubUrl?: string;
+  repoKey?: string | null;
   defaultBranch?: string;
   status?: "active" | "paused" | "archived";
   /** Updated by sync(). Not required in input. */
@@ -260,6 +263,7 @@ export class ProjectRegistry {
       name: entry.name,
       path: entry.path,
       githubUrl: (entry as LegacyProjectEntry & { githubUrl?: string }).githubUrl ?? "",
+      repoKey: null,
       defaultBranch: (entry as LegacyProjectEntry & { defaultBranch?: string }).defaultBranch ?? "main",
       status: "active" as const,
       createdAt: entry.addedAt ?? now,
@@ -298,6 +302,33 @@ export class ProjectRegistry {
   /** Invalidate the in-memory cache. Call after any write. */
   private invalidateCache(): void {
     this.cache = null;
+  }
+
+  private projectRowToRecord(row: import("./db/postgres-adapter.js").ProjectRow): ProjectRecord {
+    return {
+      id: row.id,
+      name: row.name,
+      path: row.path,
+      githubUrl: row.github_url ?? "",
+      repoKey: row.repo_key,
+      defaultBranch: row.default_branch ?? "main",
+      status: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      lastSyncAt: row.last_sync_at,
+    };
+  }
+
+  private async writeJsonMirror(records: ProjectRecord[]): Promise<void> {
+    try {
+      await this.writeJson(records);
+      this.invalidateCache();
+    } catch (err) {
+      console.warn(
+        `[ProjectRegistry] JSON mirror write failed: ${(err as Error).message}. ` +
+          "Postgres source of truth remains current."
+      );
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -355,6 +386,7 @@ export class ProjectRegistry {
     let path: string;
     let projectName: string;
     let githubUrl: string;
+    let repoKey: string | null;
     let defaultBranch: string;
 
     if (typeof metadata === "string") {
@@ -362,17 +394,20 @@ export class ProjectRegistry {
       path = metadata;
       projectName = name ?? basename(metadata);
       githubUrl = "";
+      repoKey = null;
       defaultBranch = "main";
     } else {
       // New API: add(metadata: ProjectMetadata)
       path = metadata.path;
       projectName = metadata.name;
       githubUrl = metadata.githubUrl ?? "";
+      repoKey = metadata.repoKey ?? null;
       defaultBranch = metadata.defaultBranch ?? "main";
     }
 
-    // Check for path collision
-    const existing = await this.readJson();
+    const existing = this.pg
+      ? await this.list()
+      : await this.readJson();
     if (existing.some((p) => p.path === path)) {
       const dup = existing.find((p) => p.path === path)!;
       throw new DuplicateProjectError("path", dup.path);
@@ -380,6 +415,9 @@ export class ProjectRegistry {
     if (existing.some((p) => p.name === projectName)) {
       const dup = existing.find((p) => p.name === projectName)!;
       throw new DuplicateProjectError("name", dup.name);
+    }
+    if (repoKey && existing.some((p) => p.repoKey === repoKey)) {
+      throw new DuplicateProjectError("path", repoKey);
     }
 
     const now = new Date().toISOString();
@@ -390,6 +428,7 @@ export class ProjectRegistry {
       name: projectName,
       path,
       githubUrl,
+      repoKey,
       defaultBranch,
       status: "active",
       createdAt: now,
@@ -397,28 +436,27 @@ export class ProjectRegistry {
       lastSyncAt: null,
     };
 
-    // JSON write first — source of truth must persist
+    if (this.pg) {
+      const row = await this.pg.createProject({
+        name: record.name,
+        path: record.path,
+        githubUrl: record.githubUrl,
+        repoKey: record.repoKey,
+        defaultBranch: record.defaultBranch,
+        status: record.status,
+      });
+      const persisted = this.projectRowToRecord(row);
+      this.invalidateCache();
+      await this.writeJsonMirror([
+        ...existing.filter((project) => project.id !== persisted.id && project.path !== persisted.path),
+        persisted,
+      ]);
+      return persisted;
+    }
+
+    // JSON write first — source of truth must persist in legacy mode
     await this.writeJson([...existing, record]);
     this.invalidateCache();
-
-    // Postgres write second — non-fatal if it fails
-    if (this.pg) {
-      try {
-        await this.pg.createProject({
-          id: record.id,
-          name: record.name,
-          path: record.path,
-          githubUrl: record.githubUrl,
-          defaultBranch: record.defaultBranch,
-          status: record.status,
-        });
-      } catch (err) {
-        console.warn(
-          `[ProjectRegistry] Postgres write failed for '${id}': ${(err as Error).message}. ` +
-            "JSON entry persisted. Query mirror may be stale."
-        );
-      }
-    }
 
     return record;
   }
@@ -428,6 +466,10 @@ export class ProjectRegistry {
    * Tries ID first, then falls back to name (backward compat).
    */
   async get(projectIdOrName: string): Promise<ProjectRecord | null> {
+    if (this.pg) {
+      const records = await this.list();
+      return records.find((p) => p.id === projectIdOrName || p.name === projectIdOrName) ?? null;
+    }
     const records = await this.readJson();
     return records.find((p) => p.id === projectIdOrName || p.name === projectIdOrName) ?? null;
   }
@@ -437,6 +479,11 @@ export class ProjectRegistry {
    * Results are cached in memory for the lifetime of the registry instance.
    */
   async list(): Promise<ProjectRecord[]> {
+    if (this.pg) {
+      const records = (await this.pg.listProjects()).map((row) => this.projectRowToRecord(row));
+      this.cache = records;
+      return [...records];
+    }
     if (this.cache !== null) {
       return [...this.cache];
     }
@@ -457,6 +504,35 @@ export class ProjectRegistry {
     projectIdOrName: string,
     patch: Partial<ProjectMetadata>
   ): Promise<ProjectRecord> {
+    if (this.pg) {
+      const existing = await this.get(projectIdOrName);
+      if (!existing) {
+        throw new ProjectNotFoundError(projectIdOrName);
+      }
+
+      await this.pg.updateProject(existing.id, {
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.path !== undefined ? { path: patch.path } : {}),
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.githubUrl !== undefined ? { github_url: patch.githubUrl } : {}),
+        ...(patch.repoKey !== undefined ? { repo_key: patch.repoKey } : {}),
+        ...(patch.defaultBranch !== undefined ? { default_branch: patch.defaultBranch } : {}),
+        ...(patch.lastSyncAt !== undefined ? { last_sync_at: patch.lastSyncAt } : {}),
+      });
+
+      const updated = await this.pg.getProject(existing.id);
+      if (!updated) {
+        throw new ProjectNotFoundError(projectIdOrName);
+      }
+      const record = this.projectRowToRecord(updated);
+      await this.writeJsonMirror([
+        ...(await this.readJson()).filter((project) => project.id !== record.id && project.path !== record.path),
+        record,
+      ]);
+      this.cache = null;
+      return record;
+    }
+
     const records = await this.readJson();
     let idx = records.findIndex((p) => p.id === projectIdOrName);
     if (idx === -1) {
@@ -484,17 +560,6 @@ export class ProjectRegistry {
     await this.writeJson(records);
     this.invalidateCache();
 
-    // Postgres update — non-fatal
-    if (this.pg) {
-      try {
-        await this.pg.updateProject(records[idx].id, patch);
-      } catch (err) {
-        console.warn(
-          `[ProjectRegistry] Postgres update failed for '${projectIdOrName}': ${(err as Error).message}`
-        );
-      }
-    }
-
     return updated;
   }
 
@@ -505,6 +570,17 @@ export class ProjectRegistry {
    * @throws ProjectNotFoundError if project doesn't exist
    */
   async remove(projectIdOrName: string): Promise<void> {
+    if (this.pg) {
+      const existing = await this.get(projectIdOrName);
+      if (!existing) {
+        throw new ProjectNotFoundError(projectIdOrName);
+      }
+      await this.pg.removeProject(existing.id);
+      await this.writeJsonMirror((await this.readJson()).filter((project) => project.id !== existing.id));
+      this.cache = null;
+      return;
+    }
+
     const records = await this.readJson();
     // Try ID first, then fall back to name (backward compat)
     let idx = records.findIndex((p) => p.id === projectIdOrName);
@@ -520,17 +596,6 @@ export class ProjectRegistry {
     records.splice(idx, 1);
     await this.writeJson(records);
     this.invalidateCache();
-
-    // Postgres removal — non-fatal
-    if (this.pg && actualId) {
-      try {
-        await this.pg.removeProject(actualId);
-      } catch (err) {
-        console.warn(
-          `[ProjectRegistry] Postgres remove failed for '${projectIdOrName}': ${(err as Error).message}`
-        );
-      }
-    }
   }
 
   // -------------------------------------------------------------------------
@@ -638,7 +703,7 @@ export class ProjectRegistry {
    * Does not modify the registry.
    */
   async listStale(): Promise<StaleProject[]> {
-    const records = await this.readJson();
+    const records = await this.list();
     const stale: StaleProject[] = [];
     for (const record of records) {
       try {
@@ -659,10 +724,16 @@ export class ProjectRegistry {
     if (stale.length === 0) return [];
 
     const staleNames = new Set(stale.map((s) => s.name));
-    const records = await this.readJson();
-    const remaining = records.filter((r) => !staleNames.has(r.name));
-    await this.writeJson(remaining);
-    this.invalidateCache();
+    if (this.pg) {
+      for (const name of staleNames) {
+        await this.remove(name);
+      }
+    } else {
+      const records = await this.readJson();
+      const remaining = records.filter((r) => !staleNames.has(r.name));
+      await this.writeJson(remaining);
+      this.invalidateCache();
+    }
     return stale.map((s) => s.name);
   }
 
@@ -676,6 +747,7 @@ export class ProjectRegistry {
       name: entry.name,
       path: entry.path,
       githubUrl: entry.githubUrl ?? "",
+      repoKey: null,
       defaultBranch: entry.defaultBranch ?? "main",
       status: "active" as const,
       createdAt: entry.addedAt ?? now,

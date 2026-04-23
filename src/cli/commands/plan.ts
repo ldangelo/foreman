@@ -221,7 +221,7 @@ export const planCommand = new Command("plan")
         dryRun?: boolean;
       },
     ) => {
-      const resolvedProjectPath = resolveProjectPathFromOption(opts.project);
+      const resolvedProjectPath = await resolveProjectPathFromOption(opts.project);
       const vcs = await VcsBackendFactory.create({ backend: "auto" }, resolvedProjectPath);
       const projectPath = await vcs.getRepoRoot(resolvedProjectPath);
       const outputDir = isAbsolute(opts.outputDir)

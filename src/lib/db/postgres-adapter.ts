@@ -30,6 +30,7 @@ export interface ProjectMetadata {
   name: string;
   path: string;
   githubUrl?: string;
+  repoKey?: string | null;
   defaultBranch?: string;
   status?: "active" | "paused" | "archived";
 }
@@ -39,10 +40,12 @@ export interface ProjectRow {
   name: string;
   path: string;
   github_url: string | null;
+  repo_key: string | null;
   default_branch: string | null;
   status: "active" | "paused" | "archived";
   created_at: string;
   updated_at: string;
+  last_sync_at: string | null;
 }
 
 export interface RunRow {
@@ -151,13 +154,14 @@ export class PostgresAdapter {
    */
   async createProject(metadata: ProjectMetadata): Promise<ProjectRow> {
     const rows = await query<ProjectRow>(
-      `INSERT INTO projects (name, path, github_url, default_branch, status)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO projects (name, path, github_url, repo_key, default_branch, status)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
       [
         metadata.name,
         metadata.path,
         metadata.githubUrl ?? null,
+        metadata.repoKey ?? null,
         metadata.defaultBranch ?? null,
         metadata.status ?? "active",
       ],
@@ -222,7 +226,7 @@ export class PostgresAdapter {
    */
   async updateProject(
     projectId: string,
-    updates: Partial<Pick<ProjectRow, "name" | "path" | "status" | "github_url" | "default_branch">>,
+    updates: Partial<Pick<ProjectRow, "name" | "path" | "status" | "github_url" | "repo_key" | "default_branch" | "last_sync_at">>,
   ): Promise<void> {
     const setClauses: string[] = ["updated_at = now()"];
     const params: unknown[] = [];
@@ -240,9 +244,17 @@ export class PostgresAdapter {
       setClauses.push(`status = $${i++}`);
       params.push(updates.status);
     }
+    if (updates.last_sync_at !== undefined) {
+      setClauses.push(`last_sync_at = $${i++}`);
+      params.push(updates.last_sync_at);
+    }
     if (updates.github_url !== undefined) {
       setClauses.push(`github_url = $${i++}`);
       params.push(updates.github_url);
+    }
+    if (updates.repo_key !== undefined) {
+      setClauses.push(`repo_key = $${i++}`);
+      params.push(updates.repo_key);
     }
     if (updates.default_branch !== undefined) {
       setClauses.push(`default_branch = $${i++}`);

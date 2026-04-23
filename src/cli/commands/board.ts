@@ -34,8 +34,7 @@ import {
   parsePriority,
   type TaskRow,
 } from "../../lib/task-store.js";
-import { resolveProjectPathFromOptions, requireProjectOrAllInMultiMode } from "./project-task-support.js";
-import { ProjectRegistry } from "../../lib/project-registry.js";
+import { listRegisteredProjects, resolveProjectPathFromOptions, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────────
 
@@ -1303,14 +1302,13 @@ export const boardCommand = new Command("board")
     }
 
     if (opts.all) {
-      const registry = new ProjectRegistry();
-      const projects = await registry.list();
+      const projects = await listRegisteredProjects();
       if (projects.length === 0) {
         console.log(chalk.yellow("No registered projects found. Run 'foreman project add' to register projects."));
         return;
       }
       for (const project of projects) {
-        const projectPath = project.path ?? resolveProjectPathFromOptions({ project: project.name });
+        const projectPath = project.path ?? await resolveProjectPathFromOptions({ project: project.name });
         console.log(chalk.bold(`\n=== ${project.name} ===`));
         try {
           runBoard({ projectPath, projectName: project.name, limit: opts.limit ? parseInt(opts.limit, 10) : undefined, filter: opts.filter });
@@ -1321,7 +1319,7 @@ export const boardCommand = new Command("board")
       return;
     }
 
-    const projectPath = resolveProjectPathFromOptions(opts);
+    const projectPath = await resolveProjectPathFromOptions(opts);
     const projectName = opts.project ?? basename(projectPath);
     const parsedLimit = opts.limit == null ? undefined : parseInt(opts.limit, 10);
     const limit = parsedLimit == null || Number.isNaN(parsedLimit)
