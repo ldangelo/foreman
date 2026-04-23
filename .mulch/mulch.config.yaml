@@ -5,6 +5,7 @@ domains:
   - orchestrator
   - cli
   - dispatcher
+  - planning
 governance:
   max_entries: 100
   warn_entries: 150

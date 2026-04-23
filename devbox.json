@@ -1,0 +1,44 @@
+{
+  "packages": [
+    "nodejs@20",
+    "postgresql@16",
+    "git",
+    "jq"
+  ],
+  "env": {
+    "DATABASE_URL": "postgresql://postgres:postgres@127.0.0.1:5432/foreman",
+    "POSTGRES_DB": "foreman",
+    "POSTGRES_USER": "postgres",
+    "POSTGRES_PASSWORD": "postgres"
+  },
+  "shell": {
+    "init_hook": [
+      "echo 'Foreman devbox ready. Run: devbox run install && devbox run db:up && devbox run db:migrate'"
+    ],
+    "scripts": {
+      "install": "npm ci",
+      "db:up": [
+        "if command -v docker >/dev/null 2>&1; then docker compose up -d postgres; elif command -v docker-compose >/dev/null 2>&1; then docker-compose up -d postgres; else echo 'Docker CLI not found. Install Docker Desktop, Colima, or OrbStack and retry.' >&2; exit 1; fi",
+        "for i in {1..30}; do health=$(docker inspect -f '{{.State.Health.Status}}' foreman-postgres 2>/dev/null || echo starting); echo \"postgres health: $health\"; if [ \"$health\" = healthy ]; then exit 0; fi; sleep 1; done; echo 'Postgres did not become healthy in time.' >&2; exit 1"
+      ],
+      "db:down": "if command -v docker >/dev/null 2>&1; then docker compose down; elif command -v docker-compose >/dev/null 2>&1; then docker-compose down; else echo 'Docker CLI not found. Install Docker Desktop, Colima, or OrbStack and retry.' >&2; exit 1; fi",
+      "db:reset": [
+        "if command -v docker >/dev/null 2>&1; then docker compose down -v; elif command -v docker-compose >/dev/null 2>&1; then docker-compose down -v; else echo 'Docker CLI not found. Install Docker Desktop, Colima, or OrbStack and retry.' >&2; exit 1; fi",
+        "if command -v docker >/dev/null 2>&1; then docker compose up -d postgres; elif command -v docker-compose >/dev/null 2>&1; then docker-compose up -d postgres; else echo 'Docker CLI not found. Install Docker Desktop, Colima, or OrbStack and retry.' >&2; exit 1; fi",
+        "for i in {1..30}; do health=$(docker inspect -f '{{.State.Health.Status}}' foreman-postgres 2>/dev/null || echo starting); echo \"postgres health: $health\"; if [ \"$health\" = healthy ]; then break; fi; sleep 1; done",
+        "npm run db:migrate"
+      ],
+      "db:logs": "if command -v docker >/dev/null 2>&1; then docker compose logs -f postgres; elif command -v docker-compose >/dev/null 2>&1; then docker-compose logs -f postgres; else echo 'Docker CLI not found. Install Docker Desktop, Colima, or OrbStack and retry.' >&2; exit 1; fi",
+      "db:psql": "psql \"$DATABASE_URL\"",
+      "db:migrate": "npm run db:migrate",
+      "db:migrate:down": "npm run db:migrate:down",
+      "db:migrate:create": "npm run db:migrate:create --",
+      "daemon:start": [
+        "npm run build",
+        "npm run db:migrate",
+        "node dist/cli/index.js daemon start"
+      ],
+      "test": "npm run test:all"
+    }
+  }
+}

@@ -67,6 +67,18 @@ const {
   };
 });
 
+vi.mock("../../lib/trpc-client.js", () => ({
+  createTrpcClient: () => ({
+    projects: {
+      list: vi.fn().mockResolvedValue([]),
+      add: vi.fn(),
+      get: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
+      sync: vi.fn(),
+    },
+  }),
+}));
 vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient }));
 // Skip runtime asset preflight — no prompts/workflows in test env
 vi.mock("../../lib/prompt-loader.js", () => ({
@@ -76,6 +88,13 @@ vi.mock("../../lib/prompt-loader.js", () => ({
 vi.mock("../../lib/workflow-loader.js", () => ({
   findMissingWorkflows: () => [],
   findStaleWorkflows: () => [],
+}));
+// Mock node:fs/promises so that BeadsRustClient.ensureBrInstalled() (which calls
+// access(BR_PATH)) succeeds without actually checking the real br binary.
+// Without this, createTaskClients() throws "br not found" and runCommand calls process.exit(1),
+// which causes vi.runAllTimersAsync() to hang in fake-timer tests.
+vi.mock("node:fs/promises", () => ({
+  access: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));

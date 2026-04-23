@@ -1,3 +1,11 @@
+> ⚠️ Historical Context
+> This document describes Foreman's beads-first architecture, which has been
+> superseded by native task management (TRD-2026-006). Some instructions,
+> configurations, or comparisons in this document may no longer reflect
+> current behavior.
+> This migration guide is preserved for historical reference. See TRD-2026-006
+> for current task management architecture.
+
 # Seeds → beads_rust (br) Migration Guide
 
 This document summarises the changes made in the `seeds-to-br-bv-migration` TRD. It covers

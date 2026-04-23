@@ -220,6 +220,49 @@ npm install -g @oftheangels/foreman
 curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | sh
 ```
 
+## Development with Devbox + Docker
+
+Foreman does not currently ship a checked-in containerized dev environment by default, but this repository now includes:
+
+- `devbox.json` — reproducible local shell with Node 20, Postgres client tools, git, and helper scripts
+- `compose.yaml` — local Postgres container for daemon + migration development
+
+### Prerequisites
+
+- [Devbox](https://www.jetify.com/devbox/)
+- A Docker runtime on your machine (Docker Desktop, Colima, or OrbStack)
+
+### Quickstart
+
+```bash
+devbox shell
+devbox run install
+devbox run db:up
+devbox run db:migrate
+```
+
+The default local database URL inside the devbox shell is:
+
+```bash
+postgresql://postgres:postgres@127.0.0.1:5432/foreman
+```
+
+### Common Devbox commands
+
+```bash
+devbox run db:up            # start local Postgres
+devbox run db:down          # stop local Postgres
+devbox run db:reset         # recreate the Postgres volume and rerun migrations
+devbox run db:logs          # follow Postgres logs
+devbox run db:psql          # connect with psql
+devbox run db:migrate       # run node-pg-migrate up
+devbox run db:migrate:create -- add-runs-table
+devbox run daemon:start     # build, migrate, and start the daemon
+devbox run test             # run the full test suite
+```
+
+If you prefer not to use Docker for Postgres, override `DATABASE_URL` in your shell or `.env` and run the normal npm migration scripts directly.
+
 ### PowerShell (Windows)
 
 ```powershell

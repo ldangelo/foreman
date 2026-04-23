@@ -1,338 +1,799 @@
 /**
- * Global Project Registry for Foreman multi-project orchestration.
+ * ProjectRegistry — project metadata store with JSON + Postgres dual-write.
  *
- * Manages a JSON registry at `~/.foreman/projects.json` that maps project
- * names to filesystem paths, enabling cross-project operations.
+ * Architecture:
+ * - Legacy JSON file at `~/.foreman/projects/projects.json` is retained as a
+ *   compatibility mirror and recovery artifact.
+ * - When PostgresAdapter is provided, Postgres is the source of truth and the
+ *   JSON file is best-effort mirrored after successful DB writes.
+ * - Without PostgresAdapter, the registry falls back to the legacy JSON-only mode.
  *
- * Registry schema:
- * ```json
- * {
- *   "version": 1,
- *   "projects": [
- *     {
- *       "name": "foreman",
- *       "path": "/Users/user/Development/foreman",
- *       "addedAt": "2026-03-29T00:00:00Z"
- *     }
- *   ]
- * }
- * ```
+ * Design decisions:
+ * - In Postgres-backed mode, writes go to Postgres first and then mirror to
+ *   JSON opportunistically for compatibility with remaining sync-only helpers.
+ * - In-memory cache invalidated on every write — no TTL, no background refresh.
+ *   Registry writes are infrequent (add/remove/sync), so this is acceptable.
+ * - Project IDs are deterministic from the normalized name + random hex suffix.
+ *   Collision resistance comes from the 5-char hex suffix (16^5 = ~1M combos).
+ * - Health check runs `git fetch --quiet` in the clone directory with 5s timeout.
+ *   This is a "fast" health indicator — network latency or large repos affect it.
  *
- * @module src/lib/project-registry
+ * @module project-registry
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-  accessSync,
-  constants as fsConstants,
-} from "node:fs";
-import { dirname, resolve, basename, normalize } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { readFile, writeFile, mkdir, access, constants } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { basename, dirname, join, resolve as pathResolve } from "node:path";
 import { homedir } from "node:os";
+import { randomBytes } from "node:crypto";
+import type { PostgresAdapter } from "./db/postgres-adapter.js";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+const execFileAsync = promisify(execFile);
 
-/** A single registered project entry. */
-export interface ProjectEntry {
-  /** Short human-readable alias for the project. */
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Sub-directory under baseDir for project data. */
+const PROJECTS_SUBDIR = "projects";
+const PROJECTS_JSON = "projects.json";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface ProjectRecord {
+  /** Stable ID derived from normalized name, e.g. `foreman-a3f2b`. */
+  id: string;
+  /** Display name, e.g. `foreman`. */
   name: string;
-  /** Absolute filesystem path to the project root. */
+  /** Absolute clone path, e.g. `/Users/…/.foreman/projects/foreman-a3f2b`. */
   path: string;
-  /** ISO 8601 timestamp when the project was added to the registry. */
+  /** GitHub repository URL. */
+  githubUrl: string;
+  /** Canonical lowercased owner/repo key for GitHub-backed projects. */
+  repoKey?: string | null;
+  /** Default branch name, e.g. `main`. */
+  defaultBranch: string;
+  /** Project lifecycle status. */
+  status: "active" | "paused" | "archived";
+  createdAt: string; // ISO 8601
+  updatedAt: string; // ISO 8601
+  lastSyncAt: string | null; // ISO 8601
+}
+
+export interface ProjectMetadata {
+  name: string;
+  path: string;
+  githubUrl?: string;
+  repoKey?: string | null;
+  defaultBranch?: string;
+  status?: "active" | "paused" | "archived";
+  /** Updated by sync(). Not required in input. */
+  lastSyncAt?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Error types
+// ---------------------------------------------------------------------------
+
+export class ProjectRegistryError extends Error {
+  override readonly name = "ProjectRegistryError" as string;
+}
+
+export class ProjectNotFoundError extends ProjectRegistryError {
+  override readonly name = "ProjectNotFoundError" as string;
+  /** The name or path that was looked up and not found. */
+  readonly nameOrPath: string;
+  constructor(nameOrPath: string) {
+    super(`Project not found: '${nameOrPath}'`);
+    this.nameOrPath = nameOrPath;
+  }
+}
+
+export class ProjectIdCollisionError extends ProjectRegistryError {
+  override readonly name = "ProjectIdCollisionError" as string;
+  /** Which field caused the collision. */
+  readonly field: "name" | "path";
+  /** The conflicting value. */
+  readonly value: string;
+  constructor(field: "name" | "path", value: string) {
+    super(`A project with ${field} '${value}' already exists in the registry`);
+    this.field = field;
+    this.value = value;
+  }
+}
+
+export class ProjectRegistryJsonError extends ProjectRegistryError {
+  override readonly name = "ProjectRegistryJsonError" as string;
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    if (cause instanceof Error) {
+      (this as unknown as { cause: unknown }).cause = cause;
+    }
+  }
+}
+
+/**
+ * Error thrown when a project name or path is already registered.
+ * Alias for ProjectIdCollisionError for backward compatibility.
+ */
+export class DuplicateProjectError extends ProjectRegistryError {
+  override readonly name = "DuplicateProjectError" as string;
+  /** Which field caused the collision. */
+  readonly field: "name" | "path";
+  /** The conflicting value. */
+  readonly value: string;
+  constructor(field: "name" | "path", value: string) {
+    super(`Duplicate project: ${field} '${value}'`);
+    this.field = field;
+    this.value = value;
+  }
+}
+
+/**
+ * Backward-compatible project entry used by old consumers.
+ * Alias for ProjectRecord with the fields that old code expected.
+ */
+export interface ProjectEntry {
+  name: string;
+  path: string;
   addedAt: string;
 }
 
-/** Shape of the `~/.foreman/projects.json` file. */
-export interface ProjectRegistryFile {
-  /** Schema version — currently always `1`. */
-  version: number;
-  /** Ordered list of registered projects. */
-  projects: ProjectEntry[];
-}
-
-// ── Error classes ─────────────────────────────────────────────────────────────
-
 /**
- * Thrown when attempting to add a project that is already registered
- * (either by the same name or the same resolved path).
+ * Stale project — a registry entry whose clone path is no longer accessible.
  */
-export class DuplicateProjectError extends Error {
-  constructor(
-    public readonly field: "name" | "path",
-    public readonly value: string,
-  ) {
-    super(
-      field === "name"
-        ? `Project '${value}' is already registered`
-        : `Path '${value}' is already registered as a project`,
-    );
-    this.name = "DuplicateProjectError";
-  }
+export interface StaleProject {
+  name: string;
+  path: string;
 }
 
 /**
- * Thrown when resolving a project name or path that is not in the registry.
+ * Legacy project entry format from `~/.foreman/projects.json` (old v1 format).
  */
-export class ProjectNotFoundError extends Error {
-  constructor(public readonly nameOrPath: string) {
-    super(`Project '${nameOrPath}' not found in registry`);
-    this.name = "ProjectNotFoundError";
-  }
+interface LegacyProjectEntry {
+  name: string;
+  path: string;
+  addedAt?: string;
+  githubUrl?: string;
+  defaultBranch?: string;
 }
 
-// ── Default registry path ─────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// ProjectRegistry
+// ---------------------------------------------------------------------------
 
-/**
- * Returns the default path to the global registry file: `~/.foreman/projects.json`.
- */
-function defaultRegistryPath(): string {
-  return resolve(homedir(), ".foreman", "projects.json");
+export interface ProjectRegistryOptions {
+  /** Override the base directory. Defaults to `~/.foreman`. */
+  baseDir?: string;
+  /** Override PostgresAdapter instance. Defaults to module-level singleton. */
+  pg?: PostgresAdapter;
+  /** Override the JSON file path (for testing). */
+  jsonPath?: string;
 }
 
-// ── ProjectRegistry class ─────────────────────────────────────────────────────
-
-/**
- * Manages the global Foreman project registry stored at `~/.foreman/projects.json`.
- *
- * All write operations use a read-modify-write pattern for atomicity.
- * The registry directory (`~/.foreman/`) is created automatically on first write.
- */
 export class ProjectRegistry {
-  private readonly registryPath: string;
+  private readonly baseDir: string;
+  private readonly jsonFilePath: string;
+  private readonly pg: PostgresAdapter | null;
+  /** In-memory cache — null means cache is invalidated (needs re-read). */
+  private cache: ProjectRecord[] | null = null;
 
   /**
-   * @param registryPath - Override the registry file location (default: `~/.foreman/projects.json`).
-   *                       Useful for testing with temporary directories.
-   */
-  constructor(registryPath?: string) {
-    this.registryPath = registryPath ?? defaultRegistryPath();
-  }
-
-  // ── Private helpers ──────────────────────────────────────────────────────────
-
-  /**
-   * Load the registry file from disk.
-   * Returns an empty registry if the file does not yet exist.
-   */
-  private loadRegistry(): ProjectRegistryFile {
-    if (!existsSync(this.registryPath)) {
-      return { version: 1, projects: [] };
-    }
-
-    try {
-      const raw = readFileSync(this.registryPath, "utf-8");
-      const parsed = JSON.parse(raw) as unknown;
-      return this.validateRegistryFile(parsed);
-    } catch (err) {
-      if (err instanceof SyntaxError) {
-        // Corrupted JSON — start fresh (log warning)
-        console.error(
-          `[ProjectRegistry] Warning: registry file is corrupted (${String(err.message)}). Starting fresh.`,
-        );
-        return { version: 1, projects: [] };
-      }
-      throw err;
-    }
-  }
-
-  /**
-   * Validate a raw parsed registry file.
-   * Returns a well-typed `ProjectRegistryFile` on success.
-   */
-  private validateRegistryFile(raw: unknown): ProjectRegistryFile {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      return { version: 1, projects: [] };
-    }
-
-    const obj = raw as Record<string, unknown>;
-    const version = typeof obj["version"] === "number" ? obj["version"] : 1;
-    const projectsRaw = Array.isArray(obj["projects"]) ? obj["projects"] : [];
-
-    const projects: ProjectEntry[] = projectsRaw
-      .filter(
-        (p): p is Record<string, unknown> =>
-          typeof p === "object" && p !== null && !Array.isArray(p),
-      )
-      .filter(
-        (p) => typeof p["name"] === "string" && typeof p["path"] === "string",
-      )
-      .map((p) => ({
-        name: p["name"] as string,
-        path: p["path"] as string,
-        addedAt:
-          typeof p["addedAt"] === "string" ? p["addedAt"] : new Date().toISOString(),
-      }));
-
-    return { version, projects };
-  }
-
-  /**
-   * Persist the registry to disk.
-   * Creates the parent directory (`~/.foreman/`) if it does not exist.
-   */
-  private saveRegistry(data: ProjectRegistryFile): void {
-    const dir = dirname(this.registryPath);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(this.registryPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
-  }
-
-  /**
-   * Derive a project name from a directory path.
-   * Uses `basename()` — e.g. `/Users/user/my-project` → `my-project`.
-   */
-  private deriveName(projectPath: string): string {
-    return basename(normalize(projectPath));
-  }
-
-  // ── Public API ───────────────────────────────────────────────────────────────
-
-  /**
-   * Register a project in the global registry.
+   * Construct a ProjectRegistry.
    *
-   * @param projectPath - Absolute or relative path to the project root.
-   *                      Will be resolved to an absolute path.
-   * @param name        - Optional alias. If omitted, derived from the directory basename.
-   * @throws {DuplicateProjectError} If a project with the same name or resolved path already exists.
+   * Accepts either:
+   * - A string path (old API, backward compat) — treated as `jsonPath`
+   * - An options object (new API)
+   * - No argument (defaults to `~/.foreman/projects/projects.json`)
    */
-  async add(projectPath: string, name?: string): Promise<void> {
-    const resolvedPath = resolve(projectPath);
-    const projectName = name ?? this.deriveName(resolvedPath);
-
-    const registry = this.loadRegistry();
-
-    // Check for duplicate name
-    const existingByName = registry.projects.find((p) => p.name === projectName);
-    if (existingByName !== undefined) {
-      throw new DuplicateProjectError("name", projectName);
+  constructor(options: ProjectRegistryOptions | string = {}) {
+    if (typeof options === "string") {
+      // Old API: `new ProjectRegistry(registryPath: string)`
+      this.jsonFilePath = options;
+      this.baseDir = dirname(options);
+      this.pg = null;
+    } else {
+    this.baseDir = options.baseDir ??
+      process.env.FOREMAN_REGISTRY_BASE_DIR ??
+      join(homedir(), ".foreman");
+    this.jsonFilePath =
+      options.jsonPath ??
+      join(this.baseDir, PROJECTS_SUBDIR, PROJECTS_JSON);
+      this.pg = options.pg ?? null;
     }
+  }
 
-    // Check for duplicate path
-    const existingByPath = registry.projects.find((p) => p.path === resolvedPath);
-    if (existingByPath !== undefined) {
-      throw new DuplicateProjectError("path", resolvedPath);
+  // -------------------------------------------------------------------------
+  // Private helpers
+  // -------------------------------------------------------------------------
+
+  /** Ensure the projects directory and JSON file directory exist. */
+  private async ensureDir(): Promise<void> {
+    const dir = dirname(this.jsonFilePath);
+    await mkdir(dir, { recursive: true });
+  }
+
+  /** Read and parse the JSON registry file. Returns `[]` if file doesn't exist. */
+  private async readJson(): Promise<ProjectRecord[]> {
+    try {
+      const content = await readFile(this.jsonFilePath, "utf8");
+      const parsed = JSON.parse(content);
+
+      // Support both old format ({ version, projects[] }) and new format (array)
+      if (!Array.isArray(parsed)) {
+        const legacy = parsed as { version?: number; projects?: unknown[] };
+        if (typeof legacy?.version === "number" && Array.isArray(legacy?.projects)) {
+          // Old format — migrate to new flat array
+          return this.migrateLegacyRecords(legacy.projects as LegacyProjectEntry[]);
+        }
+        throw new ProjectRegistryJsonError(
+          `Invalid projects.json: expected array, got ${typeof parsed}`
+        );
+      }
+      return parsed as ProjectRecord[];
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return [];
+      }
+      if (err instanceof ProjectRegistryJsonError) throw err;
+      // Corrupt JSON file — recover gracefully by returning empty list
+      // (matching old behavior for backward compatibility)
+      console.warn(
+        `[ProjectRegistry] Corrupted projects.json (${(err as Error).message}), ` +
+          "returning empty registry. Data may need to be re-imported."
+      );
+      return [];
     }
+  }
 
-    // Warn if no .foreman/ directory (project not yet initialized with foreman)
-    const foremanDir = resolve(resolvedPath, ".foreman");
-    if (!existsSync(foremanDir)) {
-      console.error(
-        `[ProjectRegistry] Warning: '${resolvedPath}' has no .foreman/ directory. ` +
-          `Run 'foreman init' inside the project before using it with foreman.`,
+  /**
+   * Migrate legacy { version, projects[] } format to new flat array format.
+   * The old `addedAt` becomes `createdAt` and `updatedAt`.
+   */
+  private migrateLegacyRecords(
+    entries: LegacyProjectEntry[]
+  ): ProjectRecord[] {
+    const now = new Date().toISOString();
+    return entries.map((entry) => ({
+      id: this.generateProjectId(entry.name),
+      name: entry.name,
+      path: entry.path,
+      githubUrl: (entry as LegacyProjectEntry & { githubUrl?: string }).githubUrl ?? "",
+      repoKey: null,
+      defaultBranch: (entry as LegacyProjectEntry & { defaultBranch?: string }).defaultBranch ?? "main",
+      status: "active" as const,
+      createdAt: entry.addedAt ?? now,
+      updatedAt: now,
+      lastSyncAt: null,
+    }));
+  }
+
+  /**
+   * Write the JSON registry file atomically: write to a temp file first,
+   * then rename to the target path. This avoids corruption on write failure.
+   */
+  private async writeJson(records: ProjectRecord[]): Promise<void> {
+    await this.ensureDir();
+    const tmpPath = `${this.jsonFilePath}.tmp.${Date.now()}`;
+    try {
+      await writeFile(tmpPath, JSON.stringify(records, null, 2), "utf8");
+      await access(tmpPath, constants.W_OK); // verify write succeeded
+      // Atomic rename on POSIX; this is close enough on macOS
+      const { rename } = await import("node:fs/promises");
+      await rename(tmpPath, this.jsonFilePath);
+    } catch (err: unknown) {
+      try {
+        const { unlink } = await import("node:fs/promises");
+        await unlink(tmpPath).catch(() => {});
+      } catch {
+        // ignore
+      }
+      throw new ProjectRegistryJsonError(
+        `Failed to write projects.json: ${(err as Error).message}`,
+        err
       );
     }
-
-    registry.projects.push({
-      name: projectName,
-      path: resolvedPath,
-      addedAt: new Date().toISOString(),
-    });
-
-    this.saveRegistry(registry);
   }
 
-  /**
-   * Return all registered projects.
-   */
-  list(): ProjectEntry[] {
-    return this.loadRegistry().projects;
+  /** Invalidate the in-memory cache. Call after any write. */
+  private invalidateCache(): void {
+    this.cache = null;
   }
 
-  /**
-   * Remove a registered project from the registry by name.
-   *
-   * @param name - The project alias to remove.
-   * @throws {ProjectNotFoundError} If no project with that name is registered.
-   */
-  async remove(name: string): Promise<void> {
-    const registry = this.loadRegistry();
-
-    const index = registry.projects.findIndex((p) => p.name === name);
-    if (index === -1) {
-      throw new ProjectNotFoundError(name);
-    }
-
-    registry.projects.splice(index, 1);
-    this.saveRegistry(registry);
+  private projectRowToRecord(row: import("./db/postgres-adapter.js").ProjectRow): ProjectRecord {
+    return {
+      id: row.id,
+      name: row.name,
+      path: row.path,
+      githubUrl: row.github_url ?? "",
+      repoKey: row.repo_key,
+      defaultBranch: row.default_branch ?? "main",
+      status: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      lastSyncAt: row.last_sync_at,
+    };
   }
 
-  /**
-   * Resolve a project name or path to an absolute filesystem path.
-   *
-   * Resolution order:
-   * 1. Exact match on `name`
-   * 2. Exact match on `path`
-   *
-   * @param nameOrPath - Registry name or absolute path to resolve.
-   * @returns The absolute path of the registered project.
-   * @throws {ProjectNotFoundError} If the name/path is not found in the registry.
-   */
-  resolve(nameOrPath: string): string {
-    const registry = this.loadRegistry();
-
-    // Try exact name match first
-    const byName = registry.projects.find((p) => p.name === nameOrPath);
-    if (byName !== undefined) {
-      return byName.path;
-    }
-
-    // Try exact path match (resolve in case it's relative)
-    const resolvedInput = resolve(nameOrPath);
-    const byPath = registry.projects.find((p) => p.path === resolvedInput);
-    if (byPath !== undefined) {
-      return byPath.path;
-    }
-
-    throw new ProjectNotFoundError(nameOrPath);
-  }
-
-  /**
-   * Remove all projects whose directories are no longer accessible.
-   *
-   * A project is considered stale if its path does not exist or is not readable.
-   *
-   * @returns Array of project names that were removed.
-   */
-  async removeStale(): Promise<string[]> {
-    const registry = this.loadRegistry();
-
-    const stale: ProjectEntry[] = [];
-    const active: ProjectEntry[] = [];
-
-    for (const project of registry.projects) {
-      if (!this.isAccessible(project.path)) {
-        stale.push(project);
-      } else {
-        active.push(project);
-      }
-    }
-
-    if (stale.length > 0) {
-      registry.projects = active;
-      this.saveRegistry(registry);
-    }
-
-    return stale.map((p) => p.name);
-  }
-
-  /**
-   * Return all projects whose directories are no longer accessible (without removing them).
-   */
-  listStale(): ProjectEntry[] {
-    const registry = this.loadRegistry();
-    return registry.projects.filter((p) => !this.isAccessible(p.path));
-  }
-
-  /**
-   * Check whether a project path is accessible (exists and is readable).
-   */
-  private isAccessible(projectPath: string): boolean {
+  private async writeJsonMirror(records: ProjectRecord[]): Promise<void> {
     try {
-      accessSync(projectPath, fsConstants.R_OK);
+      await this.writeJson(records);
+      this.invalidateCache();
+    } catch (err) {
+      console.warn(
+        `[ProjectRegistry] JSON mirror write failed: ${(err as Error).message}. ` +
+          "Postgres source of truth remains current."
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // ID generation
+  // -------------------------------------------------------------------------
+
+  /**
+   * Generate a stable project ID from a name.
+   *
+   * Format: `<normalized-name>-<hex5>`
+   * - Normalize: lowercase, replace non-alphanumeric with dashes,
+   *   collapse consecutive dashes, trim leading/trailing dashes.
+   * - Hex5: 5 random hex chars for collision resistance.
+   *
+   * Examples:
+   *   `Foreman Dashboard` → `foreman-dashboard-a3f2b`
+   *   `my-api-v2`         → `my-api-v2-c91fe`
+   *   `React⚛️App`        → `react-app-7f2a1`
+   */
+  generateProjectId(name: string): string {
+    const normalized = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .replace(/-+/g, "-");
+
+    const hex5 = randomBytes(3)
+      .toString("hex")
+      .slice(0, 5);
+
+    return `${normalized}-${hex5}`;
+  }
+
+  // -------------------------------------------------------------------------
+  // CRUD operations
+  // -------------------------------------------------------------------------
+
+  /**
+   * Add a new project to the registry.
+   *
+   * Supports both the new API (ProjectMetadata object) and the old API
+   * (path string with optional name override) for backward compatibility.
+   *
+   * In Postgres-backed mode, writes to Postgres first and mirrors JSON for
+   * compatibility. In legacy mode, writes directly to JSON.
+   *
+   * @param metadata - Project metadata (new API)
+   * @param name - Optional name override (old API second arg — ignored when metadata is object)
+   */
+  async add(
+    metadata: ProjectMetadata | string,
+    name?: string
+  ): Promise<ProjectRecord> {
+    let path: string;
+    let projectName: string;
+    let githubUrl: string;
+    let repoKey: string | null;
+    let defaultBranch: string;
+
+    if (typeof metadata === "string") {
+      // Old API: add(path: string, name?: string)
+      path = metadata;
+      projectName = name ?? basename(metadata);
+      githubUrl = "";
+      repoKey = null;
+      defaultBranch = "main";
+    } else {
+      // New API: add(metadata: ProjectMetadata)
+      path = metadata.path;
+      projectName = metadata.name;
+      githubUrl = metadata.githubUrl ?? "";
+      repoKey = metadata.repoKey ?? null;
+      defaultBranch = metadata.defaultBranch ?? "main";
+    }
+
+    const existing = this.pg
+      ? await this.list()
+      : await this.readJson();
+    if (existing.some((p) => p.path === path)) {
+      const dup = existing.find((p) => p.path === path)!;
+      throw new DuplicateProjectError("path", dup.path);
+    }
+    if (existing.some((p) => p.name === projectName)) {
+      const dup = existing.find((p) => p.name === projectName)!;
+      throw new DuplicateProjectError("name", dup.name);
+    }
+    if (repoKey && existing.some((p) => p.repoKey === repoKey)) {
+      throw new DuplicateProjectError("path", repoKey);
+    }
+
+    const now = new Date().toISOString();
+    const id = this.generateProjectId(projectName);
+
+    const record: ProjectRecord = {
+      id,
+      name: projectName,
+      path,
+      githubUrl,
+      repoKey,
+      defaultBranch,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      lastSyncAt: null,
+    };
+
+    if (this.pg) {
+      const row = await this.pg.createProject({
+        name: record.name,
+        path: record.path,
+        githubUrl: record.githubUrl,
+        repoKey: record.repoKey,
+        defaultBranch: record.defaultBranch,
+        status: record.status,
+      });
+      const persisted = this.projectRowToRecord(row);
+      this.invalidateCache();
+      await this.writeJsonMirror([
+        ...existing.filter((project) => project.id !== persisted.id && project.path !== persisted.path),
+        persisted,
+      ]);
+      return persisted;
+    }
+
+    // JSON write first — source of truth must persist in legacy mode
+    await this.writeJson([...existing, record]);
+    this.invalidateCache();
+
+    return record;
+  }
+
+  /**
+   * Get a single project by ID or name. Returns `null` if not found.
+   * Tries ID first, then falls back to name (backward compat).
+   */
+  async get(projectIdOrName: string): Promise<ProjectRecord | null> {
+    if (this.pg) {
+      const records = await this.list();
+      return records.find((p) => p.id === projectIdOrName || p.name === projectIdOrName) ?? null;
+    }
+    const records = await this.readJson();
+    return records.find((p) => p.id === projectIdOrName || p.name === projectIdOrName) ?? null;
+  }
+
+  /**
+   * List all registered projects.
+   * In Postgres-backed mode this reads from Postgres; otherwise it falls back
+   * to the legacy JSON registry. Results are cached in memory per instance.
+   */
+  async list(): Promise<ProjectRecord[]> {
+    if (this.pg) {
+      const records = (await this.pg.listProjects()).map((row) => this.projectRowToRecord(row));
+      this.cache = records;
+      return [...records];
+    }
+    if (this.cache !== null) {
+      return [...this.cache];
+    }
+    const records = await this.readJson();
+    this.cache = records;
+    return [...records];
+  }
+
+  /**
+   * Update a project's metadata by ID or name.
+   * Tries ID first, then falls back to name (backward compat).
+   *
+   * @param projectIdOrName - The project ID or name to update
+   * @param patch - Partial metadata to merge
+   * @throws ProjectNotFoundError if project doesn't exist
+   */
+  async update(
+    projectIdOrName: string,
+    patch: Partial<ProjectMetadata>
+  ): Promise<ProjectRecord> {
+    if (this.pg) {
+      const existing = await this.get(projectIdOrName);
+      if (!existing) {
+        throw new ProjectNotFoundError(projectIdOrName);
+      }
+
+      await this.pg.updateProject(existing.id, {
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.path !== undefined ? { path: patch.path } : {}),
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.githubUrl !== undefined ? { github_url: patch.githubUrl } : {}),
+        ...(patch.repoKey !== undefined ? { repo_key: patch.repoKey } : {}),
+        ...(patch.defaultBranch !== undefined ? { default_branch: patch.defaultBranch } : {}),
+        ...(patch.lastSyncAt !== undefined ? { last_sync_at: patch.lastSyncAt } : {}),
+      });
+
+      const updated = await this.pg.getProject(existing.id);
+      if (!updated) {
+        throw new ProjectNotFoundError(projectIdOrName);
+      }
+      const record = this.projectRowToRecord(updated);
+      await this.writeJsonMirror([
+        ...(await this.readJson()).filter((project) => project.id !== record.id && project.path !== record.path),
+        record,
+      ]);
+      this.cache = null;
+      return record;
+    }
+
+    const records = await this.readJson();
+    let idx = records.findIndex((p) => p.id === projectIdOrName);
+    if (idx === -1) {
+      idx = records.findIndex((p) => p.name === projectIdOrName);
+    }
+
+    if (idx === -1) {
+      throw new ProjectNotFoundError(projectIdOrName);
+    }
+
+    const updated: ProjectRecord = {
+      ...records[idx],
+      ...patch,
+      // Prevent overwriting immutable fields
+      id: records[idx].id,
+      path: patch.path ?? records[idx].path,
+      createdAt: records[idx].createdAt,
+      updatedAt: new Date().toISOString(),
+      lastSyncAt: patch.lastSyncAt !== undefined
+        ? patch.lastSyncAt
+        : records[idx].lastSyncAt,
+    };
+
+    records[idx] = updated;
+    await this.writeJson(records);
+    this.invalidateCache();
+
+    return updated;
+  }
+
+  /**
+   * Remove a project from the registry.
+   *
+   * @param projectIdOrName - The project ID or project name to remove
+   * @throws ProjectNotFoundError if project doesn't exist
+   */
+  async remove(projectIdOrName: string): Promise<void> {
+    if (this.pg) {
+      const existing = await this.get(projectIdOrName);
+      if (!existing) {
+        throw new ProjectNotFoundError(projectIdOrName);
+      }
+      await this.pg.removeProject(existing.id);
+      await this.writeJsonMirror((await this.readJson()).filter((project) => project.id !== existing.id));
+      this.cache = null;
+      return;
+    }
+
+    const records = await this.readJson();
+    // Try ID first, then fall back to name (backward compat)
+    let idx = records.findIndex((p) => p.id === projectIdOrName);
+    let actualId = records[idx]?.id;
+    if (idx === -1) {
+      idx = records.findIndex((p) => p.name === projectIdOrName);
+      actualId = records[idx]?.id;
+    }
+    if (idx === -1) {
+      throw new ProjectNotFoundError(projectIdOrName);
+    }
+
+    records.splice(idx, 1);
+    await this.writeJson(records);
+    this.invalidateCache();
+  }
+
+  // -------------------------------------------------------------------------
+  // Health & sync
+  // -------------------------------------------------------------------------
+
+  /**
+   * Check whether a project clone is healthy by running `git fetch --quiet`.
+   *
+   * Returns `true` if fetch succeeds within 5 seconds.
+   * Returns `false` if:
+   * - Clone directory doesn't exist
+   * - Not a git repository
+   * - Fetch times out (5s)
+   * - Any other git error
+   */
+  async isHealthy(projectId: string): Promise<boolean> {
+    const record = await this.get(projectId);
+    if (!record) {
+      return false;
+    }
+
+    // Check clone directory exists
+    try {
+      await access(record.path, constants.F_OK);
+    } catch {
+      return false;
+    }
+
+    try {
+      await execFileAsync("git", ["fetch", "--quiet"], {
+        cwd: record.path,
+        timeout: 5_000,
+        encoding: "utf8",
+      });
       return true;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Resolve a project name or ID to an absolute path.
+   *
+   * Resolution order:
+   * 1. Match by ID (new API)
+   * 2. Match by name (backward compat with old API)
+   * 3. If input is an absolute path not in registry, return it as-is
+   *    (backward compat with old behavior)
+   *
+   * @param nameOrIdOrPath - Project name, ID, or absolute path
+   * @throws ProjectNotFoundError if not found and not an absolute path
+   */
+  resolve(nameOrIdOrPath: string): string {
+    // Try to use cache first for synchronous lookup
+    const records = this.cache;
+
+    if (records !== null) {
+      // Cache hit
+      const byId = records.find((p) => p.id === nameOrIdOrPath);
+      if (byId) return byId.path;
+      const byName = records.find((p) => p.name === nameOrIdOrPath);
+      if (byName) return byName.path;
+      const byPath = records.find((p) => p.path === nameOrIdOrPath);
+      if (byPath) return byPath.path;
+      // Unregistered path: throw (matching old behavior)
+      throw new ProjectNotFoundError(nameOrIdOrPath);
+    }
+
+    // Cache miss — do a sync read
+    try {
+      const content = readFileSync(this.jsonFilePath, "utf8");
+      const parsed = JSON.parse(content);
+      let arr: ProjectRecord[];
+      if (!Array.isArray(parsed)) {
+        const legacy = parsed as { version?: number; projects?: unknown[] };
+        if (typeof legacy?.version === "number" && Array.isArray(legacy?.projects)) {
+          arr = this.migrateLegacyRecordsSync(legacy.projects as LegacyProjectEntry[]);
+        } else {
+          arr = [];
+        }
+      } else {
+        arr = parsed as ProjectRecord[];
+      }
+      this.cache = arr;
+      const byId = arr.find((p) => p.id === nameOrIdOrPath);
+      if (byId) return byId.path;
+      const byName = arr.find((p) => p.name === nameOrIdOrPath);
+      if (byName) return byName.path;
+      const byPath = arr.find((p) => p.path === nameOrIdOrPath);
+      if (byPath) return byPath.path;
+      // Unregistered path: throw (matching old behavior)
+      throw new ProjectNotFoundError(nameOrIdOrPath);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new ProjectNotFoundError(nameOrIdOrPath);
+      }
+      if (err instanceof ProjectNotFoundError) throw err;
+      throw new ProjectNotFoundError(nameOrIdOrPath);
+    }
+  }
+
+  /**
+   * List stale projects — registry entries whose clone paths are inaccessible.
+   * Does not modify the registry.
+   */
+  async listStale(): Promise<StaleProject[]> {
+    const records = await this.list();
+    const stale: StaleProject[] = [];
+    for (const record of records) {
+      try {
+        await access(record.path, constants.F_OK);
+      } catch {
+        stale.push({ name: record.name, path: record.path });
+      }
+    }
+    return stale;
+  }
+
+  /**
+   * Remove all stale projects — registry entries whose clone paths are inaccessible.
+   * Returns the names of removed projects.
+   */
+  async removeStale(): Promise<string[]> {
+    const stale = await this.listStale();
+    if (stale.length === 0) return [];
+
+    const staleNames = new Set(stale.map((s) => s.name));
+    if (this.pg) {
+      for (const name of staleNames) {
+        await this.remove(name);
+      }
+    } else {
+      const records = await this.readJson();
+      const remaining = records.filter((r) => !staleNames.has(r.name));
+      await this.writeJson(remaining);
+      this.invalidateCache();
+    }
+    return stale.map((s) => s.name);
+  }
+
+  /** Sync version of migrateLegacyRecords for the resolve path. */
+  private migrateLegacyRecordsSync(
+    entries: LegacyProjectEntry[]
+  ): ProjectRecord[] {
+    const now = new Date().toISOString();
+    return entries.map((entry) => ({
+      id: this.generateProjectId(entry.name),
+      name: entry.name,
+      path: entry.path,
+      githubUrl: entry.githubUrl ?? "",
+      repoKey: null,
+      defaultBranch: entry.defaultBranch ?? "main",
+      status: "active" as const,
+      createdAt: entry.addedAt ?? now,
+      updatedAt: now,
+      lastSyncAt: null,
+    }));
+  }
+
+  /**
+   * Sync a project: run `git fetch --quiet` and update `lastSyncAt`.
+   *
+   * @param projectId - The project ID to sync
+   * @throws ProjectNotFoundError if project doesn't exist
+   */
+  async sync(projectId: string): Promise<ProjectRecord> {
+    const record = await this.get(projectId);
+    if (!record) {
+      throw new ProjectNotFoundError(projectId);
+    }
+
+    // Run git fetch
+    try {
+      await execFileAsync("git", ["fetch", "--quiet"], {
+        cwd: record.path,
+        timeout: 30_000,
+        encoding: "utf8",
+      });
+    } catch (err) {
+      // Network errors during fetch are non-fatal — log and continue
+      console.warn(
+        `[ProjectRegistry] git fetch failed for '${projectId}': ${(err as Error).message}`
+      );
+    }
+
+    const now = new Date().toISOString();
+    return this.update(projectId, { lastSyncAt: now });
+  }
+
+  // -------------------------------------------------------------------------
+  // Directory helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Get the projects directory path.
+   */
+  getProjectsDir(): string {
+    return join(this.baseDir, PROJECTS_SUBDIR);
   }
 }

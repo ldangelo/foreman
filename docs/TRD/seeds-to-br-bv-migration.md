@@ -1,4 +1,12 @@
 # TRD: Migrate Task Management from seeds (sd) to br + bv
+> ⚠️ Historical Context
+> This document describes Foreman's beads-first architecture, which has been
+> superseded by native task management (TRD-2026-006). Some instructions,
+> configurations, or comparisons in this document may no longer reflect
+> current behavior.
+> Comparisons to external tools (e.g. Overstory, Flywheel) reflect Foreman at
+> a specific historical point and may be outdated.
+
 
 **Document ID:** TRD-2026-001
 **Source PRD:** PRD-2026-001 v1.1

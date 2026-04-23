@@ -13,7 +13,7 @@
  *   - Corrupt registry file: graceful recovery
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -69,13 +69,13 @@ describe("ProjectRegistry", () => {
 
   // ── Initial state ────────────────────────────────────────────────────────────
 
-  it("list() returns empty array when registry file does not exist", () => {
-    const projects = registry.list();
+  it("list() returns empty array when registry file does not exist", async () => {
+    const projects = await registry.list();
     expect(projects).toEqual([]);
   });
 
-  it("does not create registry file on list()", () => {
-    registry.list();
+  it("does not create registry file on list()", async () => {
+    await registry.list();
     expect(existsSync(registryFile)).toBe(false);
   });
 
@@ -85,11 +85,11 @@ describe("ProjectRegistry", () => {
     const projectDir = mkProject(tmpBase, "my-project");
     await registry.add(projectDir);
 
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects).toHaveLength(1);
     expect(projects[0]!.name).toBe("my-project");
     expect(projects[0]!.path).toBe(resolve(projectDir));
-    expect(projects[0]!.addedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(projects[0]!.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("add() creates registry file (and parent dir) on first write", async () => {
@@ -102,7 +102,7 @@ describe("ProjectRegistry", () => {
     const projectDir = mkProject(tmpBase, "my-project");
     await registry.add(projectDir, "alias");
 
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects[0]!.name).toBe("alias");
   });
 
@@ -110,7 +110,7 @@ describe("ProjectRegistry", () => {
     const projectDir = mkProject(tmpBase, "rel-project");
     // Pass a path that starts absolute (resolve does nothing but we test the contract)
     await registry.add(resolve(projectDir));
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects[0]!.path).toBe(resolve(projectDir));
   });
 
@@ -169,7 +169,7 @@ describe("ProjectRegistry", () => {
     await registry.add(p2);
     await registry.add(p3);
 
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects).toHaveLength(3);
     expect(projects.map((p) => p.name)).toEqual(["alpha", "beta", "gamma"]);
   });
@@ -178,7 +178,7 @@ describe("ProjectRegistry", () => {
     const bareDir = mkBareProject(tmpBase, "bare-project");
     // Should not throw — just warn to console.error
     await expect(registry.add(bareDir)).resolves.not.toThrow();
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects).toHaveLength(1);
     expect(projects[0]!.name).toBe("bare-project");
   });
@@ -193,7 +193,7 @@ describe("ProjectRegistry", () => {
 
     await registry.remove("alpha");
 
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects).toHaveLength(1);
     expect(projects[0]!.name).toBe("beta");
   });
@@ -272,7 +272,7 @@ describe("ProjectRegistry", () => {
     expect(removed).toContain("ghost-project");
     expect(removed).not.toContain("live-project");
 
-    const remaining = registry.list();
+    const remaining = await registry.list();
     expect(remaining).toHaveLength(1);
     expect(remaining[0]!.name).toBe("live-project");
   });
@@ -291,7 +291,7 @@ describe("ProjectRegistry", () => {
 
     await registry.removeStale();
 
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects).toHaveLength(1);
   });
 
@@ -315,12 +315,13 @@ describe("ProjectRegistry", () => {
       "utf-8",
     );
 
-    const stale = registry.listStale();
+    const stale = await registry.listStale();
     expect(stale).toHaveLength(1);
     expect(stale[0]!.name).toBe("ghost");
 
     // Registry is untouched
-    expect(registry.list()).toHaveLength(2);
+    const projects = await registry.list();
+    expect(projects).toHaveLength(2);
   });
 
   // ── Corrupt registry ──────────────────────────────────────────────────────────
@@ -330,7 +331,7 @@ describe("ProjectRegistry", () => {
     writeFileSync(registryFile, "this is not valid JSON!!!!", "utf-8");
 
     // Should not throw — should return empty list
-    const projects = registry.list();
+    const projects = await registry.list();
     expect(projects).toEqual([]);
   });
 
@@ -340,18 +341,130 @@ describe("ProjectRegistry", () => {
 
     const p1 = mkProject(tmpBase, "fresh-project");
     await expect(registry.add(p1)).resolves.not.toThrow();
-    expect(registry.list()).toHaveLength(1);
+    const projects = await registry.list();
+    expect(projects).toHaveLength(1);
   });
 
   // ── Registry file format ──────────────────────────────────────────────────────
 
-  it("persisted registry file has version=1", async () => {
+  it("persisted registry file has no version wrapper (flat array)", async () => {
     const p1 = mkProject(tmpBase, "alpha");
     await registry.add(p1);
 
-    const raw = JSON.parse(
-      readFileSync(registryFile, "utf-8"),
-    ) as { version: number };
-    expect(raw.version).toBe(1);
+    const raw = JSON.parse(readFileSync(registryFile, "utf-8"));
+    // New format: flat array of ProjectRecord objects
+    expect(Array.isArray(raw)).toBe(true);
+    expect((raw as unknown[]).length).toBe(1);
+    expect((raw as { id: string }[])[0]!.id).toBeDefined();
+  });
+});
+
+describe("ProjectRegistry with Postgres-backed source of truth", () => {
+  let tmpBase: string;
+  let registryFile: string;
+
+  beforeEach(() => {
+    tmpBase = mkTmpDir();
+    registryFile = join(tmpBase, ".foreman", "projects", "projects.json");
+  });
+
+  afterEach(() => {
+    rmSync(tmpBase, { recursive: true, force: true });
+  });
+
+  it("list() returns Postgres-backed projects and does not depend on JSON reads", async () => {
+    const pg = {
+      listProjects: vi.fn().mockResolvedValue([
+        {
+          id: "proj-1",
+          name: "ensemble",
+          path: "/tmp/ensemble",
+          github_url: "https://github.com/FortiumPartners/ensemble",
+          repo_key: "fortiumpartners/ensemble",
+          default_branch: "main",
+          status: "active",
+          created_at: "2026-04-23T00:00:00.000Z",
+          updated_at: "2026-04-23T00:00:00.000Z",
+          last_sync_at: null,
+        },
+      ]),
+    };
+
+    const registry = new ProjectRegistry({ jsonPath: registryFile, pg: pg as any });
+    const projects = await registry.list();
+
+    expect(projects).toHaveLength(1);
+    expect(projects[0]!.name).toBe("ensemble");
+    expect(projects[0]!.repoKey).toBe("fortiumpartners/ensemble");
+    expect(pg.listProjects).toHaveBeenCalledTimes(1);
+  });
+
+  it("add() persists to Postgres and writes a JSON mirror", async () => {
+    const createdRow = {
+      id: "proj-1",
+      name: "ensemble",
+      path: "/tmp/ensemble",
+      github_url: "https://github.com/FortiumPartners/ensemble",
+      repo_key: "fortiumpartners/ensemble",
+      default_branch: "main",
+      status: "active",
+      created_at: "2026-04-23T00:00:00.000Z",
+      updated_at: "2026-04-23T00:00:00.000Z",
+      last_sync_at: null,
+    };
+    const pg = {
+      listProjects: vi.fn().mockResolvedValue([]),
+      createProject: vi.fn().mockResolvedValue(createdRow),
+    };
+
+    const registry = new ProjectRegistry({ jsonPath: registryFile, pg: pg as any });
+    const record = await registry.add({
+      name: "ensemble",
+      path: "/tmp/ensemble",
+      githubUrl: "https://github.com/FortiumPartners/ensemble",
+      repoKey: "fortiumpartners/ensemble",
+      defaultBranch: "main",
+    });
+
+    expect(record.id).toBe("proj-1");
+    expect(pg.createProject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "ensemble",
+        repoKey: "fortiumpartners/ensemble",
+      }),
+    );
+    const mirror = JSON.parse(readFileSync(registryFile, "utf-8"));
+    expect(mirror[0].name).toBe("ensemble");
+    expect(mirror[0].repoKey).toBe("fortiumpartners/ensemble");
+  });
+
+  it("add() rejects a duplicate repoKey even when the display name changes", async () => {
+    const existingRow = {
+      id: "proj-1",
+      name: "ensemble",
+      path: "/tmp/ensemble",
+      github_url: "https://github.com/FortiumPartners/ensemble",
+      repo_key: "fortiumpartners/ensemble",
+      default_branch: "main",
+      status: "active",
+      created_at: "2026-04-23T00:00:00.000Z",
+      updated_at: "2026-04-23T00:00:00.000Z",
+      last_sync_at: null,
+    };
+    const pg = {
+      listProjects: vi.fn().mockResolvedValue([existingRow]),
+    };
+
+    const registry = new ProjectRegistry({ jsonPath: registryFile, pg: pg as any });
+
+    await expect(
+      registry.add({
+        name: "ensemble-copy",
+        path: "/tmp/ensemble-copy",
+        githubUrl: "https://github.com/FortiumPartners/ensemble",
+        repoKey: "fortiumpartners/ensemble",
+        defaultBranch: "main",
+      }),
+    ).rejects.toBeInstanceOf(DuplicateProjectError);
   });
 });

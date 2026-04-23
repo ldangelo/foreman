@@ -97,6 +97,18 @@ const {
   };
 });
 
+vi.mock("../../lib/trpc-client.js", () => ({
+  createTrpcClient: () => ({
+    projects: {
+      list: vi.fn().mockResolvedValue([]),
+      add: vi.fn(),
+      get: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
+      sync: vi.fn(),
+    },
+  }),
+}));
 vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient }));
 // Skip runtime asset preflight — no prompts/workflows in test env
 vi.mock("../../lib/prompt-loader.js", () => ({

@@ -1,0 +1,227 @@
+/**
+ * ForemanDaemon — long-lived tRPC HTTP server.
+ *
+ * Starts as a standalone Node.js process. Validates Postgres connection on boot,
+ * then listens for tRPC requests over Unix socket (primary) or HTTP (fallback).
+ *
+ * Configuration:
+ * - Socket: ~/.foreman/daemon.sock (mode 0600)
+ * - HTTP fallback: localhost:3847
+ * - DATABASE_URL: from env or postgresql://localhost/foreman
+ *
+ * @module daemon
+ */
+
+import Fastify from "fastify";
+import { fastifyRequestHandler } from "@trpc/server/adapters/fastify";
+import { join } from "node:path";
+import { mkdirSync, chmodSync, existsSync, unlinkSync } from "node:fs";
+import { homedir } from "node:os";
+import { initPool, healthCheck, destroyPool } from "../lib/db/pool-manager.js";
+import { createContext } from "./router.js";
+import { appRouter } from "./router.js";
+import { createWebhookHandler } from "./webhook-handler.js";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const DEFAULT_SOCKET_PATH = join(homedir(), ".foreman", "daemon.sock");
+const DEFAULT_HTTP_PORT = 3847;
+
+/**
+ * Exit with a clear error when Postgres connection fails on startup.
+ * @param cause - The underlying error.
+ */
+function failStartup(cause: unknown): never {
+  const msg =
+    cause instanceof Error
+      ? `Cannot connect to Postgres: ${cause.message}`
+      : `Cannot connect to Postgres: ${String(cause)}`;
+  console.error(`[ForemanDaemon] ${msg}`);
+  console.error(
+    "[ForemanDaemon] Check DATABASE_URL and ensure Postgres is running."
+  );
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// ForemanDaemon
+// ---------------------------------------------------------------------------
+
+export class ForemanDaemon {
+  private readonly fastify = Fastify({ logger: true });
+  private _running = false;
+  private _socketPath: string;
+  private _httpPort: number;
+  private _useSocket: boolean = true;
+
+  constructor(options?: {
+    socketPath?: string;
+    httpPort?: number;
+  }) {
+    this._socketPath = options?.socketPath ?? DEFAULT_SOCKET_PATH;
+    this._httpPort = options?.httpPort ?? DEFAULT_HTTP_PORT;
+  }
+
+  get socketPath(): string {
+    return this._socketPath;
+  }
+
+  get httpPort(): number {
+    return this._httpPort;
+  }
+
+  get running(): boolean {
+    return this._running;
+  }
+
+  /** Start the daemon. Validates Postgres, then listens on socket or HTTP. */
+  async start(): Promise<void> {
+    if (this._running) {
+      throw new Error("ForemanDaemon already running");
+    }
+
+    // 1. Initialise Postgres pool.
+    try {
+      initPool();
+    } catch (err: unknown) {
+      failStartup(err);
+    }
+
+    // 2. Validate Postgres connection.
+    try {
+      await healthCheck();
+      this.fastify.log.info("[ForemanDaemon] Postgres connection validated");
+    } catch (err: unknown) {
+      failStartup(err);
+    }
+
+    // 3. Mount tRPC handler on Fastify.
+    this.fastify.all("/trpc/:path", async (req, res) => {
+      const { path } = req.params as { path: string };
+      return fastifyRequestHandler({
+        router: appRouter,
+        createContext,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        req: req as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        res: res as any,
+        path,
+      });
+    });
+
+    // 4. Health endpoint (no tRPC).
+    this.fastify.get("/health", async () => ({ status: "ok" }));
+
+    // 5. Webhook endpoint (TRD-061/062/063/064).
+    // Reads FOREMAN_WEBHOOK_SECRET from env; skips if not set (daemon still starts).
+    const webhookSecret = process.env.FOREMAN_WEBHOOK_SECRET;
+    if (webhookSecret) {
+      const { createContext: makeContext } = await import("./router.js");
+      const ctx = await makeContext({ req: {} as never, res: {} as never });
+      const webhookHandler = createWebhookHandler(
+        { adapter: ctx.adapter, registry: ctx.registry },
+        { secret: webhookSecret },
+      );
+      this.fastify.post("/webhook", webhookHandler);
+      this.fastify.log.info("[ForemanDaemon] Webhook endpoint enabled at /webhook");
+    } else {
+      this.fastify.log.info(
+        "[ForemanDaemon] FOREMAN_WEBHOOK_SECRET not set — webhook endpoint disabled",
+      );
+    }
+
+    // 5. Attempt Unix socket first.
+    await this.#listenOnSocket();
+
+    // 6. Graceful shutdown.
+    const shutdown = async (signal: string) => {
+      this.fastify.log.info(`[ForemanDaemon] Received ${signal}, shutting down`);
+      await this.stop();
+    };
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
+    process.on("SIGINT", () => shutdown("SIGINT"));
+
+    this._running = true;
+  }
+
+  /** Try to bind on the Unix socket. Fall back to HTTP on failure. */
+  async #listenOnSocket(): Promise<void> {
+    const socketDir = join(this._socketPath, "..");
+    mkdirSync(socketDir, { recursive: true });
+
+    // Clean up stale socket.
+    if (existsSync(this._socketPath)) {
+      try {
+        unlinkSync(this._socketPath);
+      } catch {
+        // ignore
+      }
+    }
+
+    try {
+      await this.fastify.listen({
+        path: this._socketPath,
+      } as never);
+      chmodSync(this._socketPath, 0o600);
+      this.fastify.log.info(
+        `[ForemanDaemon] Listening on Unix socket: ${this._socketPath}`
+      );
+      this._useSocket = true;
+    } catch (err: unknown) {
+      this.fastify.log.warn(
+        `[ForemanDaemon] Unix socket bind failed (${(err as Error).message}), falling back to HTTP`
+      );
+      await this.#listenOnHttp();
+    }
+  }
+
+  /** Bind on localhost:3847 as fallback. */
+  async #listenOnHttp(): Promise<void> {
+    try {
+      await this.fastify.listen({ port: this._httpPort, host: "127.0.0.1" });
+      this.fastify.log.info(
+        `[ForemanDaemon] Listening on HTTP: http://localhost:${this._httpPort}`
+      );
+      this._useSocket = false;
+    } catch (err: unknown) {
+      this.fastify.log.error(
+        `[ForemanDaemon] HTTP bind also failed: ${(err as Error).message}`
+      );
+      failStartup(err);
+    }
+  }
+
+  /** Stop the daemon and release all resources. */
+  async stop(): Promise<void> {
+    if (!this._running) return;
+
+    try {
+      await this.fastify.close();
+    } catch {
+      // ignore
+    }
+
+    try {
+      await destroyPool();
+    } catch {
+      // ignore
+    }
+
+    this._running = false;
+    this.fastify.log.info("[ForemanDaemon] Stopped");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main entry point (run directly with `node src/daemon/index.ts`)
+// ---------------------------------------------------------------------------
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const daemon = new ForemanDaemon();
+  daemon.start().catch((err) => {
+    console.error("[ForemanDaemon] Startup failed:", err);
+    process.exit(1);
+  });
+}

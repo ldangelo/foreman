@@ -3,6 +3,7 @@ import { defineVitestLaneConfig } from "./vitest.shared";
 export default defineVitestLaneConfig("unit", {
   include: ["src/**/*.test.ts"],
   exclude: [
+    "src/**/*-orig.test.ts",
     "src/integration/**",
     "src/**/__tests__/**/*integration*.test.ts",
     "src/**/__tests__/**/*e2e*.test.ts",

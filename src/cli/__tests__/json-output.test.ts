@@ -159,6 +159,19 @@ vi.mock("../../lib/feature-flags.js", () => ({
   getTaskBackend: vi.fn().mockReturnValue("br"),
 }));
 
+vi.mock("../../lib/trpc-client.js", () => ({
+  createTrpcClient: () => ({
+    projects: {
+      list: vi.fn().mockResolvedValue([]),
+      add: vi.fn(),
+      get: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
+      sync: vi.fn(),
+    },
+  }),
+}));
+
 // ── process.exit mock ────────────────────────────────────────────────────────
 // Prevent accidental process.exit from terminating the test runner.
 // Any unexpected error path that calls process.exit will throw instead.

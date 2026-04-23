@@ -17,19 +17,13 @@ import { tmpdir } from "node:os";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-const { mockExecFileSync, mockHomedir } = vi.hoisted(() => ({
+const { mockExecFileSync } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
-  mockHomedir: vi.fn().mockReturnValue("/test/home"),
 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual, execFileSync: mockExecFileSync, spawn: actual.spawn };
-});
-
-vi.mock("node:os", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:os")>();
-  return { ...actual, homedir: mockHomedir };
 });
 
 // Mock heavy dependencies not needed for drain tests
@@ -46,14 +40,6 @@ vi.mock("../pi-rpc-spawn-strategy.js", () => ({ isPiAvailable: vi.fn().mockResol
 
 import { Dispatcher } from "../dispatcher.js";
 import { ForemanStore } from "../../lib/store.js";
-
-// ── Type helpers ─────────────────────────────────────────────────────────────
-
-type MockCall = [cmd: string, args: string[], opts: unknown];
-
-function getCalls(): MockCall[] {
-  return mockExecFileSync.mock.calls as unknown as MockCall[];
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -76,17 +62,18 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
   let store: ForemanStore;
   let dispatcher: Dispatcher;
 
-  const HOME = "/test/home";
-  const BR_PATH = `${HOME}/.local/bin/br`;
+
+  const BR_BIN = `${process.env.HOME ?? "/Users/ldangelo"}/.local/bin/br`;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "bead-drain-test-"));
     mkdirSync(join(tmpDir, ".beads"), { recursive: true });
     store = ForemanStore.forProject(tmpDir);
+    // Register a project so resolveProjectId() doesn't throw in drainBeadWriterInbox.
+    store.registerProject("test", tmpDir);
     dispatcher = makeDispatcher(store, tmpDir);
     mockExecFileSync.mockReset();
     mockExecFileSync.mockReturnValue(Buffer.from(""));
-    mockHomedir.mockReturnValue(HOME);
   });
 
   afterEach(() => {
@@ -94,13 +81,17 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  function getCalls(): Array<[string, string[], object]> {
+    return mockExecFileSync.mock.calls as Array<[string, string[], object]>;
+  }
+
   it("returns 0 when queue is empty", async () => {
     const result = await dispatcher.drainBeadWriterInbox();
     expect(result).toBe(0);
     expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 
-  it("executes br update --status closed for close-seed operation", async () => {
+  it("executes br close --no-db for close-seed operation", async () => {
     store.enqueueBeadWrite("refinery", "close-seed", { seedId: "bd-abc" });
 
     const result = await dispatcher.drainBeadWriterInbox();
@@ -110,7 +101,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     const closeCall = calls.find(([, args]) => args[0] === "close" && args.includes("--no-db"));
     expect(closeCall).toBeTruthy();
     const [cmd, args] = closeCall!;
-    expect(cmd).toBe(BR_PATH);
+    expect(cmd).toBe(BR_BIN);
     expect(args).toEqual(["close", "bd-abc", "--no-db", "--reason", "Completed via pipeline", "--lock-timeout", "10000"]);
   });
 
@@ -123,7 +114,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     const updateCall = calls.find(([, args]) => args[0] === "update" && args.includes("open"));
     expect(updateCall).toBeTruthy();
     const [cmd, args] = updateCall!;
-    expect(cmd).toBe(BR_PATH);
+    expect(cmd).toBe(BR_BIN);
     expect(args).toEqual(["update", "bd-xyz", "--status", "open", "--lock-timeout", "10000"]);
   });
 
@@ -136,7 +127,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     const updateCall = calls.find(([, args]) => args[0] === "update" && args.includes("failed"));
     expect(updateCall).toBeTruthy();
     const [cmd, args] = updateCall!;
-    expect(cmd).toBe(BR_PATH);
+    expect(cmd).toBe(BR_BIN);
     expect(args).toEqual(["update", "bd-fail", "--status", "failed", "--lock-timeout", "10000"]);
   });
 
@@ -149,7 +140,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     const notesCall = calls.find(([, args]) => args[0] === "update" && args.includes("--notes"));
     expect(notesCall).toBeTruthy();
     const [cmd, args] = notesCall!;
-    expect(cmd).toBe(BR_PATH);
+    expect(cmd).toBe(BR_BIN);
     expect(args).toEqual(["update", "bd-notes", "--notes", "Some failure note", "--lock-timeout", "10000"]);
   });
 
@@ -162,7 +153,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     const labelsCall = calls.find(([, args]) => args[0] === "update" && args.includes("--add-label"));
     expect(labelsCall).toBeTruthy();
     const [cmd, args] = labelsCall!;
-    expect(cmd).toBe(BR_PATH);
+    expect(cmd).toBe(BR_BIN);
     expect(args).toEqual(["update", "bd-labels", "--add-label", "phase:dev", "--add-label", "ci:pass", "--lock-timeout", "10000"]);
   });
 
@@ -207,10 +198,8 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     store.enqueueBeadWrite("sender", "close-seed", { seedId: "bd-fail" });
     store.enqueueBeadWrite("sender", "reset-seed", { seedId: "bd-ok" });
 
-    // First call throws, second succeeds, third (sync) succeeds
-    mockExecFileSync
-      .mockImplementationOnce(() => { throw new Error("br binary error"); })
-      .mockReturnValue(Buffer.from(""));
+    // Make the first execFileSync call throw; subsequent calls succeed via the mocked return
+    mockExecFileSync.mockImplementationOnce(() => { throw new Error("br binary error"); });
 
     await dispatcher.drainBeadWriterInbox();
 
@@ -221,7 +210,7 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
   it("marks failed entry as processed to prevent infinite retry", async () => {
     store.enqueueBeadWrite("sender", "close-seed", { seedId: "bd-error" });
 
-    // br fails
+    // All br calls fail
     mockExecFileSync.mockImplementation(() => { throw new Error("br error"); });
 
     await dispatcher.drainBeadWriterInbox();

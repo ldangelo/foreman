@@ -34,6 +34,8 @@ import {
   type DependencyRow,
 } from "../../lib/task-store.js";
 import { resolveProjectPathFromOptions } from "./project-task-support.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
+import { listRegisteredProjects } from "./project-task-support.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -44,6 +46,48 @@ const COL_TYPE = 10;
 const COL_PRI = 14;
 const COL_STATUS = 14;
 const COL_GAP = "  ";
+
+// ── tRPC task helpers ─────────────────────────────────────────────────────
+
+/** Try to resolve a projectId from the project flag, then attempt tRPC call.
+ * Falls back to NativeTaskStore on daemon errors.
+ */
+async function withTaskTrpc<T>(
+  opts: { project?: string },
+  fn: (client: ReturnType<typeof createTrpcClient>, projectId: string) => Promise<T>,
+  fallback: () => Promise<T>,
+): Promise<T> {
+  if (!opts.project) return fallback();
+  try {
+    const projects = await listRegisteredProjects();
+    const record = projects.find((project) => project.id === opts.project || project.name === opts.project);
+    if (!record) return fallback();
+    const client = createTrpcClient();
+    return fn(client, record.id);
+  } catch {
+    return fallback();
+  }
+}
+
+function handleTaskDaemonError(err: unknown): void {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (
+    msg.includes("ECONNREFUSED") ||
+    msg.includes("ENOENT") ||
+    msg.includes("connect") ||
+    msg.includes("socket")
+  ) {
+    console.error(
+      chalk.yellow(
+        "Daemon unavailable. Falling back to local task store."
+      )
+    );
+  } else {
+    console.error(
+      chalk.red(`Daemon error: ${msg}`)
+    );
+  }
+}
 
 function pad(str: string, width: number): string {
   return str.length >= width ? str.slice(0, width - 1) + "…" : str.padEnd(width);
@@ -441,7 +485,7 @@ const createCommand = new Command("create")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
-    (opts: {
+    async (opts: {
       title: string;
       description?: string;
       type: string;
@@ -449,7 +493,7 @@ const createCommand = new Command("create")
       project?: string;
       projectPath?: string;
     }) => {
-      const projectPath = resolveProjectPathFromOptions(opts);
+      const projectPath = await resolveProjectPathFromOptions(opts);
 
       let priority: number;
       try {
@@ -508,8 +552,8 @@ const listCommand = new Command("list")
   .option("--all", "Include closed and merged tasks (excluded by default)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action((opts: { status?: string; type?: string; all?: boolean; project?: string; projectPath?: string }) => {
-    const projectPath = resolveProjectPathFromOptions(opts);
+  .action(async (opts: { status?: string; type?: string; all?: boolean; project?: string; projectPath?: string }) => {
+    const projectPath = await resolveProjectPathFromOptions(opts);
 
     try {
       const { store, taskStore } = getTaskStore(projectPath);
@@ -588,8 +632,8 @@ const showCommand = new Command("show")
   .argument("<id>", "Task ID (or short prefix)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action((id: string, opts: { project?: string; projectPath?: string }) => {
-    const projectPath = resolveProjectPathFromOptions(opts);
+  .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
+    const projectPath = await resolveProjectPathFromOptions(opts);
 
     try {
       const { taskStore } = getTaskStore(projectPath);
@@ -657,8 +701,8 @@ const approveCommand = new Command("approve")
   .argument("<id>", "Task ID")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action((id: string, opts: { project?: string; projectPath?: string }) => {
-    const projectPath = resolveProjectPathFromOptions(opts);
+  .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
+    const projectPath = await resolveProjectPathFromOptions(opts);
 
     try {
       const { taskStore } = getTaskStore(projectPath);
@@ -710,7 +754,7 @@ const updateCommand = new Command("update")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
-    (id: string, opts: {
+    async (id: string, opts: {
       title?: string;
       description?: string;
       noDescription?: boolean;
@@ -720,7 +764,7 @@ const updateCommand = new Command("update")
       project?: string;
       projectPath?: string;
     }) => {
-      const projectPath = resolveProjectPathFromOptions(opts);
+      const projectPath = await resolveProjectPathFromOptions(opts);
 
       const updateOpts: {
         title?: string;
@@ -799,8 +843,8 @@ const closeCommand = new Command("close")
   .argument("<id>", "Task ID")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action((id: string, opts: { project?: string; projectPath?: string }) => {
-    const projectPath = resolveProjectPathFromOptions(opts);
+  .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
+    const projectPath = await resolveProjectPathFromOptions(opts);
 
     try {
       const { taskStore } = getTaskStore(projectPath);
@@ -826,8 +870,8 @@ const importCommand = new Command("import")
   .option("--dry-run", "Preview the first 5 mappings without writing to the database")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action((opts: { fromBeads: boolean; dryRun?: boolean; project?: string; projectPath?: string }) => {
-    const projectPath = resolveProjectPathFromOptions(opts);
+  .action(async (opts: { fromBeads: boolean; dryRun?: boolean; project?: string; projectPath?: string }) => {
+    const projectPath = await resolveProjectPathFromOptions(opts);
 
     try {
       const result = performBeadsImport(projectPath, { dryRun: opts.dryRun });
@@ -866,8 +910,8 @@ const depAddCommand = new Command("add")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
-    (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
-      const projectPath = resolveProjectPathFromOptions(opts);
+    async (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
+      const projectPath = await resolveProjectPathFromOptions(opts);
 
       if (opts.type !== "blocks" && opts.type !== "parent-child") {
         console.error(
@@ -909,8 +953,8 @@ const depListCommand = new Command("list")
   .argument("<id>", "Task ID")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action((id: string, opts: { project?: string; projectPath?: string }) => {
-    const projectPath = resolveProjectPathFromOptions(opts);
+  .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
+    const projectPath = await resolveProjectPathFromOptions(opts);
 
     try {
       const { taskStore } = getTaskStore(projectPath);
@@ -956,8 +1000,8 @@ const depRemoveCommand = new Command("remove")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
-    (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
-      const projectPath = resolveProjectPathFromOptions(opts);
+    async (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
+      const projectPath = await resolveProjectPathFromOptions(opts);
 
       try {
         const { taskStore } = getTaskStore(projectPath);
