@@ -597,6 +597,110 @@ DROP TABLE IF EXISTS messages;
 DROP INDEX IF EXISTS idx_messages_run_status;
 `;
 
+interface LegacyTaskSchemaRow {
+  id: string;
+  title: string;
+  description: string | null;
+  type: string;
+  priority: number;
+  status: string;
+  run_id: string | null;
+  branch: string | null;
+  external_id: string | null;
+  created_at: string;
+  updated_at: string;
+  approved_at: string | null;
+  closed_at: string | null;
+}
+
+interface LegacyTaskDependencyRow {
+  from_task_id: string;
+  to_task_id: string;
+  type: string;
+}
+
+function normalizeLegacyTaskStatus(status: string): string {
+  if (status === "in_progress") return "in-progress";
+  return status;
+}
+
+function tasksTableNeedsClosedStatusMigration(db: Database.Database): boolean {
+  const row = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'",
+  ).get() as { sql: string | null } | undefined;
+  const schemaSql = row?.sql;
+  return typeof schemaSql === "string" && !schemaSql.includes("'closed'");
+}
+
+function migrateLegacyTasksTable(db: Database.Database): void {
+  const taskRows = db
+    .prepare(
+      `SELECT id, title, description, type, priority, status, run_id, branch,
+              external_id, created_at, updated_at, approved_at, closed_at
+         FROM tasks`,
+    )
+    .all() as LegacyTaskSchemaRow[];
+
+  let dependencyRows: LegacyTaskDependencyRow[] = [];
+  try {
+    dependencyRows = db.prepare(
+      "SELECT from_task_id, to_task_id, type FROM task_dependencies",
+    ).all() as LegacyTaskDependencyRow[];
+  } catch {
+    dependencyRows = [];
+  }
+
+  db.pragma("foreign_keys = OFF");
+  try {
+    const tx = db.transaction(() => {
+      db.exec("DROP TABLE IF EXISTS task_dependencies");
+      db.exec("ALTER TABLE tasks RENAME TO tasks_legacy");
+      db.exec(TASKS_SCHEMA);
+
+      const insertTask = db.prepare(
+        `INSERT INTO tasks (
+          id, title, description, type, priority, status, run_id, branch,
+          external_id, created_at, updated_at, approved_at, closed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+
+      for (const row of taskRows) {
+        insertTask.run(
+          row.id,
+          row.title,
+          row.description,
+          row.type,
+          row.priority,
+          normalizeLegacyTaskStatus(row.status),
+          row.run_id,
+          row.branch,
+          row.external_id,
+          row.created_at,
+          row.updated_at,
+          row.approved_at,
+          row.closed_at,
+        );
+      }
+
+      db.exec("DROP TABLE tasks_legacy");
+      db.exec(TASK_DEPENDENCIES_SCHEMA);
+
+      if (dependencyRows.length > 0) {
+        const insertDependency = db.prepare(
+          "INSERT INTO task_dependencies (from_task_id, to_task_id, type) VALUES (?, ?, ?)",
+        );
+        for (const row of dependencyRows) {
+          insertDependency.run(row.from_task_id, row.to_task_id, row.type);
+        }
+      }
+    });
+
+    tx();
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
+}
+
 // ── Store ───────────────────────────────────────────────────────────────
 
 export class ForemanStore {
@@ -681,6 +785,9 @@ export class ForemanStore {
     // Apply native task management schemas (PRD-2026-006 REQ-003, REQ-004).
     // Both use CREATE TABLE IF NOT EXISTS — safe to run on every startup.
     this.db.exec(TASKS_SCHEMA);
+    if (tasksTableNeedsClosedStatusMigration(this.db)) {
+      migrateLegacyTasksTable(this.db);
+    }
     this.db.exec(TASK_DEPENDENCIES_SCHEMA);
 
     // Apply rate limit events schema (P2: per-model rate limit tracking).

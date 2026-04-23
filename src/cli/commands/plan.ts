@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { readFileSync, existsSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { normalizePriority } from "../../lib/priority.js";
 import { ForemanStore } from "../../lib/store.js";
@@ -416,13 +416,12 @@ export const planCommand = new Command("plan")
         console.log(chalk.bold.green("\n Planning pipeline complete!"));
         console.log(chalk.dim(`\nOutputs in: ${outputDir}`));
         console.log(chalk.dim(`Epic: ${epic.id}`));
-        if (!opts.prdOnly) {
-          console.log(
-            chalk.dim(
-              `\nNext step: foreman sling trd ${outputDir}/TRD.md`,
-            ),
-          );
-        }
+        const prdHintPath = inferPrdHintPath(outputDir, opts.fromPrd);
+        console.log(
+          chalk.dim(
+            `\nNext step: foreman sling prd ${prdHintPath} --auto`,
+          ),
+        );
       } finally {
         store.close();
       }
@@ -476,6 +475,17 @@ function buildPipelineSteps(
   }
 
   return steps;
+}
+
+export function inferPrdHintPath(outputDir: string, fromPrd?: string): string {
+  if (fromPrd) return fromPrd;
+  const candidates = readdirSync(outputDir)
+    .filter((name) => name.endsWith(".md") && name.startsWith("PRD"))
+    .sort();
+  if (candidates.length > 0) {
+    return join(outputDir, candidates[candidates.length - 1]);
+  }
+  return join(outputDir, "PRD.md");
 }
 
 function sleep(ms: number): Promise<void> {

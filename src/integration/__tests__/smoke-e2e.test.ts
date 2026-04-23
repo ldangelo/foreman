@@ -5,16 +5,13 @@ import { tmpdir } from "node:os";
 import { createTempProjectHarness } from "../../test-support/temp-project-harness.js";
 import { runCommand } from "../../cli/commands/run.js";
 
-// Prevent requireProjectInMultiMode from exiting when daemon has multiple projects
+// Mock createTrpcClient to return a client whose projects.list() rejects.
+// This makes isMultiProjectMode() return false (error caught in try/catch),
+// bypassing the multi-project guard, without starting the daemon or holding connections.
 vi.mock("../../lib/trpc-client.js", () => ({
   createTrpcClient: () => ({
     projects: {
-      list: vi.fn().mockResolvedValue([]),
-      add: vi.fn(),
-      get: vi.fn(),
-      update: vi.fn(),
-      remove: vi.fn(),
-      sync: vi.fn(),
+      list: () => Promise.reject(new Error("daemon unavailable")),
     },
   }),
 }));

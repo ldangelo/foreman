@@ -20,6 +20,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
 
+// Mock createTrpcClient to return a client whose projects.list() rejects.
+// This makes isMultiProjectMode() return false (error caught in try/catch),
+// bypassing the multi-project guard in --help invocations.
+vi.mock("../../../lib/trpc-client.js", () => ({
+  createTrpcClient: () => ({
+    projects: {
+      list: () => Promise.reject(new Error("daemon unavailable")),
+    },
+  }),
+}));
+
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
