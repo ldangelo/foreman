@@ -11,7 +11,6 @@ import type { ForemanStore, NativeTask } from "../lib/store.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache } from "../lib/setup.js";
-import { GitBackend } from "../lib/vcs/git-backend.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
@@ -27,6 +26,9 @@ import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { checkAndRebaseStaleWorktree } from "./stale-worktree-check.js";
 import { WorktreeManager } from "../lib/worktree-manager.js";
+import { resolveTaskStoreMode } from "../lib/task-client-factory.js";
+export { resolveTaskStoreMode } from "../lib/task-client-factory.js";
+export type { TaskStoreMode } from "../lib/task-client-factory.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import type {
   SeedInfo,
@@ -58,31 +60,6 @@ interface DispatcherBeadsIssueDetail {
 async function createDispatcherBeadsClient(projectPath: string): Promise<TaskOrderingClient> {
   const { BeadsRustClient } = await import("../lib/beads-rust.js");
   return new BeadsRustClient(projectPath) as TaskOrderingClient;
-}
-
-// ── Task store resolution (REQ-014 / REQ-017) ────────────────────────────
-
-/**
- * Valid values for the FOREMAN_TASK_STORE environment variable.
- * - 'native': force native SQLite tasks table even if empty
- * - 'beads': force BeadsRustClient fallback even if native tasks exist
- * - 'auto' / undefined: auto-detect based on hasNativeTasks()
- */
-export type TaskStoreMode = "native" | "beads" | "auto";
-
-/**
- * Resolve the task store mode from the FOREMAN_TASK_STORE environment variable.
- *
- * Invalid values are treated as 'auto' and a warning is emitted.
- */
-export function resolveTaskStoreMode(): TaskStoreMode {
-  const raw = process.env.FOREMAN_TASK_STORE;
-  if (!raw || raw === "auto") return "auto";
-  if (raw === "native" || raw === "beads") return raw;
-  console.error(
-    `[dispatch] Warning: FOREMAN_TASK_STORE='${raw}' is not valid ('native'|'beads'|'auto'). Treating as 'auto'.`,
-  );
-  return "auto";
 }
 
 /**
@@ -676,7 +653,7 @@ export class Dispatcher {
         }
 
         // 1. Resolve base branch (may stack on a dependency branch)
-        const baseBranch = await resolveBaseBranch(seed.id, this.projectPath, this.store);
+        const baseBranch = await resolveBaseBranch(seed.id, this.projectPath, this.store, branchBackend);
         if (baseBranch) {
           log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
         }
@@ -1568,16 +1545,17 @@ export async function resolveBaseBranch(
   seedId: string,
   projectPath: string,
   store: Pick<ForemanStore, "getRunsForSeed">,
+  backend?: Pick<VcsBackend, "branchExists">,
 ): Promise<string | undefined> {
   const brClient = await createDispatcherBeadsClient(projectPath);
   try {
     const detail = await brClient.show(seedId) as DispatcherBeadsIssueDetail;
+    const depBackend = backend ?? await VcsBackendFactory.create({ backend: "auto" }, projectPath);
     // detail.dependencies is BrDepRef[] — extract id for branch resolution
     for (const dep of detail.dependencies ?? []) {
       const depId = typeof dep === "string" ? dep : (dep as { id: string }).id;
       const depBranch = `foreman/${depId}`;
       // Check if this branch exists locally via VcsBackend (TRD-015: migrate from gitBranchExists shim)
-      const depBackend = new GitBackend(projectPath);
       const branchExists = await depBackend.branchExists(projectPath, depBranch);
       if (!branchExists) continue;
       // Check if the dep's most recent run is "completed" (done but not yet merged)

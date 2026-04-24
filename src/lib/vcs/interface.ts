@@ -19,6 +19,8 @@ import type {
   FinalizeCommands,
 } from "./types.js";
 
+export type MergeStrategy = "theirs";
+
 /**
  * Backend-agnostic interface for all VCS operations used by Foreman.
  *
@@ -138,6 +140,17 @@ export interface VcsBackend {
    */
   pull(workspacePath: string, branchName: string): Promise<void>;
 
+  /**
+   * Save local worktree/index state before an operation that requires a clean
+   * tree. Returns true when state was saved and must later be restored.
+   */
+  saveWorktreeState(workspacePath: string): Promise<boolean>;
+
+  /**
+   * Restore previously saved local worktree/index state.
+   */
+  restoreWorktreeState(workspacePath: string): Promise<void>;
+
   // ── Rebase and Merge Operations ──────────────────────────────────────
 
   /**
@@ -145,6 +158,24 @@ export interface VcsBackend {
    * Returns a `RebaseResult` indicating success or conflicts.
    */
   rebase(workspacePath: string, onto: string): Promise<RebaseResult>;
+
+  /**
+   * Rebase a named branch/bookmark onto a new base without requiring it to be
+   * the currently checked out branch.
+   */
+  rebaseBranch(repoPath: string, branchName: string, onto: string): Promise<RebaseResult>;
+
+  /**
+   * Re-stack a named branch/bookmark from one base onto another.
+   * For git this maps to `git rebase --onto <newBase> <oldBase> <branchName>`.
+   * Backends may ignore `oldBase` when their native rebase model does not need it.
+   */
+  restackBranch(
+    repoPath: string,
+    branchName: string,
+    oldBase: string,
+    newBase: string,
+  ): Promise<RebaseResult>;
 
   /**
    * Abort an in-progress rebase, returning the workspace to pre-rebase state.
@@ -160,6 +191,21 @@ export interface VcsBackend {
     sourceBranch: string,
     targetBranch?: string,
   ): Promise<MergeResult>;
+
+  /**
+   * Merge a source branch into the target using a workflow-level strategy.
+   */
+  mergeWithStrategy(
+    repoPath: string,
+    sourceBranch: string,
+    targetBranch: string,
+    strategy: MergeStrategy,
+  ): Promise<MergeResult>;
+
+  /**
+   * Roll back a failed merge/integration attempt to a known pre-merge ref.
+   */
+  rollbackFailedMerge(workspacePath: string, beforeRef: string): Promise<void>;
 
   // ── Diff, Status and Conflict Detection ─────────────────────────────
 
@@ -263,6 +309,12 @@ export interface VcsBackend {
   stageFile(workspacePath: string, filePath: string): Promise<void>;
 
   /**
+   * Stage a specific list of files without staging everything.
+   * For jujutsu this is a no-op (auto-staged).
+   */
+  stageFiles(workspacePath: string, filePaths: string[]): Promise<void>;
+
+  /**
    * Checkout a file from a specific ref into the working tree.
    * For git: `git checkout <ref> -- <path>`.
    * For jujutsu: `jj file show <ref> -- <path>` written to working tree.
@@ -305,6 +357,13 @@ export interface VcsBackend {
    * For jujutsu: not applicable (no separate index).
    */
   removeFromIndex(workspacePath: string, filePath: string): Promise<void>;
+
+  /**
+   * Apply a patch file to the working tree and index.
+   * For git: `git apply --index <patchFilePath>`.
+   * For jujutsu: applies via colocated git metadata when available.
+   */
+  applyPatchToIndex(workspacePath: string, patchFilePath: string): Promise<void>;
 
   /**
    * Get the merge base (common ancestor) of two refs.

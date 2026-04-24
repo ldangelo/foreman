@@ -570,6 +570,14 @@ export class JujutsuBackend implements VcsBackend {
     }
   }
 
+  async saveWorktreeState(_workspacePath: string): Promise<boolean> {
+    return false;
+  }
+
+  async restoreWorktreeState(_workspacePath: string): Promise<void> {
+    return;
+  }
+
   // ── Rebase and Merge Operations ──────────────────────────────────────
 
   /**
@@ -615,6 +623,47 @@ export class JujutsuBackend implements VcsBackend {
 
       throw err;
     }
+  }
+
+  async rebaseBranch(
+    repoPath: string,
+    branchName: string,
+    onto: string,
+  ): Promise<RebaseResult> {
+    try {
+      await this.jj(["rebase", "-b", branchName, "-d", onto], repoPath);
+      let conflictingFiles: string[] = [];
+      try {
+        conflictingFiles = await this.getConflictingFiles(repoPath);
+      } catch {
+        // best effort
+      }
+      if (conflictingFiles.length > 0) {
+        return { success: false, hasConflicts: true, conflictingFiles };
+      }
+      return { success: true, hasConflicts: false };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      let conflictingFiles: string[] = [];
+      try {
+        conflictingFiles = await this.getConflictingFiles(repoPath);
+      } catch {
+        // best effort
+      }
+      if (msg.includes("conflict") || msg.includes("Conflict") || conflictingFiles.length > 0) {
+        return { success: false, hasConflicts: true, conflictingFiles };
+      }
+      throw err;
+    }
+  }
+
+  async restackBranch(
+    repoPath: string,
+    branchName: string,
+    _oldBase: string,
+    newBase: string,
+  ): Promise<RebaseResult> {
+    return this.rebaseBranch(repoPath, branchName, newBase);
   }
 
   /**
@@ -667,6 +716,35 @@ export class JujutsuBackend implements VcsBackend {
 
       throw err;
     }
+  }
+
+  async mergeWithStrategy(
+    repoPath: string,
+    sourceBranch: string,
+    targetBranch: string,
+    strategy: "theirs",
+  ): Promise<MergeResult> {
+    try {
+      await this.git(["checkout", targetBranch], repoPath);
+      await this.git(["merge", sourceBranch, "--no-ff", "-X", strategy], repoPath);
+      return { success: true };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      let conflictingFiles: string[] = [];
+      try {
+        conflictingFiles = await this.getConflictingFiles(repoPath);
+      } catch {
+        // best effort
+      }
+      if (message.includes("conflict") || message.includes("Conflict") || conflictingFiles.length > 0) {
+        return { success: false, conflicts: conflictingFiles };
+      }
+      throw err;
+    }
+  }
+
+  async rollbackFailedMerge(workspacePath: string, beforeRef: string): Promise<void> {
+    await this.resetHard(workspacePath, beforeRef);
   }
 
   // ── Diff, Status and Conflict Detection ─────────────────────────────
@@ -892,6 +970,10 @@ export class JujutsuBackend implements VcsBackend {
     // jj auto-stages — nothing to do
   }
 
+  async stageFiles(_workspacePath: string, _filePaths: string[]): Promise<void> {
+    // jj auto-stages — nothing to do
+  }
+
   /**
    * Checkout a file from a specific ref into the working tree.
    * Uses `jj file show <ref> -- <path>` written to the working copy.
@@ -973,6 +1055,13 @@ export class JujutsuBackend implements VcsBackend {
    */
   async removeFromIndex(_workspacePath: string, _filePath: string): Promise<void> {
     // jj has no separate index — nothing to do
+  }
+
+  /**
+   * Apply a patch file via colocated git metadata.
+   */
+  async applyPatchToIndex(workspacePath: string, patchFilePath: string): Promise<void> {
+    await this.git(["apply", "--index", patchFilePath], workspacePath);
   }
 
   /**

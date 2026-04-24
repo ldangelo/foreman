@@ -446,6 +446,22 @@ export class GitBackend implements VcsBackend {
     await this.git(["pull", "origin", branchName, "--ff-only"], workspacePath);
   }
 
+  async saveWorktreeState(workspacePath: string): Promise<boolean> {
+    try {
+      const stashOut = await this.git(
+        ["stash", "push", "--include-untracked", "-m", "foreman-worktree-state"],
+        workspacePath,
+      );
+      return !stashOut.includes("No local changes");
+    } catch {
+      return false;
+    }
+  }
+
+  async restoreWorktreeState(workspacePath: string): Promise<void> {
+    await this.git(["stash", "pop"], workspacePath);
+  }
+
   // ── Rebase and Merge Operations ──────────────────────────────────────
 
   /**
@@ -489,6 +505,55 @@ export class GitBackend implements VcsBackend {
     }
   }
 
+  async rebaseBranch(
+    repoPath: string,
+    branchName: string,
+    onto: string,
+  ): Promise<RebaseResult> {
+    try {
+      await this.git(["rebase", onto, branchName], repoPath);
+      return { success: true, hasConflicts: false };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      let conflictingFiles: string[] = [];
+      try {
+        const statusOut = await this.git(["diff", "--name-only", "--diff-filter=U"], repoPath);
+        conflictingFiles = statusOut.split("\n").map((f) => f.trim()).filter(Boolean);
+      } catch {
+        // Best effort
+      }
+      if (msg.includes("CONFLICT") || msg.includes("conflict") || conflictingFiles.length > 0) {
+        return { success: false, hasConflicts: true, conflictingFiles };
+      }
+      throw err;
+    }
+  }
+
+  async restackBranch(
+    repoPath: string,
+    branchName: string,
+    oldBase: string,
+    newBase: string,
+  ): Promise<RebaseResult> {
+    try {
+      await this.git(["rebase", "--onto", newBase, oldBase, branchName], repoPath);
+      return { success: true, hasConflicts: false };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      let conflictingFiles: string[] = [];
+      try {
+        const statusOut = await this.git(["diff", "--name-only", "--diff-filter=U"], repoPath);
+        conflictingFiles = statusOut.split("\n").map((f) => f.trim()).filter(Boolean);
+      } catch {
+        // Best effort
+      }
+      if (msg.includes("CONFLICT") || msg.includes("conflict") || conflictingFiles.length > 0) {
+        return { success: false, hasConflicts: true, conflictingFiles };
+      }
+      throw err;
+    }
+  }
+
   /**
    * Abort an in-progress rebase.
    */
@@ -507,17 +572,7 @@ export class GitBackend implements VcsBackend {
   ): Promise<MergeResult> {
     const target = targetBranch ?? (await this.getCurrentBranch(repoPath));
 
-    // Stash local changes if needed
-    let stashed = false;
-    try {
-      const stashOut = await this.git(
-        ["stash", "push", "-m", "foreman-merge-auto-stash"],
-        repoPath,
-      );
-      stashed = !stashOut.includes("No local changes");
-    } catch {
-      // stash may fail if nothing to stash — fine
-    }
+    const stashed = await this.saveWorktreeState(repoPath);
 
     try {
       await this.git(["checkout", target], repoPath);
@@ -543,12 +598,37 @@ export class GitBackend implements VcsBackend {
     } finally {
       if (stashed) {
         try {
-          await this.git(["stash", "pop"], repoPath);
+          await this.restoreWorktreeState(repoPath);
         } catch {
           // pop may conflict — leave in stash
         }
       }
     }
+  }
+
+  async mergeWithStrategy(
+    repoPath: string,
+    sourceBranch: string,
+    targetBranch: string,
+    strategy: "theirs",
+  ): Promise<MergeResult> {
+    try {
+      await this.git(["checkout", targetBranch], repoPath);
+      await this.git(["merge", sourceBranch, "--no-ff", "-X", strategy], repoPath);
+      return { success: true };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("CONFLICT") || message.includes("Merge conflict")) {
+        const statusOut = await this.git(["diff", "--name-only", "--diff-filter=U"], repoPath);
+        const conflicts = statusOut.split("\n").map((f) => f.trim()).filter(Boolean);
+        return { success: false, conflicts };
+      }
+      throw err;
+    }
+  }
+
+  async rollbackFailedMerge(workspacePath: string, beforeRef: string): Promise<void> {
+    await this.resetHard(workspacePath, beforeRef);
   }
 
   // ── Diff, Status and Conflict Detection ─────────────────────────────
@@ -727,6 +807,11 @@ export class GitBackend implements VcsBackend {
     await this.git(["add", filePath], workspacePath);
   }
 
+  async stageFiles(workspacePath: string, filePaths: string[]): Promise<void> {
+    if (filePaths.length === 0) return;
+    await this.git(["add", ...filePaths], workspacePath);
+  }
+
   /**
    * Checkout a file from a specific ref into the working tree.
    * The special ref "--theirs" is resolved based on the current rebase context.
@@ -784,6 +869,13 @@ export class GitBackend implements VcsBackend {
    */
   async removeFromIndex(workspacePath: string, filePath: string): Promise<void> {
     await this.git(["rm", "--cached", filePath], workspacePath);
+  }
+
+  /**
+   * Apply a patch file to the working tree and index.
+   */
+  async applyPatchToIndex(workspacePath: string, patchFilePath: string): Promise<void> {
+    await this.git(["apply", "--index", patchFilePath], workspacePath);
   }
 
   /**

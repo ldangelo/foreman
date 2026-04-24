@@ -12,6 +12,7 @@ export interface TaskClientFactoryResult {
 
 export interface TaskClientFactoryOptions {
   ensureBrInstalled?: boolean;
+  forceBeadsFallback?: boolean;
   autoSelectNativeWhenAvailable?: boolean;
 }
 
@@ -49,7 +50,11 @@ const NATIVE_BLOCKED_STATUSES = [
 
 export function resolveTaskStoreMode(raw = process.env.FOREMAN_TASK_STORE): TaskStoreMode {
   const normalized = raw?.trim().toLowerCase();
+  if (!raw || normalized === "auto") return "auto";
   if (normalized === "native" || normalized === "beads") return normalized;
+  console.error(
+    `[dispatch] Warning: FOREMAN_TASK_STORE='${raw}' is not valid ('native'|'beads'|'auto'). Treating as 'auto'.`,
+  );
   return "auto";
 }
 
@@ -69,13 +74,13 @@ export function projectHasNativeTasks(projectPath: string): boolean {
 
 export function selectTaskReadBackend(
   projectPath: string,
-  opts?: { autoSelectNativeWhenAvailable?: boolean },
+  opts?: { forceBeadsFallback?: boolean; autoSelectNativeWhenAvailable?: boolean },
 ): TaskClientBackend {
   const taskStoreMode = resolveTaskStoreMode();
   if (taskStoreMode === "native") return "native";
   if (taskStoreMode === "beads") return "beads";
 
-  if (opts?.autoSelectNativeWhenAvailable === true) {
+  if (opts?.forceBeadsFallback === true || opts?.autoSelectNativeWhenAvailable === true) {
     return "beads";
   }
 
@@ -87,6 +92,7 @@ export async function createTaskClient(
   opts?: TaskClientFactoryOptions,
 ): Promise<TaskClientFactoryResult> {
   const backendType = selectTaskReadBackend(projectPath, {
+    forceBeadsFallback: opts?.forceBeadsFallback,
     autoSelectNativeWhenAvailable: opts?.autoSelectNativeWhenAvailable,
   });
   if (backendType === "native") {

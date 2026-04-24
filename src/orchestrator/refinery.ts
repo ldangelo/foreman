@@ -15,8 +15,8 @@ import { ConflictResolver } from "./conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
 import { enqueueCloseSeed, enqueueResetSeedToOpen, enqueueAddNotesToBead } from "./task-backend-ops.js";
 import { syncBeadStatusAfterMerge } from "./auto-merge.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
-import { GitBackend } from "../lib/vcs/git-backend.js";
 import { NativeTaskStore } from "../lib/task-store.js";
 
 const execFileAsync = promisify(execFile);
@@ -25,17 +25,7 @@ const execFileAsync = promisify(execFile);
 
 /**
  * Run git commands that are NOT covered by the VcsBackend interface:
- *   - git stash push / pop  (no stash support in VcsBackend)
- *   - git log --oneline     (no log method in VcsBackend)
- *   - git reset --hard      (no reset method in VcsBackend)
- *   - git merge --abort     (no merge-abort method in VcsBackend)
- *   - git rebase --onto     (no 3-ref rebase form in VcsBackend)
- *   - git rebase <upstream> <branch>  (2-arg form, operates on non-current branch)
- *   - git checkout --theirs <file>  (no per-file resolution in VcsBackend)
- *   - git add <specific files>  (VcsBackend.stageAll stages everything)
- *   - git commit --no-edit  (VcsBackend.commit() requires a message)
- *   - git apply --index     (no apply in VcsBackend)
- *   - git merge -X theirs   (VcsBackend.merge() doesn't support -X strategy)
+ *   - git log --oneline / git log ranges for PR body rendering and diagnostics
  */
 async function gitSpecial(args: string[], cwd: string): Promise<string> {
   const { stdout } = await execFileAsync("git", args, {
@@ -112,10 +102,10 @@ export class Refinery {
     private projectPath: string,
     vcsBackend?: VcsBackend,
   ) {
-    // Default to GitBackend for backward compatibility with callers that don't
-    // provide an explicit VcsBackend (e.g. CLI commands, existing tests).
-    this.vcsBackend = vcsBackend ?? new GitBackend(projectPath);
-    this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG);
+    // Default to git for backward compatibility with callers that don't
+    // provide an explicit VcsBackend (e.g. existing tests).
+    this.vcsBackend = vcsBackend ?? VcsBackendFactory.createSync({ backend: "git" }, projectPath);
+    this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG, this.vcsBackend);
     this.taskStore = new NativeTaskStore(this.store.getDb());
   }
 
@@ -186,8 +176,7 @@ export class Refinery {
 
       if (stateFiles.length === 0) return;
 
-      // Use gitSpecial for selective staging (VcsBackend.stageAll stages everything)
-      await gitSpecial(["add", ...stateFiles], this.projectPath);
+      await this.vcsBackend.stageFiles(this.projectPath, stateFiles);
       await this.vcsBackend.commit(this.projectPath, "chore: auto-commit state files before merge");
     } catch (err: unknown) {
       // MQ-020: Auto-commit failure is non-fatal — log and continue
@@ -600,9 +589,19 @@ export class Refinery {
         if (!branchExists) continue;
 
         try {
-          // Use gitSpecial for the --onto form which is not supported by VcsBackend.rebase()
-          // (VcsBackend.rebase() only supports simple "rebase onto" without --onto syntax)
-          await gitSpecial(["rebase", "--onto", targetBranch, mergedBranch, stackedBranch], this.projectPath);
+          const restackResult = await this.vcsBackend.restackBranch(
+            this.projectPath,
+            stackedBranch,
+            mergedBranch,
+            targetBranch,
+          );
+          if (!restackResult.success) {
+            throw new Error(
+              restackResult.conflictingFiles?.length
+                ? `rebase conflicts: ${restackResult.conflictingFiles.join(", ")}`
+                : "restack failed",
+            );
+          }
           console.error(`[Refinery] Rebased stacked branch ${stackedBranch} onto ${targetBranch} (was on ${mergedBranch})`);
           // Update the run's base_branch to reflect it's now on targetBranch
           this.store.updateRun(stackedRun.id, { base_branch: null });
@@ -953,22 +952,26 @@ export class Refinery {
               rebaseOk = rebaseResult.success;
             } else {
               // Ensure working directory is clean before rebase — a previous partial rebase
-              // may have left patches applied but not committed. Stash any uncommitted changes
+              // may have left patches applied but not committed. Save any uncommitted changes
               // so git rebase doesn't refuse to run.
               try {
                 const dirty = await this.vcsBackend.status(this.projectPath);
                 if (dirty.trim()) {
-                  await gitSpecial(["stash", "push", "--include-untracked", "-m", "foreman-rebase-pre-stash"], this.projectPath);
-                  stashedBeforeRebase = true;
+                  stashedBeforeRebase = await this.vcsBackend.saveWorktreeState(this.projectPath);
                 }
               } catch {
-                // stash failure is non-fatal — rebase will fail with a clear message if still dirty
+                // save failure is non-fatal — rebase will fail with a clear message if still dirty
               }
 
               try {
-                // Use gitSpecial for the 2-arg rebase form (rebase <upstream> <branch>) which
-                // operates on a non-current branch and is not supported by VcsBackend.rebase().
-                await gitSpecial(["rebase", targetBranch, branchName], this.projectPath);
+                const rebaseResult = await this.vcsBackend.rebaseBranch(this.projectPath, branchName, targetBranch);
+                if (!rebaseResult.success) {
+                  throw new Error(
+                    rebaseResult.conflictingFiles?.length
+                      ? `rebase conflicts: ${rebaseResult.conflictingFiles.join(", ")}`
+                      : "rebase failed",
+                  );
+                }
               } catch (err: unknown) {
                 const errMsg = err instanceof Error ? err.message : String(err);
                 if (errMsg.includes("already used by worktree") || errMsg.includes("is already checked out")) {
@@ -987,7 +990,7 @@ export class Refinery {
             try { await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch); } catch { /* best effort */ }
 
             if (stashedBeforeRebase) {
-              try { await gitSpecial(["stash", "pop"], this.projectPath); } catch { /* best effort — may be empty */ }
+              try { await this.vcsBackend.restoreWorktreeState(this.projectPath); } catch { /* best effort — may be empty */ }
             }
           }
 
@@ -1269,15 +1272,26 @@ export class Refinery {
     const targetBranch = opts?.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
     const runTests = opts?.runTests ?? true;
     const testCommand = opts?.testCommand ?? "npm test";
+    const preMergeHead = await this.vcsBackend.getHeadId(this.projectPath);
 
     try {
-      await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
-      // Use gitSpecial for -X theirs merge strategy (not supported by VcsBackend.merge())
-      await gitSpecial(["merge", branchName, "--no-ff", "-X", "theirs"], this.projectPath);
+      const mergeResult = await this.vcsBackend.mergeWithStrategy(
+        this.projectPath,
+        branchName,
+        targetBranch,
+        "theirs",
+      );
+      if (!mergeResult.success) {
+        throw new Error(
+          mergeResult.conflicts?.length
+            ? `merge conflicts: ${mergeResult.conflicts.join(", ")}`
+            : "merge failed",
+        );
+      }
     } catch (err: unknown) {
       // Merge failed — abort to leave repo in a clean state
       try {
-        await gitSpecial(["merge", "--abort"], this.projectPath);
+        await this.vcsBackend.abortMerge(this.projectPath);
       } catch {
         // merge --abort may fail if there is nothing to abort
       }
@@ -1302,7 +1316,7 @@ export class Refinery {
 
       if (!testResult.ok) {
         // Revert the merge
-        await gitSpecial(["reset", "--hard", "HEAD~1"], this.projectPath);
+        await this.vcsBackend.rollbackFailedMerge(this.projectPath, preMergeHead);
 
         this.store.updateRun(run.id, {
           status: "test-failed",
@@ -1598,6 +1612,7 @@ export async function preserveBeadChanges(
   projectPath: string,
   branchName: string,
   targetBranch: string,
+  vcsBackend?: Pick<VcsBackend, "applyPatchToIndex" | "commit">,
 ): Promise<BeadPreservationResult> {
   const tmpPatchPath = join(projectPath, `.foreman-seed-patch-${Date.now()}.patch`);
 
@@ -1615,20 +1630,19 @@ export async function preserveBeadChanges(
     // Write temp patch
     writeFileSync(tmpPatchPath, patchContent);
 
-    // Apply the patch to the index (gitSpecial: git apply not in VcsBackend)
+    const backend = vcsBackend ?? VcsBackendFactory.createSync({ backend: "git" }, projectPath);
+
+    // Apply the patch to the index via VcsBackend.
     try {
-      await gitSpecial(["apply", "--index", tmpPatchPath], projectPath);
+      await backend.applyPatchToIndex(projectPath, tmpPatchPath);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       return { preserved: false, error: `MQ-019: ${message}` };
     }
 
-    // Commit the seed changes (gitSpecial: need specific message format)
+    // Commit the seed changes with a descriptive message.
     const seedId = branchName.replace(/^foreman\//, "");
-    await gitSpecial(
-      ["commit", "-m", `chore: preserve seed changes from ${seedId}`],
-      projectPath,
-    );
+    await backend.commit(projectPath, `chore: preserve seed changes from ${seedId}`);
 
     return { preserved: true };
   } catch (err: unknown) {

@@ -76,12 +76,12 @@ export async function createTaskClients(
   projectPath: string,
   runtimeMode: RuntimeMode = resolveRuntimeMode(),
 ): Promise<TaskClientResult> {
-  // In normal mode: auto-detect (pass undefined so selectTaskReadBackend uses
-  // projectHasNativeTasks). In test mode: force beads (pass true to override).
-  const autoSelectNative = runtimeMode === "test" ? true : undefined;
+  // In normal mode: auto-detect (omit the force flag so selectTaskReadBackend
+  // uses projectHasNativeTasks). In test mode: force beads fallback.
+  const forceBeadsFallback = runtimeMode === "test" ? true : undefined;
   const { taskClient, backendType } = await createTaskClient(projectPath, {
     ensureBrInstalled: true,
-    autoSelectNativeWhenAvailable: autoSelectNative,
+    forceBeadsFallback,
   });
 
   return {
@@ -508,7 +508,7 @@ export const runCommand = new Command("run")
             const sentinelConfig = store.getSentinelConfig(project.id);
             if (sentinelConfig && sentinelConfig.enabled === 1) {
               const sentinelTaskClient = taskClient as SentinelStartupTaskClient;
-              sentinelAgent = new SentinelAgent(store, sentinelTaskClient, project.id, projectPath);
+              sentinelAgent = new SentinelAgent(store, sentinelTaskClient, project.id, projectPath, startupVcs);
               sentinelAgent.start(
                 {
                   branch: sentinelConfig.branch,

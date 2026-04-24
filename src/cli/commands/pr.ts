@@ -16,7 +16,7 @@ export const prCommand = new Command("pr")
       const projectPath = await vcs.getRepoRoot(process.cwd());
       const { taskClient } = await createTaskClient(projectPath);
       const store = ForemanStore.forProject(projectPath);
-      const refinery = new Refinery(store, taskClient, projectPath);
+      const refinery = new Refinery(store, taskClient, projectPath, vcs);
 
       const project = store.getProjectByPath(projectPath);
       if (!project) {
