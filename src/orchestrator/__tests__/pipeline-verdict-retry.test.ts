@@ -86,8 +86,9 @@ describe("verdict-triggered retry", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-verdict-test-"));
     mkdirSync(tmpDir, { recursive: true });
+    process.env["FOREMAN_HOME"] = tmpDir;
     // Create stub prompt files so prompt-loader doesn't throw
-    const promptDir = join(tmpDir, ".foreman", "prompts", "default");
+    const promptDir = join(tmpDir, "prompts", "default");
     mkdirSync(promptDir, { recursive: true });
     for (const phase of ["developer", "qa", "reviewer", "explorer"]) {
       writeFileSync(join(promptDir, `${phase}.md`), `# ${phase} stub\n`);
@@ -100,6 +101,7 @@ describe("verdict-triggered retry", () => {
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("reviewer FAIL loops back to developer (retryOnFail: 1)", async () => {

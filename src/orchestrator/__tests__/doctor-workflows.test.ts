@@ -27,10 +27,12 @@ describe("Doctor.checkWorkflows()", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-doctor-wf-"));
+    process.env["FOREMAN_HOME"] = tmpDir;
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("passes when all bundled workflows are installed with correct content", () => {
@@ -66,8 +68,8 @@ describe("Doctor.checkWorkflows()", () => {
       expect(result.status).toBe("fixed");
       expect(result.fixApplied).toBeDefined();
       // Verify files were actually installed
-      expect(existsSync(join(tmpDir, ".foreman", "workflows", "default.yaml"))).toBe(true);
-      expect(existsSync(join(tmpDir, ".foreman", "workflows", "smoke.yaml"))).toBe(true);
+      expect(existsSync(join(tmpDir, "workflows", "default.yaml"))).toBe(true);
+      expect(existsSync(join(tmpDir, "workflows", "smoke.yaml"))).toBe(true);
     });
   });
 
@@ -83,13 +85,13 @@ describe("Doctor.checkWorkflows()", () => {
     return doctor.checkWorkflows({ fix: true, dryRun: true }).then((result) => {
       // dryRun should report intent but not install
       expect(result.message).toMatch(/dry-run/i);
-      expect(existsSync(join(tmpDir, ".foreman", "workflows", "default.yaml"))).toBe(false);
+      expect(existsSync(join(tmpDir, "workflows", "default.yaml"))).toBe(false);
     });
   });
 
   it("detects stale workflow missing verdict/retryWith on reviewer phase", () => {
     // Install a default.yaml that exists but has a reviewer phase without verdict/retryWith
-    const workflowsDir = join(tmpDir, ".foreman", "workflows");
+    const workflowsDir = join(tmpDir, "workflows");
     mkdirSync(workflowsDir, { recursive: true });
     // Stale format: reviewer phase lacks verdict and retryWith (old foreman init output)
     writeFileSync(
@@ -121,7 +123,7 @@ describe("Doctor.checkWorkflows()", () => {
 
   it("fix=true overwrites stale workflow files (force reinstall)", async () => {
     // Install a stale default.yaml missing verdict/retryWith
-    const workflowsDir = join(tmpDir, ".foreman", "workflows");
+    const workflowsDir = join(tmpDir, "workflows");
     mkdirSync(workflowsDir, { recursive: true });
     writeFileSync(
       join(workflowsDir, "default.yaml"),

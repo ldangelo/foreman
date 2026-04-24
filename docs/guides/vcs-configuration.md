@@ -44,7 +44,7 @@ When multiple sources specify a backend, the **highest-priority non-auto value w
 ```
 Workflow YAML vcs.backend   (highest priority)
     ↓  (if absent or 'auto')
-.foreman/config.yaml vcs.backend
+~/.foreman/config.yaml vcs.backend
     ↓  (if absent or 'auto')
 Auto-detection (.jj/ / .git/)   (lowest priority)
 ```
@@ -55,10 +55,10 @@ Auto-detection (.jj/ / .git/)   (lowest priority)
 
 ## Project-Level Config
 
-Create `.foreman/config.yaml` in your project root to set project-wide VCS defaults:
+Create `~/.foreman/config.yaml` to set Foreman-wide VCS defaults:
 
 ```yaml
-# .foreman/config.yaml
+# ~/.foreman/config.yaml
 
 vcs:
   # Options: 'git' | 'jujutsu' | 'auto' (default: 'auto')
@@ -77,10 +77,10 @@ vcs:
 
 | Location | Priority |
 |----------|---------|
-| `.foreman/config.yaml` | Preferred (YAML) |
-| `.foreman/config.json` | Legacy fallback (JSON) |
+| `~/.foreman/config.yaml` | Preferred (YAML) |
+| `~/.foreman/config.json` | Legacy fallback (JSON) |
 
-If neither exists, Foreman uses auto-detection. The `.foreman/` directory is created by `foreman init`.
+If neither exists, Foreman uses auto-detection. The `~/.foreman/` directory is created by `foreman init`.
 
 ### JSON Format (legacy)
 
@@ -104,12 +104,12 @@ Workflows can override the project-level VCS config. This is useful when you wan
 Add a top-level `vcs:` block to your workflow YAML:
 
 ```yaml
-# .foreman/workflows/default.yaml
+# ~/.foreman/workflows/default.yaml
 
 name: default
 vcs:
   backend: jujutsu    # Override project config for this workflow
-  # Note: git/jujutsu sub-options are project-config-only (.foreman/config.yaml)
+  # Note: git/jujutsu sub-options are global-config-only (~/.foreman/config.yaml)
 phases:
   - ...
 ```
@@ -200,7 +200,7 @@ project/
 ### Jujutsu Colocated Project
 
 ```yaml
-# .foreman/config.yaml
+# ~/.foreman/config.yaml
 vcs:
   backend: jujutsu
   jujutsu:
@@ -220,7 +220,7 @@ foreman doctor
 Some teams run jujutsu locally but want Foreman to use the git backend for simplicity:
 
 ```yaml
-# .foreman/config.yaml
+# ~/.foreman/config.yaml
 vcs:
   backend: git    # Explicitly use git even though .jj/ exists
 ```
@@ -230,13 +230,13 @@ vcs:
 Teams A and B use different VCS backends:
 
 ```yaml
-# .foreman/workflows/team-a.yaml
+# ~/.foreman/workflows/team-a.yaml
 name: team-a
 vcs:
   backend: git
 phases: [...]
 
-# .foreman/workflows/team-b.yaml
+# ~/.foreman/workflows/team-b.yaml
 name: team-b
 vcs:
   backend: jujutsu
@@ -273,7 +273,7 @@ jj git init --colocate
 ### Invalid backend value
 
 ```
-Error: ProjectConfig: .foreman/config.yaml: vcs.backend must be 'git', 'jujutsu', or 'auto' (got: github)
+Error: ProjectConfig: ~/.foreman/config.yaml: vcs.backend must be 'git', 'jujutsu', or 'auto' (got: github)
 ```
 
 **Cause:** Typo or unsupported backend in config.
@@ -283,12 +283,12 @@ Error: ProjectConfig: .foreman/config.yaml: vcs.backend must be 'git', 'jujutsu'
 ### Config file parse error
 
 ```
-Error: ProjectConfig: .foreman/config.yaml: failed to parse YAML: unexpected token
+Error: ProjectConfig: ~/.foreman/config.yaml: failed to parse YAML: unexpected token
 ```
 
-**Cause:** Malformed YAML in `.foreman/config.yaml`.
+**Cause:** Malformed YAML in `~/.foreman/config.yaml`.
 
-**Fix:** Validate YAML syntax with `python3 -c "import yaml; yaml.safe_load(open('.foreman/config.yaml'))"` or an online YAML validator.
+**Fix:** Validate YAML syntax with `python3 -c "import os, yaml; yaml.safe_load(open(os.path.expanduser('~/.foreman/config.yaml')))"` or an online YAML validator.
 
 ### jj not found
 
@@ -335,10 +335,10 @@ If `foreman status` shows the wrong backend, check the resolution order:
 
 ```bash
 # 1. Check workflow vcs block
-cat .foreman/workflows/default.yaml | grep -A5 "^vcs:"
+cat ~/.foreman/workflows/default.yaml | grep -A5 "^vcs:"
 
 # 2. Check project config
-cat .foreman/config.yaml
+cat ~/.foreman/config.yaml
 
 # 3. Check what's in project root
 ls -la | grep -E "\.git|\.jj"

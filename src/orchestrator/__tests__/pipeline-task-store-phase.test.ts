@@ -145,12 +145,14 @@ describe("executePipeline(): taskStore.updatePhase() called at phase transitions
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-pipe-taskstore-test-"));
-    mkdirSync(join(tmpDir, ".foreman", "prompts", "default"), { recursive: true });
+    process.env["FOREMAN_HOME"] = tmpDir;
+    mkdirSync(join(tmpDir, "prompts", "default"), { recursive: true });
     installBundledPrompts(tmpDir, true);
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("calls taskStore.updatePhase for each successfully completed phase", async () => {

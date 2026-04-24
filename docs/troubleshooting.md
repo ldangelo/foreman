@@ -355,7 +355,7 @@ foreman attach <bead-id> --follow # Watch what the agent is doing
 3. **Wrong model for the task** — Using opus for simple work.
    ```bash
    # Check the workflow YAML models map
-   cat .foreman/workflows/default.yaml | grep -A 3 models
+   cat ~/.foreman/workflows/default.yaml | grep -A 3 models
    ```
 
 ### Smoke test costs too much
@@ -366,7 +366,7 @@ foreman attach <bead-id> --follow # Watch what the agent is doing
 
 **Fix:** Use haiku for all smoke phases and keep maxTurns low:
 ```yaml
-# .foreman/workflows/smoke.yaml
+# ~/.foreman/workflows/smoke.yaml
 phases:
   - name: explorer
     models:
@@ -435,7 +435,7 @@ md5 package-lock.json             # Compare with cache dir names
 
 2. **setupCache not configured** — Check the workflow YAML:
    ```bash
-   grep -A 2 setupCache .foreman/workflows/default.yaml
+   grep -A 2 setupCache ~/.foreman/workflows/default.yaml
    ```
 
 ### Symlink errors after cache populated

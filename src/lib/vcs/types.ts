@@ -109,7 +109,7 @@ export interface FinalizeCommands {
   restoreTrackedStateCommand: string;
 }
 
-/** VCS configuration read from project config YAML (.foreman/config.yaml). */
+/** VCS configuration read from Foreman's global config YAML (~/.foreman/config.yaml). */
 export interface VcsConfig {
   /** Which VCS backend to use. 'auto' detects based on repository contents. */
   backend: 'git' | 'jujutsu' | 'auto';

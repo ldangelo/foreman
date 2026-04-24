@@ -93,7 +93,7 @@ export async function initProjectStore(
 // ── Command ────────────────────────────────────────────────────────────────
 
 /**
- * Install bundled prompt templates to <projectDir>/.foreman/prompts/.
+ * Install bundled prompt templates to ~/.foreman/prompts/.
  * Exported for unit testing.
  *
  * @param projectDir - Absolute path to the project directory
@@ -133,7 +133,7 @@ export const initCommand = new Command("init")
       const { installed, skipped } = installPrompts(projectDir, force);
       if (installed.length > 0) {
         spinner.succeed(
-          `Installed ${installed.length} prompt template(s) to .foreman/prompts/`,
+          `Installed ${installed.length} prompt template(s) to ~/.foreman/prompts/`,
         );
       } else if (skipped.length > 0) {
         spinner.info(
@@ -163,13 +163,13 @@ export const initCommand = new Command("init")
       skillSpinner.warn(`Failed to install Pi skills: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    // Install bundled workflow configs to .foreman/workflows/
+    // Install bundled workflow configs to ~/.foreman/workflows/
     const workflowSpinner = ora("Installing workflow configs...").start();
     try {
       const { installed: workflowsInstalled, skipped: workflowsSkipped } = installBundledWorkflows(projectDir, force);
       if (workflowsInstalled.length > 0) {
         workflowSpinner.succeed(
-          `Installed ${workflowsInstalled.length} workflow config(s) to .foreman/workflows/`,
+          `Installed ${workflowsInstalled.length} workflow config(s) to ~/.foreman/workflows/`,
         );
       } else if (workflowsSkipped.length > 0) {
         workflowSpinner.info(

@@ -227,6 +227,7 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-test-"));
+    process.env["FOREMAN_HOME"] = tmpDir;
     // Touch log file
     writeFileSync(join(tmpDir, "test.log"), "");
     // Install bundled prompts so buildPhasePrompt() can resolve them
@@ -235,6 +236,7 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("loops back to developer when finalize writes ## Verdict: FAIL", async () => {

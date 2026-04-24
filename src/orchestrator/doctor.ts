@@ -750,7 +750,7 @@ export class Doctor {
   }
 
   /**
-   * Check that all required prompt files are installed in .foreman/prompts/.
+   * Check that all required prompt files are installed in ~/.foreman/prompts/.
    * With --fix, reinstalls missing prompts from bundled defaults.
    */
   async checkPrompts(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
@@ -762,7 +762,7 @@ export class Doctor {
 
     if (problemCount === 0) {
       return {
-        name: "prompt templates (.foreman/prompts/)",
+        name: "prompt templates (~/.foreman/prompts/)",
         status: "pass",
         message: "All required prompt files are installed",
       };
@@ -773,7 +773,7 @@ export class Doctor {
 
     if (dryRun) {
       return {
-        name: "prompt templates (.foreman/prompts/)",
+        name: "prompt templates (~/.foreman/prompts/)",
         status: "fail",
         message:
           `${problemCount} prompt issue(s): ` +
@@ -793,14 +793,14 @@ export class Doctor {
         const stillStale = findStalePrompts(this.projectPath);
         if (stillMissing.length === 0 && stillStale.length === 0) {
           return {
-            name: "prompt templates (.foreman/prompts/)",
+            name: "prompt templates (~/.foreman/prompts/)",
             status: "fixed",
             message: `${problemCount} prompt issue(s)`,
             fixApplied: `Installed ${installed.length} prompt file(s) from bundled defaults`,
           };
         } else {
           return {
-            name: "prompt templates (.foreman/prompts/)",
+            name: "prompt templates (~/.foreman/prompts/)",
             status: "fail",
             message: `Prompt issues remain after reinstall: missing=${stillMissing.join(", ")} stale=${stillStale.join(", ")}`,
           };
@@ -808,7 +808,7 @@ export class Doctor {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          name: "prompt templates (.foreman/prompts/)",
+          name: "prompt templates (~/.foreman/prompts/)",
           status: "fail",
           message: `Failed to reinstall prompts: ${msg}`,
         };
@@ -816,7 +816,7 @@ export class Doctor {
     }
 
     return {
-      name: "prompt templates (.foreman/prompts/)",
+      name: "prompt templates (~/.foreman/prompts/)",
       status: "fail",
       message:
         `${problemCount} prompt issue(s): ` +
@@ -889,7 +889,7 @@ export class Doctor {
   }
 
   /**
-   * Check that all bundled workflow YAML files are installed in .foreman/workflows/
+   * Check that all bundled workflow YAML files are installed in ~/.foreman/workflows/
    * and that locally installed files have the required verdict/retry config fields.
    *
    * With --fix, reinstalls ALL workflow configs (including stale ones) from bundled
@@ -905,7 +905,7 @@ export class Doctor {
 
     if (problemCount === 0) {
       return {
-        name: "workflow configs (.foreman/workflows/)",
+        name: "workflow configs (~/.foreman/workflows/)",
         status: "pass",
         message: "All required workflow config files are installed",
       };
@@ -922,7 +922,7 @@ export class Doctor {
 
     if (dryRun) {
       return {
-        name: "workflow configs (.foreman/workflows/)",
+        name: "workflow configs (~/.foreman/workflows/)",
         status: "fail",
         message: `${problemCount} workflow config issue(s): ${problemDesc}. Would reinstall (dry-run).`,
       };
@@ -938,21 +938,21 @@ export class Doctor {
         const stillStale = findStaleWorkflows(this.projectPath);
         if (stillMissing.length === 0 && stillStale.length === 0) {
           return {
-            name: "workflow configs (.foreman/workflows/)",
+            name: "workflow configs (~/.foreman/workflows/)",
             status: "fixed",
             message: `${problemCount} workflow config issue(s)`,
             fixApplied: `Reinstalled ${installed.length} workflow config(s) from bundled defaults`,
           };
         }
         return {
-          name: "workflow configs (.foreman/workflows/)",
+          name: "workflow configs (~/.foreman/workflows/)",
           status: "fail",
           message: `Workflow config issues remain after reinstall: missing=${stillMissing.join(", ")} stale=${stillStale.join(", ")}`,
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          name: "workflow configs (.foreman/workflows/)",
+          name: "workflow configs (~/.foreman/workflows/)",
           status: "fail",
           message: `Failed to reinstall workflow configs: ${msg}`,
         };
@@ -960,7 +960,7 @@ export class Doctor {
     }
 
     return {
-      name: "workflow configs (.foreman/workflows/)",
+      name: "workflow configs (~/.foreman/workflows/)",
       status: "fail",
       message: `${problemCount} workflow config issue(s): ${problemDesc}. Run 'foreman init' or 'foreman doctor --fix' to reinstall.`,
     };

@@ -30,13 +30,12 @@ function mkTmpDir(): string {
 }
 
 function writeForemanConfig(
-  projectRoot: string,
+  foremanHome: string,
   content: string,
   ext: "yaml" | "json" = "yaml",
 ): void {
-  const dir = join(projectRoot, ".foreman");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `config.${ext}`), content, "utf-8");
+  mkdirSync(foremanHome, { recursive: true });
+  writeFileSync(join(foremanHome, `config.${ext}`), content, "utf-8");
 }
 
 // ── loadProjectConfig ─────────────────────────────────────────────────────────
@@ -46,19 +45,21 @@ describe("loadProjectConfig", () => {
 
   beforeEach(() => {
     tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   // AC-T-025-3: Missing config → null (not an error)
-  it("returns null when .foreman/config.yaml does not exist", () => {
+  it("returns null when ~/.foreman/config.yaml does not exist", () => {
     const result = loadProjectConfig(tmpDir);
     expect(result).toBeNull();
   });
 
-  it("returns null when .foreman/ directory does not exist", () => {
+  it("returns null when ~/.foreman/ directory does not exist", () => {
     const result = loadProjectConfig(tmpDir);
     expect(result).toBeNull();
   });
@@ -123,7 +124,7 @@ describe("loadProjectConfig", () => {
   });
 
   // JSON fallback
-  it("falls back to .foreman/config.json when config.yaml is absent", () => {
+  it("falls back to ~/.foreman/config.json when config.yaml is absent", () => {
     writeForemanConfig(
       tmpDir,
       JSON.stringify({ vcs: { backend: "git" } }),
@@ -302,10 +303,12 @@ describe("resolveDefaultBranch", () => {
 
   beforeEach(() => {
     tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("prefers configured defaultBranch over auto-detection", async () => {

@@ -31,8 +31,8 @@ function mkTmpDir(): string {
   return dir;
 }
 
-function writeWorkflowFile(projectRoot: string, name: string, content: string): void {
-  const dir = join(projectRoot, ".foreman", "workflows");
+function writeWorkflowFile(foremanHome: string, name: string, content: string): void {
+  const dir = join(foremanHome, "workflows");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${name}.yaml`), content, "utf-8");
 }
@@ -175,10 +175,12 @@ describe("loadWorkflowConfig — setup block integration", () => {
 
   beforeEach(() => {
     tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("bundled default workflow has a setup block", () => {
@@ -195,7 +197,7 @@ describe("loadWorkflowConfig — setup block integration", () => {
     expect(config.setup![0].command).toBeTruthy();
   });
 
-  it("project-local workflow without setup block has undefined setup", () => {
+  it("global workflow without setup block has undefined setup", () => {
     writeWorkflowFile(tmpDir, "default", `
 name: default
 phases:
@@ -206,7 +208,7 @@ phases:
     expect(config.setup).toBeUndefined();
   });
 
-  it("project-local workflow with setup block parses correctly", () => {
+  it("global workflow with setup block parses correctly", () => {
     writeWorkflowFile(tmpDir, "default", `
 name: default
 setup:
@@ -234,13 +236,15 @@ describe("loadWorkflowConfig", () => {
 
   beforeEach(() => {
     tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
-  it("loads a valid project-local workflow YAML", () => {
+  it("loads a valid global workflow YAML", () => {
     writeWorkflowFile(tmpDir, "default", `
 name: default
 phases:
@@ -256,8 +260,8 @@ phases:
     expect(config.phases[1].builtin).toBe(true);
   });
 
-  it("falls back to bundled defaults when no project-local file exists", () => {
-    // tmpDir has no .foreman/workflows/ — should fall through to bundled defaults
+  it("falls back to bundled defaults when no global workflow file exists", () => {
+    // tmpDir has no workflows/ — should fall through to bundled defaults
     const config = loadWorkflowConfig("default", tmpDir);
     expect(config.name).toBe("default");
     expect(config.phases.length).toBeGreaterThan(0);
@@ -276,7 +280,7 @@ phases:
     expect(() => loadWorkflowConfig("nonexistent-workflow", tmpDir)).toThrow(WorkflowConfigError);
   });
 
-  it("project-local file takes precedence over bundled defaults", () => {
+  it("global file takes precedence over bundled defaults", () => {
     writeWorkflowFile(tmpDir, "default", `
 name: custom-default
 phases:
@@ -289,7 +293,7 @@ phases:
     const config = loadWorkflowConfig("default", tmpDir);
     // Name comes from the YAML content
     expect(config.name).toBe("custom-default");
-    // Only 2 phases (no explorer, qa, reviewer) - confirming project-local was used
+    // Only 2 phases (no explorer, qa, reviewer) - confirming global override was used
     expect(config.phases).toHaveLength(2);
   });
 
@@ -326,10 +330,12 @@ describe("installBundledWorkflows", () => {
 
   beforeEach(() => {
     tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("installs all bundled workflow files", () => {
@@ -337,7 +343,7 @@ describe("installBundledWorkflows", () => {
     expect(installed.length).toBeGreaterThan(0);
     expect(skipped).toHaveLength(0);
     for (const name of BUNDLED_WORKFLOW_NAMES) {
-      expect(existsSync(join(tmpDir, ".foreman", "workflows", `${name}.yaml`))).toBe(true);
+      expect(existsSync(join(tmpDir, "workflows", `${name}.yaml`))).toBe(true);
     }
   });
 
@@ -354,8 +360,8 @@ describe("installBundledWorkflows", () => {
     expect(installed.length).toBeGreaterThan(0);
   });
 
-  it("creates .foreman/workflows/ directory if missing", () => {
-    const workflowsDir = join(tmpDir, ".foreman", "workflows");
+  it("creates ~/.foreman/workflows/ directory if missing", () => {
+    const workflowsDir = join(tmpDir, "workflows");
     expect(existsSync(workflowsDir)).toBe(false);
     installBundledWorkflows(tmpDir);
     expect(existsSync(workflowsDir)).toBe(true);
@@ -369,10 +375,12 @@ describe("findMissingWorkflows", () => {
 
   beforeEach(() => {
     tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("returns all bundled workflow names when nothing is installed", () => {
@@ -388,7 +396,7 @@ describe("findMissingWorkflows", () => {
 
   it("returns only the missing workflow names", () => {
     // Install only 'default', leaving 'smoke' missing
-    const workflowsDir = join(tmpDir, ".foreman", "workflows");
+    const workflowsDir = join(tmpDir, "workflows");
     mkdirSync(workflowsDir, { recursive: true });
     writeFileSync(join(workflowsDir, "default.yaml"), "name: default\nphases:\n  - name: finalize\n    builtin: true\n");
 
@@ -401,6 +409,18 @@ describe("findMissingWorkflows", () => {
 // ── resolveWorkflowName ───────────────────────────────────────────────────────
 
 describe("resolveWorkflowName", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
+  });
+
   it("returns 'smoke' for smoke bead type", () => {
     expect(resolveWorkflowName("smoke")).toBe("smoke");
   });
@@ -440,6 +460,17 @@ describe("resolveWorkflowName", () => {
 
   it("returns workflow when labels is undefined", () => {
     expect(resolveWorkflowName("feature", undefined)).toBe("feature");
+  });
+
+  it("uses a workflow file installed in the global foreman home", () => {
+    writeWorkflowFile(tmpDir, "custom-seed", `
+name: custom-seed
+phases:
+  - name: finalize
+    builtin: true
+`);
+
+    expect(resolveWorkflowName("custom-seed")).toBe("custom-seed");
   });
 
   it("ignores optional routing hints — uses type-based workflow when no workflow label", () => {

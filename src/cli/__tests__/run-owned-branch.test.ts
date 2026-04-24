@@ -128,8 +128,9 @@ describe("collectRuntimeAssetIssues", () => {
   function makeProject(): string {
     const dir = mkdtempSync(join(tmpdir(), "foreman-run-assets-"));
     tempDirs.push(dir);
-    mkdirSync(join(dir, ".foreman", "prompts", "default"), { recursive: true });
-    mkdirSync(join(dir, ".foreman", "workflows"), { recursive: true });
+    process.env["FOREMAN_HOME"] = dir;
+    mkdirSync(join(dir, "prompts", "default"), { recursive: true });
+    mkdirSync(join(dir, "workflows"), { recursive: true });
     return dir;
   }
 
@@ -138,12 +139,13 @@ describe("collectRuntimeAssetIssues", () => {
       rmSync(dir, { recursive: true, force: true });
     }
     tempDirs.length = 0;
+    delete process.env["FOREMAN_HOME"];
   });
 
-  it("flags stale project-local prompts before dispatch", () => {
+  it("flags stale global prompts before dispatch", () => {
     const projectRoot = makeProject();
     writeFileSync(
-      join(projectRoot, ".foreman", "prompts", "default", "developer.md"),
+      join(projectRoot, "prompts", "default", "developer.md"),
       "# stale prompt without new placeholders",
       "utf8",
     );

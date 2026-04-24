@@ -29,7 +29,7 @@ Foreman CLI / Dispatcher
   │       Tools: read, write, edit, bash, grep, find, ls, send_mail
   │
   ├─ Pipeline Executor (workflow YAML-driven)
-  │    Phases defined in .foreman/workflows/*.yaml
+  │    Phases defined in ~/.foreman/workflows/*.yaml
   │    Model selection, retries, mail hooks, artifacts — all YAML config
   │    Per-phase trace artifacts → docs/reports/{seedId}/{PHASE}_TRACE.{md,json}
   │
@@ -655,7 +655,7 @@ Workflows define:
 - **Mail hooks** — lifecycle notifications and artifact forwarding
 
 ```yaml
-# .foreman/workflows/default.yaml (project-local override)
+# ~/.foreman/workflows/default.yaml (global override)
 name: default
 setup:
   - command: npm install --prefer-offline --no-audit
