@@ -21,7 +21,7 @@ phases:
   # Uses /ensemble:fix-issue as the agent prompt, with task metadata interpolated.
   # Use /ensemble:refactor or /ensemble:chore for refactoring-specific agents.
   - name: fix
-    command: "/ensemble:fix-issue {task.title} {task.description}"
+    command: "/skill:ensemble-fix-issue {task.title} {task.description}"
     models:
       default: sonnet
       P0: opus
