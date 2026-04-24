@@ -148,9 +148,11 @@ function printTaskTable(rows: TaskRow[]): void {
     return;
   }
 
+  const idWidth = Math.max(COL_ID, ...rows.map((row) => row.id.length));
+
   // Header
   console.log(
-    chalk.bold(pad("ID", COL_ID)) +
+    chalk.bold(pad("ID", idWidth)) +
       COL_GAP +
       chalk.bold(pad("TITLE", COL_TITLE)) +
       COL_GAP +
@@ -160,12 +162,11 @@ function printTaskTable(rows: TaskRow[]): void {
       COL_GAP +
       chalk.bold("STATUS"),
   );
-  console.log("─".repeat(COL_ID + COL_TITLE + COL_TYPE + COL_PRI + COL_STATUS + (COL_GAP.length * 4)));
+  console.log("─".repeat(idWidth + COL_TITLE + COL_TYPE + COL_PRI + COL_STATUS + (COL_GAP.length * 4)));
 
   for (const t of rows) {
-    const shortId = formatTaskIdDisplay(t.id);
     console.log(
-      renderColumn(shortId, COL_ID, chalk.dim) +
+      chalk.dim(t.id.padEnd(idWidth)) +
         COL_GAP +
         renderColumn(t.title, COL_TITLE) +
         COL_GAP +
