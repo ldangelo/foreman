@@ -34,6 +34,7 @@ vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
 
+import { createTaskClient } from "../../lib/task-client-factory.js";
 import { createTaskClients, resolveRuntimeMode } from "../commands/run.js";
 
 describe("run runtime mode", () => {
@@ -67,16 +68,27 @@ describe("run runtime mode", () => {
     expect(resolveRuntimeMode()).toBe("test");
   });
 
-  it("uses the native task client in test runtime when native tasks exist", async () => {
-    // Stub TASK_STORE so selectTaskReadBackend uses autoSelectNativeWhenAvailable directly
+  it("forces the beads backend in test runtime when native tasks exist", async () => {
+    // Stub TASK_STORE so selectTaskReadBackend uses the explicit fallback flag directly
     vi.stubEnv("FOREMAN_TASK_STORE", "auto");
     const result = await createTaskClients(projectPath, "test");
 
-    // Test mode: autoSelectNativeWhenAvailable=true forces beads (skip native)
+    // Test mode: forceBeadsFallback=true forces beads (skip native)
     expect(result.backendType).toBe("beads");
     expect(result.bvClient).not.toBeNull();
     expect(MockBeadsRustClient).toHaveBeenCalledWith(projectPath);
     expect(result.taskClient).toBeDefined();
+  });
+
+  it("preserves the legacy autoSelectNativeWhenAvailable alias", async () => {
+    vi.stubEnv("FOREMAN_TASK_STORE", "auto");
+
+    const result = await createTaskClient(projectPath, {
+      autoSelectNativeWhenAvailable: true,
+    });
+
+    expect(result.backendType).toBe("beads");
+    expect(MockBeadsRustClient).toHaveBeenCalledWith(projectPath);
   });
 
   it("falls back to br in normal runtime", async () => {
@@ -91,4 +103,3 @@ describe("run runtime mode", () => {
     expect(result.bvClient).not.toBeNull();
   });
 });
-

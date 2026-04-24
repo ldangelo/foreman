@@ -240,6 +240,7 @@ describe("sentinel auto-start in foreman run", () => {
       expect.anything(), // brClient
       MOCK_PROJECT.id,
       "/mock/project",
+      expect.anything(), // vcs backend
     );
     expect(mockSentinelStart).toHaveBeenCalledOnce();
     expect(mockSentinelStart).toHaveBeenCalledWith(

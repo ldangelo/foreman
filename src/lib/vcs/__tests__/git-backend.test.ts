@@ -8,6 +8,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import {
   mkdtempSync,
+  readFileSync,
   writeFileSync,
   realpathSync,
   rmSync,
@@ -951,6 +952,115 @@ describe("GitBackend.rebase", () => {
   });
 });
 
+describe("GitBackend.rebaseBranch / restackBranch", () => {
+  it("rebaseBranch() rebases a non-current branch onto a target branch", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    execFileSync("git", ["checkout", "-b", "feature/rebase-branch"], { cwd: repo });
+    writeFileSync(join(repo, "feature.txt"), "feature work\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "feature work"], { cwd: repo });
+
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    writeFileSync(join(repo, "main.txt"), "main work\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "main work"], { cwd: repo });
+
+    const result = await backend.rebaseBranch(repo, "feature/rebase-branch", "main");
+
+    expect(result.success).toBe(true);
+    expect(result.hasConflicts).toBe(false);
+    expect(await backend.getCurrentBranch(repo)).toBe("feature/rebase-branch");
+  });
+
+  it("restackBranch() restacks a branch from one base onto another", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    execFileSync("git", ["checkout", "-b", "feature/base"], { cwd: repo });
+    writeFileSync(join(repo, "base.txt"), "base work\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "base work"], { cwd: repo });
+
+    execFileSync("git", ["checkout", "-b", "feature/stacked"], { cwd: repo });
+    writeFileSync(join(repo, "stacked.txt"), "stacked work\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "stacked work"], { cwd: repo });
+
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    writeFileSync(join(repo, "main.txt"), "main work\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "main work"], { cwd: repo });
+
+    const result = await backend.restackBranch(repo, "feature/stacked", "feature/base", "main");
+    const mergeBase = execFileSync("git", ["merge-base", "feature/stacked", "main"], { cwd: repo }).toString().trim();
+    const mainHead = execFileSync("git", ["rev-parse", "main"], { cwd: repo }).toString().trim();
+
+    expect(result.success).toBe(true);
+    expect(result.hasConflicts).toBe(false);
+    expect(mergeBase).toBe(mainHead);
+  });
+});
+
+describe("GitBackend.saveWorktreeState / restoreWorktreeState", () => {
+  it("saves and restores staged local state", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    writeFileSync(join(repo, "dirty-state.txt"), "saved change\n");
+    execFileSync("git", ["add", "dirty-state.txt"], { cwd: repo });
+
+    const saved = await backend.saveWorktreeState(repo);
+    expect(saved).toBe(true);
+
+    let status = execFileSync("git", ["status", "--short"], { cwd: repo }).toString();
+    expect(status.trim()).toBe("");
+
+    await backend.restoreWorktreeState(repo);
+
+    status = execFileSync("git", ["status", "--short"], { cwd: repo }).toString();
+    expect(status).toContain("A  dirty-state.txt");
+  });
+
+  it("returns false when there is no local state to save", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    await expect(backend.saveWorktreeState(repo)).resolves.toBe(false);
+  });
+});
+
+describe("GitBackend.applyPatchToIndex", () => {
+  it("applies a patch file to the index and working tree", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    const original = readFileSync(join(repo, "README.md"), "utf8");
+    const updated = `${original.trimEnd()}\nupdated\n`;
+
+    writeFileSync(join(repo, "README.md"), updated);
+    const patch = execFileSync("git", ["diff", "--", "README.md"], { cwd: repo }).toString();
+    const patchPath = join(repo, "change.patch");
+    writeFileSync(patchPath, patch);
+
+    writeFileSync(join(repo, "README.md"), original);
+
+    await backend.applyPatchToIndex(repo, patchPath);
+
+    const status = execFileSync("git", ["status", "--short"], { cwd: repo }).toString();
+    const readme = readFileSync(join(repo, "README.md"), "utf8");
+
+    expect(readme).toBe(updated);
+    expect(status).toContain("M  README.md");
+  });
+});
+
 // ── GitBackend.deleteBranch ───────────────────────────────────────────────────
 
 describe("GitBackend.deleteBranch", () => {
@@ -1602,6 +1712,47 @@ describe("GitBackend.merge", () => {
 
     // Clean up conflict state to allow tempDir cleanup
     execFileSync("git", ["merge", "--abort"], { cwd: repo });
+  });
+
+  it("mergeWithStrategy() prefers source-side changes for the supported strategy", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    execFileSync("git", ["checkout", "-b", "feature/theirs-strategy"], { cwd: repo });
+    writeFileSync(join(repo, "README.md"), "feature version\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "feature: edit README"], { cwd: repo });
+
+    execFileSync("git", ["checkout", "main"], { cwd: repo });
+    writeFileSync(join(repo, "README.md"), "main version\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "main: edit README"], { cwd: repo });
+
+    const result = await backend.mergeWithStrategy(repo, "feature/theirs-strategy", "main", "theirs");
+    const readme = readFileSync(join(repo, "README.md"), "utf8");
+
+    expect(result.success).toBe(true);
+    expect(readme).toBe("feature version\n");
+  });
+
+  it("rollbackFailedMerge() resets the repo to the provided pre-merge ref", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    const beforeRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo }).toString().trim();
+
+    execFileSync("git", ["checkout", "-b", "feature/rollback"], { cwd: repo });
+    writeFileSync(join(repo, "feature.txt"), "feature content\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "feature commit"], { cwd: repo });
+    await backend.mergeWithStrategy(repo, "feature/rollback", "main", "theirs");
+
+    await backend.rollbackFailedMerge(repo, beforeRef);
+
+    const currentHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo }).toString().trim();
+    expect(currentHead).toBe(beforeRef);
   });
 
   // AC-005-3: Dirty working tree is stashed before merge and restored after

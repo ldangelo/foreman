@@ -18,6 +18,13 @@ import { execFile } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { preserveBeadChanges } from "../refinery.js";
 
+function makeBackend() {
+  return {
+    applyPatchToIndex: vi.fn().mockResolvedValue(undefined),
+    commit: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function mockGitSuccess(responses: Record<string, string>) {
@@ -62,10 +69,10 @@ describe("preserveBeadChanges()", () => {
 
   it("extracts .seeds/ changes and applies them to target", async () => {
     const patchContent = "diff --git a/.seeds/issues.jsonl b/.seeds/issues.jsonl\n+some bead data\n";
+    const backend = makeBackend();
 
     mockGitSuccess({
       "diff main...foreman/seed-abc -- .seeds/": patchContent,
-      "apply --index": "",
       "commit -m": "",
     });
 
@@ -73,10 +80,19 @@ describe("preserveBeadChanges()", () => {
       "/tmp/project",
       "foreman/seed-abc",
       "main",
+      backend,
     );
 
     expect(result.preserved).toBe(true);
     expect(vi.mocked(writeFileSync)).toHaveBeenCalled();
+    expect(backend.applyPatchToIndex).toHaveBeenCalledWith(
+      "/tmp/project",
+      expect.stringContaining(".foreman-seed-patch-"),
+    );
+    expect(backend.commit).toHaveBeenCalledWith(
+      "/tmp/project",
+      "chore: preserve seed changes from seed-abc",
+    );
   });
 
   it("does nothing when no .seeds/ changes exist", async () => {
@@ -96,19 +112,12 @@ describe("preserveBeadChanges()", () => {
 
   it("logs warning on patch failure but does not throw", async () => {
     const patchContent = "diff --git a/.seeds/issues.jsonl b/.seeds/issues.jsonl\n+data\n";
+    const backend = {
+      applyPatchToIndex: vi.fn().mockRejectedValue(new Error("patch does not apply")),
+    };
 
-    let callIndex = 0;
     (execFile as any).mockImplementation(
       (_cmd: string, args: string[], _opts: any, callback: Function) => {
-        callIndex++;
-        if (args.includes("apply")) {
-          const err = new Error("patch does not apply") as any;
-          err.stdout = "";
-          err.stderr = "patch does not apply";
-          err.code = "MQ-019";
-          callback(err);
-          return;
-        }
         if (args.includes("diff")) {
           callback(null, { stdout: patchContent, stderr: "" });
           return;
@@ -121,6 +130,7 @@ describe("preserveBeadChanges()", () => {
       "/tmp/project",
       "foreman/seed-fail",
       "main",
+      backend,
     );
 
     expect(result.preserved).toBe(false);
@@ -129,15 +139,12 @@ describe("preserveBeadChanges()", () => {
 
   it("always cleans up temp file even on failure", async () => {
     const patchContent = "diff --git a/.seeds/x b/.seeds/x\n+data\n";
+    const backend = {
+      applyPatchToIndex: vi.fn().mockRejectedValue(new Error("apply failed")),
+    };
 
-    let callIndex = 0;
     (execFile as any).mockImplementation(
       (_cmd: string, args: string[], _opts: any, callback: Function) => {
-        callIndex++;
-        if (args.includes("apply")) {
-          callback(new Error("apply failed"));
-          return;
-        }
         if (args.includes("diff")) {
           callback(null, { stdout: patchContent, stderr: "" });
           return;
@@ -146,7 +153,7 @@ describe("preserveBeadChanges()", () => {
       },
     );
 
-    await preserveBeadChanges("/tmp/project", "foreman/seed-cleanup", "main");
+    await preserveBeadChanges("/tmp/project", "foreman/seed-cleanup", "main", backend);
 
     // unlinkSync should be called for temp file cleanup
     expect(vi.mocked(unlinkSync)).toHaveBeenCalled();

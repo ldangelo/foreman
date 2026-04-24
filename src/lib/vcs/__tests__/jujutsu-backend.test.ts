@@ -476,6 +476,55 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend sync operations (AC-T-020)", () =
     expect(typeof result.hasConflicts).toBe("boolean");
   });
 
+  it("rebaseBranch() rebases a bookmark onto a destination bookmark", async () => {
+    const repoPath = makeTempJjRepo();
+    tempDirs.push(repoPath);
+
+    writeFileSync(join(repoPath, "base.txt"), "base");
+    execFileSync("jj", ["describe", "-m", "Base"], { cwd: repoPath, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "base", "-r", "@"], { cwd: repoPath, stdio: "pipe" });
+
+    execFileSync("jj", ["new"], { cwd: repoPath, stdio: "pipe" });
+    writeFileSync(join(repoPath, "feature.txt"), "feature");
+    execFileSync("jj", ["describe", "-m", "Feature"], { cwd: repoPath, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "feature", "-r", "@"], { cwd: repoPath, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repoPath);
+    const result = await backend.rebaseBranch(repoPath, "feature", "base");
+
+    expect(result.success).toBe(true);
+    expect(result.hasConflicts).toBe(false);
+  });
+
+  it("restackBranch() restacks a bookmark onto a new destination", async () => {
+    const repoPath = makeTempJjRepo();
+    tempDirs.push(repoPath);
+
+    writeFileSync(join(repoPath, "base.txt"), "base");
+    execFileSync("jj", ["describe", "-m", "Base"], { cwd: repoPath, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "base", "-r", "@"], { cwd: repoPath, stdio: "pipe" });
+
+    execFileSync("jj", ["new"], { cwd: repoPath, stdio: "pipe" });
+    writeFileSync(join(repoPath, "feature.txt"), "feature");
+    execFileSync("jj", ["describe", "-m", "Feature"], { cwd: repoPath, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "feature", "-r", "@"], { cwd: repoPath, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repoPath);
+    const result = await backend.restackBranch(repoPath, "feature", "ignored", "base");
+
+    expect(result.success).toBe(true);
+    expect(result.hasConflicts).toBe(false);
+  });
+
+  it("saveWorktreeState()/restoreWorktreeState() are harmless no-ops", async () => {
+    const repoPath = makeTempJjRepo();
+    tempDirs.push(repoPath);
+    const backend = new JujutsuBackend(repoPath);
+
+    await expect(backend.saveWorktreeState(repoPath)).resolves.toBe(false);
+    await expect(backend.restoreWorktreeState(repoPath)).resolves.toBeUndefined();
+  });
+
   // AC-T-020-3: abortRebase() calls jj undo ────────────────────────────────
 
   it("abortRebase() resolves without throwing (AC-T-020-3)", async () => {
