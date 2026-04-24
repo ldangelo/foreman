@@ -87,7 +87,6 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
     restackBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
     abortRebase: vi.fn().mockResolvedValue(undefined),
     abortMerge: vi.fn().mockResolvedValue(undefined),
-    stageFile: vi.fn().mockResolvedValue(undefined),
     stageFiles: vi.fn().mockResolvedValue(undefined),
     /** merge() defaults to success — tests can override via overrides.merge */
     merge: vi.fn().mockResolvedValue({ success: true }),

@@ -77,11 +77,12 @@ describe("deterministic smoke e2e", () => {
   });
 
   it("merges a deterministic smoke task through the real run command", { timeout: 70_000 }, async () => {
+    tempHome = mkdtempSync(join(tmpdir(), "foreman-test-home-"));
+    mkdirSync(join(tempHome, ".foreman"), { recursive: true });
+    process.env.HOME = tempHome;
+
     const harness = createTempProjectHarness();
     try {
-      tempHome = mkdtempSync(join(tmpdir(), "foreman-test-home-"));
-      mkdirSync(join(tempHome, ".foreman"), { recursive: true });
-      process.env.HOME = tempHome;
       process.env.FOREMAN_RUNTIME_MODE = "test";
       process.env.FOREMAN_TASK_STORE = "native";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
@@ -111,11 +112,12 @@ describe("deterministic smoke e2e", () => {
   });
 
   it("surfaces a deterministic same-file conflict outcome", { timeout: 120_000 }, async () => {
+    tempHome = mkdtempSync(join(tmpdir(), "foreman-test-home-"));
+    mkdirSync(join(tempHome, ".foreman"), { recursive: true });
+    process.env.HOME = tempHome;
+
     const harness = createTempProjectHarness();
     try {
-      tempHome = mkdtempSync(join(tmpdir(), "foreman-test-home-"));
-      mkdirSync(join(tempHome, ".foreman"), { recursive: true });
-      process.env.HOME = tempHome;
       process.env.FOREMAN_RUNTIME_MODE = "test";
       process.env.FOREMAN_TASK_STORE = "native";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;

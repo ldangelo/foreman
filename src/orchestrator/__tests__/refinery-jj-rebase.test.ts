@@ -67,7 +67,6 @@ function makeMockVcs(): VcsBackend {
     rebaseBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
     restackBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
     abortRebase: vi.fn().mockResolvedValue(undefined),
-    stageFile: vi.fn().mockResolvedValue(undefined),
     stageFiles: vi.fn().mockResolvedValue(undefined),
     merge: vi.fn().mockResolvedValue({ success: true }),
     mergeWithStrategy: vi.fn().mockResolvedValue({ success: true }),

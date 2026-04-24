@@ -1062,7 +1062,11 @@ export class ConflictResolver {
       ).trim();
 
       // Revert the merge commit
-      await this.vcs.rollbackFailedMerge(this.projectPath, beforeRef);
+      if (this.vcs) {
+        await this.vcs.rollbackFailedMerge(this.projectPath, beforeRef);
+      } else {
+        await this.gitResetHard(beforeRef);
+      }
 
       return {
         passed: false,

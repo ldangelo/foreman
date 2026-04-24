@@ -90,6 +90,7 @@ function stubGitForTier4(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const r = resolver as any;
+  r.vcs = undefined;
 
   r.gitTry = vi.fn().mockImplementation((args: string[]) => {
     if (args[0] === "show") {

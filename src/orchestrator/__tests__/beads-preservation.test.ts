@@ -114,6 +114,7 @@ describe("preserveBeadChanges()", () => {
     const patchContent = "diff --git a/.seeds/issues.jsonl b/.seeds/issues.jsonl\n+data\n";
     const backend = {
       applyPatchToIndex: vi.fn().mockRejectedValue(new Error("patch does not apply")),
+      commit: vi.fn().mockResolvedValue(undefined),
     };
 
     (execFile as any).mockImplementation(
@@ -141,6 +142,7 @@ describe("preserveBeadChanges()", () => {
     const patchContent = "diff --git a/.seeds/x b/.seeds/x\n+data\n";
     const backend = {
       applyPatchToIndex: vi.fn().mockRejectedValue(new Error("apply failed")),
+      commit: vi.fn().mockResolvedValue(undefined),
     };
 
     (execFile as any).mockImplementation(

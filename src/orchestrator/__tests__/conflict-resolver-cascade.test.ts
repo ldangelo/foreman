@@ -38,6 +38,9 @@ describe("ConflictResolver - Cascade Orchestration (MQ-T038)", () => {
   beforeEach(() => {
     config = makeConfig();
     resolver = new ConflictResolver("/fake/project", config);
+    // These tests intentionally exercise the internal fallback helper path.
+    // Disable the default backend so local gitTry/git stubs stay authoritative.
+    (resolver as unknown as { vcs?: unknown }).vcs = undefined;
   });
 
   describe("resolveConflicts(): clean merge (Tier 1 success)", () => {
