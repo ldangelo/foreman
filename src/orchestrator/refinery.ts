@@ -870,6 +870,7 @@ export class Refinery {
         if (!branchCommits.trim()) {
           console.warn(`[Refinery] Branch ${branchName} has no commits beyond ${targetBranch} — agent may not have committed work`);
           await this.addFailureNote(run.seed_id, `Branch ${branchName} has no unique commits beyond ${targetBranch}. The agent may not have committed its work. Manual intervention required — do not auto-reset.`);
+          this.store.updateRun(run.id, { status: "conflict" });
           this.sendMail(run.id, "merge-failed", {
             seedId: run.seed_id,
             branchName,

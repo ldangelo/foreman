@@ -142,6 +142,7 @@ describe("deterministic smoke e2e", () => {
       process.chdir(harness.projectPath);
       await invokeRun(["--runtime-mode", "test", "--no-watch", "--max-agents", "2"]);
       await harness.waitForRunCount(2, 20_000);
+      await harness.waitForTerminalRuns(2, 20_000);
       const statuses = await driveMergeQueueUntil(
         harness,
         (values) => values.filter((status) => status === "merged").length === 1
