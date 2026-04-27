@@ -26,7 +26,20 @@ export interface AgentMailMessage {
   acknowledged: boolean;
 }
 
-export class SqliteMailClient {
+export interface AgentMailClient {
+  agentName: string | null;
+  healthCheck(): Promise<boolean>;
+  ensureProject(projectPath: string): Promise<void>;
+  setRunId(runId: string): void;
+  ensureAgentRegistered(roleHint: string): Promise<string | null>;
+  sendMessage(to: string, subject: string, body: string): Promise<void>;
+  fetchInbox(agent: string, options?: { limit?: number }): Promise<AgentMailMessage[]>;
+  acknowledgeMessage(agent: string, messageId: number): Promise<void>;
+  reserveFiles(paths: string[], agentName: string, leaseSecs?: number): Promise<void>;
+  releaseFiles(paths: string[], agentName: string): Promise<void>;
+}
+
+export class SqliteMailClient implements AgentMailClient {
   /** The registered agent name for this instance. Used as sender for outgoing messages. */
   agentName: string | null = null;
 

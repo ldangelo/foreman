@@ -43,7 +43,10 @@ export interface IStore {
       sessionKey?: string | null;
     },
   ): Promise<Run>;
-  updateRun(runId: string, updates: Partial<Pick<Run, "status" | "worktree_path" | "session_key">>): Promise<void>;
+  updateRun(
+    runId: string,
+    updates: Partial<Pick<Run, "status" | "worktree_path" | "session_key" | "started_at" | "completed_at">>,
+  ): Promise<void>;
   getRun(id: string): Promise<Run | null>;
   getActiveRuns(projectId?: string): Promise<Run[]>;
   getRunsByStatus(status: Run["status"], projectId?: string): Promise<Run[]>;

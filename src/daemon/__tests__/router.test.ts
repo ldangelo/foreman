@@ -27,8 +27,12 @@ const mockAdapter = {
   updateTask: vi.fn(),
   deleteTask: vi.fn(),
   approveTask: vi.fn(),
+  closeTask: vi.fn(),
   resetTask: vi.fn(),
   retryTask: vi.fn(),
+  addTaskDependency: vi.fn(),
+  listTaskDependencies: vi.fn(),
+  removeTaskDependency: vi.fn(),
   listReadyTasks: vi.fn(),
   listNeedsHumanTasks: vi.fn(),
   // Pipeline / runs / events / messages (TRD-039)
@@ -188,9 +192,9 @@ describe("Zod schemas", () => {
       projectId: z.string().min(1),
       title: z.string().min(1),
       description: z.string().optional(),
-      type: z.enum(["feature", "bugfix", "chore", "test", "docs", "refactor", "security"]).optional(),
+      type: z.enum(["task", "bug", "feature", "story", "epic", "chore", "docs", "question"]).optional(),
       priority: z.enum(["P0", "P1", "P2", "P3", "P4"]).optional(),
-      status: z.enum(["backlog", "ready", "in-progress", "in-review", "approved", "merged", "closed"]).optional(),
+      status: z.enum(["backlog", "ready", "in-progress", "explorer", "developer", "qa", "reviewer", "finalize", "merged", "closed", "conflict", "failed", "stuck", "blocked"]).optional(),
       externalId: z.string().optional(),
     });
     // Missing projectId
@@ -202,7 +206,7 @@ describe("Zod schemas", () => {
   it("task get/list input requires projectId", () => {
     const listSchema = z.object({
       projectId: z.string().min(1),
-      status: z.enum(["backlog", "ready", "in-progress", "in-review", "approved", "merged", "closed"]).optional(),
+      status: z.enum(["backlog", "ready", "in-progress", "explorer", "developer", "qa", "reviewer", "finalize", "merged", "closed", "conflict", "failed", "stuck", "blocked"]).optional(),
       type: z.string().optional(),
       priority: z.enum(["P0", "P1", "P2", "P3", "P4"]).optional(),
       assignee: z.string().optional(),
@@ -284,6 +288,26 @@ describe("tasks router structure", () => {
   it("tasks router has claim procedure", () => {
     // @ts-ignore
     expect(appRouter.tasks).toHaveProperty("claim");
+  });
+
+  it("tasks router has close procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("close");
+  });
+
+  it("tasks router has addDependency procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("addDependency");
+  });
+
+  it("tasks router has listDependencies procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("listDependencies");
+  });
+
+  it("tasks router has removeDependency procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("removeDependency");
   });
 });
 
@@ -374,7 +398,7 @@ describe("tasks.create procedure", () => {
 
     expect(mockAdapter.createTask).toHaveBeenCalledWith(
       "proj-123",
-      expect.objectContaining({ title: "New feature", type: "task" })
+      expect.objectContaining({ title: "New feature", type: "task", status: undefined })
     );
     expect(result.id).toBe("task-2");
   });
@@ -513,6 +537,94 @@ describe("tasks.retry procedure", () => {
 
     expect(mockAdapter.retryTask).toHaveBeenCalledWith("proj-123", "task-1");
     expect(result!.id).toBe("task-1");
+  });
+});
+
+describe("tasks.close procedure", () => {
+  beforeEach(() => {
+    mockAdapter.closeTask.mockReset();
+    mockAdapter.getTask.mockReset();
+  });
+
+  it("calls adapter.closeTask then returns updated task", async () => {
+    const mockTask = {
+      id: "task-1",
+      project_id: "proj-123",
+      title: "Test",
+      description: null,
+      type: "task",
+      priority: 2,
+      status: "closed",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      approved_at: null,
+      closed_at: new Date().toISOString(),
+    };
+    mockAdapter.closeTask.mockResolvedValueOnce(undefined);
+    mockAdapter.getTask.mockResolvedValueOnce(mockTask);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.tasks.close({ projectId: "proj-123", taskId: "task-1" });
+
+    expect(mockAdapter.closeTask).toHaveBeenCalledWith("proj-123", "task-1");
+    expect(result!.status).toBe("closed");
+  });
+});
+
+describe("tasks dependency procedures", () => {
+  beforeEach(() => {
+    mockAdapter.addTaskDependency.mockReset();
+    mockAdapter.listTaskDependencies.mockReset();
+    mockAdapter.removeTaskDependency.mockReset();
+  });
+
+  it("calls adapter.addTaskDependency", async () => {
+    mockAdapter.addTaskDependency.mockResolvedValueOnce(undefined);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.tasks.addDependency({
+      projectId: "proj-123",
+      fromTaskId: "task-a",
+      toTaskId: "task-b",
+      type: "blocks",
+    });
+
+    expect(mockAdapter.addTaskDependency).toHaveBeenCalledWith("proj-123", "task-a", "task-b", "blocks");
+    expect(result).toEqual({ added: true });
+  });
+
+  it("calls adapter.listTaskDependencies", async () => {
+    mockAdapter.listTaskDependencies.mockResolvedValueOnce([
+      { from_task_id: "task-a", to_task_id: "task-b", type: "blocks" },
+    ]);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.tasks.listDependencies({
+      projectId: "proj-123",
+      taskId: "task-b",
+      direction: "incoming",
+    });
+
+    expect(mockAdapter.listTaskDependencies).toHaveBeenCalledWith("proj-123", "task-b", "incoming");
+    expect(result).toHaveLength(1);
+  });
+
+  it("calls adapter.removeTaskDependency", async () => {
+    mockAdapter.removeTaskDependency.mockResolvedValueOnce(undefined);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore
+    const result = await caller.tasks.removeDependency({
+      projectId: "proj-123",
+      fromTaskId: "task-a",
+      toTaskId: "task-b",
+      type: "blocks",
+    });
+
+    expect(mockAdapter.removeTaskDependency).toHaveBeenCalledWith("proj-123", "task-a", "task-b", "blocks");
+    expect(result).toEqual({ removed: true });
   });
 });
 

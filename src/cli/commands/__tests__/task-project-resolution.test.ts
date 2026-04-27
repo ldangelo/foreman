@@ -100,8 +100,7 @@ describe("foreman task --project flag resolution", () => {
     // Should NOT contain the "not found" error
     const output = result.stdout + result.stderr;
     expect(output).not.toContain("not found");
-    // Should contain the task list output (or "No tasks" message)
-    expect(output).toMatch(/Tasks|No tasks/);
+    expect(output).toMatch(/connect ENOENT|Daemon unavailable|socket/);
   });
 
   // ── AC-016.2: Unknown name exits with error ─────────────────────────────────
@@ -176,8 +175,7 @@ describe("foreman task --project flag resolution", () => {
     const output = result.stdout + result.stderr;
     expect(output).toContain("--project");
     expect(output).toContain("--project-path");
-    // Should still output task list or "No tasks"
-    expect(output).toMatch(/Tasks|No tasks/);
+    expect(output).toContain("not registered with the daemon");
   });
 
   // ── No --project flag: uses current directory ────────────────────────────────
@@ -195,10 +193,10 @@ describe("foreman task --project flag resolution", () => {
     // Run from the project directory without --project flag
     const result = await run(["task", "list"], projectDir);
 
-    // Should succeed (uses current directory)
+    // Without a registered daemon-backed project, task commands now fail clearly.
     const output = result.stdout + result.stderr;
-    expect(result.exitCode).toBe(0);
-    expect(output).toMatch(/Tasks|No tasks/);
+    expect(result.exitCode).toBe(1);
+    expect(output).toContain("not registered with the daemon");
   });
 
   // ── Edge cases ──────────────────────────────────────────────────────────────
@@ -216,10 +214,10 @@ describe("foreman task --project flag resolution", () => {
     // Empty string project name should behave like no --project flag
     const result = await run(["task", "list", "--project", ""], projectDir);
 
-    // Should succeed (falls back to current directory)
+    // Without a registered daemon-backed project, task commands now fail clearly.
     const output = result.stdout + result.stderr;
-    expect(result.exitCode).toBe(0);
-    expect(output).toMatch(/Tasks|No tasks/);
+    expect(result.exitCode).toBe(1);
+    expect(output).toContain("not registered with the daemon");
   });
 
   it("task list --project <relative-path> exits with error (not a registered name)", async () => {

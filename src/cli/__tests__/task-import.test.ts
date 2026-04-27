@@ -1,9 +1,9 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
-import { ForemanStore } from "../../lib/store.js";
-import { NativeTaskStore, isCompactTaskId } from "../../lib/task-store.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as projectTaskSupport from "../commands/project-task-support.js";
+import * as trpcClientModule from "../../lib/trpc-client.js";
 import { performBeadsImport } from "../commands/task.js";
 
 function writeBeadsJsonl(projectPath: string, records: unknown[]): void {
@@ -25,14 +25,19 @@ describe("foreman task import --from-beads", () => {
     return dir;
   }
 
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
   afterEach(() => {
     for (const dir of tempDirs) {
       rmSync(dir, { recursive: true, force: true });
     }
     tempDirs.length = 0;
+    vi.restoreAllMocks();
   });
 
-  it("imports beads statuses and dependencies into native tasks", async () => {
+  it("imports beads statuses and dependencies through the daemon task API", async () => {
     const project = makeProject();
     writeBeadsJsonl(project, [
       {
@@ -74,47 +79,81 @@ describe("foreman task import --from-beads", () => {
       },
     ]);
 
-    const result = performBeadsImport(project);
+    const create = vi.fn().mockResolvedValue(undefined);
+    const addDependency = vi.fn().mockResolvedValue({ added: true });
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "foreman", path: project },
+    ]);
+    vi.spyOn(trpcClientModule, "createTrpcClient").mockReturnValue({
+      tasks: {
+        list: vi.fn().mockResolvedValue([]),
+        create,
+        addDependency,
+      },
+    } as unknown as trpcClientModule.TrpcClient);
+
+    const result = await performBeadsImport(project);
     expect(result.imported).toBe(3);
     expect(result.duplicateSkips).toBe(0);
     expect(result.unsupportedStatusSkips).toBe(0);
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "proj-1",
+      title: "Open bead",
+      type: "feature",
+      status: "backlog",
+      externalId: "bd-open",
+    }));
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "proj-1",
+      title: "Ready bead",
+      type: "task",
+      status: "ready",
+      approvedAt: "2026-04-01T02:00:00.000Z",
+      externalId: "bd-ready",
+    }));
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "proj-1",
+      title: "Closed bead",
+      type: "bug",
+      status: "merged",
+      closedAt: "2026-04-01T04:00:00.000Z",
+      externalId: "bd-closed",
+    }));
+    expect(addDependency).toHaveBeenCalledTimes(2);
+    expect(addDependency).toHaveBeenCalledWith({
+      projectId: "proj-1",
+      fromTaskId: expect.any(String),
+      toTaskId: expect.any(String),
+      type: "blocks",
+    });
+    expect(addDependency).toHaveBeenCalledWith({
+      projectId: "proj-1",
+      fromTaskId: expect.any(String),
+      toTaskId: expect.any(String),
+      type: "parent-child",
+    });
 
-    const store = ForemanStore.forProject(project);
-    store.registerProject("foreman", project);
-    const taskStore = new NativeTaskStore(store.getDb(), { projectKey: "foreman" });
-    const openTask = store.getTaskByExternalId("bd-open");
-    const readyTask = store.getTaskByExternalId("bd-ready");
-    const closedTask = store.getTaskByExternalId("bd-closed");
-
-    expect(openTask && isCompactTaskId(openTask.id)).toBe(true);
-    expect(readyTask && isCompactTaskId(readyTask.id)).toBe(true);
-    expect(closedTask && isCompactTaskId(closedTask.id)).toBe(true);
-    expect(openTask?.status).toBe("backlog");
-    expect(readyTask?.status).toBe("ready");
-    expect(readyTask?.approved_at).toBeTruthy();
-    expect(closedTask?.status).toBe("merged");
-    expect(closedTask?.closed_at).toBe("2026-04-01T04:00:00.000Z");
-    expect(openTask?.type).toBe("feature");
-    expect(closedTask?.type).toBe("bug");
-
-    const readyDeps = taskStore.getDependencies(readyTask!.id, "outgoing");
-    const closedDeps = taskStore.getDependencies(closedTask!.id, "outgoing");
-    expect(readyDeps).toEqual([
-      expect.objectContaining({
-        from_task_id: readyTask!.id,
-        to_task_id: openTask!.id,
+    const dependencyCalls = addDependency.mock.calls;
+    const createdByExternalId = new Map(
+      create.mock.calls.map(([input]) => [input.externalId, input.id]),
+    );
+    expect(dependencyCalls).toContainEqual([
+      {
+        projectId: "proj-1",
+        fromTaskId: createdByExternalId.get("bd-open"),
+        toTaskId: createdByExternalId.get("bd-ready"),
         type: "blocks",
-      }),
+      },
     ]);
-    expect(closedDeps).toEqual([
-      expect.objectContaining({
-        from_task_id: closedTask!.id,
-        to_task_id: readyTask!.id,
+    expect(dependencyCalls).toContainEqual([
+      {
+        projectId: "proj-1",
+        fromTaskId: createdByExternalId.get("bd-ready"),
+        toTaskId: createdByExternalId.get("bd-closed"),
         type: "parent-child",
-      }),
+      },
     ]);
-
-    store.close();
   });
 
   it("supports dry-run without writing rows", async () => {
@@ -129,26 +168,26 @@ describe("foreman task import --from-beads", () => {
       },
     ]);
 
-    const result = performBeadsImport(project, { dryRun: true });
+    const create = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "foreman", path: project },
+    ]);
+    vi.spyOn(trpcClientModule, "createTrpcClient").mockReturnValue({
+      tasks: {
+        list: vi.fn().mockResolvedValue([]),
+        create,
+        addDependency: vi.fn(),
+      },
+    } as unknown as trpcClientModule.TrpcClient);
+
+    const result = await performBeadsImport(project, { dryRun: true });
     expect(result.imported).toBe(1);
     expect(result.preview).toHaveLength(1);
-
-    const store = ForemanStore.forProject(project);
-    expect(store.hasNativeTasks()).toBe(false);
-    store.close();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("skips duplicate imports when external_id already exists", async () => {
     const project = makeProject();
-    const store = ForemanStore.forProject(project);
-    store.registerProject("foreman", project);
-    const taskStore = new NativeTaskStore(store.getDb(), { projectKey: "foreman" });
-    taskStore.create({
-      title: "Existing bead",
-      externalId: "bd-existing",
-    });
-    store.close();
-
     writeBeadsJsonl(project, [
       {
         id: "bd-existing",
@@ -159,16 +198,27 @@ describe("foreman task import --from-beads", () => {
       },
     ]);
 
-    const result = performBeadsImport(project);
+    const create = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "foreman", path: project },
+    ]);
+    vi.spyOn(trpcClientModule, "createTrpcClient").mockReturnValue({
+      tasks: {
+        list: vi.fn().mockResolvedValue([
+          {
+            id: "foreman-aaaaa",
+            title: "Existing bead",
+            external_id: "bd-existing",
+          },
+        ]),
+        create,
+        addDependency: vi.fn(),
+      },
+    } as unknown as trpcClientModule.TrpcClient);
+
+    const result = await performBeadsImport(project);
     expect(result.imported).toBe(0);
     expect(result.duplicateSkips).toBe(1);
-
-    const verifyStore = ForemanStore.forProject(project);
-    const count = verifyStore
-      .getDb()
-      .prepare("SELECT COUNT(*) as cnt FROM tasks WHERE external_id = 'bd-existing'")
-      .get() as { cnt: number };
-    expect(count.cnt).toBe(1);
-    verifyStore.close();
+    expect(create).not.toHaveBeenCalled();
   });
 });

@@ -27,8 +27,6 @@ import {
 import { ProjectRegistry } from "../lib/project-registry.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
-import Database from "better-sqlite3";
 
 // ---------------------------------------------------------------------------
 // Context
@@ -89,7 +87,7 @@ const TASK_STATUS_VALUES = [
 const TASK_STATUS_SCHEMA = z.enum(TASK_STATUS_VALUES).optional();
 const TASK_STATUS_ARRAY_SCHEMA = z.array(z.enum(TASK_STATUS_VALUES)).optional();
 const TASK_PRIORITY_SCHEMA = z.number().int().min(0).max(4).optional();
-const TASK_TYPE_SCHEMA = z.enum(["task", "bug", "story", "epic", "chore"]).optional();
+const TASK_TYPE_SCHEMA = z.enum(["task", "bug", "feature", "story", "epic", "chore", "docs", "question"]).optional();
 
 // ---------------------------------------------------------------------------
 // Init
@@ -161,8 +159,13 @@ const tasksRouter = t.router({
         description: z.string().optional(),
         type: TASK_TYPE_SCHEMA,
         priority: TASK_PRIORITY_SCHEMA,
+        status: TASK_STATUS_SCHEMA,
         externalId: z.string().optional(),
         branch: z.string().optional(),
+        createdAt: z.string().optional(),
+        updatedAt: z.string().optional(),
+        approvedAt: z.string().optional(),
+        closedAt: z.string().optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -172,8 +175,13 @@ const tasksRouter = t.router({
         description: input.description,
         type: input.type ?? "task",
         priority: input.priority ?? 2,
+        status: input.status,
         external_id: input.externalId,
         branch: input.branch,
+        created_at: input.createdAt,
+        updated_at: input.updatedAt,
+        approved_at: input.approvedAt,
+        closed_at: input.closedAt,
       });
     }),
 
@@ -257,6 +265,18 @@ const tasksRouter = t.router({
       return ctx.adapter.getTask(input.projectId, input.taskId);
     }),
 
+  close: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.closeTask(input.projectId, input.taskId);
+      return ctx.adapter.getTask(input.projectId, input.taskId);
+    }),
+
   /**
    * Reset a task back to 'ready' state (clears run_id).
    * POST /trpc/tasks.reset
@@ -287,6 +307,46 @@ const tasksRouter = t.router({
     .mutation(async ({ input, ctx }) => {
       await ctx.adapter.retryTask(input.projectId, input.taskId);
       return ctx.adapter.getTask(input.projectId, input.taskId);
+    }),
+
+  addDependency: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        fromTaskId: TASK_ID_SCHEMA,
+        toTaskId: TASK_ID_SCHEMA,
+        type: z.enum(["blocks", "parent-child"]).default("blocks"),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.addTaskDependency(input.projectId, input.fromTaskId, input.toTaskId, input.type);
+      return { added: true };
+    }),
+
+  listDependencies: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+        direction: z.enum(["incoming", "outgoing"]).optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.listTaskDependencies(input.projectId, input.taskId, input.direction ?? "outgoing");
+    }),
+
+  removeDependency: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        fromTaskId: TASK_ID_SCHEMA,
+        toTaskId: TASK_ID_SCHEMA,
+        type: z.enum(["blocks", "parent-child"]).default("blocks"),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.removeTaskDependency(input.projectId, input.fromTaskId, input.toTaskId, input.type);
+      return { removed: true };
     }),
 });
 
@@ -515,6 +575,76 @@ const runsRouter = t.router({
     }),
 });
 
+const mailRouter = t.router({
+  send: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        runId: z.string().uuid(),
+        senderAgentType: z.string().min(1),
+        recipientAgentType: z.string().min(1),
+        subject: z.string().min(1),
+        body: z.string(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      return ctx.adapter.sendMessage(
+        input.projectId,
+        input.runId,
+        input.senderAgentType,
+        input.recipientAgentType,
+        input.subject,
+        input.body,
+      );
+    }),
+
+  list: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        runId: z.string().uuid(),
+        agentType: z.string().min(1).optional(),
+        unreadOnly: z.boolean().optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      if (input.agentType) {
+        return ctx.adapter.getMessages(input.projectId, input.runId, input.agentType, input.unreadOnly ?? false);
+      }
+      return ctx.adapter.getAllMessages(input.runId);
+    }),
+
+  listGlobal: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        limit: z.number().int().min(1).max(500).optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.getAllMessagesGlobal(input.projectId, input.limit ?? 200);
+    }),
+
+  markRead: t.procedure
+    .input(z.object({ projectId: PROJECT_ID_SCHEMA, messageId: z.string().uuid() }))
+    .mutation(async ({ input, ctx }) => {
+      return ctx.adapter.markMessageRead(input.projectId, input.messageId);
+    }),
+
+  markAllRead: t.procedure
+    .input(z.object({ projectId: PROJECT_ID_SCHEMA, runId: z.string().uuid(), agentType: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.markAllMessagesRead(input.projectId, input.runId, input.agentType);
+      return { updated: true };
+    }),
+
+  delete: t.procedure
+    .input(z.object({ projectId: PROJECT_ID_SCHEMA, messageId: z.string().uuid() }))
+    .mutation(async ({ input, ctx }) => {
+      return ctx.adapter.deleteMessage(input.projectId, input.messageId);
+    }),
+});
+
 // ---------------------------------------------------------------------------
 // Projects router
 // ---------------------------------------------------------------------------
@@ -592,11 +722,10 @@ const projectsRouter = t.router({
       })
     )
     .query(async ({ input, ctx }) => {
-      const [backlog, ready, inProgress, approved, merged, closed] = await Promise.all([
+      const [backlog, ready, inProgress, merged, closed] = await Promise.all([
         ctx.adapter.listTasks(input.projectId, { status: ["backlog"] }),
         ctx.adapter.listTasks(input.projectId, { status: ["ready"] }),
         ctx.adapter.listTasks(input.projectId, { status: ["in-progress"] }),
-        ctx.adapter.listTasks(input.projectId, { status: ["approved"] }),
         ctx.adapter.listTasks(input.projectId, { status: ["merged"] }),
         ctx.adapter.listTasks(input.projectId, { status: ["closed"] }),
       ]);
@@ -609,10 +738,10 @@ const projectsRouter = t.router({
           backlog: backlog.length,
           ready: ready.length,
           inProgress: inProgress.length,
-          approved: approved.length,
+          approved: 0,
           merged: merged.length,
           closed: closed.length,
-          total: backlog.length + ready.length + inProgress.length + approved.length + merged.length + closed.length,
+          total: backlog.length + ready.length + inProgress.length + merged.length + closed.length,
         },
         runs: {
           active: activeRuns.length,
@@ -831,6 +960,7 @@ export const appRouter = t.router({
   projects: projectsRouter,
   tasks: tasksRouter,
   runs: runsRouter,
+  mail: mailRouter,
 });
 
 export type AppRouter = typeof appRouter;
@@ -889,34 +1019,15 @@ function toRepoKey(owner: string, repo: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Check whether a project has any active (pending or running) tasks.
- * Queries the per-project SQLite task store at `<project-path>/.beads/beads.db`.
- * Returns false if the store file does not exist (no tasks have been created yet).
+ * Check whether a project has any active pipeline runs.
  */
 async function hasActiveRuns(
   projectId: string,
   ctx: Context
 ): Promise<boolean> {
-  const record = await ctx.registry.get(projectId);
-  if (!record) return false; // project doesn't exist — guard won't prevent removal
-
-  const dbPath = join(record.path, ".beads", "beads.db");
-  if (!existsSync(dbPath)) return false;
-
-  try {
-    const db = new Database(dbPath, { readonly: true });
-    try {
-      const rows = db
-        .prepare(
-          `SELECT COUNT(*) as cnt FROM tasks WHERE status IN ('pending', 'running') LIMIT 1`
-        )
-        .get() as { cnt: number } | undefined;
-      return (rows?.cnt ?? 0) > 0;
-    } finally {
-      db.close();
-    }
-  } catch {
-    // If the database is locked or schema is wrong, fail open — don't block removal
-    return false;
-  }
+  const [pendingRuns, activeRuns] = await Promise.all([
+    ctx.adapter.listPipelineRuns(projectId, { status: "pending" }),
+    ctx.adapter.listPipelineRuns(projectId, { status: "running" }),
+  ]);
+  return pendingRuns.length > 0 || activeRuns.length > 0;
 }

@@ -1,5 +1,5 @@
 /**
- * `foreman task` CLI commands — manage native tasks in the Foreman SQLite store.
+ * `foreman task` CLI commands — manage daemon-backed tasks in the Foreman task store.
  *
  * Sub-commands:
  *   foreman task create --title <text> [--description <text>] [--type <type>]
@@ -18,24 +18,14 @@
  */
 
 import { Command } from "commander";
+import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join, resolve } from "node:path";
 import chalk from "chalk";
-import { ForemanStore } from "../../lib/store.js";
-import {
-  NativeTaskStore,
-  parsePriority,
-  priorityLabel,
-  formatTaskIdDisplay,
-  TaskNotFoundError,
-  InvalidStatusTransitionError,
-  CircularDependencyError,
-  type TaskRow,
-  type DependencyRow,
-} from "../../lib/task-store.js";
+import type { TaskDependencyRow as DependencyRow, TaskRow } from "../../lib/db/postgres-adapter.js";
 import { resolveProjectPathFromOptions } from "./project-task-support.js";
-import { createTrpcClient } from "../../lib/trpc-client.js";
-import { listRegisteredProjects } from "./project-task-support.js";
+import { createTrpcClient, type TrpcClient } from "../../lib/trpc-client.js";
+import { listRegisteredProjects, type RegisteredProjectSummary } from "./project-task-support.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -46,47 +36,144 @@ const COL_TYPE = 10;
 const COL_PRI = 14;
 const COL_STATUS = 14;
 const COL_GAP = "  ";
+const COMPACT_TASK_ID_SUFFIX_HEX_LENGTH = 5;
 
-// ── tRPC task helpers ─────────────────────────────────────────────────────
+const TASK_STATUS_ORDER: Record<string, number> = {
+  backlog: 0,
+  blocked: 0,
+  ready: 1,
+  "in-progress": 2,
+  explorer: 3,
+  developer: 3,
+  qa: 3,
+  reviewer: 3,
+  finalize: 4,
+  merged: 5,
+  closed: 5,
+  conflict: -1,
+  failed: -1,
+  stuck: -1,
+};
 
-/** Try to resolve a projectId from the project flag, then attempt tRPC call.
- * Falls back to NativeTaskStore on daemon errors.
- */
-async function withTaskTrpc<T>(
-  opts: { project?: string },
-  fn: (client: ReturnType<typeof createTrpcClient>, projectId: string) => Promise<T>,
-  fallback: () => Promise<T>,
-): Promise<T> {
-  if (!opts.project) return fallback();
-  try {
-    const projects = await listRegisteredProjects();
-    const record = projects.find((project) => project.id === opts.project || project.name === opts.project);
-    if (!record) return fallback();
-    const client = createTrpcClient();
-    return fn(client, record.id);
-  } catch {
-    return fallback();
+const ALL_TASK_STATUSES = Object.keys(TASK_STATUS_ORDER);
+const VALID_TASK_TYPES = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
+
+interface TaskProjectContext {
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+  client: TrpcClient;
+}
+
+function normalizeTaskIdPrefix(raw: string | null | undefined): string {
+  const normalized = (raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized.length > 0 ? normalized : "task";
+}
+
+function allocateTaskId(projectKey: string, existingIds: Set<string>): string {
+  const prefix = normalizeTaskIdPrefix(projectKey);
+  for (let attempt = 0; attempt < 64; attempt += 1) {
+    const candidate = `${prefix}-${randomBytes(3).toString("hex").slice(0, COMPACT_TASK_ID_SUFFIX_HEX_LENGTH)}`;
+    if (!existingIds.has(candidate)) {
+      existingIds.add(candidate);
+      return candidate;
+    }
+  }
+  throw new Error(`Unable to allocate a unique task ID for prefix '${prefix}'.`);
+}
+
+function parsePriority(input: string): number {
+  const normalized = input.trim().toLowerCase();
+  if (/^[0-4]$/.test(normalized)) return Number(normalized);
+  switch (normalized) {
+    case "critical":
+    case "p0":
+      return 0;
+    case "high":
+    case "p1":
+      return 1;
+    case "medium":
+    case "p2":
+      return 2;
+    case "low":
+    case "p3":
+      return 3;
+    case "backlog":
+    case "p4":
+      return 4;
+    default:
+      throw new RangeError(`Invalid priority '${input}'.`);
   }
 }
 
-function handleTaskDaemonError(err: unknown): void {
-  const msg = err instanceof Error ? err.message : String(err);
-  if (
-    msg.includes("ECONNREFUSED") ||
-    msg.includes("ENOENT") ||
-    msg.includes("connect") ||
-    msg.includes("socket")
-  ) {
-    console.error(
-      chalk.yellow(
-        "Daemon unavailable. Falling back to local task store."
-      )
-    );
-  } else {
-    console.error(
-      chalk.red(`Daemon error: ${msg}`)
+function priorityLabel(priority: number): string {
+  switch (priority) {
+    case 0:
+      return "critical";
+    case 1:
+      return "high";
+    case 2:
+      return "medium";
+    case 3:
+      return "low";
+    case 4:
+      return "backlog";
+    default:
+      return String(priority);
+  }
+}
+
+function formatTaskIdDisplay(taskId: string): string {
+  return taskId.length <= 16 ? taskId : `${taskId.slice(0, 8)}…`;
+}
+
+async function resolveTaskProjectContext(
+  opts: { project?: string; projectPath?: string },
+): Promise<TaskProjectContext> {
+  const projectPath = resolve(await resolveProjectPathFromOptions(opts));
+  const projects = await listRegisteredProjects();
+  const record = projects.find((project) => resolve(project.path) === projectPath);
+  if (!record) {
+    throw new Error(
+      `Project at '${projectPath}' is not registered with the daemon. Run 'foreman project list' to see registered projects.`,
     );
   }
+
+  return {
+    projectId: record.id,
+    projectName: record.name,
+    projectPath,
+    client: createTrpcClient(),
+  };
+}
+
+async function listAllTasks(client: TrpcClient, projectId: string): Promise<TaskRow[]> {
+  return await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
+}
+
+function resolveTaskId(rows: TaskRow[], taskIdOrPrefix: string): string {
+  const exact = rows.find((row) => row.id === taskIdOrPrefix);
+  if (exact) {
+    return exact.id;
+  }
+  const matches = rows.filter((row) => row.id.startsWith(taskIdOrPrefix));
+  if (matches.length === 0) {
+    throw new Error(`Task '${taskIdOrPrefix}' not found.`);
+  }
+  if (matches.length > 1) {
+    throw new Error(`Ambiguous task ID prefix '${taskIdOrPrefix}'.`);
+  }
+  return matches[0].id;
+}
+
+function isBackwardStatusTransition(fromStatus: string, toStatus: string): boolean {
+  const fromOrder = TASK_STATUS_ORDER[fromStatus] ?? 0;
+  const toOrder = TASK_STATUS_ORDER[toStatus] ?? 0;
+  return toOrder >= 0 && fromOrder > toOrder;
 }
 
 function pad(str: string, width: number): string {
@@ -177,15 +264,6 @@ function printTaskTable(rows: TaskRow[]): void {
         renderColumn(t.status, COL_STATUS, statusChalk),
     );
   }
-}
-
-function getTaskStore(projectPath: string): { store: ForemanStore; taskStore: NativeTaskStore } {
-  const store = ForemanStore.forProject(projectPath);
-  const project = store.getProjectByPath(projectPath);
-  const taskStore = new NativeTaskStore(store.getDb(), {
-    projectKey: project?.name ?? basename(projectPath),
-  });
-  return { store, taskStore };
 }
 
 type ImportedBeadStatus = "open" | "in_progress" | "closed";
@@ -321,150 +399,110 @@ function summarizeImportPreview(records: PreparedImportRecord[]): void {
   console.log();
 }
 
-export function performBeadsImport(
+export async function performBeadsImport(
   projectPath: string,
   opts: { dryRun?: boolean } = {},
-): TaskImportResult {
+): Promise<TaskImportResult> {
   const jsonlPath = resolveBeadsImportPath(projectPath);
   const beads = parseBeadsJsonl(jsonlPath);
-  const { store, taskStore } = getTaskStore(projectPath);
+  const { client, projectId, projectName } = await resolveTaskProjectContext({ projectPath });
+  const now = new Date().toISOString();
+  const existingRows = await listAllTasks(client, projectId);
+  const existingIds = new Set(existingRows.map((row) => row.id));
 
-  try {
-    const db = store.getDb();
-    const now = new Date().toISOString();
-    const existingRows = db.prepare("SELECT id, title, external_id FROM tasks").all() as Array<{
-      id: string;
-      title: string;
-      external_id: string | null;
-    }>;
+  const existingByExternalId = new Map<string, string>();
+  for (const row of existingRows) {
+    if (row.external_id) {
+      existingByExternalId.set(row.external_id, row.id);
+    }
+  }
 
-    const existingByExternalId = new Map<string, string>();
-    const existingByTitle = new Map<string, string>();
-    for (const row of existingRows) {
-      if (row.external_id) {
-        existingByExternalId.set(row.external_id, row.id);
-      }
-      if (!existingByTitle.has(row.title)) {
-        existingByTitle.set(row.title, row.id);
-      }
+  const beadToNativeId = new Map<string, string>();
+  const prepared: PreparedImportRecord[] = [];
+  let duplicateSkips = 0;
+  let unsupportedStatusSkips = 0;
+
+  for (const bead of beads) {
+    const mappedStatus = mapImportedBeadStatus(bead.status);
+    if (!mappedStatus) {
+      unsupportedStatusSkips += 1;
+      continue;
     }
 
-    const beadToNativeId = new Map<string, string>();
-    const prepared: PreparedImportRecord[] = [];
-    let duplicateSkips = 0;
-    let unsupportedStatusSkips = 0;
+    const existingId = existingByExternalId.get(bead.id);
+    if (existingId) {
+      duplicateSkips += 1;
+      beadToNativeId.set(bead.id, existingId);
+      continue;
+    }
+
+    const priority = normalizeImportedBeadPriority(bead);
+    const createdAt = bead.created_at ?? now;
+    const updatedAt = bead.updated_at ?? createdAt;
+    const approvedAt = mappedStatus === "ready" ? updatedAt : null;
+    const closedAt = mappedStatus === "merged" ? bead.closed_at ?? updatedAt : null;
+    const record: PreparedImportRecord = {
+      nativeId: allocateTaskId(projectName, existingIds),
+      bead,
+      type: normalizeImportedBeadType(bead),
+      priority,
+      status: mappedStatus,
+      createdAt,
+      updatedAt,
+      approvedAt,
+      closedAt,
+    };
+
+    prepared.push(record);
+    beadToNativeId.set(bead.id, record.nativeId);
+  }
+
+  if (!opts.dryRun) {
+    for (const record of prepared) {
+      await client.tasks.create({
+        projectId,
+        id: record.nativeId,
+        title: record.bead.title,
+        description: record.bead.description ?? undefined,
+        type: record.type,
+        priority: record.priority,
+        status: record.status,
+        externalId: record.bead.id,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        approvedAt: record.approvedAt ?? undefined,
+        closedAt: record.closedAt ?? undefined,
+      });
+    }
 
     for (const bead of beads) {
-      const mappedStatus = mapImportedBeadStatus(bead.status);
-      if (!mappedStatus) {
-        unsupportedStatusSkips += 1;
-        continue;
+      const fromTaskId = beadToNativeId.get(bead.id);
+      if (!fromTaskId || !Array.isArray(bead.dependencies)) continue;
+
+      for (const dependency of bead.dependencies) {
+        const dependencyType = dependency.type === "parent-child" ? "parent-child" : "blocks";
+        const blockerId = dependency.depends_on_id
+          ? beadToNativeId.get(dependency.depends_on_id)
+          : null;
+
+        if (!blockerId) continue;
+        await client.tasks.addDependency({
+          projectId,
+          fromTaskId: blockerId,
+          toTaskId: fromTaskId,
+          type: dependencyType,
+        });
       }
-
-      const existingId = existingByExternalId.get(bead.id) ?? existingByTitle.get(bead.title);
-      if (existingId) {
-        duplicateSkips += 1;
-        beadToNativeId.set(bead.id, existingId);
-        continue;
-      }
-
-      const priority = normalizeImportedBeadPriority(bead);
-      const createdAt = bead.created_at ?? now;
-      const updatedAt = bead.updated_at ?? createdAt;
-      const approvedAt = mappedStatus === "ready" ? updatedAt : null;
-      const closedAt = mappedStatus === "merged" ? bead.closed_at ?? updatedAt : null;
-      const record: PreparedImportRecord = {
-        nativeId: taskStore.allocateTaskId(),
-        bead,
-        type: normalizeImportedBeadType(bead),
-        priority,
-        status: mappedStatus,
-        createdAt,
-        updatedAt,
-        approvedAt,
-        closedAt,
-      };
-
-      prepared.push(record);
-      beadToNativeId.set(bead.id, record.nativeId);
     }
-
-    if (!opts.dryRun) {
-      const insertTask = db.prepare(
-        `INSERT INTO tasks
-           (id, title, description, type, priority, status, external_id, created_at, updated_at, approved_at, closed_at)
-         VALUES (?, ?, ?, ?, ?, 'backlog', ?, ?, ?, NULL, NULL)`,
-      );
-      const updateImportedTask = db.prepare(
-        `UPDATE tasks
-            SET status = ?,
-                created_at = ?,
-                updated_at = ?,
-                approved_at = ?,
-                closed_at = ?
-          WHERE id = ?`,
-      );
-      const insertDependency = db.prepare(
-        `INSERT OR IGNORE INTO task_dependencies (from_task_id, to_task_id, type)
-         VALUES (?, ?, ?)`,
-      );
-
-      const transaction = db.transaction(() => {
-        for (const record of prepared) {
-          insertTask.run(
-            record.nativeId,
-            record.bead.title,
-            record.bead.description ?? null,
-            record.type,
-            record.priority,
-            record.bead.id,
-            record.createdAt,
-            record.updatedAt,
-          );
-
-          updateImportedTask.run(
-            record.status,
-            record.createdAt,
-            record.updatedAt,
-            record.approvedAt,
-            record.closedAt,
-            record.nativeId,
-          );
-        }
-
-        for (const bead of beads) {
-          const fromTaskId = beadToNativeId.get(bead.id);
-          if (!fromTaskId || !Array.isArray(bead.dependencies)) continue;
-
-          for (const dependency of bead.dependencies) {
-            const dependencyType = dependency.type === "parent-child" ? "parent-child" : "blocks";
-            const blockerId = dependency.depends_on_id
-              ? beadToNativeId.get(dependency.depends_on_id)
-              : null;
-
-            if (!blockerId) continue;
-            if (taskStore.hasCyclicDependency(fromTaskId, blockerId)) {
-              throw new CircularDependencyError(fromTaskId, blockerId);
-            }
-
-            insertDependency.run(fromTaskId, blockerId, dependencyType);
-          }
-        }
-      });
-
-      transaction();
-    }
-
-    return {
-      imported: prepared.length,
-      duplicateSkips,
-      unsupportedStatusSkips,
-      jsonlPath,
-      preview: prepared,
-    };
-  } finally {
-    store.close();
   }
+
+  return {
+    imported: prepared.length,
+    duplicateSkips,
+    unsupportedStatusSkips,
+    jsonlPath,
+    preview: prepared,
+  };
 }
 
 // ── foreman task create ───────────────────────────────────────────────────────
@@ -494,8 +532,6 @@ const createCommand = new Command("create")
       project?: string;
       projectPath?: string;
     }) => {
-      const projectPath = await resolveProjectPathFromOptions(opts);
-
       let priority: number;
       try {
         priority = parsePriority(opts.priority);
@@ -508,34 +544,38 @@ const createCommand = new Command("create")
         process.exit(1);
       }
 
-      const validTypes = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
-      if (!validTypes.includes(opts.type)) {
+      if (!VALID_TASK_TYPES.includes(opts.type)) {
         console.error(
           chalk.red(
-            `Error: Invalid type '${opts.type}'. Valid types: ${validTypes.join(", ")}`,
+            `Error: Invalid type '${opts.type}'. Valid types: ${VALID_TASK_TYPES.join(", ")}`,
           ),
         );
         process.exit(1);
       }
 
       try {
-        const { taskStore } = getTaskStore(projectPath);
-        const task = taskStore.create({
+        const { client, projectId, projectName } = await resolveTaskProjectContext(opts);
+        const existingIds = new Set((await listAllTasks(client, projectId)).map((task) => task.id));
+        const taskId = allocateTaskId(projectName, existingIds);
+        const task = await client.tasks.create({
+          projectId,
+          id: taskId,
           title: opts.title,
-          description: opts.description ?? null,
+          description: opts.description,
           type: opts.type,
           priority,
         });
+        const createdTask = task as TaskRow;
 
         console.log(
-          chalk.green(`✓ Task created`) + chalk.dim(` [${task.id}]`),
+          chalk.green(`✓ Task created`) + chalk.dim(` [${createdTask.id}]`),
         );
-        console.log(`  Title:    ${task.title}`);
-        console.log(`  Type:     ${task.type}`);
-        console.log(`  Priority: ${priorityLabel(task.priority)}`);
-        console.log(`  Status:   ${task.status}`);
+        console.log(`  Title:    ${createdTask.title}`);
+        console.log(`  Type:     ${createdTask.type}`);
+        console.log(`  Priority: ${priorityLabel(createdTask.priority)}`);
+        console.log(`  Status:   ${createdTask.status}`);
         console.log(
-          chalk.dim(`\n  Run 'foreman task approve ${task.id}' to make it ready for dispatch.`),
+          chalk.dim(`\n  Run 'foreman task approve ${createdTask.id}' to make it ready for dispatch.`),
         );
       } catch (err) {
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
@@ -547,51 +587,30 @@ const createCommand = new Command("create")
 // ── foreman task list ─────────────────────────────────────────────────────────
 
 const listCommand = new Command("list")
-  .description("List tasks in the native task store")
+  .description("List tasks from the daemon-backed task store")
   .option("--status <status>", "Filter by status (e.g. ready, backlog, in-progress)")
   .option("--type <type>", "Filter by type (e.g. epic, bug, feature, task)")
   .option("--all", "Include closed and merged tasks (excluded by default)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts: { status?: string; type?: string; all?: boolean; project?: string; projectPath?: string }) => {
-    const projectPath = await resolveProjectPathFromOptions(opts);
-
     try {
-      const { store, taskStore } = getTaskStore(projectPath);
-
-      if (!taskStore.hasNativeTasks() && !opts.status) {
-        console.log(
-          chalk.dim("No tasks in native store. Use 'foreman task create' to add tasks."),
-        );
-        return;
-      }
-
-      const db = store.getDb();
-      let sql = "SELECT * FROM tasks";
-      const params: string[] = [];
-      const conditions: string[] = [];
+      const { client, projectId } = await resolveTaskProjectContext(opts);
+      let rows = await listAllTasks(client, projectId);
 
       if (opts.status) {
-        conditions.push("status = ?");
-        params.push(opts.status);
+        rows = rows.filter((row) => row.status === opts.status);
       } else if (!opts.all) {
-        // By default, exclude closed/merged tasks
-        conditions.push("status NOT IN ('closed', 'merged')");
+        rows = rows.filter((row) => row.status !== "closed" && row.status !== "merged");
       }
 
       if (opts.type) {
-        conditions.push("type = ?");
-        params.push(opts.type);
+        rows = rows.filter((row) => row.type === opts.type);
       }
 
-      if (conditions.length > 0) {
-        sql += " WHERE " + conditions.join(" AND ");
-      }
-      sql += " ORDER BY priority ASC, created_at ASC";
-
-      const rows = (
-        params.length > 0 ? db.prepare(sql).all(...params) : db.prepare(sql).all()
-      ) as TaskRow[];
+      rows = [...rows].sort(
+        (a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at),
+      );
 
       if (rows.length === 0) {
         if (opts.status && opts.type) {
@@ -634,12 +653,11 @@ const showCommand = new Command("show")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
-    const projectPath = await resolveProjectPathFromOptions(opts);
-
     try {
-      const { taskStore } = getTaskStore(projectPath);
-      const resolvedId = taskStore.resolveTaskId(id);
-      const task = taskStore.get(resolvedId);
+      const { client, projectId } = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(client, projectId);
+      const resolvedId = resolveTaskId(rows, id);
+      const task = await client.tasks.get({ projectId, taskId: resolvedId }) as TaskRow | null;
       if (!task) {
         console.error(chalk.red(`Error: Task '${id}' not found.`));
         process.exit(1);
@@ -672,8 +690,16 @@ const showCommand = new Command("show")
       }
 
       // Show dependencies
-      const outgoing = taskStore.getDependencies(task.id, "outgoing");
-      const incoming = taskStore.getDependencies(task.id, "incoming");
+      const outgoing = await client.tasks.listDependencies({
+        projectId,
+        taskId: task.id,
+        direction: "outgoing",
+      }) as DependencyRow[];
+      const incoming = await client.tasks.listDependencies({
+        projectId,
+        taskId: task.id,
+        direction: "incoming",
+      }) as DependencyRow[];
 
       if (incoming.length > 0) {
         console.log(chalk.bold("\n  Blocked by:"));
@@ -703,15 +729,11 @@ const approveCommand = new Command("approve")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
-    const projectPath = await resolveProjectPathFromOptions(opts);
-
     try {
-      const { taskStore } = getTaskStore(projectPath);
-      const resolvedId = taskStore.resolveTaskId(id);
-      taskStore.approve(resolvedId);
-
-      // Check what status it transitioned to
-      const task = taskStore.get(resolvedId);
+      const { client, projectId } = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(client, projectId);
+      const resolvedId = resolveTaskId(rows, id);
+      const task = await client.tasks.approve({ projectId, taskId: resolvedId }) as TaskRow | null;
       if (task?.status === "ready") {
         console.log(
           chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' approved and ready for dispatch.`),
@@ -723,19 +745,6 @@ const approveCommand = new Command("approve")
         }
       }
     } catch (err) {
-      if (err instanceof TaskNotFoundError) {
-        console.error(chalk.red(`Error: Task '${id}' not found.`));
-        process.exit(1);
-      }
-      if (err instanceof InvalidStatusTransitionError) {
-        console.error(
-          chalk.red(
-            `Error: Task '${formatTaskIdDisplay(err.taskId)}' cannot be approved — it is currently '${err.fromStatus}'.`,
-          ),
-        );
-        console.error(chalk.dim("  Only 'backlog' tasks can be approved."));
-        process.exit(1);
-      }
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
       process.exit(1);
     }
@@ -765,8 +774,6 @@ const updateCommand = new Command("update")
       project?: string;
       projectPath?: string;
     }) => {
-      const projectPath = await resolveProjectPathFromOptions(opts);
-
       const updateOpts: {
         title?: string;
         description?: string | null;
@@ -803,9 +810,36 @@ const updateCommand = new Command("update")
       }
 
       try {
-        const { taskStore } = getTaskStore(projectPath);
-        const resolvedId = taskStore.resolveTaskId(id);
-        const task = taskStore.update(resolvedId, updateOpts);
+        const { client, projectId } = await resolveTaskProjectContext(opts);
+        const rows = await listAllTasks(client, projectId);
+        const resolvedId = resolveTaskId(rows, id);
+
+        if (updateOpts.status !== undefined && !updateOpts.force) {
+          const current = rows.find((row) => row.id === resolvedId);
+          if (current && isBackwardStatusTransition(current.status, updateOpts.status)) {
+            console.error(
+              chalk.red(
+                `Error: Task '${formatTaskIdDisplay(resolvedId)}' cannot transition from '${current.status}' to '${updateOpts.status}'.`,
+              ),
+            );
+            console.error(chalk.dim("  Use --force to override this check."));
+            process.exit(1);
+          }
+        }
+
+        const task = await client.tasks.update({
+          projectId,
+          taskId: resolvedId,
+          updates: {
+            title: updateOpts.title,
+            description: updateOpts.description ?? undefined,
+            priority: updateOpts.priority,
+            status: updateOpts.status,
+          },
+        }) as TaskRow | null;
+        if (!task) {
+          throw new Error(`Task '${resolvedId}' not found.`);
+        }
 
         console.log(chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' updated.`));
         console.log(`  Title:    ${task.title}`);
@@ -816,21 +850,6 @@ const updateCommand = new Command("update")
           console.log(`  Description: ${task.description}`);
         }
       } catch (err) {
-        if (err instanceof TaskNotFoundError) {
-          console.error(chalk.red(`Error: Task '${id}' not found.`));
-          process.exit(1);
-        }
-        if (err instanceof InvalidStatusTransitionError) {
-          console.error(
-            chalk.red(
-              `Error: Task '${formatTaskIdDisplay(err.taskId)}' cannot transition from '${err.fromStatus}' to '${err.toStatus}'.`,
-            ),
-          );
-          console.error(
-            chalk.dim("  Use --force to override this check."),
-          );
-          process.exit(1);
-        }
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
         process.exit(1);
       }
@@ -845,19 +864,14 @@ const closeCommand = new Command("close")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
-    const projectPath = await resolveProjectPathFromOptions(opts);
-
     try {
-      const { taskStore } = getTaskStore(projectPath);
-      const resolvedId = taskStore.resolveTaskId(id);
-      taskStore.close(resolvedId);
+      const { client, projectId } = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(client, projectId);
+      const resolvedId = resolveTaskId(rows, id);
+      await client.tasks.close({ projectId, taskId: resolvedId });
 
       console.log(chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' closed.`));
     } catch (err) {
-      if (err instanceof TaskNotFoundError) {
-        console.error(chalk.red(`Error: Task '${id}' not found.`));
-        process.exit(1);
-      }
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
       process.exit(1);
     }
@@ -866,7 +880,7 @@ const closeCommand = new Command("close")
 // ── foreman task import ───────────────────────────────────────────────────────
 
 const importCommand = new Command("import")
-  .description("Import legacy beads JSONL data into the native task store")
+  .description("Import legacy beads JSONL data into the daemon-backed task store")
   .requiredOption("--from-beads", "Import tasks from .beads/issues.jsonl or .beads/beads.jsonl")
   .option("--dry-run", "Preview the first 5 mappings without writing to the database")
   .option("--project <name>", "Registered project name (default: current directory)")
@@ -875,19 +889,19 @@ const importCommand = new Command("import")
     const projectPath = await resolveProjectPathFromOptions(opts);
 
     try {
-      const result = performBeadsImport(projectPath, { dryRun: opts.dryRun });
+      const result = await performBeadsImport(projectPath, { dryRun: opts.dryRun });
       if (opts.dryRun) {
         summarizeImportPreview(result.preview);
         console.log(
           chalk.green(
-            `Would import ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id/title${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
+            `Would import ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
           ),
         );
         return;
       }
       console.log(
         chalk.green(
-          `Imported ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id/title${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
+            `Imported ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
         ),
       );
       console.log(chalk.dim(`  Source: ${result.jsonlPath}`));
@@ -912,8 +926,6 @@ const depAddCommand = new Command("add")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
     async (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
-      const projectPath = await resolveProjectPathFromOptions(opts);
-
       if (opts.type !== "blocks" && opts.type !== "parent-child") {
         console.error(
           chalk.red(`Error: Invalid type '${opts.type}'. Use 'blocks' or 'parent-child'.`),
@@ -922,10 +934,16 @@ const depAddCommand = new Command("add")
       }
 
       try {
-        const { taskStore } = getTaskStore(projectPath);
-        const resolvedFromId = taskStore.resolveTaskId(fromId);
-        const resolvedToId = taskStore.resolveTaskId(toId);
-        taskStore.addDependency(resolvedFromId, resolvedToId, opts.type as "blocks" | "parent-child");
+        const { client, projectId } = await resolveTaskProjectContext(opts);
+        const rows = await listAllTasks(client, projectId);
+        const resolvedFromId = resolveTaskId(rows, fromId);
+        const resolvedToId = resolveTaskId(rows, toId);
+        await client.tasks.addDependency({
+          projectId,
+          fromTaskId: resolvedFromId,
+          toTaskId: resolvedToId,
+          type: opts.type as "blocks" | "parent-child",
+        });
         const verb = opts.type === "blocks" ? "blocks" : "is parent of";
         console.log(
           chalk.green(
@@ -933,11 +951,7 @@ const depAddCommand = new Command("add")
           ),
         );
       } catch (err) {
-        if (err instanceof TaskNotFoundError) {
-          console.error(chalk.red(`Error: Task '${err.taskId}' not found.`));
-          process.exit(1);
-        }
-        if (err instanceof CircularDependencyError) {
+        if (err instanceof Error && err.message.includes("circular dependency")) {
           console.error(
             chalk.red(`Error: Adding this dependency would create a circular dependency.`),
           );
@@ -955,14 +969,21 @@ const depListCommand = new Command("list")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
-    const projectPath = await resolveProjectPathFromOptions(opts);
-
     try {
-      const { taskStore } = getTaskStore(projectPath);
-      const resolvedId = taskStore.resolveTaskId(id);
+      const { client, projectId } = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(client, projectId);
+      const resolvedId = resolveTaskId(rows, id);
 
-      const blockedBy = taskStore.getDependencies(resolvedId, "incoming") as DependencyRow[];
-      const blocking = taskStore.getDependencies(resolvedId, "outgoing") as DependencyRow[];
+      const blockedBy = await client.tasks.listDependencies({
+        projectId,
+        taskId: resolvedId,
+        direction: "incoming",
+      }) as DependencyRow[];
+      const blocking = await client.tasks.listDependencies({
+        projectId,
+        taskId: resolvedId,
+        direction: "outgoing",
+      }) as DependencyRow[];
 
       if (blockedBy.length === 0 && blocking.length === 0) {
         console.log(chalk.dim(`Task '${formatTaskIdDisplay(resolvedId)}' has no dependencies.`));
@@ -1002,13 +1023,17 @@ const depRemoveCommand = new Command("remove")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
     async (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
-      const projectPath = await resolveProjectPathFromOptions(opts);
-
       try {
-        const { taskStore } = getTaskStore(projectPath);
-        const resolvedFromId = taskStore.resolveTaskId(fromId);
-        const resolvedToId = taskStore.resolveTaskId(toId);
-        taskStore.removeDependency(resolvedFromId, resolvedToId, opts.type as "blocks" | "parent-child");
+        const { client, projectId } = await resolveTaskProjectContext(opts);
+        const rows = await listAllTasks(client, projectId);
+        const resolvedFromId = resolveTaskId(rows, fromId);
+        const resolvedToId = resolveTaskId(rows, toId);
+        await client.tasks.removeDependency({
+          projectId,
+          fromTaskId: resolvedFromId,
+          toTaskId: resolvedToId,
+          type: opts.type as "blocks" | "parent-child",
+        });
         console.log(
           chalk.green(
             `✓ Dependency removed: '${formatTaskIdDisplay(resolvedFromId)}' → '${formatTaskIdDisplay(resolvedToId)}'.`,
@@ -1030,7 +1055,7 @@ const depCommand = new Command("dep")
 // ── Parent command ────────────────────────────────────────────────────────────
 
 export const taskCommand = new Command("task")
-  .description("Manage native tasks in the Foreman SQLite store")
+  .description("Manage daemon-backed tasks in Foreman")
   .addCommand(createCommand)
   .addCommand(listCommand)
   .addCommand(showCommand)

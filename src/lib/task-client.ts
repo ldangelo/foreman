@@ -59,6 +59,13 @@ export interface UpdateOptions {
   labels?: string[];
 }
 
+export interface CreateOptions {
+  type?: string;
+  priority?: string;
+  parent?: string;
+  description?: string;
+}
+
 // ── ITaskClient interface ────────────────────────────────────────────────
 
 /**
@@ -68,6 +75,11 @@ export interface UpdateOptions {
  * native issue types to the common Issue type.
  */
 export interface ITaskClient {
+  /**
+   * Create a new task when the active backend supports writes.
+   */
+  create?(title: string, opts?: CreateOptions): Promise<Issue>;
+
   /**
    * List issues with optional filters.
    */

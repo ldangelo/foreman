@@ -29,6 +29,8 @@ import {
   CircularDependencyError,
   type TaskRow,
 } from "../../lib/task-store.js";
+import * as projectTaskSupport from "../commands/project-task-support.js";
+import * as trpcClientModule from "../../lib/trpc-client.js";
 import { taskCommand } from "../commands/task.js";
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
@@ -199,6 +201,14 @@ describe("task list — NativeTaskStore.list()", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation((value?: unknown) => {
       logs.push(String(value ?? ""));
     });
+    const listProjectsSpy = vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "foreman", path: ctx.tmpDir },
+    ]);
+    const createClientSpy = vi.spyOn(trpcClientModule, "createTrpcClient").mockReturnValue({
+      tasks: {
+        list: vi.fn().mockResolvedValue([task]),
+      },
+    } as unknown as trpcClientModule.TrpcClient);
 
     try {
       await taskCommand.parseAsync(
@@ -206,6 +216,8 @@ describe("task list — NativeTaskStore.list()", () => {
         { from: "user" },
       );
     } finally {
+      listProjectsSpy.mockRestore();
+      createClientSpy.mockRestore();
       logSpy.mockRestore();
     }
 

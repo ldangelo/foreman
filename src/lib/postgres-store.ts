@@ -44,7 +44,12 @@ export type EventType =
   | "recover"
   | "conflict"
   | "test-fail"
-  | "pr-created";
+  | "pr-created"
+  | "sentinel-start"
+  | "sentinel-pass"
+  | "sentinel-fail"
+  | "phase-start"
+  | "heartbeat";
 
 /**
  * Factory to get or create the shared PostgresAdapter instance.
@@ -80,6 +85,10 @@ export class PostgresStore implements IStore {
 
   close(): void {
     // Postgres connections are pooled; no per-project close needed
+  }
+
+  isOpen(): boolean {
+    return true;
   }
 
   // ── Native Tasks ─────────────────────────────────────────────────────
@@ -165,11 +174,16 @@ export class PostgresStore implements IStore {
     return this.rowToRun(run);
   }
 
-  async updateRun(runId: string, updates: Partial<Pick<Run, "status" | "worktree_path" | "session_key">>): Promise<void> {
+  async updateRun(
+    runId: string,
+    updates: Partial<Pick<Run, "status" | "worktree_path" | "session_key" | "started_at" | "completed_at">>,
+  ): Promise<void> {
     const updateData: Record<string, string | null> = {};
     if (updates.status) updateData.status = updates.status;
     if (updates.worktree_path !== undefined) updateData.worktree_path = updates.worktree_path;
     if (updates.session_key !== undefined) updateData.session_key = updates.session_key;
+    if (updates.started_at !== undefined) updateData.started_at = updates.started_at;
+    if (updates.completed_at !== undefined) updateData.completed_at = updates.completed_at;
     await this.adapter.updateRun(this.projectId, runId, updateData);
   }
 
@@ -241,19 +255,50 @@ export class PostgresStore implements IStore {
     data: Record<string, unknown>,
     runId?: string,
   ): Promise<void> {
-    await this.adapter.logEvent(projectId, eventType, JSON.stringify(data), runId);
+    if (!runId) return;
+    await this.adapter.recordPipelineEvent({
+      projectId,
+      runId,
+      taskId: (data.seedId as string | undefined) ?? undefined,
+      eventType,
+      payload: data,
+    });
   }
 
-  async getRunEvents(_runId: string, _eventType?: EventType): Promise<Array<{ id: string; event_type: string; data: string; created_at: string }>> {
-    return [];
+  async getRunEvents(runId: string, eventType?: EventType): Promise<Array<{ id: string; event_type: string; data: string; created_at: string }>> {
+    const rows = await this.adapter.listPipelineEvents(runId);
+    return rows
+      .filter((row) => (eventType ? row.event_type === eventType : true))
+      .map((row) => ({
+        id: row.id,
+        event_type: row.event_type,
+        data: JSON.stringify(row.payload ?? {}),
+        created_at: row.created_at,
+      }));
   }
 
   async getEvents(
-    _projectId?: string,
-    _limit?: number,
-    _eventType?: string,
+    projectId?: string,
+    limit = 200,
+    eventType?: string,
   ): Promise<Array<{ id: string; project_id: string; run_id: string | null; event_type: string; data: string; created_at: string }>> {
-    return [];
+    const runs = await this.adapter.listPipelineRuns(projectId ?? this.projectId, { limit: 500 });
+    const all = (
+      await Promise.all(runs.map((run) => this.adapter.listPipelineEvents(run.id)))
+    )
+      .flat()
+      .filter((row) => (eventType ? row.event_type === eventType : true))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit)
+      .map((row) => ({
+        id: row.id,
+        project_id: row.project_id,
+        run_id: row.run_id,
+        event_type: row.event_type,
+        data: JSON.stringify(row.payload ?? {}),
+        created_at: row.created_at,
+      }));
+    return all;
   }
 
   // ── Costs ───────────────────────────────────────────────────────────
@@ -284,11 +329,8 @@ export class PostgresStore implements IStore {
 
   async updateRunProgress(runId: string, progress: RunProgress): Promise<void> {
     await this.adapter.updateRunProgress(this.projectId, runId, {
+      ...progress,
       phase: progress.currentPhase,
-      currentTargetRef: progress.currentTargetRef,
-      lastActivity: progress.lastActivity,
-      tokensIn: progress.tokensIn,
-      tokensOut: progress.tokensOut,
     });
   }
 
@@ -296,7 +338,29 @@ export class PostgresStore implements IStore {
     const run = await this.getRun(runId);
     if (!run?.progress) return null;
     try {
-      return JSON.parse(run.progress) as RunProgress;
+      const raw = JSON.parse(run.progress) as Record<string, unknown>;
+      return {
+        toolCalls: typeof raw.toolCalls === "number" ? raw.toolCalls : 0,
+        toolBreakdown: typeof raw.toolBreakdown === "object" && raw.toolBreakdown ? raw.toolBreakdown as Record<string, number> : {},
+        filesChanged: Array.isArray(raw.filesChanged) ? raw.filesChanged as string[] : [],
+        turns: typeof raw.turns === "number" ? raw.turns : 0,
+        costUsd: typeof raw.costUsd === "number" ? raw.costUsd : 0,
+        tokensIn: typeof raw.tokensIn === "number" ? raw.tokensIn : 0,
+        tokensOut: typeof raw.tokensOut === "number" ? raw.tokensOut : 0,
+        lastToolCall: typeof raw.lastToolCall === "string" ? raw.lastToolCall : null,
+        lastActivity: typeof raw.lastActivity === "string" ? raw.lastActivity : new Date().toISOString(),
+        currentPhase: (typeof raw.currentPhase === "string" ? raw.currentPhase : typeof raw.phase === "string" ? raw.phase : undefined),
+        costByPhase: typeof raw.costByPhase === "object" && raw.costByPhase ? raw.costByPhase as Record<string, number> : undefined,
+        agentByPhase: typeof raw.agentByPhase === "object" && raw.agentByPhase ? raw.agentByPhase as Record<string, string> : undefined,
+        qaValidatedTargetBranch: typeof raw.qaValidatedTargetBranch === "string" ? raw.qaValidatedTargetBranch : undefined,
+        qaValidatedTargetRef: typeof raw.qaValidatedTargetRef === "string" ? raw.qaValidatedTargetRef : undefined,
+        qaValidatedHeadRef: typeof raw.qaValidatedHeadRef === "string" ? raw.qaValidatedHeadRef : undefined,
+        currentTargetRef: typeof raw.currentTargetRef === "string" ? raw.currentTargetRef : undefined,
+        epicTaskCount: typeof raw.epicTaskCount === "number" ? raw.epicTaskCount : undefined,
+        epicTasksCompleted: typeof raw.epicTasksCompleted === "number" ? raw.epicTasksCompleted : undefined,
+        epicCurrentTaskId: typeof raw.epicCurrentTaskId === "string" ? raw.epicCurrentTaskId : undefined,
+        epicCostByTask: typeof raw.epicCostByTask === "object" && raw.epicCostByTask ? raw.epicCostByTask as Record<string, number> : undefined,
+      };
     } catch {
       return null;
     }
@@ -304,9 +368,22 @@ export class PostgresStore implements IStore {
 
   // ── Rate Limiting ───────────────────────────────────────────────────
 
-  async logRateLimitEvent(projectId: string, model: string, tokensUsed: number, windowStart: string): Promise<void> {
-    // Format: "model:tokens:window" - adapt to PostgresAdapter signature
-    await this.adapter.logRateLimitEvent(projectId, null, model, `${model}:${tokensUsed}:${windowStart}`);
+  async logRateLimitEvent(
+    projectId: string,
+    model: string,
+    phase: string,
+    error: string,
+    retryAfterSeconds?: number,
+    runId?: string,
+  ): Promise<void> {
+    await this.adapter.logRateLimitEvent(
+      projectId,
+      runId ?? null,
+      model,
+      phase,
+      error,
+      retryAfterSeconds ?? null,
+    );
   }
 
   async getRateLimitCountsByModel(projectId: string, hoursBack = 24): Promise<Record<string, number>> {
@@ -331,20 +408,31 @@ export class PostgresStore implements IStore {
     subject: string,
     body: string,
   ): Promise<void> {
-    // Format body as "subject\nbody" to include both
-    await this.adapter.sendMessage(this.projectId, runId, recipientAgentType, `${subject}\n${body}`);
+    await this.adapter.sendMessage(this.projectId, runId, senderAgentType, recipientAgentType, subject, body);
   }
 
-  async getMessages(_runId: string, _agentType: string, _unreadOnly = false): Promise<Message[]> {
-    return [];
+  async getMessages(runId: string, agentType: string, unreadOnly = false): Promise<Message[]> {
+    return await this.adapter.getMessages(this.projectId, runId, agentType, unreadOnly) as unknown as Message[];
   }
 
-  async markMessageRead(_messageId: string): Promise<void> {
-    // Not implemented
+  async markMessageRead(messageId: string): Promise<void> {
+    await this.adapter.markMessageRead(this.projectId, messageId);
   }
 
-  async markAllMessagesRead(_runId: string, _agentType: string): Promise<void> {
-    // Not implemented
+  async markAllMessagesRead(runId: string, agentType: string): Promise<void> {
+    await this.adapter.markAllMessagesRead(this.projectId, runId, agentType);
+  }
+
+  async deleteMessage(messageId: string): Promise<void> {
+    await this.adapter.deleteMessage(this.projectId, messageId);
+  }
+
+  async getAllMessages(runId: string): Promise<Message[]> {
+    return await this.adapter.getAllMessages(runId) as unknown as Message[];
+  }
+
+  async getAllMessagesGlobal(limit = 200): Promise<Message[]> {
+    return await this.adapter.getAllMessagesGlobal(this.projectId, limit) as unknown as Message[];
   }
 
   // ── Bead Write Queue ────────────────────────────────────────────────
@@ -408,24 +496,23 @@ export class PostgresStore implements IStore {
   // ── Sentinel ─────────────────────────────────────────────────────────
 
   async getSentinelConfig(projectId: string): Promise<SentinelConfigRow | null> {
-    // Not implemented in Postgres yet
-    return null;
+    return this.adapter.getSentinelConfig(projectId);
   }
 
-  async upsertSentinelConfig(_projectId: string, _config: Partial<Omit<SentinelConfigRow, "id" | "project_id" | "created_at" | "updated_at">>): Promise<void> {
-    // Not implemented
+  async upsertSentinelConfig(projectId: string, config: Partial<Omit<SentinelConfigRow, "id" | "project_id" | "created_at" | "updated_at">>): Promise<void> {
+    await this.adapter.upsertSentinelConfig(projectId, config);
   }
 
-  async getSentinelRuns(_projectId: string, _limit?: number): Promise<SentinelRunRow[]> {
-    return [];
+  async getSentinelRuns(projectId: string, limit?: number): Promise<SentinelRunRow[]> {
+    return this.adapter.getSentinelRuns(projectId, limit);
   }
 
-  async recordSentinelRun(_projectId: string, _branch: string, _passed: boolean, _errorMessage?: string): Promise<void> {
-    // Not implemented
+  async recordSentinelRun(projectId: string, run: Omit<SentinelRunRow, "failure_count"> & { failure_count?: number }): Promise<void> {
+    await this.adapter.recordSentinelRun(projectId, run);
   }
 
-  async updateSentinelRun(_id: string, _updates: Partial<SentinelRunRow>): Promise<void> {
-    // Not implemented
+  async updateSentinelRun(id: string, updates: Partial<SentinelRunRow>): Promise<void> {
+    await this.adapter.updateSentinelRun(this.projectId, id, updates);
   }
 
   // ── Merge Agent Config ──────────────────────────────────────────────

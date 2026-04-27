@@ -1,4 +1,8 @@
 import { NativeTaskClient } from "./native-task-client.js";
+import { PostgresAdapter } from "./db/postgres-adapter.js";
+import { initPool, isPoolInitialised } from "./db/pool-manager.js";
+import { resolveProjectDatabaseUrl } from "./project-mail-client.js";
+import { ProjectRegistry } from "./project-registry.js";
 import { ForemanStore } from "./store.js";
 import type { ITaskClient } from "./task-client.js";
 
@@ -14,6 +18,7 @@ export interface TaskClientFactoryOptions {
   ensureBrInstalled?: boolean;
   forceBeadsFallback?: boolean;
   autoSelectNativeWhenAvailable?: boolean;
+  registeredProjectId?: string;
 }
 
 export interface TaskCounts {
@@ -63,6 +68,46 @@ async function createBeadsFallbackClient(projectPath: string): Promise<BeadsTask
   return new BeadsRustClient(projectPath) as BeadsTaskClient;
 }
 
+async function resolveRegisteredProject(
+  projectPath: string,
+  registeredProjectId?: string,
+): Promise<{ id: string; path: string } | null> {
+  const databaseUrl = resolveProjectDatabaseUrl(projectPath);
+  if (databaseUrl && !isPoolInitialised()) {
+    try {
+      initPool({ databaseUrl });
+    } catch {
+      // Best effort only — callers fall back to local behavior when the pool is unavailable.
+    }
+  }
+
+  const registries = databaseUrl
+    ? [new ProjectRegistry({ pg: new PostgresAdapter() }), new ProjectRegistry()]
+    : [new ProjectRegistry()];
+
+  for (const registry of registries) {
+    try {
+      const projects = await registry.list();
+      if (registeredProjectId) {
+        const byId = projects.find((project) => project.id === registeredProjectId);
+        if (byId) {
+          return { id: byId.id, path: byId.path };
+        }
+        continue;
+      }
+
+      const byPath = projects.find((project) => project.path === projectPath);
+      if (byPath) {
+        return { id: byPath.id, path: byPath.path };
+      }
+    } catch {
+      // Keep falling back — local/unregistered mode should remain available.
+    }
+  }
+
+  return null;
+}
+
 export function projectHasNativeTasks(projectPath: string): boolean {
   const store = ForemanStore.forProject(projectPath);
   try {
@@ -87,18 +132,53 @@ export function selectTaskReadBackend(
   return projectHasNativeTasks(projectPath) ? "native" : "beads";
 }
 
+async function projectHasNativeTasksAsync(
+  projectPath: string,
+  registeredProjectId?: string,
+): Promise<{ hasNativeTasks: boolean; registeredProjectId?: string }> {
+  const registered = await resolveRegisteredProject(projectPath, registeredProjectId);
+  if (registered) {
+    return {
+      hasNativeTasks: await new PostgresAdapter().hasNativeTasks(registered.id),
+      registeredProjectId: registered.id,
+    };
+  }
+
+  return {
+    hasNativeTasks: projectHasNativeTasks(projectPath),
+  };
+}
+
+async function selectTaskReadBackendAsync(
+  projectPath: string,
+  opts?: TaskClientFactoryOptions,
+): Promise<{ backendType: TaskClientBackend; registeredProjectId?: string }> {
+  const taskStoreMode = resolveTaskStoreMode();
+  if (opts?.forceBeadsFallback === true || opts?.autoSelectNativeWhenAvailable === true) {
+    return { backendType: "beads" };
+  }
+  if (taskStoreMode === "native") {
+    const registered = await resolveRegisteredProject(projectPath, opts?.registeredProjectId);
+    return { backendType: "native", registeredProjectId: registered?.id };
+  }
+  if (taskStoreMode === "beads") return { backendType: "beads" };
+
+  const nativeAvailability = await projectHasNativeTasksAsync(projectPath, opts?.registeredProjectId);
+  return {
+    backendType: nativeAvailability.hasNativeTasks ? "native" : "beads",
+    registeredProjectId: nativeAvailability.registeredProjectId,
+  };
+}
+
 export async function createTaskClient(
   projectPath: string,
   opts?: TaskClientFactoryOptions,
 ): Promise<TaskClientFactoryResult> {
-  const backendType = selectTaskReadBackend(projectPath, {
-    forceBeadsFallback: opts?.forceBeadsFallback,
-    autoSelectNativeWhenAvailable: opts?.autoSelectNativeWhenAvailable,
-  });
+  const { backendType, registeredProjectId } = await selectTaskReadBackendAsync(projectPath, opts);
   if (backendType === "native") {
     return {
       backendType,
-      taskClient: new NativeTaskClient(projectPath),
+      taskClient: new NativeTaskClient(projectPath, { registeredProjectId }),
     };
   }
 
@@ -150,7 +230,27 @@ async function fetchBeadsTaskCounts(projectPath: string): Promise<TaskCounts> {
   };
 }
 
-function fetchNativeTaskCounts(projectPath: string): TaskCounts {
+async function fetchNativeTaskCounts(projectPath: string, registeredProjectId?: string): Promise<TaskCounts> {
+  const registered = await resolveRegisteredProject(projectPath, registeredProjectId);
+  if (registered) {
+    const adapter = new PostgresAdapter();
+    const [total, ready, inProgress, completed, blocked] = await Promise.all([
+      adapter.listTasks(registered.id, { status: [...NATIVE_TOTAL_STATUSES], limit: 1000 }),
+      adapter.listTasks(registered.id, { status: ["ready"], limit: 1000 }),
+      adapter.listTasks(registered.id, { status: ["in-progress"], limit: 1000 }),
+      adapter.listTasks(registered.id, { status: ["merged", "closed"], limit: 1000 }),
+      adapter.listTasks(registered.id, { status: [...NATIVE_BLOCKED_STATUSES], limit: 1000 }),
+    ]);
+
+    return {
+      total: total.length,
+      ready: ready.length,
+      inProgress: inProgress.length,
+      completed: completed.length,
+      blocked: blocked.length,
+    };
+  }
+
   const store = ForemanStore.forProject(projectPath);
   try {
     return {
@@ -166,7 +266,8 @@ function fetchNativeTaskCounts(projectPath: string): TaskCounts {
 }
 
 export async function fetchTaskCounts(projectPath: string): Promise<TaskCounts> {
-  return selectTaskReadBackend(projectPath) === "native"
-    ? fetchNativeTaskCounts(projectPath)
+  const { backendType, registeredProjectId } = await selectTaskReadBackendAsync(projectPath)
+  return backendType === "native"
+    ? fetchNativeTaskCounts(projectPath, registeredProjectId)
     : fetchBeadsTaskCounts(projectPath);
 }

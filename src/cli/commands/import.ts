@@ -4,7 +4,7 @@ import { performBeadsImport } from "./task.js";
 import { resolveProjectPathFromOptions } from "./project-task-support.js";
 
 export const importCommand = new Command("import")
-  .description("Import legacy beads data into the native task store (idempotent by external_id)")
+  .description("Import legacy beads data into the daemon-backed task store (idempotent by external_id)")
   .option("--from-beads", "Import tasks from .beads/issues.jsonl or .beads/beads.jsonl", true)
   .option("--dry-run", "Preview the first 5 mappings without writing to the database")
   .option("--project <name>", "Registered project name (default: current directory)")
@@ -13,7 +13,7 @@ export const importCommand = new Command("import")
     const projectPath = await resolveProjectPathFromOptions(opts);
 
     try {
-      const result = performBeadsImport(projectPath, { dryRun: opts.dryRun });
+      const result = await performBeadsImport(projectPath, { dryRun: opts.dryRun });
       if (opts.dryRun) {
         console.log(chalk.bold("\n  Dry-run preview (first 5 tasks)\n"));
         for (const record of result.preview.slice(0, 5)) {
@@ -25,7 +25,7 @@ export const importCommand = new Command("import")
         console.log();
         console.log(
           chalk.green(
-            `Would import ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id/title${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
+            `Would import ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
           ),
         );
         return;
@@ -33,7 +33,7 @@ export const importCommand = new Command("import")
 
       console.log(
         chalk.green(
-          `Imported ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id/title${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
+            `Imported ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
         ),
       );
       console.log(chalk.dim(`  Source: ${result.jsonlPath}`));

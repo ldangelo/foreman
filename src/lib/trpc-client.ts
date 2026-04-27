@@ -15,7 +15,7 @@ import { createTRPCUntypedClient } from "@trpc/client";
 import * as http from "node:http";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { appRouter } from "../daemon/router.js";
+import type { appRouter } from "../daemon/router.js";
 
 /** AppRouter type — use `typeof appRouter` to extract. */
 export type AppRouter = typeof appRouter;
@@ -193,6 +193,8 @@ export interface TrpcClient {
   readonly tasks: TRPCTasksClient;
   /** Typed proxy to the daemon's runs/events/messages procedures. */
   readonly runs: TRPCRunsClient;
+  /** Typed proxy to the daemon's agent mail procedures. */
+  readonly mail: TRPCMailClient;
 }
 
 /** Tasks sub-router client. */
@@ -211,8 +213,13 @@ export interface TRPCTasksClient {
     description?: string;
     type?: string;
     priority?: number;
+    status?: string;
     externalId?: string;
     branch?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    approvedAt?: string;
+    closedAt?: string;
   }): Promise<unknown>;
   update(input: {
     projectId: string;
@@ -230,8 +237,26 @@ export interface TRPCTasksClient {
   delete(input: { projectId: string; taskId: string }): Promise<unknown>;
   claim(input: { projectId: string; taskId: string; runId: string }): Promise<unknown>;
   approve(input: { projectId: string; taskId: string }): Promise<unknown>;
+  close(input: { projectId: string; taskId: string }): Promise<unknown>;
   reset(input: { projectId: string; taskId: string }): Promise<unknown>;
   retry(input: { projectId: string; taskId: string }): Promise<unknown>;
+  addDependency(input: {
+    projectId: string;
+    fromTaskId: string;
+    toTaskId: string;
+    type?: "blocks" | "parent-child";
+  }): Promise<unknown>;
+  listDependencies(input: {
+    projectId: string;
+    taskId: string;
+    direction?: "incoming" | "outgoing";
+  }): Promise<unknown>;
+  removeDependency(input: {
+    projectId: string;
+    fromTaskId: string;
+    toTaskId: string;
+    type?: "blocks" | "parent-child";
+  }): Promise<unknown>;
 }
 
 /** Projects sub-router client. */
@@ -313,6 +338,27 @@ export interface TRPCRunsClient {
   listMessages(input: { runId: string; stepKey?: string }): Promise<unknown>;
 }
 
+export interface TRPCMailClient {
+  send(input: {
+    projectId: string;
+    runId: string;
+    senderAgentType: string;
+    recipientAgentType: string;
+    subject: string;
+    body: string;
+  }): Promise<unknown>;
+  list(input: {
+    projectId: string;
+    runId: string;
+    agentType?: string;
+    unreadOnly?: boolean;
+  }): Promise<unknown>;
+  listGlobal(input: { projectId: string; limit?: number }): Promise<unknown>;
+  markRead(input: { projectId: string; messageId: string }): Promise<unknown>;
+  markAllRead(input: { projectId: string; runId: string; agentType: string }): Promise<unknown>;
+  delete(input: { projectId: string; messageId: string }): Promise<unknown>;
+}
+
 /**
  * Create a tRPC client that connects to ForemanDaemon.
  *
@@ -359,8 +405,12 @@ export function createTrpcClient(
       delete: (input) => untypedClient.mutation("tasks.delete", input),
       claim: (input) => untypedClient.mutation("tasks.claim", input),
       approve: (input) => untypedClient.mutation("tasks.approve", input),
+      close: (input) => untypedClient.mutation("tasks.close", input),
       reset: (input) => untypedClient.mutation("tasks.reset", input),
       retry: (input) => untypedClient.mutation("tasks.retry", input),
+      addDependency: (input) => untypedClient.mutation("tasks.addDependency", input),
+      listDependencies: (input) => untypedClient.query("tasks.listDependencies", input),
+      removeDependency: (input) => untypedClient.mutation("tasks.removeDependency", input),
     },
     runs: {
       create: (input) => untypedClient.mutation("runs.create", input),
@@ -373,6 +423,14 @@ export function createTrpcClient(
       listEvents: (input) => untypedClient.query("runs.listEvents", input),
       sendMessage: (input) => untypedClient.mutation("runs.sendMessage", input),
       listMessages: (input) => untypedClient.query("runs.listMessages", input),
+    },
+    mail: {
+      send: (input) => untypedClient.mutation("mail.send", input),
+      list: (input) => untypedClient.query("mail.list", input),
+      listGlobal: (input) => untypedClient.query("mail.listGlobal", input),
+      markRead: (input) => untypedClient.mutation("mail.markRead", input),
+      markAllRead: (input) => untypedClient.mutation("mail.markAllRead", input),
+      delete: (input) => untypedClient.mutation("mail.delete", input),
     },
   };
 }

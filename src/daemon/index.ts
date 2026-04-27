@@ -23,6 +23,7 @@ import { appRouter } from "./router.js";
 import { createWebhookHandler } from "./webhook-handler.js";
 import { ProjectRegistry } from "../lib/project-registry.js";
 import { ForemanStore } from "../lib/store.js";
+import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
 import { Dispatcher } from "../orchestrator/dispatcher.js";
 import { BvClient } from "../lib/bv.js";
@@ -297,6 +298,7 @@ export class ForemanDaemon {
       try {
         const { taskClient, backendType } = await createTaskClient(project.path);
         const store = ForemanStore.forProject(project.path);
+        const pg = new PostgresAdapter();
 
         // Create BvClient if available (best effort)
         let bvClient: BvClient | null = null;
@@ -306,7 +308,94 @@ export class ForemanDaemon {
           // BvClient not available — continue without it
         }
 
-        const dispatcher = new Dispatcher(taskClient, store, project.path, bvClient);
+        const dispatcher = new Dispatcher(taskClient, store, project.path, bvClient, {
+          externalProjectId: project.id,
+          getRecentFailureCount: async (_projectId: string, since: string) => {
+            const failures = await pg.listTasks(project.id, {
+              status: ["failed", "stuck", "conflict"],
+              limit: 1000,
+            });
+            return failures.filter((task) => task.updated_at >= since).length;
+          },
+          getActiveSeedIds: async () => {
+            const activeRuns = await pg.listPipelineRuns(project.id, { status: "running", limit: 1000 });
+            const pendingRuns = await pg.listPipelineRuns(project.id, { status: "pending", limit: 1000 });
+            return [...activeRuns, ...pendingRuns].map((run) => run.bead_id);
+          },
+          getActiveAgentCount: async () => {
+            const activeRuns = await pg.listPipelineRuns(project.id, { status: "running", limit: 1000 });
+            const pendingRuns = await pg.listPipelineRuns(project.id, { status: "pending", limit: 1000 });
+            return activeRuns.length + pendingRuns.length;
+          },
+          hasActiveOrPendingRun: async (seedId: string) => {
+            const runs = await pg.listPipelineRuns(project.id, { beadId: seedId, limit: 20 });
+            return runs.some((run) => ["pending", "running", "success"].includes(run.status));
+          },
+          nativeTaskOps: {
+            hasNativeTasks: async () => pg.hasNativeTasks(project.id),
+            getReadyTasks: async () => (await pg.listTasks(project.id, {
+              status: ["ready"],
+              limit: 1000,
+            })) as never,
+            getTaskByExternalId: async (externalId: string) => (await pg.getTaskByExternalId(project.id, externalId)) as never,
+            getTaskById: async (taskId: string) => (await pg.getTask(project.id, taskId)) as never,
+            claimTask: async (taskId: string, runId: string) => pg.claimTask(project.id, taskId, runId),
+          },
+          runOps: {
+            createRun: async ({ runId, seedId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
+              const existing = await pg.listPipelineRuns(project.id, { beadId: seedId });
+              await pg.createPipelineRun({
+                id: runId,
+                projectId: project.id,
+                beadId: seedId,
+                runNumber: existing.length + 1,
+                branch: branchName,
+                trigger: "bead",
+                agentType,
+                worktreePath: worktreePath ?? undefined,
+                baseBranch: baseBranch ?? undefined,
+                mergeStrategy: mergeStrategy ?? undefined,
+              });
+            },
+            updateRun: async (runId, updates) => {
+              const patch: {
+                status?: string;
+                sessionKey?: string;
+                worktreePath?: string;
+                startedAt?: string;
+                finishedAt?: string;
+              } = {};
+              if (updates.status) patch.status = updates.status;
+              if (updates.session_key !== undefined) patch.sessionKey = updates.session_key ?? undefined;
+              if (updates.worktree_path !== undefined) patch.worktreePath = updates.worktree_path ?? undefined;
+              if (updates.started_at) patch.startedAt = updates.started_at;
+              if (updates.completed_at) patch.finishedAt = updates.completed_at;
+              if (Object.keys(patch).length > 0) {
+                await pg.updatePipelineRun(runId, patch);
+              }
+            },
+            sendMessage: async (runId, senderAgentType, recipientAgentType, subject, body) => {
+              await pg.sendMessage(project.id, runId, senderAgentType, recipientAgentType, subject, body);
+            },
+            logEvent: async (runId, _projectId, eventType, payload) => {
+              const mappedEventType = eventType === "complete"
+                ? "run:success"
+                : eventType === "fail"
+                  ? "run:failure"
+                  : eventType === "restart" || eventType === "dispatch"
+                    ? "run:queued"
+                    : null;
+              if (!mappedEventType) return;
+              await pg.recordPipelineEvent({
+                projectId: project.id,
+                runId,
+                taskId: payload.seedId as string | undefined,
+                eventType: mappedEventType,
+                payload,
+              });
+            },
+          },
+        });
         const result = await dispatcher.dispatch({ maxAgents });
 
         if (result.dispatched.length > 0) {

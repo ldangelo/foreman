@@ -1,8 +1,11 @@
 import chalk from "chalk";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { resolveProjectPath } from "../../lib/project-path.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { initPool, isPoolInitialised } from "../../lib/db/pool-manager.js";
 
 export interface RegisteredProjectSummary {
   id: string;
@@ -36,6 +39,15 @@ export async function listRegisteredProjects(): Promise<RegisteredProjectSummary
       githubUrl: record.githubUrl,
     }));
   }
+}
+
+export function ensureCliPostgresPool(projectPath: string): void {
+  if (isPoolInitialised()) return;
+  const dotEnvPath = join(projectPath, ".env");
+  const databaseUrl = existsSync(dotEnvPath)
+    ? readFileSync(dotEnvPath, "utf8").match(/^\s*DATABASE_URL=(.+)\s*$/m)?.[1]?.trim().replace(/^['"]|['"]$/g, "")
+    : undefined;
+  initPool(databaseUrl ? { databaseUrl } : undefined);
 }
 
 export async function resolveProjectPathFromOptions(

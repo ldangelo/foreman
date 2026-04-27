@@ -20,6 +20,7 @@ import {
   acquireClient,
   releaseClient,
 } from "./pool-manager.js";
+import type { RunProgress, SentinelConfigRow, SentinelRunRow } from "../store.js";
 
 // ---------------------------------------------------------------------------
 // Type definitions
@@ -58,6 +59,7 @@ export interface RunRow {
   status: string;
   started_at: string | null;
   completed_at: string | null;
+  base_branch: string | null;
   created_at: string;
   progress: string | null;
 }
@@ -77,6 +79,12 @@ export interface TaskRow {
   updated_at: string;
   approved_at: string | null;
   closed_at: string | null;
+}
+
+export interface TaskDependencyRow {
+  from_task_id: string;
+  to_task_id: string;
+  type: "blocks" | "parent-child";
 }
 
 export interface EventRow {
@@ -109,6 +117,12 @@ export interface PipelineRunRow {
   branch: string;
   commit_sha: string | null;
   trigger: string;
+  agent_type: string | null;
+  session_key: string | null;
+  worktree_path: string | null;
+  progress: string | null;
+  base_branch: string | null;
+  merge_strategy: string | null;
   queued_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -126,6 +140,77 @@ export interface PipelineEventRow {
   created_at: string;
 }
 
+export interface RateLimitEventRow {
+  id: string;
+  project_id: string;
+  run_id: string | null;
+  model: string;
+  phase: string | null;
+  error: string;
+  retry_after_seconds: number | null;
+  recorded_at: string;
+}
+
+function mapLegacyRunStatusToPipeline(status: string): PipelineRunRow["status"] {
+  switch (status) {
+    case "pending":
+      return "pending";
+    case "running":
+      return "running";
+    case "completed":
+    case "merged":
+    case "pr-created":
+      return "success";
+    case "failed":
+    case "test-failed":
+    case "stuck":
+    case "conflict":
+      return "failure";
+    case "reset":
+      return "cancelled";
+    default:
+      return "skipped";
+  }
+}
+
+function mapPipelineRunStatusToLegacy(status: string): RunRow["status"] {
+  switch (status) {
+    case "pending":
+      return "pending";
+    case "running":
+      return "running";
+    case "success":
+      return "completed";
+    case "failure":
+      return "failed";
+    case "cancelled":
+    case "skipped":
+      return "reset";
+    default:
+      return "failed";
+  }
+}
+
+function runRowSelectSql(): string {
+  return `
+    SELECT
+      id,
+      project_id,
+      bead_id AS seed_id,
+      COALESCE(agent_type, 'claude-code') AS agent_type,
+      session_key,
+      worktree_path,
+      status,
+      started_at,
+      finished_at AS completed_at,
+      created_at,
+      CASE WHEN progress IS NULL THEN NULL ELSE progress::text END AS progress,
+      base_branch,
+      merge_strategy
+    FROM runs
+  `;
+}
+
 export interface MessageRow {
   id: string;
   run_id: string;
@@ -134,6 +219,41 @@ export interface MessageRow {
   chunk: string;
   line_number: number;
   created_at: string;
+}
+
+export interface AgentMessageRow {
+  id: string;
+  project_id: string;
+  run_id: string;
+  sender_agent_type: string;
+  recipient_agent_type: string;
+  subject: string;
+  body: string;
+  read: number;
+  created_at: string;
+  deleted_at: string | null;
+}
+
+export type MergeQueueStatus = "pending" | "merging" | "merged" | "conflict" | "failed";
+export type MergeQueueOperation = "auto_merge" | "create_pr";
+
+export interface MergeQueueEntryRow {
+  id: number;
+  project_id: string;
+  branch_name: string;
+  seed_id: string;
+  run_id: string;
+  operation: MergeQueueOperation;
+  agent_name: string | null;
+  files_modified: string[];
+  enqueued_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  status: MergeQueueStatus;
+  resolved_tier: number | null;
+  error: string | null;
+  retry_count: number;
+  last_attempted_at: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -327,12 +447,34 @@ export class PostgresAdapter {
     const priority = (taskData.priority as number) ?? 2;
     const externalId = taskData.external_id as string | null ?? null;
     const branch = taskData.branch as string | null ?? null;
+    const status = (taskData.status as string) ?? "backlog";
+    const createdAt = (taskData.created_at as string) ?? new Date().toISOString();
+    const updatedAt = (taskData.updated_at as string) ?? createdAt;
+    const approvedAt = taskData.approved_at as string | null ?? null;
+    const closedAt = taskData.closed_at as string | null ?? null;
 
     const rows = await query<TaskRow>(
-      `INSERT INTO tasks (id, project_id, title, description, type, priority, external_id, branch)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO tasks (
+         id, project_id, title, description, type, priority, status,
+         external_id, branch, created_at, updated_at, approved_at, closed_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING *`,
-      [id, projectId, title, description, type, priority, externalId, branch],
+      [
+        id,
+        projectId,
+        title,
+        description,
+        type,
+        priority,
+        status,
+        externalId,
+        branch,
+        createdAt,
+        updatedAt,
+        approvedAt,
+        closedAt,
+      ],
     );
     return rows[0];
   }
@@ -477,7 +619,7 @@ export class PostgresAdapter {
   async claimTask(
     projectId: string,
     taskId: string,
-    runId: string
+    runId: string | null
   ): Promise<boolean> {
     const client = await acquireClient();
     try {
@@ -499,7 +641,7 @@ export class PostgresAdapter {
 
       await client.query(
         `UPDATE tasks SET run_id = $1, status = 'in-progress', updated_at = now()
-         WHERE id = $2 AND project_id = $3`,
+          WHERE id = $2 AND project_id = $3`,
         [runId, taskId, projectId],
       );
 
@@ -534,6 +676,19 @@ export class PostgresAdapter {
       throw new Error(
         `Cannot approve task '${taskId}': task not found or not in backlog status`,
       );
+    }
+  }
+
+  async closeTask(projectId: string, taskId: string): Promise<void> {
+    const rows = await query<TaskRow>(
+      `UPDATE tasks
+       SET status = 'closed', closed_at = now(), updated_at = now()
+       WHERE id = $1 AND project_id = $2
+       RETURNING id`,
+      [taskId, projectId],
+    );
+    if (rows.length === 0) {
+      throw new Error(`Cannot close task '${taskId}': task not found`);
     }
   }
 
@@ -632,6 +787,109 @@ export class PostgresAdapter {
     return parseInt(result[0]?.cnt ?? "0", 10) > 0;
   }
 
+  async addTaskDependency(
+    projectId: string,
+    fromTaskId: string,
+    toTaskId: string,
+    type: "blocks" | "parent-child" = "blocks",
+  ): Promise<void> {
+    if (fromTaskId === toTaskId) {
+      throw new Error("Adding this dependency would create a circular dependency.");
+    }
+
+    const client = await acquireClient();
+    try {
+      await client.query("BEGIN");
+
+      const rows = await client.query<{ id: string }>(
+        `SELECT id FROM tasks
+         WHERE project_id = $1 AND id IN ($2, $3)`,
+        [projectId, fromTaskId, toTaskId],
+      );
+      if (rows.rows.length !== 2) {
+        throw new Error("One or both task IDs were not found in this project.");
+      }
+
+      const cycle = await client.query<{ found: number }>(
+        `WITH RECURSIVE reach(id) AS (
+           SELECT $1::text
+           UNION
+           SELECT td.to_task_id
+           FROM task_dependencies td
+           JOIN reach r ON td.from_task_id = r.id
+         )
+         SELECT 1 AS found
+         FROM reach
+         WHERE id = $2
+         LIMIT 1`,
+        [toTaskId, fromTaskId],
+      );
+      if (cycle.rows.length > 0) {
+        throw new Error("Adding this dependency would create a circular dependency.");
+      }
+
+      await client.query(
+        `INSERT INTO task_dependencies (from_task_id, to_task_id, type)
+         VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING`,
+        [fromTaskId, toTaskId, type],
+      );
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      releaseClient(client);
+    }
+  }
+
+  async listTaskDependencies(
+    projectId: string,
+    taskId: string,
+    direction: "outgoing" | "incoming" = "outgoing",
+  ): Promise<TaskDependencyRow[]> {
+    if (direction === "outgoing") {
+      return query<TaskDependencyRow>(
+        `SELECT td.*
+         FROM task_dependencies td
+         JOIN tasks t ON t.id = td.from_task_id
+         WHERE t.project_id = $1 AND td.from_task_id = $2
+         ORDER BY td.to_task_id ASC`,
+        [projectId, taskId],
+      );
+    }
+
+    return query<TaskDependencyRow>(
+      `SELECT td.*
+       FROM task_dependencies td
+       JOIN tasks t ON t.id = td.to_task_id
+       WHERE t.project_id = $1 AND td.to_task_id = $2
+       ORDER BY td.from_task_id ASC`,
+      [projectId, taskId],
+    );
+  }
+
+  async removeTaskDependency(
+    projectId: string,
+    fromTaskId: string,
+    toTaskId: string,
+    type: "blocks" | "parent-child" = "blocks",
+  ): Promise<void> {
+    await execute(
+      `DELETE FROM task_dependencies td
+       USING tasks tf, tasks tt
+       WHERE td.from_task_id = $1
+         AND td.to_task_id = $2
+         AND td.type = $3
+         AND tf.id = td.from_task_id
+         AND tf.project_id = $4
+         AND tt.id = td.to_task_id
+         AND tt.project_id = $4`,
+      [fromTaskId, toTaskId, type, projectId],
+    );
+  }
+
   /**
    * Get runs by multiple statuses since a given time.
    */
@@ -669,7 +927,49 @@ export class PostgresAdapter {
       mergeStrategy?: "auto" | "pr" | "none";
     }
   ): Promise<RunRow> {
-    throw new Error("not implemented");
+    const rows = await query<RunRow>(
+      `INSERT INTO runs (
+         project_id, bead_id, run_number, status, branch, trigger,
+         agent_type, session_key, worktree_path, base_branch, merge_strategy, progress
+       )
+       VALUES (
+         $1,
+         $2,
+         COALESCE((SELECT MAX(run_number) + 1 FROM runs WHERE project_id = $1 AND bead_id = $2), 1),
+         'pending',
+         $3,
+         'manual',
+         $4,
+         $5,
+         $6,
+         $7,
+         $8,
+         NULL
+       )
+       RETURNING
+         id,
+         project_id,
+         bead_id AS seed_id,
+         agent_type,
+         session_key,
+         worktree_path,
+         status,
+         started_at,
+         finished_at AS completed_at,
+         created_at,
+         CASE WHEN progress IS NULL THEN NULL ELSE progress::text END AS progress`,
+      [
+        projectId,
+        seedId,
+        options?.worktreePath ?? `foreman/${seedId}`,
+        agentType,
+        options?.sessionKey ?? null,
+        options?.worktreePath ?? null,
+        options?.baseBranch ?? null,
+        options?.mergeStrategy ?? null,
+      ],
+    );
+    return rows[0];
   }
 
   /**
@@ -680,7 +980,22 @@ export class PostgresAdapter {
     projectId: string,
     filters?: { status?: string[]; limit?: number }
   ): Promise<RunRow[]> {
-    throw new Error("not implemented");
+    const conditions = [`project_id = $1`];
+    const params: unknown[] = [projectId];
+    let i = 2;
+    if (filters?.status && filters.status.length > 0) {
+      const mapped = filters.status.map(mapLegacyRunStatusToPipeline);
+      conditions.push(`status IN (${mapped.map((_, idx) => `$${i + idx}`).join(",")})`);
+      params.push(...mapped);
+      i += mapped.length;
+    }
+    let sql = `${runRowSelectSql()} WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC`;
+    if (filters?.limit) {
+      sql += ` LIMIT $${i}`;
+      params.push(filters.limit);
+    }
+    const rows = await query<RunRow>(sql, params);
+    return rows.map((row) => ({ ...row, status: mapPipelineRunStatusToLegacy(row.status) }));
   }
 
   /**
@@ -688,7 +1003,12 @@ export class PostgresAdapter {
    * @throws Error("not implemented")
    */
   async getRun(projectId: string, runId: string): Promise<RunRow | null> {
-    throw new Error("not implemented");
+    const rows = await query<RunRow>(
+      `${runRowSelectSql()} WHERE project_id = $1 AND id = $2 LIMIT 1`,
+      [projectId, runId],
+    );
+    const row = rows[0];
+    return row ? { ...row, status: mapPipelineRunStatusToLegacy(row.status) } : null;
   }
 
   /**
@@ -698,9 +1018,44 @@ export class PostgresAdapter {
   async updateRun(
     projectId: string,
     runId: string,
-    updates: Partial<Pick<RunRow, "status" | "session_key" | "worktree_path" | "progress" | "started_at" | "completed_at">>
+    updates: Partial<Pick<RunRow, "status" | "session_key" | "worktree_path" | "progress" | "started_at" | "completed_at" | "base_branch">>
   ): Promise<void> {
-    throw new Error("not implemented");
+    const setClauses: string[] = ["updated_at = now()"];
+    const params: unknown[] = [];
+    let i = 1;
+    if (updates.status !== undefined) {
+      setClauses.push(`status = $${i++}`);
+      params.push(mapLegacyRunStatusToPipeline(updates.status));
+    }
+    if (updates.session_key !== undefined) {
+      setClauses.push(`session_key = $${i++}`);
+      params.push(updates.session_key);
+    }
+    if (updates.worktree_path !== undefined) {
+      setClauses.push(`worktree_path = $${i++}`);
+      params.push(updates.worktree_path);
+    }
+    if (updates.progress !== undefined) {
+      setClauses.push(`progress = $${i++}::jsonb`);
+      params.push(updates.progress);
+    }
+    if (updates.started_at !== undefined) {
+      setClauses.push(`started_at = $${i++}`);
+      params.push(updates.started_at);
+    }
+    if (updates.completed_at !== undefined) {
+      setClauses.push(`finished_at = $${i++}`);
+      params.push(updates.completed_at);
+    }
+    if (updates.base_branch !== undefined) {
+      setClauses.push(`base_branch = $${i++}`);
+      params.push(updates.base_branch);
+    }
+    params.push(runId, projectId);
+    await execute(
+      `UPDATE runs SET ${setClauses.join(", ")} WHERE id = $${i++} AND project_id = $${i}`,
+      params,
+    );
   }
 
   /**
@@ -708,7 +1063,11 @@ export class PostgresAdapter {
    * @throws Error("not implemented")
    */
   async listActiveRuns(projectId: string): Promise<RunRow[]> {
-    throw new Error("not implemented");
+    const rows = await query<RunRow>(
+      `${runRowSelectSql()} WHERE project_id = $1 AND status IN ('pending','running') ORDER BY created_at DESC`,
+      [projectId],
+    );
+    return rows.map((row) => ({ ...row, status: mapPipelineRunStatusToLegacy(row.status) }));
   }
 
   /**
@@ -719,7 +1078,11 @@ export class PostgresAdapter {
     projectId: string,
     seedId: string
   ): Promise<boolean> {
-    throw new Error("not implemented");
+    const rows = await query<{ found: number }>(
+      `SELECT 1 as found FROM runs WHERE project_id = $1 AND bead_id = $2 AND status IN ('pending','running','success') LIMIT 1`,
+      [projectId, seedId],
+    );
+    return rows.length > 0;
   }
 
   /**
@@ -729,18 +1092,19 @@ export class PostgresAdapter {
   async updateRunProgress(
     projectId: string,
     runId: string,
-    progress: {
-      phase?: string;
-      currentTargetRef?: string;
-      lastToolCall?: string;
-      lastActivity?: string;
-      tokensIn?: number;
-      tokensOut?: number;
-      costByPhase?: Record<string, number>;
-      agentByPhase?: Record<string, string>;
-    }
+    progress: Partial<RunProgress> & { phase?: string }
   ): Promise<void> {
-    throw new Error("not implemented");
+    const run = await this.getRun(projectId, runId);
+    let existing: Record<string, unknown> = {};
+    if (run?.progress) {
+      try {
+        existing = JSON.parse(run.progress) as Record<string, unknown>;
+      } catch {
+        existing = {};
+      }
+    }
+    const merged = { ...existing, ...progress };
+    await this.updateRun(projectId, runId, { progress: JSON.stringify(merged) });
   }
 
   /**
@@ -797,7 +1161,26 @@ export class PostgresAdapter {
     eventType: string,
     details?: string
   ): Promise<void> {
-    throw new Error("not implemented");
+    let payload: Record<string, unknown> | undefined;
+    if (details !== undefined) {
+      try {
+        const parsed = JSON.parse(details) as unknown;
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+          payload = parsed as Record<string, unknown>;
+        } else {
+          payload = { details: parsed };
+        }
+      } catch {
+        payload = { details };
+      }
+    }
+
+    await this.recordPipelineEvent({
+      projectId,
+      runId,
+      eventType,
+      payload,
+    });
   }
 
   /**
@@ -807,10 +1190,17 @@ export class PostgresAdapter {
   async logRateLimitEvent(
     projectId: string,
     runId: string | null,
-    agentType: string,
-    details: string
+    model: string,
+    phase: string | null,
+    error: string,
+    retryAfterSeconds: number | null
   ): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `INSERT INTO rate_limit_events (
+         project_id, run_id, model, phase, error, retry_after_seconds
+       ) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [projectId, runId, model, phase, error, retryAfterSeconds],
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -824,10 +1214,20 @@ export class PostgresAdapter {
   async sendMessage(
     projectId: string,
     runId: string,
+    senderAgentType: string,
     toAgent: string,
+    subject: string,
     body: string
-  ): Promise<void> {
-    throw new Error("not implemented");
+  ): Promise<AgentMessageRow> {
+    const rows = await query<AgentMessageRow>(
+      `INSERT INTO agent_messages (
+         project_id, run_id, sender_agent_type, recipient_agent_type, subject, body, read
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, 0)
+       RETURNING *`,
+      [projectId, runId, senderAgentType, toAgent, subject, body],
+    );
+    return rows[0];
   }
 
   /**
@@ -838,7 +1238,13 @@ export class PostgresAdapter {
     projectId: string,
     messageId: string
   ): Promise<boolean> {
-    throw new Error("not implemented");
+    const result = await execute(
+      `UPDATE agent_messages
+       SET read = 1
+       WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL`,
+      [messageId, projectId],
+    );
+    return result > 0;
   }
 
   /**
@@ -850,7 +1256,12 @@ export class PostgresAdapter {
     runId: string,
     agentType: string
   ): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `UPDATE agent_messages
+       SET read = 1
+       WHERE project_id = $1 AND run_id = $2 AND recipient_agent_type = $3 AND deleted_at IS NULL`,
+      [projectId, runId, agentType],
+    );
   }
 
   /**
@@ -861,7 +1272,170 @@ export class PostgresAdapter {
     projectId: string,
     messageId: string
   ): Promise<boolean> {
-    throw new Error("not implemented");
+    const result = await execute(
+      `UPDATE agent_messages
+       SET deleted_at = now()
+       WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL`,
+      [messageId, projectId],
+    );
+    return result > 0;
+  }
+
+  async getMessages(
+    projectId: string,
+    runId: string,
+    agentType: string,
+    unreadOnly = false,
+  ): Promise<AgentMessageRow[]> {
+    let sql = `SELECT * FROM agent_messages
+               WHERE project_id = $1 AND run_id = $2 AND recipient_agent_type = $3 AND deleted_at IS NULL`;
+    const params: unknown[] = [projectId, runId, agentType];
+    if (unreadOnly) {
+      sql += ` AND read = 0`;
+    }
+    sql += ` ORDER BY created_at ASC`;
+    return query<AgentMessageRow>(sql, params);
+  }
+
+  async getAllMessages(runId: string): Promise<AgentMessageRow[]> {
+    return query<AgentMessageRow>(
+      `SELECT * FROM agent_messages
+       WHERE run_id = $1 AND deleted_at IS NULL
+       ORDER BY created_at ASC`,
+      [runId],
+    );
+  }
+
+  async getAllMessagesGlobal(projectId: string, limit = 200): Promise<AgentMessageRow[]> {
+    const rows = await query<AgentMessageRow>(
+      `SELECT * FROM agent_messages
+       WHERE project_id = $1 AND deleted_at IS NULL
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [projectId, limit],
+    );
+    return rows.reverse();
+  }
+
+  async enqueueMergeQueueEntry(data: {
+    projectId: string;
+    branchName: string;
+    seedId: string;
+    runId: string;
+    operation?: MergeQueueOperation;
+    agentName?: string | null;
+    filesModified?: string[];
+  }): Promise<MergeQueueEntryRow> {
+    const rows = await query<MergeQueueEntryRow>(
+      `INSERT INTO merge_queue (
+         project_id, branch_name, seed_id, run_id, operation, agent_name, files_modified
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+       ON CONFLICT (project_id, branch_name, run_id) DO UPDATE
+       SET branch_name = EXCLUDED.branch_name
+       RETURNING *`,
+      [
+        data.projectId,
+        data.branchName,
+        data.seedId,
+        data.runId,
+        data.operation ?? "auto_merge",
+        data.agentName ?? null,
+        JSON.stringify(data.filesModified ?? []),
+      ],
+    );
+    return rows[0];
+  }
+
+  async listMergeQueue(projectId: string, status?: MergeQueueStatus): Promise<MergeQueueEntryRow[]> {
+    const params: unknown[] = [projectId];
+    let sql = `SELECT * FROM merge_queue WHERE project_id = $1`;
+    if (status) {
+      sql += ` AND status = $2`;
+      params.push(status);
+    }
+    sql += ` ORDER BY enqueued_at ASC`;
+    return query<MergeQueueEntryRow>(sql, params);
+  }
+
+  async updateMergeQueueStatus(
+    projectId: string,
+    id: number,
+    status: MergeQueueStatus,
+    extra?: { resolvedTier?: number; error?: string; completedAt?: string; lastAttemptedAt?: string; retryCount?: number },
+  ): Promise<void> {
+    const fields = ["status = $1"];
+    const params: unknown[] = [status];
+    let i = 2;
+    if (extra?.resolvedTier !== undefined) {
+      fields.push(`resolved_tier = $${i++}`);
+      params.push(extra.resolvedTier);
+    }
+    if (extra?.error !== undefined) {
+      fields.push(`error = $${i++}`);
+      params.push(extra.error);
+    }
+    if (extra?.completedAt !== undefined) {
+      fields.push(`completed_at = $${i++}`);
+      params.push(extra.completedAt);
+    }
+    if (extra?.lastAttemptedAt !== undefined) {
+      fields.push(`last_attempted_at = $${i++}`);
+      params.push(extra.lastAttemptedAt);
+    }
+    if (extra?.retryCount !== undefined) {
+      fields.push(`retry_count = $${i++}`);
+      params.push(extra.retryCount);
+    }
+    params.push(projectId, id);
+    await execute(`UPDATE merge_queue SET ${fields.join(", ")} WHERE project_id = $${i++} AND id = $${i}`, params);
+  }
+
+  async removeMergeQueueEntry(projectId: string, id: number): Promise<void> {
+    await execute(`DELETE FROM merge_queue WHERE project_id = $1 AND id = $2`, [projectId, id]);
+  }
+
+  async resetMergeQueueForRetry(projectId: string, seedId: string): Promise<boolean> {
+    const rows = await query<{ id: number }>(
+      `UPDATE merge_queue
+       SET status = 'pending', error = NULL, started_at = NULL, last_attempted_at = now()
+       WHERE project_id = $1 AND seed_id = $2 AND status IN ('failed','conflict','merging')
+       RETURNING id`,
+      [projectId, seedId],
+    );
+    return rows.length > 0;
+  }
+
+  async listRetryableMergeQueue(projectId: string): Promise<MergeQueueEntryRow[]> {
+    return query<MergeQueueEntryRow>(
+      `SELECT * FROM merge_queue
+       WHERE project_id = $1 AND status IN ('conflict','failed')
+       ORDER BY enqueued_at ASC`,
+      [projectId],
+    );
+  }
+
+  async reEnqueueMergeQueue(projectId: string, id: number): Promise<boolean> {
+    const rows = await query<{ id: number }>(
+      `UPDATE merge_queue
+       SET status = 'pending', error = NULL, started_at = NULL,
+           retry_count = retry_count + 1, last_attempted_at = now()
+       WHERE project_id = $1 AND id = $2 AND status IN ('conflict','failed')
+       RETURNING id`,
+      [projectId, id],
+    );
+    return rows.length > 0;
+  }
+
+  async listMissingFromMergeQueue(projectId: string): Promise<Array<{ run_id: string; seed_id: string }>> {
+    return query<{ run_id: string; seed_id: string }>(
+      `SELECT r.id AS run_id, r.bead_id AS seed_id
+       FROM runs r
+       WHERE r.project_id = $1 AND r.status = 'success'
+         AND r.id NOT IN (SELECT run_id FROM merge_queue WHERE project_id = $1)
+       ORDER BY r.created_at ASC`,
+      [projectId],
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -904,7 +1478,41 @@ export class PostgresAdapter {
     projectId: string,
     config: Record<string, unknown>
   ): Promise<void> {
-    throw new Error("not implemented");
+    const fields = [
+      "project_id",
+      "branch",
+      "test_command",
+      "interval_minutes",
+      "failure_threshold",
+      "enabled",
+      "pid",
+      "created_at",
+      "updated_at",
+    ];
+    const now = new Date().toISOString();
+    await execute(
+      `INSERT INTO sentinel_configs (${fields.join(",")})
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (project_id) DO UPDATE SET
+         branch = EXCLUDED.branch,
+         test_command = EXCLUDED.test_command,
+         interval_minutes = EXCLUDED.interval_minutes,
+         failure_threshold = EXCLUDED.failure_threshold,
+         enabled = EXCLUDED.enabled,
+         pid = EXCLUDED.pid,
+         updated_at = EXCLUDED.updated_at`,
+      [
+        projectId,
+        config.branch ?? "main",
+        config.test_command ?? "npm test",
+        config.interval_minutes ?? 30,
+        config.failure_threshold ?? 2,
+        config.enabled ?? 1,
+        config.pid ?? null,
+        now,
+        now,
+      ],
+    );
   }
 
   /**
@@ -915,7 +1523,23 @@ export class PostgresAdapter {
     projectId: string,
     run: Record<string, unknown>
   ): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `INSERT INTO sentinel_runs (
+         id, project_id, branch, commit_hash, status, test_command, output, failure_count, started_at, completed_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        run.id,
+        projectId,
+        run.branch,
+        run.commit_hash ?? null,
+        run.status,
+        run.test_command,
+        run.output ?? null,
+        run.failure_count ?? 0,
+        run.started_at,
+        run.completed_at ?? null,
+      ],
+    );
   }
 
   /**
@@ -927,7 +1551,33 @@ export class PostgresAdapter {
     runId: string,
     updates: Record<string, unknown>
   ): Promise<void> {
-    throw new Error("not implemented");
+    const fields: string[] = [];
+    const params: unknown[] = [];
+    let i = 1;
+    for (const key of ["status", "output", "completed_at", "failure_count"] as const) {
+      if (updates[key] !== undefined) {
+        fields.push(`${key} = $${i++}`);
+        params.push(updates[key]);
+      }
+    }
+    if (fields.length === 0) return;
+    params.push(projectId, runId);
+    await execute(`UPDATE sentinel_runs SET ${fields.join(", ")} WHERE project_id = $${i++} AND id = $${i}`, params);
+  }
+
+  async getSentinelConfig(projectId: string): Promise<SentinelConfigRow | null> {
+    const rows = await query<SentinelConfigRow>(
+      `SELECT * FROM sentinel_configs WHERE project_id = $1 LIMIT 1`,
+      [projectId],
+    );
+    return rows[0] ?? null;
+  }
+
+  async getSentinelRuns(projectId: string, limit = 10): Promise<SentinelRunRow[]> {
+    return query<SentinelRunRow>(
+      `SELECT * FROM sentinel_runs WHERE project_id = $1 ORDER BY started_at DESC LIMIT $2`,
+      [projectId, limit],
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -935,24 +1585,41 @@ export class PostgresAdapter {
   // -------------------------------------------------------------------------
 
   async createPipelineRun(data: {
+    id?: string;
     projectId: string;
     beadId: string;
     runNumber: number;
     branch: string;
     commitSha?: string;
     trigger?: string;
+    agentType?: string;
+    sessionKey?: string;
+    worktreePath?: string;
+    progress?: string;
+    baseBranch?: string;
+    mergeStrategy?: string;
   }): Promise<PipelineRunRow> {
     const rows = await query<PipelineRunRow>(
-      `INSERT INTO runs (project_id, bead_id, run_number, branch, commit_sha, trigger)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO runs (
+         id, project_id, bead_id, run_number, status, branch, commit_sha, trigger,
+         agent_type, session_key, worktree_path, progress, base_branch, merge_strategy
+       )
+       VALUES (COALESCE($1, gen_random_uuid()), $2, $3, $4, 'pending', $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
        RETURNING *`,
       [
+        data.id ?? null,
         data.projectId,
         data.beadId,
         data.runNumber,
         data.branch,
         data.commitSha ?? null,
         data.trigger ?? "manual",
+        data.agentType ?? null,
+        data.sessionKey ?? null,
+        data.worktreePath ?? null,
+        data.progress ?? null,
+        data.baseBranch ?? null,
+        data.mergeStrategy ?? null,
       ]
     );
     return rows[0];
@@ -997,6 +1664,11 @@ export class PostgresAdapter {
     runId: string,
     updates: {
       status?: string;
+      sessionKey?: string;
+      worktreePath?: string;
+      progress?: string;
+      baseBranch?: string;
+      mergeStrategy?: string;
       startedAt?: string;
       finishedAt?: string;
     }
@@ -1007,6 +1679,26 @@ export class PostgresAdapter {
     if (updates.status !== undefined) {
       setParts.push(`status = $${p++}`);
       params.push(updates.status);
+    }
+    if (updates.sessionKey !== undefined) {
+      setParts.push(`session_key = $${p++}`);
+      params.push(updates.sessionKey);
+    }
+    if (updates.worktreePath !== undefined) {
+      setParts.push(`worktree_path = $${p++}`);
+      params.push(updates.worktreePath);
+    }
+    if (updates.progress !== undefined) {
+      setParts.push(`progress = $${p++}::jsonb`);
+      params.push(updates.progress);
+    }
+    if (updates.baseBranch !== undefined) {
+      setParts.push(`base_branch = $${p++}`);
+      params.push(updates.baseBranch);
+    }
+    if (updates.mergeStrategy !== undefined) {
+      setParts.push(`merge_strategy = $${p++}`);
+      params.push(updates.mergeStrategy);
     }
     if (updates.startedAt !== undefined) {
       setParts.push(`started_at = $${p++}`);
@@ -1028,7 +1720,7 @@ export class PostgresAdapter {
 
   async recordPipelineEvent(data: {
     projectId: string;
-    runId: string;
+    runId: string | null;
     taskId?: string;
     eventType: string;
     payload?: Record<string, unknown>;
