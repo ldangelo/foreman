@@ -192,7 +192,7 @@ Reviewers can use `{{vcsBackendName}}` to tailor feedback (e.g., noting that a d
    ls -la   # should show both .jj and .git
    ```
 
-3. **Update `.foreman/config.yaml`**:
+3. **Update `~/.foreman/config.yaml`**:
    ```yaml
    vcs:
      backend: jujutsu

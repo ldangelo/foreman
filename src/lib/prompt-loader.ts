@@ -2,9 +2,9 @@
  * Unified prompt loader.
  *
  * Single resolution chain for agent phase prompts:
- *   1. <projectRoot>/.foreman/prompts/{workflow}/{phase}.md  (project-local override)
- *   2. <projectRoot>/.foreman/prompts/default/{phase}.md     (shared project-local fallback)
- *   3. ~/.foreman/prompts/{phase}.md                         (user global override)
+ *   1. ~/.foreman/prompts/{workflow}/{phase}.md              (workflow-specific global prompt)
+ *   2. ~/.foreman/prompts/default/{phase}.md                 (shared global fallback)
+ *   3. ~/.foreman/prompts/{phase}.md                         (legacy flat global override)
  *   4. Error — no silent fallback to bundled defaults at runtime
  *
  * Bundled defaults live in src/defaults/prompts/{workflow}/{phase}.md and are
@@ -22,6 +22,7 @@ import {
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { getForemanHomePath } from "./foreman-paths.js";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -100,8 +101,8 @@ export function renderTemplate(
  * Load and interpolate a phase prompt using the unified resolution chain.
  *
  * Resolution order:
- *   1. <projectRoot>/.foreman/prompts/{workflow}/{phase}.md
- *   2. <projectRoot>/.foreman/prompts/default/{phase}.md
+ *   1. ~/.foreman/prompts/{workflow}/{phase}.md
+ *   2. ~/.foreman/prompts/default/{phase}.md
  *   3. ~/.foreman/prompts/{phase}.md
  *   4. Throws PromptNotFoundError
  *
@@ -117,22 +118,22 @@ export function loadPrompt(
   workflow: string,
   projectRoot: string,
 ): string {
-  const projectPromptCandidates = [
-    join(projectRoot, ".foreman", "prompts", workflow, `${phase}.md`),
-    join(projectRoot, ".foreman", "prompts", "default", `${phase}.md`),
+  const globalPromptCandidates = [
+    getForemanHomePath("prompts", workflow, `${phase}.md`),
+    getForemanHomePath("prompts", "default", `${phase}.md`),
   ];
 
-  for (const projectPromptPath of projectPromptCandidates) {
-    if (!existsSync(projectPromptPath)) continue;
+  for (const globalPromptPath of globalPromptCandidates) {
+    if (!existsSync(globalPromptPath)) continue;
     try {
-      return renderTemplate(readFileSync(projectPromptPath, "utf-8"), vars);
+      return renderTemplate(readFileSync(globalPromptPath, "utf-8"), vars);
     } catch {
       // Fall through to next tier/candidate
     }
   }
 
   // Tier 3: user global prompt
-  const userPromptPath = join(homedir(), ".foreman", "prompts", `${phase}.md`);
+  const userPromptPath = getForemanHomePath("prompts", `${phase}.md`);
   if (existsSync(userPromptPath)) {
     try {
       return renderTemplate(readFileSync(userPromptPath, "utf-8"), vars);
@@ -201,9 +202,9 @@ export function getBundledPromptContent(
 }
 
 /**
- * Install bundled prompt templates to <projectRoot>/.foreman/prompts/.
+ * Install bundled prompt templates to ~/.foreman/prompts/.
  *
- * Copies all bundled workflows (default, smoke) to the project's .foreman/prompts/
+ * Copies all bundled workflows (default, smoke) to the global ~/.foreman/prompts/
  * directory. Existing files are skipped unless force=true.
  *
  * @param projectRoot - Absolute path to the project root
@@ -211,7 +212,7 @@ export function getBundledPromptContent(
  * @returns Summary of installed/skipped files
  */
 export function installBundledPrompts(
-  projectRoot: string,
+  _projectRoot: string,
   force: boolean = false,
 ): { installed: string[]; skipped: string[] } {
   const installed: string[] = [];
@@ -226,7 +227,7 @@ export function installBundledPrompts(
 
   for (const workflow of workflows) {
     const srcDir = join(BUNDLED_DEFAULTS_DIR, workflow);
-    const destDir = join(projectRoot, ".foreman", "prompts", workflow);
+    const destDir = getForemanHomePath("prompts", workflow);
     mkdirSync(destDir, { recursive: true });
 
     const files = readdirSync(srcDir).filter((f) => f.endsWith(".md"));
@@ -248,28 +249,27 @@ export function installBundledPrompts(
  * Validate that all required prompt files are present for a project.
  *
  * @param projectRoot - Absolute path to the project root
- * @returns Array of missing prompt file paths (relative to .foreman/prompts/)
+ * @returns Array of missing prompt file paths (relative to ~/.foreman/prompts/)
  */
-export function findMissingPrompts(projectRoot: string): string[] {
+export function findMissingPrompts(_projectRoot: string): string[] {
   const missing: string[] = [];
 
   for (const [workflow, phases] of Object.entries(REQUIRED_PHASES)) {
     for (const phase of phases) {
       const workflowPrompt = join(
-        projectRoot,
-        ".foreman",
         "prompts",
         workflow,
         `${phase}.md`,
       );
       const defaultPrompt = join(
-        projectRoot,
-        ".foreman",
         "prompts",
         "default",
         `${phase}.md`,
       );
-      if (!existsSync(workflowPrompt) && !existsSync(defaultPrompt)) {
+      if (
+        !existsSync(getForemanHomePath(workflowPrompt)) &&
+        !existsSync(getForemanHomePath(defaultPrompt))
+      ) {
         missing.push(`${workflow}/${phase}.md`);
       }
     }
@@ -283,22 +283,21 @@ export function findMissingPrompts(projectRoot: string): string[] {
  * current runtime expectations (e.g. missing critical placeholder markers that
  * newer pipeline code depends on).
  */
-export function findStalePrompts(projectRoot: string): string[] {
+export function findStalePrompts(_projectRoot: string): string[] {
   const stale: string[] = [];
 
   for (const [workflow, phases] of Object.entries(REQUIRED_PROMPT_MARKERS)) {
     for (const [phase, markers] of Object.entries(phases)) {
       const localPromptPath = join(
-        projectRoot,
-        ".foreman",
         "prompts",
         workflow,
         `${phase}.md`,
       );
-      if (!existsSync(localPromptPath)) continue;
+      const globalPromptPath = getForemanHomePath(localPromptPath);
+      if (!existsSync(globalPromptPath)) continue;
 
       try {
-        const content = readFileSync(localPromptPath, "utf-8");
+        const content = readFileSync(globalPromptPath, "utf-8");
         const missingMarker = markers.find((marker) => !content.includes(marker));
         if (missingMarker) {
           stale.push(`${workflow}/${phase}.md`);

@@ -38,6 +38,20 @@ const DEFAULT_DISPATCH_INTERVAL_MS = 30_000; // 30 seconds
 const DEFAULT_MAX_AGENTS = 5;
 
 /**
+ * Global handlers to prevent silent crashes.
+ * Logs the error and exits with code 1 so the daemon can be restarted.
+ */
+process.on("uncaughtException", (err) => {
+  console.error("[ForemanDaemon] Uncaught exception:", err);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[ForemanDaemon] Unhandled rejection:", reason);
+  process.exit(1);
+});
+
+/**
  * Exit with a clear error when Postgres connection fails on startup.
  * @param cause - The underlying error.
  */

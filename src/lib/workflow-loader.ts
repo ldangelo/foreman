@@ -2,7 +2,7 @@
  * Workflow configuration loader.
  *
  * Loads and validates workflow YAML files from:
- *   1. <projectRoot>/.foreman/workflows/{name}.yaml  (project-local override)
+ *   1. ~/.foreman/workflows/{name}.yaml              (global override)
  *   2. Bundled defaults in src/defaults/workflows/{name}.yaml
  *
  * Workflow files define the ordered phase sequence for a pipeline run,
@@ -45,6 +45,7 @@ import {
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load as yamlLoad } from "js-yaml";
+import { getForemanHomePath } from "./foreman-paths.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -610,7 +611,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
  * Load and validate a workflow config.
  *
  * Resolution order:
- *   1. <projectRoot>/.foreman/workflows/{name}.yaml  (project-local override)
+ *   1. ~/.foreman/workflows/{name}.yaml              (global override)
  *   2. Bundled default: src/defaults/workflows/{name}.yaml
  *
  * @param workflowName - Workflow name (e.g. "default", "smoke").
@@ -621,16 +622,16 @@ export function loadWorkflowConfig(
   workflowName: string,
   projectRoot: string,
 ): WorkflowConfig {
-  // Tier 1: project-local override
-  const localPath = join(projectRoot, ".foreman", "workflows", `${workflowName}.yaml`);
-  if (existsSync(localPath)) {
+  // Tier 1: global override
+  const globalPath = getForemanHomePath("workflows", `${workflowName}.yaml`);
+  if (existsSync(globalPath)) {
     try {
-      const raw = yamlLoad(readFileSync(localPath, "utf-8"));
-      return { ...validateWorkflowConfig(raw, workflowName), sourcePath: localPath };
+      const raw = yamlLoad(readFileSync(globalPath, "utf-8"));
+      return { ...validateWorkflowConfig(raw, workflowName), sourcePath: globalPath };
     } catch (err) {
       if (err instanceof WorkflowConfigError) throw err;
       const msg = err instanceof Error ? err.message : String(err);
-      throw new WorkflowConfigError(workflowName, `failed to parse ${localPath}: ${msg}`);
+      throw new WorkflowConfigError(workflowName, `failed to parse ${globalPath}: ${msg}`);
     }
   }
 
@@ -639,7 +640,7 @@ export function loadWorkflowConfig(
   if (existsSync(bundledPath)) {
     try {
       const raw = yamlLoad(readFileSync(bundledPath, "utf-8"));
-      return { ...validateWorkflowConfig(raw, workflowName), sourcePath: bundledPath };
+    return { ...validateWorkflowConfig(raw, workflowName), sourcePath: bundledPath };
     } catch (err) {
       if (err instanceof WorkflowConfigError) throw err;
       const msg = err instanceof Error ? err.message : String(err);
@@ -649,7 +650,7 @@ export function loadWorkflowConfig(
 
   throw new WorkflowConfigError(
     workflowName,
-    `no workflow config found at ${localPath} or bundled defaults`,
+    `no workflow config found at ${globalPath} or bundled defaults`,
   );
 }
 
@@ -664,7 +665,7 @@ export function getBundledWorkflowPath(workflowName: string): string | null {
 }
 
 /**
- * Install bundled workflow configs to <projectRoot>/.foreman/workflows/.
+ * Install bundled workflow configs to ~/.foreman/workflows/.
  *
  * Copies all bundled workflow YAML files. Existing files are skipped unless
  * force=true.
@@ -674,13 +675,13 @@ export function getBundledWorkflowPath(workflowName: string): string | null {
  * @returns Summary of installed/skipped files.
  */
 export function installBundledWorkflows(
-  projectRoot: string,
+  _projectRoot: string,
   force: boolean = false,
 ): { installed: string[]; skipped: string[] } {
   const installed: string[] = [];
   const skipped: string[] = [];
 
-  const destDir = join(projectRoot, ".foreman", "workflows");
+  const destDir = getForemanHomePath("workflows");
   mkdirSync(destDir, { recursive: true });
 
   let files: string[];
@@ -710,10 +711,10 @@ export function installBundledWorkflows(
  * @param projectRoot - Absolute path to the project root.
  * @returns Array of missing workflow names (e.g. ["default", "smoke"]).
  */
-export function findMissingWorkflows(projectRoot: string): string[] {
+export function findMissingWorkflows(_projectRoot: string): string[] {
   const missing: string[] = [];
   for (const name of BUNDLED_WORKFLOW_NAMES) {
-    const p = join(projectRoot, ".foreman", "workflows", `${name}.yaml`);
+    const p = getForemanHomePath("workflows", `${name}.yaml`);
     if (!existsSync(p)) {
       missing.push(name);
     }
@@ -736,10 +737,10 @@ export function findMissingWorkflows(projectRoot: string): string[] {
  * @param projectRoot - Absolute path to the project root.
  * @returns Array of stale workflow names (present but outdated).
  */
-export function findStaleWorkflows(projectRoot: string): string[] {
+export function findStaleWorkflows(_projectRoot: string): string[] {
   const stale: string[] = [];
   for (const name of BUNDLED_WORKFLOW_NAMES) {
-    const localPath = join(projectRoot, ".foreman", "workflows", `${name}.yaml`);
+    const localPath = getForemanHomePath("workflows", `${name}.yaml`);
     if (!existsSync(localPath)) continue; // missing, not stale
 
     const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${name}.yaml`);
@@ -831,6 +832,10 @@ export function resolveWorkflowName(
   }
   // TRD-006: type-based resolution — check if a workflow file exists for the seed type
   if (seedType) {
+    const globalPath = getForemanHomePath("workflows", `${seedType}.yaml`);
+    if (existsSync(globalPath)) {
+      return seedType;
+    }
     const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${seedType}.yaml`);
     if (existsSync(bundledPath)) {
       return seedType;

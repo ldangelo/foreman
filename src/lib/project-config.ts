@@ -1,8 +1,8 @@
 /**
  * Project-level VCS configuration loader.
  *
- * Loads project-wide VCS settings from `.foreman/config.yaml` (or the legacy
- * `.foreman/config.json` fallback) and resolves the final VCS configuration by
+ * Loads Foreman's global VCS settings from `~/.foreman/config.yaml` (or the legacy
+ * `~/.foreman/config.json` fallback) and resolves the final VCS configuration by
  * merging workflow-level, project-level, and auto-detection defaults.
  *
  * Resolution priority (highest wins):
@@ -14,10 +14,10 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { load as yamlLoad } from "js-yaml";
 import type { VcsConfig } from "./vcs/index.js";
 import { normalizeBranchLabel } from "./branch-label.js";
+import { getForemanHomePath } from "./foreman-paths.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -109,7 +109,7 @@ export interface GuardrailsConfig {
 }
 
 /**
- * Shape of `.foreman/config.yaml` (or `.foreman/config.json`).
+ * Shape of `~/.foreman/config.yaml` (or `~/.foreman/config.json`).
  * Only the `vcs` section is currently defined; additional top-level keys may
  * be added in future phases without breaking this interface.
  */
@@ -385,7 +385,7 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Load project-level configuration from `.foreman/config.yaml`.
+ * Load Foreman's global configuration from `~/.foreman/config.yaml`.
  *
  * Falls back to `.foreman/config.json` if the YAML file is absent.
  * Returns `null` if neither file exists (config is optional).
@@ -394,11 +394,9 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
  * @returns Parsed `ProjectConfig`, or `null` if no config file found.
  * @throws ProjectConfigError if the config file exists but is malformed.
  */
-export function loadProjectConfig(projectPath: string): ProjectConfig | null {
-  const foremanDir = join(projectPath, ".foreman");
-
+export function loadProjectConfig(_projectPath: string): ProjectConfig | null {
   // Prefer YAML
-  const yamlPath = join(foremanDir, "config.yaml");
+  const yamlPath = getForemanHomePath("config.yaml");
   if (existsSync(yamlPath)) {
     try {
       const raw = yamlLoad(readFileSync(yamlPath, "utf-8"));
@@ -411,7 +409,7 @@ export function loadProjectConfig(projectPath: string): ProjectConfig | null {
   }
 
   // Fallback: JSON
-  const jsonPath = join(foremanDir, "config.json");
+  const jsonPath = getForemanHomePath("config.json");
   if (existsSync(jsonPath)) {
     try {
       const raw: unknown = JSON.parse(readFileSync(jsonPath, "utf-8"));
@@ -430,7 +428,7 @@ export function loadProjectConfig(projectPath: string): ProjectConfig | null {
 /**
  * Load and return the dashboard configuration for a project.
  *
- * Reads `dashboard.refreshInterval` from `.foreman/config.yaml` and returns
+ * Reads `dashboard.refreshInterval` from `~/.foreman/config.yaml` and returns
  * a merged `DashboardConfig` with default values filled in.
  *
  * @param projectPath - Absolute path to the project root.
@@ -462,7 +460,7 @@ export function loadDashboardConfig(projectPath: string): Required<DashboardConf
  * settings taking precedence over project settings.
  *
  * @param workflowVcs - VCS config from the workflow YAML `vcs:` block (optional).
- * @param projectVcs  - VCS config from `.foreman/config.yaml` `vcs:` block (optional).
+ * @param projectVcs  - VCS config from `~/.foreman/config.yaml` `vcs:` block (optional).
  * @returns Resolved `VcsConfig` ready for `VcsBackendFactory.create()`.
  */
 export function resolveVcsConfig(

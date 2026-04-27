@@ -118,12 +118,11 @@ function mockNonColocatedMode(): void {
 }
 
 /**
- * Write a minimal .foreman/config.yaml to a temp directory, specifying a VCS backend.
+ * Write a minimal ~/.foreman/config.yaml to a temp directory, specifying a VCS backend.
  */
-function writeVcsConfig(projectPath: string, backend: "git" | "jujutsu" | "auto"): void {
-  const foremanDir = join(projectPath, ".foreman");
-  mkdirSync(foremanDir, { recursive: true });
-  writeFileSync(join(foremanDir, "config.yaml"), `vcs:\n  backend: ${backend}\n`, "utf-8");
+function writeVcsConfig(foremanHome: string, backend: "git" | "jujutsu" | "auto"): void {
+  mkdirSync(foremanHome, { recursive: true });
+  writeFileSync(join(foremanHome, "config.yaml"), `vcs:\n  backend: ${backend}\n`, "utf-8");
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -134,6 +133,7 @@ describe("TRD-028: Doctor VCS Checks", () => {
   function makeTempDir(): string {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "foreman-doctor-vcs-")));
     tempDirs.push(dir);
+    process.env["FOREMAN_HOME"] = dir;
     return dir;
   }
 
@@ -155,6 +155,7 @@ describe("TRD-028: Doctor VCS Checks", () => {
       rmSync(dir, { recursive: true, force: true });
     }
     tempDirs.length = 0;
+    delete process.env["FOREMAN_HOME"];
   });
 
   // ── AC-T-028-1: jj missing with backend=jujutsu ──────────────────────────

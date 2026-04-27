@@ -61,11 +61,12 @@ describe("full-run test runtime e2e", () => {
   });
 
   it("runs a detached native-task flow in test runtime without br installed", { timeout: 70_000 }, async () => {
+    tempHome = mkdtempSync(join(tmpdir(), "foreman-no-br-home-"));
+    mkdirSync(join(tempHome, ".foreman"), { recursive: true });
+    process.env.HOME = tempHome;
+
     const harness = createTempProjectHarness();
     try {
-      tempHome = mkdtempSync(join(tmpdir(), "foreman-no-br-home-"));
-      mkdirSync(join(tempHome, ".foreman"), { recursive: true });
-      process.env.HOME = tempHome;
       process.env.FOREMAN_RUNTIME_MODE = "test";
       process.env.FOREMAN_TASK_STORE = "native";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;

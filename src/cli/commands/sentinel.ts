@@ -24,7 +24,7 @@ export interface SentinelCommandTaskClient extends ITaskClient {
 
 export async function createSentinelTaskClient(projectPath: string): Promise<SentinelCommandTaskClient> {
   const { taskClient } = await createTaskClient(projectPath, {
-    autoSelectNativeWhenAvailable: false,
+    forceBeadsFallback: true,
   });
   return taskClient as SentinelCommandTaskClient;
 }
@@ -51,7 +51,7 @@ sentinelCommand
         process.exit(1);
       }
 
-      const agent = new SentinelAgent(store, seeds, project.id, projectPath);
+      const agent = new SentinelAgent(store, seeds, project.id, projectPath, vcs);
       const options = {
         branch: opts.branch as string,
         testCommand: opts.testCommand as string,
@@ -118,7 +118,7 @@ sentinelCommand
       const intervalMinutes = parseInt(opts.interval as string, 10);
       const failureThreshold = parseInt(opts.failureThreshold as string, 10);
 
-      const agent = new SentinelAgent(store, seeds, project.id, projectPath);
+      const agent = new SentinelAgent(store, seeds, project.id, projectPath, vcs);
       const options = {
         branch: opts.branch as string,
         testCommand: opts.testCommand as string,

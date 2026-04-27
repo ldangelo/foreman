@@ -47,7 +47,7 @@ describe("createSentinelTaskClient", () => {
     const taskClient = await createSentinelTaskClient("/mock/project");
 
     expect(mockCreateTaskClient).toHaveBeenCalledWith("/mock/project", {
-      autoSelectNativeWhenAvailable: false,
+      forceBeadsFallback: true,
     });
     expect(taskClient).toBe(sentinelTaskClient);
   });

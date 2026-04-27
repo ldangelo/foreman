@@ -67,14 +67,16 @@ describeInstall("installPrompts", () => {
   itInstall("installs bundled prompts to .foreman/prompts/ on first init", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "foreman-init-prompts-test-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       const { installed, skipped } = installPrompts(tmpDir, false);
       expectInstall(installed.length).toBeGreaterThan(0);
       expectInstall(skipped.length).toBe(0);
       // Verify key files exist
-      expectInstall(existsSync(join(tmpDir, ".foreman", "prompts", "default", "explorer.md"))).toBe(true);
-      expectInstall(existsSync(join(tmpDir, ".foreman", "prompts", "default", "developer.md"))).toBe(true);
-      expectInstall(existsSync(join(tmpDir, ".foreman", "prompts", "smoke", "explorer.md"))).toBe(true);
+      expectInstall(existsSync(join(tmpDir, "prompts", "default", "explorer.md"))).toBe(true);
+      expectInstall(existsSync(join(tmpDir, "prompts", "default", "developer.md"))).toBe(true);
+      expectInstall(existsSync(join(tmpDir, "prompts", "smoke", "explorer.md"))).toBe(true);
     } finally {
+      delete process.env["FOREMAN_HOME"];
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
@@ -82,6 +84,7 @@ describeInstall("installPrompts", () => {
   itInstall("skips existing files when force=false", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "foreman-init-prompts-skip-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       // First install
       installPrompts(tmpDir, false);
       // Second install — should skip all
@@ -89,6 +92,7 @@ describeInstall("installPrompts", () => {
       expectInstall(installed.length).toBe(0);
       expectInstall(skipped.length).toBeGreaterThan(0);
     } finally {
+      delete process.env["FOREMAN_HOME"];
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
@@ -96,11 +100,13 @@ describeInstall("installPrompts", () => {
   itInstall("overwrites existing files when force=true", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "foreman-init-prompts-force-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       installPrompts(tmpDir, false);
       const { installed, skipped } = installPrompts(tmpDir, true);
       expectInstall(installed.length).toBeGreaterThan(0);
       expectInstall(skipped.length).toBe(0);
     } finally {
+      delete process.env["FOREMAN_HOME"];
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });

@@ -1399,6 +1399,7 @@ describe("Doctor.checkPrompts", () => {
   it("returns fail when prompts are not installed", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-prompts-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       const store = { getProjectByPath: vi.fn(() => null) };
       const doctor = new Doctor(store as any, tmpDir);
       const result = await doctor.checkPrompts();
@@ -1406,6 +1407,7 @@ describe("Doctor.checkPrompts", () => {
       expect(result.message).toContain("missing:");
       expect(result.message).toContain("foreman init");
     } finally {
+      delete process.env["FOREMAN_HOME"];
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -1414,12 +1416,14 @@ describe("Doctor.checkPrompts", () => {
     const { installBundledPrompts } = await import("../../lib/prompt-loader.js");
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-prompts-ok-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       installBundledPrompts(tmpDir, true);
       const store = { getProjectByPath: vi.fn(() => null) };
       const doctor = new Doctor(store as any, tmpDir);
       const result = await doctor.checkPrompts();
       expect(result.status).toBe("pass");
     } finally {
+      delete process.env["FOREMAN_HOME"];
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -1427,6 +1431,7 @@ describe("Doctor.checkPrompts", () => {
   it("returns fixed when --fix reinstalls missing prompts", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-prompts-fix-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       const store = { getProjectByPath: vi.fn(() => null) };
       const doctor = new Doctor(store as any, tmpDir);
       // First confirm they're missing
@@ -1437,6 +1442,7 @@ describe("Doctor.checkPrompts", () => {
       expect(result.status).toBe("fixed");
       expect(result.fixApplied).toContain("Installed");
     } finally {
+      delete process.env["FOREMAN_HOME"];
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -1444,6 +1450,7 @@ describe("Doctor.checkPrompts", () => {
   it("dry-run reports missing prompts without installing", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-prompts-dry-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       const store = { getProjectByPath: vi.fn(() => null) };
       const doctor = new Doctor(store as any, tmpDir);
       const result = await doctor.checkPrompts({ dryRun: true });
@@ -1454,6 +1461,7 @@ describe("Doctor.checkPrompts", () => {
       const stillMissing = findMissingPrompts(tmpDir);
       expect(stillMissing.length).toBeGreaterThan(0);
     } finally {
+      delete process.env["FOREMAN_HOME"];
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -1461,6 +1469,7 @@ describe("Doctor.checkPrompts", () => {
   it("checkRepository includes prompt check", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-repo-prompts-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       const store = {
         getProjectByPath: vi.fn(() => null),
         getRunsByStatus: vi.fn(() => []),
@@ -1472,6 +1481,7 @@ describe("Doctor.checkPrompts", () => {
       expect(promptCheck).toBeDefined();
       expect(promptCheck?.status).toBe("fail");
     } finally {
+      delete process.env["FOREMAN_HOME"];
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -1479,6 +1489,7 @@ describe("Doctor.checkPrompts", () => {
   it("checkWorkflows fails when workflow configs are missing", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-workflows-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       const store = {
         getProjectByPath: vi.fn(() => null),
         getRunsByStatus: vi.fn(() => []),
@@ -1490,6 +1501,7 @@ describe("Doctor.checkPrompts", () => {
       expect(result.name).toContain("workflow configs");
       expect(result.message).toContain("missing");
     } finally {
+      delete process.env["FOREMAN_HOME"];
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -1497,6 +1509,7 @@ describe("Doctor.checkPrompts", () => {
   it("checkWorkflows passes after install", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-workflows-installed-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       const { installBundledWorkflows } = await import("../../lib/workflow-loader.js");
       installBundledWorkflows(tmpDir);
       const store = {
@@ -1508,6 +1521,7 @@ describe("Doctor.checkPrompts", () => {
       const result = await doctor.checkWorkflows();
       expect(result.status).toBe("pass");
     } finally {
+      delete process.env["FOREMAN_HOME"];
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -1515,6 +1529,7 @@ describe("Doctor.checkPrompts", () => {
   it("checkWorkflows with --fix installs missing configs", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-workflows-fix-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       const store = {
         getProjectByPath: vi.fn(() => null),
         getRunsByStatus: vi.fn(() => []),
@@ -1525,6 +1540,7 @@ describe("Doctor.checkPrompts", () => {
       expect(result.status).toBe("fixed");
       expect(result.fixApplied).toMatch(/[Rr]e?installed/);
     } finally {
+      delete process.env["FOREMAN_HOME"];
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -1532,6 +1548,7 @@ describe("Doctor.checkPrompts", () => {
   it("checkRepository includes workflow configs check", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-repo-workflows-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       const store = {
         getProjectByPath: vi.fn(() => null),
         getRunsByStatus: vi.fn(() => []),
@@ -1543,6 +1560,7 @@ describe("Doctor.checkPrompts", () => {
       expect(workflowCheck).toBeDefined();
       expect(workflowCheck?.status).toBe("fail");
     } finally {
+      delete process.env["FOREMAN_HOME"];
       await rm(tmpDir, { recursive: true, force: true });
     }
   });

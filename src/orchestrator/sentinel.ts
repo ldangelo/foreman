@@ -11,7 +11,8 @@ import { randomUUID } from "node:crypto";
 import type { ForemanStore } from "../lib/store.js";
 import type { Issue } from "../lib/task-client.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
-import { GitBackend } from "../lib/vcs/git-backend.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
+import type { VcsBackend } from "../lib/vcs/interface.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -58,6 +59,7 @@ export class SentinelAgent {
   private seeds: SentinelTaskClient;
   private projectId: string;
   private projectPath: string;
+  private vcsBackend?: Pick<VcsBackend, "resolveRef">;
   private running = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private consecutiveFailures = 0;
@@ -67,11 +69,13 @@ export class SentinelAgent {
     seeds: SentinelTaskClient,
     projectId: string,
     projectPath: string,
+    vcsBackend?: Pick<VcsBackend, "resolveRef">,
   ) {
     this.store = store;
     this.seeds = seeds;
     this.projectId = projectId;
     this.projectPath = projectPath;
+    this.vcsBackend = vcsBackend;
   }
 
   /**
@@ -236,7 +240,8 @@ export class SentinelAgent {
   // ── Private helpers ──────────────────────────────────────────────────
 
   private async resolveCommit(branch: string): Promise<string | null> {
-    const backend = new GitBackend(this.projectPath);
+    const backend = this.vcsBackend
+      ?? await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
     for (const ref of [`origin/${branch}`, branch]) {
       try {
         return await backend.resolveRef(this.projectPath, ref);

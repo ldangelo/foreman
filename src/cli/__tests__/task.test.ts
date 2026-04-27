@@ -14,7 +14,7 @@
  * Uses NativeTaskStore directly (no subprocess) for speed.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -29,6 +29,7 @@ import {
   CircularDependencyError,
   type TaskRow,
 } from "../../lib/task-store.js";
+import { taskCommand } from "../commands/task.js";
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -190,6 +191,27 @@ describe("task list — NativeTaskStore.list()", () => {
     const result = ctx.taskStore.list({ status: "ready", type: "epic" });
     expect(result).toHaveLength(1);
     expect(result[0]!.title).toBe("Ready Epic");
+  });
+
+  it("prints full task IDs in the list output", async () => {
+    const task = ctx.taskStore.create({ title: "Visible ID Task" });
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((value?: unknown) => {
+      logs.push(String(value ?? ""));
+    });
+
+    try {
+      await taskCommand.parseAsync(
+        ["list", "--project-path", ctx.tmpDir],
+        { from: "user" },
+      );
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const output = logs.join("\n");
+    expect(output).toContain(task.id);
+    expect(output).not.toContain(`${task.id.slice(0, 8)}…`);
   });
 });
 

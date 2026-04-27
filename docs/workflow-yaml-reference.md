@@ -6,7 +6,7 @@ Workflow YAML files define the complete pipeline configuration for Foreman: whic
 
 | Location | Purpose |
 |----------|---------|
-| `.foreman/workflows/{name}.yaml` | Project-local overrides (highest priority) |
+| `~/.foreman/workflows/{name}.yaml` | Global overrides (highest priority) |
 | `src/defaults/workflows/{name}.yaml` | Bundled defaults (installed by `foreman init`) |
 
 Foreman ships with two bundled workflows:
@@ -54,7 +54,7 @@ name: default
 
 ## VCS Configuration
 
-The optional top-level `vcs:` block overrides the project-level VCS configuration in `.foreman/config.yaml` for this specific workflow.
+The optional top-level `vcs:` block overrides the global VCS configuration in `~/.foreman/config.yaml` for this specific workflow.
 
 ### `vcs` (optional)
 
@@ -62,9 +62,9 @@ The optional top-level `vcs:` block overrides the project-level VCS configuratio
 |-------|------|---------|-------------|
 | `backend` | string | `'auto'` | VCS backend to use: `'git'`, `'jujutsu'`, or `'auto'` |
 
-> **Note:** Backend-specific sub-options (`git.useTown`, `jujutsu.minVersion`) are only available in the project-level `.foreman/config.yaml`, not in workflow YAML.
+> **Note:** Backend-specific sub-options (`git.useTown`, `jujutsu.minVersion`) are only available in the global `~/.foreman/config.yaml`, not in workflow YAML.
 
-**Resolution priority** (highest wins): workflow `vcs.backend` → project `.foreman/config.yaml` `vcs.backend` → auto-detection.
+**Resolution priority** (highest wins): workflow `vcs.backend` → global `~/.foreman/config.yaml` `vcs.backend` → auto-detection.
 
 ```yaml
 # Force git even if .jj/ is present
@@ -251,7 +251,7 @@ The `phases` array defines the ordered sequence of pipeline phases. Each phase r
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | *required* | Phase identifier (used in logs, mail, labels) |
-| `prompt` | string | — | Prompt file name in `.foreman/prompts/{workflow}/` |
+| `prompt` | string | — | Prompt file name in `~/.foreman/prompts/{workflow}/` |
 | `model` | string | — | Single model shorthand or full ID (deprecated, use `models`) |
 | `models` | map | — | Priority-based model overrides (see below) |
 | `maxTurns` | number | — | Maximum agent turns before timeout |
@@ -695,7 +695,7 @@ phases:
 
 You can add custom phases beyond the default five. Each custom phase needs:
 1. A YAML entry in the workflow
-2. A prompt file in `.foreman/prompts/{workflow}/`
+2. A prompt file in `~/.foreman/prompts/{workflow}/`
 
 ```yaml
 phases:
@@ -714,17 +714,17 @@ phases:
       onFail: developer
 ```
 
-The prompt file (`.foreman/prompts/default/security-scan.md`) defines the agent's instructions, using `{{seedId}}`, `{{seedTitle}}`, `{{seedDescription}}`, and other template variables.
+The prompt file (`~/.foreman/prompts/default/security-scan.md`) defines the agent's instructions, using `{{seedId}}`, `{{seedTitle}}`, `{{seedDescription}}`, and other template variables.
 
 ---
 
 ## Custom Workflows
 
-Create a new workflow by adding a YAML file to `.foreman/workflows/`:
+Create a new workflow by adding a YAML file to `~/.foreman/workflows/`:
 
 ```bash
 # Create a minimal workflow for documentation tasks
-cat > .foreman/workflows/docs.yaml << 'EOF'
+cat > ~/.foreman/workflows/docs.yaml << 'EOF'
 name: docs
 setup:
   - command: npm install --prefer-offline --no-audit

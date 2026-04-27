@@ -61,13 +61,25 @@ class MockVcsBackend implements VcsBackend {
   async commit(_p: string, _m: string): Promise<void> {}
   async push(_p: string, _b: string): Promise<void> {}
   async pull(_p: string, _b: string): Promise<void> {}
+  async saveWorktreeState(_p: string): Promise<boolean> { return false; }
+  async restoreWorktreeState(_p: string): Promise<void> {}
   async rebase(_p: string, _o: string): Promise<RebaseResult> {
+    return { success: true, hasConflicts: false };
+  }
+  async rebaseBranch(_p: string, _b: string, _o: string): Promise<RebaseResult> {
+    return { success: true, hasConflicts: false };
+  }
+  async restackBranch(_p: string, _b: string, _old: string, _new: string): Promise<RebaseResult> {
     return { success: true, hasConflicts: false };
   }
   async abortRebase(_p: string): Promise<void> {}
   async merge(_p: string, _s: string): Promise<MergeResult> {
     return { success: true };
   }
+  async mergeWithStrategy(_p: string, _s: string, _t: string, _strategy: "theirs"): Promise<MergeResult> {
+    return { success: true };
+  }
+  async rollbackFailedMerge(_p: string, _before: string): Promise<void> {}
   async getHeadId(_p: string): Promise<string> { return 'abc123'; }
   async resolveRef(_p: string, _r: string): Promise<string> { return 'abc123'; }
   async getRefCommitTimestamp(_p: string, _r: string): Promise<number | null> { return null; }
@@ -84,12 +96,14 @@ class MockVcsBackend implements VcsBackend {
   async commitNoEdit(_p: string): Promise<void> {}
   async abortMerge(_p: string): Promise<void> {}
   async stageFile(_p: string, _f: string): Promise<void> {}
+  async stageFiles(_p: string, _files: string[]): Promise<void> {}
   async checkoutFile(_p: string, _r: string, _f: string): Promise<void> {}
   async showFile(_p: string, _r: string, _f: string): Promise<string> { return ''; }
   async resetHard(_p: string, _r: string): Promise<void> {}
   async removeFile(_p: string, _f: string): Promise<void> {}
   async rebaseContinue(_p: string): Promise<void> {}
   async removeFromIndex(_p: string, _f: string): Promise<void> {}
+  async applyPatchToIndex(_p: string, _patch: string): Promise<void> {}
   async getMergeBase(_p: string, _r1: string, _r2: string): Promise<string> { return ''; }
   async getUntrackedFiles(_p: string): Promise<string[]> { return []; }
   async isAncestor(_p: string, _a: string, _d: string): Promise<boolean> { return true; }
@@ -225,9 +239,15 @@ describe("GitBackend satisfies VcsBackend", () => {
     expect(typeof b.commit).toBe('function');
     expect(typeof b.push).toBe('function');
     expect(typeof b.pull).toBe('function');
+    expect(typeof b.saveWorktreeState).toBe('function');
+    expect(typeof b.restoreWorktreeState).toBe('function');
     expect(typeof b.rebase).toBe('function');
+    expect(typeof b.rebaseBranch).toBe('function');
+    expect(typeof b.restackBranch).toBe('function');
     expect(typeof b.abortRebase).toBe('function');
     expect(typeof b.merge).toBe('function');
+    expect(typeof b.mergeWithStrategy).toBe('function');
+    expect(typeof b.rollbackFailedMerge).toBe('function');
     expect(typeof b.getHeadId).toBe('function');
     expect(typeof b.resolveRef).toBe('function');
     expect(typeof b.fetch).toBe('function');
@@ -238,6 +258,7 @@ describe("GitBackend satisfies VcsBackend", () => {
     expect(typeof b.getConflictingFiles).toBe('function');
     expect(typeof b.status).toBe('function');
     expect(typeof b.cleanWorkingTree).toBe('function');
+    expect(typeof b.applyPatchToIndex).toBe('function');
     expect(typeof b.getFinalizeCommands).toBe('function');
   });
 });
@@ -265,9 +286,15 @@ describe("JujutsuBackend satisfies VcsBackend", () => {
     expect(typeof b.commit).toBe('function');
     expect(typeof b.push).toBe('function');
     expect(typeof b.pull).toBe('function');
+    expect(typeof b.saveWorktreeState).toBe('function');
+    expect(typeof b.restoreWorktreeState).toBe('function');
     expect(typeof b.rebase).toBe('function');
+    expect(typeof b.rebaseBranch).toBe('function');
+    expect(typeof b.restackBranch).toBe('function');
     expect(typeof b.abortRebase).toBe('function');
     expect(typeof b.merge).toBe('function');
+    expect(typeof b.mergeWithStrategy).toBe('function');
+    expect(typeof b.rollbackFailedMerge).toBe('function');
     expect(typeof b.getHeadId).toBe('function');
     expect(typeof b.resolveRef).toBe('function');
     expect(typeof b.fetch).toBe('function');
@@ -278,6 +305,7 @@ describe("JujutsuBackend satisfies VcsBackend", () => {
     expect(typeof b.getConflictingFiles).toBe('function');
     expect(typeof b.status).toBe('function');
     expect(typeof b.cleanWorkingTree).toBe('function');
+    expect(typeof b.applyPatchToIndex).toBe('function');
     expect(typeof b.getFinalizeCommands).toBe('function');
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { SentinelAgent } from "../sentinel.js";
 import type { SentinelConfigRow } from "../../lib/store.js";
+import type { VcsBackend } from "../../lib/vcs/interface.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -19,6 +20,12 @@ function makeMocks(existingBeads: Array<{ id: string; title: string }> = []) {
   };
   const agent = new SentinelAgent(store as any, seeds as any, "proj-1", "/tmp/project");
   return { store, seeds, agent };
+}
+
+function makeBackend(): Pick<VcsBackend, "resolveRef"> {
+  return {
+    resolveRef: vi.fn(),
+  };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -103,6 +110,38 @@ describe("SentinelAgent", () => {
       expect(typeof result.output).toBe("string");
       expect(typeof result.durationMs).toBe("number");
       expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it("resolves commit hash via injected VCS backend on non-dry-run", async () => {
+      const { store, seeds } = makeMocks();
+      const backend = makeBackend();
+      vi.mocked(backend.resolveRef)
+        .mockRejectedValueOnce(new Error("missing remote ref"))
+        .mockResolvedValueOnce("abc123def456");
+      const agent = new SentinelAgent(
+        store as any,
+        seeds as any,
+        "proj-1",
+        "/tmp/project",
+        backend,
+      );
+      const runTestCommand = vi.fn().mockResolvedValue({
+        status: "passed",
+        output: "ok",
+      });
+      (agent as unknown as { runTestCommand: typeof runTestCommand }).runTestCommand = runTestCommand;
+
+      const result = await agent.runOnce({
+        branch: "main",
+        testCommand: "npm test",
+        intervalMinutes: 0,
+        failureThreshold: 2,
+      });
+
+      expect(backend.resolveRef).toHaveBeenNthCalledWith(1, "/tmp/project", "origin/main");
+      expect(backend.resolveRef).toHaveBeenNthCalledWith(2, "/tmp/project", "main");
+      expect(result.commitHash).toBe("abc123def456");
+      expect(runTestCommand).toHaveBeenCalledWith("npm test");
     });
   });
 

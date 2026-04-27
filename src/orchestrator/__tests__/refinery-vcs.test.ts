@@ -82,11 +82,18 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
     commitNoEdit: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockResolvedValue(undefined),
     pull: vi.fn().mockResolvedValue(undefined),
+    saveWorktreeState: vi.fn().mockResolvedValue(false),
+    restoreWorktreeState: vi.fn().mockResolvedValue(undefined),
     // Rebase and merge
     rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    rebaseBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    restackBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
     abortRebase: vi.fn().mockResolvedValue(undefined),
     abortMerge: vi.fn().mockResolvedValue(undefined),
+    stageFiles: vi.fn().mockResolvedValue(undefined),
     merge: vi.fn().mockResolvedValue({ success: true }),
+    mergeWithStrategy: vi.fn().mockResolvedValue({ success: true }),
+    rollbackFailedMerge: vi.fn().mockResolvedValue(undefined),
     mergeWithoutCommit: vi.fn().mockResolvedValue({ success: true }),
     resetHard: vi.fn().mockResolvedValue(undefined),
     // Diff, status, conflict detection
@@ -263,6 +270,14 @@ describe("AC-T-012-1: Clean squash merge invokes git merge --squash and closes t
   });
 });
 
+describe("Refinery constructor VCS propagation", () => {
+  it("passes the provided VcsBackend into ConflictResolver", () => {
+    const { refinery, vcs } = makeMocks();
+
+    expect((refinery as any).conflictResolver.vcs).toBe(vcs);
+  });
+});
+
 // ── AC-T-012-2: Conflict Cascade Triggered ────────────────────────────────────
 
 describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts", () => {
@@ -421,8 +436,9 @@ describe("AC-T-012-3: refinery.ts no longer imports or calls mergeWorktree", () 
     // AC-T-012-3: mergeWorktree must NOT be imported from git.ts -- it has been
     // replaced by squash merge via gitSpecial in the mergeCompleted() method.
     // Note: gitSpecial() and gitReadOnly() are intentionally kept as private
-    // helpers for git operations not covered by VcsBackend (stash, reset --hard,
-    // rebase --onto, etc.) -- see no-direct-git.test.ts allowlist for rationale.
+    // helpers for git operations not covered by VcsBackend (reset --hard,
+    // apply/index helpers, etc.) -- see no-direct-git.test.ts
+    // allowlist for rationale.
     expect(source).not.toMatch(/import.*mergeWorktree.*from/);
 
     // Also verify that the merge call in mergeCompleted uses squash merge

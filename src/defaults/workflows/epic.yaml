@@ -42,7 +42,7 @@ phases:
   # PRD skill writes to docs/PRD/PRD-{yyyymm}-{title-slug}.md
   # skipIfArtifact checks for docs/PRD/PRD-{yyyymm}-{title-slug}.md (skill's output path)
   - name: prd
-    command: "/ensemble:create-prd {task.title}"
+    command: "/skill:ensemble-create-prd {task.title}"
     models:
       default: MiniMax
       P0: MiniMax
@@ -56,7 +56,7 @@ phases:
   # TRD skill writes to docs/TRD/TRD-{yyyymm}-{title-slug}.md
   # skipIfArtifact checks for docs/TRD/TRD-{yyyymm}-{title-slug}.md (skill's output path)
   - name: trd
-    command: "/ensemble:create-trd"
+    command: "/skill:ensemble-create-trd"
     models:
       default: MiniMax
       P0: MiniMax
@@ -72,7 +72,7 @@ phases:
   # Implement skill writes an IMPLEMENT_REPORT.md to the current working directory.
   # We anchor it to docs/reports/{seedId}/ so it's committed with the worktree.
   - name: implement
-    command: "mkdir -p docs/reports/{task.id} && /ensemble:implement-trd && mv IMPLEMENT_REPORT.md docs/reports/{task.id}/IMPLEMENT_REPORT.md 2>/dev/null || true"
+    command: "mkdir -p docs/reports/{task.id} && /skill:ensemble-implement-trd && mv IMPLEMENT_REPORT.md docs/reports/{task.id}/IMPLEMENT_REPORT.md 2>/dev/null || true"
     models:
       default: MiniMax
       P0: MiniMax

@@ -80,11 +80,18 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
     commitNoEdit: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockResolvedValue(undefined),
     pull: vi.fn().mockResolvedValue(undefined),
+    saveWorktreeState: vi.fn().mockResolvedValue(false),
+    restoreWorktreeState: vi.fn().mockResolvedValue(undefined),
     rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    rebaseBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    restackBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
     abortRebase: vi.fn().mockResolvedValue(undefined),
     abortMerge: vi.fn().mockResolvedValue(undefined),
+    stageFiles: vi.fn().mockResolvedValue(undefined),
     /** merge() defaults to success — tests can override via overrides.merge */
     merge: vi.fn().mockResolvedValue({ success: true }),
+    mergeWithStrategy: vi.fn().mockResolvedValue({ success: true }),
+    rollbackFailedMerge: vi.fn().mockResolvedValue(undefined),
     mergeWithoutCommit: vi.fn().mockResolvedValue({ success: true }),
     resetHard: vi.fn().mockResolvedValue(undefined),
     getHeadId: vi.fn().mockResolvedValue("abc1234"),
@@ -206,11 +213,6 @@ describe("Refinery.resolveConflict()", () => {
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
-    // execFile is used by the promisified git() helper inside resolveConflict
-    // vitest doesn't auto-promisify, so we need to handle the promisified call
-    // The promisify(execFile) version calls with (cmd, args, opts) returning a promise
-    // We mock execFile but node's promisify wraps it - let's use a different approach
-    // by mocking the callback-style execFile that promisify wraps
     (execFile as any).mockImplementation(
       (_cmd: string, _args: string[], _opts: any, callback: Function) => {
         callback(null, { stdout: "", stderr: "" });
@@ -234,21 +236,14 @@ describe("Refinery.resolveConflict()", () => {
   });
 
   it("theirs strategy marks run as failed if git merge fails", async () => {
-    const { store, seeds, refinery } = makeMocks();
+    const { store, seeds, refinery, vcs } = makeMocks({
+      mergeWithStrategy: vi.fn().mockResolvedValue({ success: false, conflicts: ["README.md"] }),
+      abortMerge: vi.fn().mockResolvedValue(undefined),
+    });
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
-    (execFile as any).mockImplementation(
-      (_cmd: string, _args: string[], _opts: any, callback: Function) => {
-        const err = new Error("CONFLICT (content): Merge conflict in README.md") as any;
-        err.stdout = "";
-        err.stderr = "CONFLICT (content): Merge conflict in README.md";
-        callback(err);
-      },
-    );
-
     // Provide targetBranch explicitly to avoid calling vcsBackend.detectDefaultBranch()
-    // (which would also fail since ALL execFile calls throw in this mock).
     const result = await refinery.resolveConflict("run-1", "theirs", { targetBranch: "main" });
 
     expect(result).toBe(false);
@@ -257,10 +252,7 @@ describe("Refinery.resolveConflict()", () => {
       expect.objectContaining({ status: "failed" }),
     );
 
-    // Ensure git merge --abort is called to leave the repo in a clean state
-    const calls: string[][] = (execFile as any).mock.calls.map((c: any[]) => c[1]);
-    const abortCall = calls.find((args) => Array.isArray(args) && args.includes("--abort"));
-    expect(abortCall).toBeDefined();
+    expect(vcs.abortMerge).toHaveBeenCalledWith("/tmp/project");
     expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
       expect.anything(), run.seed_id, expect.stringContaining("Merge failed"), "refinery",
     );
@@ -274,17 +266,14 @@ describe("Refinery.resolveConflict()", () => {
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
-    (execFile as any).mockImplementation(
-      (_cmd: string, _args: string[], _opts: any, callback: Function) => {
-        callback(null, { stdout: "", stderr: "" });
-      },
-    );
-    (removeWorktree as any).mockResolvedValue(undefined);
-
     await refinery.resolveConflict("run-1", "theirs", { targetBranch: "develop", runTests: false });
 
-    // vcsBackend.checkoutBranch() is now used instead of raw execFile("git", ["checkout", ...])
-    expect(vcs.checkoutBranch).toHaveBeenCalledWith(expect.any(String), "develop");
+    expect(vcs.mergeWithStrategy).toHaveBeenCalledWith(
+      "/tmp/project",
+      "foreman/seed-abc",
+      "develop",
+      "theirs",
+    );
   });
 
   it("theirs strategy defaults to main when no targetBranch provided", async () => {
@@ -292,21 +281,21 @@ describe("Refinery.resolveConflict()", () => {
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
-    (execFile as any).mockImplementation(
-      (_cmd: string, _args: string[], _opts: any, callback: Function) => {
-        callback(null, { stdout: "", stderr: "" });
-      },
-    );
-    (removeWorktree as any).mockResolvedValue(undefined);
-
     await refinery.resolveConflict("run-1", "theirs", { runTests: false });
 
-    // vcsBackend.checkoutBranch() is used; default branch = "main" (from vcs.detectDefaultBranch mock)
-    expect(vcs.checkoutBranch).toHaveBeenCalledWith(expect.any(String), "main");
+    expect(vcs.mergeWithStrategy).toHaveBeenCalledWith(
+      "/tmp/project",
+      "foreman/seed-abc",
+      "main",
+      "theirs",
+    );
   });
 
   it("theirs strategy marks run as test-failed and reverts when tests fail after merge", async () => {
-    const { store, seeds, refinery } = makeMocks();
+    const { store, seeds, refinery, vcs } = makeMocks({
+      mergeWithStrategy: vi.fn().mockResolvedValue({ success: true }),
+      rollbackFailedMerge: vi.fn().mockResolvedValue(undefined),
+    });
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
@@ -335,12 +324,7 @@ describe("Refinery.resolveConflict()", () => {
       expect.objectContaining({ status: "test-failed" }),
     );
 
-    // Ensure git reset --hard HEAD~1 was called to revert the merge
-    const calls: string[][] = (execFile as any).mock.calls.map((c: any[]) => c[1]);
-    const resetCall = calls.find(
-      (args) => Array.isArray(args) && args.includes("reset") && args.includes("--hard"),
-    );
-    expect(resetCall).toBeDefined();
+    expect(vcs.rollbackFailedMerge).toHaveBeenCalled();
     expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
       expect.anything(), run.seed_id, expect.stringContaining("tests failed"), "refinery",
     );
@@ -602,17 +586,23 @@ describe("Refinery.mergeCompleted()", () => {
   });
 
   it("adds failure note when rebase-conflict PR creation fails", async () => {
-    const { store, seeds, refinery } = makeMocks();
+    const { store, seeds, refinery } = makeMocks({
+      rebaseBranch: vi.fn().mockResolvedValue({
+        success: false,
+        hasConflicts: true,
+        conflictingFiles: ["src/index.ts"],
+      }),
+      getConflictingFiles: vi.fn().mockResolvedValue(["src/index.ts"]),
+      abortRebase: vi.fn().mockResolvedValue(undefined),
+    });
     const run = makeRun();
     store.getRunsByStatus.mockReturnValue([run]);
 
-    // Sequence of git calls:
-    //   1. git status --porcelain         → "" (autoCommitStateFiles: no dirty files)
-    //   2. git rebase main foreman/seed-abc → CONFLICT (rebase fails)
-    //   3. git diff --name-only --diff-filter=U → "src/index.ts" (real code conflict)
-    //   4. git rebase --abort             → success
-    //   5. git checkout main              → success (return to target branch)
-    //   6. git push (for PR creation)     → fails (gh not available)
+    // Sequence after VcsBackend migration:
+    //   1. rebaseBranch() → conflict result
+    //   2. abortRebase()  → success
+    //   3. push()         → success
+    //   4. gh pr create   → fails (gh not available)
     // → createPrForConflict returns null → addFailureNote must be called
     (execFile as any).mockImplementation(
       (cmd: string, args: string[], _opts: any, callback: Function) => {
@@ -621,15 +611,6 @@ describe("Refinery.mergeCompleted()", () => {
           err.stdout = "";
           err.stderr = "gh not available";
           callback(err);
-        } else if (Array.isArray(args) && args[0] === "rebase" && args.length > 1 && args[1] !== "--abort") {
-          // git rebase <target> <branch> — fail with conflict
-          const err = new Error("CONFLICT during rebase") as any;
-          err.stdout = "";
-          err.stderr = "CONFLICT during rebase";
-          callback(err);
-        } else if (Array.isArray(args) && args[0] === "diff" && args.includes("--diff-filter=U")) {
-          // git diff --name-only --diff-filter=U → real code conflict file
-          callback(null, { stdout: "src/index.ts\n", stderr: "" });
         } else if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
           callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
         } else {
@@ -988,22 +969,12 @@ describe("Refinery.resolveConflict() — bead close after merge", () => {
   });
 
   it("does NOT call closeSeed when resolveConflict git merge fails", async () => {
-    const { store, refinery } = makeMocks();
+    const { store, refinery } = makeMocks({
+      mergeWithStrategy: vi.fn().mockResolvedValue({ success: false, conflicts: ["README.md"] }),
+      abortMerge: vi.fn().mockResolvedValue(undefined),
+    });
     const run = makeRun({ id: "run-1", seed_id: "seed-mergefail", status: "conflict" });
     store.getRun.mockReturnValue(run);
-
-    (execFile as any).mockImplementation(
-      (_cmd: string, args: string[], _opts: any, callback: Function) => {
-        if (Array.isArray(args) && args.includes("merge") && !args.includes("--abort")) {
-          const err = new Error("Merge conflict") as any;
-          err.stdout = "";
-          err.stderr = "Merge conflict";
-          callback(err);
-        } else {
-          callback(null, { stdout: "", stderr: "" });
-        }
-      },
-    );
 
     const result = await refinery.resolveConflict("run-1", "theirs");
 

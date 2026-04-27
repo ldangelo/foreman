@@ -26,6 +26,23 @@ import {
   closeSync,
 } from "node:fs";
 
+function resolveDaemonEnv(baseEnv: NodeJS.ProcessEnv, cwd: string): NodeJS.ProcessEnv {
+  const dotEnvPath = join(cwd, ".env");
+  if (!existsSync(dotEnvPath)) {
+    return { ...baseEnv };
+  }
+
+  const match = readFileSync(dotEnvPath, "utf8").match(/^\s*DATABASE_URL=(.+)\s*$/m);
+  if (!match?.[1]) {
+    return { ...baseEnv };
+  }
+
+  return {
+    ...baseEnv,
+    DATABASE_URL: match[1].trim().replace(/^['"]|['"]$/g, ""),
+  };
+}
+
 const DEFAULT_SOCKET_PATH = join(homedir(), ".foreman", "daemon.sock");
 const DEFAULT_PID_PATH = join(homedir(), ".foreman", "daemon.pid");
 const DAEMON_ENTRY = join(dirname(import.meta.filename), "..", "daemon", "index.js");
@@ -175,7 +192,7 @@ export class DaemonManager {
       this.childProcess = spawn(process.execPath, [DAEMON_ENTRY], {
         detached: true,
         stdio: ["ignore", stdoutFd, stderrFd],
-        env: { ...process.env },
+        env: resolveDaemonEnv(process.env, process.cwd()),
       });
       closeSync(stdoutFd);
       closeSync(stderrFd);
