@@ -3,8 +3,10 @@ import chalk from "chalk";
 
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { Monitor } from "../../orchestrator/monitor.js";
+import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 export const monitorCommand = new Command("monitor")
   .description("[deprecated] Check agent progress and detect stuck runs. Use 'foreman reset --detect-stuck' instead.")
@@ -31,10 +33,32 @@ export const monitorCommand = new Command("monitor")
     }
 
     try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      const projectPath = await vcs.getRepoRoot(process.cwd());
+      const projectPath = await resolveRepoRootProjectPath({});
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
       const { taskClient } = await createTaskClient(projectPath, { ensureBrInstalled: true });
-      const store = ForemanStore.forProject(projectPath);
+      const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
+      if (registered) {
+        ensureCliPostgresPool(projectPath);
+      }
+      const store = registered
+        ? PostgresStore.forProject(registered.id)
+        : (() => {
+            const local = ForemanStore.forProject(projectPath);
+            return {
+              getActiveRuns: async (projectId?: string) => local.getActiveRuns(projectId),
+              updateRun: async (runId: string, updates: Parameters<typeof local.updateRun>[1]) => local.updateRun(runId, updates),
+              logEvent: async (projectId: string, eventType: Parameters<typeof local.logEvent>[1], data: Record<string, unknown>, runId?: string) => local.logEvent(projectId, eventType, data, runId),
+              getRunProgress: async (runId: string) => local.getRunProgress(runId),
+              getRunEvents: async (runId: string, eventType?: "recover") =>
+                local.getRunEvents(runId, eventType).map((event) => ({
+                  id: event.id,
+                  event_type: event.event_type,
+                  data: event.details ?? "{}",
+                  created_at: event.created_at,
+                })),
+              close: () => local.close(),
+            };
+          })();
       const monitor = new Monitor(store, taskClient, projectPath, vcs);
 
       if (!opts.json) {
@@ -48,7 +72,9 @@ export const monitorCommand = new Command("monitor")
       // JSON output path — serialize MonitorReport directly
       if (opts.json) {
         console.log(JSON.stringify(report, null, 2));
-        store.close();
+        if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
+          (store as { close: () => void }).close();
+        }
         return;
       }
 
@@ -124,7 +150,9 @@ export const monitorCommand = new Command("monitor")
         console.log(chalk.dim("No active runs found."));
       }
 
-      store.close();
+      if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
+        (store as { close: () => void }).close();
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       if (opts.json) {

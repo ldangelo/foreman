@@ -3,6 +3,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore, type Run } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
+
+vi.mock("../commands/project-task-support.js", () => ({
+  resolveRepoRootProjectPath: vi.fn(),
+  listRegisteredProjects: vi.fn(),
+  ensureCliPostgresPool: vi.fn(),
+}));
+
+vi.mock("../../lib/task-client-factory.js", () => ({
+  createTaskClient: vi.fn(),
+}));
 
 // ── Mock BeadsRustClient ───────────────────────────────────────────────
 
@@ -56,6 +67,16 @@ function createTestRun(
   return store.getRun(run.id)!;
 }
 
+function createStoreFacade(store: ForemanStore) {
+  return {
+    getProjectByPath: async (path: string) => store.getProjectByPath(path),
+    getRunsByStatus: async (status: Run["status"], projectId: string) =>
+      store.getRunsByStatus(status, projectId),
+    deleteRun: async (runId: string) => store.deleteRun(runId),
+    close: vi.fn(),
+  };
+}
+
 // ── Test suite ─────────────────────────────────────────────────────────
 
 describe("foreman purge-zombie-runs", () => {
@@ -79,6 +100,108 @@ describe("foreman purge-zombie-runs", () => {
   afterEach(() => {
     store.close();
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  describe("command targeting", () => {
+    it("resolves a registered run from a non-canonical cwd to the registered project path", async () => {
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const projectTaskSupport = await import("../commands/project-task-support.js");
+      const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+      const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+      const taskClientFactory = await import("../../lib/task-client-factory.js");
+      const createTaskClientMock = vi.mocked(taskClientFactory.createTaskClient);
+      const localStoreFacade = createStoreFacade(store);
+      const postgresStoreFacade = createStoreFacade(store);
+      const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStoreFacade as never);
+      const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject").mockReturnValue(postgresStoreFacade as never);
+
+      try {
+        const canonicalProject = store.registerProject("canonical-project", "/canonical/project");
+        createTestRun(store, canonicalProject.id, { seedId: "bd-registered", status: "running" });
+
+        resolveRepoRootProjectPathMock.mockResolvedValue("/canonical/project");
+        listRegisteredProjectsMock.mockResolvedValue([
+          { id: canonicalProject.id, name: "canonical-project", path: "/canonical/project" },
+        ]);
+        createTaskClientMock.mockResolvedValue({
+          backendType: "native",
+          taskClient: { show: vi.fn() },
+        });
+
+        const { purgeZombieRunsCommandAction } = await import("../commands/purge-zombie-runs.js");
+        const exitCode = await purgeZombieRunsCommandAction({});
+
+        expect(exitCode).toBe(0);
+        expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});
+        expect(localStoreSpy).toHaveBeenCalledWith("/canonical/project");
+        expect(postgresStoreSpy).toHaveBeenCalledWith(canonicalProject.id);
+        expect(createTaskClientMock).toHaveBeenCalledWith("/canonical/project");
+      } finally {
+        localStoreSpy.mockRestore();
+        postgresStoreSpy.mockRestore();
+        consoleSpy.mockRestore();
+      }
+    });
+
+    it("keeps local unregistered behavior unchanged", async () => {
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const projectTaskSupport = await import("../commands/project-task-support.js");
+      const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+      const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+      const taskClientFactory = await import("../../lib/task-client-factory.js");
+      const createTaskClientMock = vi.mocked(taskClientFactory.createTaskClient);
+      const localStoreFacade = createStoreFacade(store);
+      const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStoreFacade as never);
+      const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject");
+
+      try {
+        resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
+        listRegisteredProjectsMock.mockResolvedValue([]);
+        createTaskClientMock.mockResolvedValue({
+          backendType: "beads",
+          taskClient: { show: vi.fn() },
+        });
+
+        const { purgeZombieRunsCommandAction } = await import("../commands/purge-zombie-runs.js");
+        const exitCode = await purgeZombieRunsCommandAction({});
+
+        expect(exitCode).toBe(0);
+        expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});
+        expect(localStoreSpy).toHaveBeenCalledWith(tmpDir);
+        expect(postgresStoreSpy).not.toHaveBeenCalled();
+        expect(createTaskClientMock).toHaveBeenCalledWith(tmpDir);
+      } finally {
+        localStoreSpy.mockRestore();
+        postgresStoreSpy.mockRestore();
+        consoleSpy.mockRestore();
+      }
+    });
+
+    it("keeps the outside-repo error unchanged", async () => {
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const projectTaskSupport = await import("../commands/project-task-support.js");
+      const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+      const localStoreSpy = vi.spyOn(ForemanStore, "forProject");
+      const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject");
+
+      try {
+        resolveRepoRootProjectPathMock.mockRejectedValue(new Error("not a repo"));
+
+        const { purgeZombieRunsCommandAction } = await import("../commands/purge-zombie-runs.js");
+        const exitCode = await purgeZombieRunsCommandAction({});
+
+        expect(exitCode).toBe(1);
+        expect(consoleSpy).toHaveBeenCalledWith(
+          expect.stringContaining("Not in a git repository"),
+        );
+        expect(localStoreSpy).not.toHaveBeenCalled();
+        expect(postgresStoreSpy).not.toHaveBeenCalled();
+      } finally {
+        localStoreSpy.mockRestore();
+        postgresStoreSpy.mockRestore();
+        consoleSpy.mockRestore();
+      }
+    });
   });
 
   // ── No project registered ─────────────────────────────────────────────

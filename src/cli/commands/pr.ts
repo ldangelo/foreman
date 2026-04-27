@@ -2,9 +2,11 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { ForemanStore } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { Refinery } from "../../orchestrator/refinery.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 export const prCommand = new Command("pr")
   .description("Create pull requests for completed agent work")
@@ -12,13 +14,17 @@ export const prCommand = new Command("pr")
   .option("--draft", "Create draft PRs")
   .action(async (opts) => {
     try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      const projectPath = await vcs.getRepoRoot(process.cwd());
-      const { taskClient } = await createTaskClient(projectPath);
+      const projectPath = await resolveRepoRootProjectPath({});
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+      const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
+      const { taskClient } = await createTaskClient(projectPath, { registeredProjectId: registered?.id });
       const store = ForemanStore.forProject(projectPath);
-      const refinery = new Refinery(store, taskClient, projectPath, vcs);
+      const runLookup = registered ? PostgresStore.forProject(registered.id) : undefined;
+      const refinery = registered
+        ? new Refinery(store, taskClient, projectPath, vcs, { registeredProjectId: registered.id, runLookup })
+        : new Refinery(store, taskClient, projectPath, vcs);
 
-      const project = store.getProjectByPath(projectPath);
+      const project = registered ?? store.getProjectByPath(projectPath);
       if (!project) {
         console.error(chalk.red("No project registered. Run 'foreman init' first."));
         process.exit(1);

@@ -5,13 +5,13 @@ import { isAbsolute, join, resolve } from "node:path";
 
 import { normalizePriority } from "../../lib/priority.js";
 import { ForemanStore } from "../../lib/store.js";
-import { NativeTaskStore, type TaskRow } from "../../lib/task-store.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
+import { type TaskRow } from "../../lib/task-store.js";
 import { selectTaskReadBackend } from "../../lib/task-client-factory.js";
 import type { ITaskClient, Issue, UpdateOptions } from "../../lib/task-client.js";
-import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { PlanStepDefinition } from "../../orchestrator/types.js";
-import { resolveProjectPathFromOption } from "./project-task-support.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 // ── Client factory (TRD-016) ──────────────────────────────────────────────
 
@@ -46,58 +46,78 @@ function taskRowToIssue(row: TaskRow): Issue {
 class NativePlanTaskClient implements PlanTaskClient {
   constructor(private readonly projectPath: string) {}
 
-  private withStore<T>(fn: (taskStore: NativeTaskStore) => T): T {
-    const store = ForemanStore.forProject(this.projectPath);
-    try {
-      return fn(new NativeTaskStore(store.getDb()));
-    } finally {
-      store.close();
+  private async withClient<T>(fn: (client: ReturnType<typeof createTrpcClient>, projectId: string, projectKey: string) => Promise<T>): Promise<T> {
+    const projects = await listRegisteredProjects();
+    const project = projects.find((record) => record.path === this.projectPath);
+    if (!project) {
+      throw new Error(`Project at '${this.projectPath}' is not registered with the daemon.`);
     }
+    return fn(createTrpcClient(), project.id, project.name);
   }
 
   async create(title: string, opts?: PlanCreateOptions): Promise<Issue> {
-    return this.withStore((taskStore) => {
-      const row = taskStore.create({
+    return this.withClient(async (client, projectId, projectKey) => {
+      const existing = await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
+      const prefix = projectKey.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "task";
+      const seen = new Set(existing.map((row) => row.id));
+      let id = "";
+      for (;;) {
+        const candidate = `${prefix}-${Math.random().toString(16).slice(2, 7)}`;
+        if (!seen.has(candidate)) {
+          id = candidate;
+          break;
+        }
+      }
+      const row = await client.tasks.create({
+        projectId,
+        id,
         title,
         description: opts?.description,
-        type: opts?.type,
+        type: opts?.type ?? "task",
         priority: opts?.priority ? normalizePriority(opts.priority) : 2,
-      });
-      taskStore.approve(row.id);
+      }) as TaskRow;
+      await client.tasks.approve({ projectId, taskId: row.id });
       if (opts?.parent) {
-        taskStore.addDependency(row.id, opts.parent, "parent-child");
+        await client.tasks.addDependency({
+          projectId,
+          fromTaskId: row.id,
+          toTaskId: opts.parent,
+          type: "parent-child",
+        });
       }
-      return taskRowToIssue(taskStore.get(row.id) ?? row);
+      const current = await client.tasks.get({ projectId, taskId: row.id }) as TaskRow | null;
+      return taskRowToIssue(current ?? row);
     });
   }
 
   async addDependency(fromId: string, toId: string): Promise<void> {
-    this.withStore((taskStore) => {
-      taskStore.addDependency(fromId, toId, "blocks");
-      const blocker = taskStore.get(toId);
-      if (!blocker || !["merged", "closed"].includes(blocker.status)) {
-        taskStore.update(fromId, { status: "blocked", force: true });
-      } else {
-        taskStore.reevaluateBlockedTasks();
-      }
+    await this.withClient(async (client, projectId) => {
+      await client.tasks.addDependency({
+        projectId,
+        fromTaskId: fromId,
+        toTaskId: toId,
+        type: "blocks",
+      });
     });
   }
 
   async list(opts?: { status?: string; type?: string }): Promise<Issue[]> {
-    return this.withStore((taskStore) =>
-      taskStore
-        .list(opts?.status ? { status: opts.status } : undefined)
-        .filter((issue) => !opts?.type || issue.type === opts.type),
-    );
+    return this.withClient(async (client, projectId) => {
+      const rows = await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
+      return rows
+        .filter((row) => !opts?.status || row.status === opts.status)
+        .filter((row) => !opts?.type || row.type === opts.type)
+        .map(taskRowToIssue);
+    });
   }
 
   async ready(): Promise<Issue[]> {
-    return this.withStore((taskStore) => taskStore.ready());
+    return this.list({ status: "ready" });
   }
 
   async show(id: string): Promise<{ status: string; description?: string | null; notes?: string | null }> {
-    return this.withStore((taskStore) => {
-      const row = taskStore.get(id);
+    return this.withClient(async (client, projectId) => {
+      const row = await client.tasks.get({ projectId, taskId: id }) as TaskRow | null;
       if (!row) {
         throw new Error(`Native task '${id}' not found`);
       }
@@ -110,23 +130,23 @@ class NativePlanTaskClient implements PlanTaskClient {
   }
 
   async update(id: string, opts: UpdateOptions): Promise<void> {
-    this.withStore((taskStore) => {
-      taskStore.update(id, {
-        ...(opts.title !== undefined ? { title: opts.title } : {}),
-        ...(opts.description !== undefined ? { description: opts.description ?? null } : {}),
-        ...(opts.status !== undefined
-          ? { status: opts.status === "in_progress" ? "in-progress" : opts.status }
-          : {}),
-        ...(opts.claim ? { status: "in-progress" } : {}),
-        force: true,
+    await this.withClient(async (client, projectId) => {
+      await client.tasks.update({
+        projectId,
+        taskId: id,
+        updates: {
+          title: opts.title,
+          description: opts.description ?? undefined,
+          status: opts.claim ? "in-progress" : opts.status === "in_progress" ? "in-progress" : opts.status,
+        },
       });
     });
   }
 
   async close(id: string, reason?: string): Promise<void> {
-    this.withStore((taskStore) => {
-      taskStore.close(id, reason);
-      taskStore.reevaluateBlockedTasks();
+    void reason;
+    await this.withClient(async (client, projectId) => {
+      await client.tasks.close({ projectId, taskId: id });
     });
   }
 }
@@ -221,9 +241,7 @@ export const planCommand = new Command("plan")
         dryRun?: boolean;
       },
     ) => {
-      const resolvedProjectPath = await resolveProjectPathFromOption(opts.project);
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, resolvedProjectPath);
-      const projectPath = await vcs.getRepoRoot(resolvedProjectPath);
+      const projectPath = await resolveRepoRootProjectPath(opts.project ? { project: opts.project } : {});
       const outputDir = isAbsolute(opts.outputDir)
         ? resolve(opts.outputDir)
         : resolve(projectPath, opts.outputDir);
@@ -241,23 +259,22 @@ export const planCommand = new Command("plan")
       }
 
       // Initialize planning task client
+      const projects = await listRegisteredProjects();
+      const project = projects.find((record) => record.path === projectPath);
+      if (!project) {
+        console.error(
+          chalk.red(
+            "No project registered for this directory. Run 'foreman init' first.",
+          ),
+        );
+        process.exitCode = 1;
+        return;
+      }
       const store = ForemanStore.forProject(projectPath);
       const seeds = createPlanClient(projectPath);
-      const dispatcher = new Dispatcher(seeds, store, projectPath);
+      const dispatcher = new Dispatcher(seeds, store, projectPath, null, { externalProjectId: project.id });
 
       try {
-        // Ensure project is registered
-        const project = store.getProjectByPath(projectPath);
-        if (!project) {
-          console.error(
-            chalk.red(
-              "No project registered for this directory. Run 'foreman init' first.",
-            ),
-          );
-          process.exitCode = 1;
-          return;
-        }
-
         // Validate --from-prd path
         if (opts.fromPrd) {
           const prdPath = isAbsolute(opts.fromPrd)

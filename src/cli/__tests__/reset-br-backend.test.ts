@@ -19,6 +19,8 @@ import type { ForemanStore, Run } from "../../lib/store.js";
 import type { BrIssueDetail } from "../../lib/beads-rust.js";
 import type { UpdateOptions } from "../../lib/task-client.js";
 import type { MergeQueueEntry, MergeQueueStatus } from "../../orchestrator/merge-queue.js";
+import { buildSdkSessionKey } from "../../orchestrator/dispatcher.js";
+import { getWorkerPid } from "../commands/reset.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -265,6 +267,16 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
     expect(result.mismatches).toHaveLength(1);
     expect(result.mismatches[0].expectedSeedStatus).toBe("closed");
     expect(brClient.update).toHaveBeenCalledWith("bd-abc", { status: "closed" });
+  });
+});
+
+describe("reset kill handle parsing", () => {
+  it("extracts the persisted pid from SDK session metadata", () => {
+    const run = makeRun({
+      session_key: buildSdkSessionKey("claude-sonnet-4-6", "run-1", 24680),
+    });
+
+    expect(getWorkerPid(run)).toBe(24680);
   });
 });
 

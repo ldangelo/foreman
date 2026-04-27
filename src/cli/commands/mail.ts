@@ -11,8 +11,9 @@
  */
 
 import { Command } from "commander";
-import { ForemanStore } from "../../lib/store.js";
-import { VcsBackendFactory } from "../../lib/vcs/index.js";
+import { resolve } from "node:path";
+import { createTrpcClient } from "../../lib/trpc-client.js";
+import { resolveRepoRootProjectPath, listRegisteredProjects } from "./project-task-support.js";
 
 // ── send subcommand ───────────────────────────────────────────────────────────
 
@@ -51,22 +52,25 @@ const sendCommand = new Command("send")
       process.exit(1);
     }
 
-    // Resolve the project root so we can open the correct store
-    let projectPath: string;
+    const projectPath = await resolveRepoRootProjectPath({});
     try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      projectPath = await vcs.getMainRepoRoot(process.cwd());
-    } catch {
-      projectPath = process.cwd();
-    }
-
-    const store = ForemanStore.forProject(projectPath);
-    try {
-      store.sendMessage(runId, options.from, options.to, options.subject, parsedBody);
-      store.close();
+      const resolvedProjectPath = resolve(projectPath);
+      const projects = await listRegisteredProjects();
+      const project = projects.find((record) => resolve(record.path) === resolvedProjectPath);
+      if (!project) {
+        throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
+      }
+      const client = createTrpcClient();
+      await client.mail.send({
+        projectId: project.id,
+        runId,
+        senderAgentType: options.from,
+        recipientAgentType: options.to,
+        subject: options.subject,
+        body: parsedBody,
+      });
       process.exit(0);
     } catch (err: unknown) {
-      store.close();
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`mail send error: ${msg}\n`);
       process.exit(1);

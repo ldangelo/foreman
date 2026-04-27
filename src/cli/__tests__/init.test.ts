@@ -31,6 +31,27 @@ describe("initProjectStore — sentinel seeding", () => {
     });
   });
 
+  it("awaits async Postgres-backed sentinel config methods", async () => {
+    const store = makeStore({
+      getProjectByPath: vi.fn().mockResolvedValue(null),
+      registerProject: vi.fn().mockResolvedValue({ id: "proj-async" }),
+      getSentinelConfig: vi.fn().mockResolvedValue(null),
+      upsertSentinelConfig: vi.fn().mockResolvedValue({}),
+    });
+
+    await initProjectStore("/my/project", "my-project", store);
+
+    expect(store.registerProject).toHaveBeenCalledWith("my-project", "/my/project");
+    expect(store.getSentinelConfig).toHaveBeenCalledWith("proj-async");
+    expect(store.upsertSentinelConfig).toHaveBeenCalledWith("proj-async", {
+      branch: "main",
+      test_command: "npm test",
+      interval_minutes: 30,
+      failure_threshold: 2,
+      enabled: 1,
+    });
+  });
+
   it("skips sentinel seeding when config already exists", async () => {
     const store = makeStore({
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-existing" }),

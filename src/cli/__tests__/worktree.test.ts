@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Workspace } from "../../lib/vcs/types.js";
 import type { Run } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
@@ -18,6 +19,12 @@ const { mockListWorkspaces, mockRemoveWorkspace, mockDeleteBranch, mockCreateVcs
   return { mockListWorkspaces, mockRemoveWorkspace, mockDeleteBranch, mockCreateVcsBackend };
 });
 
+vi.mock("../commands/project-task-support.js", () => ({
+  resolveRepoRootProjectPath: vi.fn(),
+  listRegisteredProjects: vi.fn(),
+  ensureCliPostgresPool: vi.fn(),
+}));
+
 vi.mock("../../lib/vcs/index.js", () => ({
   VcsBackendFactory: {
     create: mockCreateVcsBackend,
@@ -26,6 +33,7 @@ vi.mock("../../lib/vcs/index.js", () => ({
 
 vi.mock("../../lib/store.js", () => {
   class MockForemanStore {
+    static forProject = vi.fn(() => new MockForemanStore());
     getProjectByPath = vi.fn(() => ({ id: "proj-1", name: "test", path: "/tmp/project", status: "active", created_at: "", updated_at: "" }));
     getRunsForSeed = vi.fn((): Run[] => []);
     getRunsByStatus = vi.fn((): Run[] => []);
@@ -34,13 +42,24 @@ vi.mock("../../lib/store.js", () => {
   return { ForemanStore: MockForemanStore };
 });
 
+vi.mock("../../lib/postgres-store.js", () => {
+  class MockPostgresStore {
+    static forProject = vi.fn(() => new MockPostgresStore());
+    getRunsForSeed = vi.fn(async () => []);
+    close = vi.fn();
+  }
+  return { PostgresStore: MockPostgresStore };
+});
+
 import { ForemanStore } from "../../lib/store.js";
 import {
   listForemanWorktrees,
   cleanWorktrees,
+  worktreeListCommandAction,
+  worktreeCleanCommandAction,
   type WorktreeInfo,
-  type CleanResult,
 } from "../commands/worktree.js";
+import * as projectTaskSupport from "../commands/project-task-support.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -443,5 +462,112 @@ describe("cleanWorktrees()", () => {
 
     expect(result.wouldRemove).toBeUndefined();
     expect(mockRemoveWorkspace).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── worktree command targeting tests ──────────────────────────────────────────
+
+describe("worktree command targeting", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("resolves registered worktree list to the canonical project path from a non-canonical cwd", async () => {
+    const projectTaskSupportMock = vi.mocked(projectTaskSupport);
+    const canonicalPath = "/canonical/project";
+    const localStore = new ForemanStore();
+    const postgresStore = new PostgresStore();
+    const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
+    const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject").mockReturnValue(postgresStore);
+
+    try {
+      projectTaskSupportMock.resolveRepoRootProjectPath.mockResolvedValue(canonicalPath);
+      projectTaskSupportMock.listRegisteredProjects.mockResolvedValue([
+        { id: "proj-1", name: "test-project", path: canonicalPath },
+      ]);
+
+      await worktreeListCommandAction({});
+
+      expect(projectTaskSupportMock.resolveRepoRootProjectPath).toHaveBeenCalledWith({});
+      expect(projectTaskSupportMock.ensureCliPostgresPool).toHaveBeenCalledWith(canonicalPath);
+      expect(localStoreSpy).toHaveBeenCalledWith(canonicalPath);
+      expect(postgresStoreSpy).toHaveBeenCalledWith("proj-1");
+    } finally {
+      localStoreSpy.mockRestore();
+      postgresStoreSpy.mockRestore();
+    }
+  });
+
+  it("resolves registered worktree clean to the canonical project path from a non-canonical cwd", async () => {
+    const projectTaskSupportMock = vi.mocked(projectTaskSupport);
+    const canonicalPath = "/canonical/project";
+    const localStore = new ForemanStore();
+    const postgresStore = new PostgresStore();
+    const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
+    const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject").mockReturnValue(postgresStore);
+
+    try {
+      projectTaskSupportMock.resolveRepoRootProjectPath.mockResolvedValue(canonicalPath);
+      projectTaskSupportMock.listRegisteredProjects.mockResolvedValue([
+        { id: "proj-1", name: "test-project", path: canonicalPath },
+      ]);
+
+      await worktreeCleanCommandAction({});
+
+      expect(projectTaskSupportMock.resolveRepoRootProjectPath).toHaveBeenCalledWith({});
+      expect(projectTaskSupportMock.ensureCliPostgresPool).toHaveBeenCalledWith(canonicalPath);
+      expect(localStoreSpy).toHaveBeenCalledWith(canonicalPath);
+      expect(postgresStoreSpy).toHaveBeenCalledWith("proj-1");
+    } finally {
+      localStoreSpy.mockRestore();
+      postgresStoreSpy.mockRestore();
+    }
+  });
+
+  it("keeps local unregistered worktree list behavior unchanged", async () => {
+    const projectTaskSupportMock = vi.mocked(projectTaskSupport);
+    const localStore = new ForemanStore();
+    const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
+    const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject");
+
+    try {
+      projectTaskSupportMock.resolveRepoRootProjectPath.mockResolvedValue("/tmp/project");
+      projectTaskSupportMock.listRegisteredProjects.mockResolvedValue([]);
+
+      await worktreeListCommandAction({});
+
+      expect(projectTaskSupportMock.resolveRepoRootProjectPath).toHaveBeenCalledWith({});
+      expect(projectTaskSupportMock.ensureCliPostgresPool).not.toHaveBeenCalled();
+      expect(localStoreSpy).toHaveBeenCalledWith("/tmp/project");
+      expect(postgresStoreSpy).not.toHaveBeenCalled();
+    } finally {
+      localStoreSpy.mockRestore();
+      postgresStoreSpy.mockRestore();
+    }
+  });
+
+  it("keeps outside-a-repo worktree clean behavior unchanged", async () => {
+    const projectTaskSupportMock = vi.mocked(projectTaskSupport);
+    const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const localStoreSpy = vi.spyOn(ForemanStore, "forProject");
+    const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject");
+
+    try {
+      projectTaskSupportMock.resolveRepoRootProjectPath.mockRejectedValue(new Error("not a repo"));
+
+      await worktreeCleanCommandAction({});
+
+      expect(projectTaskSupportMock.resolveRepoRootProjectPath).toHaveBeenCalledWith({});
+      expect(consoleErrSpy).toHaveBeenCalledWith(expect.stringContaining("Error: not a repo"));
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(localStoreSpy).not.toHaveBeenCalled();
+      expect(postgresStoreSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleErrSpy.mockRestore();
+      exitSpy.mockRestore();
+      localStoreSpy.mockRestore();
+      postgresStoreSpy.mockRestore();
+    }
   });
 });

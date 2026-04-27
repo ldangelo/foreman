@@ -30,6 +30,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { ForemanStore } from "../../../lib/store.js";
 import { loadDashboardConfig } from "../../../lib/project-config.js";
+import { resolveRepoRootProjectPath } from "../project-task-support.js";
 import {
   type WatchState,
   initialWatchState,
@@ -60,7 +61,7 @@ export const watchCommand = new Command("watch")
     inbox: boolean;
     project?: string;
   }) => {
-    const projectPath = process.cwd();
+    const projectPath = await resolveRepoRootProjectPath({ project: opts.project });
 
     // Load config
     const config = loadDashboardConfig(projectPath);
@@ -96,8 +97,8 @@ export const watchCommand = new Command("watch")
       projectId,
     };
 
-    // Store
-    const store = ForemanStore.forProject(projectPath);
+    // SQLite-backed store is only still needed for inbox fallback.
+    const store = noInbox ? null : ForemanStore.forProject(projectPath);
 
     // SIGWINCH handler for resize
     let winchOccurred = false;
@@ -116,7 +117,7 @@ export const watchCommand = new Command("watch")
       detached = true;
       process.stdout.write("\x1b[?25h\n"); // restore cursor
       console.log(chalk.dim("  Detached."));
-      store.close();
+      store?.close();
       process.exit(0);
     };
     process.on("SIGINT", onSigint);
@@ -155,26 +156,30 @@ export const watchCommand = new Command("watch")
         if (task) {
           if (key === "a" || key === "A") {
             if (task.status === "backlog") {
-              const ok = approveTask(task.id, projectPath);
-              if (!ok) {
-                state.errorMessage = "Failed to approve task";
-              }
+              void approveTask(task.id, projectPath).then((ok) => {
+                if (!ok) {
+                  state.errorMessage = "Failed to approve task";
+                }
+                wakeAndRender();
+              });
             } else {
               state.errorMessage = "Task must be in backlog to approve";
+              wakeAndRender();
             }
-            wakeAndRender();
             return;
           }
           if (key === "r" || key === "R") {
             if (task.status === "failed" || task.status === "stuck" || task.status === "conflict") {
-              const ok = retryTask(task.id, projectPath);
-              if (!ok) {
-                state.errorMessage = "Failed to retry task";
-              }
+              void retryTask(task.id, projectPath).then((ok) => {
+                if (!ok) {
+                  state.errorMessage = "Failed to retry task";
+                }
+                wakeAndRender();
+              });
             } else {
               state.errorMessage = "Task must be failed or stuck to retry";
+              wakeAndRender();
             }
-            wakeAndRender();
             return;
           }
         }
@@ -204,7 +209,7 @@ export const watchCommand = new Command("watch")
       // ── One-shot mode ─────────────────────────────────────────────────
       if (noWatch) {
         const pollStart = Date.now();
-        const result = await pollWatchData(store, projectPath, projectId);
+        const result = await pollWatchData(projectPath, projectId);
         state.lastPollMs = pollStart;
         state.dashboard = result.dashboard;
         state.agents = result.agents;
@@ -213,7 +218,7 @@ export const watchCommand = new Command("watch")
 
         if (!noInbox) {
           const runIds = result.agents.map(e => e.run.id);
-          const inboxResult = await pollInboxData(store, null, inboxLimit, runIds);
+          const inboxResult = await pollInboxData(store!, null, inboxLimit, runIds, projectPath, projectId);
           state.inbox = {
             messages: inboxResult.messages,
             totalCount: inboxResult.totalCount,
@@ -223,8 +228,8 @@ export const watchCommand = new Command("watch")
         }
 
         console.log(renderWatch(state));
-        store.close();
-        return;
+          store?.close();
+          return;
       }
 
       // ── Live mode ─────────────────────────────────────────────────────
@@ -238,7 +243,7 @@ export const watchCommand = new Command("watch")
       // Initial poll
       {
         const pollStart = Date.now();
-        const result = await pollWatchData(store, projectPath, projectId);
+        const result = await pollWatchData(projectPath, projectId);
         state.lastPollMs = pollStart;
         state.dashboard = result.dashboard;
         state.agents = result.agents;
@@ -249,7 +254,7 @@ export const watchCommand = new Command("watch")
       // Initial inbox poll
       if (!noInbox) {
         const runIds = state.agents.map(e => e.run.id);
-        const inboxResult = await pollInboxData(store, null, inboxLimit, runIds);
+          const inboxResult = await pollInboxData(store!, null, inboxLimit, runIds, projectPath, projectId);
         state.inbox = {
           messages: inboxResult.messages,
           totalCount: inboxResult.totalCount,
@@ -286,7 +291,7 @@ export const watchCommand = new Command("watch")
 
         // Full data poll
         const pollStart = Date.now();
-        const result = await pollWatchData(store, projectPath, projectId);
+          const result = await pollWatchData(projectPath, projectId);
         state.lastPollMs = pollStart;
         state.dashboard = result.dashboard;
         state.agents = result.agents;
@@ -299,7 +304,7 @@ export const watchCommand = new Command("watch")
         // Inbox-only fast poll
         if (!noInbox) {
           const runIds = result.agents.map(e => e.run.id);
-          const inboxResult = await pollInboxData(store, state.inboxLastSeenId, inboxLimit, runIds);
+          const inboxResult = await pollInboxData(store!, state.inboxLastSeenId, inboxLimit, runIds, projectPath, projectId);
 
           if (inboxResult.messages.length > 0) {
             // Prepend new messages (they come in reverse chronological order)
@@ -336,6 +341,6 @@ export const watchCommand = new Command("watch")
         try { process.stdin.setRawMode(false); } catch { /* ignore */ }
         process.stdin.pause();
       }
-      store.close();
+      store?.close();
     }
   });

@@ -18,7 +18,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { Box, Spacer, Text, renderToString } from "ink";
 import { createElement } from "react";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -26,9 +26,8 @@ import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 import { createInterface } from "node:readline/promises";
 import * as yaml from "js-yaml";
-import { ForemanStore } from "../../lib/store.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
 import {
-  NativeTaskStore,
   priorityLabel,
   formatTaskIdDisplay,
   parsePriority,
@@ -89,6 +88,12 @@ export interface BoardTask {
   closed_at: string | null;
 }
 
+interface BoardContext {
+  client: ReturnType<typeof createTrpcClient>;
+  projectId: string;
+  projectPath: string;
+}
+
 export interface NavigationState {
   colIndex: number;       // 0-5 for status columns
   rowIndex: number;       // position within the column's task list
@@ -107,59 +112,55 @@ export interface RenderState {
 
 // ── Board data loading ───────────────────────────────────────────────────────
 
-function getTaskStore(projectPath: string): { store: ForemanStore; taskStore: NativeTaskStore } {
-  const store = ForemanStore.forProject(projectPath);
-  const project = store.getProjectByPath(projectPath);
-  const taskStore = new NativeTaskStore(store.getDb(), {
-    projectKey: project?.name ?? basename(projectPath),
-  });
-  return { store, taskStore };
+async function resolveBoardContext(projectPath: string): Promise<BoardContext> {
+  const projects = await listRegisteredProjects();
+  const resolvedProjectPath = resolve(projectPath);
+  const project = projects.find((record) => resolve(record.path) === resolvedProjectPath);
+  if (!project) {
+    throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
+  }
+  return {
+    client: createTrpcClient(),
+    projectId: project.id,
+    projectPath,
+  };
 }
 
 /**
  * Load all tasks from the native task store, grouped by status.
  * Tasks with unknown statuses are placed in the rightmost column (closed).
  */
-export function loadBoardTasks(projectPath: string): Map<BoardStatus, BoardTask[]> {
-  const { store, taskStore } = getTaskStore(projectPath);
-  try {
-    const db = store.getDb();
-    // Load all tasks ordered by priority and created_at
-    const rows = db.prepare(
-      "SELECT * FROM tasks ORDER BY priority ASC, created_at ASC",
-    ).all() as TaskRow[];
+export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStatus, BoardTask[]>> {
+  const { client, projectId } = await resolveBoardContext(projectPath);
+  const rows = await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
 
-    const map = new Map<BoardStatus, BoardTask[]>();
-    for (const status of BOARD_STATUSES) {
-      map.set(status, []);
-    }
-
-    for (const row of rows) {
-      // Normalize status: convert hyphens to underscores for matching
-      const normalizedStatus = row.status.replace(/-/g, "_") as BoardStatus;
-      const status = BOARD_STATUSES.includes(normalizedStatus)
-        ? normalizedStatus
-        : "closed";
-      const tasks = map.get(status)!;
-      tasks.push({
-        id: row.id,
-        title: row.title,
-        description: row.description,
-        type: row.type,
-        priority: row.priority,
-        status: row.status,
-        external_id: row.external_id,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        approved_at: row.approved_at,
-        closed_at: row.closed_at,
-      });
-    }
-
-    return map;
-  } finally {
-    store.close();
+  const map = new Map<BoardStatus, BoardTask[]>();
+  for (const status of BOARD_STATUSES) {
+    map.set(status, []);
   }
+
+  for (const row of rows) {
+    const normalizedStatus = row.status.replace(/-/g, "_") as BoardStatus;
+    const status = BOARD_STATUSES.includes(normalizedStatus)
+      ? normalizedStatus
+      : "closed";
+    const tasks = map.get(status)!;
+    tasks.push({
+      id: row.id,
+      title: row.title,
+      description: row.description,
+      type: row.type,
+      priority: row.priority,
+      status: row.status,
+      external_id: row.external_id,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      approved_at: row.approved_at,
+      closed_at: row.closed_at,
+    });
+  }
+
+  return map;
 }
 
 // ── ANSI rendering helpers ────────────────────────────────────────────────────
@@ -766,14 +767,16 @@ export function editTaskInEditor(
  * Write a status change to the store.
  */
 export function applyStatusChange(projectPath: string, taskId: string, newStatus: string): string | null {
-  const { store, taskStore } = getTaskStore(projectPath);
+  throw new Error("applyStatusChange is now async; use applyStatusChangeAsync().");
+}
+
+export async function applyStatusChangeAsync(projectPath: string, taskId: string, newStatus: string): Promise<string | null> {
   try {
-    taskStore.update(taskId, { status: newStatus });
+    const { client, projectId } = await resolveBoardContext(projectPath);
+    await client.tasks.update({ projectId, taskId, updates: { status: newStatus } });
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
-  } finally {
-    store.close();
   }
 }
 
@@ -781,19 +784,16 @@ export function applyStatusChange(projectPath: string, taskId: string, newStatus
  * Close a task (status → closed, optionally with a reason stored in closed_at).
  */
 export function closeTask(projectPath: string, taskId: string, reason?: string): string | null {
-  const { store, taskStore } = getTaskStore(projectPath);
+  throw new Error("closeTask is now async; use closeTaskAsync().");
+}
+
+export async function closeTaskAsync(projectPath: string, taskId: string, _reason?: string): Promise<string | null> {
   try {
-    taskStore.close(taskId);
-    if (reason) {
-      // Store reason in closed_at (we reuse this field; a real implementation might use a separate field)
-      const db = store.getDb();
-      db.prepare("UPDATE tasks SET closed_at = ? WHERE id = ?").run(reason, taskId);
-    }
+    const { client, projectId } = await resolveBoardContext(projectPath);
+    await client.tasks.close({ projectId, taskId });
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
-  } finally {
-    store.close();
   }
 }
 
@@ -801,25 +801,25 @@ export function closeTask(projectPath: string, taskId: string, reason?: string):
  * Save an edited task back to the store (title, description, priority, status).
  */
 export function saveEditedTask(projectPath: string, originalId: string, updated: BoardTask): string | null {
-  const { store, taskStore } = getTaskStore(projectPath);
+  throw new Error("saveEditedTask is now async; use saveEditedTaskAsync().");
+}
+
+export async function saveEditedTaskAsync(projectPath: string, originalId: string, updated: BoardTask): Promise<string | null> {
   try {
-    const db = store.getDb();
-    db.prepare(
-      `UPDATE tasks SET title = ?, description = ?, type = ?, priority = ?, status = ?, updated_at = ? WHERE id = ?`,
-    ).run(
-      updated.title,
-      updated.description ?? null,
-      updated.type,
-      updated.priority,
-      updated.status,
-      new Date().toISOString(),
-      originalId,
-    );
+    const { client, projectId } = await resolveBoardContext(projectPath);
+    await client.tasks.update({
+      projectId,
+      taskId: originalId,
+      updates: {
+        title: updated.title,
+        description: updated.description ?? undefined,
+        priority: updated.priority,
+        status: updated.status,
+      },
+    });
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
-  } finally {
-    store.close();
   }
 }
 
@@ -884,16 +884,16 @@ export type KeyHandler = (
   key: string,
   state: RenderState,
   projectPath: string,
-) => KeyHandlerResult;
+) => Promise<KeyHandlerResult>;
 
 /**
  * Create the key handler closure that captures projectPath.
  */
 export function createKeyHandler(projectPath: string): KeyHandler {
-  return function handleKey(
+  return async function handleKey(
     key: string,
     state: RenderState,
-  ): KeyHandlerResult {
+  ): Promise<KeyHandlerResult> {
     const result: KeyHandlerResult = {
       nav: { ...state.nav },
       errorMessage: null,
@@ -988,7 +988,7 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         const newStatusIdx = (currentStatusIdx + delta + BOARD_STATUSES.length) % BOARD_STATUSES.length;
         const newStatus = BOARD_STATUSES[newStatusIdx];
 
-        const err = applyStatusChange(projectPath, task.id, newStatus);
+        const err = await applyStatusChangeAsync(projectPath, task.id, newStatus);
         if (err) {
           result.errorMessage = err;
         } else {
@@ -1003,7 +1003,7 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         const task = getHighlightedTask(result.nav, state.tasks);
         if (!task) break;
 
-        const err = closeTask(projectPath, task.id);
+        const err = await closeTaskAsync(projectPath, task.id);
         if (err) {
           result.errorMessage = err;
         } else {
@@ -1031,7 +1031,7 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         });
 
         if (updated && updated.id === task.id) {
-          const saveErr = saveEditedTask(projectPath, task.id, updated);
+          const saveErr = await saveEditedTaskAsync(projectPath, task.id, updated);
           if (saveErr) {
             result.errorMessage = saveErr;
           } else {
@@ -1122,12 +1122,12 @@ async function readLine(prompt: string): Promise<string> {
 /**
  * Run the interactive kanban board TUI loop.
  */
-export function runBoard(opts: BoardOptions): void {
+export async function runBoard(opts: BoardOptions): Promise<void> {
   const { projectPath, projectName, limit } = opts;
 
   let tasks: Map<BoardStatus, BoardTask[]>;
   try {
-    tasks = loadBoardTasks(projectPath);
+    tasks = await loadBoardTasks(projectPath);
   } catch (err) {
     console.error(chalk.red(`Failed to load tasks: ${err instanceof Error ? err.message : String(err)}`));
     return;
@@ -1210,7 +1210,7 @@ export function runBoard(opts: BoardOptions): void {
       detailTask,
     };
 
-    const result = handleKey(normalizedKey, currentState, projectPath);
+    const result = await handleKey(normalizedKey, currentState, projectPath);
 
     if (result.promptForCloseReason) {
       const task = getHighlightedTask(nav, tasks);
@@ -1218,7 +1218,7 @@ export function runBoard(opts: BoardOptions): void {
         detachRawMode();
         try {
           const closeReason = await readLine("\nClose reason (optional, press Enter to skip): ");
-          const err = closeTask(projectPath, task.id, closeReason || undefined);
+          const err = await closeTaskAsync(projectPath, task.id, closeReason || undefined);
           if (!err) {
             result.flashTaskId = task.id;
             result.needsRefresh = true;
@@ -1239,12 +1239,12 @@ export function runBoard(opts: BoardOptions): void {
     errorMessage = result.errorMessage;
     flashTaskId = result.flashTaskId;
 
-    // Refresh tasks if requested
-    if (result.needsRefresh) {
-      try {
-        tasks = loadBoardTasks(projectPath);
-        normalizeNavRowIndex(nav, tasks);
-      } catch (err) {
+      // Refresh tasks if requested
+      if (result.needsRefresh) {
+        try {
+          tasks = await loadBoardTasks(projectPath);
+          normalizeNavRowIndex(nav, tasks);
+        } catch (err) {
         errorMessage = `Failed to refresh: ${err instanceof Error ? err.message : String(err)}`;
       }
       flashTaskId = null;

@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 import { ForemanStore } from "../../lib/store.js";
-import { VcsBackendFactory } from "../../lib/vcs/index.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
+import { ensureCliPostgresPool, listRegisteredProjects } from "./project-task-support.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -21,6 +23,41 @@ export interface PurgeLogsResult {
   skipped: number;
   errors: number;
   freedBytes: number;
+}
+
+interface PurgeStore {
+  getRun(id: string): Promise<import("../../lib/store.js").Run | null>;
+}
+
+type RegisteredProject = Awaited<ReturnType<typeof listRegisteredProjects>>[number];
+
+export interface PurgeLogsCommandContext {
+  projectPath: string;
+  localStore: ForemanStore;
+  registered?: RegisteredProject;
+  store: PurgeStore;
+}
+
+export function wrapLocalPurgeStore(store: ForemanStore): PurgeStore {
+  return {
+    getRun: async (id) => store.getRun(id),
+  };
+}
+
+export async function resolvePurgeLogsCommandContext(): Promise<PurgeLogsCommandContext> {
+  const projectPath = await resolveRepoRootProjectPath({});
+  const localStore = ForemanStore.forProject(projectPath);
+  const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
+
+  if (registered) {
+    ensureCliPostgresPool(projectPath);
+  }
+
+  const store: PurgeStore = registered
+    ? PostgresStore.forProject(registered.id)
+    : wrapLocalPurgeStore(localStore);
+
+  return { projectPath, localStore, registered, store };
 }
 
 // ── Constants ─────────────────────────────────────────────────────────
@@ -77,7 +114,7 @@ function humanBytes(bytes: number): string {
  */
 export async function purgeLogsAction(
   opts: PurgeLogsOpts,
-  store: ForemanStore,
+  store: PurgeStore,
   logsDir?: string,
 ): Promise<PurgeLogsResult> {
   const dryRun = opts.dryRun ?? false;
@@ -181,7 +218,7 @@ export async function purgeLogsAction(
     }
 
     // Check the run status in the DB
-    const run = store.getRun(runId);
+    const run = await store.getRun(runId);
 
     if (run && !TERMINAL_STATUSES.has(run.status)) {
       // Active run — never delete
@@ -256,6 +293,40 @@ export async function purgeLogsAction(
   return result;
 }
 
+export async function purgeLogsCommandAction(opts: PurgeLogsOpts): Promise<void> {
+  let context: PurgeLogsCommandContext;
+  try {
+    context = await resolvePurgeLogsCommandContext();
+  } catch {
+    console.error(chalk.red("Not in a git repository. Run from within a foreman project."));
+    process.exit(1);
+  }
+
+  try {
+    const result = await purgeLogsAction(
+      {
+        days: opts.days ?? 7,
+        dryRun: opts.dryRun,
+        all: opts.all,
+      },
+      context.store,
+    );
+    context.localStore.close();
+    if ("close" in context.store && typeof (context.store as { close?: () => void }).close === "function") {
+      (context.store as { close: () => void }).close();
+    }
+    process.exit(result.errors > 0 ? 1 : 0);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(chalk.red(msg));
+    context.localStore.close();
+    if ("close" in context.store && typeof (context.store as { close?: () => void }).close === "function") {
+      (context.store as { close: () => void }).close();
+    }
+    process.exit(1);
+  }
+}
+
 // ── CLI Command ──────────────────────────────────────────────────────
 
 export const purgeLogsCommand = new Command("purge-logs")
@@ -273,35 +344,4 @@ export const purgeLogsCommand = new Command("purge-logs")
   )
   .option("--dry-run", "Show what would be deleted without making any changes")
   .option("--all", "Delete all terminal-status logs regardless of age (use with caution)")
-  .action(async (opts: { days?: number; dryRun?: boolean; all?: boolean }) => {
-    let projectPath: string;
-    try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      projectPath = await vcs.getRepoRoot(process.cwd());
-    } catch {
-      console.error(
-        chalk.red("Not in a git repository. Run from within a foreman project."),
-      );
-      process.exit(1);
-    }
-
-    const store = ForemanStore.forProject(projectPath);
-
-    try {
-      const result = await purgeLogsAction(
-        {
-          days: opts.days ?? 7,
-          dryRun: opts.dryRun,
-          all: opts.all,
-        },
-        store,
-      );
-      store.close();
-      process.exit(result.errors > 0 ? 1 : 0);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(msg));
-      store.close();
-      process.exit(1);
-    }
-  });
+  .action(purgeLogsCommandAction);

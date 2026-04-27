@@ -5,14 +5,18 @@ import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../..
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { Refinery, dryRunMerge } from "../../orchestrator/refinery.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
+import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import type { MergeQueueStatus } from "../../orchestrator/merge-queue.js";
 import type { MergedRun, ConflictRun, FailedRun, CreatedPr } from "../../orchestrator/types.js";
 import { MergeCostTracker } from "../../orchestrator/merge-cost-tracker.js";
+import { PostgresMergeCostTracker } from "../../orchestrator/postgres-merge-cost-tracker.js";
 import { syncBeadStatusAfterMerge } from "../../orchestrator/auto-merge.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 // ── Backend Client Factory (TRD-017) ──────────────────────────────────
 
@@ -24,8 +28,8 @@ import { syncBeadStatusAfterMerge } from "../../orchestrator/auto-merge.js";
  *
  * Throws if the br binary cannot be found.
  */
-export async function createMergeTaskClient(projectPath: string): Promise<ITaskClient> {
-  const { taskClient } = await createTaskClient(projectPath, { ensureBrInstalled: true });
+export async function createMergeTaskClient(projectPath: string, registeredProjectId?: string): Promise<ITaskClient> {
+  const { taskClient } = await createTaskClient(projectPath, { ensureBrInstalled: true, registeredProjectId });
   return taskClient;
 }
 
@@ -46,6 +50,39 @@ function statusLabel(status: MergeQueueStatus): string {
   }
 }
 
+interface MergeQueueLike {
+  reconcile(repoPath: string): Promise<{ enqueued: number; skipped: number; invalidBranch: number; failedToEnqueue: Array<{ run_id: string; seed_id: string; reason: string }> }>;
+  list(): Promise<Array<{
+    id: number;
+    branch_name: string;
+    seed_id: string;
+    run_id: string;
+    enqueued_at: string;
+    status: MergeQueueStatus;
+    files_modified: string[];
+    operation?: "auto_merge" | "create_pr";
+    error: string | null;
+    retry_count: number;
+  }>>;
+  resetForRetry(seedId: string): Promise<boolean>;
+  dequeue(): Promise<Awaited<ReturnType<MergeQueueLike["list"]>>[number] | null>;
+  updateStatus(id: number, status: MergeQueueStatus, extra?: { resolvedTier?: number; error?: string; completedAt?: string; lastAttemptedAt?: string; retryCount?: number }): Promise<void>;
+  getRetryableEntries(): Promise<Awaited<ReturnType<MergeQueueLike["list"]>>>;
+  reEnqueue(id: number): Promise<boolean>;
+}
+
+function wrapLocalMergeQueue(queue: MergeQueue, store: ForemanStore, projectPath: string): MergeQueueLike {
+  return {
+    reconcile: async () => queue.reconcile(store.getDb(), projectPath),
+    list: async () => queue.list(),
+    resetForRetry: async (seedId) => queue.resetForRetry(seedId),
+    dequeue: async () => queue.dequeue(),
+    updateStatus: async (id, status, extra) => queue.updateStatus(id, status, extra),
+    getRetryableEntries: async () => queue.getRetryableEntries(),
+    reEnqueue: async (id) => queue.reEnqueue(id),
+  };
+}
+
 export const mergeCommand = new Command("merge")
   .description("Merge completed agent work into target branch")
   .option("--target-branch <branch>", "Branch to merge into (default: auto-detected)")
@@ -61,10 +98,10 @@ export const mergeCommand = new Command("merge")
   .option("--json", "Output stats in JSON format")
   .action(async (opts) => {
     try {
-      const startupVcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      const projectPath = await startupVcs.getRepoRoot(process.cwd());
+      const projectPath = await resolveRepoRootProjectPath({});
       const projectCfg = loadProjectConfig(projectPath);
       const vcs = await createMergeVcsBackend(projectPath);
+      const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
 
       // Resolve the target branch: use the explicit --target-branch flag if provided,
       // otherwise auto-detect the repository's default branch.
@@ -75,12 +112,20 @@ export const mergeCommand = new Command("merge")
           projectCfg,
         );
 
-      const seeds = await createMergeTaskClient(projectPath);
       const store = ForemanStore.forProject(projectPath);
-      const refinery = new Refinery(store, seeds, projectPath, vcs);
-      const mq = new MergeQueue(store.getDb());
+      const seeds = await createMergeTaskClient(projectPath, registered?.id);
+      const runLookup = registered ? new PostgresStore(registered.id) : undefined;
+      const refinery = registered
+        ? new Refinery(store, seeds, projectPath, vcs, {
+          registeredProjectId: registered.id,
+          runLookup,
+        })
+        : new Refinery(store, seeds, projectPath, vcs);
+      const mq: MergeQueueLike = registered
+        ? new PostgresMergeQueue(registered.id)
+        : wrapLocalMergeQueue(new MergeQueue(store.getDb()), store, projectPath);
 
-      const project = store.getProjectByPath(projectPath);
+      const project = registered ?? store.getProjectByPath(projectPath);
       if (!project) {
         if (opts.json) {
           console.error(JSON.stringify({ error: "No project registered. Run 'foreman init' first." }));
@@ -106,7 +151,7 @@ export const mergeCommand = new Command("merge")
         }
 
         const runId = opts.resolve as string;
-        const run = store.getRun(runId);
+        const run = registered ? await runLookup!.getRun(runId) : store.getRun(runId);
         if (!run) {
           console.error(chalk.red(`Error: Run '${runId}' not found.`));
           store.close();
@@ -146,9 +191,11 @@ export const mergeCommand = new Command("merge")
 
       // --stats: show merge cost statistics (MQ-T071)
       if (opts.stats !== undefined) {
-        const costTracker = new MergeCostTracker(store.getDb());
+        const costTracker = registered
+          ? new PostgresMergeCostTracker(registered.id)
+          : new MergeCostTracker(store.getDb());
         const period = (typeof opts.stats === "string" ? opts.stats : "all") as "daily" | "weekly" | "monthly" | "all";
-        const stats = costTracker.getStats(period);
+        const stats = await costTracker.getStats(period as never);
 
         if (opts.json) {
           console.log(JSON.stringify(stats, null, 2));
@@ -174,7 +221,7 @@ export const mergeCommand = new Command("merge")
           }
 
           // Resolution rate (MQ-T072)
-          const rate = costTracker.getResolutionRate(30);
+          const rate = await costTracker.getResolutionRate(30);
           if (rate.total > 0) {
             console.log(chalk.bold("\n  AI resolution rate (30 days):"));
             console.log(`    ${rate.successes}/${rate.total} conflicts (${rate.rate.toFixed(1)}%)`);
@@ -188,12 +235,12 @@ export const mergeCommand = new Command("merge")
       // --dry-run: preview merge without modifying git state (MQ-T058)
       if (opts.dryRun) {
         // Reconcile first to get current queue state
-        const reconcileResult = await mq.reconcile(store.getDb(), projectPath);
+        const reconcileResult = await mq.reconcile(projectPath);
         if (reconcileResult.enqueued > 0) {
           console.log(chalk.dim(`  (reconciled ${reconcileResult.enqueued} new entry/entries into queue)\n`));
         }
 
-        const entries = mq.list();
+        const entries = await mq.list();
         const branches = entries.map((e) => ({
           branchName: e.branch_name,
           seedId: e.seed_id,
@@ -243,9 +290,9 @@ export const mergeCommand = new Command("merge")
       // --list: show queue entries and exit (MQ-T019)
       if (opts.list) {
         // Reconcile first to ensure queue is up to date
-        const reconcileResult = await mq.reconcile(store.getDb(), projectPath);
+        const reconcileResult = await mq.reconcile(projectPath);
 
-        const entries = mq.list();
+        const entries = await mq.list();
 
         if (opts.json) {
           console.log(JSON.stringify({ entries }, null, 2));
@@ -292,7 +339,7 @@ export const mergeCommand = new Command("merge")
       console.log(chalk.bold("Running refinery on completed work...\n"));
 
       // Step 1: Reconcile — ensure all completed runs are in the queue
-      const reconcileResult = await mq.reconcile(store.getDb(), projectPath);
+        const reconcileResult = await mq.reconcile(projectPath);
       if (reconcileResult.enqueued > 0) {
         console.log(chalk.dim(`  Reconciled ${reconcileResult.enqueued} completed run(s) into merge queue.\n`));
       }
@@ -307,7 +354,7 @@ export const mergeCommand = new Command("merge")
       // When retrying a specific seed, reset its failed/conflict entry back to
       // pending so the dequeue loop can pick it up again.
       if (opts.bead) {
-        mq.resetForRetry(opts.bead);
+        await mq.resetForRetry(opts.bead);
       }
 
       // Step 2: Process queue via dequeue loop
@@ -317,12 +364,12 @@ export const mergeCommand = new Command("merge")
       const prsCreated: CreatedPr[] = [];
       const skippedIds: number[] = []; // entries skipped due to --seed filter
 
-      let entry = mq.dequeue();
+      let entry = await mq.dequeue();
       while (entry) {
         // If --seed filter is active, skip non-matching entries
         if (opts.bead && entry.seed_id !== opts.bead) {
           skippedIds.push(entry.id);
-          entry = mq.dequeue();
+          entry = await mq.dequeue();
           continue;
         }
 
@@ -335,20 +382,20 @@ export const mergeCommand = new Command("merge")
           // the race condition where finalize marks a run completed but the query hasn't
           // seen the update yet.
           const run = store.getRun(entry.run_id);
-          const report = await refinery.mergeCompleted({
-            targetBranch,
-            runTests: opts.tests,
-            testCommand: opts.testCommand,
-            projectId: project.id,
-            seedId: entry.seed_id,
-            overrideRun: run ?? undefined,
-          });
+                const report = await refinery.mergeCompleted({
+                  targetBranch,
+                  runTests: opts.tests,
+                  testCommand: opts.testCommand,
+                  projectId: registered?.id ?? project.id,
+                  seedId: entry.seed_id,
+                  overrideRun: run ?? undefined,
+                });
 
           if (report.merged.length > 0) {
-            mq.updateStatus(entry.id, "merged", { completedAt: new Date().toISOString() });
+            await mq.updateStatus(entry.id, "merged", { completedAt: new Date().toISOString() });
             merged.push(...report.merged);
           } else if (report.conflicts.length > 0 || report.prsCreated.length > 0) {
-            mq.updateStatus(entry.id, "conflict", { error: "Code conflicts" });
+            await mq.updateStatus(entry.id, "conflict", { error: "Code conflicts" });
             conflicts.push(...report.conflicts);
             prsCreated.push(...report.prsCreated);
             // Build failure reason for bead note
@@ -360,7 +407,7 @@ export const mergeCommand = new Command("merge")
               mergeFailureReason = `Merge conflict: a PR was created for manual review.\nPR URL: ${pr.prUrl}\nBranch: ${pr.branchName}`;
             }
           } else if (report.testFailures.length > 0) {
-            mq.updateStatus(entry.id, "failed", { error: "Test failures" });
+            await mq.updateStatus(entry.id, "failed", { error: "Test failures" });
             testFailures.push(...report.testFailures);
             // Build failure reason for bead note
             const firstFailure = report.testFailures[0];
@@ -368,12 +415,12 @@ export const mergeCommand = new Command("merge")
             mergeFailureReason = `Post-merge tests failed (${report.testFailures.length} failure(s)).\nFirst failure:\n${errorSummary}`;
           } else {
             // No completed run found for this seed (already merged or no run)
-            mq.updateStatus(entry.id, "failed", { error: "No completed run found" });
+            await mq.updateStatus(entry.id, "failed", { error: "No completed run found" });
             mergeFailureReason = `Merge failed: no completed run found for seed ${entry.seed_id}. The run may have been deleted or not yet finalized.`;
           }
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
-          mq.updateStatus(entry.id, "failed", { error: message });
+          await mq.updateStatus(entry.id, "failed", { error: message });
           testFailures.push({
             runId: entry.run_id,
             seedId: entry.seed_id,
@@ -385,7 +432,7 @@ export const mergeCommand = new Command("merge")
           // Immediately sync bead status in br so it reflects the merge outcome
           // without waiting for the next foreman startup reconciliation.
           // Pass mergeFailureReason to add an explanatory note to the bead.
-          await syncBeadStatusAfterMerge(store, seeds, entry.run_id, entry.seed_id, projectPath, mergeFailureReason);
+          await syncBeadStatusAfterMerge(store, seeds, entry.run_id, entry.seed_id, projectPath, mergeFailureReason, runLookup);
         }
 
         // If --seed filter, stop after processing the target
@@ -397,7 +444,7 @@ export const mergeCommand = new Command("merge")
         // This handles the race condition where an agent finishes after the initial
         // reconcile snapshot but before the dequeue loop exhausts the queue.
         try {
-          const midLoopResult = await mq.reconcile(store.getDb(), projectPath);
+          const midLoopResult = await mq.reconcile(projectPath);
           if (midLoopResult.enqueued > 0) {
             console.log(chalk.dim(`  Reconciled ${midLoopResult.enqueued} additional completed run(s) into merge queue.\n`));
           }
@@ -406,23 +453,23 @@ export const mergeCommand = new Command("merge")
           console.warn(chalk.yellow(`  Warning: mid-loop reconcile failed (${reconcileMessage}); continuing with existing queue entries.`));
         }
 
-        entry = mq.dequeue();
+        entry = await mq.dequeue();
       }
 
       // Reset skipped entries back to pending (for --seed filter)
       for (const id of skippedIds) {
-        mq.updateStatus(id, "pending");
+        await mq.updateStatus(id, "pending");
       }
 
       // ── Auto-retry loop ──────────────────────────────────────────────────
       if (opts.autoRetry && !opts.bead) {
-        const retryable = mq.getRetryableEntries();
+        const retryable = await mq.getRetryableEntries();
         if (retryable.length > 0) {
           console.log(chalk.dim(`\n  Retrying ${retryable.length} failed/conflict entry(ies)...\n`));
           for (const retryEntry of retryable) {
-            if (mq.reEnqueue(retryEntry.id)) {
+            if (await mq.reEnqueue(retryEntry.id)) {
               console.log(`Retrying: ${chalk.cyan(retryEntry.seed_id)} (attempt ${retryEntry.retry_count + 1})`);
-              const toProcess = mq.dequeue();
+              const toProcess = await mq.dequeue();
               if (!toProcess) continue;
 
               let retryFailureReason: string | undefined;
@@ -435,16 +482,16 @@ export const mergeCommand = new Command("merge")
                   targetBranch,
                   runTests: opts.tests,
                   testCommand: opts.testCommand,
-                  projectId: project.id,
+                  projectId: registered?.id ?? project.id,
                   seedId: toProcess.seed_id,
                   overrideRun: run ?? undefined,
                 });
 
                 if (report.merged.length > 0) {
-                  mq.updateStatus(toProcess.id, "merged", { completedAt: new Date().toISOString() });
+                  await mq.updateStatus(toProcess.id, "merged", { completedAt: new Date().toISOString() });
                   merged.push(...report.merged);
                 } else if (report.conflicts.length > 0 || report.prsCreated.length > 0) {
-                  mq.updateStatus(toProcess.id, "conflict", { error: "Code conflicts" });
+                  await mq.updateStatus(toProcess.id, "conflict", { error: "Code conflicts" });
                   conflicts.push(...report.conflicts);
                   prsCreated.push(...report.prsCreated);
                   if (report.conflicts.length > 0) {
@@ -455,17 +502,17 @@ export const mergeCommand = new Command("merge")
                     retryFailureReason = `Merge conflict (retry): a PR was created for manual review.\nPR URL: ${pr.prUrl}\nBranch: ${pr.branchName}`;
                   }
                 } else if (report.testFailures.length > 0) {
-                  mq.updateStatus(toProcess.id, "failed", { error: "Test failures" });
+                  await mq.updateStatus(toProcess.id, "failed", { error: "Test failures" });
                   testFailures.push(...report.testFailures);
                   const firstFailure = report.testFailures[0];
                   retryFailureReason = `Post-merge tests failed on retry (${report.testFailures.length} failure(s)).\nFirst failure:\n${firstFailure.error?.slice(0, 800) ?? "no details"}`;
                 } else {
-                  mq.updateStatus(toProcess.id, "failed", { error: "No completed run found" });
+                  await mq.updateStatus(toProcess.id, "failed", { error: "No completed run found" });
                   retryFailureReason = `Merge failed on retry: no completed run found for seed ${toProcess.seed_id}.`;
                 }
               } catch (err: unknown) {
                 const message = err instanceof Error ? err.message : String(err);
-                mq.updateStatus(toProcess.id, "failed", { error: message });
+                await mq.updateStatus(toProcess.id, "failed", { error: message });
                 testFailures.push({
                   runId: toProcess.run_id,
                   seedId: toProcess.seed_id,
@@ -474,7 +521,7 @@ export const mergeCommand = new Command("merge")
                 });
                 retryFailureReason = `Unexpected error during merge retry: ${message.slice(0, 800)}`;
               } finally {
-                await syncBeadStatusAfterMerge(store, seeds, toProcess.run_id, toProcess.seed_id, projectPath, retryFailureReason);
+                await syncBeadStatusAfterMerge(store, seeds, toProcess.run_id, toProcess.seed_id, projectPath, retryFailureReason, runLookup);
               }
             }
           }
@@ -527,8 +574,10 @@ export const mergeCommand = new Command("merge")
       // Display running AI resolution rate after merge (MQ-T072)
       if (merged.length > 0 || conflicts.length > 0) {
         try {
-          const costTracker = new MergeCostTracker(store.getDb());
-          const rate = costTracker.getResolutionRate(30);
+          const costTracker = registered
+            ? new PostgresMergeCostTracker(registered.id)
+            : new MergeCostTracker(store.getDb());
+          const rate = await costTracker.getResolutionRate(30);
           if (rate.total > 0) {
             console.log(
               chalk.dim(`AI resolution rate: ${rate.successes}/${rate.total} conflicts (${rate.rate.toFixed(1)}%) over last 30 days\n`),

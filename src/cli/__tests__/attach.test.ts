@@ -3,12 +3,37 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { ForemanStore, type Run, type RunProgress } from "../../lib/store.js";
+import { attachCommand } from "../commands/attach.js";
+import * as projectTaskSupport from "../commands/project-task-support.js";
+import { buildSdkSessionKey } from "../../orchestrator/dispatcher.js";
+
+type AttachActionFn = typeof import("../commands/attach.js").attachAction;
+type AttachDaemonContext = Parameters<AttachActionFn>[4];
+
+const { mockRunsList, mockUpdateStatus, mockCreateTrpcClient } = vi.hoisted(() => {
+  const mockRunsList = vi.fn();
+  const mockUpdateStatus = vi.fn();
+  const mockCreateTrpcClient = vi.fn(() => ({
+    runs: {
+      list: mockRunsList,
+      updateStatus: mockUpdateStatus,
+    },
+  }));
+
+  return { mockRunsList, mockUpdateStatus, mockCreateTrpcClient };
+});
+
+vi.mock("../../lib/trpc-client.js", () => ({
+  createTrpcClient: () => mockCreateTrpcClient(),
+}));
 
 // ── Mock child_process ─────────────────────────────────────────────────
 const mockSpawn = vi.fn();
+const mockExecFile = vi.fn();
 
 vi.mock("node:child_process", () => ({
   spawn: (...args: unknown[]) => mockSpawn(...args),
+  execFile: (...args: unknown[]) => mockExecFile(...args),
 }));
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -38,6 +63,26 @@ function createTestRun(
   return store.getRun(run.id)!;
 }
 
+function createDaemonRunRow(run: Run, projectId: string) {
+  return {
+    id: run.id,
+    project_id: projectId,
+    bead_id: run.seed_id,
+    status: "running",
+    branch: "main",
+    agent_type: run.agent_type,
+    session_key: run.session_key,
+    worktree_path: run.worktree_path,
+    progress: null,
+    base_branch: null,
+    merge_strategy: null,
+    queued_at: run.created_at,
+    started_at: run.started_at,
+    finished_at: null,
+    created_at: run.created_at,
+  };
+}
+
 // ── Test suite ─────────────────────────────────────────────────────────
 
 describe("foreman attach", () => {
@@ -51,6 +96,9 @@ describe("foreman attach", () => {
     const project = store.registerProject("test-project", tmpDir);
     projectId = project.id;
     mockSpawn.mockReset();
+    mockRunsList.mockReset();
+    mockUpdateStatus.mockReset();
+    mockCreateTrpcClient.mockClear();
   });
 
   afterEach(() => {
@@ -67,7 +115,7 @@ describe("foreman attach", () => {
       createTestRun(store, projectId, {
         seedId: "abc2",
         status: "running",
-        sessionKey: "foreman:sdk:sonnet:r1:session-the-sdk-id",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 12345, "the-sdk-id"),
       });
 
       const mockChild = {
@@ -97,7 +145,7 @@ describe("foreman attach", () => {
       createTestRun(store, projectId, {
         seedId: "abc-info",
         status: "running",
-        sessionKey: "foreman:sdk:sonnet:r1:session-info-id",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 12345, "info-id"),
       });
 
       const mockChild = {
@@ -154,7 +202,7 @@ describe("foreman attach", () => {
       createTestRun(store, projectId, {
         seedId: "abc-err",
         status: "running",
-        sessionKey: "foreman:sdk:sonnet:r1:session-err-id",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 12345, "err-id"),
       });
 
       const mockChild = {
@@ -252,6 +300,89 @@ describe("foreman attach", () => {
   // ── --kill option ────────────────────────────────────────────────────
 
   describe("--kill option", () => {
+    function makeDaemonContext(run: Run, updateStatus: ReturnType<typeof vi.fn>): AttachDaemonContext {
+      return {
+        client: {
+          runs: {
+            list: vi.fn().mockResolvedValue([
+              {
+                id: run.id,
+                project_id: projectId,
+                bead_id: run.seed_id,
+                status: "running",
+                branch: "main",
+                agent_type: run.agent_type,
+                session_key: run.session_key,
+                worktree_path: run.worktree_path,
+                progress: null,
+                base_branch: null,
+                merge_strategy: null,
+                queued_at: run.created_at,
+                started_at: run.started_at,
+                finished_at: null,
+                created_at: run.created_at,
+              },
+            ]),
+            updateStatus,
+          },
+        },
+        projectId,
+        projectPath: tmpDir,
+      } as AttachDaemonContext;
+    }
+
+    it("uses the daemon update path for registered projects", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+      const run = createTestRun(store, projectId, {
+        seedId: "kill-registered",
+        status: "running",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 44444, "registered"),
+      });
+
+      const updateStatus = vi.fn().mockResolvedValue({});
+      const daemon = makeDaemonContext(run, updateStatus);
+      const updateRunSpy = vi.spyOn(store, "updateRun");
+
+      const { attachAction } = await import("../commands/attach.js");
+      const exitCode = await attachAction("kill-registered", { kill: true }, store, tmpDir, daemon);
+
+      expect(updateStatus).toHaveBeenCalledWith({ runId: run.id, status: "stuck" });
+      expect(killSpy).toHaveBeenCalledWith(44444, "SIGTERM");
+      expect(updateRunSpy).not.toHaveBeenCalled();
+      expect(exitCode).toBe(0);
+
+      killSpy.mockRestore();
+      consoleSpy.mockRestore();
+    });
+
+    it("falls back to local store updates when the daemon path fails", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+      const run = createTestRun(store, projectId, {
+        seedId: "kill-daemon-fail",
+        status: "running",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 55555, "daemon-fail"),
+      });
+
+      const updateStatus = vi.fn().mockRejectedValue(new Error("daemon unavailable"));
+      const daemon = makeDaemonContext(run, updateStatus);
+      const updateRunSpy = vi.spyOn(store, "updateRun");
+
+      const { attachAction } = await import("../commands/attach.js");
+      const exitCode = await attachAction("kill-daemon-fail", { kill: true }, store, tmpDir, daemon);
+
+      expect(updateStatus).toHaveBeenCalledWith({ runId: run.id, status: "stuck" });
+      expect(updateRunSpy).toHaveBeenCalledWith(run.id, { status: "stuck" });
+      expect(killSpy).toHaveBeenCalledWith(55555, "SIGTERM");
+      expect(exitCode).toBe(0);
+
+      killSpy.mockRestore();
+      consoleSpy.mockRestore();
+    });
+
     it("kills process by PID and marks running run as stuck", async () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
       const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
@@ -259,7 +390,7 @@ describe("foreman attach", () => {
       const run = createTestRun(store, projectId, {
         seedId: "kill1",
         status: "running",
-        sessionKey: "foreman:sdk:sonnet:r1:pid-12345:session-abc",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 12345, "abc"),
       });
 
       const { attachAction } = await import("../commands/attach.js");
@@ -282,7 +413,7 @@ describe("foreman attach", () => {
       const run = createTestRun(store, projectId, {
         seedId: "kill-pending",
         status: "pending",
-        sessionKey: "foreman:sdk:sonnet:r1:pid-22222:session-def",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 22222, "def"),
       });
 
       const { attachAction } = await import("../commands/attach.js");
@@ -302,7 +433,7 @@ describe("foreman attach", () => {
       const run = createTestRun(store, projectId, {
         seedId: "kill-done",
         status: "completed",
-        sessionKey: "foreman:sdk:sonnet:r1:pid-33333:session-ghi",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 33333, "ghi"),
       });
 
       const { attachAction } = await import("../commands/attach.js");
@@ -709,6 +840,146 @@ describe("foreman attach", () => {
       expect(output).toContain("error=test failure");
 
       consoleSpy.mockRestore();
+    });
+  });
+
+  describe("CLI bootstrap", () => {
+    it("falls back to local listing when daemon list RPC rejects", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const forProjectSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(store);
+      const projectRoot = process.cwd();
+      const resolveRepoRootProjectPathSpy = vi
+        .spyOn(projectTaskSupport, "resolveRepoRootProjectPath")
+        .mockResolvedValue(projectRoot);
+      const commandProject = store.registerProject("command-project", projectRoot);
+      const listRegisteredProjectsSpy = vi
+        .spyOn(projectTaskSupport, "listRegisteredProjects")
+        .mockResolvedValue([{ id: commandProject.id, name: "command-project", path: projectRoot }]);
+
+      const run = createTestRun(store, commandProject.id, {
+        seedId: "daemon-list-fallback",
+        status: "running",
+      });
+      mockRunsList.mockRejectedValueOnce(new Error("daemon unavailable"));
+
+      await attachCommand.parseAsync(["--list"], { from: "user" });
+
+      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain("Attachable sessions");
+      expect(output).toContain(run.seed_id);
+      expect(mockRunsList).toHaveBeenCalled();
+
+      consoleSpy.mockRestore();
+      forProjectSpy.mockRestore();
+      resolveRepoRootProjectPathSpy.mockRestore();
+      listRegisteredProjectsSpy.mockRestore();
+    });
+
+    it("falls back to local attach when daemon run lookup rejects", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => undefined) as never);
+      const forProjectSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(store);
+      const projectRoot = process.cwd();
+      const resolveRepoRootProjectPathSpy = vi
+        .spyOn(projectTaskSupport, "resolveRepoRootProjectPath")
+        .mockResolvedValue(projectRoot);
+      const commandProject = store.registerProject("command-project", projectRoot);
+      const listRegisteredProjectsSpy = vi
+        .spyOn(projectTaskSupport, "listRegisteredProjects")
+        .mockResolvedValue([{ id: commandProject.id, name: "command-project", path: projectRoot }]);
+
+      const run = createTestRun(store, commandProject.id, {
+        seedId: "daemon-attach-fallback",
+        status: "running",
+        sessionKey: "foreman:sdk:sonnet:r1:session-local-fallback",
+      });
+
+      mockRunsList.mockRejectedValueOnce(new Error("daemon unavailable"));
+
+      const mockChild = {
+        on: vi.fn((event: string, cb: (arg: unknown) => void) => {
+          if (event === "exit") setTimeout(() => cb(0), 10);
+          return mockChild;
+        }),
+      };
+      mockSpawn.mockReturnValue(mockChild);
+
+      await attachCommand.parseAsync([run.id], { from: "user" });
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        "claude",
+        ["--resume", "local-fallback"],
+        expect.objectContaining({ stdio: "inherit", cwd: "/tmp/wt" }),
+      );
+      expect(exitSpy).toHaveBeenCalledWith(0);
+
+      consoleSpy.mockRestore();
+      exitSpy.mockRestore();
+      forProjectSpy.mockRestore();
+      resolveRepoRootProjectPathSpy.mockRestore();
+      listRegisteredProjectsSpy.mockRestore();
+    });
+
+    it("keeps the daemon kill path unchanged", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => undefined) as never);
+      const forProjectSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(store);
+      const projectRoot = process.cwd();
+      const resolveRepoRootProjectPathSpy = vi
+        .spyOn(projectTaskSupport, "resolveRepoRootProjectPath")
+        .mockResolvedValue(projectRoot);
+      const commandProject = store.registerProject("command-project", projectRoot);
+      const listRegisteredProjectsSpy = vi
+        .spyOn(projectTaskSupport, "listRegisteredProjects")
+        .mockResolvedValue([{ id: commandProject.id, name: "command-project", path: projectRoot }]);
+
+      const run = createTestRun(store, commandProject.id, {
+        seedId: "kill-unchanged",
+        status: "running",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 24680, "kill-unchanged"),
+      });
+
+      mockRunsList.mockResolvedValueOnce([createDaemonRunRow(run, projectId)]);
+
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+      await attachCommand.parseAsync([run.id, "--kill"], { from: "user" });
+
+      expect(mockRunsList).toHaveBeenCalled();
+      expect(killSpy).toHaveBeenCalledWith(24680, "SIGTERM");
+      expect(exitSpy).toHaveBeenCalledWith(0);
+
+      killSpy.mockRestore();
+      consoleSpy.mockRestore();
+      exitSpy.mockRestore();
+      forProjectSpy.mockRestore();
+      resolveRepoRootProjectPathSpy.mockRestore();
+      listRegisteredProjectsSpy.mockRestore();
+    });
+
+    it("constructs the fallback store from the resolved project path", async () => {
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const resolveRepoRootProjectPathSpy = vi
+        .spyOn(projectTaskSupport, "resolveRepoRootProjectPath")
+        .mockResolvedValue("/resolved/project-root");
+      const listRegisteredProjectsSpy = vi
+        .spyOn(projectTaskSupport, "listRegisteredProjects")
+        .mockResolvedValue([]);
+      const forProjectSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue({
+        close: vi.fn(),
+        getProjectByPath: vi.fn().mockReturnValue(null),
+      } as unknown as ForemanStore);
+
+      await attachCommand.parseAsync(["--list"], { from: "user" });
+
+      expect(resolveRepoRootProjectPathSpy).toHaveBeenCalledWith({});
+      expect(forProjectSpy).toHaveBeenCalledWith("/resolved/project-root");
+      expect(listRegisteredProjectsSpy).toHaveBeenCalled();
+
+      consoleSpy.mockRestore();
+      resolveRepoRootProjectPathSpy.mockRestore();
+      listRegisteredProjectsSpy.mockRestore();
+      forProjectSpy.mockRestore();
     });
   });
 });

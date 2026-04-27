@@ -1,8 +1,9 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type Database from "better-sqlite3";
+import { createTrpcClient } from "../../lib/trpc-client.js";
 import {
   ForemanStore,
   type Project,
@@ -15,6 +16,7 @@ import {
 import { elapsed, renderAgentCard, formatSuccessRate } from "../watch-ui.js";
 import { fetchTaskCounts } from "../../lib/task-client-factory.js";
 import { loadDashboardConfig } from "../../lib/project-config.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 // ── Task count helpers (for --simple mode) ───────────────────────────────
 
@@ -29,10 +31,211 @@ export interface DashboardTaskCounts {
   blocked: number;
 }
 
+interface DaemonDashboardStats {
+  tasks: {
+    backlog: number;
+    ready: number;
+    inProgress: number;
+    approved: number;
+    merged: number;
+    closed: number;
+    total: number;
+  };
+  runs: {
+    active: number;
+    pending: number;
+  };
+}
+
+interface DaemonRunSummary {
+  id: string;
+  bead_id: string;
+  status: "pending" | "running";
+  branch: string;
+  started_at: string | null;
+  queued_at: string;
+  created_at: string;
+}
+
+interface DaemonProjectRecord {
+  id: string;
+  name: string;
+  path: string;
+}
+
+async function fetchDaemonDashboardSimpleSnapshot(projectPath: string, projectSelector?: string): Promise<{
+  counts: DashboardTaskCounts;
+  state: DashboardState;
+} | null> {
+  try {
+    const projects = await listRegisteredProjects();
+    const project = await resolveDashboardProjectRecord(projects, projectPath, projectSelector);
+    if (!project) return null;
+
+    const client = createTrpcClient();
+    const [stats, activeRuns] = await Promise.all([
+      client.projects.stats({ projectId: project.id }) as Promise<DaemonDashboardStats>,
+      client.runs.listActive({ projectId: project.id }) as Promise<DaemonRunSummary[]>,
+    ]);
+
+    const projectRow: Project = {
+      id: project.id,
+      name: project.name,
+      path: project.path,
+      status: "active",
+      created_at: "",
+      updated_at: "",
+    };
+
+    const mappedRuns: Run[] = activeRuns.map((run) => ({
+      id: run.id,
+      project_id: project.id,
+      seed_id: run.bead_id,
+      agent_type: "daemon",
+      session_key: null,
+      worktree_path: null,
+      status: run.status,
+      started_at: run.started_at,
+      completed_at: null,
+      created_at: run.created_at,
+      progress: null,
+      base_branch: null,
+    }));
+
+    return {
+      counts: {
+        total: stats.tasks.total,
+        ready: stats.tasks.ready,
+        inProgress: stats.tasks.inProgress,
+        completed: stats.tasks.merged + stats.tasks.closed,
+        blocked: stats.tasks.backlog,
+      },
+      state: {
+        projects: [projectRow],
+        activeRuns: new Map([[project.id, mappedRuns]]),
+        completedRuns: new Map([[project.id, []]]),
+        progresses: new Map(),
+        metrics: new Map([[project.id, { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] }]]),
+        events: new Map([[project.id, []]]),
+        lastUpdated: new Date(),
+        successRates: new Map([[project.id, { rate: null, merged: 0, failed: 0 }]]),
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveDashboardProjectRecord(
+  projects: Array<{ id: string; name: string; path: string }>,
+  projectPath: string,
+  projectSelector?: string,
+): Promise<{ id: string; name: string; path: string } | null> {
+  if (projectSelector) {
+    return projects.find((record) => record.id === projectSelector || record.name === projectSelector) ?? null;
+  }
+  const resolvedProjectPath = resolve(projectPath);
+  return projects.find((record) => resolve(record.path) === resolvedProjectPath) ?? null;
+}
+
+export async function fetchDaemonDashboardState(projectPath: string, projectId?: string): Promise<DashboardState | null> {
+  try {
+    const projects = await listRegisteredProjects();
+    const current = await resolveDashboardProjectRecord(projects, projectPath, projectId);
+    const visible = current ? [current] : [];
+    if (visible.length === 0) return null;
+
+    const client = createTrpcClient();
+    const projectRows: Project[] = [];
+    const activeRuns = new Map<string, Run[]>();
+    const completedRuns = new Map<string, Run[]>();
+    const progresses = new Map<string, RunProgress | null>();
+    const metrics = new Map<string, Metrics>();
+    const events = new Map<string, Event[]>();
+    const successRates = new Map<string, { rate: number | null; merged: number; failed: number }>();
+    const needsHumanTasks: NativeTask[] = [];
+
+    for (const project of visible as DaemonProjectRecord[]) {
+      const [stats, human, runs] = await Promise.all([
+        client.projects.stats({ projectId: project.id }) as Promise<DaemonDashboardStats>,
+        client.projects.listNeedsHuman({ projectId: project.id }) as Promise<Array<NativeTask>>,
+        client.runs.listActive({ projectId: project.id }) as Promise<DaemonRunSummary[]>,
+      ]);
+
+      projectRows.push({
+        id: project.id,
+        name: project.name,
+        path: project.path,
+        status: "active",
+        created_at: "",
+        updated_at: "",
+      });
+
+      activeRuns.set(project.id, runs.map((run) => ({
+        id: run.id,
+        project_id: project.id,
+        seed_id: run.bead_id,
+        agent_type: "daemon",
+        session_key: null,
+        worktree_path: null,
+        status: run.status,
+        started_at: run.started_at,
+        completed_at: null,
+        created_at: run.created_at,
+        progress: null,
+        base_branch: null,
+      })));
+      completedRuns.set(project.id, []);
+      metrics.set(project.id, { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] });
+      events.set(project.id, []);
+      successRates.set(project.id, { rate: null, merged: 0, failed: 0 });
+
+      const withProject = human.map((task) => ({
+        ...task,
+        projectName: project.name,
+        projectId: project.id,
+        projectPath: project.path,
+      }));
+      needsHumanTasks.push(...withProject);
+      // Preserve counts in a minimal metrics slot for header cost-free rendering.
+      metrics.set(project.id, {
+        totalCost: 0,
+        totalTokens: 0,
+        tasksByStatus: {
+          backlog: stats.tasks.backlog,
+          ready: stats.tasks.ready,
+          "in-progress": stats.tasks.inProgress,
+          merged: stats.tasks.merged,
+          closed: stats.tasks.closed,
+        },
+        costByRuntime: [],
+      });
+    }
+
+    return {
+      projects: projectRows,
+      activeRuns,
+      completedRuns,
+      progresses,
+      metrics,
+      events,
+      lastUpdated: new Date(),
+      successRates,
+      needsHumanTasks: sortNeedsHumanTasks(needsHumanTasks),
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Fetch task counts for the compact status view (used by --simple mode).
  */
 export async function fetchDashboardTaskCounts(projectPath: string): Promise<DashboardTaskCounts> {
+  const daemon = await fetchDaemonDashboardSimpleSnapshot(projectPath);
+  if (daemon) {
+    return daemon.counts;
+  }
   return fetchTaskCounts(projectPath);
 }
 
@@ -814,13 +1017,13 @@ export function renderSimpleDashboard(
  * @param taskId     - Native task ID.
  * @param projectPath - Path to the project that owns this task.
  */
-export function approveTask(taskId: string, projectPath: string): void {
-  const store = ForemanStore.forProject(projectPath);
-  try {
-    store.updateTaskStatus(taskId, "ready");
-  } finally {
-    store.close();
-  }
+export async function approveTask(taskId: string, projectPath: string): Promise<void> {
+  const projects = await listRegisteredProjects();
+  const resolvedProjectPath = resolve(projectPath);
+  const project = projects.find((record) => resolve(record.path) === resolvedProjectPath);
+  if (!project) throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
+  const client = createTrpcClient();
+  await client.tasks.approve({ projectId: project.id, taskId });
 }
 
 /**
@@ -831,13 +1034,13 @@ export function approveTask(taskId: string, projectPath: string): void {
  * @param taskId     - Native task ID.
  * @param projectPath - Path to the project that owns this task.
  */
-export function retryTask(taskId: string, projectPath: string): void {
-  const store = ForemanStore.forProject(projectPath);
-  try {
-    store.updateTaskStatus(taskId, "backlog");
-  } finally {
-    store.close();
-  }
+export async function retryTask(taskId: string, projectPath: string): Promise<void> {
+  const projects = await listRegisteredProjects();
+  const resolvedProjectPath = resolve(projectPath);
+  const project = projects.find((record) => resolve(record.path) === resolvedProjectPath);
+  if (!project) throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
+  const client = createTrpcClient();
+  await client.tasks.retry({ projectId: project.id, taskId });
 }
 
 // ── Command ───────────────────────────────────────────────────────────────
@@ -858,8 +1061,7 @@ export const dashboardCommand = new Command("dashboard")
     events: string;
     simple?: boolean;
   }) => {
-    const projectPath = process.cwd();
-    const store = ForemanStore.forProject(projectPath);
+    const projectPath = await resolveRepoRootProjectPath({ project: opts.project });
 
     // Refresh interval: CLI --refresh > CLI --interval > config.yaml > default 5000ms
     const configRefresh = loadDashboardConfig(projectPath).refreshInterval;
@@ -877,14 +1079,11 @@ export const dashboardCommand = new Command("dashboard")
     if (simple) {
       // Single-shot simple mode
       if (!watch) {
-        try {
-          const state = pollDashboard(store, projectId, eventsLimit);
-          let counts: DashboardTaskCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
-          try { counts = await fetchDashboardTaskCounts(projectPath); } catch { /* ignore */ }
-          console.log(renderSimpleDashboard(state, counts, projectId));
-        } finally {
-          store.close();
+        const daemon = await fetchDaemonDashboardSimpleSnapshot(projectPath, projectId);
+        if (!daemon) {
+          throw new Error("Cannot load daemon-backed dashboard data. Make sure the daemon is running and the project is registered.");
         }
+        console.log(renderSimpleDashboard(daemon.state, daemon.counts));
         return;
       }
 
@@ -896,7 +1095,6 @@ export const dashboardCommand = new Command("dashboard")
         process.stdout.write("\x1b[?25h\n");
         console.log(chalk.dim("  Detached — agents continue in background."));
         console.log(chalk.dim("  Tip: 'foreman status --live' for a full unified dashboard."));
-        store.close();
         process.exit(0);
       };
       process.on("SIGINT", onSigintSimple);
@@ -904,37 +1102,29 @@ export const dashboardCommand = new Command("dashboard")
 
       try {
         while (!detachedSimple) {
-          const state = pollDashboard(store, projectId, eventsLimit);
-          let counts: DashboardTaskCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
-          try { counts = await fetchDashboardTaskCounts(projectPath); } catch { /* ignore */ }
-          const display = renderSimpleDashboard(state, counts, projectId);
+          const daemon = await fetchDaemonDashboardSimpleSnapshot(projectPath, projectId);
+          if (!daemon) {
+            throw new Error("Cannot load daemon-backed dashboard data. Make sure the daemon is running and the project is registered.");
+          }
+          const display = renderSimpleDashboard(daemon.state, daemon.counts);
           process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
           await new Promise<void>((r) => setTimeout(r, intervalMs));
         }
       } finally {
         process.stdout.write("\x1b[?25h");
         process.removeListener("SIGINT", onSigintSimple);
-        store.close();
       }
       return;
     }
 
     // ── Multi-project full dashboard mode ─────────────────────────────────
-    // Use readProjectSnapshot() for concurrent READONLY reads (REQ-010, REQ-019)
-    const registeredProjects = readProjectRegistry(store);
-    const projectsToShow = projectId
-      ? registeredProjects.filter((p) => p.id === projectId)
-      : registeredProjects;
-
     // ── Single-shot full mode ─────────────────────────────────────────────
     if (!watch) {
-      try {
-        const snapshots = await readProjectSnapshot(projectsToShow, eventsLimit);
-        const state = aggregateSnapshots(snapshots);
-        console.log(renderDashboard(state));
-      } finally {
-        store.close();
+      const state = await fetchDaemonDashboardState(projectPath, projectId);
+      if (!state) {
+        throw new Error("Cannot load daemon-backed dashboard data. Make sure the daemon is running and the project is registered.");
       }
+      console.log(renderDashboard(state));
       return;
     }
 
@@ -948,7 +1138,6 @@ export const dashboardCommand = new Command("dashboard")
       console.log(chalk.dim("  Detached — agents continue in background."));
       console.log(chalk.dim("  Check status: foreman status"));
       console.log(chalk.dim("  Monitor runs: foreman monitor\n"));
-      store.close();
       process.exit(0);
     };
 
@@ -985,9 +1174,12 @@ export const dashboardCommand = new Command("dashboard")
         if (selectedTaskIndex >= 0 && selectedTaskIndex < tasks.length) {
           const task = tasks[selectedTaskIndex];
           if (task.status === "backlog" && task.projectPath) {
-            approveTask(task.id, task.projectPath);
-            selectedTaskIndex = -1;
-            wakeAndRender();
+            void approveTask(task.id, task.projectPath)
+              .then(() => {
+                selectedTaskIndex = -1;
+                wakeAndRender();
+              })
+              .catch(() => undefined);
           }
         }
       } else if (key === "r" || key === "R") {
@@ -997,9 +1189,12 @@ export const dashboardCommand = new Command("dashboard")
             (task.status === "failed" || task.status === "stuck" || task.status === "conflict") &&
             task.projectPath
           ) {
-            retryTask(task.id, task.projectPath);
-            selectedTaskIndex = -1;
-            wakeAndRender();
+            void retryTask(task.id, task.projectPath)
+              .then(() => {
+                selectedTaskIndex = -1;
+                wakeAndRender();
+              })
+              .catch(() => undefined);
           }
         }
       } else if (key === "\r" || key === "\n") {
@@ -1023,19 +1218,15 @@ export const dashboardCommand = new Command("dashboard")
       }
     }
 
-    try {
-      while (!detached) {
-        // Re-read project list each iteration in case new projects registered
-        const currentProjects = readProjectRegistry(store);
-        const filtered = projectId
-          ? currentProjects.filter((p) => p.id === projectId)
-          : currentProjects;
-
-        const snapshots = await readProjectSnapshot(filtered, eventsLimit);
-        const state = aggregateSnapshots(snapshots);
-        needsHumanTasks = state.needsHumanTasks ?? [];
-        if (selectedTaskIndex >= needsHumanTasks.length) {
-          selectedTaskIndex = needsHumanTasks.length > 0 ? needsHumanTasks.length - 1 : -1;
+      try {
+        while (!detached) {
+          const state = await fetchDaemonDashboardState(projectPath, projectId);
+          if (!state) {
+            throw new Error("Cannot load daemon-backed dashboard data. Make sure the daemon is running and the project is registered.");
+          }
+          needsHumanTasks = state.needsHumanTasks ?? [];
+          if (selectedTaskIndex >= needsHumanTasks.length) {
+            selectedTaskIndex = needsHumanTasks.length > 0 ? needsHumanTasks.length - 1 : -1;
         }
         const display = renderDashboard(state);
         process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
@@ -1056,6 +1247,5 @@ export const dashboardCommand = new Command("dashboard")
           // ignore restore failures
         }
       }
-      store.close();
     }
   });

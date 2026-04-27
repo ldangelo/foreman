@@ -2,10 +2,12 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { ForemanStore } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
 import type { Run } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { Workspace } from "../../lib/vcs/types.js";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
+import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -53,7 +55,7 @@ function seedIdFromBranch(branch: string): string {
  */
 export async function listForemanWorktrees(
   projectPath: string,
-  store: Pick<ForemanStore, "getRunsForSeed">,
+  store: Pick<PostgresStore, "getRunsForSeed"> | Pick<ForemanStore, "getRunsForSeed">,
 ): Promise<WorktreeInfo[]> {
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
   const worktrees = await vcs.listWorkspaces(projectPath);
@@ -62,12 +64,13 @@ export async function listForemanWorktrees(
     wt.branch.startsWith("foreman/"),
   );
 
-  return foremanWorktrees.map((wt) => {
+  const results: WorktreeInfo[] = [];
+  for (const wt of foremanWorktrees) {
     const seedId = seedIdFromBranch(wt.branch);
-    const runs = store.getRunsForSeed(seedId);
+    const runs = await store.getRunsForSeed(seedId);
     const latestRun = runs.length > 0 ? runs[0] : null;
 
-    return {
+    results.push({
       path: wt.path,
       branch: wt.branch,
       head: wt.head,
@@ -75,8 +78,9 @@ export async function listForemanWorktrees(
       runStatus: latestRun?.status ?? null,
       runId: latestRun?.id ?? null,
       createdAt: latestRun?.created_at ?? null,
-    };
-  });
+    });
+  }
+  return results;
 }
 
 /**
@@ -128,108 +132,140 @@ export async function cleanWorktrees(
 
 // ── CLI command ───────────────────────────────────────────────────────────────
 
+export interface WorktreeListOpts {
+  json?: boolean;
+}
+
+export interface WorktreeCleanOpts {
+  all?: boolean;
+  force?: boolean;
+  dryRun?: boolean;
+}
+
+function closeWorktreeStores(
+  localStore: ForemanStore,
+  store: Pick<ForemanStore, "close"> | Pick<PostgresStore, "close">,
+): void {
+  localStore.close();
+  if ("close" in store && typeof store.close === "function") {
+    store.close();
+  }
+}
+
+export async function worktreeListCommandAction(opts: WorktreeListOpts): Promise<void> {
+  try {
+    const projectPath = await resolveRepoRootProjectPath({});
+    const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
+    if (registered) {
+      ensureCliPostgresPool(projectPath);
+    }
+    const localStore = ForemanStore.forProject(projectPath);
+    const store = registered ? PostgresStore.forProject(registered.id) : localStore;
+
+    const worktrees = await listForemanWorktrees(projectPath, store);
+
+    if (opts.json) {
+      console.log(JSON.stringify(worktrees, null, 2));
+      closeWorktreeStores(localStore, store);
+      return;
+    }
+
+    if (worktrees.length === 0) {
+      console.log(chalk.yellow("No foreman worktrees found."));
+      closeWorktreeStores(localStore, store);
+      return;
+    }
+
+    console.log(chalk.bold(`Foreman worktrees (${worktrees.length}):\n`));
+
+    for (const wt of worktrees) {
+      const age = wt.createdAt
+        ? `${Math.round((Date.now() - new Date(wt.createdAt).getTime()) / 60000)}m ago`
+        : "unknown";
+      const status = wt.runStatus
+        ? formatStatus(wt.runStatus)
+        : chalk.dim("no run");
+
+      console.log(
+        `  ${chalk.cyan(wt.seedId)} ${status} ${chalk.dim(wt.path)} ${chalk.dim(`(${age})`)}`,
+      );
+    }
+
+    closeWorktreeStores(localStore, store);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(chalk.red(`Error: ${message}`));
+    process.exit(1);
+  }
+}
+
+export async function worktreeCleanCommandAction(opts: WorktreeCleanOpts): Promise<void> {
+  try {
+    const projectPath = await resolveRepoRootProjectPath({});
+    const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
+    if (registered) {
+      ensureCliPostgresPool(projectPath);
+    }
+    const localStore = ForemanStore.forProject(projectPath);
+    const store = registered ? PostgresStore.forProject(registered.id) : localStore;
+    const dryRun = opts.dryRun ?? false;
+
+    const worktrees = await listForemanWorktrees(projectPath, store);
+
+    if (worktrees.length === 0) {
+      console.log(chalk.yellow("No foreman worktrees to clean."));
+      closeWorktreeStores(localStore, store);
+      return;
+    }
+
+    if (dryRun) {
+      console.log(chalk.dim("(dry-run mode — no changes will be made)\n"));
+    }
+
+    console.log(chalk.bold("Cleaning foreman worktrees...\n"));
+
+    const result = await cleanWorktrees(projectPath, worktrees, {
+      all: Boolean(opts.all),
+      force: Boolean(opts.force),
+      dryRun,
+    });
+
+    if (dryRun && result.wouldRemove && result.wouldRemove.length > 0) {
+      console.log(chalk.dim("Worktrees that would be removed:"));
+      for (const wt of result.wouldRemove) {
+        console.log(`  ${chalk.cyan(wt.seedId)}  ${chalk.dim(wt.path)}`);
+      }
+    }
+
+    const action = dryRun ? "Would remove" : "Removed";
+    console.log(chalk.green.bold(`\n${action} ${result.removed} worktree(s).`));
+
+    if (result.errors.length > 0) {
+      console.log(chalk.red(`\nErrors (${result.errors.length}):`));
+      for (const err of result.errors) {
+        console.log(chalk.red(`  ${err}`));
+      }
+    }
+
+    closeWorktreeStores(localStore, store);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(chalk.red(`Error: ${message}`));
+    process.exit(1);
+  }
+}
+
 const listSubcommand = new Command("list")
   .description("List all foreman worktrees")
   .option("--json", "Output as JSON")
-  .action(async (opts) => {
-    try {
-      const startupVcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      const projectPath = await startupVcs.getRepoRoot(process.cwd());
-      const store = ForemanStore.forProject(projectPath);
-
-      const worktrees = await listForemanWorktrees(projectPath, store);
-
-      if (opts.json) {
-        console.log(JSON.stringify(worktrees, null, 2));
-        store.close();
-        return;
-      }
-
-      if (worktrees.length === 0) {
-        console.log(chalk.yellow("No foreman worktrees found."));
-        store.close();
-        return;
-      }
-
-      console.log(chalk.bold(`Foreman worktrees (${worktrees.length}):\n`));
-
-      for (const wt of worktrees) {
-        const age = wt.createdAt
-          ? `${Math.round((Date.now() - new Date(wt.createdAt).getTime()) / 60000)}m ago`
-          : "unknown";
-        const status = wt.runStatus
-          ? formatStatus(wt.runStatus)
-          : chalk.dim("no run");
-
-        console.log(
-          `  ${chalk.cyan(wt.seedId)} ${status} ${chalk.dim(wt.path)} ${chalk.dim(`(${age})`)}`,
-        );
-      }
-
-      store.close();
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(`Error: ${message}`));
-      process.exit(1);
-    }
-  });
+  .action(worktreeListCommandAction);
 
 const cleanSubcommand = new Command("clean")
   .description("Remove worktrees for completed/merged/failed runs")
   .option("--all", "Remove all foreman worktrees including active ones")
   .option("--force", "Force-delete branches even if not fully merged")
   .option("--dry-run", "Show what would be removed without making changes")
-  .action(async (opts) => {
-    try {
-      const startupVcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      const projectPath = await startupVcs.getRepoRoot(process.cwd());
-      const store = ForemanStore.forProject(projectPath);
-      const dryRun = (opts.dryRun as boolean | undefined) ?? false;
-
-      const worktrees = await listForemanWorktrees(projectPath, store);
-
-      if (worktrees.length === 0) {
-        console.log(chalk.yellow("No foreman worktrees to clean."));
-        store.close();
-        return;
-      }
-
-      if (dryRun) {
-        console.log(chalk.dim("(dry-run mode — no changes will be made)\n"));
-      }
-
-      console.log(chalk.bold("Cleaning foreman worktrees...\n"));
-
-      const result = await cleanWorktrees(projectPath, worktrees, {
-        all: Boolean(opts.all),
-        force: Boolean(opts.force),
-        dryRun,
-      });
-
-      if (dryRun && result.wouldRemove && result.wouldRemove.length > 0) {
-        console.log(chalk.dim("Worktrees that would be removed:"));
-        for (const wt of result.wouldRemove) {
-          console.log(`  ${chalk.cyan(wt.seedId)}  ${chalk.dim(wt.path)}`);
-        }
-      }
-
-      const action = dryRun ? "Would remove" : "Removed";
-      console.log(chalk.green.bold(`\n${action} ${result.removed} worktree(s).`));
-
-      if (result.errors.length > 0) {
-        console.log(chalk.red(`\nErrors (${result.errors.length}):`));
-        for (const err of result.errors) {
-          console.log(chalk.red(`  ${err}`));
-        }
-      }
-
-      store.close();
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(`Error: ${message}`));
-      process.exit(1);
-    }
-  });
+  .action(worktreeCleanCommandAction);
 
 export const worktreeCommand = new Command("worktree")
   .description("Manage foreman worktrees")

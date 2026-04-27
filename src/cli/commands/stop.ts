@@ -2,7 +2,8 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { ForemanStore, type Run } from "../../lib/store.js";
-import { VcsBackendFactory } from "../../lib/vcs/index.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
+import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -18,6 +19,26 @@ export interface StopResult {
   skipped: number;
 }
 
+interface StopStore {
+  getProjectByPath(path: string): Promise<{ id: string; path: string } | null>;
+  getActiveRuns(projectId: string): Promise<Run[]>;
+  getRun(id: string): Promise<Run | null>;
+  getRunsForSeed(seedId: string, projectId: string): Promise<Run[]>;
+  updateRun(runId: string, updates: Partial<Pick<Run, "status" | "completed_at">>): Promise<void>;
+  logEvent(projectId: string, eventType: "stuck", data: Record<string, unknown>, runId?: string): Promise<void>;
+}
+
+export function wrapLocalStopStore(store: ForemanStore): StopStore {
+  return {
+    getProjectByPath: async (path) => store.getProjectByPath(path),
+    getActiveRuns: async (projectId) => store.getActiveRuns(projectId),
+    getRun: async (id) => store.getRun(id),
+    getRunsForSeed: async (seedId, projectId) => store.getRunsForSeed(seedId, projectId),
+    updateRun: async (runId, updates) => store.updateRun(runId, updates),
+    logEvent: async (projectId, eventType, data, runId) => store.logEvent(projectId, eventType, data, runId),
+  };
+}
+
 // ── Core action (exported for testing) ───────────────────────────────
 
 /**
@@ -27,7 +48,7 @@ export interface StopResult {
 export async function stopAction(
   id: string | undefined,
   opts: StopOpts,
-  store: ForemanStore,
+  store: StopStore,
   projectPath: string,
 ): Promise<number> {
   const dryRun = opts.dryRun ?? false;
@@ -35,16 +56,16 @@ export async function stopAction(
 
   // ── --list ─────────────────────────────────────────────────────────
   if (opts.list) {
-    const listProject = store.getProjectByPath(projectPath);
+    const listProject = await store.getProjectByPath(projectPath);
     if (!listProject) {
       console.error(chalk.red("No project registered for this path. Run 'foreman init' first."));
       return 1;
     }
-    listActiveRuns(store, projectPath);
+    await listActiveRuns(store, projectPath);
     return 0;
   }
 
-  const project = store.getProjectByPath(projectPath);
+  const project = await store.getProjectByPath(projectPath);
   if (!project) {
     console.error(chalk.red("No project registered for this path. Run 'foreman init' first."));
     return 1;
@@ -56,7 +77,7 @@ export async function stopAction(
 
   // ── Single run by ID or seed ID ────────────────────────────────────
   if (id) {
-    const run = findRun(store, id, project.id);
+    const run = await findRun(store, id, project.id);
     if (!run) {
       console.error(chalk.red(`No run found for "${id}". Use 'foreman stop --list' to see active runs.`));
       return 1;
@@ -68,7 +89,7 @@ export async function stopAction(
   }
 
   // ── Stop all active runs ───────────────────────────────────────────
-  const activeRuns = store.getActiveRuns(project.id);
+  const activeRuns = await store.getActiveRuns(project.id);
 
   if (activeRuns.length === 0) {
     console.log(chalk.yellow("No active runs to stop."));
@@ -117,7 +138,7 @@ export async function stopAction(
  */
 async function stopRun(
   run: Run,
-  store: ForemanStore,
+  store: StopStore,
   opts: { dryRun: boolean; force: boolean },
 ): Promise<StopResult> {
   const { dryRun, force } = opts;
@@ -128,7 +149,7 @@ async function stopRun(
     `  ${chalk.cyan(run.seed_id)} ${chalk.dim(`[${run.id}]`)} status=${run.status}`,
   );
 
-  const pid = extractPid(run.session_key);
+  const pid = getWorkerPid(run);
   const signal = force ? "SIGKILL" : "SIGTERM";
 
   // Kill process by PID if available
@@ -155,13 +176,13 @@ async function stopRun(
   if (run.status === "running" || run.status === "pending") {
     console.log(`    ${chalk.yellow("mark")} run as stuck`);
     if (!dryRun) {
-      store.updateRun(run.id, {
-        status: "stuck",
-        completed_at: new Date().toISOString(),
-      });
-      store.logEvent(run.project_id, "stuck", { reason: "foreman stop" }, run.id);
+        await store.updateRun(run.id, {
+          status: "stuck",
+          completed_at: new Date().toISOString(),
+        });
+        await store.logEvent(run.project_id, "stuck", { reason: "foreman stop" }, run.id);
+      }
     }
-  }
 
   console.log();
   return { stopped: dryRun ? 0 : (processKilled ? 1 : 0), errors, skipped: 0 };
@@ -170,14 +191,14 @@ async function stopRun(
 /**
  * List active runs with full details.
  */
-export function listActiveRuns(store: ForemanStore, projectPath: string): void {
-  const project = store.getProjectByPath(projectPath);
+export async function listActiveRuns(store: StopStore, projectPath: string): Promise<void> {
+  const project = await store.getProjectByPath(projectPath);
   if (!project) {
     console.error(chalk.red("No project registered for this directory. Run 'foreman init' first."));
     return;
   }
 
-  const activeRuns = store.getActiveRuns(project.id);
+  const activeRuns = await store.getActiveRuns(project.id);
 
   if (activeRuns.length === 0) {
     console.log("No active runs found.");
@@ -212,6 +233,48 @@ export function listActiveRuns(store: ForemanStore, projectPath: string): void {
   console.log();
 }
 
+export async function stopCommandAction(id: string | undefined, opts: StopOpts): Promise<number> {
+  let projectPath: string;
+  let isGitRepo = true;
+  try {
+    projectPath = await resolveRepoRootProjectPath({});
+  } catch {
+    projectPath = process.cwd();
+    isGitRepo = false;
+  }
+
+  const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
+  const localStore = ForemanStore.forProject(projectPath);
+  if (registered) {
+    ensureCliPostgresPool(projectPath);
+  }
+  const store: StopStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalStopStore(localStore);
+
+  const closeStores = () => {
+    localStore.close();
+    const maybeCloseStore = store as { close?: () => void };
+    if (typeof maybeCloseStore.close === "function") {
+      maybeCloseStore.close();
+    }
+  };
+
+  if (opts.list) {
+    await listActiveRuns(store, projectPath);
+    closeStores();
+    return 0;
+  }
+
+  if (!isGitRepo) {
+    console.error(chalk.red("Not in a git repository. Run from within a foreman project."));
+    closeStores();
+    return 1;
+  }
+
+  const exitCode = await stopAction(id, opts, store, projectPath);
+  closeStores();
+  return exitCode;
+}
+
 function printStopResult(run: Run, result: StopResult): void {
   if (result.errors.length === 0 && result.skipped === 0) {
     // Success output already printed by stopRun
@@ -220,16 +283,20 @@ function printStopResult(run: Run, result: StopResult): void {
   }
 }
 
-function findRun(store: ForemanStore, id: string, projectId: string): Run | null {
+async function findRun(store: StopStore, id: string, projectId: string): Promise<Run | null> {
   // Try by run ID first — must belong to this project to avoid cross-project leakage
-  const byRunId = store.getRun(id);
+  const byRunId = await store.getRun(id);
   if (byRunId && byRunId.project_id === projectId) return byRunId;
 
   // Then by seed ID (most recent run for this project)
-  const bySeedId = store.getRunsForSeed(id, projectId);
+  const bySeedId = await store.getRunsForSeed(id, projectId);
   if (bySeedId.length > 0) return bySeedId[0];
 
   return null;
+}
+
+function getWorkerPid(run: Run): number | null {
+  return extractPid(run.session_key);
 }
 
 function extractPid(sessionKey: string | null): number | null {
@@ -275,34 +342,5 @@ export const stopCommand = new Command("stop")
   .option("--force", "Force kill with SIGKILL instead of SIGTERM")
   .option("--dry-run", "Show what would be stopped without doing it")
   .action(async (id: string | undefined, opts: StopOpts) => {
-    // Resolve project path first so the store is opened at the project-local location.
-    let projectPath: string;
-    let isGitRepo = true;
-    try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      projectPath = await vcs.getRepoRoot(process.cwd());
-    } catch {
-      // Fall back to cwd for --list (shows runs even outside a git repo), but
-      // for all other operations we require a git repo below.
-      projectPath = process.cwd();
-      isGitRepo = false;
-    }
-
-    const store = ForemanStore.forProject(projectPath);
-
-    if (opts.list) {
-      listActiveRuns(store, projectPath);
-      store.close();
-      return;
-    }
-
-    if (!isGitRepo) {
-      console.error(chalk.red("Not in a git repository. Run from within a foreman project."));
-      store.close();
-      process.exit(1);
-    }
-
-    const exitCode = await stopAction(id, opts, store, projectPath);
-    store.close();
-    process.exit(exitCode);
+    process.exit(await stopCommandAction(id, opts));
   });

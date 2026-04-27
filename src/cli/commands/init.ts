@@ -7,8 +7,24 @@ import { basename, join, resolve } from "node:path";
 
 import { homedir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
+import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
+import { ProjectRegistry } from "../../lib/project-registry.js";
 import { installBundledPrompts, installBundledSkills } from "../../lib/prompt-loader.js";
 import { installBundledWorkflows } from "../../lib/workflow-loader.js";
+import { ensureCliPostgresPool } from "./project-task-support.js";
+
+type Awaitable<T> = T | Promise<T>;
+
+interface InitProjectStore {
+  getProjectByPath: (path: string) => Awaitable<{ id: string } | null>;
+  registerProject: (name: string, path: string) => Awaitable<{ id: string }>;
+  getSentinelConfig: (projectId: string) => Awaitable<ReturnType<ForemanStore["getSentinelConfig"]>>;
+  upsertSentinelConfig: (
+    projectId: string,
+    config: Parameters<ForemanStore["upsertSentinelConfig"]>[1],
+  ) => Awaitable<void>;
+}
 
 // ── Backend-specific init logic (TRD-018) ─────────────────────────────────
 
@@ -63,22 +79,22 @@ export async function initBackend(opts: InitBackendOpts): Promise<void> {
 export async function initProjectStore(
   projectDir: string,
   projectName: string,
-  store: ForemanStore,
+  store: InitProjectStore,
 ): Promise<void> {
   let projectId: string;
-  const existing = store.getProjectByPath(projectDir);
+  const existing = await store.getProjectByPath(projectDir);
   if (existing) {
     console.log(chalk.dim(`Project already registered (${existing.id})`));
     projectId = existing.id;
   } else {
-    const project = store.registerProject(projectName, projectDir);
+    const project = await store.registerProject(projectName, projectDir);
     console.log(chalk.dim(`Registered in store: ${project.id}`));
     projectId = project.id;
   }
 
   // Seed default sentinel config only on first init
-  if (!store.getSentinelConfig(projectId)) {
-    store.upsertSentinelConfig(projectId, {
+  if (!(await store.getSentinelConfig(projectId))) {
+    await store.upsertSentinelConfig(projectId, {
       branch: "main",
       test_command: "npm test",
       interval_minutes: 30,
@@ -87,7 +103,6 @@ export async function initProjectStore(
     });
     console.log(chalk.dim("  Sentinel: enabled (npm test every 30m on main)"));
   }
-
 }
 
 // ── Command ────────────────────────────────────────────────────────────────
@@ -123,8 +138,19 @@ export const initCommand = new Command("init")
     await initBackend({ projectDir });
 
     // Register project and seed sentinel config
-    const store = ForemanStore.forProject(projectDir);
-    await initProjectStore(projectDir, projectName, store);
+    ensureCliPostgresPool(projectDir);
+    const registry = new ProjectRegistry({ pg: new PostgresAdapter() });
+    let project = (await registry.list()).find((record) => record.path === projectDir || record.name === projectName);
+    if (!project) {
+      project = await registry.add({ name: projectName, path: projectDir, status: "active" });
+    }
+    const store = PostgresStore.forProject(project.id);
+    await initProjectStore(projectDir, projectName, {
+      getProjectByPath: async (path: string) => (path === projectDir ? { id: project.id } : null),
+      registerProject: async () => ({ id: project.id }),
+      getSentinelConfig: async (projectId: string) => store.getSentinelConfig(projectId),
+      upsertSentinelConfig: async (projectId: string, config) => store.upsertSentinelConfig(projectId, config),
+    });
     store.close();
 
     // Install bundled prompt templates to .foreman/prompts/

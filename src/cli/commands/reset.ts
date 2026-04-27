@@ -2,8 +2,9 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { createTaskClient } from "../../lib/task-client-factory.js";
-import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode, listRegisteredProjects, ensureCliPostgresPool } from "./project-task-support.js";
 import { ForemanStore } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
 import type { Run } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { existsSync, readdirSync } from "node:fs";
@@ -13,6 +14,7 @@ import { PIPELINE_LIMITS } from "../../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { deleteWorkerConfigFile } from "../../orchestrator/dispatcher.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
+import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import type { StateMismatch } from "../../lib/run-status.js";
 import { getWorkspaceRoot } from "../../lib/workspace-paths.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../../lib/project-config.js";
@@ -27,6 +29,38 @@ export type { StateMismatch } from "../../lib/run-status.js";
 export type IShowUpdateClient = Pick<ITaskClient, "show" | "update"> & {
   resetToReady?: ITaskClient["resetToReady"];
 };
+
+interface ResetRunStore {
+  getRunsByStatus(status: Run["status"], projectId: string): Promise<Run[]>;
+  getActiveRuns(projectId: string): Promise<Run[]>;
+  getRunsForSeed(seedId: string, projectId: string): Promise<Run[]>;
+  updateRun(runId: string, updates: Partial<Pick<Run, "status" | "completed_at">>): Promise<void>;
+  logEvent(projectId: string, eventType: "stuck", data: Record<string, unknown>, runId?: string): Promise<void>;
+}
+
+function wrapLocalResetRunStore(store: ForemanStore): ResetRunStore {
+  return {
+    getRunsByStatus: async (status, projectId) => store.getRunsByStatus(status, projectId),
+    getActiveRuns: async (projectId) => store.getActiveRuns(projectId),
+    getRunsForSeed: async (seedId, projectId) => store.getRunsForSeed(seedId, projectId),
+    updateRun: async (runId, updates) => store.updateRun(runId, updates),
+    logEvent: async (projectId, eventType, data, runId) => store.logEvent(projectId, eventType, data, runId),
+  };
+}
+
+interface ResetMergeQueue {
+  list(): Promise<Array<{ id: number; seed_id: string; status: string }>>;
+  remove(id: number): Promise<void>;
+  missingFromQueue(): Promise<Array<{ run_id: string; seed_id: string }>>;
+}
+
+function wrapLocalMergeQueue(queue: MergeQueue): ResetMergeQueue {
+  return {
+    list: async () => queue.list(),
+    remove: async (id) => queue.remove(id),
+    missingFromQueue: async () => queue.missingFromQueue(),
+  };
+}
 
 // ── Stale-branch detection types ─────────────────────────────────────────────
 
@@ -202,9 +236,9 @@ async function getDefaultExecFileAsync(): Promise<ExecFileAsyncFn> {
  * re-processed by the refinery.
  */
 export async function detectAndHandleStaleBranches(
-  store: Pick<ForemanStore, "getRunsByStatus" | "getActiveRuns" | "updateRun">,
+  store: Pick<ResetRunStore, "getRunsByStatus" | "getActiveRuns" | "updateRun">,
   seeds: IShowUpdateClient,
-  mergeQueue: MergeQueue,
+  mergeQueue: ResetMergeQueue,
   projectPath: string,
   projectId: string,
   skipSeedIds: ReadonlySet<string>,
@@ -216,10 +250,10 @@ export async function detectAndHandleStaleBranches(
   const dryRun = opts?.dryRun ?? false;
   const execFn = opts?.execFileAsync;
 
-  const completedRuns = store.getRunsByStatus("completed", projectId);
+  const completedRuns = await store.getRunsByStatus("completed", projectId);
 
   // Build a set of seed IDs that have active (pending/running) dispatched runs.
-  const activeRuns = store.getActiveRuns(projectId);
+  const activeRuns = await store.getActiveRuns(projectId);
   const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
 
   // Deduplicate by seed_id: keep the most recently created run per seed.
@@ -252,7 +286,7 @@ export async function detectAndHandleStaleBranches(
   }
 
   // Snapshot MQ entries once so we don't call list() in a tight loop.
-  const mqEntries = mergeQueue.list();
+  const mqEntries = await mergeQueue.list();
   const activeMqSeedIds = new Set(
     mqEntries
       .filter((e) => e.status === "pending" || e.status === "merging")
@@ -315,12 +349,12 @@ export async function detectAndHandleStaleBranches(
         }
 
         // Mark the run as reset regardless of action.
-        store.updateRun(run.id, { status: "reset", completed_at: new Date().toISOString() });
+        await store.updateRun(run.id, { status: "reset", completed_at: new Date().toISOString() });
 
         // Remove any MQ entries for this seed (conflict/failed ones).
         const seedMqEntries = mqEntries.filter((e) => e.seed_id === run.seed_id);
         for (const entry of seedMqEntries) {
-          mergeQueue.remove(entry.id);
+          await mergeQueue.remove(entry.id);
         }
       } else {
         if (action === "close") closed++;
@@ -366,7 +400,7 @@ export interface MismatchResult {
  * (unless dryRun is true).
  */
 export async function detectAndFixMismatches(
-  store: Pick<ForemanStore, "getRunsByStatus" | "getActiveRuns">,
+  store: Pick<ResetRunStore, "getRunsByStatus" | "getActiveRuns">,
   seeds: IShowUpdateClient,
   projectId: string,
   resetSeedIds: ReadonlySet<string>,
@@ -376,14 +410,14 @@ export async function detectAndFixMismatches(
 
   // Check terminal run statuses not already handled by the reset loop
   const checkStatuses = ["completed", "merged", "pr-created", "conflict", "test-failed"] as const;
-  const terminalRuns = checkStatuses.flatMap((s) => store.getRunsByStatus(s, projectId));
+  const terminalRuns = (await Promise.all(checkStatuses.map((s) => store.getRunsByStatus(s, projectId)))).flat();
 
   // Short-circuit: nothing to check, skip the extra DB read for active runs.
   if (terminalRuns.length === 0) return { mismatches: [], fixed: 0, errors: [] };
 
   // Build a set of seed IDs that have active (pending/running) runs.
   // We skip those to avoid clobbering seeds that were just dispatched.
-  const activeRuns = store.getActiveRuns(projectId);
+  const activeRuns = await store.getActiveRuns(projectId);
   const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
 
   // Deduplicate by seed_id: keep the most recently created run per seed
@@ -459,7 +493,7 @@ export interface StuckDetectionResult {
  * be picked up by the main reset loop).
  */
 export async function detectStuckRuns(
-  store: Pick<ForemanStore, "getActiveRuns" | "updateRun" | "logEvent">,
+  store: Pick<ResetRunStore, "getActiveRuns" | "updateRun" | "logEvent">,
   projectId: string,
   opts?: {
     stuckTimeoutMinutes?: number;
@@ -470,7 +504,7 @@ export async function detectStuckRuns(
   const dryRun = opts?.dryRun ?? false;
 
   // Only look at "running" (not pending/failed/stuck — those are handled elsewhere)
-  const activeRuns = store.getActiveRuns(projectId).filter((r) => r.status === "running");
+  const activeRuns = (await store.getActiveRuns(projectId)).filter((r) => r.status === "running");
 
   const stuck: Run[] = [];
   const errors: string[] = [];
@@ -485,8 +519,8 @@ export async function detectStuckRuns(
 
         if (elapsedMinutes > stuckTimeout) {
           if (!dryRun) {
-            store.updateRun(run.id, { status: "stuck" });
-            store.logEvent(
+            await store.updateRun(run.id, { status: "stuck" });
+            await store.logEvent(
               run.project_id,
               "stuck",
               { seedId: run.seed_id, elapsedMinutes: Math.round(elapsedMinutes), detectedBy: "timeout" },
@@ -639,19 +673,29 @@ export const resetCommand = new Command("reset")
       const { taskClient } = await createTaskClient(projectPath);
       const seeds: IShowUpdateClient = taskClient;
       const store = ForemanStore.forProject(projectPath);
+      const registered = opts.project
+        ? (await listRegisteredProjects()).find((record) => record.id === opts.project || record.name === opts.project)
+        : (await listRegisteredProjects()).find((record) => record.path === projectPath);
+      if (registered) {
+        ensureCliPostgresPool(projectPath);
+      }
+      const helperStore: ResetRunStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalResetRunStore(store);
       const project = store.getProjectByPath(projectPath);
+      const runtimeProjectId = registered?.id ?? project?.id;
 
-      if (!project) {
+      if (!registered && !project) {
         console.error(chalk.red("No project registered for this path. Run 'foreman init' first."));
         process.exit(1);
       }
 
-      const mergeQueue = new MergeQueue(store.getDb());
+      const mergeQueue: ResetMergeQueue = registered
+        ? new PostgresMergeQueue(registered.id)
+        : wrapLocalMergeQueue(new MergeQueue(store.getDb()));
 
       // Optional: run stuck detection first, mark newly-stuck runs in the store
       if (detectStuck) {
         console.log(chalk.bold("Detecting stuck runs...\n"));
-        const detectionResult = await detectStuckRuns(store, project.id, {
+        const detectionResult = await detectStuckRuns(helperStore, runtimeProjectId!, {
           stuckTimeoutMinutes: timeoutMinutes,
           dryRun,
         });
@@ -684,7 +728,7 @@ export const resetCommand = new Command("reset")
 
       if (beadFilter) {
         // --seed: get ALL runs for this seed regardless of status, so stale pending/running are included
-        runs = store.getRunsForSeed(beadFilter, project.id);
+          runs = await helperStore.getRunsForSeed(beadFilter, runtimeProjectId!);
         if (runs.length === 0) {
           console.log(chalk.yellow(`No runs found for bead ${beadFilter}.\n`));
         } else {
@@ -694,7 +738,7 @@ export const resetCommand = new Command("reset")
         const statuses = all
           ? ["pending", "running", "failed", "stuck", "conflict", "test-failed"] as const
           : ["failed", "stuck", "conflict", "test-failed"] as const;
-        runs = statuses.flatMap((s) => store.getRunsByStatus(s, project.id));
+          runs = (await Promise.all(statuses.map((s) => helperStore.getRunsByStatus(s, runtimeProjectId!)))).flat();
       }
 
       if (dryRun) {
@@ -720,7 +764,7 @@ export const resetCommand = new Command("reset")
       const closedPrSeeds = new Set<string>();
 
       for (const run of runs) {
-        const pid = extractPid(run.session_key);
+        const pid = getWorkerPid(run);
         const branchName = `foreman/${run.seed_id}`;
 
         console.log(`  ${chalk.cyan(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)} status=${run.status}`);
@@ -825,7 +869,7 @@ export const resetCommand = new Command("reset")
         //    doctor that this run was intentionally cleared (not an active failure).
         console.log(`    ${chalk.yellow("mark")} run as reset`);
         if (!dryRun) {
-          store.updateRun(run.id, {
+          await helperStore.updateRun(run.id, {
             status: "reset",
             completed_at: new Date().toISOString(),
           });
@@ -838,12 +882,12 @@ export const resetCommand = new Command("reset")
         }
 
         // 5b. Remove merge queue entries for this seed
-        const mqEntries = mergeQueue.list().filter((e) => e.seed_id === run.seed_id);
+        const mqEntries = (await mergeQueue.list()).filter((e) => e.seed_id === run.seed_id);
         if (mqEntries.length > 0) {
           console.log(`    ${chalk.yellow("remove")} ${mqEntries.length} merge queue entry(ies)`);
           if (!dryRun) {
             for (const entry of mqEntries) {
-              mergeQueue.remove(entry.id);
+                await mergeQueue.remove(entry.id);
               mqEntriesRemoved++;
             }
           }
@@ -887,7 +931,7 @@ export const resetCommand = new Command("reset")
       //     have been removed or were never queued, so they can never be merged.
       //     Leaving them as "completed" triggers the MQ-011 doctor warning.
       if (!dryRun) {
-        const unqueuedCompleted = mergeQueue.missingFromQueue();
+        const unqueuedCompleted = await mergeQueue.missingFromQueue();
         for (const entry of unqueuedCompleted) {
           store.updateRun(entry.run_id, { status: "reset", completed_at: new Date().toISOString() });
           runsMarkedFailed++;
@@ -927,7 +971,7 @@ export const resetCommand = new Command("reset")
           // "active" set was the bug: it prevented orphaned worktrees from being
           // cleaned up when a run had no worktree_path recorded in the DB.
           const activeStatuses = ["pending", "running"] as const;
-          const activeRuns = activeStatuses.flatMap((s) => store.getRunsByStatus(s, project.id));
+           const activeRuns = activeStatuses.flatMap((s) => store.getRunsByStatus(s, runtimeProjectId!));
           const activeWorktreePaths = new Set(activeRuns.map((r) => r.worktree_path).filter(Boolean));
 
           let entries: string[] = [];
@@ -970,11 +1014,11 @@ export const resetCommand = new Command("reset")
       // 6c. Purge all remaining conflict/failed merge queue entries (catches seeds not
       //     in this reset batch that are still clogging the queue)
       if (!dryRun) {
-        const staleEntries = mergeQueue.list().filter(
+        const staleEntries = (await mergeQueue.list()).filter(
           (e) => e.status === "conflict" || e.status === "failed",
         );
         for (const entry of staleEntries) {
-          mergeQueue.remove(entry.id);
+          await mergeQueue.remove(entry.id);
           mqEntriesRemoved++;
         }
         if (staleEntries.length > 0) {
@@ -984,7 +1028,7 @@ export const resetCommand = new Command("reset")
 
       // 7. Detect and fix seed/run state mismatches for terminal runs
       console.log(chalk.bold("\nChecking for bead/run state mismatches..."));
-      const mismatchResult = await detectAndFixMismatches(store, seeds, project.id, seedIds, { dryRun });
+      const mismatchResult = await detectAndFixMismatches(helperStore, seeds, runtimeProjectId!, seedIds, { dryRun });
 
       if (mismatchResult.mismatches.length > 0) {
         for (const m of mismatchResult.mismatches) {
@@ -1004,11 +1048,11 @@ export const resetCommand = new Command("reset")
       //    This covers beads stuck in 'review' status from failed merge attempts.
       console.log(chalk.bold("\nChecking for stale / already-merged review branches..."));
       const staleResult = await detectAndHandleStaleBranches(
-        store,
+        helperStore,
         seeds,
         mergeQueue,
         projectPath,
-        project.id,
+        runtimeProjectId!,
         seedIds, // skip seeds already handled by the main reset loop
         { dryRun },
       );
@@ -1096,6 +1140,10 @@ function extractPid(sessionKey: string | null): number | null {
   if (!sessionKey) return null;
   const m = sessionKey.match(/pid-(\d+)/);
   return m ? parseInt(m[1], 10) : null;
+}
+
+export function getWorkerPid(run: Run): number | null {
+  return extractPid(run.session_key);
 }
 
 function isAlive(pid: number): boolean {

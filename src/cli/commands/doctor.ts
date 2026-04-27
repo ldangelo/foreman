@@ -1,11 +1,13 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { ForemanStore } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { Doctor } from "../../orchestrator/doctor.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
-import { purgeLogsAction } from "./purge-logs.js";
+import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
+import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
+import { purgeLogsAction, wrapLocalPurgeStore } from "./purge-logs.js";
 import type { CheckResult, CheckStatus } from "../../orchestrator/types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -55,6 +57,10 @@ function printSection(title: string, results: CheckResult[], jsonOutput: boolean
 
 // ── Command ──────────────────────────────────────────────────────────────
 
+async function resolveDoctorProjectPath(): Promise<string> {
+  return resolveRepoRootProjectPath({});
+}
+
 export const doctorCommand = new Command("doctor")
   .description("Check foreman installation and project health, with optional auto-fix")
   .option("--fix", "Auto-fix issues where possible")
@@ -85,8 +91,7 @@ export const doctorCommand = new Command("doctor")
     // Determine project path
     let projectPath: string;
     try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      projectPath = await vcs.getRepoRoot(process.cwd());
+      projectPath = await resolveDoctorProjectPath();
     } catch {
       if (!jsonOutput) {
         console.log(chalk.bold("Repository:"));
@@ -106,9 +111,15 @@ export const doctorCommand = new Command("doctor")
     let store: ForemanStore | null = null;
     try {
       store = ForemanStore.forProject(projectPath);
+      const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
       const mq = new MergeQueue(store.getDb());
-      const { taskClient } = await createTaskClient(projectPath);
-      const doctor = new Doctor(store, projectPath, mq, taskClient);
+      if (registered) {
+        ensureCliPostgresPool(projectPath);
+      }
+      const runLookup = registered ? PostgresStore.forProject(registered.id) : undefined;
+      const registeredMergeQueue = registered ? new PostgresMergeQueue(registered.id) : undefined;
+      const { taskClient, backendType } = await createTaskClient(projectPath);
+      const doctor = new Doctor(store, projectPath, mq, taskClient, undefined, registeredMergeQueue, runLookup, backendType);
 
       const report = await doctor.runAll({ fix, dryRun, projectPath });
 
@@ -147,16 +158,28 @@ export const doctorCommand = new Command("doctor")
 
       // Run log cleanup if --clean-logs was requested
       if (cleanLogs) {
-        if (!jsonOutput) {
-          console.log();
-          console.log(chalk.bold("Log cleanup:"));
-        }
-        const purgeStore = ForemanStore.forProject(projectPath);
+      if (!jsonOutput) {
+        console.log();
+        console.log(chalk.bold("Log cleanup:"));
+      }
+      if (registered) {
+        ensureCliPostgresPool(projectPath);
+      }
+      if (registered) {
+        const purgeStore = PostgresStore.forProject(registered.id);
         try {
           await purgeLogsAction({ days: logDays, dryRun }, purgeStore);
         } finally {
           purgeStore.close();
         }
+      } else {
+        const localPurgeStore = ForemanStore.forProject(projectPath);
+        try {
+          await purgeLogsAction({ days: logDays, dryRun }, wrapLocalPurgeStore(localPurgeStore));
+        } finally {
+          localPurgeStore.close();
+        }
+      }
       }
 
       if (report.summary.fail > 0) {

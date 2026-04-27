@@ -17,6 +17,7 @@ const {
   mockBrList,
   mockBrReady,
   mockEnsureBrInstalled,
+  mockCreateTaskClient,
   MockBeadsRustClient,
   mockGetProjectByPath,
   mockGetActiveRuns,
@@ -25,17 +26,22 @@ const {
   mockGetRunProgress,
   mockGetDb,
   MockForemanStore,
+  MockPostgresStore,
   mockCheckAll,
   MockMonitor,
   mockReconcile,
   mockList,
   MockMergeQueue,
 } = vi.hoisted(() => {
+  const mockCreateTaskClient = vi.fn().mockResolvedValue({ taskClient: { kind: "task-client" }, backendType: "native" });
   const mockGetRepoRoot = vi.fn().mockResolvedValue("/mock/project");
   const mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
   const mockCreateVcsBackend = vi.fn().mockResolvedValue({
     name: "git",
     getRepoRoot: mockGetRepoRoot,
+    getCurrentBranch: vi.fn().mockResolvedValue("main"),
+    checkoutBranch: vi.fn().mockResolvedValue(undefined),
+    getRemoteUrl: vi.fn().mockResolvedValue(null),
     detectDefaultBranch: mockDetectDefaultBranch,
   });
 
@@ -66,6 +72,12 @@ const {
     this.close = vi.fn();
     this.getSuccessRate = vi.fn(() => ({ rate: null, merged: 0, failed: 0 }));
   });
+  const MockPostgresStore = vi.fn(function MockPostgresStoreImpl(this: Record<string, unknown>) {
+    this.getRun = vi.fn();
+    this.getRunsByStatus = vi.fn();
+    this.getRunsByStatuses = vi.fn();
+    this.getRunsByBaseBranch = vi.fn();
+  });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
@@ -94,6 +106,7 @@ const {
     mockBrList,
     mockBrReady,
     mockEnsureBrInstalled,
+    mockCreateTaskClient,
     MockBeadsRustClient,
     mockGetProjectByPath,
     mockGetActiveRuns,
@@ -102,6 +115,7 @@ const {
     mockGetRunProgress,
     mockGetDb,
     MockForemanStore,
+    MockPostgresStore,
     mockCheckAll,
     MockMonitor,
     mockReconcile,
@@ -120,8 +134,20 @@ vi.mock("../../lib/beads-rust.js", () => ({
   BeadsRustClient: MockBeadsRustClient,
 }));
 
+vi.mock("../../lib/task-client-factory.js", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/task-client-factory.js")>("../../lib/task-client-factory.js");
+  return {
+    ...actual,
+    createTaskClient: mockCreateTaskClient,
+  };
+});
+
 vi.mock("../../lib/store.js", () => ({
   ForemanStore: MockForemanStore,
+}));
+
+vi.mock("../../lib/postgres-store.js", () => ({
+  PostgresStore: MockPostgresStore,
 }));
 
 vi.mock("../../orchestrator/monitor.js", () => ({
@@ -234,6 +260,14 @@ const MOCK_PROJECT = {
 describe("foreman status --json", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCreateVcsBackend.mockResolvedValue({
+      name: "git",
+      getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+      getCurrentBranch: vi.fn().mockResolvedValue("main"),
+      checkoutBranch: vi.fn().mockResolvedValue(undefined),
+      getRemoteUrl: vi.fn().mockResolvedValue(null),
+      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+    });
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
       this.list = mockBrList;
       this.ready = mockBrReady;
@@ -378,6 +412,14 @@ describe("foreman status --json", () => {
 describe("foreman monitor --json", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCreateVcsBackend.mockResolvedValue({
+      name: "git",
+      getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+      getCurrentBranch: vi.fn().mockResolvedValue("main"),
+      checkoutBranch: vi.fn().mockResolvedValue(undefined),
+      getRemoteUrl: vi.fn().mockResolvedValue(null),
+      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+    });
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
       this.list = mockBrList;
       this.ready = mockBrReady;
@@ -461,6 +503,14 @@ describe("foreman monitor --json", () => {
 describe("foreman merge --list --json", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCreateVcsBackend.mockResolvedValue({
+      name: "git",
+      getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+      getCurrentBranch: vi.fn().mockResolvedValue("main"),
+      checkoutBranch: vi.fn().mockResolvedValue(undefined),
+      getRemoteUrl: vi.fn().mockResolvedValue(null),
+      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+    });
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
       this.list = mockBrList;
       this.ready = mockBrReady;

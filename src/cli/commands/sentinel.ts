@@ -3,9 +3,11 @@ import chalk from "chalk";
 
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
+import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 export const sentinelCommand = new Command("sentinel")
   .description("QA sentinel: continuous testing agent for main/master branch");
@@ -29,6 +31,40 @@ export async function createSentinelTaskClient(projectPath: string): Promise<Sen
   return taskClient as SentinelCommandTaskClient;
 }
 
+function wrapLocalSentinelStore(store: ForemanStore) {
+  return {
+    close: () => store.close(),
+    isOpen: () => store.isOpen(),
+    logEvent: async (projectId: string, eventType: "sentinel-start" | "sentinel-pass" | "sentinel-fail", data: Record<string, unknown>) => store.logEvent(projectId, eventType, data),
+    recordSentinelRun: async (run: Parameters<ForemanStore["recordSentinelRun"]>[0]) => store.recordSentinelRun(run),
+    updateSentinelRun: async (id: string, updates: Parameters<ForemanStore["updateSentinelRun"]>[1]) => store.updateSentinelRun(id, updates),
+    upsertSentinelConfig: async (projectId: string, config: Parameters<ForemanStore["upsertSentinelConfig"]>[1]) => { store.upsertSentinelConfig(projectId, config); },
+    getSentinelConfig: async (projectId: string) => store.getSentinelConfig(projectId),
+    getSentinelRuns: async (projectId: string, limit?: number) => store.getSentinelRuns(projectId, limit),
+  };
+}
+
+export function wrapPostgresSentinelStore(store: PostgresStore, projectId: string) {
+  return {
+    close: () => store.close(),
+    isOpen: () => store.isOpen(),
+    logEvent: async (pid: string, eventType: "sentinel-start" | "sentinel-pass" | "sentinel-fail", data: Record<string, unknown>) => {
+      const runId = typeof data.runId === "string" ? data.runId : undefined;
+      return store.logEvent(pid, eventType, data, runId);
+    },
+    recordSentinelRun: async (run: Parameters<ForemanStore["recordSentinelRun"]>[0]) => store.recordSentinelRun(projectId, run),
+    updateSentinelRun: async (id: string, updates: Parameters<ForemanStore["updateSentinelRun"]>[1]) => store.updateSentinelRun(id, updates),
+    upsertSentinelConfig: async (_projectId: string, config: Parameters<ForemanStore["upsertSentinelConfig"]>[1]) => { await store.upsertSentinelConfig(projectId, config); },
+    getSentinelConfig: async (_projectId: string) => store.getSentinelConfig(projectId),
+    getSentinelRuns: async (_projectId: string, limit?: number) => store.getSentinelRuns(projectId, limit),
+  };
+}
+
+async function resolveSentinelRegisteredProject(projectPath: string) {
+  const projects = await listRegisteredProjects();
+  return projects.find((project) => project.path === projectPath) ?? null;
+}
+
 // ── foreman sentinel run-once ──────────────────────────────────────────
 
 sentinelCommand
@@ -40,12 +76,17 @@ sentinelCommand
   .option("--dry-run", "Simulate without running tests")
   .action(async (opts) => {
     try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      const projectPath = await vcs.getRepoRoot(process.cwd());
-      const store = new ForemanStore();
+      const projectPath = await resolveRepoRootProjectPath({});
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+      const localStore = ForemanStore.forProject(projectPath);
+      const registered = await resolveSentinelRegisteredProject(projectPath);
+      if (registered) {
+        ensureCliPostgresPool(projectPath);
+      }
+      const store = registered ? wrapPostgresSentinelStore(PostgresStore.forProject(registered.id), registered.id) : wrapLocalSentinelStore(localStore);
       const seeds = await createSentinelTaskClient(projectPath);
 
-      const project = store.getProjectByPath(projectPath);
+      const project = registered ?? localStore.getProjectByPath(projectPath);
       if (!project) {
         console.error(chalk.red("Error: project not initialized. Run `foreman init` first."));
         process.exit(1);
@@ -83,7 +124,10 @@ sentinelCommand
         console.log(result.output.slice(-2000));
       }
 
-      store.close();
+      localStore.close();
+      if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
+        (store as { close: () => void }).close();
+      }
       process.exit(result.status === "passed" ? 0 : 1);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -104,12 +148,17 @@ sentinelCommand
   .option("--dry-run", "Simulate without running tests")
   .action(async (opts) => {
     try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      const projectPath = await vcs.getRepoRoot(process.cwd());
-      const store = new ForemanStore();
+      const projectPath = await resolveRepoRootProjectPath({});
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+      const localStore = ForemanStore.forProject(projectPath);
+      const registered = await resolveSentinelRegisteredProject(projectPath);
+      if (registered) {
+        ensureCliPostgresPool(projectPath);
+      }
+      const store = registered ? wrapPostgresSentinelStore(PostgresStore.forProject(registered.id), registered.id) : wrapLocalSentinelStore(localStore);
       const seeds = await createSentinelTaskClient(projectPath);
 
-      const project = store.getProjectByPath(projectPath);
+      const project = registered ?? localStore.getProjectByPath(projectPath);
       if (!project) {
         console.error(chalk.red("Error: project not initialized. Run `foreman init` first."));
         process.exit(1);
@@ -128,7 +177,7 @@ sentinelCommand
       };
 
       // Persist sentinel config for status queries
-      store.upsertSentinelConfig(project.id, {
+      await store.upsertSentinelConfig(project.id, {
         branch: options.branch,
         test_command: options.testCommand,
         interval_minutes: intervalMinutes,
@@ -162,8 +211,11 @@ sentinelCommand
       // Keep process alive; stop cleanly on SIGINT
       const cleanup = () => {
         agent.stop();
-        store.upsertSentinelConfig(project.id, { enabled: 0, pid: null });
-        store.close();
+        void store.upsertSentinelConfig(project.id, { enabled: 0, pid: null });
+        localStore.close();
+        if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
+          (store as { close: () => void }).close();
+        }
         console.log(chalk.dim("\nSentinel stopped."));
         process.exit(0);
       };
@@ -188,23 +240,31 @@ sentinelCommand
   .option("--json", "Output as JSON")
   .action(async (opts) => {
     try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      const projectPath = await vcs.getRepoRoot(process.cwd());
-      const store = new ForemanStore();
+      const projectPath = await resolveRepoRootProjectPath({});
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+      const localStore = ForemanStore.forProject(projectPath);
+      const registered = await resolveSentinelRegisteredProject(projectPath);
+      if (registered) {
+        ensureCliPostgresPool(projectPath);
+      }
+      const store = registered ? wrapPostgresSentinelStore(PostgresStore.forProject(registered.id), registered.id) : wrapLocalSentinelStore(localStore);
 
-      const project = store.getProjectByPath(projectPath);
+      const project = registered ?? localStore.getProjectByPath(projectPath);
       if (!project) {
         console.error(chalk.red("Error: project not initialized. Run `foreman init` first."));
         process.exit(1);
       }
 
       const limit = parseInt(opts.limit as string, 10);
-      const runs = store.getSentinelRuns(project.id, limit);
-      const config = store.getSentinelConfig(project.id);
+      const runs = await store.getSentinelRuns(project.id, limit);
+      const config = await store.getSentinelConfig(project.id);
 
       if (opts.json) {
         console.log(JSON.stringify({ config, runs }, null, 2));
-        store.close();
+        localStore.close();
+        if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
+          (store as { close: () => void }).close();
+        }
         return;
       }
 
@@ -222,7 +282,10 @@ sentinelCommand
 
       if (runs.length === 0) {
         console.log(chalk.dim("No sentinel runs recorded yet."));
-        store.close();
+        localStore.close();
+        if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
+          (store as { close: () => void }).close();
+        }
         return;
       }
 
@@ -251,7 +314,10 @@ sentinelCommand
         console.log(`  ${icon} ${statusLabel}${hash}${dur}  ${chalk.dim(ts)}`);
       }
 
-      store.close();
+      localStore.close();
+      if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
+        (store as { close: () => void }).close();
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Error: ${message}`));
@@ -267,27 +333,38 @@ sentinelCommand
   .option("--force", "Force kill with SIGKILL instead of SIGTERM")
   .action(async (opts) => {
     try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      const projectPath = await vcs.getRepoRoot(process.cwd());
-      const store = new ForemanStore();
+      const projectPath = await resolveRepoRootProjectPath({});
+      const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+      const localStore = ForemanStore.forProject(projectPath);
+      const registered = await resolveSentinelRegisteredProject(projectPath);
+      if (registered) {
+        ensureCliPostgresPool(projectPath);
+      }
+      const store = registered ? wrapPostgresSentinelStore(PostgresStore.forProject(registered.id), registered.id) : wrapLocalSentinelStore(localStore);
 
-      const project = store.getProjectByPath(projectPath);
+      const project = registered ?? localStore.getProjectByPath(projectPath);
       if (!project) {
         console.error(chalk.red("Error: project not initialized. Run `foreman init` first."));
         process.exit(1);
       }
 
-      const config = store.getSentinelConfig(project.id);
+      const config = await store.getSentinelConfig(project.id);
 
       if (!config) {
         console.log(chalk.dim("Sentinel not configured."));
-        store.close();
+        localStore.close();
+        if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
+          (store as { close: () => void }).close();
+        }
         return;
       }
 
       if (config.enabled !== 1) {
         console.log(chalk.dim("Sentinel not running."));
-        store.close();
+        localStore.close();
+        if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
+          (store as { close: () => void }).close();
+        }
         return;
       }
 
@@ -301,10 +378,13 @@ sentinelCommand
       }
 
       // Mark sentinel as stopped in the database
-      store.upsertSentinelConfig(project.id, { enabled: 0, pid: null });
+      await store.upsertSentinelConfig(project.id, { enabled: 0, pid: null });
       console.log(chalk.dim("Sentinel stopped."));
 
-      store.close();
+      localStore.close();
+      if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
+        (store as { close: () => void }).close();
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Error: ${message}`));

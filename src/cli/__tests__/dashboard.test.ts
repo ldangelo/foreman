@@ -1,6 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run, RunProgress, Project, Metrics, Event, NativeTask } from "../../lib/store.js";
+import * as projectConfig from "../../lib/project-config.js";
+import * as projectTaskSupport from "../commands/project-task-support.js";
+import * as trpcClientModule from "../../lib/trpc-client.js";
+import * as dashboardModule from "../commands/dashboard.js";
 import {
   renderEventLine,
   renderProjectHeader,
@@ -611,6 +618,41 @@ describe("renderNeedsHumanPanel", () => {
   });
 });
 
+describe("dashboard command bootstrap", () => {
+  let tempDir: string;
+  let originalCwd: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "foreman-dashboard-command-"));
+    originalCwd = process.cwd();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    rmSync(tempDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it("resolves a registered dashboard run from a non-canonical worktree before daemon lookup", async () => {
+    const canonicalPath = join(tempDir, "canonical-project");
+    const worktreePath = join(tempDir, "worktree-clone");
+    mkdirSync(canonicalPath, { recursive: true });
+    mkdirSync(worktreePath, { recursive: true });
+    process.chdir(worktreePath);
+
+    const resolveSpy = vi.spyOn(projectTaskSupport, "resolveRepoRootProjectPath").mockResolvedValue(canonicalPath);
+    const configSpy = vi.spyOn(projectConfig, "loadDashboardConfig").mockReturnValue({ refreshInterval: 5000 });
+
+    await expect(
+      dashboardModule.dashboardCommand.parseAsync(["--no-watch", "--project", "registered-project"], { from: "user" }),
+    ).rejects.toThrow("Cannot load daemon-backed dashboard data. Make sure the daemon is running and the project is registered.");
+
+    expect(resolveSpy).toHaveBeenCalledWith({ project: "registered-project" });
+    expect(configSpy).toHaveBeenCalledWith(canonicalPath);
+  });
+});
+
 // ── renderProjectAgentPanel() ─────────────────────────────────────────────
 
 describe("renderProjectAgentPanel", () => {
@@ -766,63 +808,78 @@ describe("renderDashboard with needsHumanTasks", () => {
 // ── approveTask() / retryTask() ───────────────────────────────────────────
 
 describe("approveTask and retryTask", () => {
-  it("approveTask calls updateTaskStatus with 'ready'", () => {
-    const mockUpdateTaskStatus = vi.fn();
-    const mockClose = vi.fn();
-    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
-      updateTaskStatus: mockUpdateTaskStatus,
-      close: mockClose,
-    } as unknown as ForemanStore);
+  it("approveTask calls daemon task approve", async () => {
+    const approve = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "test", path: "/some/project" },
+    ]);
+    vi.spyOn(trpcClientModule, "createTrpcClient").mockReturnValue({
+      tasks: { approve },
+    } as unknown as trpcClientModule.TrpcClient);
 
-    approveTask("task-001", "/some/project");
-    expect(mockUpdateTaskStatus).toHaveBeenCalledWith("task-001", "ready");
-    expect(mockClose).toHaveBeenCalled();
+    await approveTask("task-001", "/some/project");
+    expect(approve).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-001" });
   });
 
-  it("retryTask calls updateTaskStatus with 'backlog'", () => {
-    const mockUpdateTaskStatus = vi.fn();
-    const mockClose = vi.fn();
-    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
-      updateTaskStatus: mockUpdateTaskStatus,
-      close: mockClose,
-    } as unknown as ForemanStore);
+  it("approveTask resolves registered projects by normalized path", async () => {
+    const approve = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "test", path: "/some/project/./" },
+    ]);
+    vi.spyOn(trpcClientModule, "createTrpcClient").mockReturnValue({
+      tasks: { approve },
+    } as unknown as trpcClientModule.TrpcClient);
 
-    retryTask("task-001", "/some/project");
-    expect(mockUpdateTaskStatus).toHaveBeenCalledWith("task-001", "backlog");
-    expect(mockClose).toHaveBeenCalled();
+    await approveTask("task-001", "/some/./project");
+    expect(approve).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-001" });
   });
 
-  it("approveTask closes the store even if updateTaskStatus throws", () => {
-    const mockClose = vi.fn();
-    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
-      updateTaskStatus: vi.fn().mockImplementation(() => { throw new Error("DB error"); }),
-      close: mockClose,
-    } as unknown as ForemanStore);
+  it("retryTask calls daemon task retry", async () => {
+    const retry = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "test", path: "/some/project" },
+    ]);
+    vi.spyOn(trpcClientModule, "createTrpcClient").mockReturnValue({
+      tasks: { retry },
+    } as unknown as trpcClientModule.TrpcClient);
 
-    expect(() => approveTask("task-001", "/some/project")).toThrow("DB error");
-    expect(mockClose).toHaveBeenCalled();
+    await retryTask("task-001", "/some/project");
+    expect(retry).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-001" });
   });
 
-  it("approveTask propagates error from updateTaskStatus for invalid taskId", () => {
-    const mockClose = vi.fn();
-    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
-      updateTaskStatus: vi.fn().mockImplementation(() => { throw new Error("no such task: nonexistent-id"); }),
-      close: mockClose,
-    } as unknown as ForemanStore);
+  it("retryTask resolves registered projects by normalized path", async () => {
+    const retry = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "test", path: "/some/project/./" },
+    ]);
+    vi.spyOn(trpcClientModule, "createTrpcClient").mockReturnValue({
+      tasks: { retry },
+    } as unknown as trpcClientModule.TrpcClient);
 
-    expect(() => approveTask("nonexistent-id", "/some/project")).toThrow("no such task: nonexistent-id");
-    expect(mockClose).toHaveBeenCalled();
+    await retryTask("task-001", "/some/./project");
+    expect(retry).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-001" });
   });
 
-  it("retryTask propagates error from updateTaskStatus for invalid taskId", () => {
-    const mockClose = vi.fn();
-    vi.spyOn(ForemanStore, "forProject").mockReturnValueOnce({
-      updateTaskStatus: vi.fn().mockImplementation(() => { throw new Error("no such task: nonexistent-id"); }),
-      close: mockClose,
-    } as unknown as ForemanStore);
+  it("approveTask propagates daemon errors", async () => {
+    const approve = vi.fn().mockRejectedValue(new Error("daemon error"));
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "test", path: "/some/project" },
+    ]);
+    vi.spyOn(trpcClientModule, "createTrpcClient").mockReturnValue({
+      tasks: { approve },
+    } as unknown as trpcClientModule.TrpcClient);
 
-    expect(() => retryTask("nonexistent-id", "/some/project")).toThrow("no such task: nonexistent-id");
-    expect(mockClose).toHaveBeenCalled();
+    await expect(approveTask("task-001", "/some/project")).rejects.toThrow("daemon error");
+  });
+
+  it("approveTask fails when project path is not registered", async () => {
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([]);
+    await expect(approveTask("nonexistent-id", "/some/project")).rejects.toThrow("not registered with the daemon");
+  });
+
+  it("retryTask fails when project path is not registered", async () => {
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([]);
+    await expect(retryTask("nonexistent-id", "/some/project")).rejects.toThrow("not registered with the daemon");
   });
 });
 

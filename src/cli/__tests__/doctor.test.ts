@@ -157,6 +157,211 @@ describe("doctor command", () => {
     expect(output).not.toContain("ReferenceError");
     expect(output).toContain("Summary");
   }, 30_000);
+
+  describe("doctor --clean-logs registered-aware store selection", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    async function arrange(registered: boolean) {
+      const tmp = makeTempDir();
+      await makeGitRepo(tmp);
+
+      const vcs = await import("../../lib/vcs/index.js");
+      vi.spyOn(vcs.VcsBackendFactory, "create").mockResolvedValue({
+        getRepoRoot: async () => tmp,
+      } as never);
+
+      const projectSupport = await import("../commands/project-task-support.js");
+      const ensureSpy = vi.spyOn(projectSupport, "ensureCliPostgresPool").mockImplementation(() => undefined);
+      const listSpy = vi.spyOn(projectSupport, "listRegisteredProjects").mockResolvedValue(
+        registered ? ([{ id: "registered-project-id", path: tmp }] as never) : ([] as never),
+      );
+
+      const storeMod = await import("../../lib/store.js");
+      const mainLocalStore = { getDb: () => ({}), close: vi.fn() };
+      const purgeLocalStore = { getDb: () => ({}), close: vi.fn() };
+      const localSpy = vi.spyOn(storeMod.ForemanStore, "forProject")
+        .mockImplementationOnce(() => mainLocalStore as never)
+        .mockImplementation(() => purgeLocalStore as never);
+
+      const postgresMod = await import("../../lib/postgres-store.js");
+      const postgresPurgeStore = { getRun: vi.fn(), close: vi.fn() };
+      const postgresSpy = vi.spyOn(postgresMod.PostgresStore, "forProject").mockReturnValue(postgresPurgeStore as never);
+
+      const taskClientFactory = await import("../../lib/task-client-factory.js");
+      vi.spyOn(taskClientFactory, "createTaskClient").mockResolvedValue({ taskClient: {} } as never);
+
+      const doctorOrchestrator = await import("../../orchestrator/doctor.js");
+      vi.spyOn(doctorOrchestrator.Doctor.prototype, "runAll").mockResolvedValue({
+        system: [],
+        repository: [],
+        dataIntegrity: [],
+        summary: { pass: 1, warn: 0, fail: 0, fixed: 0, skip: 0 },
+      } as never);
+
+      const purgeLogsModule = await import("../commands/purge-logs.js");
+      const wrapSpy = vi.spyOn(purgeLogsModule, "wrapLocalPurgeStore").mockImplementation((store) => ({
+        getRun: async (id: string) => store.getRun(id),
+      }));
+      const purgeSpy = vi.spyOn(purgeLogsModule, "purgeLogsAction").mockResolvedValue({
+        checked: 0,
+        deleted: 0,
+        skipped: 0,
+        errors: 0,
+        freedBytes: 0,
+      } as never);
+
+      const { doctorCommand } = await import("../commands/doctor.js");
+      return {
+        tmp,
+        ensureSpy,
+        listSpy,
+        localSpy,
+        mainLocalStore,
+        purgeLocalStore,
+        postgresSpy,
+        postgresPurgeStore,
+        wrapSpy,
+        purgeSpy,
+        doctorCommand,
+      };
+    }
+
+    it("registered clean-logs uses PostgresStore and not a second local store", async () => {
+      const { tmp, ensureSpy, listSpy, localSpy, postgresSpy, postgresPurgeStore, wrapSpy, purgeSpy, doctorCommand, mainLocalStore } = await arrange(true);
+
+      await doctorCommand.parseAsync(["node", "doctor", "--clean-logs"], { from: "node" });
+
+      expect(listSpy).toHaveBeenCalled();
+      expect(ensureSpy).toHaveBeenCalledWith(tmp);
+      expect(localSpy).toHaveBeenCalledTimes(1);
+      expect(wrapSpy).not.toHaveBeenCalled();
+      expect(postgresSpy).toHaveBeenCalledWith("registered-project-id");
+      expect(purgeSpy).toHaveBeenCalledWith({ days: 7, dryRun: false }, postgresPurgeStore);
+      expect(mainLocalStore.close).toHaveBeenCalledTimes(1);
+    }, 30_000);
+
+    it("local clean-logs keeps the local store path", async () => {
+      const { ensureSpy, listSpy, localSpy, postgresSpy, wrapSpy, purgeSpy, doctorCommand, purgeLocalStore } = await arrange(false);
+
+      await doctorCommand.parseAsync(["node", "doctor", "--clean-logs"], { from: "node" });
+
+      expect(listSpy).toHaveBeenCalled();
+      expect(ensureSpy).not.toHaveBeenCalled();
+      expect(localSpy).toHaveBeenCalledTimes(2);
+      expect(postgresSpy).not.toHaveBeenCalled();
+      expect(wrapSpy).toHaveBeenCalledWith(purgeLocalStore);
+      expect(purgeSpy).toHaveBeenCalledWith({ days: 7, dryRun: false }, expect.objectContaining({ getRun: expect.any(Function) }));
+    }, 30_000);
+  });
+
+  describe("doctor project bootstrap resolution", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    async function arrange(registered: boolean) {
+      vi.resetModules();
+
+      const canonicalPath = makeTempDir();
+      const clonePath = makeTempDir();
+
+      const projectSupport = await import("../commands/project-task-support.js");
+      const ensureSpy = vi.spyOn(projectSupport, "ensureCliPostgresPool").mockImplementation(() => undefined);
+      const resolveSpy = vi.spyOn(projectSupport, "resolveRepoRootProjectPath");
+      resolveSpy.mockResolvedValue(registered ? canonicalPath : clonePath);
+      vi.spyOn(projectSupport, "listRegisteredProjects").mockResolvedValue(
+        registered ? ([{ id: "registered-project-id", path: canonicalPath }] as never) : ([] as never),
+      );
+
+      const storeMod = await import("../../lib/store.js");
+      const localStore = { getDb: () => ({}), close: vi.fn() };
+      const localStoreSpy = vi.spyOn(storeMod.ForemanStore, "forProject").mockReturnValue(localStore as never);
+
+      const postgresStoreMod = await import("../../lib/postgres-store.js");
+      const postgresStoreSpy = vi.spyOn(postgresStoreMod.PostgresStore, "forProject").mockReturnValue({ close: vi.fn() } as never);
+
+      const mergeQueueMod = await import("../../orchestrator/merge-queue.js");
+      const MergeQueue = mergeQueueMod.MergeQueue;
+
+      const postgresQueueMod = await import("../../orchestrator/postgres-merge-queue.js");
+      const postgresQueueSpy = vi.spyOn(postgresQueueMod, "PostgresMergeQueue").mockImplementation(function PostgresMergeQueueMock(this: unknown) {
+        return {
+          list: vi.fn(),
+          missingFromQueue: vi.fn(),
+          updateStatus: vi.fn(),
+          remove: vi.fn(),
+          reEnqueue: vi.fn(),
+          reconcile: vi.fn(),
+        } as never;
+      } as never);
+
+      const taskClientFactory = await import("../../lib/task-client-factory.js");
+      vi.spyOn(taskClientFactory, "createTaskClient").mockResolvedValue({ taskClient: {} } as never);
+
+      const doctorOrchestrator = await import("../../orchestrator/doctor.js");
+      const doctorCtorSpy = vi.spyOn(doctorOrchestrator, "Doctor").mockImplementation(function DoctorMock(this: unknown) {
+        return {
+          runAll: vi.fn().mockResolvedValue({
+            system: [],
+            repository: [],
+            dataIntegrity: [],
+            summary: { pass: 1, warn: 0, fail: 0, fixed: 0, skip: 0 },
+          }),
+        } as never;
+      } as never);
+
+      const { doctorCommand } = await import("../commands/doctor.js");
+      return {
+        canonicalPath,
+        clonePath,
+        ensureSpy,
+        resolveSpy,
+        localStoreSpy,
+        postgresStoreSpy,
+        postgresQueueSpy,
+        doctorCtorSpy,
+        doctorCommand,
+        MergeQueue,
+      };
+    }
+
+    it("resolves a registered doctor run from a clone to the canonical project path", async () => {
+      const { canonicalPath, ensureSpy, resolveSpy, localStoreSpy, postgresStoreSpy, doctorCtorSpy, doctorCommand } = await arrange(true);
+
+      await doctorCommand.parseAsync(["node", "doctor"], { from: "node" });
+
+      expect(resolveSpy).toHaveBeenCalledWith({});
+      expect(ensureSpy).toHaveBeenCalledWith(canonicalPath);
+      expect(localStoreSpy).toHaveBeenCalledWith(canonicalPath);
+      expect(postgresStoreSpy).toHaveBeenCalledWith("registered-project-id");
+      expect(doctorCtorSpy.mock.calls[0]?.[1]).toBe(canonicalPath);
+    }, 30_000);
+
+    it("keeps local unregistered doctor runs on the resolved repo-root path", async () => {
+      const { clonePath, ensureSpy, resolveSpy, localStoreSpy, postgresStoreSpy, doctorCtorSpy, doctorCommand } = await arrange(false);
+
+      await doctorCommand.parseAsync(["node", "doctor"], { from: "node" });
+
+      expect(resolveSpy).toHaveBeenCalledWith({});
+      expect(ensureSpy).not.toHaveBeenCalled();
+      expect(localStoreSpy).toHaveBeenCalledWith(clonePath);
+      expect(postgresStoreSpy).not.toHaveBeenCalled();
+      expect(doctorCtorSpy.mock.calls[0]?.[1]).toBe(clonePath);
+    }, 30_000);
+
+    it("keeps the local merge queue lane for unregistered runs", async () => {
+      const { doctorCtorSpy, doctorCommand, MergeQueue, postgresQueueSpy } = await arrange(false);
+
+      await doctorCommand.parseAsync(["node", "doctor"], { from: "node" });
+
+      expect(postgresQueueSpy).not.toHaveBeenCalled();
+      expect(doctorCtorSpy).toHaveBeenCalledTimes(1);
+      expect(doctorCtorSpy.mock.calls[0]?.[2]).toBeInstanceOf(MergeQueue);
+      expect(doctorCtorSpy.mock.calls[0]?.[5]).toBeUndefined();
+    }, 30_000);
+  });
 });
 
 // ── Unit tests for doctor logic ──────────────────────────────────────────

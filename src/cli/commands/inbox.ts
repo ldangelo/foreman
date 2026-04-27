@@ -12,10 +12,35 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { resolve } from "node:path";
 import { ForemanStore } from "../../lib/store.js";
 import type { Message, Run } from "../../lib/store.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
-import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+
+interface DaemonMailMessage {
+  id: string;
+  run_id: string;
+  sender_agent_type: string;
+  recipient_agent_type: string;
+  subject: string;
+  body: string;
+  read: number;
+  created_at: string;
+  deleted_at: string | null;
+}
+
+interface DaemonRunRow {
+  id: string;
+  bead_id: string;
+  status: string;
+  branch: string;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+}
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -141,6 +166,90 @@ function formatRunStatus(run: Run): string {
   return `[${ts}] ${chalk.bold("●")} ${run.seed_id} ${statusStr} (run ${run.id})`;
 }
 
+function adaptDaemonMessage(row: DaemonMailMessage): Message {
+  return {
+    id: row.id,
+    run_id: row.run_id,
+    sender_agent_type: row.sender_agent_type,
+    recipient_agent_type: row.recipient_agent_type,
+    subject: row.subject,
+    body: row.body,
+    read: row.read,
+    created_at: row.created_at,
+    deleted_at: row.deleted_at,
+  };
+}
+
+function adaptDaemonRun(row: DaemonRunRow): Run {
+  return {
+    id: row.id,
+    project_id: "",
+    seed_id: row.bead_id,
+    agent_type: "daemon",
+    session_key: null,
+    worktree_path: null,
+    status: row.status as Run["status"],
+    started_at: row.started_at,
+    completed_at: row.finished_at,
+    created_at: row.created_at,
+    progress: null,
+    base_branch: null,
+  };
+}
+
+export async function resolveDaemonInboxContext(projectPath: string, projectSelector?: string): Promise<{
+  client: ReturnType<typeof createTrpcClient>;
+  projectId: string;
+} | null> {
+  try {
+    const projects = await listRegisteredProjects();
+    const project = projectSelector
+      ? projects.find((record) => record.id === projectSelector || record.name === projectSelector)
+      : projects.find((record) => resolve(record.path) === resolve(projectPath));
+    if (!project) return null;
+    return { client: createTrpcClient(), projectId: project.id };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveDaemonRunId(
+  client: ReturnType<typeof createTrpcClient>,
+  projectId: string,
+  options: { run?: string; bead?: string },
+): Promise<string | null> {
+  if (options.run) return options.run;
+  const runs = await client.runs.list({ projectId, limit: 100 }) as DaemonRunRow[];
+  if (options.bead) {
+    const match = runs.find((run) => run.bead_id === options.bead);
+    return match?.id ?? null;
+  }
+  return runs[0]?.id ?? null;
+}
+
+async function fetchDaemonMessages(
+  client: ReturnType<typeof createTrpcClient>,
+  projectId: string,
+  options: { all?: boolean; runId?: string; agent?: string; unread?: boolean; limit: number },
+): Promise<Message[]> {
+  if (options.all) {
+    const rows = await client.mail.listGlobal({ projectId, limit: options.limit }) as DaemonMailMessage[];
+    const filtered = options.agent
+      ? rows.filter((row) => row.recipient_agent_type === options.agent)
+      : rows;
+    const unreadFiltered = options.unread ? filtered.filter((row) => row.read === 0) : filtered;
+    return unreadFiltered.map(adaptDaemonMessage);
+  }
+  if (!options.runId) return [];
+  const rows = await client.mail.list({
+    projectId,
+    runId: options.runId,
+    agentType: options.agent,
+    unreadOnly: options.unread,
+  }) as DaemonMailMessage[];
+  return rows.slice(0, options.limit).map(adaptDaemonMessage);
+}
+
 // ── Run resolution ────────────────────────────────────────────────────────────
 
 function resolveLatestRunId(store: ForemanStore): string | null {
@@ -210,20 +319,23 @@ export const inboxCommand = new Command("inbox")
       projectPath = process.cwd();
     }
 
-    const store = ForemanStore.forProject(projectPath);
+    const daemon = await resolveDaemonInboxContext(projectPath, options.project);
+    const store = daemon ? null : ForemanStore.forProject(projectPath);
 
     try {
       // ── One-shot global mode (--all without --watch) ───────────────────────
       if (options.all && !options.watch) {
-        let messages = store.getAllMessagesGlobal(limit);
+        let messages = daemon
+          ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: options.unread, limit })
+          : store!.getAllMessagesGlobal(limit);
 
         // Apply agent filter (by recipient, matching single-run behavior)
-        if (options.agent) {
+        if (!daemon && options.agent) {
           messages = messages.filter((m) => m.recipient_agent_type === options.agent);
         }
 
         // Apply unread filter
-        if (options.unread) {
+        if (!daemon && options.unread) {
           messages = messages.filter((m) => m.read === 0);
         }
 
@@ -239,8 +351,14 @@ export const inboxCommand = new Command("inbox")
         }
 
         if (options.ack && messages.length > 0) {
-          for (const msg of messages) {
-            store.markMessageRead(msg.id);
+          if (daemon) {
+            for (const msg of messages) {
+              await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
+            }
+          } else {
+            for (const msg of messages) {
+              store!.markMessageRead(msg.id);
+            }
           }
           console.log(`Marked ${messages.length} message(s) as read.`);
         }
@@ -252,55 +370,73 @@ export const inboxCommand = new Command("inbox")
         console.log("Watching all runs... (Ctrl-C to stop)\n");
         const seenIds = new Set<string>();
         const seenRunIds = new Set<string>();
-        const initialGlobal = store.getAllMessagesGlobal(limit);
+        const initialGlobal = daemon
+          ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
+          : store!.getAllMessagesGlobal(limit);
         if (initialGlobal.length > 0) {
           console.log(`── past messages ${"─".repeat(53)}`);
           for (const m of initialGlobal) { console.log(formatMessage(m, fullPayload)); console.log(""); seenIds.add(m.id); }
           console.log(`── live ─────────────────────────────────────────────────────────────\n`);
         }
-        const initRuns = store.getRunsByStatuses(["completed", "failed", "running"]);
+        const initRuns = daemon
+          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+          : store!.getRunsByStatuses(["completed", "failed", "running"]);
         for (const r of initRuns) seenRunIds.add(r.id);
         const pollAll = (): void => {
-          const statusRuns = store.getRunsByStatuses(["completed", "failed", "running"]);
-          for (const run of statusRuns) {
-            if (!seenRunIds.has(run.id)) { seenRunIds.add(run.id); console.log(formatRunStatus(run)); console.log(""); }
-          }
-          const msgs = store.getAllMessagesGlobal(limit);
-          for (const msg of msgs.filter((m) => !seenIds.has(m.id))) {
-            seenIds.add(msg.id); console.log(formatMessage(msg, fullPayload)); console.log("");
-          }
+          void (async () => {
+            const statusRuns = daemon
+              ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+              : store!.getRunsByStatuses(["completed", "failed", "running"]);
+            for (const run of statusRuns) {
+              if (!seenRunIds.has(run.id)) { seenRunIds.add(run.id); console.log(formatRunStatus(run)); console.log(""); }
+            }
+            const msgs = daemon
+              ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
+              : store!.getAllMessagesGlobal(limit);
+            for (const msg of msgs.filter((m) => !seenIds.has(m.id))) {
+              seenIds.add(msg.id); console.log(formatMessage(msg, fullPayload)); console.log("");
+            }
+          })().catch(() => undefined);
         };
         pollAll();
         const interval = setInterval(pollAll, 2000);
-        process.on("SIGINT", () => { clearInterval(interval); store.close(); process.exit(0); });
+        process.on("SIGINT", () => { clearInterval(interval); store?.close(); process.exit(0); });
         return;
       }
 
-      const runId = options.run
-        ?? (options.bead ? resolveRunIdBySeed(store, options.bead) : null)
-        ?? resolveLatestRunId(store);
+      const runId = daemon
+        ? await resolveDaemonRunId(daemon.client, daemon.projectId, { run: options.run, bead: options.bead })
+        : options.run
+          ?? (options.bead ? resolveRunIdBySeed(store!, options.bead) : null)
+          ?? resolveLatestRunId(store!);
       if (!runId) {
         console.error("No runs found. Start a pipeline first with `foreman run`.");
         process.exit(1);
       }
 
       // Resolve seed ID for display (run record carries seed_id)
-      const allRuns = store.getRunsByStatuses(
-        ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
-      );
+      const allRuns = daemon
+        ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+        : store!.getRunsByStatuses(
+          ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
+        );
       const thisRun = allRuns.find((r) => r.id === runId);
       const seedLabel = thisRun?.seed_id ? `  bead: ${thisRun.seed_id}` : "";
 
       if (!options.watch) {
         // One-shot: show current run lifecycle status then fetch and display messages
-        const runStatusRuns = store.getRunsByStatuses(["completed", "failed"]);
+        const runStatusRuns = daemon
+          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+          : store!.getRunsByStatuses(["completed", "failed"]);
         const currentRun = runStatusRuns.find((r) => r.id === runId);
         if (currentRun) {
           console.log(formatRunStatus(currentRun));
           console.log("");
         }
 
-        const messages = fetchMessages(store, runId, options.agent, options.unread ?? false, limit);
+        const messages = daemon
+          ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: options.unread, limit })
+          : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
         if (messages.length === 0) {
           console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
         } else {
@@ -313,8 +449,14 @@ export const inboxCommand = new Command("inbox")
         }
 
         if (options.ack && messages.length > 0) {
-          for (const msg of messages) {
-            store.markMessageRead(msg.id);
+          if (daemon) {
+            for (const msg of messages) {
+              await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
+            }
+          } else {
+            for (const msg of messages) {
+              store!.markMessageRead(msg.id);
+            }
           }
           console.log(`Marked ${messages.length} message(s) as read.`);
         }
@@ -327,7 +469,9 @@ export const inboxCommand = new Command("inbox")
       const seenRunIds = new Set<string>();
 
       // Initial fetch — print existing messages immediately, then track them as seen
-      const initial = fetchMessages(store, runId, options.agent, false, limit);
+      const initial = daemon
+        ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: false, limit })
+        : fetchMessages(store!, runId, options.agent, false, limit);
       if (initial.length > 0) {
         console.log(`── past messages ${"─".repeat(53)}`);
         for (const m of initial) {
@@ -339,31 +483,41 @@ export const inboxCommand = new Command("inbox")
       }
 
       // Seed seenRunIds with any already-completed/failed runs so we only show new transitions
-      const initialRuns = store.getRunsByStatuses(["completed", "failed"]);
+      const initialRuns = daemon
+        ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+        : store!.getRunsByStatuses(["completed", "failed"]);
       for (const r of initialRuns) seenRunIds.add(r.id);
 
       const poll = (): void => {
-        // Poll run lifecycle transitions (completed / failed)
-        const statusRuns = store.getRunsByStatuses(["completed", "failed"]);
-        for (const run of statusRuns) {
-          if (!seenRunIds.has(run.id)) {
-            seenRunIds.add(run.id);
-            console.log(formatRunStatus(run));
-            console.log("");
+        void (async () => {
+          const statusRuns = daemon
+            ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+            : store!.getRunsByStatuses(["completed", "failed"]);
+          for (const run of statusRuns) {
+            if (!seenRunIds.has(run.id)) {
+              seenRunIds.add(run.id);
+              console.log(formatRunStatus(run));
+              console.log("");
+            }
           }
-        }
 
-        // Poll messages
-        const msgs = fetchMessages(store, runId, options.agent, options.unread ?? false, limit);
-        const newMsgs = msgs.filter((m) => !seenIds.has(m.id));
-        for (const msg of newMsgs) {
-          seenIds.add(msg.id);
-          console.log(formatMessage(msg, fullPayload));
-          console.log("");
-          if (options.ack) {
-            store.markMessageRead(msg.id);
+          const msgs = daemon
+            ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: options.unread, limit })
+            : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
+          const newMsgs = msgs.filter((m) => !seenIds.has(m.id));
+          for (const msg of newMsgs) {
+            seenIds.add(msg.id);
+            console.log(formatMessage(msg, fullPayload));
+            console.log("");
+            if (options.ack) {
+              if (daemon) {
+                await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
+              } else {
+                store!.markMessageRead(msg.id);
+              }
+            }
           }
-        }
+        })().catch(() => undefined);
       };
 
       // Initial poll after setup
@@ -373,11 +527,11 @@ export const inboxCommand = new Command("inbox")
       // Keep the process alive
       process.on("SIGINT", () => {
         clearInterval(interval);
-        store.close();
+        store?.close();
         process.exit(0);
       });
     } catch (err: unknown) {
-      store.close();
+      store?.close();
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`inbox error: ${msg}`);
       process.exit(1);

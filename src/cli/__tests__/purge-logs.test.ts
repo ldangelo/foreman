@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { utimesSync } from "node:fs";
 import { ForemanStore, type Run } from "../../lib/store.js";
-import { purgeLogsAction, type PurgeLogsOpts } from "../commands/purge-logs.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
+import { resolvePurgeLogsCommandContext, purgeLogsCommandAction, purgeLogsAction } from "../commands/purge-logs.js";
+
+vi.mock("../commands/project-task-support.js", () => ({
+  resolveRepoRootProjectPath: vi.fn(),
+  listRegisteredProjects: vi.fn(),
+  ensureCliPostgresPool: vi.fn(),
+}));
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -71,6 +78,118 @@ describe("foreman purge-logs", () => {
     store.close();
     rmSync(tmpDir, { recursive: true, force: true });
     vi.restoreAllMocks();
+  });
+
+  describe("command targeting", () => {
+    it("resolves a registered purge-logs run from a non-canonical cwd to the registered project path", async () => {
+      const projectTaskSupport = await import("../commands/project-task-support.js");
+      const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+      const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+      const ensureCliPostgresPoolMock = vi.mocked(projectTaskSupport.ensureCliPostgresPool);
+      const localStoreFacade = {
+        getRun: vi.fn(async (id: string) => store.getRun(id)),
+        close: vi.fn(),
+      };
+      const postgresStoreFacade = {
+        getRun: vi.fn(async (id: string) => store.getRun(id)),
+        close: vi.fn(),
+      };
+      const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStoreFacade as never);
+      const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject").mockReturnValue(postgresStoreFacade as never);
+
+      try {
+        resolveRepoRootProjectPathMock.mockReset();
+        listRegisteredProjectsMock.mockReset();
+        ensureCliPostgresPoolMock.mockReset();
+        const canonicalProject = store.registerProject("canonical-project", "/canonical/project");
+
+        resolveRepoRootProjectPathMock.mockResolvedValue("/canonical/project");
+        listRegisteredProjectsMock.mockResolvedValue([
+          { id: canonicalProject.id, name: "canonical-project", path: "/canonical/project" },
+        ]);
+
+        const context = await resolvePurgeLogsCommandContext();
+
+        expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});
+        expect(context.projectPath).toBe("/canonical/project");
+        expect(localStoreSpy).toHaveBeenCalledWith("/canonical/project");
+        expect(ensureCliPostgresPoolMock).toHaveBeenCalledWith("/canonical/project");
+        expect(postgresStoreSpy).toHaveBeenCalledWith(canonicalProject.id);
+        expect(context.store).toBe(postgresStoreFacade);
+      } finally {
+        localStoreSpy.mockRestore();
+        postgresStoreSpy.mockRestore();
+      }
+    });
+
+    it("keeps local unregistered behavior unchanged", async () => {
+      const projectTaskSupport = await import("../commands/project-task-support.js");
+      const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+      const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+      const ensureCliPostgresPoolMock = vi.mocked(projectTaskSupport.ensureCliPostgresPool);
+      const localStoreFacade = {
+        getRun: vi.fn(async (id: string) => store.getRun(id)),
+        close: vi.fn(),
+      };
+      const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStoreFacade as never);
+      const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject");
+
+      try {
+        resolveRepoRootProjectPathMock.mockReset();
+        listRegisteredProjectsMock.mockReset();
+        ensureCliPostgresPoolMock.mockReset();
+        resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
+        listRegisteredProjectsMock.mockResolvedValue([]);
+
+        const context = await resolvePurgeLogsCommandContext();
+
+        expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});
+        expect(context.projectPath).toBe(tmpDir);
+        expect(localStoreSpy).toHaveBeenCalledWith(tmpDir);
+        expect(postgresStoreSpy).not.toHaveBeenCalled();
+        expect(ensureCliPostgresPoolMock).not.toHaveBeenCalled();
+        await context.store.getRun("run-1");
+        expect(localStoreFacade.getRun).toHaveBeenCalledWith("run-1");
+      } finally {
+        localStoreSpy.mockRestore();
+        postgresStoreSpy.mockRestore();
+      }
+    });
+
+    it("keeps outside-repo behavior unchanged", async () => {
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+        throw new Error(`EXIT:${code ?? 0}`);
+      }) as never);
+      const projectTaskSupport = await import("../commands/project-task-support.js");
+      const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+      const localStoreSpy = vi.spyOn(ForemanStore, "forProject");
+      const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject");
+
+      try {
+        resolveRepoRootProjectPathMock.mockReset();
+        resolveRepoRootProjectPathMock.mockRejectedValue(new Error("not a repo"));
+
+        let thrown: unknown;
+        try {
+          await purgeLogsCommandAction({});
+        } catch (error) {
+          thrown = error;
+        }
+
+        expect(String(thrown)).toContain("EXIT:1");
+        expect(consoleSpy).toHaveBeenCalledWith(
+          expect.stringContaining("Not in a git repository"),
+        );
+        expect(localStoreSpy).not.toHaveBeenCalled();
+        expect(postgresStoreSpy).not.toHaveBeenCalled();
+      } finally {
+        exitSpy.mockRestore();
+        localStoreSpy.mockRestore();
+        postgresStoreSpy.mockRestore();
+        consoleSpy.mockRestore();
+      }
+    });
   });
 
   // ── Empty logs directory ──────────────────────────────────────────────

@@ -20,10 +20,97 @@ import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run, Message } from "../../lib/store.js";
-import { VcsBackendFactory } from "../../lib/vcs/index.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { loadAndInterpolate } from "../../orchestrator/template-loader.js";
 import { getHighspeedModel } from "../../lib/config.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
+
+interface DaemonRunRow {
+  id: string;
+  project_id: string;
+  bead_id: string;
+  status: string;
+  branch: string;
+  agent_type: string | null;
+  session_key: string | null;
+  worktree_path: string | null;
+  progress: string | null;
+  base_branch: string | null;
+  merge_strategy: string | null;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+}
+
+interface DaemonMailMessage {
+  id: string;
+  run_id: string;
+  sender_agent_type: string;
+  recipient_agent_type: string;
+  subject: string;
+  body: string;
+  read: number;
+  created_at: string;
+  deleted_at: string | null;
+}
+
+interface DaemonRecoverContext {
+  client: ReturnType<typeof createTrpcClient>;
+  projectId: string;
+}
+
+function adaptDaemonRun(row: DaemonRunRow): Run {
+  const statusMap: Record<string, Run["status"]> = {
+    pending: "pending",
+    running: "running",
+    success: "completed",
+    failure: "failed",
+    cancelled: "reset",
+    skipped: "reset",
+  };
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    seed_id: row.bead_id,
+    agent_type: row.agent_type ?? "daemon",
+    session_key: row.session_key,
+    worktree_path: row.worktree_path,
+    status: statusMap[row.status] ?? "failed",
+    started_at: row.started_at,
+    completed_at: row.finished_at,
+    created_at: row.created_at,
+    progress: row.progress,
+    base_branch: row.base_branch,
+    merge_strategy: (row.merge_strategy as Run["merge_strategy"]) ?? null,
+  };
+}
+
+function adaptDaemonMessage(row: DaemonMailMessage): Message {
+  return {
+    id: row.id,
+    run_id: row.run_id,
+    sender_agent_type: row.sender_agent_type,
+    recipient_agent_type: row.recipient_agent_type,
+    subject: row.subject,
+    body: row.body,
+    read: row.read,
+    created_at: row.created_at,
+    deleted_at: row.deleted_at,
+  };
+}
+
+async function resolveDaemonRecoverContext(projectPath: string): Promise<DaemonRecoverContext | null> {
+  try {
+    const projects = await listRegisteredProjects();
+    const project = projects.find((record) => record.path === projectPath);
+    if (!project) return null;
+    return { client: createTrpcClient(), projectId: project.id };
+  } catch {
+    return null;
+  }
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -164,12 +251,14 @@ export const recoverCommand = new Command("recover")
       process.exit(1);
     }
 
-    const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-    const projectPath = await vcs.getRepoRoot(process.cwd());
+    const projectPath = await resolveRepoRootProjectPath({});
+    const daemon = await resolveDaemonRecoverContext(projectPath);
     const store = ForemanStore.forProject(projectPath);
 
     // Find runs for this seed
-    const runs = store.getRunsForSeed(beadId);
+    const runs = daemon
+      ? ((await daemon.client.runs.list({ projectId: daemon.projectId, beadId, limit: 50 }) as DaemonRunRow[]).map(adaptDaemonRun))
+      : store.getRunsForSeed(beadId);
     if (runs.length === 0) {
       console.error(chalk.red(`No runs found for seed ${beadId}`));
       process.exit(1);
@@ -189,11 +278,15 @@ export const recoverCommand = new Command("recover")
     console.log(chalk.bold(`\nRecovery: ${beadId} — reason: ${reason} — run ${run.id.slice(0, 8)} (${run.status})\n`));
 
     // 1. Run summary + progress
-    const progress = store.getRunProgress(run.id);
+    const progress = daemon && run.progress
+      ? JSON.parse(run.progress) as Record<string, unknown>
+      : store.getRunProgress(run.id);
     const runSummary = formatRunSummary(run, progress as Record<string, unknown> | null);
 
     // 2. Mail messages
-    const allMessages = store.getAllMessages(run.id);
+    const allMessages = daemon
+      ? (await daemon.client.mail.list({ projectId: daemon.projectId, runId: run.id }) as DaemonMailMessage[]).map(adaptDaemonMessage)
+      : store.getAllMessages(run.id);
     const messagesText = formatMessages(allMessages);
 
     // 3. Reports from worktree

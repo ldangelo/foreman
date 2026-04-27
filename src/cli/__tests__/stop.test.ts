@@ -3,6 +3,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore, type Run, type RunProgress } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
+import { wrapLocalStopStore } from "../commands/stop.js";
+import { buildSdkSessionKey } from "../../orchestrator/dispatcher.js";
+
+vi.mock("../commands/project-task-support.js", () => ({
+  resolveRepoRootProjectPath: vi.fn(),
+  listRegisteredProjects: vi.fn(),
+  ensureCliPostgresPool: vi.fn(),
+}));
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -50,6 +59,111 @@ describe("foreman stop", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  describe("command targeting", () => {
+    it("resolves registered stop to the canonical project path from a non-canonical cwd", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const projectTaskSupport = await import("../commands/project-task-support.js");
+      const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+      const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+      const ensureCliPostgresPoolMock = vi.mocked(projectTaskSupport.ensureCliPostgresPool);
+      const localStoreFacade = { ...wrapLocalStopStore(store), close: vi.fn() } as any;
+      const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStoreFacade);
+      const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject").mockReturnValue(wrapLocalStopStore(store) as any);
+
+      try {
+        const canonicalPath = tmpDir;
+        const run = createTestRun(store, projectId, {
+          seedId: "bd-registered",
+          status: "running",
+          sessionKey: buildSdkSessionKey("sonnet", "r1", 11111, "abc"),
+        });
+
+        resolveRepoRootProjectPathMock.mockResolvedValue(canonicalPath);
+        listRegisteredProjectsMock.mockResolvedValue([
+          { id: projectId, name: "test-project", path: canonicalPath },
+        ]);
+
+        const { stopCommandAction } = await import("../commands/stop.js");
+        const exitCode = await stopCommandAction("bd-registered", {});
+
+        expect(exitCode).toBe(0);
+        expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});
+        expect(ensureCliPostgresPoolMock).toHaveBeenCalledWith(canonicalPath);
+        expect(postgresStoreSpy).toHaveBeenCalledWith(projectId);
+        expect(store.getRun(run.id)?.status).toBe("stuck");
+      } finally {
+        localStoreSpy.mockRestore();
+        postgresStoreSpy.mockRestore();
+        consoleSpy.mockRestore();
+      }
+    });
+
+    it("keeps local unregistered stop behavior unchanged", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const projectTaskSupport = await import("../commands/project-task-support.js");
+      const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+      const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+      const localStoreFacade = { ...wrapLocalStopStore(store), close: vi.fn() } as any;
+      const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStoreFacade);
+
+      try {
+        const run = createTestRun(store, projectId, {
+          seedId: "bd-local",
+          status: "running",
+          sessionKey: buildSdkSessionKey("sonnet", "r1", 22222, "abc"),
+        });
+
+        resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
+        listRegisteredProjectsMock.mockResolvedValue([]);
+
+        const { stopCommandAction } = await import("../commands/stop.js");
+        const exitCode = await stopCommandAction(run.id, {});
+
+        expect(exitCode).toBe(0);
+        expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});
+        expect(store.getRun(run.id)!.status).toBe("stuck");
+      } finally {
+        localStoreSpy.mockRestore();
+        consoleSpy.mockRestore();
+      }
+    });
+
+    it("keeps --list fallback behavior outside a git repo unchanged", async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const projectTaskSupport = await import("../commands/project-task-support.js");
+      const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+      const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+      const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
+      const localStoreFacade = { ...wrapLocalStopStore(store), close: vi.fn() } as any;
+      const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStoreFacade);
+
+      try {
+        createTestRun(store, projectId, {
+          seedId: "bd-list",
+          status: "running",
+          startedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+        });
+
+        resolveRepoRootProjectPathMock.mockRejectedValue(new Error("not a repo"));
+        listRegisteredProjectsMock.mockResolvedValue([]);
+
+        const { stopCommandAction } = await import("../commands/stop.js");
+        const exitCode = await stopCommandAction(undefined, { list: true });
+
+        expect(exitCode).toBe(0);
+        expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});
+        expect(consoleErrSpy).not.toHaveBeenCalled();
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Active runs:"));
+      } finally {
+        cwdSpy.mockRestore();
+        localStoreSpy.mockRestore();
+        consoleErrSpy.mockRestore();
+        consoleSpy.mockRestore();
+      }
+    });
+  });
+
   // ── --list ──────────────────────────────────────────────────────────
 
   describe("--list option", () => {
@@ -63,7 +177,7 @@ describe("foreman stop", () => {
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      const exitCode = await stopAction(undefined, { list: true }, store, tmpDir);
+      const exitCode = await stopAction(undefined, { list: true }, wrapLocalStopStore(store), tmpDir);
 
       expect(exitCode).toBe(0);
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -80,7 +194,7 @@ describe("foreman stop", () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
       const { stopAction } = await import("../commands/stop.js");
-      await stopAction(undefined, { list: true }, store, tmpDir);
+      await stopAction(undefined, { list: true }, wrapLocalStopStore(store), tmpDir);
 
       expect(consoleSpy).toHaveBeenCalledWith("No active runs found.");
 
@@ -91,7 +205,7 @@ describe("foreman stop", () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
       const { stopAction } = await import("../commands/stop.js");
-      const exitCode = await stopAction(undefined, { list: true }, store, tmpDir);
+      const exitCode = await stopAction(undefined, { list: true }, wrapLocalStopStore(store), tmpDir);
 
       expect(exitCode).toBe(0);
       consoleSpy.mockRestore();
@@ -105,7 +219,7 @@ describe("foreman stop", () => {
       const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const { stopAction } = await import("../commands/stop.js");
-      const exitCode = await stopAction(undefined, {}, store, "/nonexistent/path");
+      const exitCode = await stopAction(undefined, {}, wrapLocalStopStore(store), "/nonexistent/path");
 
       expect(exitCode).toBe(1);
       expect(consoleErrSpy).toHaveBeenCalledWith(
@@ -126,16 +240,16 @@ describe("foreman stop", () => {
       const run1 = createTestRun(store, projectId, {
         seedId: "bd-r1",
         status: "running",
-        sessionKey: "foreman:sdk:sonnet:r1:pid-11111:session-abc",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 11111, "abc"),
       });
       const run2 = createTestRun(store, projectId, {
         seedId: "bd-r2",
         status: "running",
-        sessionKey: "foreman:sdk:sonnet:r2:pid-22222:session-def",
+        sessionKey: buildSdkSessionKey("sonnet", "r2", 22222, "def"),
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      const exitCode = await stopAction(undefined, {}, store, tmpDir);
+      const exitCode = await stopAction(undefined, {}, wrapLocalStopStore(store), tmpDir);
 
       expect(exitCode).toBe(0);
 
@@ -153,7 +267,7 @@ describe("foreman stop", () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
       const { stopAction } = await import("../commands/stop.js");
-      const exitCode = await stopAction(undefined, {}, store, tmpDir);
+      const exitCode = await stopAction(undefined, {}, wrapLocalStopStore(store), tmpDir);
 
       expect(exitCode).toBe(0);
       expect(consoleSpy).toHaveBeenCalledWith(
@@ -170,11 +284,11 @@ describe("foreman stop", () => {
       const run = createTestRun(store, projectId, {
         seedId: "bd-stuck1",
         status: "running",
-        sessionKey: "foreman:sdk:sonnet:r1:pid-33333:session-abc",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 33333, "abc"),
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      await stopAction(undefined, {}, store, tmpDir);
+      await stopAction(undefined, {}, wrapLocalStopStore(store), tmpDir);
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("stuck");
@@ -193,7 +307,7 @@ describe("foreman stop", () => {
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      await stopAction(undefined, {}, store, tmpDir);
+      await stopAction(undefined, {}, wrapLocalStopStore(store), tmpDir);
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("stuck");
@@ -212,11 +326,11 @@ describe("foreman stop", () => {
       const run = createTestRun(store, projectId, {
         seedId: "bd-specific",
         status: "running",
-        sessionKey: "foreman:sdk:sonnet:r1:pid-44444:session-abc",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 44444, "abc"),
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      const exitCode = await stopAction("bd-specific", {}, store, tmpDir);
+      const exitCode = await stopAction("bd-specific", {}, wrapLocalStopStore(store), tmpDir);
 
       expect(exitCode).toBe(0);
 
@@ -234,11 +348,11 @@ describe("foreman stop", () => {
       const run = createTestRun(store, projectId, {
         seedId: "bd-byrunid",
         status: "running",
-        sessionKey: "foreman:sdk:sonnet:r1:pid-55555:session-abc",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 55555, "abc"),
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      const exitCode = await stopAction(run.id, {}, store, tmpDir);
+      const exitCode = await stopAction(run.id, {}, wrapLocalStopStore(store), tmpDir);
 
       expect(exitCode).toBe(0);
 
@@ -253,7 +367,7 @@ describe("foreman stop", () => {
       const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const { stopAction } = await import("../commands/stop.js");
-      const exitCode = await stopAction("bd-nonexistent", {}, store, tmpDir);
+      const exitCode = await stopAction("bd-nonexistent", {}, wrapLocalStopStore(store), tmpDir);
 
       expect(exitCode).toBe(1);
       expect(consoleErrSpy).toHaveBeenCalledWith(
@@ -277,7 +391,7 @@ describe("foreman stop", () => {
       createTestRun(store, projectId, {
         seedId: "bd-dry",
         status: "running",
-        sessionKey: "foreman:sdk:sonnet:r1:pid-66666:session-abc",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 66666, "abc"),
       });
 
       const { stopAction } = await import("../commands/stop.js");
@@ -336,7 +450,7 @@ describe("foreman stop", () => {
       const run = createTestRun(store, projectId, {
         seedId: "bd-force",
         status: "running",
-        sessionKey: "foreman:sdk:sonnet:r1:pid-99999:session-abc",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 99999, "abc"),
       });
 
       // Simulate the pid as alive
@@ -364,7 +478,7 @@ describe("foreman stop", () => {
 
       const run = createTestRun(store, projectId, {
         seedId: "bd-sigterm",
-        sessionKey: "foreman:sdk:sonnet:r1:pid-88888:session-abc",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 88888, "abc"),
         status: "running",
       });
 
@@ -421,12 +535,12 @@ describe("foreman stop", () => {
       createTestRun(store, projectId, {
         seedId: "bd-pid-list",
         status: "running",
-        sessionKey: "foreman:sdk:sonnet:r1:pid-12345:session-abc",
+        sessionKey: buildSdkSessionKey("sonnet", "r1", 12345, "abc"),
         startedAt: new Date().toISOString(),
       });
 
       const { listActiveRuns } = await import("../commands/stop.js");
-      listActiveRuns(store, tmpDir);
+      await listActiveRuns(wrapLocalStopStore(store), tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain("12345");
@@ -445,7 +559,7 @@ describe("foreman stop", () => {
       });
 
       const { listActiveRuns } = await import("../commands/stop.js");
-      listActiveRuns(store, tmpDir);
+      await listActiveRuns(wrapLocalStopStore(store), tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain("(none)");
@@ -457,7 +571,7 @@ describe("foreman stop", () => {
       const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const { listActiveRuns } = await import("../commands/stop.js");
-      listActiveRuns(store, "/invalid/path");
+      await listActiveRuns(wrapLocalStopStore(store), "/invalid/path");
 
       expect(consoleErrSpy).toHaveBeenCalledWith(
         expect.stringContaining("No project registered"),

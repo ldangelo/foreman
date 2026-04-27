@@ -9,12 +9,15 @@
  */
 
 import chalk from "chalk";
+import { resolve } from "node:path";
 import { ForemanStore } from "../../../lib/store.js";
 import type { Run, RunProgress, Message } from "../../../lib/store.js";
 import type { BoardTask } from "../board.js";
-import { pollDashboard, type DashboardState } from "../dashboard.js";
-import { loadBoardTasks, type BoardStatus } from "../board.js";
+import { fetchDaemonDashboardState, type DashboardState } from "../dashboard.js";
+import { type BoardStatus } from "../board.js";
 import { fetchTaskCounts } from "../../../lib/task-client-factory.js";
+import { createTrpcClient } from "../../../lib/trpc-client.js";
+import { listRegisteredProjects } from "../project-task-support.js";
 
 // ── Panel focus ─────────────────────────────────────────────────────────
 
@@ -122,19 +125,60 @@ export interface PollResult {
   taskCounts: { total: number; ready: number; inProgress: number; completed: number; blocked: number };
 }
 
+async function loadBoardSummary(
+  projectPath: string,
+  projectId?: string,
+): Promise<BoardSummary> {
+  const projects = await listRegisteredProjects();
+  const normalizedProjectPath = resolve(projectPath);
+  const project = projectId
+    ? projects.find((record) => record.id === projectId || record.name === projectId)
+    : projects.find((record) => resolve(record.path) === normalizedProjectPath);
+
+  if (!project) {
+    return { counts: createEmptyCounts(), total: 0, ready: 0, needsAttention: [] };
+  }
+
+  const client = createTrpcClient();
+  const rows = await client.tasks.list({ projectId: project.id, limit: 1000 }) as Array<BoardTask>;
+  const counts = createEmptyCounts();
+  const needsAttention: BoardTask[] = [];
+
+  for (const row of rows) {
+    const normalizedStatus = row.status.replace(/-/g, "_") as BoardStatus;
+    const status = BOARD_STATUS_SET.has(normalizedStatus) ? normalizedStatus : "closed";
+    counts[status] += 1;
+    if (NEEDS_ATTENTION_STATUSES.has(row.status)) {
+      needsAttention.push({
+        ...row,
+        projectId: project.id,
+        projectName: project.name,
+        projectPath: project.path,
+      } as BoardTask);
+    }
+  }
+
+  return {
+    counts,
+    total: countsTotal(counts),
+    ready: counts.ready,
+    needsAttention: needsAttention.sort((a, b) => a.priority - b.priority),
+  };
+}
+
 /**
  * Poll all data sources for the main display.
  * Returns null for unavailable sources (graceful degradation).
  */
 export async function pollWatchData(
-  store: ForemanStore,
   projectPath: string,
   projectId?: string,
 ): Promise<PollResult> {
   // Dashboard state
   let dashboard: DashboardState;
   try {
-    dashboard = pollDashboard(store, projectId);
+    dashboard = await fetchDaemonDashboardState(projectPath, projectId)
+      ?? { projects: [], activeRuns: new Map(), completedRuns: new Map(), progresses: new Map(), metrics: new Map(), events: new Map(), lastUpdated: new Date() };
   } catch {
     dashboard = { projects: [], activeRuns: new Map(), completedRuns: new Map(), progresses: new Map(), metrics: new Map(), events: new Map(), lastUpdated: new Date() };
   }
@@ -157,10 +201,7 @@ export async function pollWatchData(
   // Board summary
   let board: BoardSummary;
   try {
-    const boardTasks = loadBoardTasks(projectPath);
-    const counts = createBoardCounts(boardTasks);
-    const needsAttention = collectNeedsAttention(boardTasks);
-    board = { counts, total: countsTotal(counts), ready: counts.ready, needsAttention };
+    board = await loadBoardSummary(projectPath, projectId);
   } catch {
     board = { counts: createEmptyCounts(), total: 0, ready: 0, needsAttention: [] };
   }
@@ -168,7 +209,22 @@ export async function pollWatchData(
   // Task counts
   let taskCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
   try {
-    taskCounts = await fetchTaskCounts(projectPath);
+    const currentProject = dashboard.projects[0];
+    if (currentProject) {
+      const client = createTrpcClient();
+      const stats = await client.projects.stats({ projectId: currentProject.id }) as {
+        tasks: { total: number; ready: number; inProgress: number; merged: number; closed: number; backlog: number };
+      };
+      taskCounts = {
+        total: stats.tasks.total,
+        ready: stats.tasks.ready,
+        inProgress: stats.tasks.inProgress,
+        completed: stats.tasks.merged + stats.tasks.closed,
+        blocked: stats.tasks.backlog,
+      };
+    } else {
+      taskCounts = await fetchTaskCounts(projectPath);
+    }
   } catch {
     // ignore
   }
@@ -185,8 +241,52 @@ export async function pollInboxData(
   lastSeenId: string | null,
   inboxLimit: number,
   runIds: string[],
+  projectPath?: string,
+  projectId?: string,
 ): Promise<{ messages: InboxEntry[]; totalCount: number; newestId: string | null }> {
   try {
+    if (projectPath) {
+      try {
+        const projects = await listRegisteredProjects();
+        const normalizedProjectPath = resolve(projectPath);
+        const project = projectId
+          ? projects.find((record) => record.id === projectId || record.name === projectId)
+          : projects.find((record) => resolve(record.path) === normalizedProjectPath);
+        if (project) {
+          const client = createTrpcClient();
+          const messageLists = await Promise.all(
+            runIds.map((runId) => client.runs.listMessages({ runId }) as Promise<Array<{ id: string; run_id: string; step_key: string | null; stream: string; chunk: string; created_at: string }>>),
+          );
+
+          const allMessages: Message[] = messageLists
+            .flat()
+            .map((msg) => ({
+              id: msg.id,
+              run_id: msg.run_id,
+              sender_agent_type: msg.stream,
+              recipient_agent_type: msg.step_key ?? "run",
+              subject: (msg.chunk || "").trim().slice(0, 60) || msg.stream,
+              body: msg.chunk,
+              read: 0,
+              created_at: msg.created_at,
+              deleted_at: null,
+            }));
+
+          allMessages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+          const totalCount = allMessages.length;
+          const recent = allMessages.slice(0, inboxLimit);
+          const newestId = recent[0]?.id ?? null;
+          const messages: InboxEntry[] = recent.map((msg, i) => ({
+            message: msg,
+            isNew: lastSeenId !== null && i === 0 && msg.id !== lastSeenId,
+          }));
+          return { messages, totalCount, newestId };
+        }
+      } catch {
+        // Fall through to legacy local-store inbox path.
+      }
+    }
+
     const allMessages: Message[] = [];
     for (const runId of runIds) {
       const msgs = store.getAllMessages(runId);
@@ -224,31 +324,13 @@ function createEmptyCounts(): Record<BoardStatus, number> {
   };
 }
 
-function createBoardCounts(tasks: Map<BoardStatus, BoardTask[]>): Record<BoardStatus, number> {
-  const counts = createEmptyCounts();
-  for (const [status, taskList] of tasks) {
-    counts[status] = taskList.length;
-  }
-  return counts;
-}
+const BOARD_STATUS_SET = new Set<BoardStatus>(["backlog", "ready", "in_progress", "review", "blocked", "closed"]);
 
 function countsTotal(counts: Record<BoardStatus, number>): number {
   return Object.values(counts).reduce((sum, n) => sum + n, 0);
 }
 
 const NEEDS_ATTENTION_STATUSES = new Set(["conflict", "failed", "stuck", "backlog"]);
-
-function collectNeedsAttention(tasks: Map<BoardStatus, BoardTask[]>): BoardTask[] {
-  const result: BoardTask[] = [];
-  for (const [, taskList] of tasks) {
-    for (const task of taskList) {
-      if (NEEDS_ATTENTION_STATUSES.has(task.status)) {
-        result.push(task);
-      }
-    }
-  }
-  return result.sort((a, b) => a.priority - b.priority);
-}
 
 // ── Key handling ──────────────────────────────────────────────────────────
 

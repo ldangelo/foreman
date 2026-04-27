@@ -5,11 +5,9 @@
  * - approveTask: backlog → ready
  * - retryTask: failed/stuck/conflict → backlog
  *
- * Reuses logic from dashboard.ts (which already implements these actions
- * via short-lived ForemanStore connections).
+ * Reuses logic from dashboard.ts (which now implements these actions
+ * via daemon-backed task APIs).
  */
-
-import { ForemanStore } from "../../../lib/store.js";
 import { approveTask as approveDashboard, retryTask as retryDashboard } from "../dashboard.js";
 
 /**
@@ -20,9 +18,9 @@ import { approveTask as approveDashboard, retryTask as retryDashboard } from "..
  * @param projectPath - Path to the project that owns this task
  * @returns true on success, false on failure
  */
-export function approveTask(taskId: string, projectPath: string): boolean {
+export async function approveTask(taskId: string, projectPath: string): Promise<boolean> {
   try {
-    approveDashboard(taskId, projectPath);
+    await approveDashboard(taskId, projectPath);
     return true;
   } catch (err) {
     return false;
@@ -37,9 +35,9 @@ export function approveTask(taskId: string, projectPath: string): boolean {
  * @param projectPath - Path to the project that owns this task
  * @returns true on success, false on failure
  */
-export function retryTask(taskId: string, projectPath: string): boolean {
+export async function retryTask(taskId: string, projectPath: string): Promise<boolean> {
   try {
-    retryDashboard(taskId, projectPath);
+    await retryDashboard(taskId, projectPath);
     return true;
   } catch (err) {
     return false;
