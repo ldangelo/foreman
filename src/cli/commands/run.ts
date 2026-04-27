@@ -7,7 +7,7 @@ import chalk from "chalk";
 
 import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
-import { createTaskClient } from "../../lib/task-client-factory.js";
+import { createTaskClient, resolveTaskStoreMode } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
@@ -202,8 +202,10 @@ export async function createTaskClients(
   registeredProjectId?: string,
 ): Promise<TaskClientResult> {
   // In normal mode: auto-detect (omit the force flag so selectTaskReadBackend
-  // uses projectHasNativeTasks). In test mode: force beads fallback.
-  const forceBeadsFallback = runtimeMode === "test" ? true : undefined;
+  // uses projectHasNativeTasks). In test mode: force beads fallback unless the
+  // task store is explicitly pinned to native.
+  const taskStoreMode = resolveTaskStoreMode();
+  const forceBeadsFallback = runtimeMode === "test" && taskStoreMode !== "native" ? true : undefined;
   const { taskClient, backendType } = await createTaskClient(projectPath, {
     ensureBrInstalled: true,
     forceBeadsFallback,

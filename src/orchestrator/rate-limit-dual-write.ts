@@ -33,7 +33,6 @@ export function createDualWriteStore(
       localStore.updateRunProgress(runId, progress);
       const op = pgStore.updateRunProgress(runId, progress);
       mirror(op, "updateRunProgress");
-      return op as unknown as void;
     },
     logEvent(projectId: string, eventType: string, data: Record<string, unknown>, runId?: string): void {
       localStore.logEvent(projectId, eventType as never, data, runId);

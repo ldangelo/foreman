@@ -97,4 +97,42 @@ describe("createDualWriteStore rate-limit logging", () => {
     expect(localStore.logRateLimitEvent).toHaveBeenCalledTimes(1);
     expect(pgStore.logRateLimitEvent).not.toHaveBeenCalled();
   });
+
+  it("does not return the Postgres mirror promise from updateRunProgress", () => {
+    const localStore = {
+      close: vi.fn(),
+      sendMessage: vi.fn(),
+      updateRun: vi.fn(),
+      updateRunProgress: vi.fn(),
+      logEvent: vi.fn(),
+      logRateLimitEvent: vi.fn(),
+    };
+    const pgStore = {
+      close: vi.fn(),
+      sendMessage: vi.fn(),
+      updateRun: vi.fn().mockResolvedValue(undefined),
+      updateRunProgress: vi.fn().mockResolvedValue(undefined),
+      logEvent: vi.fn().mockResolvedValue(undefined),
+      logRateLimitEvent: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const store = createDualWriteStore(localStore as never, pgStore as never);
+    const progress = {
+      toolCalls: 1,
+      toolBreakdown: { Edit: 1 },
+      filesChanged: ["src/orchestrator/rate-limit-dual-write.ts"],
+      turns: 1,
+      costUsd: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      lastToolCall: null,
+      lastActivity: "2026-04-26T00:00:00.000Z",
+    };
+
+    const result = store.updateRunProgress("run-1", progress);
+
+    expect(result).toBeUndefined();
+    expect(localStore.updateRunProgress).toHaveBeenCalledWith("run-1", progress);
+    expect(pgStore.updateRunProgress).toHaveBeenCalledTimes(1);
+  });
 });

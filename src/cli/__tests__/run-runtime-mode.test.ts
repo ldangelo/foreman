@@ -97,17 +97,28 @@ describe("run runtime mode", () => {
     expect(resolveRuntimeMode()).toBe("test");
   });
 
-  it("forces the beads backend in test runtime even when task store is native", async () => {
-    mockHasNativeTasks.mockReturnValue(false);
+  it("keeps the native backend in test runtime when task store is native", async () => {
+    mockHasNativeTasks.mockReturnValue(true);
     mockRegistryList.mockResolvedValue([{ id: "proj-1", name: "foreman", path: projectPath }]);
 
     vi.stubEnv("FOREMAN_TASK_STORE", "native");
     const result = await createTaskClients(projectPath, "test", "proj-1");
 
+    expect(result.backendType).toBe("native");
+    expect(result.bvClient).toBeNull();
+    expect(MockBeadsRustClient).not.toHaveBeenCalled();
+    expect(result.taskClient).toBeDefined();
+    expect(MockForemanStore.forProject).not.toHaveBeenCalled();
+  });
+
+  it("forces the beads backend in test runtime when task store is auto", async () => {
+    vi.stubEnv("FOREMAN_TASK_STORE", "auto");
+
+    const result = await createTaskClients(projectPath, "test");
+
     expect(result.backendType).toBe("beads");
     expect(result.bvClient).not.toBeNull();
     expect(MockBeadsRustClient).toHaveBeenCalledWith(projectPath);
-    expect(result.taskClient).toBeDefined();
     expect(mockPostgresHasNativeTasks).not.toHaveBeenCalled();
   });
 
