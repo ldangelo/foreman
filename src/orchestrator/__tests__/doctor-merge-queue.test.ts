@@ -419,7 +419,7 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
     it("uses registered reconcile signature when registered run lookup is active", async () => {
       const { doctor, registeredQueue, runLookup, store } = makeRegisteredMocks();
-      registeredQueue.missingFromQueue.mockReturnValue([{ run_id: "run-1", seed_id: "seed-1" }]);
+      registeredQueue.missingFromQueue.mockResolvedValue([{ run_id: "run-1", seed_id: "seed-1" }]);
       registeredQueue.reconcile.mockResolvedValue({ enqueued: 1, skipped: 0, invalidBranch: 0, failedToEnqueue: [] });
       runLookup.getRun.mockResolvedValue(makeRun({ id: "run-1", status: "completed" }));
 
