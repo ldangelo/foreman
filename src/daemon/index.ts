@@ -296,7 +296,9 @@ export class ForemanDaemon {
       if (project.status !== "active") continue;
 
       try {
-        const { taskClient, backendType } = await createTaskClient(project.path);
+        const { taskClient, backendType } = await createTaskClient(project.path, {
+          registeredProjectId: project.id,
+        });
         const store = ForemanStore.forProject(project.path);
         const pg = new PostgresAdapter();
 

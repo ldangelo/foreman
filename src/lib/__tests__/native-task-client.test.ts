@@ -134,7 +134,22 @@ describe("NativeTaskClient registered Postgres path", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    const seed = {
+    const seed: {
+      id: string;
+      project_id: string;
+      title: string;
+      description: string;
+      type: string;
+      priority: number;
+      status: string;
+      run_id: string | null;
+      branch: string | null;
+      external_id: string | null;
+      created_at: string;
+      updated_at: string;
+      approved_at: string | null;
+      closed_at: string | null;
+    } = {
       id: "task-1",
       project_id: "proj-1",
       title: "Task 1",

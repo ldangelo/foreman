@@ -4,11 +4,120 @@
  * TRD: docs/TRD/TRD-2026-011-multi-project-orchestrator.md#trd-005
  */
 
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanDaemon } from "../index.js";
+
+let mockFastify: {
+  all: ReturnType<typeof vi.fn>;
+  get: ReturnType<typeof vi.fn>;
+  post: ReturnType<typeof vi.fn>;
+  listen: ReturnType<typeof vi.fn>;
+  close: ReturnType<typeof vi.fn>;
+  log: {
+    info: ReturnType<typeof vi.fn>;
+    warn: ReturnType<typeof vi.fn>;
+    error: ReturnType<typeof vi.fn>;
+  };
+};
+
+let mockTrpcClient: {
+  projects: {
+    list: ReturnType<typeof vi.fn>;
+  };
+};
+
+let mockDispatcherDispatch: ReturnType<typeof vi.fn>;
+let mockStore: {
+  close: ReturnType<typeof vi.fn>;
+};
+let mockPostgresAdapterInstance: {
+  hasNativeTasks: ReturnType<typeof vi.fn>;
+  listTasks: ReturnType<typeof vi.fn>;
+  getTaskByExternalId: ReturnType<typeof vi.fn>;
+  getTask: ReturnType<typeof vi.fn>;
+  claimTask: ReturnType<typeof vi.fn>;
+  listPipelineRuns: ReturnType<typeof vi.fn>;
+  createPipelineRun: ReturnType<typeof vi.fn>;
+  updatePipelineRun: ReturnType<typeof vi.fn>;
+  sendMessage: ReturnType<typeof vi.fn>;
+  recordPipelineEvent: ReturnType<typeof vi.fn>;
+};
+
+vi.mock("fastify", () => ({
+  default: vi.fn(() => mockFastify),
+}));
+
+vi.mock("../../lib/trpc-client.js", () => ({
+  createTrpcClient: vi.fn(() => mockTrpcClient),
+}));
+
+vi.mock("../../lib/task-client-factory.js", () => ({
+  createTaskClient: vi.fn(async () => ({
+    backendType: "native",
+    taskClient: {},
+  })),
+}));
+
+vi.mock("../../orchestrator/dispatcher.js", () => ({
+  Dispatcher: vi.fn(() => ({
+    dispatch: mockDispatcherDispatch,
+  })),
+}));
+
+vi.mock("../../lib/store.js", () => ({
+  ForemanStore: {
+    forProject: vi.fn(() => mockStore),
+  },
+}));
+
+vi.mock("../../lib/db/postgres-adapter.js", () => ({
+  PostgresAdapter: vi.fn(() => mockPostgresAdapterInstance),
+}));
+
+vi.mock("../../lib/bv.js", () => ({
+  BvClient: vi.fn(),
+}));
+
+vi.mock("../../lib/db/pool-manager.js", () => ({
+  initPool: vi.fn(),
+  healthCheck: vi.fn(async () => {}),
+  destroyPool: vi.fn(async () => {}),
+  isPoolInitialised: vi.fn(() => true),
+  getPool: vi.fn(),
+}));
+
+function createMockFastify() {
+  return {
+    all: vi.fn(),
+    get: vi.fn(),
+    post: vi.fn(),
+    listen: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
+    log: {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    },
+  };
+}
+
+function createMockPostgresAdapterInstance() {
+  return {
+    hasNativeTasks: vi.fn(),
+    listTasks: vi.fn(),
+    getTaskByExternalId: vi.fn(),
+    getTask: vi.fn(),
+    claimTask: vi.fn(),
+    listPipelineRuns: vi.fn(),
+    createPipelineRun: vi.fn(),
+    updatePipelineRun: vi.fn(),
+    sendMessage: vi.fn(),
+    recordPipelineEvent: vi.fn(),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Fake PoolManager
@@ -17,20 +126,6 @@ import { ForemanDaemon } from "../index.js";
 let healthCheckCalls = 0;
 let poolInitCalls = 0;
 let poolDestroyCalls = 0;
-
-vi.mock("../../lib/db/pool-manager.js", () => ({
-  initPool: vi.fn(() => {
-    poolInitCalls++;
-  }),
-  healthCheck: vi.fn(async () => {
-    healthCheckCalls++;
-  }),
-  destroyPool: vi.fn(async () => {
-    poolDestroyCalls++;
-  }),
-  isPoolInitialised: vi.fn(() => true),
-  getPool: vi.fn(),
-}));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,9 +140,23 @@ function fakeSocketDir(): string {
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
+  mockFastify = createMockFastify();
+  mockTrpcClient = {
+    projects: {
+      list: vi.fn(),
+    },
+  };
+  mockDispatcherDispatch = vi.fn(async () => ({
+    dispatched: [],
+  }));
+  mockStore = {
+    close: vi.fn(),
+  };
+  mockPostgresAdapterInstance = createMockPostgresAdapterInstance();
   healthCheckCalls = 0;
   poolInitCalls = 0;
   poolDestroyCalls = 0;
+  vi.clearAllMocks();
 });
 
 describe("ForemanDaemon", () => {
@@ -130,5 +239,54 @@ describe("failStartup", () => {
     // but the ForemanDaemon.start() calls failStartup(err) on connection failure.
     // The test verifies the class structure is correct.
     expect(typeof ForemanDaemon).toBe("function");
+  });
+});
+
+describe("ForemanDaemon dispatch loop", () => {
+  it("passes registeredProjectId into createTaskClient for registered projects", async () => {
+    const originalWebhookSecret = process.env.FOREMAN_WEBHOOK_SECRET;
+    delete process.env.FOREMAN_WEBHOOK_SECRET;
+
+    const createTaskClientMock = vi.mocked(await import("../../lib/task-client-factory.js")).createTaskClient;
+    const dispatcherModule = vi.mocked(await import("../../orchestrator/dispatcher.js"), { deep: true });
+    const trpcClientMock = vi.mocked(await import("../../lib/trpc-client.js")).createTrpcClient;
+
+    trpcClientMock.mockReturnValue({
+      projects: {
+        list: vi.fn(async () => [
+          {
+            id: "proj-123",
+            name: "registered-project",
+            path: "/tmp/registered-project",
+            status: "active",
+          },
+        ]),
+      },
+    } as never);
+
+    createTaskClientMock.mockResolvedValue({
+      backendType: "native",
+      taskClient: {},
+    } as never);
+
+    dispatcherModule.Dispatcher.mockImplementation(() => ({
+      dispatch: vi.fn(async () => ({ dispatched: [] })),
+    }) as never);
+
+    try {
+      const daemon = new ForemanDaemon({ httpPort: 9998, socketPath: join(tmpdir(), "foreman-daemon-test.sock") });
+      await daemon.start();
+
+      expect(createTaskClientMock).toHaveBeenCalledWith("/tmp/registered-project", {
+        registeredProjectId: "proj-123",
+      });
+      await daemon.stop();
+    } finally {
+      if (originalWebhookSecret !== undefined) {
+        process.env.FOREMAN_WEBHOOK_SECRET = originalWebhookSecret;
+      } else {
+        delete process.env.FOREMAN_WEBHOOK_SECRET;
+      }
+    }
   });
 });

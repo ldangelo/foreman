@@ -179,10 +179,10 @@ describe("RefineryAgent", () => {
         getRun: vi.fn().mockResolvedValue({ id: entry.run_id, worktree_path: "/daemon/worktree" }),
       });
 
-      vi.spyOn(agent as never, "ensureMailClient" as never).mockResolvedValue(undefined);
-      vi.spyOn(agent as never, "readPrState" as never).mockResolvedValue({} as never);
-      vi.spyOn(agent as never, "checkCiStatus" as never).mockResolvedValue(true);
-      const runAgentSpy = vi.spyOn(agent as never, "runAgent" as never).mockResolvedValue({
+      vi.spyOn(agent as unknown as { ensureMailClient: () => Promise<void> }, "ensureMailClient").mockResolvedValue(undefined);
+      vi.spyOn(agent as unknown as { readPrState: () => Promise<unknown> }, "readPrState").mockResolvedValue({});
+      vi.spyOn(agent as unknown as { checkCiStatus: () => Promise<boolean> }, "checkCiStatus").mockResolvedValue(true);
+      const runAgentSpy = vi.spyOn(agent as unknown as { runAgent: (...args: unknown[]) => Promise<unknown> }, "runAgent").mockResolvedValue({
         success: true,
         action: "merged",
         logPath: "/tmp/log",
@@ -202,10 +202,10 @@ describe("RefineryAgent", () => {
       const vcsBackend = makeMockVcsBackend();
       const agent = new RefineryAgent(mergeQueue as never, vcsBackend, "/tmp/test");
 
-      vi.spyOn(agent as never, "ensureMailClient" as never).mockResolvedValue(undefined);
-      vi.spyOn(agent as never, "readPrState" as never).mockResolvedValue({} as never);
-      vi.spyOn(agent as never, "checkCiStatus" as never).mockResolvedValue(true);
-      const runAgentSpy = vi.spyOn(agent as never, "runAgent" as never).mockResolvedValue({
+      vi.spyOn(agent as unknown as { ensureMailClient: () => Promise<void> }, "ensureMailClient").mockResolvedValue(undefined);
+      vi.spyOn(agent as unknown as { readPrState: () => Promise<unknown> }, "readPrState").mockResolvedValue({});
+      vi.spyOn(agent as unknown as { checkCiStatus: () => Promise<boolean> }, "checkCiStatus").mockResolvedValue(true);
+      const runAgentSpy = vi.spyOn(agent as unknown as { runAgent: (...args: unknown[]) => Promise<unknown> }, "runAgent").mockResolvedValue({
         success: true,
         action: "merged",
         logPath: "/tmp/log",
@@ -233,10 +233,10 @@ describe("RefineryAgent", () => {
         },
       );
 
-      vi.spyOn(agent as never, "ensureMailClient" as never).mockResolvedValue(undefined);
-      vi.spyOn(agent as never, "readPrState" as never).mockResolvedValue({} as never);
-      vi.spyOn(agent as never, "checkCiStatus" as never).mockResolvedValue(true);
-      const runAgentSpy = vi.spyOn(agent as never, "runAgent" as never).mockResolvedValue({
+      vi.spyOn(agent as unknown as { ensureMailClient: () => Promise<void> }, "ensureMailClient").mockResolvedValue(undefined);
+      vi.spyOn(agent as unknown as { readPrState: () => Promise<unknown> }, "readPrState").mockResolvedValue({});
+      vi.spyOn(agent as unknown as { checkCiStatus: () => Promise<boolean> }, "checkCiStatus").mockResolvedValue(true);
+      const runAgentSpy = vi.spyOn(agent as unknown as { runAgent: (...args: unknown[]) => Promise<unknown> }, "runAgent").mockResolvedValue({
         success: true,
         action: "merged",
         logPath: "/tmp/log",
@@ -262,10 +262,10 @@ describe("RefineryAgent", () => {
         },
       );
 
-      vi.spyOn(agent as never, "ensureMailClient" as never).mockResolvedValue(undefined);
-      vi.spyOn(agent as never, "readPrState" as never).mockResolvedValue({} as never);
-      vi.spyOn(agent as never, "checkCiStatus" as never).mockResolvedValue(true);
-      const runAgentSpy = vi.spyOn(agent as never, "runAgent" as never).mockResolvedValue({
+      vi.spyOn(agent as unknown as { ensureMailClient: () => Promise<void> }, "ensureMailClient").mockResolvedValue(undefined);
+      vi.spyOn(agent as unknown as { readPrState: () => Promise<unknown> }, "readPrState").mockResolvedValue({});
+      vi.spyOn(agent as unknown as { checkCiStatus: () => Promise<boolean> }, "checkCiStatus").mockResolvedValue(true);
+      const runAgentSpy = vi.spyOn(agent as unknown as { runAgent: (...args: unknown[]) => Promise<unknown> }, "runAgent").mockResolvedValue({
         success: true,
         action: "merged",
         logPath: "/tmp/log",
@@ -291,10 +291,10 @@ describe("RefineryAgent", () => {
         },
       );
 
-      vi.spyOn(agent as never, "ensureMailClient" as never).mockResolvedValue(undefined);
-      vi.spyOn(agent as never, "readPrState" as never).mockResolvedValue({} as never);
-      vi.spyOn(agent as never, "checkCiStatus" as never).mockResolvedValue(true);
-      const runAgentSpy = vi.spyOn(agent as never, "runAgent" as never).mockResolvedValue({
+      vi.spyOn(agent as unknown as { ensureMailClient: () => Promise<void> }, "ensureMailClient").mockResolvedValue(undefined);
+      vi.spyOn(agent as unknown as { readPrState: () => Promise<unknown> }, "readPrState").mockResolvedValue({});
+      vi.spyOn(agent as unknown as { checkCiStatus: () => Promise<boolean> }, "checkCiStatus").mockResolvedValue(true);
+      const runAgentSpy = vi.spyOn(agent as unknown as { runAgent: (...args: unknown[]) => Promise<unknown> }, "runAgent").mockResolvedValue({
         success: false,
         action: "error",
         logPath: "/tmp/log",

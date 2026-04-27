@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { Run } from "../../lib/store.js";
 
 // ── Mock setup ──────────────────────────────────────────────────────────────
 //
@@ -82,7 +83,7 @@ describe("syncBeadStatusOnStartup", () => {
   it("awaits an async getRunsByStatuses store implementation", async () => {
     const run = makeRun({ status: "completed" });
     const store = {
-      getRunsByStatuses: vi.fn(async () => [run]),
+      getRunsByStatuses: vi.fn(async () => [run as Run]),
     } satisfies Parameters<typeof syncBeadStatusOnStartup>[0];
     const taskClient = {
       show: vi.fn(async () => ({ status: "review" })),

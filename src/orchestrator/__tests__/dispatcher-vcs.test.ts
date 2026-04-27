@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Dispatcher } from "../dispatcher.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
-import type { ForemanStore } from "../../lib/store.js";
+import type { ForemanStore, Run } from "../../lib/store.js";
 import type { VcsBackend } from "../../lib/vcs/index.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 
@@ -626,7 +626,7 @@ describe("Dispatcher — registered override-backed dependency stacking", () => 
     const store = makeStore();
     store.getRunsForSeed = vi.fn().mockResolvedValue([]);
     const overrides = {
-      getRunsForSeed: vi.fn(async (seedId: string) => {
+      getRunsForSeed: vi.fn(async (seedId: string, _projectId: string) => {
         if (seedId === "dep-a") {
           return [{
             id: "run-dep-a",
@@ -635,13 +635,13 @@ describe("Dispatcher — registered override-backed dependency stacking", () => 
             agent_type: "claude-code",
             session_key: null,
             worktree_path: "/tmp/worktrees/dep-a",
-            status: "completed",
+            status: "completed" as Run["status"],
             started_at: new Date().toISOString(),
             completed_at: new Date().toISOString(),
             created_at: new Date().toISOString(),
             progress: null,
             base_branch: null,
-          }];
+          }] satisfies Run[];
         }
         return [];
       }),
