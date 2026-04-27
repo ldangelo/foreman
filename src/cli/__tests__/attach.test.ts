@@ -328,7 +328,7 @@ describe("foreman attach", () => {
         },
         projectId,
         projectPath: tmpDir,
-      } as AttachDaemonContext;
+      } as unknown as AttachDaemonContext;
     }
 
     it("uses the daemon update path for registered projects", async () => {

@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { initProjectStore } from "../commands/init.js";
 
+type InitProjectStore = Parameters<typeof initProjectStore>[2];
+
 function makeStore(overrides: Record<string, unknown> = {}) {
   return {
     getProjectByPath: vi.fn().mockReturnValue(null),
     registerProject: vi.fn().mockReturnValue({ id: "proj-new" }),
     getSentinelConfig: vi.fn().mockReturnValue(null),
-    upsertSentinelConfig: vi.fn().mockReturnValue({}),
+    upsertSentinelConfig: vi.fn().mockResolvedValue(undefined),
     ...overrides,
-  } as unknown as import("../../lib/store.js").ForemanStore;
+  } as InitProjectStore;
 }
 
 describe("initProjectStore — sentinel seeding", () => {

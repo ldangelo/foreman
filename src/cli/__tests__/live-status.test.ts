@@ -9,6 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as dashboardModule from "../commands/dashboard.js";
+import type { ForemanStore } from "../../lib/store.js";
 
 // ── Hoisted mocks ───────────────────────────────────────────────────────────
 const {
@@ -75,8 +76,8 @@ const {
     this.listTasksByStatus = mockListTasksByStatus;
     this.getProject = vi.fn().mockReturnValue(null);
     this.close = vi.fn();
-  });
-  (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
+  }) as ReturnType<typeof vi.fn> & { forProject: ReturnType<typeof vi.fn> };
+  MockForemanStore.forProject = vi.fn((...args: unknown[]) => new MockForemanStore(...args));
 
   // Dashboard function mocks (used by status --live tests)
   const mockPollDashboard = vi.fn().mockReturnValue({
@@ -99,8 +100,12 @@ const {
       stats: mockProjectsStats,
       listNeedsHuman: mockProjectsListNeedsHuman,
     },
+    tasks: {
+      list: vi.fn().mockResolvedValue([]),
+    },
     runs: {
       listActive: mockRunsListActive,
+      listMessages: vi.fn().mockResolvedValue([]),
     },
   }));
 
@@ -689,8 +694,8 @@ describe("watch-state path normalization", () => {
     ]);
     mockCreateTrpcClient.mockReturnValue({
       tasks: { list: tasksList },
-      projects: { stats: mockProjectsStats },
-      runs: { listActive: mockRunsListActive },
+      projects: { stats: mockProjectsStats, listNeedsHuman: mockProjectsListNeedsHuman },
+      runs: { listActive: mockRunsListActive, listMessages: vi.fn().mockResolvedValue([]) },
     });
     mockProjectsStats.mockResolvedValue({
       tasks: {
@@ -721,7 +726,7 @@ describe("watch-state path normalization", () => {
     ]);
     mockCreateTrpcClient.mockReturnValue({
       tasks: { list: vi.fn() },
-      projects: { stats: mockProjectsStats },
+      projects: { stats: mockProjectsStats, listNeedsHuman: mockProjectsListNeedsHuman },
       runs: { listActive: mockRunsListActive, listMessages },
     });
 

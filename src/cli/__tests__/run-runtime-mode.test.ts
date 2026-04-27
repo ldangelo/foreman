@@ -22,10 +22,8 @@ const {
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
     this.hasNativeTasks = mockHasNativeTasks;
     this.close = vi.fn();
-  });
-  (MockForemanStore as any).forProject = vi.fn(
-    (...args: unknown[]) => new (MockForemanStore as any)(...args),
-  );
+  }) as ReturnType<typeof vi.fn> & { forProject: ReturnType<typeof vi.fn> };
+  MockForemanStore.forProject = vi.fn((...args: unknown[]) => new MockForemanStore(...args));
 
   const MockPostgresAdapter = vi.fn(function (this: Record<string, unknown>) {
     this.hasNativeTasks = mockPostgresHasNativeTasks;
@@ -81,9 +79,7 @@ describe("run runtime mode", () => {
       this.hasNativeTasks = mockHasNativeTasks;
       this.close = vi.fn();
     });
-    (MockForemanStore as any).forProject = vi.fn(
-      (...args: unknown[]) => new (MockForemanStore as any)(...args),
-    );
+    MockForemanStore.forProject = vi.fn((...args: unknown[]) => new MockForemanStore(...args));
   });
 
   afterEach(() => {

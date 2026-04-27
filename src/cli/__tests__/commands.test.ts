@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +10,19 @@ const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
   return runTsxModule(CLI, args, { cwd, timeout: 10_000 });
+}
+
+function registerProjectInHomeRegistry(homeDir: string, projectPath: string, projectName: string): void {
+  const registryDir = join(homeDir, ".foreman", "projects");
+  mkdirSync(registryDir, { recursive: true });
+  writeFileSync(
+    join(registryDir, "projects.json"),
+    JSON.stringify({
+      version: 1,
+      projects: [{ name: projectName, path: projectPath, addedAt: new Date().toISOString() }],
+    }, null, 2) + "\n",
+    "utf-8",
+  );
 }
 
 describe("CLI smoke tests", () => {
@@ -82,7 +95,16 @@ describe("CLI smoke tests", () => {
     store.registerProject("test-project", tmp);
     store.close();
 
-    const result = await run(["plan", "--dry-run", "test-description"], tmp);
+    registerProjectInHomeRegistry(tmp, tmp, "test-project");
+
+    const result = await runTsxModule(CLI, ["plan", "--dry-run", "test-description"], {
+      cwd: tmp,
+      timeout: 10_000,
+      env: {
+        ...process.env,
+        HOME: tmp,
+      },
+    });
 
     const output = result.stdout + result.stderr;
     expect(output).toContain("Create PRD");

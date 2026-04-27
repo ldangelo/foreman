@@ -33,8 +33,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
     this.getRun = mockLocalGetRun;
     this.getDb = vi.fn().mockReturnValue({});
     this.close = vi.fn();
-  });
-  (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
+  }) as ReturnType<typeof vi.fn> & { forProject: ReturnType<typeof vi.fn> };
+  MockForemanStore.forProject = vi.fn((...args: unknown[]) => new MockForemanStore(...args));
 
   const MockPostgresStore = vi.fn(function MockPostgresStoreImpl(this: Record<string, unknown>) {
     this.getRun = vi.fn();

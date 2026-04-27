@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import chalk from "chalk";
+import { resolve } from "node:path";
 
 import { createTaskClient, type TaskClientBackend } from "../../lib/task-client-factory.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
@@ -351,7 +352,10 @@ export const retryCommand = new Command("retry")
 
     let projectPath: string;
     try {
-      projectPath = await resolveRepoRootProjectPath(opts);
+      projectPath = await resolveRepoRootProjectPath({
+        project: opts.project,
+        projectPath: opts.projectPath,
+      });
     } catch {
       console.error(
         chalk.red(
@@ -359,10 +363,11 @@ export const retryCommand = new Command("retry")
         ),
       );
       process.exit(1);
+      return;
     }
 
     const localStore = ForemanStore.forProject(projectPath);
-    const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
+    const registered = (await listRegisteredProjects()).find((project) => resolve(project.path) === resolve(projectPath));
     if (registered) {
       ensureCliPostgresPool(projectPath);
     }

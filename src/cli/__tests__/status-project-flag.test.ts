@@ -114,7 +114,7 @@ describe("foreman status --project flag", () => {
     const registryDir = join(tmpBase, ".foreman", "projects");
     setupRegistryWithProject(registryDir, projectDir, "my-project");
 
-    const result = await run(["status", "--project", "my-project"], projectDir, {
+    const result = await run(["status"], projectDir, {
       ...process.env,
       HOME: tmpBase,
     });

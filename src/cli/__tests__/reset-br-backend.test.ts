@@ -60,11 +60,14 @@ function makeBrDetail(status: string): BrIssueDetail {
 }
 
 // Type alias for the store pick used by detectAndFixMismatches.
-type StoreMock = Pick<ForemanStore, "getRunsByStatus" | "getActiveRuns">;
+type StoreMock = {
+  getRunsByStatus: (status: Run["status"], projectId?: string) => Promise<Run[]>;
+  getActiveRuns: (projectId?: string) => Promise<Run[]>;
+};
 
 function makeBrMocks() {
-  const storeFn = vi.fn((_status: string, _projectId?: string): Run[] => []);
-  const activeRunsFn = vi.fn((_projectId?: string): Run[] => []);
+  const storeFn = vi.fn(async (_status: string, _projectId?: string): Promise<Run[]> => []);
+  const activeRunsFn = vi.fn(async (_projectId?: string): Promise<Run[]> => []);
   // Cast the mock store to satisfy StoreMock for the function under test.
   // The vi.fn signature is compatible at runtime; the cast is needed because
   // vi.fn wraps the function in a Mock type.
@@ -88,7 +91,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
   it("detects mismatch when completed run has br issue in open state (should be review awaiting merge)", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-abc", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
     brClient.show.mockResolvedValue(makeBrDetail("open"));
@@ -113,7 +116,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
   it("calls brClient.update to fix a mismatch (completed run should have review bead — pipeline done, awaiting merge)", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-abc", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
     brClient.show.mockResolvedValue(makeBrDetail("open"));
@@ -132,7 +135,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
   it("does not call brClient.update in dry-run mode", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-abc", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
     brClient.show.mockResolvedValue(makeBrDetail("open"));
@@ -153,7 +156,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
   it("reports no mismatch when br issue status already matches expected (review for completed run)", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-abc", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
     // completed → review: bead already in 'review' means no mismatch
@@ -173,7 +176,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
   it("silently skips br issues that are not found", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-missing", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
     brClient.show.mockRejectedValue(new Error("Issue not found: bd-missing"));
@@ -192,7 +195,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
   it("records error when brClient.show fails with unexpected error", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-abc", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
     brClient.show.mockRejectedValue(new Error("Database connection lost"));
@@ -211,7 +214,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
   it("records error when brClient.update fails, does not count as fixed", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-abc", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
     // Use "open" so there IS a mismatch (completed → review, but bead is open)
@@ -234,7 +237,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
   it("skips br issues already in the resetSeedIds set", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-already-reset", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
 
@@ -252,7 +255,7 @@ describe("detectAndFixMismatches — br backend (BeadsRustClient)", () => {
   it("handles merged run with br issue in_progress", async () => {
     const { store, brClient } = makeBrMocks();
     const run = makeRun({ seed_id: "bd-abc", status: "merged" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "merged" ? [run] : [],
     );
     brClient.show.mockResolvedValue(makeBrDetail("in_progress"));
@@ -608,12 +611,16 @@ function makeMergeQueueEntry(
   };
 }
 
-type StoreMockForStale = Pick<ForemanStore, "getRunsByStatus" | "getActiveRuns" | "updateRun">;
+type StoreMockForStale = {
+  getRunsByStatus: (status: Run["status"], projectId?: string) => Promise<Run[]>;
+  getActiveRuns: (projectId?: string) => Promise<Run[]>;
+  updateRun: (id: string, updates: Partial<Run>) => Promise<void>;
+};
 
 function makeStaleBranchMocks() {
-  const getRunsByStatusFn = vi.fn((_status: string, _projectId?: string): Run[] => []);
-  const getActiveRunsFn = vi.fn((_projectId?: string): Run[] => []);
-  const updateRunFn = vi.fn((_id: string, _upd: Partial<Run>): void => {});
+  const getRunsByStatusFn = vi.fn(async (_status: string, _projectId?: string): Promise<Run[]> => []);
+  const getActiveRunsFn = vi.fn(async (_projectId?: string): Promise<Run[]> => []);
+  const updateRunFn = vi.fn(async (_id: string, _upd: Partial<Run>): Promise<void> => {});
 
   const store = {
     getRunsByStatus: getRunsByStatusFn,
@@ -630,8 +637,8 @@ function makeStaleBranchMocks() {
     update: vi.fn(async (_id: string, _opts: UpdateOptions): Promise<void> => {}),
   };
 
-  const listFn = vi.fn((_status?: MergeQueueStatus): MergeQueueEntry[] => []);
-  const removeFn = vi.fn((_id: number): void => {});
+  const listFn = vi.fn(async (_status?: MergeQueueStatus): Promise<MergeQueueEntry[]> => []);
+  const removeFn = vi.fn(async (_id: number): Promise<void> => {});
 
   const mergeQueue = {
     list: listFn,
@@ -664,10 +671,10 @@ const execFnNotMerged: ExecFileAsyncFn = vi.fn(async (_cmd, args) => {
 describe("detectAndHandleStaleBranches", () => {
   it("returns empty results when there are no completed runs", async () => {
     const { store, brClient, mergeQueue } = makeStaleBranchMocks();
-    store.getRunsByStatus.mockReturnValue([]);
+    store.getRunsByStatus.mockResolvedValue([]);
 
     const result = await detectAndHandleStaleBranches(
-      store, brClient as IShowUpdateClient, mergeQueue as unknown as import("../../orchestrator/merge-queue.js").MergeQueue,
+      store, brClient as IShowUpdateClient, mergeQueue as unknown as Parameters<typeof detectAndHandleStaleBranches>[2],
       "/repo", "proj-1", new Set(),
       { dryRun: true, execFileAsync: execFnMerged },
     );
@@ -680,12 +687,12 @@ describe("detectAndHandleStaleBranches", () => {
   it("skips seeds in skipSeedIds", async () => {
     const { store, brClient, mergeQueue } = makeStaleBranchMocks();
     const run = makeRun({ seed_id: "bd-skip", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
 
     const result = await detectAndHandleStaleBranches(
-      store, brClient as IShowUpdateClient, mergeQueue as unknown as import("../../orchestrator/merge-queue.js").MergeQueue,
+      store, brClient as IShowUpdateClient, mergeQueue as unknown as Parameters<typeof detectAndHandleStaleBranches>[2],
       "/repo", "proj-1", new Set(["bd-skip"]),
       { dryRun: true, execFileAsync: execFnMerged },
     );
@@ -697,15 +704,15 @@ describe("detectAndHandleStaleBranches", () => {
   it("skips seeds with active (pending/merging) MQ entries", async () => {
     const { store, brClient, mergeQueue } = makeStaleBranchMocks();
     const run = makeRun({ seed_id: "bd-active", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    mergeQueue.list.mockReturnValue([
+    mergeQueue.list.mockResolvedValue([
       makeMergeQueueEntry({ seed_id: "bd-active", status: "pending" }),
     ]);
 
     const result = await detectAndHandleStaleBranches(
-      store, brClient as IShowUpdateClient, mergeQueue as unknown as import("../../orchestrator/merge-queue.js").MergeQueue,
+      store, brClient as IShowUpdateClient, mergeQueue as unknown as Parameters<typeof detectAndHandleStaleBranches>[2],
       "/repo", "proj-1", new Set(),
       { dryRun: true, execFileAsync: execFnMerged },
     );
@@ -719,15 +726,15 @@ describe("detectAndHandleStaleBranches", () => {
   it("skips seeds with merging MQ entries", async () => {
     const { store, brClient, mergeQueue } = makeStaleBranchMocks();
     const run = makeRun({ seed_id: "bd-merging", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    mergeQueue.list.mockReturnValue([
+    mergeQueue.list.mockResolvedValue([
       makeMergeQueueEntry({ seed_id: "bd-merging", status: "merging" }),
     ]);
 
     const result = await detectAndHandleStaleBranches(
-      store, brClient as IShowUpdateClient, mergeQueue as unknown as import("../../orchestrator/merge-queue.js").MergeQueue,
+      store, brClient as IShowUpdateClient, mergeQueue as unknown as Parameters<typeof detectAndHandleStaleBranches>[2],
       "/repo", "proj-1", new Set(),
       { dryRun: true, execFileAsync: execFnNotMerged },
     );
@@ -739,13 +746,13 @@ describe("detectAndHandleStaleBranches", () => {
   it("closes bead when branch is already merged into target", async () => {
     const { store, brClient, mergeQueue } = makeStaleBranchMocks();
     const run = makeRun({ seed_id: "bd-merged", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    mergeQueue.list.mockReturnValue([]);
+    mergeQueue.list.mockResolvedValue([]);
 
     const result = await detectAndHandleStaleBranches(
-      store, brClient as IShowUpdateClient, mergeQueue as unknown as import("../../orchestrator/merge-queue.js").MergeQueue,
+      store, brClient as IShowUpdateClient, mergeQueue as unknown as Parameters<typeof detectAndHandleStaleBranches>[2],
       "/repo", "proj-1", new Set(),
       { dryRun: false, execFileAsync: execFnMerged },
     );
@@ -761,13 +768,13 @@ describe("detectAndHandleStaleBranches", () => {
   it("resets bead to open when branch is NOT merged into target", async () => {
     const { store, brClient, mergeQueue } = makeStaleBranchMocks();
     const run = makeRun({ seed_id: "bd-unmerged", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    mergeQueue.list.mockReturnValue([]);
+    mergeQueue.list.mockResolvedValue([]);
 
     const result = await detectAndHandleStaleBranches(
-      store, brClient as IShowUpdateClient, mergeQueue as unknown as import("../../orchestrator/merge-queue.js").MergeQueue,
+      store, brClient as IShowUpdateClient, mergeQueue as unknown as Parameters<typeof detectAndHandleStaleBranches>[2],
       "/repo", "proj-1", new Set(),
       { dryRun: false, execFileAsync: execFnNotMerged },
     );
@@ -784,10 +791,10 @@ describe("detectAndHandleStaleBranches", () => {
     const { store, brClient, mergeQueue } = makeStaleBranchMocks();
     const runMerged = makeRun({ id: "run-m", seed_id: "bd-merged2", status: "completed" });
     const runUnmerged = makeRun({ id: "run-u", seed_id: "bd-unmerged2", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [runMerged, runUnmerged] : [],
     );
-    mergeQueue.list.mockReturnValue([]);
+    mergeQueue.list.mockResolvedValue([]);
 
     // execFn: merged for bd-merged2, not-merged for bd-unmerged2
     const execFnMixed: ExecFileAsyncFn = vi.fn(async (_cmd, args, opts) => {
@@ -806,7 +813,7 @@ describe("detectAndHandleStaleBranches", () => {
     });
 
     const result = await detectAndHandleStaleBranches(
-      store, brClient as IShowUpdateClient, mergeQueue as unknown as import("../../orchestrator/merge-queue.js").MergeQueue,
+      store, brClient as IShowUpdateClient, mergeQueue as unknown as Parameters<typeof detectAndHandleStaleBranches>[2],
       "/repo", "proj-1", new Set(),
       { dryRun: true, execFileAsync: execFnMixed },
     );
@@ -821,15 +828,15 @@ describe("detectAndHandleStaleBranches", () => {
   it("removes MQ entries for the seed when closing or resetting", async () => {
     const { store, brClient, mergeQueue } = makeStaleBranchMocks();
     const run = makeRun({ seed_id: "bd-with-mq", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
     // A failed MQ entry for this seed (not pending/merging, so it won't be skipped)
     const mqEntry = makeMergeQueueEntry({ id: 42, seed_id: "bd-with-mq", status: "failed" });
-    mergeQueue.list.mockReturnValue([mqEntry]);
+    mergeQueue.list.mockResolvedValue([mqEntry]);
 
     await detectAndHandleStaleBranches(
-      store, brClient as IShowUpdateClient, mergeQueue as unknown as import("../../orchestrator/merge-queue.js").MergeQueue,
+      store, brClient as IShowUpdateClient, mergeQueue as unknown as Parameters<typeof detectAndHandleStaleBranches>[2],
       "/repo", "proj-1", new Set(),
       { dryRun: false, execFileAsync: execFnMerged },
     );
@@ -840,17 +847,17 @@ describe("detectAndHandleStaleBranches", () => {
   it("skips seeds with active dispatched runs (pending/running)", async () => {
     const { store, brClient, mergeQueue } = makeStaleBranchMocks();
     const run = makeRun({ seed_id: "bd-active-run", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
     // There's an active (pending) run for this seed
-    store.getActiveRuns.mockReturnValue([
+    store.getActiveRuns.mockResolvedValue([
       makeRun({ seed_id: "bd-active-run", status: "pending" }),
     ]);
-    mergeQueue.list.mockReturnValue([]);
+    mergeQueue.list.mockResolvedValue([]);
 
     const result = await detectAndHandleStaleBranches(
-      store, brClient as IShowUpdateClient, mergeQueue as unknown as import("../../orchestrator/merge-queue.js").MergeQueue,
+      store, brClient as IShowUpdateClient, mergeQueue as unknown as Parameters<typeof detectAndHandleStaleBranches>[2],
       "/repo", "proj-1", new Set(),
       { dryRun: true, execFileAsync: execFnMerged },
     );
@@ -863,10 +870,10 @@ describe("detectAndHandleStaleBranches", () => {
   it("treats git errors as not-merged (safe default: reset bead to open)", async () => {
     const { store, brClient, mergeQueue } = makeStaleBranchMocks();
     const run = makeRun({ seed_id: "bd-git-err", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    mergeQueue.list.mockReturnValue([]);
+    mergeQueue.list.mockResolvedValue([]);
 
     // isBranchMergedIntoTarget swallows errors and returns false (safe default).
     // detectAndHandleStaleBranches therefore treats this as "not merged" and
@@ -876,7 +883,7 @@ describe("detectAndHandleStaleBranches", () => {
     };
 
     const result = await detectAndHandleStaleBranches(
-      store, brClient as IShowUpdateClient, mergeQueue as unknown as import("../../orchestrator/merge-queue.js").MergeQueue,
+      store, brClient as IShowUpdateClient, mergeQueue as unknown as Parameters<typeof detectAndHandleStaleBranches>[2],
       "/repo", "proj-1", new Set(),
       { dryRun: false, execFileAsync: execFnError },
     );
@@ -891,16 +898,16 @@ describe("detectAndHandleStaleBranches", () => {
   it("handles bead not found gracefully when closing", async () => {
     const { store, brClient, mergeQueue } = makeStaleBranchMocks();
     const run = makeRun({ seed_id: "bd-gone", status: "completed" });
-    store.getRunsByStatus.mockImplementation((...args: unknown[]) =>
+    store.getRunsByStatus.mockImplementation(async (...args: unknown[]) =>
       args[0] === "completed" ? [run] : [],
     );
-    mergeQueue.list.mockReturnValue([]);
+    mergeQueue.list.mockResolvedValue([]);
     (brClient.update as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error("Issue not found: bd-gone"),
     );
 
     const result = await detectAndHandleStaleBranches(
-      store, brClient as IShowUpdateClient, mergeQueue as unknown as import("../../orchestrator/merge-queue.js").MergeQueue,
+      store, brClient as IShowUpdateClient, mergeQueue as unknown as Parameters<typeof detectAndHandleStaleBranches>[2],
       "/repo", "proj-1", new Set(),
       { dryRun: false, execFileAsync: execFnMerged },
     );

@@ -187,13 +187,13 @@ describe("BoardMutations", () => {
       expect(closedTask.closed_at).toBe(reason);
     });
 
-    it("C should request a close reason instead of closing immediately", () => {
+    it("C should request a close reason instead of closing immediately", async () => {
       const handleKey = createKeyHandler("/tmp/project");
       const state = createState({
         backlog: [createTask("bd-1234", { status: "backlog" })],
       });
 
-      const result = handleKey("C", state, "/tmp/project");
+      const result = await handleKey("C", state, "/tmp/project");
 
       expect(result.promptForCloseReason).toBe(true);
       expect(result.needsRefresh).toBe(false);

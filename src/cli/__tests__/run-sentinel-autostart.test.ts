@@ -311,7 +311,7 @@ describe("sentinel auto-start in foreman run", () => {
   it("uses the wrapped Postgres sentinel store for registered projects", async () => {
     mockGetProjectByPath.mockReturnValue(null);
     mockListRegisteredProjects.mockResolvedValue([
-      { id: "registered-proj", path: "/registry/elsewhere", name: "project" },
+      { id: "registered-proj", path: "/mock/project", name: "project" },
     ]);
     const postgresConfig = {
       ...MOCK_SENTINEL_CONFIG,
@@ -360,7 +360,7 @@ describe("sentinel auto-start in foreman run", () => {
   it("uses the daemon Postgres store for startup bead sync on registered projects", async () => {
     mockGetProjectByPath.mockReturnValue(null);
     mockListRegisteredProjects.mockResolvedValue([
-      { id: "registered-proj", path: "/registry/elsewhere", name: "project" },
+      { id: "registered-proj", path: "/mock/project", name: "project" },
     ]);
     const postgresStore = {
       close: vi.fn(),

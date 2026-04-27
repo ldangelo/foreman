@@ -475,8 +475,8 @@ describe("worktree command targeting", () => {
   it("resolves registered worktree list to the canonical project path from a non-canonical cwd", async () => {
     const projectTaskSupportMock = vi.mocked(projectTaskSupport);
     const canonicalPath = "/canonical/project";
-    const localStore = new ForemanStore();
-    const postgresStore = new PostgresStore();
+    const localStore = { close: vi.fn(), getRunsForSeed: vi.fn().mockResolvedValue([]) } as unknown as ForemanStore;
+    const postgresStore = { close: vi.fn(), getRunsForSeed: vi.fn().mockResolvedValue([]) } as unknown as PostgresStore;
     const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
     const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject").mockReturnValue(postgresStore);
 
@@ -501,8 +501,8 @@ describe("worktree command targeting", () => {
   it("resolves registered worktree clean to the canonical project path from a non-canonical cwd", async () => {
     const projectTaskSupportMock = vi.mocked(projectTaskSupport);
     const canonicalPath = "/canonical/project";
-    const localStore = new ForemanStore();
-    const postgresStore = new PostgresStore();
+    const localStore = { close: vi.fn(), getRunsForSeed: vi.fn().mockResolvedValue([]) } as unknown as ForemanStore;
+    const postgresStore = { close: vi.fn(), getRunsForSeed: vi.fn().mockResolvedValue([]) } as unknown as PostgresStore;
     const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
     const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject").mockReturnValue(postgresStore);
 

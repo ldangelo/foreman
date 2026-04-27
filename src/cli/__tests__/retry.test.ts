@@ -4,6 +4,24 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore, type Run, type RunProgress } from "../../lib/store.js";
 
+function wrapLocalRetryStore(store: ForemanStore) {
+  return {
+    getProjectByPath: async (path: string) => store.getProjectByPath(path),
+    getRunsForSeed: async (seedId: string, projectId: string) =>
+      store.getRunsForSeed(seedId, projectId),
+    updateRun: async (
+      runId: string,
+      updates: Partial<Pick<Run, "status" | "completed_at">>,
+    ) => store.updateRun(runId, updates),
+    logEvent: async (
+      projectId: string,
+      eventType: "restart",
+      data: Record<string, unknown>,
+      runId?: string,
+    ) => store.logEvent(projectId, eventType, data, runId),
+  };
+}
+
 // ── Mock BeadsRustClient ───────────────────────────────────────────────
 
 const mockShow = vi.fn();
@@ -104,6 +122,7 @@ describe("foreman retry", () => {
   let tmpDir: string;
   let projectId: string;
   let beadsClient: InstanceType<typeof import("../../lib/beads-rust.js").BeadsRustClient>;
+  const mockDispatcher = { dispatch: mockDispatch } as any;
 
   beforeEach(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-retry-test-"));
@@ -149,7 +168,7 @@ describe("foreman retry", () => {
         "bd-test",
         {},
         beadsClient,
-        store,
+        wrapLocalRetryStore(store),
         "/nonexistent/path",
       );
 
@@ -176,7 +195,7 @@ describe("foreman retry", () => {
         "bd-nonexistent",
         {},
         beadsClient,
-        store,
+        wrapLocalRetryStore(store),
         tmpDir,
       );
 
@@ -203,7 +222,7 @@ describe("foreman retry", () => {
         "bd-test",
         {},
         beadsClient,
-        store,
+        wrapLocalRetryStore(store),
         tmpDir,
       );
 
@@ -220,7 +239,7 @@ describe("foreman retry", () => {
       mockShow.mockResolvedValue(makeBead({ status: "open" }));
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       expect(mockDispatch).not.toHaveBeenCalled();
 
@@ -241,7 +260,7 @@ describe("foreman retry", () => {
         "bd-test",
         {},
         beadsClient,
-        store,
+        wrapLocalRetryStore(store),
         tmpDir,
       );
 
@@ -261,7 +280,7 @@ describe("foreman retry", () => {
         "bd-test",
         {},
         beadsClient,
-        store,
+        wrapLocalRetryStore(store),
         tmpDir,
       );
 
@@ -290,7 +309,7 @@ describe("foreman retry", () => {
         "bd-test",
         {},
         beadsClient,
-        store,
+        wrapLocalRetryStore(store),
         tmpDir,
       );
 
@@ -315,7 +334,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "open" });
 
@@ -333,7 +352,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir, undefined, "native");
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir, undefined, "native");
 
       expect(mockResetToReady).toHaveBeenCalledWith("bd-test");
       expect(mockUpdate).not.toHaveBeenCalled();
@@ -352,7 +371,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("failed");
@@ -371,7 +390,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("failed");
@@ -398,7 +417,7 @@ describe("foreman retry", () => {
         "bd-test",
         {},
         beadsClient,
-        store,
+        wrapLocalRetryStore(store),
         tmpDir,
       );
 
@@ -425,7 +444,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("reset");
@@ -445,7 +464,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("reset");
@@ -465,7 +484,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("reset");
@@ -487,7 +506,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("reset");
@@ -507,7 +526,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir, undefined, "beads");
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir, undefined, "beads");
 
       expect(mockUpdate).toHaveBeenCalledWith("bd-test", { status: "open" });
 
@@ -524,7 +543,7 @@ describe("foreman retry", () => {
       mockShow.mockResolvedValue(makeBead({ status: "completed" }));
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", { dryRun: true }, beadsClient, store, tmpDir);
+      await retryAction("bd-test", { dryRun: true }, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       expect(mockUpdate).not.toHaveBeenCalled();
 
@@ -542,7 +561,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", { dryRun: true }, beadsClient, store, tmpDir);
+      await retryAction("bd-test", { dryRun: true }, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       // Run status must be unchanged
       const updated = store.getRun(run.id);
@@ -557,7 +576,7 @@ describe("foreman retry", () => {
       mockShow.mockResolvedValue(makeBead({ status: "open" }));
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", { dryRun: true }, beadsClient, store, tmpDir);
+      await retryAction("bd-test", { dryRun: true }, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain("dry run");
@@ -581,8 +600,9 @@ describe("foreman retry", () => {
         "bd-test",
         { dryRun: true, dispatch: true },
         beadsClient,
-        store,
+        wrapLocalRetryStore(store),
         tmpDir,
+        mockDispatcher,
       );
 
       // dispatch is called but with dryRun: true
@@ -623,8 +643,9 @@ describe("foreman retry", () => {
         "bd-test",
         { dispatch: true },
         beadsClient,
-        store,
+        wrapLocalRetryStore(store),
         tmpDir,
+        mockDispatcher,
       );
 
       expect(exitCode).toBe(0);
@@ -661,8 +682,9 @@ describe("foreman retry", () => {
         "bd-test",
         { dispatch: true },
         beadsClient,
-        store,
+        wrapLocalRetryStore(store),
         tmpDir,
+        mockDispatcher,
       );
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -694,8 +716,9 @@ describe("foreman retry", () => {
         "bd-test",
         { dispatch: true },
         beadsClient,
-        store,
+        wrapLocalRetryStore(store),
         tmpDir,
+        mockDispatcher,
       );
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -715,8 +738,9 @@ describe("foreman retry", () => {
         "bd-test",
         { dispatch: true, model: "anthropic/claude-opus-4-6" },
         beadsClient,
-        store,
+        wrapLocalRetryStore(store),
         tmpDir,
+        mockDispatcher,
       );
 
       expect(mockDispatch).toHaveBeenCalledWith(
@@ -741,7 +765,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       // Check that a restart event was logged
       // We verify by checking the run was updated (which happens alongside the log call)
@@ -763,7 +787,7 @@ describe("foreman retry", () => {
       );
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain("bd-test");
@@ -778,7 +802,7 @@ describe("foreman retry", () => {
       mockShow.mockResolvedValue(makeBead({ status: "open" }));
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain("Done");
@@ -797,7 +821,7 @@ describe("foreman retry", () => {
       });
 
       const { retryAction } = await import("../commands/retry.js");
-      await retryAction("bd-test", {}, beadsClient, store, tmpDir);
+      await retryAction("bd-test", {}, beadsClient, wrapLocalRetryStore(store), tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain(run.id);

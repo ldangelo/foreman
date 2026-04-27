@@ -11,6 +11,7 @@ const mockExecFileSync = vi.hoisted(() => vi.fn(() => "mock-output\n"));
 const mockListRegisteredProjects = vi.hoisted(() => vi.fn());
 const mockCreateVcsBackend = vi.hoisted(() => vi.fn());
 const mockCreateTrpcClient = vi.hoisted(() => vi.fn());
+const mockResolveRepoRootProjectPath = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", () => ({
   execFileSync: mockExecFileSync,
@@ -18,6 +19,7 @@ vi.mock("node:child_process", () => ({
 
 vi.mock("../commands/project-task-support.js", () => ({
   listRegisteredProjects: mockListRegisteredProjects,
+  resolveRepoRootProjectPath: mockResolveRepoRootProjectPath,
 }));
 
 vi.mock("../../lib/vcs/index.js", () => ({
@@ -99,6 +101,7 @@ describe("daemon context fallback", () => {
       close: vi.fn(),
     };
     vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore as unknown as ForemanStore);
+    mockResolveRepoRootProjectPath.mockResolvedValue(tmpDir);
     mockCreateVcsBackend.mockResolvedValue({
       getRepoRoot: vi.fn().mockResolvedValue(tmpDir),
     });

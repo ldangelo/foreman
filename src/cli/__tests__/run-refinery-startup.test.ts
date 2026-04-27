@@ -139,7 +139,11 @@ const {
   };
 });
 
-vi.mock("../../lib/task-client-factory.js", () => ({ createTaskClient: mockCreateTaskClient, createTaskClients: mockCreateTaskClients }));
+vi.mock("../../lib/task-client-factory.js", () => ({
+  createTaskClient: mockCreateTaskClient,
+  createTaskClients: mockCreateTaskClients,
+  resolveTaskStoreMode: vi.fn().mockReturnValue("auto"),
+}));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
 vi.mock("../../lib/db/postgres-adapter.js", () => ({ PostgresAdapter: MockPostgresAdapter }));
 vi.mock("../../lib/postgres-store.js", () => ({ PostgresStore: MockPostgresStore }));
@@ -219,7 +223,7 @@ describe("foreman run startup refinery lookup", () => {
       registeredProjectId: "proj-1",
     }));
     expect(MockDispatcher).toHaveBeenCalledTimes(1);
-    const overrides = MockDispatcher.mock.calls[0][4] as Record<string, unknown>;
+    const overrides = (MockDispatcher.mock.calls as unknown[][])[0]?.[4] as Record<string, unknown>;
     expect(overrides).toMatchObject({
       externalProjectId: "proj-1",
       getRecentFailureCount: expect.any(Function),
@@ -248,7 +252,7 @@ describe("foreman run startup refinery lookup", () => {
 
     await runCommand.parseAsync(["--project-path", projectPath, "--no-watch"], { from: "user" });
 
-    const overrides = MockDispatcher.mock.calls[0][4] as Record<string, unknown>;
+    const overrides = (MockDispatcher.mock.calls as unknown[][])[0]?.[4] as Record<string, unknown>;
     const runOps = overrides.runOps as { createRun: (args: Record<string, unknown>) => Promise<Record<string, unknown>> };
     const run = await runOps.createRun({
       runId: "run-registered",
@@ -314,7 +318,7 @@ describe("foreman run startup refinery lookup", () => {
 
     await runCommand.parseAsync(["--project-path", projectPath, "--no-watch"], { from: "user" });
 
-    const overrides = MockDispatcher.mock.calls[0][4] as Record<string, unknown>;
+    const overrides = (MockDispatcher.mock.calls as unknown[][])[0]?.[4] as Record<string, unknown>;
     const getRecentFailureCount = overrides.getRecentFailureCount as (projectId: string, since: string) => Promise<number>;
     const count = await getRecentFailureCount("proj-1", "2026-04-25T00:30:00.000Z");
 
@@ -356,7 +360,7 @@ describe("foreman run startup refinery lookup", () => {
 
     expect(MockPostgresStore.forProject).not.toHaveBeenCalled();
     expect(MockDispatcher).toHaveBeenCalledTimes(1);
-    expect(MockDispatcher.mock.calls[0][4]).toBeUndefined();
+    expect((MockDispatcher.mock.calls as unknown[][])[0]?.[4]).toBeUndefined();
   });
 
   it("falls back to legacy autoMerge with the real task client for local startup merge failures", async () => {

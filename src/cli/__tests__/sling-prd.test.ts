@@ -110,7 +110,7 @@ describe("sling prd", () => {
   });
 
   it("runs create-trd-foreman and previews the parsed plan in dry-run json mode", async () => {
-    const result = await runCommand(["prd", prdPath, "--auto", "--dry-run", "--json"], tmpDir);
+    const result = await runCommand(["prd", prdPath, "--project-path", tmpDir, "--auto", "--dry-run", "--json"], tmpDir);
 
     expect(mockRunWithPiSdk).toHaveBeenCalledOnce();
     const parsed = JSON.parse(result.stdout);
@@ -122,7 +122,7 @@ describe("sling prd", () => {
   it("halts when the PRD readiness score is below the execution threshold", async () => {
     writeFileSync(prdPath, "# Demo PRD\n\n**Readiness Score:** 3.2\n", "utf-8");
 
-    const result = await runCommand(["prd", prdPath, "--auto"], tmpDir);
+    const result = await runCommand(["prd", prdPath, "--project-path", tmpDir, "--auto"], tmpDir);
 
     expect(result.stderr).toContain("SLING-009");
     expect(mockRunWithPiSdk).not.toHaveBeenCalled();

@@ -108,6 +108,6 @@ describe("foreman plan --project", () => {
 
     const output = result.stdout + result.stderr;
     expect(result.exitCode).toBe(0);
-    expect(output).toContain(`Using existing PRD: ${realpathSync(join(targetProject, "docs", "PRD.md"))}`);
+    expect(output).toContain(`Using existing PRD: ${targetProject}/docs/PRD.md`);
   });
 });

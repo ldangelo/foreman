@@ -395,7 +395,7 @@ describe("foreman stop", () => {
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      await stopAction(undefined, { dryRun: true }, store, tmpDir);
+      await stopAction(undefined, { dryRun: true }, wrapLocalStopStore(store), tmpDir);
 
       expect(killSpy).not.toHaveBeenCalledWith(expect.anything(), "SIGTERM");
       expect(killSpy).not.toHaveBeenCalledWith(expect.anything(), "SIGKILL");
@@ -413,7 +413,7 @@ describe("foreman stop", () => {
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      await stopAction(undefined, { dryRun: true }, store, tmpDir);
+      await stopAction(undefined, { dryRun: true }, wrapLocalStopStore(store), tmpDir);
 
       const updated = store.getRun(run.id);
       expect(updated!.status).toBe("running"); // unchanged
@@ -430,7 +430,7 @@ describe("foreman stop", () => {
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      await stopAction(undefined, { dryRun: true }, store, tmpDir);
+      await stopAction(undefined, { dryRun: true }, wrapLocalStopStore(store), tmpDir);
 
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining("dry run"),
@@ -460,7 +460,7 @@ describe("foreman stop", () => {
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      await stopAction(run.id, { force: true }, store, tmpDir);
+      await stopAction(run.id, { force: true }, wrapLocalStopStore(store), tmpDir);
 
       // Should have been called with SIGKILL
       const sigkillCall = killSpy.mock.calls.find(
@@ -483,7 +483,7 @@ describe("foreman stop", () => {
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      await stopAction(run.id, { force: false }, store, tmpDir);
+      await stopAction(run.id, { force: false }, wrapLocalStopStore(store), tmpDir);
 
       const sigtermCall = killSpy.mock.calls.find(
         ([, sig]) => sig === "SIGTERM",
@@ -508,7 +508,7 @@ describe("foreman stop", () => {
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      const exitCode = await stopAction(run.id, {}, store, tmpDir);
+      const exitCode = await stopAction(run.id, {}, wrapLocalStopStore(store), tmpDir);
 
       // Should succeed (no error)
       expect(exitCode).toBe(0);
@@ -599,7 +599,7 @@ describe("foreman stop", () => {
 
         const { stopAction } = await import("../commands/stop.js");
         // Try to stop other project's run while current projectPath = tmpDir (project A)
-        const exitCode = await stopAction(otherRun.id, {}, store, tmpDir);
+      const exitCode = await stopAction(otherRun.id, {}, wrapLocalStopStore(store), tmpDir);
 
         expect(exitCode).toBe(1);
         expect(consoleErrSpy).toHaveBeenCalledWith(
@@ -623,7 +623,7 @@ describe("foreman stop", () => {
       const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const { stopAction } = await import("../commands/stop.js");
-      const exitCode = await stopAction(undefined, { list: true }, store, "/nonexistent/path");
+      const exitCode = await stopAction(undefined, { list: true }, wrapLocalStopStore(store), "/nonexistent/path");
 
       expect(exitCode).toBe(1);
       expect(consoleErrSpy).toHaveBeenCalledWith(
@@ -647,7 +647,7 @@ describe("foreman stop", () => {
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      await stopAction(undefined, { list: true }, store, tmpDir);
+      await stopAction(undefined, { list: true }, wrapLocalStopStore(store), tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toMatch(/\d+s/); // should show e.g. "45s" not "0m"
@@ -665,7 +665,7 @@ describe("foreman stop", () => {
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      await stopAction(undefined, { list: true }, store, tmpDir);
+      await stopAction(undefined, { list: true }, wrapLocalStopStore(store), tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain("1m");
@@ -688,7 +688,7 @@ describe("foreman stop", () => {
       });
 
       const { stopAction } = await import("../commands/stop.js");
-      await stopAction(undefined, {}, store, tmpDir);
+      await stopAction(undefined, {}, wrapLocalStopStore(store), tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
       // Summary must show "Runs stopped: 1"

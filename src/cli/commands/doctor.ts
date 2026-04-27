@@ -2,6 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
+import { destroyPool, isPoolInitialised } from "../../lib/db/pool-manager.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { Doctor } from "../../orchestrator/doctor.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
@@ -109,11 +110,14 @@ export const doctorCommand = new Command("doctor")
     }
 
     let store: ForemanStore | null = null;
+    let shouldDestroyCliPool = false;
+    let exitCode = 0;
     try {
       store = ForemanStore.forProject(projectPath);
       const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
       const mq = new MergeQueue(store.getDb());
       if (registered) {
+        shouldDestroyCliPool = !isPoolInitialised();
         ensureCliPostgresPool(projectPath);
       }
       const runLookup = registered ? PostgresStore.forProject(registered.id) : undefined;
@@ -183,16 +187,24 @@ export const doctorCommand = new Command("doctor")
       }
 
       if (report.summary.fail > 0) {
-        process.exit(1);
+        exitCode = 1;
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (store) store.close();
       if (!jsonOutput) {
         console.error(chalk.red(`Error: ${msg}`));
       } else {
         console.log(JSON.stringify({ error: msg }, null, 2));
       }
-      process.exit(1);
+      exitCode = 1;
+    } finally {
+      if (store) store.close();
+      if (shouldDestroyCliPool) {
+        await destroyPool();
+      }
+    }
+
+    if (exitCode !== 0) {
+      process.exit(exitCode);
     }
   });

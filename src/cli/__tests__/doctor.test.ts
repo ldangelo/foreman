@@ -282,6 +282,10 @@ describe("doctor command", () => {
       const postgresStoreMod = await import("../../lib/postgres-store.js");
       const postgresStoreSpy = vi.spyOn(postgresStoreMod.PostgresStore, "forProject").mockReturnValue({ close: vi.fn() } as never);
 
+      const poolManager = await import("../../lib/db/pool-manager.js");
+      const destroyPoolSpy = vi.spyOn(poolManager, "destroyPool").mockResolvedValue(undefined);
+      vi.spyOn(poolManager, "isPoolInitialised").mockReturnValue(false);
+
       const mergeQueueMod = await import("../../orchestrator/merge-queue.js");
       const MergeQueue = mergeQueueMod.MergeQueue;
 
@@ -320,6 +324,7 @@ describe("doctor command", () => {
         resolveSpy,
         localStoreSpy,
         postgresStoreSpy,
+        destroyPoolSpy,
         postgresQueueSpy,
         doctorCtorSpy,
         doctorCommand,
@@ -328,7 +333,7 @@ describe("doctor command", () => {
     }
 
     it("resolves a registered doctor run from a clone to the canonical project path", async () => {
-      const { canonicalPath, ensureSpy, resolveSpy, localStoreSpy, postgresStoreSpy, doctorCtorSpy, doctorCommand } = await arrange(true);
+      const { canonicalPath, ensureSpy, resolveSpy, localStoreSpy, postgresStoreSpy, destroyPoolSpy, doctorCtorSpy, doctorCommand } = await arrange(true);
 
       await doctorCommand.parseAsync(["node", "doctor"], { from: "node" });
 
@@ -336,11 +341,12 @@ describe("doctor command", () => {
       expect(ensureSpy).toHaveBeenCalledWith(canonicalPath);
       expect(localStoreSpy).toHaveBeenCalledWith(canonicalPath);
       expect(postgresStoreSpy).toHaveBeenCalledWith("registered-project-id");
+      expect(destroyPoolSpy).toHaveBeenCalledTimes(1);
       expect(doctorCtorSpy.mock.calls[0]?.[1]).toBe(canonicalPath);
     }, 30_000);
 
     it("keeps local unregistered doctor runs on the resolved repo-root path", async () => {
-      const { clonePath, ensureSpy, resolveSpy, localStoreSpy, postgresStoreSpy, doctorCtorSpy, doctorCommand } = await arrange(false);
+      const { clonePath, ensureSpy, resolveSpy, localStoreSpy, postgresStoreSpy, destroyPoolSpy, doctorCtorSpy, doctorCommand } = await arrange(false);
 
       await doctorCommand.parseAsync(["node", "doctor"], { from: "node" });
 
@@ -348,6 +354,7 @@ describe("doctor command", () => {
       expect(ensureSpy).not.toHaveBeenCalled();
       expect(localStoreSpy).toHaveBeenCalledWith(clonePath);
       expect(postgresStoreSpy).not.toHaveBeenCalled();
+      expect(destroyPoolSpy).not.toHaveBeenCalled();
       expect(doctorCtorSpy.mock.calls[0]?.[1]).toBe(clonePath);
     }, 30_000);
 

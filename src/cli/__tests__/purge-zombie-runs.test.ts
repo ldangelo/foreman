@@ -125,7 +125,7 @@ describe("foreman purge-zombie-runs", () => {
         ]);
         createTaskClientMock.mockResolvedValue({
           backendType: "native",
-          taskClient: { show: vi.fn() },
+          taskClient: { show: vi.fn(), list: vi.fn(), ready: vi.fn(), update: vi.fn(), close: vi.fn() },
         });
 
         const { purgeZombieRunsCommandAction } = await import("../commands/purge-zombie-runs.js");
@@ -159,7 +159,7 @@ describe("foreman purge-zombie-runs", () => {
         listRegisteredProjectsMock.mockResolvedValue([]);
         createTaskClientMock.mockResolvedValue({
           backendType: "beads",
-          taskClient: { show: vi.fn() },
+          taskClient: { show: vi.fn(), list: vi.fn(), ready: vi.fn(), update: vi.fn(), close: vi.fn() },
         });
 
         const { purgeZombieRunsCommandAction } = await import("../commands/purge-zombie-runs.js");
@@ -211,7 +211,7 @@ describe("foreman purge-zombie-runs", () => {
       const { purgeZombieRunsAction } = await import("../commands/purge-zombie-runs.js");
 
       await expect(
-        purgeZombieRunsAction({}, beadsClient, store, "/nonexistent/path"),
+        purgeZombieRunsAction({}, beadsClient, createStoreFacade(store), "/nonexistent/path"),
       ).rejects.toThrow("No project registered");
     });
   });
@@ -226,7 +226,7 @@ describe("foreman purge-zombie-runs", () => {
       createTestRun(store, projectId, { seedId: "bd-open", status: "running" });
 
       const { purgeZombieRunsAction } = await import("../commands/purge-zombie-runs.js");
-      const result = await purgeZombieRunsAction({}, beadsClient, store, tmpDir);
+      const result = await purgeZombieRunsAction({}, beadsClient, createStoreFacade(store), tmpDir);
 
       expect(result.checked).toBe(0);
       expect(result.purged).toBe(0);
@@ -246,7 +246,7 @@ describe("foreman purge-zombie-runs", () => {
       const run = createTestRun(store, projectId, { seedId: "bd-closed", status: "failed" });
 
       const { purgeZombieRunsAction } = await import("../commands/purge-zombie-runs.js");
-      const result = await purgeZombieRunsAction({}, beadsClient, store, tmpDir);
+      const result = await purgeZombieRunsAction({}, beadsClient, createStoreFacade(store), tmpDir);
 
       expect(result.purged).toBe(1);
       expect(result.skipped).toBe(0);
@@ -264,7 +264,7 @@ describe("foreman purge-zombie-runs", () => {
       const run = createTestRun(store, projectId, { seedId: "bd-done", status: "failed" });
 
       const { purgeZombieRunsAction } = await import("../commands/purge-zombie-runs.js");
-      const result = await purgeZombieRunsAction({}, beadsClient, store, tmpDir);
+      const result = await purgeZombieRunsAction({}, beadsClient, createStoreFacade(store), tmpDir);
 
       expect(result.purged).toBe(1);
       expect(store.getRun(run.id)).toBeNull();
@@ -284,7 +284,7 @@ describe("foreman purge-zombie-runs", () => {
       const run = createTestRun(store, projectId, { seedId: "bd-gone", status: "failed" });
 
       const { purgeZombieRunsAction } = await import("../commands/purge-zombie-runs.js");
-      const result = await purgeZombieRunsAction({}, beadsClient, store, tmpDir);
+      const result = await purgeZombieRunsAction({}, beadsClient, createStoreFacade(store), tmpDir);
 
       expect(result.purged).toBe(1);
       expect(result.errors).toBe(0);
@@ -300,7 +300,7 @@ describe("foreman purge-zombie-runs", () => {
       const run = createTestRun(store, projectId, { seedId: "bd-missing", status: "failed" });
 
       const { purgeZombieRunsAction } = await import("../commands/purge-zombie-runs.js");
-      const result = await purgeZombieRunsAction({}, beadsClient, store, tmpDir);
+      const result = await purgeZombieRunsAction({}, beadsClient, createStoreFacade(store), tmpDir);
 
       expect(result.purged).toBe(1);
       expect(store.getRun(run.id)).toBeNull();
@@ -319,7 +319,7 @@ describe("foreman purge-zombie-runs", () => {
       const run = createTestRun(store, projectId, { seedId: "bd-open", status: "failed" });
 
       const { purgeZombieRunsAction } = await import("../commands/purge-zombie-runs.js");
-      const result = await purgeZombieRunsAction({}, beadsClient, store, tmpDir);
+      const result = await purgeZombieRunsAction({}, beadsClient, createStoreFacade(store), tmpDir);
 
       expect(result.skipped).toBe(1);
       expect(result.purged).toBe(0);
@@ -336,7 +336,7 @@ describe("foreman purge-zombie-runs", () => {
       const run = createTestRun(store, projectId, { seedId: "bd-wip", status: "failed" });
 
       const { purgeZombieRunsAction } = await import("../commands/purge-zombie-runs.js");
-      const result = await purgeZombieRunsAction({}, beadsClient, store, tmpDir);
+      const result = await purgeZombieRunsAction({}, beadsClient, createStoreFacade(store), tmpDir);
 
       expect(result.skipped).toBe(1);
       expect(store.getRun(run.id)).not.toBeNull();
@@ -356,7 +356,7 @@ describe("foreman purge-zombie-runs", () => {
       const run = createTestRun(store, projectId, { seedId: "bd-err", status: "failed" });
 
       const { purgeZombieRunsAction } = await import("../commands/purge-zombie-runs.js");
-      const result = await purgeZombieRunsAction({}, beadsClient, store, tmpDir);
+      const result = await purgeZombieRunsAction({}, beadsClient, createStoreFacade(store), tmpDir);
 
       expect(result.errors).toBe(1);
       expect(result.purged).toBe(0);
@@ -386,7 +386,7 @@ describe("foreman purge-zombie-runs", () => {
       });
 
       const { purgeZombieRunsAction } = await import("../commands/purge-zombie-runs.js");
-      const result = await purgeZombieRunsAction({}, beadsClient, store, tmpDir);
+      const result = await purgeZombieRunsAction({}, beadsClient, createStoreFacade(store), tmpDir);
 
       expect(result.checked).toBe(3);
       expect(result.purged).toBe(1);
@@ -414,7 +414,7 @@ describe("foreman purge-zombie-runs", () => {
       const result = await purgeZombieRunsAction(
         { dryRun: true },
         beadsClient,
-        store,
+        createStoreFacade(store),
         tmpDir,
       );
 
@@ -432,7 +432,7 @@ describe("foreman purge-zombie-runs", () => {
       createTestRun(store, projectId, { seedId: "bd-open", status: "failed" });
 
       const { purgeZombieRunsAction } = await import("../commands/purge-zombie-runs.js");
-      await purgeZombieRunsAction({ dryRun: true }, beadsClient, store, tmpDir);
+      await purgeZombieRunsAction({ dryRun: true }, beadsClient, createStoreFacade(store), tmpDir);
 
       const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(output).toContain("dry run");

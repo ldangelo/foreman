@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { utimesSync } from "node:fs";
 import { ForemanStore, type Run } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
-import { resolvePurgeLogsCommandContext, purgeLogsCommandAction, purgeLogsAction } from "../commands/purge-logs.js";
+import { resolvePurgeLogsCommandContext, purgeLogsCommandAction, purgeLogsAction, wrapLocalPurgeStore } from "../commands/purge-logs.js";
 
 vi.mock("../commands/project-task-support.js", () => ({
   resolveRepoRootProjectPath: vi.fn(),
@@ -198,7 +198,7 @@ describe("foreman purge-logs", () => {
     it("returns zero counts when no files exist", async () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-      const result = await purgeLogsAction({ days: 7 }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7 }, wrapLocalPurgeStore(store), logsDir);
 
       expect(result.checked).toBe(0);
       expect(result.deleted).toBe(0);
@@ -212,7 +212,7 @@ describe("foreman purge-logs", () => {
     it("handles missing logs directory gracefully", async () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-      const result = await purgeLogsAction({ days: 7 }, store, "/nonexistent/logs/dir");
+      const result = await purgeLogsAction({ days: 7 }, wrapLocalPurgeStore(store), "/nonexistent/logs/dir");
 
       expect(result.checked).toBe(0);
       expect(result.deleted).toBe(0);
@@ -231,7 +231,7 @@ describe("foreman purge-logs", () => {
 
       createLogFiles(logsDir, runId, "old log", eightDaysMs);
 
-      const result = await purgeLogsAction({ days: 7 }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7 }, wrapLocalPurgeStore(store), logsDir);
 
       expect(result.checked).toBe(1);
       expect(result.deleted).toBe(1);
@@ -248,7 +248,7 @@ describe("foreman purge-logs", () => {
       // File created just now — 0ms old
       createLogFiles(logsDir, runId, "recent log");
 
-      const result = await purgeLogsAction({ days: 7 }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7 }, wrapLocalPurgeStore(store), logsDir);
 
       expect(result.checked).toBe(1);
       expect(result.deleted).toBe(0);
@@ -264,7 +264,7 @@ describe("foreman purge-logs", () => {
 
       createLogFiles(logsDir, run.id, "completed log", eightDaysMs);
 
-      const result = await purgeLogsAction({ days: 7 }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7 }, wrapLocalPurgeStore(store), logsDir);
 
       expect(result.deleted).toBe(1);
 
@@ -278,7 +278,7 @@ describe("foreman purge-logs", () => {
 
       createLogFiles(logsDir, run.id, "failed log", tenDaysMs);
 
-      const result = await purgeLogsAction({ days: 7 }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7 }, wrapLocalPurgeStore(store), logsDir);
 
       expect(result.deleted).toBe(1);
 
@@ -292,7 +292,7 @@ describe("foreman purge-logs", () => {
 
       createLogFiles(logsDir, run.id, "merged log", tenDaysMs);
 
-      const result = await purgeLogsAction({ days: 7 }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7 }, wrapLocalPurgeStore(store), logsDir);
 
       expect(result.deleted).toBe(1);
 
@@ -310,7 +310,7 @@ describe("foreman purge-logs", () => {
 
       createLogFiles(logsDir, run.id, "running log", tenDaysMs);
 
-      const result = await purgeLogsAction({ days: 7 }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7 }, wrapLocalPurgeStore(store), logsDir);
 
       expect(result.skipped).toBe(1);
       expect(result.deleted).toBe(0);
@@ -325,7 +325,7 @@ describe("foreman purge-logs", () => {
 
       createLogFiles(logsDir, run.id, "pending log", tenDaysMs);
 
-      const result = await purgeLogsAction({ days: 7 }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7 }, wrapLocalPurgeStore(store), logsDir);
 
       expect(result.skipped).toBe(1);
       expect(result.deleted).toBe(0);
@@ -344,7 +344,7 @@ describe("foreman purge-logs", () => {
 
       createLogFiles(logsDir, runId, "old log", eightDaysMs);
 
-      const result = await purgeLogsAction({ days: 7, dryRun: true }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7, dryRun: true }, wrapLocalPurgeStore(store), logsDir);
 
       // Should report as would-delete, but files should still exist
       expect(result.deleted).toBe(1);
@@ -364,7 +364,7 @@ describe("foreman purge-logs", () => {
         .spyOn(console, "log")
         .mockImplementation((msg: string) => calls.push(String(msg)));
 
-      await purgeLogsAction({ days: 7, dryRun: true }, store, logsDir);
+      await purgeLogsAction({ days: 7, dryRun: true }, wrapLocalPurgeStore(store), logsDir);
 
       const output = calls.join("\n");
       expect(output).toMatch(/dry run/i);
@@ -387,7 +387,7 @@ describe("foreman purge-logs", () => {
       const run = createTestRun(store, projectId, { status: "failed" });
       createLogFiles(logsDir, run.id, "recent failed log");
 
-      const result = await purgeLogsAction({ all: true }, store, logsDir);
+      const result = await purgeLogsAction({ all: true }, wrapLocalPurgeStore(store), logsDir);
 
       expect(result.deleted).toBe(2);
       expect(result.skipped).toBe(0);
@@ -401,7 +401,7 @@ describe("foreman purge-logs", () => {
       const run = createTestRun(store, projectId, { status: "running" });
       createLogFiles(logsDir, run.id, "running log");
 
-      const result = await purgeLogsAction({ all: true }, store, logsDir);
+      const result = await purgeLogsAction({ all: true }, wrapLocalPurgeStore(store), logsDir);
 
       expect(result.skipped).toBe(1);
       expect(result.deleted).toBe(0);
@@ -419,7 +419,7 @@ describe("foreman purge-logs", () => {
       writeFileSync(join(logsDir, "README.txt"), "not a log");
       writeFileSync(join(logsDir, ".gitkeep"), "");
 
-      const result = await purgeLogsAction({ days: 7 }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7 }, wrapLocalPurgeStore(store), logsDir);
 
       expect(result.checked).toBe(0);
       expect(result.deleted).toBe(0);
@@ -453,7 +453,7 @@ describe("foreman purge-logs", () => {
       const orphanId = makeUuid();
       createLogFiles(logsDir, orphanId, "orphan", eightDaysMs);
 
-      const result = await purgeLogsAction({ days: 7 }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7 }, wrapLocalPurgeStore(store), logsDir);
 
       expect(result.checked).toBe(4);
       expect(result.deleted).toBe(2);  // oldFailed + orphan
@@ -475,7 +475,7 @@ describe("foreman purge-logs", () => {
       const runId = makeUuid();
       createLogFiles(logsDir, runId, content, eightDaysMs);
 
-      const result = await purgeLogsAction({ days: 7 }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7 }, wrapLocalPurgeStore(store), logsDir);
 
       // 3 files × 100 bytes each = 300 bytes
       expect(result.freedBytes).toBe(300);
@@ -491,7 +491,7 @@ describe("foreman purge-logs", () => {
       const runId = makeUuid();
       createLogFiles(logsDir, runId, content, eightDaysMs);
 
-      const result = await purgeLogsAction({ days: 7, dryRun: true }, store, logsDir);
+      const result = await purgeLogsAction({ days: 7, dryRun: true }, wrapLocalPurgeStore(store), logsDir);
 
       // In dry-run mode, we still track how much WOULD be freed
       expect(result.freedBytes).toBe(300);
