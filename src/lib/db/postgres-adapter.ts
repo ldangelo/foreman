@@ -1221,10 +1221,10 @@ export class PostgresAdapter {
   ): Promise<AgentMessageRow> {
     const rows = await query<AgentMessageRow>(
       `INSERT INTO agent_messages (
-         project_id, run_id, sender_agent_type, recipient_agent_type, subject, body, read
-       )
-       VALUES ($1, $2, $3, $4, $5, $6, 0)
-       RETURNING *`,
+         project_id, run_id, sender_agent_type, recipient_agent_type, subject, body, read, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, 0, clock_timestamp())
+        RETURNING *`,
       [projectId, runId, senderAgentType, toAgent, subject, body],
     );
     return rows[0];
@@ -1602,10 +1602,11 @@ export class PostgresAdapter {
     const rows = await query<PipelineRunRow>(
       `INSERT INTO runs (
          id, project_id, bead_id, run_number, status, branch, commit_sha, trigger,
-         agent_type, session_key, worktree_path, progress, base_branch, merge_strategy
-       )
-       VALUES (COALESCE($1, gen_random_uuid()), $2, $3, $4, 'pending', $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
-       RETURNING *`,
+         agent_type, session_key, worktree_path, progress, base_branch, merge_strategy,
+         queued_at, created_at, updated_at
+        )
+        VALUES (COALESCE($1, gen_random_uuid()), $2, $3, $4, 'pending', $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, clock_timestamp(), clock_timestamp(), clock_timestamp())
+        RETURNING *`,
       [
         data.id ?? null,
         data.projectId,
@@ -1726,8 +1727,8 @@ export class PostgresAdapter {
     payload?: Record<string, unknown>;
   }): Promise<PipelineEventRow> {
     const rows = await query<PipelineEventRow>(
-      `INSERT INTO events (project_id, run_id, task_id, event_type, payload)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO events (project_id, run_id, task_id, event_type, payload, created_at)
+       VALUES ($1, $2, $3, $4, $5, clock_timestamp())
        RETURNING *`,
       [
         data.projectId,
@@ -1755,8 +1756,8 @@ export class PostgresAdapter {
     lineNumber: number;
   }): Promise<MessageRow> {
     const rows = await query<MessageRow>(
-      `INSERT INTO messages (run_id, step_key, stream, chunk, line_number)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO messages (run_id, step_key, stream, chunk, line_number, created_at)
+       VALUES ($1, $2, $3, $4, $5, clock_timestamp())
        RETURNING *`,
       [data.runId, data.stepKey ?? null, data.stream, data.chunk, data.lineNumber]
     );

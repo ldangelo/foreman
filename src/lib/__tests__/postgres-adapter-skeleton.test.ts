@@ -412,53 +412,217 @@ describe("PostgresAdapter task operations", () => {
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter run operations", () => {
-  it("createRun throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.createRun(PROJECT_ID, "seed-1", "developer"),
-      "createRun"
-    );
+  it("createRun inserts a pending run row", async () => {
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /INSERT INTO runs/,
+        rows: [{
+          id: "run-1",
+          project_id: PROJECT_ID,
+          seed_id: "seed-1",
+          agent_type: "developer",
+          session_key: null,
+          worktree_path: "/tmp/worktree",
+          status: "pending",
+          started_at: null,
+          completed_at: null,
+          created_at: "2026-01-01T00:00:00Z",
+          progress: null,
+        }],
+      },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      const result = await adapter.createRun(PROJECT_ID, "seed-1", "developer", {
+        worktreePath: "/tmp/worktree",
+      });
+      expect(result.id).toBe("run-1");
+      expect(result.status).toBe("pending");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("listRuns throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.listRuns(PROJECT_ID),
-      "listRuns"
-    );
+  it("listRuns maps pipeline statuses back to legacy statuses", async () => {
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /FROM runs[\s\S]+ORDER BY created_at DESC/,
+        rows: [{
+          id: "run-1",
+          project_id: PROJECT_ID,
+          seed_id: "seed-1",
+          agent_type: "developer",
+          session_key: null,
+          worktree_path: null,
+          status: "success",
+          started_at: null,
+          completed_at: null,
+          created_at: "2026-01-01T00:00:00Z",
+          progress: null,
+          base_branch: null,
+          merge_strategy: null,
+        }],
+      },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      const result = await adapter.listRuns(PROJECT_ID, { status: ["completed"], limit: 5 });
+      expect(result).toHaveLength(1);
+      expect(result[0].status).toBe("completed");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("getRun throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.getRun(PROJECT_ID, "run-1"),
-      "getRun"
-    );
+  it("getRun returns a mapped legacy run row", async () => {
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /WHERE project_id = \$1 AND id = \$2 LIMIT 1/,
+        rows: [{
+          id: "run-1",
+          project_id: PROJECT_ID,
+          seed_id: "seed-1",
+          agent_type: "developer",
+          session_key: null,
+          worktree_path: null,
+          status: "failure",
+          started_at: null,
+          completed_at: null,
+          created_at: "2026-01-01T00:00:00Z",
+          progress: null,
+          base_branch: null,
+          merge_strategy: null,
+        }],
+      },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      const result = await adapter.getRun(PROJECT_ID, "run-1");
+      expect(result?.id).toBe("run-1");
+      expect(result?.status).toBe("failed");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("updateRun throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.updateRun(PROJECT_ID, "run-1", { status: "running" }),
-      "updateRun"
-    );
+  it("updateRun writes mapped status updates", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /UPDATE runs SET/, rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string, params?: unknown[]) => {
+      capturedSql = text;
+      capturedParams = params ?? [];
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      await adapter.updateRun(PROJECT_ID, "run-1", { status: "completed" });
+      expect(capturedSql).toContain("UPDATE runs SET");
+      expect(capturedParams).toContain("success");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("listActiveRuns throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.listActiveRuns(PROJECT_ID),
-      "listActiveRuns"
-    );
+  it("listActiveRuns returns pending and running runs", async () => {
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /status IN \('pending','running'\)/,
+        rows: [{
+          id: "run-1",
+          project_id: PROJECT_ID,
+          seed_id: "seed-1",
+          agent_type: "developer",
+          session_key: null,
+          worktree_path: null,
+          status: "running",
+          started_at: null,
+          completed_at: null,
+          created_at: "2026-01-01T00:00:00Z",
+          progress: null,
+          base_branch: null,
+          merge_strategy: null,
+        }],
+      },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      const result = await adapter.listActiveRuns(PROJECT_ID);
+      expect(result).toHaveLength(1);
+      expect(result[0].status).toBe("running");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("hasActiveOrPendingRun throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.hasActiveOrPendingRun(PROJECT_ID, "seed-1"),
-      "hasActiveOrPendingRun"
-    );
+  it("hasActiveOrPendingRun returns true when a matching run exists", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /SELECT 1 as found FROM runs/, rows: [{ found: 1 }] },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      await expect(adapter.hasActiveOrPendingRun(PROJECT_ID, "seed-1")).resolves.toBe(true);
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("updateRunProgress throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.updateRunProgress(PROJECT_ID, "run-1", { phase: "developer" }),
-      "updateRunProgress"
-    );
+  it("updateRunProgress merges JSON progress through getRun and updateRun", async () => {
+    const calls: Array<{ text: string; params?: unknown[] }> = [];
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /WHERE project_id = \$1 AND id = \$2 LIMIT 1/,
+        rows: [{
+          id: "run-1",
+          project_id: PROJECT_ID,
+          seed_id: "seed-1",
+          agent_type: "developer",
+          session_key: null,
+          worktree_path: null,
+          status: "running",
+          started_at: null,
+          completed_at: null,
+          created_at: "2026-01-01T00:00:00Z",
+          progress: JSON.stringify({ costUsd: 1.5 }),
+          base_branch: null,
+          merge_strategy: null,
+        }],
+      },
+      { sqlPattern: /UPDATE runs SET/, rowCount: 1 },
+    ]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string, params?: unknown[]) => {
+      calls.push({ text, params });
+      if (/WHERE project_id = \$1 AND id = \$2 LIMIT 1/.test(text)) {
+        return {
+          rows: [{
+            id: "run-1",
+            project_id: PROJECT_ID,
+            seed_id: "seed-1",
+            agent_type: "developer",
+            session_key: null,
+            worktree_path: null,
+            status: "running",
+            started_at: null,
+            completed_at: null,
+            created_at: "2026-01-01T00:00:00Z",
+            progress: JSON.stringify({ costUsd: 1.5 }),
+            base_branch: null,
+            merge_strategy: null,
+          }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      await adapter.updateRunProgress(PROJECT_ID, "run-1", { phase: "developer" });
+      const updateCall = calls.find((call) => /UPDATE runs SET/.test(call.text));
+      expect(updateCall).toBeDefined();
+      expect(updateCall?.params).toContain(JSON.stringify({ costUsd: 1.5, phase: "developer" }));
+    } finally {
+      await destroyPool();
+    }
   });
 
   it("purgeOldRuns throws 'not implemented'", async () => {
@@ -500,19 +664,41 @@ describe("PostgresAdapter cost operations", () => {
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter event operations", () => {
-  it("logEvent throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.logEvent(PROJECT_ID, "run-1", "phase_start", "explorer started"),
-      "logEvent"
-    );
+  it("logEvent writes a pipeline event payload", async () => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([
+      { sqlPattern: /INSERT INTO events/, rows: [{ id: "evt-1" }] },
+    ]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
+      return { rows: [{ id: "evt-1" }], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      await adapter.logEvent(PROJECT_ID, "run-1", "phase_start", "explorer started");
+      expect(capturedParams[0]).toBe(PROJECT_ID);
+      expect(capturedParams[1]).toBe("run-1");
+      expect(capturedParams[3]).toBe("phase_start");
+      expect(capturedParams[4]).toBe(JSON.stringify({ details: "explorer started" }));
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("logRateLimitEvent throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () =>
-        adapter.logRateLimitEvent(PROJECT_ID, "run-1", "developer", "rate limit hit"),
-      "logRateLimitEvent"
-    );
+  it("logRateLimitEvent inserts a rate limit row", async () => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO rate_limit_events/, rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      await adapter.logRateLimitEvent(PROJECT_ID, "run-1", "claude-sonnet", "developer", "rate limit hit", 60);
+      expect(capturedParams).toEqual([PROJECT_ID, "run-1", "claude-sonnet", "developer", "rate limit hit", 60]);
+    } finally {
+      await destroyPool();
+    }
   });
 });
 
@@ -521,32 +707,75 @@ describe("PostgresAdapter event operations", () => {
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter message operations", () => {
-  it("sendMessage throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.sendMessage(PROJECT_ID, "run-1", "developer", "Hello"),
-      "sendMessage"
-    );
+  it("sendMessage inserts and returns the message row", async () => {
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /INSERT INTO agent_messages/,
+        rows: [{
+          id: "msg-1",
+          project_id: PROJECT_ID,
+          run_id: "run-1",
+          sender_agent_type: "developer",
+          recipient_agent_type: "reviewer",
+          subject: "phase-complete",
+          body: "Hello",
+          read: 0,
+          created_at: "",
+          deleted_at: null,
+        }],
+      },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      const result = await adapter.sendMessage(
+        PROJECT_ID,
+        "run-1",
+        "developer",
+        "reviewer",
+        "phase-complete",
+        "Hello",
+      );
+      expect(result.id).toBe("msg-1");
+      expect(result.recipient_agent_type).toBe("reviewer");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("markMessageRead throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.markMessageRead(PROJECT_ID, "msg-1"),
-      "markMessageRead"
-    );
+  it("markMessageRead returns true when a row was updated", async () => {
+    const mockPool = makeMockPool([{ sqlPattern: /SET read = 1/, rowCount: 1 }]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      await expect(adapter.markMessageRead(PROJECT_ID, "msg-1")).resolves.toBe(true);
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("markAllMessagesRead throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.markAllMessagesRead(PROJECT_ID, "run-1", "developer"),
-      "markAllMessagesRead"
-    );
+  it("markAllMessagesRead updates unread messages for an agent", async () => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /recipient_agent_type = \$3/, rowCount: 2 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
+      return { rows: [], rowCount: 2 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      await adapter.markAllMessagesRead(PROJECT_ID, "run-1", "developer");
+      expect(capturedParams).toEqual([PROJECT_ID, "run-1", "developer"]);
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("deleteMessage throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.deleteMessage(PROJECT_ID, "msg-1"),
-      "deleteMessage"
-    );
+  it("deleteMessage soft-deletes a message", async () => {
+    const mockPool = makeMockPool([{ sqlPattern: /SET deleted_at = now\(\)/, rowCount: 1 }]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      await expect(adapter.deleteMessage(PROJECT_ID, "msg-1")).resolves.toBe(true);
+    } finally {
+      await destroyPool();
+    }
   });
 });
 
@@ -576,27 +805,70 @@ describe("PostgresAdapter bead write queue operations", () => {
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter sentinel operations", () => {
-  it("upsertSentinelConfig throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () =>
-        adapter.upsertSentinelConfig(PROJECT_ID, {
-          schedule: "*/5 * * * *",
-        }),
-      "upsertSentinelConfig"
-    );
+  it("upsertSentinelConfig writes the configured sentinel row", async () => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO sentinel_configs/, rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      await adapter.upsertSentinelConfig(PROJECT_ID, {
+        branch: "dev",
+        test_command: "npm test",
+        interval_minutes: 5,
+        failure_threshold: 3,
+        enabled: 1,
+        pid: 1234,
+      });
+      expect(capturedParams[0]).toBe(PROJECT_ID);
+      expect(capturedParams[1]).toBe("dev");
+      expect(capturedParams[2]).toBe("npm test");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("recordSentinelRun throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.recordSentinelRun(PROJECT_ID, { id: "sr-1" }),
-      "recordSentinelRun"
-    );
+  it("recordSentinelRun inserts the run payload", async () => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO sentinel_runs/, rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      await adapter.recordSentinelRun(PROJECT_ID, {
+        id: "sr-1",
+        branch: "main",
+        status: "running",
+        test_command: "npm test",
+        started_at: "2026-01-01T00:00:00Z",
+      });
+      expect(capturedParams[0]).toBe("sr-1");
+      expect(capturedParams[1]).toBe(PROJECT_ID);
+      expect(capturedParams[2]).toBe("main");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("updateSentinelRun throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.updateSentinelRun(PROJECT_ID, "sr-1", { status: "done" }),
-      "updateSentinelRun"
-    );
+  it("updateSentinelRun updates provided fields", async () => {
+    let capturedSql = "";
+    const mockPool = makeMockPool([{ sqlPattern: /UPDATE sentinel_runs SET/, rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
+      capturedSql = text;
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      await adapter.updateSentinelRun(PROJECT_ID, "sr-1", { status: "done", failure_count: 1 });
+      expect(capturedSql).toContain("UPDATE sentinel_runs SET");
+      expect(capturedSql).toContain("status = $1");
+      expect(capturedSql).toContain("failure_count = $2");
+    } finally {
+      await destroyPool();
+    }
   });
 });
