@@ -13,6 +13,7 @@ import type { Issue } from "../lib/task-client.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
+import type { SentinelConfigRow, SentinelRunRow } from "../lib/store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -45,6 +46,17 @@ interface SentinelTaskClient {
   ): Promise<Issue>;
 }
 
+interface SentinelStore {
+  close(): void;
+  isOpen(): boolean;
+  logEvent(projectId: string, eventType: "sentinel-start" | "sentinel-pass" | "sentinel-fail", data: Record<string, unknown>): void | Promise<void>;
+  recordSentinelRun(run: Omit<SentinelRunRow, "failure_count"> & { failure_count?: number }): void | Promise<void>;
+  updateSentinelRun(id: string, updates: Partial<Pick<SentinelRunRow, "status" | "output" | "completed_at" | "failure_count">>): void | Promise<void>;
+  upsertSentinelConfig(projectId: string, config: Partial<Omit<SentinelConfigRow, "id" | "project_id" | "created_at" | "updated_at">>): SentinelConfigRow | void | Promise<void>;
+  getSentinelConfig(projectId: string): SentinelConfigRow | null | Promise<SentinelConfigRow | null>;
+  getSentinelRuns(projectId: string, limit?: number): SentinelRunRow[] | Promise<SentinelRunRow[]>;
+}
+
 /**
  * Continuous testing agent that monitors a branch on a schedule.
  *
@@ -55,7 +67,7 @@ interface SentinelTaskClient {
  *   agent.stop();
  */
 export class SentinelAgent {
-  private store: ForemanStore;
+  private store: SentinelStore;
   private seeds: SentinelTaskClient;
   private projectId: string;
   private projectPath: string;
@@ -65,7 +77,7 @@ export class SentinelAgent {
   private consecutiveFailures = 0;
 
   constructor(
-    store: ForemanStore,
+    store: SentinelStore,
     seeds: SentinelTaskClient,
     projectId: string,
     projectPath: string,
@@ -87,14 +99,14 @@ export class SentinelAgent {
     const startMs = Date.now();
 
     // Log start event
-    this.store.logEvent(this.projectId, "sentinel-start", {
+    await this.store.logEvent(this.projectId, "sentinel-start", {
       runId,
       branch: opts.branch,
       testCommand: opts.testCommand,
     });
 
     // Insert a running record so status is visible immediately
-    this.store.recordSentinelRun({
+    await this.store.recordSentinelRun({
       id: runId,
       project_id: this.projectId,
       branch: opts.branch,
@@ -136,7 +148,7 @@ export class SentinelAgent {
     // run exited while runOnce was in-flight — the run record is lost but that's
     // acceptable since the process is shutting down anyway).
     if (this.store.isOpen()) {
-      this.store.updateSentinelRun(runId, {
+      await this.store.updateSentinelRun(runId, {
         status,
         output: output.slice(0, 50_000), // cap at 50 KB
         completed_at: completedAt,
@@ -158,7 +170,7 @@ export class SentinelAgent {
 
     // Log result event
     const eventType = status === "passed" ? "sentinel-pass" : "sentinel-fail";
-    this.store.logEvent(this.projectId, eventType, {
+    await this.store.logEvent(this.projectId, eventType, {
       runId,
       branch: opts.branch,
       commitHash,

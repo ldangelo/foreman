@@ -9,7 +9,7 @@ import { Type, type Static } from "@mariozechner/pi-ai";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
+import type { AgentMailClient } from "../lib/sqlite-mail-client.js";
 import type { ForemanStore } from "../lib/store.js";
 
 const execFileAsync = promisify(execFile);
@@ -30,7 +30,7 @@ const SendMailParams = Type.Object({
  * expansion, no prompt interpretation required.
  */
 export function createSendMailTool(
-  mailClient: SqliteMailClient,
+  mailClient: AgentMailClient,
   _agentRole: string,
 ): ToolDefinition {
   return {

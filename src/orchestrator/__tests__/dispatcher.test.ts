@@ -1,5 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Dispatcher } from "../dispatcher.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import * as os from "node:os";
+import { join } from "node:path";
+
+const { mockRunWithPiSdk, mockCheckAndRebaseStaleWorktree } = vi.hoisted(() => ({
+  mockRunWithPiSdk: vi.fn(),
+  mockCheckAndRebaseStaleWorktree: vi.fn().mockResolvedValue({ rebased: true, autoRebasePerformed: false }),
+}));
+
+vi.mock("../pi-sdk-runner.js", () => ({ runWithPiSdk: (...args: unknown[]) => mockRunWithPiSdk(...args) }));
+vi.mock("../stale-worktree-check.js", () => ({
+  checkAndRebaseStaleWorktree: (...args: unknown[]) => mockCheckAndRebaseStaleWorktree(...args),
+}));
+
+import { Dispatcher, DetachedSpawnStrategy, purgeOrphanedWorkerConfigs } from "../dispatcher.js";
 import { PLAN_STEP_CONFIG } from "../roles.js";
 import type { SeedInfo } from "../types.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
@@ -54,6 +68,389 @@ describe("Dispatcher — ITaskClient injection", () => {
     expect(typeof mockClient.show).toBe("function");
     expect(typeof mockClient.update).toBe("function");
     expect(typeof mockClient.close).toBe("function");
+  });
+});
+
+describe("purgeOrphanedWorkerConfigs", () => {
+  let tempHome: string;
+
+  beforeEach(() => {
+    tempHome = mkdtempSync(join(os.tmpdir(), "foreman-worker-config-test-"));
+    vi.stubEnv("HOME", tempHome);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  it("awaits async getRun before keeping active worker configs", async () => {
+    const workerDir = join(tempHome, ".foreman", "tmp");
+    mkdirSync(workerDir, { recursive: true });
+    const configPath = join(workerDir, "worker-run-1.json");
+    writeFileSync(configPath, JSON.stringify({ runId: "run-1" }), "utf-8");
+
+    const store = {
+      getRun: vi.fn().mockImplementation(async () => ({ id: "run-1", status: "running" })),
+    };
+
+    const purged = await purgeOrphanedWorkerConfigs(store);
+
+    expect(store.getRun).toHaveBeenCalledWith("run-1");
+    expect(purged).toBe(0);
+    expect(existsSync(configPath)).toBe(true);
+  });
+});
+
+describe("Dispatcher override-backed control-plane reads", () => {
+  beforeEach(() => {
+    mockRunWithPiSdk.mockReset();
+  });
+
+  it("fails fast when registered plan-step runOps are incomplete", async () => {
+    const dispatcher = new Dispatcher(
+      {} as ITaskClient,
+      {
+        createRun: vi.fn(),
+      } as unknown as ForemanStore,
+      "/tmp/project",
+      null,
+      { externalProjectId: "proj-registered", runOps: { createRun: vi.fn() } },
+    );
+
+    await expect(
+      dispatcher.dispatchPlanStep(
+        "proj-registered",
+        { id: "plan-1", title: "Plan 1" },
+        "/ensemble:create-prd",
+        "Build something",
+        "/tmp/out",
+      ),
+    ).rejects.toThrow("Registered dispatcher write override missing runOps.updateRun");
+
+    expect(mockRunWithPiSdk).not.toHaveBeenCalled();
+  });
+
+  it("fails fast when registered resume runs are missing logEvent", async () => {
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([]),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+
+    const store = {
+      getRunsByStatus: vi.fn(() => {
+        throw new Error("local getRunsByStatus should not be used");
+      }),
+      getActiveRuns: vi.fn(() => {
+        throw new Error("local getActiveRuns should not be used");
+      }),
+      createRun: vi.fn(),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+    } as unknown as ForemanStore;
+
+    const overrides = {
+      externalProjectId: "proj-registered",
+      getRunsByStatus: vi.fn().mockResolvedValue([]),
+      getActiveRuns: vi.fn().mockResolvedValue([]),
+      runOps: {
+        createRun: vi.fn().mockResolvedValue(undefined),
+        updateRun: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project", null, overrides);
+
+    await expect(dispatcher.resumeRuns({ maxAgents: 1 })).rejects.toThrow(
+      "Registered dispatcher write override missing runOps.logEvent",
+    );
+
+    expect(overrides.getRunsByStatus).not.toHaveBeenCalled();
+    expect(overrides.getActiveRuns).not.toHaveBeenCalled();
+    expect(overrides.runOps.createRun).not.toHaveBeenCalled();
+  });
+
+  it("uses overrides for registered dispatch read paths instead of the local store", async () => {
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([
+        {
+          id: "bd-registered",
+          title: "Registered task",
+          status: "open",
+          priority: "P2",
+          type: "task",
+          assignee: null,
+          parent: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      ]),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+
+    const store = {
+      getProjectByPath: vi.fn(() => {
+        throw new Error("local getProjectByPath should not be used");
+      }),
+      getActiveRuns: vi.fn(() => {
+        throw new Error("local getActiveRuns should not be used");
+      }),
+      getRunsByStatus: vi.fn(() => {
+        throw new Error("local getRunsByStatus should not be used");
+      }),
+      getRunsForSeed: vi.fn(() => {
+        throw new Error("local getRunsForSeed should not be used");
+      }),
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      getReadyTasks: vi.fn().mockReturnValue([]),
+    } as unknown as ForemanStore;
+
+    const overrides = {
+      externalProjectId: "proj-registered",
+      getActiveRuns: vi.fn().mockResolvedValue([]),
+      getRunsByStatus: vi.fn().mockResolvedValue([]),
+      getRunsForSeed: vi.fn().mockResolvedValue([]),
+    };
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp", null, overrides);
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    expect(result.dispatched).toHaveLength(1);
+    expect(overrides.getActiveRuns).toHaveBeenCalledWith("proj-registered");
+    expect(overrides.getRunsByStatus).toHaveBeenCalledWith("completed", "proj-registered");
+    expect(overrides.getRunsForSeed).toHaveBeenCalledWith("bd-registered", "proj-registered");
+  });
+
+  it("passes a registered event writer into stale-worktree checks", async () => {
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([]),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      getRunsByStatuses: vi.fn().mockReturnValue([]),
+      getStuckRunsForSeed: vi.fn().mockReturnValue([]),
+      getPendingBeadWrites: vi.fn().mockReturnValue([]),
+      hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      createRun: vi.fn().mockReturnValue({ id: "run-001" }),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+      sendMessage: vi.fn(),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-registered" }),
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      getReadyTasks: vi.fn().mockReturnValue([]),
+    } as unknown as ForemanStore;
+
+    const overrides = {
+      externalProjectId: "proj-registered",
+      runOps: {
+        createRun: vi.fn().mockResolvedValue(undefined),
+        updateRun: vi.fn().mockResolvedValue(undefined),
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        logEvent: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project", null, overrides);
+    const spawnSpy = vi.spyOn(DetachedSpawnStrategy.prototype, "spawn").mockResolvedValue({ sessionKey: "test-key" } as never);
+
+    try {
+      await (dispatcher as any).spawnAgent(
+        "claude-sonnet-4-6",
+        "/tmp/worktrees/test-seed",
+        {
+          id: "test-seed",
+          title: "Test Seed",
+          status: "open",
+          priority: "P2",
+          type: "task",
+          assignee: null,
+          parent: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        "run-123",
+        false,
+        undefined,
+        undefined,
+        { name: "git" } as never,
+        undefined,
+        "main",
+      );
+    } finally {
+      spawnSpy.mockRestore();
+    }
+
+    expect(mockCheckAndRebaseStaleWorktree).toHaveBeenCalledTimes(1);
+    const options = vi.mocked(mockCheckAndRebaseStaleWorktree).mock.calls[0]?.[7] as { eventWriter?: (eventType: string, payload: Record<string, unknown>) => Promise<void> | void } | undefined;
+    expect(options).toEqual(expect.objectContaining({ eventWriter: expect.any(Function) }));
+
+    await options?.eventWriter?.("worktree-rebased", { seedId: "test-seed" });
+
+    expect(overrides.runOps.logEvent).toHaveBeenCalledWith(
+      "run-123",
+      "proj-registered",
+      "worktree-rebased",
+      { seedId: "test-seed" },
+    );
+  });
+
+  it("uses overrides for registered resume read paths instead of the local store", async () => {
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([]),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+
+    const store = {
+      getProjectByPath: vi.fn(() => {
+        throw new Error("local getProjectByPath should not be used");
+      }),
+      getActiveRuns: vi.fn(() => {
+        throw new Error("local getActiveRuns should not be used");
+      }),
+      getRunsByStatus: vi.fn(() => {
+        throw new Error("local getRunsByStatus should not be used");
+      }),
+      createRun: vi.fn(),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+    } as unknown as ForemanStore;
+
+    const overrides = {
+      externalProjectId: "proj-registered",
+      getActiveRuns: vi.fn().mockResolvedValue([]),
+      getRunsByStatus: vi.fn().mockResolvedValue([
+        {
+          id: "run-1",
+          project_id: "proj-registered",
+          seed_id: "seed-1",
+          agent_type: "anthropic/claude-sonnet-4-6",
+          session_key: "foreman:sdk:claude-sonnet-4-6:run-1",
+          worktree_path: "/tmp/worktree",
+          status: "stuck",
+          started_at: null,
+          completed_at: null,
+          created_at: new Date().toISOString(),
+          progress: null,
+        },
+      ]),
+      runOps: {
+        createRun: vi.fn().mockResolvedValue(undefined),
+        updateRun: vi.fn().mockResolvedValue(undefined),
+        logEvent: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp", null, overrides);
+    const result = await dispatcher.resumeRuns({ maxAgents: 1 });
+
+    expect(result.resumed).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(overrides.getRunsByStatus).toHaveBeenCalledWith("stuck", "proj-registered");
+    expect(overrides.getActiveRuns).toHaveBeenCalledWith("proj-registered");
+  });
+
+  it("uses override getRun in plan-step failure handling", async () => {
+    mockRunWithPiSdk.mockRejectedValueOnce(new Error("plan failed"));
+
+    const seedsClient = {} as ITaskClient;
+    const store = {
+      createRun: vi.fn().mockReturnValue({ id: "run-1" }),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+      getRun: vi.fn(() => {
+        throw new Error("local getRun should not be used");
+      }),
+    } as unknown as ForemanStore;
+
+    const overrides = {
+      getRun: vi.fn().mockResolvedValue({ id: "run-1", status: "running" }),
+      runOps: {
+        createRun: vi.fn().mockResolvedValue(undefined),
+        updateRun: vi.fn().mockResolvedValue(undefined),
+        logEvent: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project", null, overrides);
+
+    await expect(
+      dispatcher.dispatchPlanStep(
+        "proj-registered",
+        { id: "plan-1", title: "Plan 1" },
+        "/ensemble:create-prd",
+        "Build something",
+        "/tmp/out",
+      ),
+    ).rejects.toThrow("plan failed");
+
+    expect(overrides.getRun).toHaveBeenCalledWith("run-1");
+  });
+
+  it("uses registered createRun override result instead of local SQLite createRun", async () => {
+    const store = {
+      createRun: vi.fn(() => {
+        throw new Error("local createRun should not be used");
+      }),
+    } as unknown as ForemanStore;
+
+    const run = {
+      id: "run-registered",
+      project_id: "proj-registered",
+      seed_id: "plan-1",
+      agent_type: "claude-code",
+      session_key: null,
+      worktree_path: null,
+      status: "pending",
+      started_at: null,
+      completed_at: null,
+      created_at: "2026-04-25T12:00:00.000Z",
+      progress: null,
+      tmux_session: null,
+      base_branch: null,
+      merge_strategy: "auto",
+    };
+
+    const overrides = {
+      externalProjectId: "proj-registered",
+      getRun: vi.fn().mockResolvedValue(run),
+      runOps: {
+        createRun: vi.fn().mockResolvedValue(run),
+        updateRun: vi.fn().mockResolvedValue(undefined),
+        logEvent: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+
+    mockRunWithPiSdk.mockResolvedValueOnce({ success: true, costUsd: 0, turns: 1 });
+
+    const dispatcher = new Dispatcher({} as ITaskClient, store, "/tmp/project", null, overrides);
+    const result = await dispatcher.dispatchPlanStep(
+      "proj-registered",
+      { id: "plan-1", title: "Plan 1" },
+      "/ensemble:create-prd",
+      "Build something",
+      "/tmp/out",
+    );
+
+    expect(result.runId).toBe("run-registered");
+    expect(store.createRun).not.toHaveBeenCalled();
+    expect(overrides.runOps.createRun).toHaveBeenCalledOnce();
   });
 });
 

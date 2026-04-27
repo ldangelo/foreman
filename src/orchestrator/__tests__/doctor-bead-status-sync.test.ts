@@ -164,6 +164,49 @@ describe("Doctor.checkBeadStatusSync()", () => {
     expect(result.message).toContain("No project registered");
   });
 
+  it("returns skip when native task backend is selected", async () => {
+    const { Doctor } = await import("../doctor.js");
+    const tmp = makeTempDir();
+    const store = makeStore({ projectPath: tmp, runs: [makeRun({ status: "completed" })] });
+    const taskClient = makeTaskClient({ "seed-abc": "in_progress" });
+
+    const doctor = new Doctor(store as any, tmp, undefined, taskClient as any, undefined, undefined, undefined, "native");
+
+    const result = await doctor.checkBeadStatusSync({ projectPath: tmp });
+
+    expect(result.status).toBe("skip");
+    expect(result.message).toContain("Native task backend active");
+  });
+
+  it("uses the registered run store for project lookup and sync", async () => {
+    const { Doctor } = await import("../doctor.js");
+    const tmp = makeTempDir();
+    const localStore = makeStore({ projectPath: "/local-only" });
+    localStore.getProjectByPath.mockImplementation(() => {
+      throw new Error("local getProjectByPath should not be used");
+    });
+    localStore.getRunsByStatuses.mockImplementation(() => {
+      throw new Error("local getRunsByStatuses should not be used");
+    });
+
+    const registeredRuns = [makeRun({ seed_id: "seed-abc", status: "completed" })];
+    const registeredStore = makeStore({ projectPath: tmp, runs: registeredRuns });
+    const taskClient = makeTaskClient({ "seed-abc": "review" });
+
+    const doctor = new Doctor(localStore as any, tmp, undefined, taskClient as any, undefined, undefined, registeredStore as any);
+
+    const result = await doctor.checkBeadStatusSync({ projectPath: tmp });
+
+    expect(result.status).toBe("pass");
+    expect(localStore.getProjectByPath).not.toHaveBeenCalled();
+    expect(localStore.getRunsByStatuses).not.toHaveBeenCalled();
+    expect(registeredStore.getProjectByPath).toHaveBeenCalledWith(tmp);
+    expect(registeredStore.getRunsByStatuses).toHaveBeenCalledWith(
+      ["completed", "merged", "pr-created", "conflict", "test-failed", "failed", "stuck"],
+      "proj-1",
+    );
+  });
+
   // ── Pass condition ───────────────────────────────────────────────────
 
   it("returns pass when there are no bead status mismatches", async () => {
@@ -181,6 +224,8 @@ describe("Doctor.checkBeadStatusSync()", () => {
     expect(result.status).toBe("pass");
     expect(result.name).toContain("bead status sync");
     expect(result.message).toContain("in sync");
+    expect(store.getProjectByPath).toHaveBeenCalledWith(tmp);
+    expect(store.getRunsByStatuses).toHaveBeenCalled();
   });
 
   it("returns pass when there are no terminal runs", async () => {
@@ -320,6 +365,36 @@ describe("Doctor.checkBeadStatusSync()", () => {
 
     expect(result.status).toBe("fixed");
     expect(result.fixApplied).toMatch(/2/); // "Fixed 2 seed status(es)"
+  });
+
+  it("returns warn when fix mode syncs one seed but collects an error", async () => {
+    const { Doctor } = await import("../doctor.js");
+    const tmp = makeTempDir();
+    const runs = [
+      makeRun({ id: "run-1", seed_id: "seed-abc", status: "completed" }),
+      makeRun({ id: "run-2", seed_id: "seed-err", status: "completed" }),
+    ];
+    const store = makeStore({ projectPath: tmp, runs });
+    const taskClient = makeTaskClient({
+      "seed-abc": "in_progress",
+      "seed-err": "in_progress",
+    });
+    taskClient.show.mockImplementation(async (id: string) => {
+      if (id === "seed-err") {
+        throw new Error("br daemon crashed");
+      }
+      return { id, status: "in_progress", title: `Task ${id}` };
+    });
+
+    const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
+
+    const result = await doctor.checkBeadStatusSync({ fix: true, projectPath: tmp });
+
+    expect(result.status).toBe("warn");
+    expect(result.message).toContain("1 bead status mismatch(es) detected");
+    expect(result.fixApplied).toContain("Fixed 1 seed status(es) in br");
+    expect(result.fixApplied).toContain("1 error(s)");
+    expect(result.details).toContain("seed-abc");
   });
 
   it("br update is called with correct status for each mismatch type", async () => {

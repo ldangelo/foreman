@@ -509,6 +509,21 @@ describe("autoMerge() mail — non-fatal", () => {
     await expect(autoMerge(makeOpts())).resolves.not.toThrow();
   });
 
+  it("does not throw when store.sendMessage() returns a rejected promise", async () => {
+    mockGetProjectByPath.mockReturnValue({ id: "proj-1" });
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry(1)).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001" }],
+      conflicts: [],
+      testFailures: [],
+      unexpectedErrors: [],
+      prsCreated: [],
+    });
+    mockSendMessage.mockRejectedValueOnce(new Error("DB write failed"));
+
+    await expect(autoMerge(makeOpts())).resolves.not.toThrow();
+  });
+
   it("returns correct counts even when sendMessage throws", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "proj-1" });
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry(1)).mockReturnValue(null);

@@ -15,6 +15,8 @@ import { VcsBackendFactory } from "../../lib/vcs/index.js";
 
 // ── Module Mocks ─────────────────────────────────────────────────────────────
 
+let mockShowFn = vi.fn().mockRejectedValue(new Error("not found"));
+
 vi.mock("../../lib/vcs/index.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../lib/vcs/index.js")>();
   return {
@@ -73,7 +75,7 @@ vi.mock("../../lib/beads-rust.js", () => ({
   BeadsRustClient: class {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     constructor(_path: string) {}
-    async show(_id: string): Promise<never> { throw new Error("not found"); }
+    show = mockShowFn;
   },
 }));
 
@@ -164,6 +166,7 @@ function makeSeeds(issue?: Partial<Issue>): ITaskClient {
 describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockShowFn = vi.fn().mockRejectedValue(new Error("not found"));
   });
 
   it("creates VcsBackend via factory when workflow config specifies 'git'", async () => {
@@ -269,6 +272,7 @@ describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
 describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015-2)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockShowFn = vi.fn().mockRejectedValue(new Error("not found"));
   });
 
   it("passes VcsBackend instance (name='git') to spawnAgent", async () => {
@@ -298,6 +302,113 @@ describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015
     const vcsBackendArg = callArgs[7] as VcsBackend | undefined;
     expect(vcsBackendArg).toBeDefined();
     expect(vcsBackendArg?.name).toBe("git");
+  });
+
+  it("uses registered write overrides for dispatch mail/event writes instead of the local store", async () => {
+    const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
+    vi.mocked(loadWorkflowConfig).mockReturnValue({
+      name: "default",
+      phases: [],
+      vcs: { backend: "git" },
+    } as unknown as ReturnType<typeof loadWorkflowConfig>);
+
+    vi.mocked(VcsBackendFactory.create).mockResolvedValue(makeGitBackend());
+
+    const store = makeStore();
+    const createdRun = {
+      id: "run-registered",
+      project_id: "proj-registered",
+      seed_id: "test-seed",
+      agent_type: "claude-sonnet-4-6",
+      session_key: null,
+      worktree_path: "/tmp/worktrees/proj-registered/test-seed",
+      status: "pending",
+      started_at: null,
+      completed_at: null,
+      created_at: new Date().toISOString(),
+      progress: null,
+      tmux_session: null,
+      base_branch: null,
+      merge_strategy: "auto",
+    };
+    const overrides = {
+      externalProjectId: "proj-registered",
+      getActiveRuns: vi.fn().mockResolvedValue([]),
+      getRunsByStatus: vi.fn().mockResolvedValue([]),
+      getRunsForSeed: vi.fn().mockResolvedValue([]),
+      runOps: {
+        createRun: vi.fn().mockResolvedValue(createdRun),
+        updateRun: vi.fn().mockResolvedValue(undefined),
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        logEvent: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+
+    const seeds = makeSeeds();
+    const dispatcher = new Dispatcher(seeds, store, "/tmp/project", null, overrides);
+    vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
+
+    await dispatcher.dispatch({ dryRun: false, projectId: "proj-registered" });
+
+    expect(store.createRun).not.toHaveBeenCalled();
+    expect(store.updateRun).not.toHaveBeenCalled();
+    expect(store.sendMessage).not.toHaveBeenCalled();
+    expect(store.logEvent).not.toHaveBeenCalled();
+    expect(overrides.runOps.createRun).toHaveBeenCalledOnce();
+    expect(overrides.runOps.logEvent).toHaveBeenCalledWith(
+      "run-registered",
+      "proj-registered",
+      "dispatch",
+      expect.objectContaining({ seedId: "test-seed" }),
+    );
+    expect(overrides.runOps.sendMessage).toHaveBeenCalledWith(
+      "run-registered",
+      "foreman",
+      "foreman",
+      "worktree-created",
+      expect.any(String),
+    );
+    expect(overrides.runOps.updateRun).toHaveBeenCalledWith(
+      "run-registered",
+      expect.objectContaining({
+        status: "running",
+        session_key: "test-key",
+      }),
+    );
+  });
+
+  it("fails fast when registered dispatch is missing sendMessage before side effects", async () => {
+    const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
+    vi.mocked(loadWorkflowConfig).mockReturnValue({
+      name: "default",
+      phases: [],
+      vcs: { backend: "git" },
+    } as unknown as ReturnType<typeof loadWorkflowConfig>);
+
+    const store = makeStore();
+    const seeds = makeSeeds();
+    const dispatcher = new Dispatcher(seeds, store, "/tmp/project", null, {
+      externalProjectId: "proj-registered",
+      getActiveRuns: vi.fn().mockResolvedValue([]),
+      getRunsByStatus: vi.fn().mockResolvedValue([]),
+      getRunsForSeed: vi.fn().mockResolvedValue([]),
+      runOps: {
+        createRun: vi.fn().mockResolvedValue(undefined),
+        updateRun: vi.fn().mockResolvedValue(undefined),
+        logEvent: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+
+    await expect(dispatcher.dispatch({ dryRun: false, projectId: "proj-registered" })).rejects.toThrow(
+      "Registered dispatcher write override missing runOps.sendMessage",
+    );
+
+    expect(seeds.ready).not.toHaveBeenCalled();
+    expect(store.createRun).not.toHaveBeenCalled();
+    expect(store.updateRun).not.toHaveBeenCalled();
+    expect(store.logEvent).not.toHaveBeenCalled();
+    expect(store.sendMessage).not.toHaveBeenCalled();
+    expect(VcsBackendFactory.create).not.toHaveBeenCalled();
   });
 
   it("passes VcsBackend instance (name='jujutsu') to spawnAgent", async () => {
@@ -354,6 +465,7 @@ describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015
 describe("Dispatcher — VcsBackend creation failure is non-fatal (TRD-015, AC-T-015-3)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockShowFn = vi.fn().mockRejectedValue(new Error("not found"));
   });
 
   it("dispatch continues and dispatches the seed even when VcsBackend creation fails", async () => {
@@ -377,6 +489,37 @@ describe("Dispatcher — VcsBackend creation failure is non-fatal (TRD-015, AC-T
     // The seed should still be dispatched (not skipped due to VCS failure)
     expect(result.dispatched).toHaveLength(1);
     expect(result.dispatched[0].seedId).toBe("test-seed");
+  });
+});
+
+describe("Dispatcher — onError=stop uses registered run failure counts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockShowFn = vi.fn().mockRejectedValue(new Error("not found"));
+  });
+
+  it("stops dispatching when the registered override reports a recent test-failed run", async () => {
+    const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
+    vi.mocked(loadWorkflowConfig).mockReturnValue({
+      name: "default",
+      phases: [],
+      onError: "stop",
+      vcs: { backend: "git" },
+    } as unknown as ReturnType<typeof loadWorkflowConfig>);
+
+    const store = makeStore();
+    const seeds = makeSeeds();
+    const overrides = {
+      getRecentFailureCount: vi.fn().mockResolvedValue(1),
+      getActiveRuns: vi.fn().mockResolvedValue([]),
+    };
+    const dispatcher = new Dispatcher(seeds, store, "/tmp/project", null, overrides);
+
+    const result = await dispatcher.dispatch({ dryRun: false });
+
+    expect(overrides.getRecentFailureCount).toHaveBeenCalledWith("proj-001", expect.stringContaining("T"));
+    expect(result.dispatched).toHaveLength(0);
+    expect(mockShowFn).not.toHaveBeenCalled();
   });
 });
 
@@ -455,5 +598,64 @@ describe("Dispatcher — uses WorktreeManager.createWorktree() for workspace cre
       repoPath: "/tmp/project",
       baseBranch: undefined,
     });
+  });
+});
+
+describe("Dispatcher — registered override-backed dependency stacking", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockShowFn = vi.fn().mockResolvedValue({ dependencies: ["dep-a"] });
+  });
+
+  it("uses the override-backed run lookup when resolving a stacked base branch", async () => {
+    const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
+    vi.mocked(loadWorkflowConfig).mockReturnValue({
+      name: "default",
+      phases: [],
+      vcs: { backend: "git" },
+    } as unknown as ReturnType<typeof loadWorkflowConfig>);
+
+    vi.mocked(VcsBackendFactory.create).mockResolvedValue({
+      name: "git",
+      createWorkspace: vi.fn().mockResolvedValue({ workspacePath: "/tmp/worktrees/test-seed", branchName: "foreman/test-seed" }),
+      getCurrentBranch: vi.fn().mockResolvedValue("main"),
+      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+      branchExists: vi.fn().mockResolvedValue(true),
+    } as unknown as VcsBackend);
+
+    const store = makeStore();
+    store.getRunsForSeed = vi.fn().mockResolvedValue([]);
+    const overrides = {
+      getRunsForSeed: vi.fn(async (seedId: string) => {
+        if (seedId === "dep-a") {
+          return [{
+            id: "run-dep-a",
+            project_id: "proj-001",
+            seed_id: "dep-a",
+            agent_type: "claude-code",
+            session_key: null,
+            worktree_path: "/tmp/worktrees/dep-a",
+            status: "completed",
+            started_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+            progress: null,
+            base_branch: null,
+          }];
+        }
+        return [];
+      }),
+    };
+
+    const seeds = makeSeeds({ id: "seed-b", title: "Test Seed" });
+    const dispatcher = new Dispatcher(seeds, store, "/tmp/project", null, overrides);
+    vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
+    const { WorktreeManager } = await import("../../lib/worktree-manager.js");
+    const createWorktreeSpy = vi.spyOn(WorktreeManager.prototype, "createWorktree");
+
+    await dispatcher.dispatch({ dryRun: false });
+
+    expect(overrides.getRunsForSeed).toHaveBeenCalledWith("dep-a", "proj-001");
+    expect(createWorktreeSpy).toHaveBeenCalledWith(expect.objectContaining({ baseBranch: "foreman/dep-a" }));
   });
 });

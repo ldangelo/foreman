@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync } from "node:f
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
+import { buildSdkSessionKey } from "../dispatcher.js";
 
 /**
  * Tests for the detached worker spawning pathway in the Dispatcher.
@@ -94,6 +95,15 @@ describe("Dispatcher worker spawning", () => {
 
     const parsed = JSON.parse(JSON.stringify(config));
     expect(parsed.resume).toBe("session-abc-def");
+  });
+
+  it("builds SDK session keys that preserve pid and resume id", () => {
+    expect(buildSdkSessionKey("claude-sonnet-4-6", "run-123", 4242)).toBe(
+      "foreman:sdk:claude-sonnet-4-6:run-123:pid-4242",
+    );
+    expect(buildSdkSessionKey("claude-sonnet-4-6", "run-123", 4242, "abc")).toBe(
+      "foreman:sdk:claude-sonnet-4-6:run-123:pid-4242:session-abc",
+    );
   });
 
   it("config tmp directory is created under HOME/.foreman/tmp", async () => {

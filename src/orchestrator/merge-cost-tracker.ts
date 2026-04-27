@@ -1,4 +1,12 @@
-import type Database from "better-sqlite3";
+interface Statement<T = unknown> {
+  get(...params: unknown[]): T;
+  all(...params: unknown[]): T[];
+  run(...params: unknown[]): unknown;
+}
+
+interface CostDb {
+  prepare(sql: string): Statement;
+}
 
 // ── Interfaces ──────────────────────────────────────────────────────────
 
@@ -70,9 +78,9 @@ function periodCutoff(period: Period): string | null {
  * for stats display and budget monitoring.
  */
 export class MergeCostTracker {
-  private db: Database.Database;
+  private db: CostDb;
 
-  constructor(db: Database.Database) {
+  constructor(db: CostDb) {
     this.db = db;
   }
 

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { ForemanStore, Run } from "../lib/store.js";
+import type { Run } from "../lib/store.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
@@ -22,6 +22,14 @@ export interface HungSessionInfo {
 export interface HungSessionReport {
   hung: HungSessionInfo[];
   checked: number;
+}
+
+interface MonitorStore {
+  getActiveRuns(projectId?: string): Promise<Run[]>;
+  updateRun(runId: string, updates: Partial<Pick<Run, "status" | "worktree_path" | "started_at" | "completed_at">>): Promise<void>;
+  logEvent(projectId: string, eventType: "complete" | "stuck" | "fail" | "recover", data: Record<string, unknown>, runId?: string): Promise<void>;
+  getRunProgress(runId: string): Promise<import("../lib/store.js").RunProgress | null>;
+  getRunEvents(runId: string, eventType?: "recover"): Promise<Array<{ id: string; event_type: string; data: string; created_at: string }>>;
 }
 
 /**
@@ -64,7 +72,7 @@ export function isNotFoundError(err: unknown): boolean {
 
 export class Monitor {
   constructor(
-    private store: ForemanStore,
+    private store: MonitorStore,
     private taskClient: ITaskClient,
     private projectPath: string,
     private vcsBackend?: VcsBackend,
@@ -85,7 +93,7 @@ export class Monitor {
     projectId?: string;
   }): Promise<MonitorReport> {
     const stuckTimeout = opts?.stuckTimeoutMinutes ?? PIPELINE_LIMITS.stuckDetectionMinutes;
-    const activeRuns = this.store.getActiveRuns(opts?.projectId);
+    const activeRuns = await this.store.getActiveRuns(opts?.projectId);
 
     const report: MonitorReport = {
       completed: [],
@@ -119,11 +127,11 @@ export class Monitor {
 
         if (issueStatus === "closed" || issueStatus === "completed") {
           // Agent finished — mark run as completed
-          this.store.updateRun(run.id, {
+          await this.store.updateRun(run.id, {
             status: "completed",
             completed_at: new Date().toISOString(),
           });
-          this.store.logEvent(
+          await this.store.logEvent(
             run.project_id,
             "complete",
             { seedId: run.seed_id, detectedBy: "monitor" },
@@ -139,8 +147,8 @@ export class Monitor {
           const elapsedMinutes = (now - startedAt) / (1000 * 60);
 
           if (elapsedMinutes > stuckTimeout) {
-            this.store.updateRun(run.id, { status: "stuck" });
-            this.store.logEvent(
+            await this.store.updateRun(run.id, { status: "stuck" });
+            await this.store.logEvent(
               run.project_id,
               "stuck",
               { seedId: run.seed_id, elapsedMinutes: Math.round(elapsedMinutes) },
@@ -155,11 +163,11 @@ export class Monitor {
         report.active.push(run);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        this.store.updateRun(run.id, {
+        await this.store.updateRun(run.id, {
           status: "failed",
           completed_at: new Date().toISOString(),
         });
-        this.store.logEvent(
+        await this.store.logEvent(
           run.project_id,
           "fail",
           { seedId: run.seed_id, error: message },
@@ -187,7 +195,7 @@ export class Monitor {
     projectId?: string;
   }): Promise<HungSessionReport> {
     const threshold = (opts?.hangThresholdMinutes ?? 10) * 60 * 1000; // ms
-    const activeRuns = this.store.getActiveRuns(opts?.projectId);
+    const activeRuns = await this.store.getActiveRuns(opts?.projectId);
     const now = Date.now();
     const hung: HungSessionInfo[] = [];
 
@@ -195,7 +203,7 @@ export class Monitor {
       // Only check runs that are actually running (not just pending)
       if (run.status !== "running") continue;
 
-      const progress = this.store.getRunProgress(run.id);
+      const progress = await this.store.getRunProgress(run.id);
       if (!progress?.lastActivity) continue;
 
       const lastActivityMs = new Date(progress.lastActivity).getTime();
@@ -214,8 +222,8 @@ export class Monitor {
         hung.push(info);
 
         // Mark as stuck with a descriptive note
-        this.store.updateRun(run.id, { status: "stuck" });
-        this.store.logEvent(
+        await this.store.updateRun(run.id, { status: "stuck" });
+        await this.store.logEvent(
           run.project_id,
           "stuck",
           {
@@ -239,15 +247,15 @@ export class Monitor {
    */
   async recoverStuck(run: Run, maxRetries = PIPELINE_LIMITS.maxRecoveryRetries): Promise<boolean> {
     // Count previous recovery attempts from the events log
-    const recoverEvents = this.store.getRunEvents(run.id, "recover");
+    const recoverEvents = await this.store.getRunEvents(run.id, "recover");
     const retryCount = recoverEvents.length;
 
     if (retryCount >= maxRetries) {
-      this.store.updateRun(run.id, {
+      await this.store.updateRun(run.id, {
         status: "failed",
         completed_at: new Date().toISOString(),
       });
-      this.store.logEvent(
+      await this.store.logEvent(
         run.project_id,
         "fail",
         { seedId: run.seed_id, reason: `Max retries (${maxRetries}) exceeded` },
@@ -264,13 +272,13 @@ export class Monitor {
     if (hasProgress && run.worktree_path) {
       // Preserve the worktree — artifact-based phase-skipping in runPipeline will handle
       // resuming from the correct phase when the run is re-dispatched.
-      this.store.updateRun(run.id, {
+      await this.store.updateRun(run.id, {
         status: "pending",
         started_at: null,
         completed_at: null,
       });
 
-      this.store.logEvent(
+      await this.store.logEvent(
         run.project_id,
         "recover",
         {
@@ -304,14 +312,14 @@ export class Monitor {
     try {
       const { workspacePath: worktreePath } = await this.getVcsBackend().createWorkspace(this.projectPath, run.seed_id);
 
-      this.store.updateRun(run.id, {
+      await this.store.updateRun(run.id, {
         status: "pending",
         worktree_path: worktreePath,
         started_at: null,
         completed_at: null,
       });
 
-      this.store.logEvent(
+      await this.store.logEvent(
         run.project_id,
         "recover",
         { seedId: run.seed_id, attempt: retryCount + 1, maxRetries, worktreePreserved: false },
@@ -321,11 +329,11 @@ export class Monitor {
       return true;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      this.store.updateRun(run.id, {
+      await this.store.updateRun(run.id, {
         status: "failed",
         completed_at: new Date().toISOString(),
       });
-      this.store.logEvent(
+      await this.store.logEvent(
         run.project_id,
         "fail",
         { seedId: run.seed_id, reason: `Recovery failed: ${message}` },

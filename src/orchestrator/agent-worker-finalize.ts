@@ -27,6 +27,8 @@ import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface FinalizeConfig {
+  /** External/daemon project id when merge queue writes should go to Postgres. */
+  projectId?: string;
   /** Run ID (used when enqueuing to the merge queue). */
   runId: string;
   /** Seed identifier, e.g. "bd-ytzv". */
@@ -224,15 +226,16 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
     }
 
     try {
-      const enqueueStore = ForemanStore.forProject(storeProjectPath);
-      const enqueueResult = enqueueToMergeQueue({
-        db: enqueueStore.getDb(),
+      const enqueueStore = config.projectId ? undefined : ForemanStore.forProject(storeProjectPath);
+      const enqueueResult = await enqueueToMergeQueue({
+        ...(enqueueStore ? { db: enqueueStore.getDb() } : {}),
+        projectId: config.projectId,
         seedId,
         runId: config.runId,
         worktreePath,
         getFilesModified: () => modifiedFiles,
       });
-      enqueueStore.close();
+      enqueueStore?.close();
 
       if (enqueueResult.success) {
         log(`[FINALIZE] Enqueued to merge queue (pre-push)`);

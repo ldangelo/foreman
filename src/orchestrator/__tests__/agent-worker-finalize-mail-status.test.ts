@@ -42,7 +42,8 @@ describe("agent-worker finalize mail status handling", () => {
 
   it("treats non-retryable pre-existing test failures as merged when the branch already landed", () => {
     expect(source).toContain('finalizeFailureReason === "tests_failed_pre_existing_issues"');
-    expect(source).toContain('store.updateRun(runId, { status: "merged", completed_at: now });');
+    expect(source).toContain('await updateTerminalRunStatus({');
+    expect(source).toContain('status: "merged"');
     expect(source).toContain('Pre-existing test failures but branch already matches ${completionTargetBranch}');
     expect(source).toContain('enqueueCloseSeed(store, seedId, "agent-worker-finalize")');
   });
@@ -52,5 +53,34 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('finalizeFailureReason === "tests_failed_pre_existing_issues"');
     expect(source).toContain('Skipping for non-retryable pre-existing finalize test failures');
     expect(source).toContain('!!workflowConfig.onFailure && !shouldSkipTroubleshooter');
+  });
+
+  it("routes normal registered finalize terminal events Postgres-first with local fallback", () => {
+    expect(source).toContain('const writeFinalizeTerminalEvent = async (');
+    expect(source).toContain('if (projectId && registeredReadStore) {');
+    expect(source).toContain('await registeredReadStore.logEvent(projectId, eventType, data, runId);');
+    expect(source).toContain('Registered terminal event write failed (non-fatal); falling back to local store');
+    expect(source).toContain('store.logEvent(projectId, eventType, data, runId);');
+    expect(source).toContain('await writeFinalizeTerminalEvent(finalizeSucceeded ? "complete" : (finalizeRetryable ? "stuck" : "fail"), {');
+  });
+
+  it("threads registered project context into Refinery during finalize PR creation", () => {
+    expect(source).toContain('const registeredRefineryOptions = config.projectId && registeredReadStore');
+    expect(source).toContain('new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend, registeredRefineryOptions);');
+  });
+
+  it("keeps finalize mail, queue, and terminal status side effects unchanged", () => {
+    expect(source).toContain('sendMail(agentMailClient, "foreman", "pr-created", {');
+    expect(source).toContain('sendMail(agentMailClient, "refinery", "branch-ready", {');
+    expect(source).toContain('await updateTerminalRunStatus({');
+    expect(source).toContain('enqueueToMergeQueue({');
+    expect(source).toContain('enqueueCloseSeed(store, seedId, "agent-worker-finalize")');
+  });
+
+  it("routes finalize terminal statuses through the helper", () => {
+    expect(source).toContain('status: "completed"');
+    expect(source).toContain('status: "pr-created"');
+    expect(source).toContain('status: terminalStatus');
+    expect(source).toContain('await updateTerminalRunStatus({');
   });
 });

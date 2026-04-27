@@ -79,6 +79,22 @@ describe("syncBeadStatusOnStartup", () => {
     expect(taskClient.show).not.toHaveBeenCalled();
   });
 
+  it("awaits an async getRunsByStatuses store implementation", async () => {
+    const run = makeRun({ status: "completed" });
+    const store = {
+      getRunsByStatuses: vi.fn(async () => [run]),
+    } satisfies Parameters<typeof syncBeadStatusOnStartup>[0];
+    const taskClient = {
+      show: vi.fn(async () => ({ status: "review" })),
+    } satisfies Pick<Parameters<typeof syncBeadStatusOnStartup>[1], "show">;
+
+    const result = await syncBeadStatusOnStartup(store, taskClient, "proj-1");
+
+    expect(store.getRunsByStatuses).toHaveBeenCalledOnce();
+    expect(taskClient.show).toHaveBeenCalledWith("seed-abc");
+    expect(result.mismatches).toHaveLength(0);
+  });
+
   it("queries all terminal statuses including failed and stuck", async () => {
     const { store, taskClient } = makeMocks();
     store.getRunsByStatuses.mockReturnValue([]);

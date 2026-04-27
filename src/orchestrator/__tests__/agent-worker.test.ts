@@ -165,4 +165,53 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(pipelineMatch).not.toBeNull();
   });
 
+  it("routes markStuck terminal run updates through the helper", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    expect(source).toContain('import { updateTerminalRunStatus } from "./agent-worker-run-status.js";');
+    expect(source).toContain('await updateTerminalRunStatus({');
+    expect(source).not.toContain('store.updateRun(runId, { status: stuckStatus, completed_at: now });');
+  });
+
+  it("routes markStuck observability writes through registered-aware helpers", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    expect(source).toContain('import { writeMarkStuckEvent, writeMarkStuckProgress } from "./agent-worker-mark-stuck-observability.js";');
+    expect(source).toContain('markStuck: async (storeArg, runIdArg, projectIdArg, seedIdArg, seedTitleArg, progressArg, phaseArg, reasonArg, projectPathArg, notifyClientArg) =>');
+    expect(source).toContain('await writeMarkStuckProgress(localStore, registeredReadStore, runId, progress, log);');
+    expect(source).toContain('await writeMarkStuckEvent(localStore, registeredReadStore, projectId, runId, isRateLimit ? "stuck" : "fail", {');
+    const progressIndex = source.indexOf('await writeMarkStuckProgress(localStore, registeredReadStore, runId, progress, log);');
+    const terminalIndex = source.indexOf('await updateTerminalRunStatus({', progressIndex);
+    const eventIndex = source.indexOf('await writeMarkStuckEvent(localStore, registeredReadStore, projectId, runId, isRateLimit ? "stuck" : "fail", {', terminalIndex);
+    const resetIndex = source.indexOf('enqueueResetSeedToOpen(store, seedId, "agent-worker-markStuck");', eventIndex);
+    const failIndex = source.indexOf('enqueueMarkBeadFailed(store, seedId, "agent-worker-markStuck");', eventIndex);
+    const notesIndex = source.indexOf('enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");', eventIndex);
+    expect(progressIndex).toBeGreaterThan(-1);
+    expect(terminalIndex).toBeGreaterThan(progressIndex);
+    expect(eventIndex).toBeGreaterThan(terminalIndex);
+    expect(resetIndex).toBeGreaterThan(eventIndex);
+    expect(failIndex).toBeGreaterThan(eventIndex);
+    expect(notesIndex).toBeGreaterThan(eventIndex);
+    expect(source).toContain('enqueueResetSeedToOpen(store, seedId, "agent-worker-markStuck");');
+    expect(source).toContain('enqueueMarkBeadFailed(store, seedId, "agent-worker-markStuck");');
+    expect(source).toContain('enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");');
+  });
+
+  it("routes single-agent progress and terminal observability through registered-aware helpers", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    expect(source).toContain('import { writeSingleAgentProgress, writeSingleAgentTerminalEvent } from "./agent-worker-single-agent-observability.js";');
+    expect(source).toContain('const registeredReadStore = databaseUrl ? pgStore : undefined;');
+    expect(source).toContain('await runPipeline(config, store, localStore, logFile, notifyClient, agentMailClient, registeredReadStore);');
+    expect(source).toContain('let progressFlushTail: Promise<void> = Promise.resolve();');
+    expect(source).toContain('progressFlushTail = progressFlushTail.then(() => writeSingleAgentProgress(localStore, registeredReadStore, runId, progress, log));');
+    expect(source).toContain('await waitForProgressFlush();');
+    expect(source).toContain('await writeSingleAgentProgress(localStore, registeredReadStore, runId, progress, log);');
+    expect(source).toContain('await writeSingleAgentTerminalEvent(localStore, registeredReadStore, projectId, runId, "complete", {');
+    expect(source).toContain('await writeSingleAgentTerminalEvent(localStore, registeredReadStore, projectId, runId, "fail", {');
+    expect(source).toContain('await writeSingleAgentTerminalEvent(localStore, registeredReadStore, projectId, runId, isRateLimit ? "stuck" : "fail", {');
+    expect(source).toContain('await updateTerminalRunStatus({');
+    expect(source).not.toContain('store.updateRunProgress(runId, progress);');
+    expect(source).not.toContain('store.logEvent(projectId, "complete"');
+    expect(source).not.toContain('store.logEvent(projectId, "fail"');
+    expect(source).not.toContain('store.logEvent(projectId, isRateLimit ? "stuck" : "fail"');
+  });
+
 });

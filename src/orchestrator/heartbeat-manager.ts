@@ -59,6 +59,13 @@ export interface HeartbeatData {
   projectId: string;
 }
 
+/**
+ * Optional heartbeat event writer used by registered worker execution.
+ */
+export interface HeartbeatEventWriter {
+  logEvent?: (eventType: "heartbeat", data: Record<string, unknown>) => Promise<void> | void;
+}
+
 // ── HeartbeatManager ─────────────────────────────────────────────────────
 
 /**
@@ -88,6 +95,7 @@ export interface HeartbeatData {
 export class HeartbeatManager {
   private config: Required<HeartbeatConfig>;
   private store: ForemanStore;
+  private eventWriter?: HeartbeatEventWriter;
   private projectId: string;
   private runId: string;
   private vcs: VcsBackend;
@@ -101,6 +109,8 @@ export class HeartbeatManager {
   private phaseStartFiles: string[] = [];
   /** HEAD commit at the start of the phase. */
   private phaseStartHead: string = "";
+  /** Seed ID attached to heartbeat events for task attribution. */
+  private seedId = "";
   /** Whether the heartbeat has fired at least once this phase. */
   private hasFired = false;
 
@@ -111,6 +121,7 @@ export class HeartbeatManager {
     runId: string,
     vcs: VcsBackend,
     worktreePath: string,
+    eventWriter?: HeartbeatEventWriter,
   ) {
     this.config = {
       enabled: config.enabled ?? true,
@@ -121,6 +132,7 @@ export class HeartbeatManager {
     this.runId = runId;
     this.vcs = vcs;
     this.worktreePath = worktreePath;
+    this.eventWriter = eventWriter;
   }
 
   /**
@@ -231,7 +243,7 @@ export class HeartbeatManager {
     }
 
     const heartbeatData: HeartbeatData = {
-      seedId: "",  // Will be filled by caller
+      seedId: this.seedId,
       phase: this.currentPhase,
       turns: stats.turns,
       toolCalls: stats.toolCalls,
@@ -247,14 +259,17 @@ export class HeartbeatManager {
     };
 
     try {
-      this.store.logEvent(this.projectId, "heartbeat", heartbeatData as unknown as Record<string, unknown>, this.runId);
+      if (this.eventWriter?.logEvent) {
+        await Promise.resolve(this.eventWriter.logEvent("heartbeat", heartbeatData as unknown as Record<string, unknown>));
+      } else {
+        this.store.logEvent(this.projectId, "heartbeat", heartbeatData as unknown as Record<string, unknown>, this.runId);
+      }
       this.hasFired = true;
     } catch (err) {
       // Fail-safe: log and continue
       console.error(
-        `[HeartbeatManager] store.logEvent failed: ${err instanceof Error ? err.message : String(err)}`,
+        `[HeartbeatManager] heartbeat event write failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
       );
-      throw err; // Re-throw so caller knows, but don't crash the session
     }
   }
 
@@ -278,9 +293,7 @@ export class HeartbeatManager {
    * Called by the pipeline executor after dispatch.
    */
   setSeedId(seedId: string): void {
-    // Seed ID is stored in the heartbeat data passed to fireHeartbeat
-    // This method exists for API completeness but the actual seedId comes
-    // from the pipeline context when fireHeartbeat is called.
+    this.seedId = seedId;
   }
 }
 
@@ -306,6 +319,7 @@ export function createHeartbeatManager(
   runId: string,
   vcs: VcsBackend,
   worktreePath: string,
+  eventWriter?: HeartbeatEventWriter,
 ): HeartbeatManager | null {
   // If config is explicitly disabled, return null
   if (config?.enabled === false) {
@@ -319,5 +333,6 @@ export function createHeartbeatManager(
     runId,
     vcs,
     worktreePath,
+    eventWriter,
   );
 }

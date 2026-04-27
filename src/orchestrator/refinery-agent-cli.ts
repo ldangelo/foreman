@@ -6,11 +6,13 @@
 
 import { parseArgs } from "node:util";
 import { join } from "node:path";
-import Database from "better-sqlite3";
 import { ForemanStore } from "../lib/store.js";
+import { PostgresStore } from "../lib/postgres-store.js";
 import { MergeQueue } from "./merge-queue.js";
+import { PostgresMergeQueue } from "./postgres-merge-queue.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
-import { RefineryAgent, type RefineryAgentConfig } from "./refinery-agent.js";
+import { RefineryAgent, wrapLocalRefineryQueue, type RefineryAgentConfig } from "./refinery-agent.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath } from "../cli/commands/project-task-support.js";
 
 const DEFAULT_LOG_DIR = "docs/reports";
 
@@ -98,13 +100,16 @@ export async function runRefineCli(args: string[]): Promise<number> {
   }
 
   // Get project path
-  const projectPath = process.cwd();
+  const projectPath = await resolveRepoRootProjectPath({});
 
   // Create store and VCS backend
-  const store = new ForemanStore();
-  const db = store.getDb();
-  const mergeQueue = new MergeQueue(db);
+  const store = ForemanStore.forProject(projectPath);
+  const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
+  const mergeQueue = registered
+    ? new PostgresMergeQueue(registered.id)
+    : wrapLocalRefineryQueue(new MergeQueue(store.getDb()));
   const vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+  const runLookup = registered ? PostgresStore.forProject(registered.id) : undefined;
 
   // Agent config
   const agentConfig: Partial<RefineryAgentConfig> = {
@@ -115,7 +120,7 @@ export async function runRefineCli(args: string[]): Promise<number> {
   };
 
   // Create agent
-  const agent = new RefineryAgent(mergeQueue, vcsBackend, projectPath, agentConfig);
+  const agent = new RefineryAgent(mergeQueue, vcsBackend, projectPath, agentConfig, runLookup);
 
   // Handle signals
   const shutdown = (): void => {

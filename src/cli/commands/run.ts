@@ -9,20 +9,26 @@ import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
+import type { Run } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
+import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../../lib/project-config.js";
 import type { ProjectConfig } from "../../lib/project-config.js";
-import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import type { RegisteredProjectSummary } from "./project-task-support.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
 import { findMissingPrompts, findStalePrompts } from "../../lib/prompt-loader.js";
 import { findMissingWorkflows, findStaleWorkflows } from "../../lib/workflow-loader.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
+import type { DispatcherOverrides } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
+import { wrapPostgresSentinelStore } from "./sentinel.js";
 import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS } from "../../lib/config.js";
 import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
@@ -30,7 +36,8 @@ import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
 import { autoMerge } from "../../orchestrator/auto-merge.js";
 export { autoMerge } from "../../orchestrator/auto-merge.js";
 export type { AutoMergeOpts, AutoMergeResult } from "../../orchestrator/auto-merge.js";
-import { RefineryAgent } from "../../orchestrator/refinery-agent.js";
+import { RefineryAgent, wrapLocalRefineryQueue, type RunLookup } from "../../orchestrator/refinery-agent.js";
+import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
@@ -64,6 +71,123 @@ export function resolveRuntimeMode(value?: string): RuntimeMode {
   return raw === "test" ? "test" : "normal";
 }
 
+function createRegisteredDispatcherOverrides(projectId: string, daemonStore: PostgresStore): DispatcherOverrides {
+  const pg = new PostgresAdapter();
+
+  return {
+    externalProjectId: projectId,
+    getRecentFailureCount: async (_projectId: string, since: string) => {
+      const statuses: Array<"failed" | "stuck" | "conflict" | "test-failed"> = [
+        "failed",
+        "stuck",
+        "conflict",
+        "test-failed",
+      ];
+      const runs = (await Promise.all(
+        statuses.map((status) => pg.listPipelineRuns(projectId, { status, limit: 1000 })),
+      )).flat();
+      return runs.filter((run) => run.created_at >= since).length;
+    },
+    getActiveSeedIds: async () => {
+      const activeRuns = await pg.listPipelineRuns(projectId, { status: "running", limit: 1000 });
+      const pendingRuns = await pg.listPipelineRuns(projectId, { status: "pending", limit: 1000 });
+      return [...activeRuns, ...pendingRuns].map((run) => run.bead_id);
+    },
+    getActiveAgentCount: async () => {
+      const activeRuns = await pg.listPipelineRuns(projectId, { status: "running", limit: 1000 });
+      const pendingRuns = await pg.listPipelineRuns(projectId, { status: "pending", limit: 1000 });
+      return activeRuns.length + pendingRuns.length;
+    },
+    hasActiveOrPendingRun: async (seedId: string) => {
+      const runs = await pg.listPipelineRuns(projectId, { beadId: seedId, limit: 20 });
+      return runs.some((run) => ["pending", "running", "success"].includes(run.status));
+    },
+    getRunsByStatus: async (status, overrideProjectId) => await daemonStore.getRunsByStatus(status, overrideProjectId),
+    getRunsForSeed: async (seedId, overrideProjectId) => await daemonStore.getRunsForSeed(seedId, overrideProjectId),
+    getRun: async (runId) => await daemonStore.getRun(runId),
+    getActiveRuns: async (overrideProjectId) => await daemonStore.getActiveRuns(overrideProjectId),
+    nativeTaskOps: {
+      hasNativeTasks: async () => pg.hasNativeTasks(projectId),
+      getReadyTasks: async () => await pg.listTasks(projectId, { status: ["ready"], limit: 1000 }) as never,
+      getTaskByExternalId: async (externalId: string) => await pg.getTaskByExternalId(projectId, externalId) as never,
+      getTaskById: async (taskId: string) => await pg.getTask(projectId, taskId) as never,
+      claimTask: async (taskId: string, runId: string) => await pg.claimTask(projectId, taskId, runId),
+    },
+    runOps: {
+      createRun: async ({ runId, seedId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
+        const createdAt = new Date().toISOString();
+        const existing = await pg.listPipelineRuns(projectId, { beadId: seedId });
+        await pg.createPipelineRun({
+          id: runId,
+          projectId,
+          beadId: seedId,
+          runNumber: existing.length + 1,
+          branch: branchName,
+          trigger: "bead",
+          agentType,
+          worktreePath: worktreePath ?? undefined,
+          baseBranch: baseBranch ?? undefined,
+          mergeStrategy: mergeStrategy ?? undefined,
+        });
+        const run: Run = {
+          id: runId,
+          project_id: projectId,
+          seed_id: seedId,
+          agent_type: agentType,
+          session_key: null,
+          worktree_path: worktreePath,
+          status: "pending",
+          started_at: null,
+          completed_at: null,
+          created_at: createdAt,
+          progress: null,
+          tmux_session: null,
+          base_branch: baseBranch ?? null,
+          merge_strategy: mergeStrategy ?? "auto",
+        };
+        return run;
+      },
+      updateRun: async (runId, updates) => {
+        const patch: {
+          status?: string;
+          sessionKey?: string;
+          worktreePath?: string;
+          startedAt?: string;
+          finishedAt?: string;
+        } = {};
+        if (updates.status) patch.status = updates.status;
+        if (updates.session_key !== undefined) patch.sessionKey = updates.session_key ?? undefined;
+        if (updates.worktree_path !== undefined) patch.worktreePath = updates.worktree_path ?? undefined;
+        if (updates.started_at) patch.startedAt = updates.started_at;
+        if (updates.completed_at) patch.finishedAt = updates.completed_at;
+        if (Object.keys(patch).length > 0) {
+          await pg.updatePipelineRun(runId, patch);
+        }
+      },
+      sendMessage: async (runId, senderAgentType, recipientAgentType, subject, body) => {
+        await pg.sendMessage(projectId, runId, senderAgentType, recipientAgentType, subject, body);
+      },
+      logEvent: async (runId, _projectId, eventType, payload) => {
+        const mappedEventType = eventType === "complete"
+          ? "run:success"
+          : eventType === "fail"
+            ? "run:failure"
+            : eventType === "restart" || eventType === "dispatch"
+              ? "run:queued"
+              : null;
+        if (!mappedEventType) return;
+        await pg.recordPipelineEvent({
+          projectId,
+          runId,
+          taskId: payload.seedId as string | undefined,
+          eventType: mappedEventType,
+          payload,
+        });
+      },
+    },
+  };
+}
+
 /**
  * Instantiate the br task-tracking client(s).
  *
@@ -75,6 +199,7 @@ export function resolveRuntimeMode(value?: string): RuntimeMode {
 export async function createTaskClients(
   projectPath: string,
   runtimeMode: RuntimeMode = resolveRuntimeMode(),
+  registeredProjectId?: string,
 ): Promise<TaskClientResult> {
   // In normal mode: auto-detect (omit the force flag so selectTaskReadBackend
   // uses projectHasNativeTasks). In test mode: force beads fallback.
@@ -82,6 +207,7 @@ export async function createTaskClients(
   const { taskClient, backendType } = await createTaskClient(projectPath, {
     ensureBrInstalled: true,
     forceBeadsFallback,
+    registeredProjectId,
   });
 
   return {
@@ -95,12 +221,21 @@ export async function createTaskClients(
  * Run the Refinery Agent to process the merge queue.
  * Replaces the legacy autoMerge() with an agentic approach.
  */
-async function runRefineryMerge(store: ForemanStore, projectPath: string): Promise<{ merged: number; conflicts: number; failed: number }> {
+async function runRefineryMerge(
+  store: ForemanStore,
+  projectPath: string,
+  taskClient: ITaskClient,
+  runLookup: RunLookup,
+  registeredProject?: RegisteredProjectSummary | null,
+): Promise<{ merged: number; conflicts: number; failed: number }> {
+  const registered = registeredProject ?? null;
+
   try {
-    const db = store.getDb();
-    const mergeQueue = new MergeQueue(db);
+    const mergeQueue = registered
+      ? new PostgresMergeQueue(registered.id)
+      : wrapLocalRefineryQueue(new MergeQueue(store.getDb()));
     const vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
-    const agent = new RefineryAgent(mergeQueue, vcsBackend, projectPath);
+    const agent = new RefineryAgent(mergeQueue, vcsBackend, projectPath, {}, runLookup);
     const results = await agent.processOnce();
 
     return {
@@ -108,9 +243,13 @@ async function runRefineryMerge(store: ForemanStore, projectPath: string): Promi
       conflicts: results.filter((r) => r.action === "escalated").length,
       failed: results.filter((r) => r.action === "error" || r.action === "skipped").length,
     };
-  } catch {
-    // Fallback to legacy autoMerge if RefineryAgent fails (e.g., in test environments)
-    return autoMerge({ store, taskClient: undefined as never, projectPath });
+  } catch (err) {
+    if (registered) {
+      throw err;
+    }
+
+    // Fallback to legacy autoMerge only for local/unregistered projects.
+    return autoMerge({ store, taskClient, projectPath });
   }
 }
 
@@ -259,6 +398,11 @@ async function createRunVcsBackend(projectPath: string): Promise<VcsBackend> {
   const projectCfg = loadProjectConfig(projectPath);
   const vcsConfig = resolveVcsConfig(undefined, projectCfg?.vcs);
   return VcsBackendFactory.create(vcsConfig, projectPath);
+}
+
+async function resolveRunRegisteredProject(projectPath: string) {
+  const projects = await listRegisteredProjects();
+  return projects.find((project) => project.path === projectPath) ?? null;
 }
 
 export function collectRuntimeAssetIssues(
@@ -483,8 +627,12 @@ export const runCommand = new Command("run")
       let taskClient: ITaskClient;
       let bvClient: BvClient | null = null;
       let backendType: "beads" | "native" = "beads";
+      const registered = await resolveRunRegisteredProject(projectPath);
+      if (registered) {
+        ensureCliPostgresPool(projectPath);
+      }
       try {
-        const clients = await createTaskClients(projectPath, runtimeMode);
+        const clients = await createTaskClients(projectPath, runtimeMode, registered?.id);
         taskClient = clients.taskClient;
         bvClient = clients.bvClient;
         backendType = clients.backendType;
@@ -494,8 +642,19 @@ export const runCommand = new Command("run")
         process.exit(1);
       }
       const store = ForemanStore.forProject(projectPath);
-      const project = store.getProjectByPath(projectPath);
-      const dispatcher = new Dispatcher(taskClient, store, projectPath, bvClient);
+      const daemonStore = registered
+        ? (() => {
+            return PostgresStore.forProject(registered.id);
+          })()
+        : null;
+      const project = registered ?? store.getProjectByPath(projectPath);
+      const dispatcher = new Dispatcher(
+        taskClient,
+        store,
+        projectPath,
+        bvClient,
+        registered && daemonStore ? createRegisteredDispatcherOverrides(registered.id, daemonStore) : undefined,
+      );
 
       // ── Sentinel Auto-Start ──────────────────────────────────────────────
       // If sentinel.enabled=1 in the DB config, start the sentinel agent
@@ -505,10 +664,13 @@ export const runCommand = new Command("run")
       if (!dryRun && backendType === "beads") {
         try {
           if (project) {
-            const sentinelConfig = store.getSentinelConfig(project.id);
+            const sentinelStore = registered
+              ? wrapPostgresSentinelStore(daemonStore ?? PostgresStore.forProject(registered.id), registered.id)
+              : store;
+            const sentinelConfig = await sentinelStore.getSentinelConfig(project.id);
             if (sentinelConfig && sentinelConfig.enabled === 1) {
               const sentinelTaskClient = taskClient as SentinelStartupTaskClient;
-              sentinelAgent = new SentinelAgent(store, sentinelTaskClient, project.id, projectPath, startupVcs);
+              sentinelAgent = new SentinelAgent(sentinelStore, sentinelTaskClient, project.id, projectPath, startupVcs);
               sentinelAgent.start(
                 {
                   branch: sentinelConfig.branch,
@@ -558,7 +720,7 @@ export const runCommand = new Command("run")
       // Non-fatal — stale files waste disk space but do not affect correctness.
       if (!dryRun) {
         try {
-          const purged = await purgeOrphanedWorkerConfigs(store);
+          const purged = await purgeOrphanedWorkerConfigs(daemonStore ?? store);
           if (purged > 0) {
             console.log(chalk.dim(`[startup] Purged ${purged} orphaned worker config file(s).`));
           }
@@ -572,7 +734,7 @@ export const runCommand = new Command("run")
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
       if (!dryRun && project && backendType === "beads") {
         try {
-          const syncResult = await syncBeadStatusOnStartup(store, taskClient, project.id, { projectPath });
+          const syncResult = await syncBeadStatusOnStartup(daemonStore ?? store, taskClient, project.id, { projectPath });
           if (syncResult.synced > 0 || syncResult.mismatches.length > 0) {
             console.log(
               chalk.dim(
@@ -731,7 +893,7 @@ export const runCommand = new Command("run")
         if (watch && result.resumed.length > 0) {
           const runIds = result.resumed.map((t) => t.runId);
           // Resume mode is a one-shot recovery action — no continuous auto-dispatch needed.
-          const { detached } = await watchRunsInk(store, runIds, { notificationBus });
+            const { detached } = await watchRunsInk(daemonStore ?? store, runIds, { notificationBus });
           if (detached) {
             await stopSentinel();
             store.close();
@@ -755,7 +917,8 @@ export const runCommand = new Command("run")
       // re-processing merge work after every batch.
       if (!dryRun && project) {
         try {
-          const startupMerge = await runRefineryMerge(store, projectPath);
+          const runLookup: RunLookup = registered && daemonStore ? daemonStore : store;
+          const startupMerge = await runRefineryMerge(store, projectPath, taskClient, runLookup, registered);
           if (startupMerge.merged > 0) {
             console.log(chalk.green(`[startup] Merged ${startupMerge.merged} previously completed branch(es).`));
           }
@@ -839,10 +1002,10 @@ export const runCommand = new Command("run")
                 `No new tasks dispatched — waiting for ${result.activeAgents} active agent(s) to finish…`
               )
             );
-            const activeRuns = store.getActiveRuns();
+            const activeRuns = await (daemonStore ?? store).getActiveRuns();
             const runIds = activeRuns.map((r) => r.id);
             if (runIds.length > 0) {
-              const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
+              const { detached } = await watchRunsInk(daemonStore ?? store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
               if (detached) {
                 userDetached = true;
                 break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
@@ -902,7 +1065,7 @@ export const runCommand = new Command("run")
         // Watch mode: wait for this batch to finish, then loop to check for more
         if (watch) {
           const runIds = result.dispatched.map((t) => t.runId);
-          const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
+          const { detached } = await watchRunsInk(daemonStore ?? store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
           if (detached) {
             userDetached = true;
             break; // User hit Ctrl+C — exit dispatch loop, agents continue in background

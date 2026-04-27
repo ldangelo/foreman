@@ -29,6 +29,13 @@ import type { ITaskClient } from "../lib/task-client.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
 import type { StateMismatch } from "../lib/run-status.js";
 
+type StartupBeadStatusStore = {
+  getRunsByStatuses(
+    statuses: Parameters<ForemanStore["getRunsByStatuses"]>[0],
+    projectId?: string,
+  ): ReturnType<ForemanStore["getRunsByStatuses"]> | Promise<ReturnType<ForemanStore["getRunsByStatuses"]>>;
+};
+
 // ── Bead Write Queue Operations ───────────────────────────────────────────────
 //
 // These functions enqueue br write operations via the ForemanStore bead_write_queue
@@ -359,8 +366,8 @@ export interface SyncResult {
 /**
  * Sync bead status from SQLite to br on foreman startup.
  *
- * Queries all terminal runs from SQLite and reconciles the expected seed
- * status (derived from run status) with the actual status stored in br.
+ * Queries all terminal runs from the selected store and reconciles the
+ * expected seed status (derived from run status) with the actual status stored in br.
  * This corrects "drift" that can occur when foreman was interrupted before
  * a br update completed.
  *
@@ -380,7 +387,7 @@ export interface SyncResult {
  * @param opts.projectPath  - Project root for br cwd (required so br finds .beads/).
  */
 export async function syncBeadStatusOnStartup(
-  store: Pick<ForemanStore, "getRunsByStatuses">,
+  store: StartupBeadStatusStore,
   taskClient: Pick<ITaskClient, "show">,
   projectId: string,
   opts?: { dryRun?: boolean; projectPath?: string },
@@ -399,7 +406,7 @@ export async function syncBeadStatusOnStartup(
     "stuck",
   ];
 
-  const terminalRuns = store.getRunsByStatuses(terminalStatuses, projectId);
+  const terminalRuns = await Promise.resolve(store.getRunsByStatuses(terminalStatuses, projectId));
 
   // Deduplicate by seed_id: keep the most recently created run per seed
   type RunLike = { id: string; seed_id: string; status: string; created_at: string };

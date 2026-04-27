@@ -9,6 +9,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Run } from "../../lib/store.js";
 import type { VcsBackend } from "../../lib/vcs/index.js";
 
+const { mockPostgresUpdateRun, MockPostgresAdapter } = vi.hoisted(() => {
+  const mockPostgresUpdateRun = vi.fn().mockResolvedValue(undefined);
+  const MockPostgresAdapter = vi.fn(function (this: Record<string, unknown>) {
+    this.updateRun = mockPostgresUpdateRun;
+    this.logEvent = vi.fn();
+  });
+  return { mockPostgresUpdateRun, MockPostgresAdapter };
+});
+
 vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
 }));
@@ -18,6 +27,10 @@ vi.mock("../task-backend-ops.js", () => ({
   enqueueCloseSeed: vi.fn(),
   enqueueSetBeadStatus: vi.fn(),
   enqueueAddNotesToBead: vi.fn(),
+}));
+
+vi.mock("../../lib/db/postgres-adapter.js", () => ({
+  PostgresAdapter: MockPostgresAdapter,
 }));
 
 import { execFile } from "node:child_process";
@@ -131,9 +144,29 @@ function makeMocks(
   return { store, seeds, refinery, vcs };
 }
 
+function makeRegisteredMocks(
+  stackedRuns: Run[] = [],
+  vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typeof vi.fn>>> = {},
+) {
+  const mocks = makeMocks(stackedRuns, vcsOverrides);
+  const runLookup = {
+    getRun: vi.fn().mockResolvedValue(null),
+    getRunsByStatus: vi.fn().mockResolvedValue([]),
+    getRunsByStatuses: vi.fn().mockResolvedValue([]),
+    getRunsByBaseBranch: vi.fn().mockResolvedValue(stackedRuns),
+  };
+  const refinery = new Refinery(mocks.store as any, mocks.seeds as any, "/tmp/project", mocks.vcs, {
+    runLookup: runLookup as any,
+    registeredProjectId: "proj-1",
+  });
+
+  return { ...mocks, refinery, runLookup };
+}
+
 describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPostgresUpdateRun.mockResolvedValue(undefined);
     (execFile as any).mockImplementation(
       (_cmd: string, args: string[], _opts: any, callback: Function) => {
         if (Array.isArray(args) && args[0] === "log") {
@@ -235,6 +268,28 @@ describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
 
     expect(store.updateRun).toHaveBeenCalledWith(
       "run-2",
+      expect.objectContaining({ base_branch: null }),
+    );
+  });
+
+  it("uses the registered run update helper to clear base_branch when rebase succeeds", async () => {
+    const mergedRun = makeRun({ seed_id: "story-1", status: "completed" });
+    const stackedRun = makeRun({ id: "run-3", seed_id: "story-3", status: "running", base_branch: "foreman/story-1" });
+    const { store, refinery, runLookup } = makeRegisteredMocks([stackedRun], {
+      branchExists: vi.fn().mockResolvedValue(true),
+      restackBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    });
+    runLookup.getRunsByStatus.mockResolvedValue([mergedRun]);
+
+    await refinery.mergeCompleted({ runTests: false });
+
+    expect(mockPostgresUpdateRun).toHaveBeenCalledWith(
+      "proj-1",
+      "run-3",
+      expect.objectContaining({ base_branch: null }),
+    );
+    expect(store.updateRun).not.toHaveBeenCalledWith(
+      "run-3",
       expect.objectContaining({ base_branch: null }),
     );
   });

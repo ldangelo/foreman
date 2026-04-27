@@ -12,11 +12,13 @@ const {
   mockBranchExistsOnRemote,
   mockDetectDefaultBranch,
   mockCreateVcsBackend,
+  mockListRegisteredProjects,
 } = vi.hoisted(() => {
   const mockListWorkspaces = vi.fn();
   const mockRemoveWorkspace = vi.fn();
   const mockBranchExistsOnRemote = vi.fn();
   const mockDetectDefaultBranch = vi.fn();
+  const mockListRegisteredProjects = vi.fn();
   const mockCreateVcsBackend = vi.fn().mockResolvedValue({
     name: "git",
     listWorkspaces: mockListWorkspaces,
@@ -24,12 +26,15 @@ const {
     branchExistsOnRemote: mockBranchExistsOnRemote,
     detectDefaultBranch: mockDetectDefaultBranch,
   });
-  return { mockListWorkspaces, mockRemoveWorkspace, mockBranchExistsOnRemote, mockDetectDefaultBranch, mockCreateVcsBackend };
+  return { mockListWorkspaces, mockRemoveWorkspace, mockBranchExistsOnRemote, mockDetectDefaultBranch, mockCreateVcsBackend, mockListRegisteredProjects };
 });
 vi.mock("../../lib/vcs/index.js", () => ({
   VcsBackendFactory: {
     create: mockCreateVcsBackend,
   },
+}));
+vi.mock("../../cli/commands/project-task-support.js", () => ({
+  listRegisteredProjects: mockListRegisteredProjects,
 }));
 
 function makeRun(overrides: Partial<Run> = {}): Run {
@@ -61,6 +66,35 @@ function makeMocks(projectPath = "/tmp/project") {
   return { store, doctor };
 }
 
+function makeRegisteredMocks(projectPath = "/tmp/project") {
+  const localStore = {
+    getProjectByPath: vi.fn(() => null as any),
+    getRunsByStatus: vi.fn(() => [] as Run[]),
+    getRunsForSeed: vi.fn(() => [] as Run[]),
+    getActiveRuns: vi.fn(() => [] as Run[]),
+    updateRun: vi.fn(),
+    logEvent: vi.fn(),
+  };
+  const project = {
+    id: "proj-registered",
+    name: "registered-project",
+    status: "active",
+    path: projectPath,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  const runStore = {
+    getProjectByPath: vi.fn().mockResolvedValue(project),
+    getRunsByStatus: vi.fn().mockResolvedValue([] as Run[]),
+    getRunsForSeed: vi.fn().mockResolvedValue([] as Run[]),
+    getActiveRuns: vi.fn().mockResolvedValue([] as Run[]),
+    updateRun: vi.fn().mockResolvedValue(undefined),
+    getRun: vi.fn().mockResolvedValue(null),
+  };
+  const doctor = new Doctor(localStore as any, projectPath, undefined, undefined, undefined, undefined, runStore as any);
+  return { localStore, runStore, doctor, project };
+}
+
 function makeMergeQueueMock(missingEntries: Array<{ run_id: string; seed_id: string }> = []) {
   return {
     missingFromQueue: vi.fn(() => missingEntries),
@@ -73,6 +107,7 @@ function makeMergeQueueMock(missingEntries: Array<{ run_id: string; seed_id: str
 // Default: return empty worktree list so existing tests aren't affected
 beforeEach(() => {
   mockListWorkspaces.mockResolvedValue([]);
+  mockListRegisteredProjects.mockResolvedValue([]);
 });
 
 describe("Doctor", () => {
@@ -105,6 +140,7 @@ describe("Doctor", () => {
     it("returns fail when project not in store", async () => {
       const { store, doctor } = makeMocks();
       store.getProjectByPath.mockReturnValue(null);
+      mockListRegisteredProjects.mockResolvedValue([]);
 
       const result = await doctor.checkProjectRegistered();
 
@@ -122,11 +158,25 @@ describe("Doctor", () => {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
+      mockListRegisteredProjects.mockResolvedValue([
+        { id: "proj-1", name: "my-project", path: "/tmp/project", status: "active", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+      ]);
 
       const result = await doctor.checkProjectRegistered();
 
       expect(result.status).toBe("pass");
       expect(result.message).toContain("my-project");
+    });
+
+    it("uses the registered run store when available", async () => {
+      const { localStore, runStore, doctor, project } = makeRegisteredMocks();
+
+      const result = await doctor.checkProjectRegistered();
+
+      expect(result.status).toBe("pass");
+      expect(result.message).toContain(project.name);
+      expect(runStore.getProjectByPath).toHaveBeenCalledWith("/tmp/project");
+      expect(localStore.getProjectByPath).not.toHaveBeenCalled();
     });
   });
 
@@ -174,6 +224,22 @@ describe("Doctor", () => {
 
       expect(results[0].status).toBe("fixed");
       expect(store.updateRun).toHaveBeenCalledWith(run.id, expect.objectContaining({ status: "failed" }));
+    });
+
+    it("uses the registered run store when available", async () => {
+      const { localStore, runStore, doctor, project } = makeRegisteredMocks();
+      const run = makeRun({ session_key: null });
+      runStore.getRunsByStatus.mockResolvedValue([run]);
+
+      const results = await doctor.checkZombieRuns({ fix: true });
+
+      expect(results[0].status).toBe("fixed");
+      expect(runStore.getProjectByPath).toHaveBeenCalledWith("/tmp/project");
+      expect(runStore.getRunsByStatus).toHaveBeenCalledWith("running", project.id);
+      expect(runStore.updateRun).toHaveBeenCalledWith(run.id, expect.objectContaining({ status: "failed" }));
+      expect(localStore.getProjectByPath).not.toHaveBeenCalled();
+      expect(localStore.getRunsByStatus).not.toHaveBeenCalled();
+      expect(localStore.updateRun).not.toHaveBeenCalled();
     });
 
     it("shows dry-run message without making changes", async () => {
@@ -315,6 +381,23 @@ describe("Doctor", () => {
       expect(result.status).toBe("fixed");
       expect(store.updateRun).toHaveBeenCalledWith(run.id, expect.objectContaining({ status: "failed" }));
     });
+
+    it("uses the registered run store when available", async () => {
+      const { localStore, runStore, doctor, project } = makeRegisteredMocks();
+      const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      const run = makeRun({ status: "pending", created_at: twoDaysAgo });
+      runStore.getRunsByStatus.mockResolvedValue([run]);
+
+      const result = await doctor.checkStalePendingRuns({ fix: true });
+
+      expect(result.status).toBe("fixed");
+      expect(runStore.getProjectByPath).toHaveBeenCalledWith("/tmp/project");
+      expect(runStore.getRunsByStatus).toHaveBeenCalledWith("pending", project.id);
+      expect(runStore.updateRun).toHaveBeenCalledWith(run.id, expect.objectContaining({ status: "failed" }));
+      expect(localStore.getProjectByPath).not.toHaveBeenCalled();
+      expect(localStore.getRunsByStatus).not.toHaveBeenCalled();
+      expect(localStore.updateRun).not.toHaveBeenCalled();
+    });
   });
 
   describe("checkRunStateConsistency", () => {
@@ -358,6 +441,25 @@ describe("Doctor", () => {
 
       expect(results[0].status).toBe("fixed");
       expect(store.updateRun).toHaveBeenCalledWith(inconsistentRun.id, { status: "failed" });
+    });
+
+    it("uses the registered run store when available", async () => {
+      const { localStore, runStore, doctor, project } = makeRegisteredMocks();
+      const inconsistentRun = makeRun({
+        status: "running",
+        completed_at: new Date().toISOString(),
+      });
+      runStore.getActiveRuns.mockResolvedValue([inconsistentRun]);
+
+      const results = await doctor.checkRunStateConsistency({ fix: true });
+
+      expect(results[0].status).toBe("fixed");
+      expect(runStore.getProjectByPath).toHaveBeenCalledWith("/tmp/project");
+      expect(runStore.getActiveRuns).toHaveBeenCalledWith(project.id);
+      expect(runStore.updateRun).toHaveBeenCalledWith(inconsistentRun.id, { status: "failed" });
+      expect(localStore.getProjectByPath).not.toHaveBeenCalled();
+      expect(localStore.getActiveRuns).not.toHaveBeenCalled();
+      expect(localStore.updateRun).not.toHaveBeenCalled();
     });
 
     it("returns empty when no project registered", async () => {
@@ -439,6 +541,122 @@ describe("Doctor", () => {
       expect(results.some((r) => r.name === "failed runs" && r.status === "warn")).toBe(true);
     });
 
+    it("uses the registered run store for failed/stuck reads and writes when fix=true", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        const beadsDir = join(tmpDir, ".beads");
+        await mkdir(beadsDir, { recursive: true });
+        await writeFile(join(beadsDir, "issues.jsonl"), `${JSON.stringify({ id: "bd-registered", status: "closed" })}\n`);
+
+        const { localStore, runStore, doctor, project } = makeRegisteredMocks(tmpDir);
+        const run = makeRun({ id: "run-registered", seed_id: "bd-registered", status: "failed" });
+        runStore.getRunsByStatus
+          .mockResolvedValueOnce([run])
+          .mockResolvedValueOnce([]);
+
+        const results = await doctor.checkFailedStuckRuns({ fix: true });
+
+        expect(results.find((r) => r.name === "failed/stuck runs (auto-resolved)")).toBeDefined();
+        expect(runStore.getProjectByPath).toHaveBeenCalledWith(tmpDir);
+        expect(runStore.getRunsByStatus).toHaveBeenNthCalledWith(1, "failed", project.id);
+        expect(runStore.getRunsByStatus).toHaveBeenNthCalledWith(2, "stuck", project.id);
+        expect(runStore.updateRun).toHaveBeenCalledWith(run.id, { status: "merged" });
+        expect(localStore.getProjectByPath).not.toHaveBeenCalled();
+        expect(localStore.getRunsByStatus).not.toHaveBeenCalled();
+        expect(localStore.updateRun).not.toHaveBeenCalled();
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("does not write auto-resolved runs without --fix", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        const beadsDir = join(tmpDir, ".beads");
+        await mkdir(beadsDir, { recursive: true });
+        await writeFile(join(beadsDir, "issues.jsonl"), `${JSON.stringify({ id: "bd-closed", status: "closed" })}\n`);
+
+        const execFn = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+        mockDetectDefaultBranch.mockResolvedValue("main");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+        const closedRun = makeRun({ id: "run-closed", seed_id: "bd-closed", status: "failed" });
+        const mergedRun = makeRun({ id: "run-merged", seed_id: "bd-merged", status: "failed" });
+        store.getRunsByStatus
+          .mockReturnValueOnce([closedRun, mergedRun])
+          .mockReturnValueOnce([]);
+
+        const results = await doctor.checkFailedStuckRuns();
+
+        const resolvedResult = results.find((r) => r.name === "failed/stuck runs (auto-resolved)");
+        expect(resolvedResult).toBeDefined();
+        expect(resolvedResult!.status).toBe("warn");
+        expect(resolvedResult!.message).toContain("eligible for auto-resolution");
+        expect(store.updateRun).not.toHaveBeenCalled();
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("uses the registered run store for historical retry partitioning", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        const { localStore, runStore, doctor, project } = makeRegisteredMocks(tmpDir);
+
+        const failedRun = makeRun({
+          id: "run-failed-old",
+          seed_id: "bd-retry",
+          status: "failed",
+          created_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+        const laterSuccess = makeRun({
+          id: "run-success",
+          seed_id: "bd-retry",
+          status: "completed",
+          created_at: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+
+        runStore.getRunsByStatus
+          .mockResolvedValueOnce([failedRun])
+          .mockResolvedValueOnce([]);
+        runStore.getRunsForSeed.mockResolvedValue([failedRun, laterSuccess]);
+
+        const results = await doctor.checkFailedStuckRuns({ fix: true });
+
+        expect(results.find((r) => r.name === "failed runs (historical retries)")).toBeDefined();
+        expect(runStore.getRunsForSeed).toHaveBeenCalledWith("bd-retry", project.id);
+        expect(localStore.getRunsForSeed).not.toHaveBeenCalled();
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("keeps local run-store behavior unchanged when no registered store is available", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        const beadsDir = join(tmpDir, ".beads");
+        await mkdir(beadsDir, { recursive: true });
+        await writeFile(join(beadsDir, "issues.jsonl"), `${JSON.stringify({ id: "bd-local", status: "closed" })}\n`);
+
+        const { store, doctor } = makeMocks(tmpDir);
+        store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: tmpDir, created_at: "", updated_at: "" });
+        const run = makeRun({ id: "run-local", seed_id: "bd-local", status: "failed" });
+        store.getRunsByStatus
+          .mockReturnValueOnce([run])
+          .mockReturnValueOnce([]);
+
+        const results = await doctor.checkFailedStuckRuns({ fix: true });
+
+        expect(results.find((r) => r.name === "failed/stuck runs (auto-resolved)")).toBeDefined();
+        expect(store.getProjectByPath).toHaveBeenCalledWith(tmpDir);
+        expect(store.getRunsByStatus).toHaveBeenNthCalledWith(1, "failed", "proj-1");
+        expect(store.getRunsByStatus).toHaveBeenNthCalledWith(2, "stuck", "proj-1");
+        expect(store.updateRun).toHaveBeenCalledWith(run.id, { status: "merged" });
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
     // ── Merge-detection tests ──────────────────────────────────────────
 
     /**
@@ -482,7 +700,7 @@ describe("Doctor", () => {
           .mockReturnValueOnce([failedRun]) // failed runs
           .mockReturnValueOnce([]);          // stuck runs
 
-        const results = await doctor.checkFailedStuckRuns();
+        const results = await doctor.checkFailedStuckRuns({ fix: true });
 
         // Should have auto-resolved the run
         const resolvedResult = results.find((r) => r.name === "failed/stuck runs (auto-resolved)");
@@ -491,7 +709,7 @@ describe("Doctor", () => {
         expect(resolvedResult!.message).toContain("Auto-resolved 1");
 
         // Store should have been updated to completed
-        expect(store.updateRun).toHaveBeenCalledWith("run-merged", { status: "completed" });
+        expect(store.updateRun).toHaveBeenCalledWith("run-merged", { status: "merged" });
 
         // No warning about failed runs should appear
         expect(results.find((r) => r.name === "failed runs")).toBeUndefined();
@@ -520,7 +738,7 @@ describe("Doctor", () => {
           .mockReturnValueOnce([failedRun])
           .mockReturnValueOnce([]);
 
-        const results = await doctor.checkFailedStuckRuns();
+        const results = await doctor.checkFailedStuckRuns({ fix: true });
 
         // Run should still appear as a warning
         const warnResult = results.find((r) => r.name === "failed runs");
@@ -555,13 +773,13 @@ describe("Doctor", () => {
           .mockReturnValueOnce([failedRun])
           .mockReturnValueOnce([]);
 
-        const results = await doctor.checkFailedStuckRuns();
+        const results = await doctor.checkFailedStuckRuns({ fix: true });
 
         // Should have auto-resolved
         const resolvedResult = results.find((r) => r.name === "failed/stuck runs (auto-resolved)");
         expect(resolvedResult).toBeDefined();
         expect(resolvedResult!.status).toBe("fixed");
-        expect(store.updateRun).toHaveBeenCalledWith("run-closed-seed", { status: "completed" });
+        expect(store.updateRun).toHaveBeenCalledWith("run-closed-seed", { status: "merged" });
 
         // execFn should NOT have been called — seed-closed check short-circuits
         expect(execFn).not.toHaveBeenCalled();
@@ -583,7 +801,7 @@ describe("Doctor", () => {
           .mockReturnValueOnce([failedRun])
           .mockReturnValueOnce([]);
 
-        const results = await doctor.checkFailedStuckRuns();
+        const results = await doctor.checkFailedStuckRuns({ fix: true });
 
         // Run should remain as a warning — error treated as "not merged"
         const warnResult = results.find((r) => r.name === "failed runs");
@@ -607,13 +825,37 @@ describe("Doctor", () => {
           .mockReturnValueOnce([])         // failed runs
           .mockReturnValueOnce([stuckRun]); // stuck runs
 
-        const results = await doctor.checkFailedStuckRuns();
+        const results = await doctor.checkFailedStuckRuns({ fix: true });
 
         const resolvedResult = results.find((r) => r.name === "failed/stuck runs (auto-resolved)");
         expect(resolvedResult).toBeDefined();
         expect(resolvedResult!.status).toBe("fixed");
-        expect(store.updateRun).toHaveBeenCalledWith("run-stuck", { status: "completed" });
+        expect(store.updateRun).toHaveBeenCalledWith("run-stuck", { status: "merged" });
         expect(results.find((r) => r.name === "stuck runs")).toBeUndefined();
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+
+    it("remains non-mutating in dry-run mode for auto-resolve candidates", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-test-"));
+      try {
+        const execFn = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+        mockDetectDefaultBranch.mockResolvedValue("main");
+
+        const { store, doctor } = await makeMergeDetectionMocks(tmpDir, execFn);
+        const mergedRun = makeRun({ id: "run-dry-merged", seed_id: "bd-dry-merged", status: "failed" });
+        store.getRunsByStatus
+          .mockReturnValueOnce([mergedRun])
+          .mockReturnValueOnce([]);
+
+        const results = await doctor.checkFailedStuckRuns({ dryRun: true });
+
+        const resolvedResult = results.find((r) => r.name === "failed/stuck runs (auto-resolved)");
+        expect(resolvedResult).toBeDefined();
+        expect(resolvedResult!.status).toBe("warn");
+        expect(resolvedResult!.message).toContain("dry-run");
+        expect(store.updateRun).not.toHaveBeenCalled();
       } finally {
         await rm(tmpDir, { recursive: true });
       }
@@ -650,7 +892,7 @@ describe("Doctor", () => {
         // getRunsForSeed returns both the failed run and the later completed run
         store.getRunsForSeed.mockReturnValue([failedRun, laterSuccess]);
 
-        const results = await doctor.checkFailedStuckRuns();
+        const results = await doctor.checkFailedStuckRuns({ fix: true });
 
         // Should be classified as historical retry, not actionable
         const historicalResult = results.find((r) => r.name === "failed runs (historical retries)");
@@ -872,6 +1114,21 @@ describe("Doctor", () => {
       expect(passResult).toBeDefined();
       expect(passResult!.status).toBe("pass");
     });
+
+    it("includes orphaned global-store runs in checkDataIntegrity and runAll", async () => {
+      const { doctor } = makeMocks();
+      vi.spyOn(doctor, "checkOrphanedGlobalStoreRuns").mockResolvedValue({
+        name: "orphaned global-store runs",
+        status: "warn",
+        message: "legacy global store",
+      });
+
+      const dataIntegrityResults = await doctor.checkDataIntegrity();
+      expect(dataIntegrityResults.map((r) => r.name)).toContain("orphaned global-store runs");
+
+      const report = await doctor.runAll();
+      expect(report.dataIntegrity.map((r) => r.name)).toContain("orphaned global-store runs");
+    });
   });
 
   describe("checkCompletedRunsNotQueued", () => {
@@ -1089,16 +1346,13 @@ describe("Doctor", () => {
       expect(results[0].message).toContain("No foreman worktrees");
     });
 
-    it("reports pass for running run with a live process", async () => {
-      const { store, doctor } = makeMocks();
-      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+    it("uses the registered run store when available", async () => {
+      const { localStore, runStore, doctor, project } = makeRegisteredMocks();
       mockListWorktrees.mockResolvedValue([
         { path: "/tmp/wt", branch: "foreman/seed-abc", head: "abc123", bare: false },
       ]);
-      // Use the current process's PID — guaranteed to be alive
-      const livePid = process.pid;
-      store.getRunsForSeed.mockReturnValue([
-        makeRun({ status: "running", seed_id: "seed-abc", worktree_path: "/tmp/wt", session_key: `session-pid-${livePid}` }),
+      runStore.getRunsForSeed.mockResolvedValue([
+        makeRun({ status: "running", seed_id: "seed-abc", worktree_path: "/tmp/wt", session_key: `session-pid-${process.pid}` }),
       ]);
 
       const results = await doctor.checkOrphanedWorktrees();
@@ -1106,6 +1360,27 @@ describe("Doctor", () => {
       expect(results).toHaveLength(1);
       expect(results[0].status).toBe("pass");
       expect(results[0].message).toContain("Active run");
+      expect(runStore.getProjectByPath).toHaveBeenCalledWith("/tmp/project");
+      expect(runStore.getRunsForSeed).toHaveBeenCalledWith("seed-abc", project.id);
+      expect(localStore.getRunsForSeed).not.toHaveBeenCalled();
+    });
+
+    it("keeps local run-store behavior unchanged when no registered store is available", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue(null);
+      mockListWorktrees.mockResolvedValue([
+        { path: "/tmp/wt", branch: "foreman/seed-abc", head: "abc123", bare: false },
+      ]);
+      store.getRunsForSeed.mockReturnValue([
+        makeRun({ status: "running", seed_id: "seed-abc", worktree_path: "/tmp/wt", session_key: `session-pid-${process.pid}` }),
+      ]);
+
+      const results = await doctor.checkOrphanedWorktrees();
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("pass");
+      expect(results[0].message).toContain("Active run");
+      expect(store.getRunsForSeed).toHaveBeenCalledWith("seed-abc");
     });
 
     it("reports warn for running run with dead process (zombie)", async () => {
@@ -1173,8 +1448,7 @@ describe("Doctor", () => {
       const results = await doctor.checkOrphanedWorktrees();
 
       expect(results[0].status).toBe("warn");
-      expect(results[0].message).toContain("branch exists on origin");
-      expect(results[0].message).toContain("skipping auto-removal");
+      expect(results[0].message).toBe("Orphaned worktree at /tmp/wt (no runs) but branch exists on origin — skipping auto-removal. Verify and remove manually if safe.");
     });
 
     it("removes orphaned worktree when branch not on origin and fix=true", async () => {
@@ -1189,7 +1463,9 @@ describe("Doctor", () => {
 
       const results = await doctor.checkOrphanedWorktrees({ fix: true });
 
-      expect(results[0].message).toContain("not on origin");
+      expect(results[0].status).toBe("fixed");
+      expect(results[0].message).toBe("Orphaned worktree (no runs, not on origin)");
+      expect(results[0].fixApplied).toBe("Removed worktree at /tmp/wt");
     });
 
     it("warns without fix for orphaned worktree not on origin", async () => {
@@ -1204,8 +1480,7 @@ describe("Doctor", () => {
       const results = await doctor.checkOrphanedWorktrees();
 
       expect(results[0].status).toBe("warn");
-      expect(results[0].message).toContain("not on origin");
-      expect(results[0].message).toContain("--fix");
+      expect(results[0].message).toBe("Orphaned worktree at /tmp/wt (no runs, not on origin). Use --fix to remove.");
     });
 
     it("reports pass for running SDK-based worker (no zombie false positive)", async () => {
@@ -1586,7 +1861,9 @@ describe("checkOrphanedGlobalStoreRuns", () => {
 
   it("returns pass when no legacy global store exists", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-global-pass-"));
+    const originalHome = process.env.HOME;
     try {
+      process.env.HOME = tmpDir;
       // Doctor's store is the project-local store — we pass a mock.
       const mockStore = {
         getProjectByPath: vi.fn(() => null),
@@ -1595,61 +1872,28 @@ describe("checkOrphanedGlobalStoreRuns", () => {
         listProjects: vi.fn(() => []),
       };
       const doctor = new Doctor(mockStore as any, tmpDir);
-      // Override homedir so the global store path points to a non-existent location.
       const result = await doctor.checkOrphanedGlobalStoreRuns();
-      // Either "pass" (no global store found) or "pass" (no orphans)
-      expect(["pass", "warn", "fixed"].includes(result.status)).toBe(true);
+      expect(result.status).toBe("pass");
+      expect(result.message).toBe("No legacy global store found");
     } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it("returns pass when global store has no projects with local stores", async () => {
+  it("warns without --fix and migrates orphaned runs with --fix", async () => {
     const { ForemanStore } = await import("../../lib/store.js");
     const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-global-noproj-"));
-    const globalDir = join(tmpDir, "global-foreman");
-    await mkdir(globalDir, { recursive: true });
-    const globalDbPath = join(globalDir, "foreman.db");
-
-    // Create a global store with a project but NO corresponding local store on disk.
-    const globalStore = new ForemanStore(globalDbPath);
-    const project = globalStore.registerProject("ghost-project", join(tmpDir, "ghost"));
-    globalStore.createRun(project.id, "seed-xyz", "developer");
-    const runs = globalStore.getRunsByStatus("pending", project.id);
-    globalStore.updateRun(runs[0].id, { status: "completed", completed_at: new Date().toISOString() });
-    globalStore.close();
-
-    // Doctor uses a mock store (project-local).
-    const mockStore = {
-      getProjectByPath: vi.fn(() => null),
-      getRunsByStatus: vi.fn(() => []),
-      getActiveRuns: vi.fn(() => []),
-      listProjects: vi.fn(() => []),
-    };
-
-    // Swap the global DB path by creating the doctor and testing with a known path.
-    // We create a Doctor that will look at a custom global path by temporarily
-    // monkey-patching the environment — instead, we directly instantiate ForemanStore
-    // at the known path to verify behaviour.
-    const { ForemanStore: FS2 } = await import("../../lib/store.js");
-    const verifyStore = new FS2(globalDbPath);
-    const projects = verifyStore.listProjects();
-    verifyStore.close();
-    // The project exists in global store, but its local .foreman/foreman.db does not exist.
-    expect(projects.length).toBe(1);
-    // The local store path should NOT exist on disk.
-    const localDbPath = join(project.path, ".foreman", "foreman.db");
-    const { existsSync } = await import("node:fs");
-    expect(existsSync(localDbPath)).toBe(false);
-    // Therefore: check should find no orphans to migrate (local store missing → skip).
-    // We validate this by confirming the logic: if local DB doesn't exist, we skip.
-    // This is checked by the check implementation (see doctor.ts).
-  });
-
-  it("detects and migrates orphaned runs to project-local store (--fix)", async () => {
-    const { ForemanStore } = await import("../../lib/store.js");
-    const tmpDir = await mkdtemp(join(tmpdir(), "foreman-doctor-global-fix-"));
+    const originalHome = process.env.HOME;
+    let expectedRunId: string | undefined;
+    const globalDir = join(tmpDir, ".foreman");
     try {
+      process.env.HOME = tmpDir;
+
       // Set up a "project" directory with a local .foreman/ store.
       const projectDir = join(tmpDir, "my-project");
       const localForemanDir = join(projectDir, ".foreman");
@@ -1661,34 +1905,42 @@ describe("checkOrphanedGlobalStoreRuns", () => {
       localStore.close();
 
       // Create a global store with a completed run for the same project.
-      const globalDir = join(tmpDir, ".foreman");
       await mkdir(globalDir, { recursive: true });
       const globalDbPath = join(globalDir, "foreman.db");
       const globalStore = new ForemanStore(globalDbPath);
       const globalProject = globalStore.registerProject("my-project", projectDir);
       const run = globalStore.createRun(globalProject.id, "seed-001", "developer", getWorkspacePath(projectDir, "seed-001"));
+      expectedRunId = run.id;
       globalStore.updateRun(run.id, { status: "completed", completed_at: new Date().toISOString() });
       globalStore.close();
 
-      // Build a Doctor that points at our custom global store path.
-      // We test checkOrphanedGlobalStoreRuns() by calling it with a patched
-      // globalDbPath. Since we can't inject the path directly, we use a workaround:
-      // create a Doctor with the local project store and verify the global store
-      // independently, then validate the migration logic via ForemanStore directly.
+      const mockStore = {
+        getProjectByPath: vi.fn(() => null),
+        getRunsByStatus: vi.fn(() => []),
+        getActiveRuns: vi.fn(() => []),
+        listProjects: vi.fn(() => []),
+      };
+      const doctor = new Doctor(mockStore as any, projectDir);
 
-      // Verify: before migration, local store has 0 runs.
-      const localStoreBefore = ForemanStore.forProject(projectDir);
-      const runsBefore = localStoreBefore.getRunsByStatus("completed");
-      localStoreBefore.close();
-      expect(runsBefore.length).toBe(0);
+      const warnResult = await doctor.checkOrphanedGlobalStoreRuns();
+      expect(warnResult.status).toBe("warn");
+      expect(warnResult.message).toContain("Use --fix");
 
-      // Verify: global store has 1 completed run.
-      const globalStoreCheck = new ForemanStore(globalDbPath);
-      const globalRuns = globalStoreCheck.getRunsByStatus("completed", globalProject.id);
-      globalStoreCheck.close();
-      expect(globalRuns.length).toBe(1);
-      expect(globalRuns[0].id).toBe(run.id);
+      const fixedResult = await doctor.checkOrphanedGlobalStoreRuns({ fix: true });
+      expect(fixedResult.status).toBe("fixed");
+      expect(fixedResult.message).toContain("Migrated 1 run(s)");
+
+      const localStoreAfter = ForemanStore.forProject(projectDir);
+      const runsAfter = localStoreAfter.getRunsByStatus("completed");
+      localStoreAfter.close();
+      expect(runsAfter.length).toBe(1);
+      expect(runsAfter[0].id).toBe(expectedRunId);
     } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
       await rm(tmpDir, { recursive: true, force: true });
     }
   });

@@ -36,6 +36,8 @@ export interface StaleWorktreeCheckOptions {
   autoRebase?: boolean;
   /** Whether to fail when rebase has conflicts. Default: true. */
   failOnConflict?: boolean;
+  /** Optional event writer for pre-dispatch stale-worktree observability events. */
+  eventWriter?: (eventType: "worktree-rebased" | "worktree-rebase-failed", payload: Record<string, unknown>) => Promise<void> | void;
 }
 
 /**
@@ -53,6 +55,27 @@ export interface StaleDetectionResult {
 }
 
 // ── Main function ─────────────────────────────────────────────────────────
+
+async function logStaleWorktreeEvent(
+  store: ForemanStore,
+  projectId: string,
+  runId: string,
+  eventType: "worktree-rebased" | "worktree-rebase-failed",
+  payload: Record<string, unknown>,
+  eventWriter?: StaleWorktreeCheckOptions["eventWriter"],
+): Promise<void> {
+  try {
+    if (eventWriter) {
+      await eventWriter(eventType, payload);
+      return;
+    }
+
+    store.logEvent(projectId, eventType, payload, runId);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[StaleWorktreeCheck] Event logging failed (non-fatal): ${msg}`);
+  }
+}
 
 /**
  * Check if a worktree is stale (behind its target branch) and optionally auto-rebase.
@@ -93,6 +116,7 @@ export async function checkAndRebaseStaleWorktree(
 ): Promise<StaleWorktreeCheckResult> {
   const autoRebase = opts?.autoRebase ?? true;
   const failOnConflict = opts?.failOnConflict ?? true;
+  let conflictRebaseErrorMessage: string | undefined;
 
   // ── Step 1: Get local HEAD ────────────────────────────────────────────
   let localHead: string;
@@ -158,14 +182,14 @@ export async function checkAndRebaseStaleWorktree(
 
     if (rebaseResult.success) {
       // Rebase succeeded
-      store.logEvent(projectId, "worktree-rebased", {
+      await logStaleWorktreeEvent(store, projectId, runId, "worktree-rebased", {
         seedId,
         runId,
         reason: "pre-dispatch",
         from: localHead,
         to: remoteHead,
         targetBranch,
-      }, runId);
+      }, opts?.eventWriter);
 
       return { rebased: true, autoRebasePerformed: true };
     } else {
@@ -173,7 +197,7 @@ export async function checkAndRebaseStaleWorktree(
       const conflictList = rebaseResult.conflictingFiles ?? [];
       const errorMsg = `Rebase failed with conflicts: ${conflictList.join(", ") || "unknown conflicts"}`;
 
-      store.logEvent(projectId, "worktree-rebase-failed", {
+      await logStaleWorktreeEvent(store, projectId, runId, "worktree-rebase-failed", {
         seedId,
         runId,
         reason: "pre-dispatch",
@@ -182,9 +206,10 @@ export async function checkAndRebaseStaleWorktree(
         targetBranch,
         conflictingFiles: conflictList,
         error: errorMsg,
-      }, runId);
+      }, opts?.eventWriter);
 
       if (failOnConflict) {
+        conflictRebaseErrorMessage = errorMsg;
         throw new Error(errorMsg);
       }
 
@@ -198,8 +223,20 @@ export async function checkAndRebaseStaleWorktree(
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
 
+    if (conflictRebaseErrorMessage === msg) {
+      if (failOnConflict) {
+        throw new Error(`Rebase conflict: ${msg}`);
+      }
+
+      return {
+        rebased: false,
+        autoRebasePerformed: true,
+        error: `Rebase conflict: ${msg}`,
+      };
+    }
+
     // Log the failure event
-    store.logEvent(projectId, "worktree-rebase-failed", {
+    await logStaleWorktreeEvent(store, projectId, runId, "worktree-rebase-failed", {
       seedId,
       runId,
       reason: "pre-dispatch",
@@ -207,7 +244,7 @@ export async function checkAndRebaseStaleWorktree(
       to: remoteHead,
       targetBranch,
       error: msg,
-    }, runId);
+    }, opts?.eventWriter);
 
     // Check if it's a conflict error (from rebase()) vs something else
     if (msg.includes("conflict") || msg.includes("CONFLICT")) {

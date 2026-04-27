@@ -222,6 +222,14 @@ describe("finalize() — push succeeds", () => {
     expect(mockEnqueueToMergeQueue).toHaveBeenCalledOnce();
   });
 
+  it("does not pass db to enqueueToMergeQueue on the Postgres path", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir, projectId: "proj-123" }), logFile, mockVcs);
+
+    expect(mockEnqueueToMergeQueue).toHaveBeenCalledOnce();
+    expect(mockEnqueueToMergeQueue.mock.calls[0][0]).not.toHaveProperty("db");
+    expect(mockEnqueueToMergeQueue.mock.calls[0][0].projectId).toBe("proj-123");
+  });
+
   it("uses vcs.stageAll and vcs.commit for the commit step", async () => {
     const vcs = makeMockVcs();
     await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-test-001", seedTitle: "My fix" }), logFile, vcs);

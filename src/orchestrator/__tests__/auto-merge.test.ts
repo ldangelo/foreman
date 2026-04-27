@@ -27,6 +27,10 @@ const {
   mockMergeQueueDequeue,
   mockMergeQueueUpdateStatus,
   MockMergeQueue,
+  mockPostgresMergeQueueReconcile,
+  mockPostgresMergeQueueDequeue,
+  mockPostgresMergeQueueUpdateStatus,
+  MockPostgresMergeQueue,
   mockRefineryMergeCompleted,
   mockRefineryEnsurePullRequest,
   MockRefinery,
@@ -61,6 +65,15 @@ const {
     this.reconcile = mockMergeQueueReconcile;
     this.dequeue = mockMergeQueueDequeue;
     this.updateStatus = mockMergeQueueUpdateStatus;
+  });
+
+  const mockPostgresMergeQueueReconcile = vi.fn().mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
+  const mockPostgresMergeQueueDequeue = vi.fn().mockReturnValue(null);
+  const mockPostgresMergeQueueUpdateStatus = vi.fn();
+  const MockPostgresMergeQueue = vi.fn(function (this: Record<string, unknown>) {
+    this.reconcile = mockPostgresMergeQueueReconcile;
+    this.dequeue = mockPostgresMergeQueueDequeue;
+    this.updateStatus = mockPostgresMergeQueueUpdateStatus;
   });
 
   const mockRefineryMergeCompleted = vi.fn().mockResolvedValue({
@@ -101,6 +114,10 @@ const {
     mockMergeQueueDequeue,
     mockMergeQueueUpdateStatus,
     MockMergeQueue,
+    mockPostgresMergeQueueReconcile,
+    mockPostgresMergeQueueDequeue,
+    mockPostgresMergeQueueUpdateStatus,
+    MockPostgresMergeQueue,
     mockRefineryMergeCompleted,
     mockRefineryEnsurePullRequest,
     MockRefinery,
@@ -123,6 +140,9 @@ vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
 vi.mock("../merge-queue.js", () => ({
   MergeQueue: MockMergeQueue,
   RETRY_CONFIG: { maxRetries: 3, initialDelayMs: 60_000, maxDelayMs: 3_600_000, backoffMultiplier: 2 },
+}));
+vi.mock("../postgres-merge-queue.js", () => ({
+  PostgresMergeQueue: MockPostgresMergeQueue,
 }));
 vi.mock("../refinery.js", () => ({ Refinery: MockRefinery }));
 vi.mock("../../lib/project-config.js", () => ({
@@ -193,6 +213,9 @@ function resetMocks(): void {
   mockMergeQueueReconcile.mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
   mockMergeQueueDequeue.mockReturnValue(null);
   mockMergeQueueUpdateStatus.mockReturnValue(undefined);
+  mockPostgresMergeQueueReconcile.mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
+  mockPostgresMergeQueueDequeue.mockReturnValue(null);
+  mockPostgresMergeQueueUpdateStatus.mockReturnValue(undefined);
   mockRefineryMergeCompleted.mockResolvedValue({
     merged: [],
     conflicts: [],
@@ -285,6 +308,81 @@ describe("autoMerge() — project registered, empty queue", () => {
     }));
 
     expect(mockDetectDefaultBranch).not.toHaveBeenCalled();
+  });
+});
+
+describe("autoMerge() — registered read seam", () => {
+  beforeEach(resetMocks);
+
+  it("uses injected registered lookup/queue without rediscovering the local project", async () => {
+    const readLookup = {
+      getRun: vi.fn().mockResolvedValue(null),
+      getRunsByStatus: vi.fn().mockResolvedValue([]),
+      getRunsByStatuses: vi.fn().mockResolvedValue([]),
+      getRunsByBaseBranch: vi.fn().mockResolvedValue([]),
+    };
+    const localProjectLookup = vi.fn(() => {
+      throw new Error("local getProjectByPath should not be used");
+    });
+    const store = makeStore({
+      getProjectByPath: localProjectLookup,
+    });
+
+    await autoMerge(makeOpts({
+      store: store as never,
+      registeredProjectId: "proj-1",
+      readLookup,
+    }));
+
+    expect(localProjectLookup).not.toHaveBeenCalled();
+    expect(MockPostgresMergeQueue).toHaveBeenCalledWith("proj-1");
+    expect(MockMergeQueue).not.toHaveBeenCalled();
+    expect(MockRefinery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "/mock/project",
+      expect.anything(),
+      expect.objectContaining({ registeredProjectId: "proj-1", runLookup: readLookup }),
+    );
+  });
+
+  it("uses the injected read lookup for registered retry counting instead of local store reads", async () => {
+    const entry = { id: 1, seed_id: "bd-test-001", run_id: "run-001" };
+    const readLookup = {
+      getRun: vi.fn().mockResolvedValue({ id: "run-001", seed_id: "bd-test-001", project_id: "proj-1", merge_strategy: "auto" }),
+      getRunsByStatus: vi.fn().mockResolvedValue([]),
+      getRunsByStatuses: vi.fn().mockResolvedValue([
+        { id: "run-old", seed_id: "bd-test-001", status: "test-failed" },
+      ]),
+      getRunsByBaseBranch: vi.fn().mockResolvedValue([]),
+    };
+    const localProjectLookup = vi.fn(() => {
+      throw new Error("local getProjectByPath should not be used");
+    });
+    const localRunsByStatuses = vi.fn(() => {
+      throw new Error("local getRunsByStatuses should not be used");
+    });
+    const store = makeStore({
+      getProjectByPath: localProjectLookup,
+      getRunsByStatuses: localRunsByStatuses,
+    });
+    mockPostgresMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [],
+      conflicts: [],
+      testFailures: [{ seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "failed" }],
+      unexpectedErrors: [],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts({
+      store: store as never,
+      registeredProjectId: "proj-1",
+      readLookup,
+    }));
+
+    expect(readLookup.getRunsByStatuses).toHaveBeenCalledWith(["test-failed"], "proj-1");
+    expect(localRunsByStatuses).not.toHaveBeenCalled();
   });
 });
 
@@ -579,6 +677,67 @@ describe("autoMerge() — merge outcomes", () => {
       expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(
         expect.objectContaining({ runId: entry.run_id })
       );
+    });
+
+    it("scopes optsRunId and overrideRun to the matching dequeued entry only", async () => {
+      const firstEntry = makeEntry(1);
+      const secondEntry = makeEntry(2);
+      const firstRun = {
+        id: firstEntry.run_id,
+        seed_id: firstEntry.seed_id,
+        status: "completed" as const,
+        project_id: "proj-1",
+        agent_type: "worker",
+        session_key: null,
+        worktree_path: null,
+        started_at: null,
+        progress: null,
+        created_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      } as import("../../lib/store.js").Run;
+      const secondRun = {
+        id: secondEntry.run_id,
+        seed_id: secondEntry.seed_id,
+        status: "completed" as const,
+        project_id: "proj-1",
+        agent_type: "worker",
+        session_key: null,
+        worktree_path: null,
+        started_at: null,
+        progress: null,
+        created_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      } as import("../../lib/store.js").Run;
+
+      mockMergeQueueDequeue
+        .mockReturnValueOnce(firstEntry)
+        .mockReturnValueOnce(secondEntry)
+        .mockReturnValue(null);
+      mockGetRun.mockImplementation((id: string) => (id === secondRun.id ? secondRun : null));
+      mockRefineryMergeCompleted
+        .mockResolvedValueOnce({ merged: [{ seedId: firstEntry.seed_id }], conflicts: [], testFailures: [], unexpectedErrors: [], prsCreated: [] })
+        .mockResolvedValueOnce({ merged: [{ seedId: secondEntry.seed_id }], conflicts: [], testFailures: [], unexpectedErrors: [], prsCreated: [] });
+      MockRefinery.mockImplementationOnce(function (this: Record<string, unknown>) {
+        this.mergeCompleted = mockRefineryMergeCompleted;
+        this.ensurePullRequestForRun = mockRefineryEnsurePullRequest;
+      });
+
+      await autoMerge(makeOpts({
+        store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: mockGetRun }) as never,
+        overrideRun: firstRun,
+        runId: firstEntry.run_id,
+      }));
+
+      expect(mockRefineryMergeCompleted).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ runId: firstEntry.run_id, overrideRun: firstRun })
+      );
+      expect(mockRefineryMergeCompleted).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ runId: secondEntry.run_id })
+      );
+      expect(mockRefineryMergeCompleted.mock.calls[1][0]).not.toHaveProperty("overrideRun");
+      expect(mockGetRun).toHaveBeenCalledWith(secondEntry.run_id);
     });
   });
 

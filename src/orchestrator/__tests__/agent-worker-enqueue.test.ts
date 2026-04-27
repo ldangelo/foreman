@@ -1,7 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { MergeQueue } from "../merge-queue.js";
 import { enqueueToMergeQueue } from "../agent-worker-enqueue.js";
+
+const { mockPostgresMergeQueueEnqueue, mockPostgresMergeQueueCtor } = vi.hoisted(() => ({
+  mockPostgresMergeQueueEnqueue: vi.fn(),
+  mockPostgresMergeQueueCtor: vi.fn(function PostgresMergeQueueMock() {
+    return {
+      enqueue: mockPostgresMergeQueueEnqueue,
+    };
+  }),
+}));
+
+vi.mock("../postgres-merge-queue.js", () => ({
+  PostgresMergeQueue: mockPostgresMergeQueueCtor,
+}));
 
 // Minimal schema needed for tests
 const TEST_SCHEMA = `
@@ -92,8 +105,55 @@ describe("enqueueToMergeQueue", () => {
     db.close();
   });
 
-  it("enqueues branch to merge queue after successful push with files_modified populated", () => {
-    const result = enqueueToMergeQueue({
+  it("uses PostgresMergeQueue without requiring db when projectId is present", async () => {
+    mockPostgresMergeQueueCtor.mockClear();
+    mockPostgresMergeQueueEnqueue.mockClear().mockResolvedValue({
+      id: 1,
+      branch_name: "foreman/seed-pg",
+      seed_id: "seed-pg",
+      run_id: "run-pg",
+      operation: "auto_merge",
+      agent_name: "pipeline",
+      files_modified: ["src/app.ts"],
+      enqueued_at: "2024-01-01T00:00:00.000Z",
+      started_at: null,
+      completed_at: null,
+      status: "pending",
+      resolved_tier: null,
+      error: null,
+      retry_count: 0,
+      last_attempted_at: null,
+    });
+
+    const result = await enqueueToMergeQueue({
+      projectId: "proj-1",
+      seedId: "seed-pg",
+      runId: "run-pg",
+      worktreePath: "/tmp/test-worktree",
+      getFilesModified: () => ["src/app.ts"],
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.entry?.branch_name).toBe("foreman/seed-pg");
+    expect(mockPostgresMergeQueueCtor).toHaveBeenCalledWith("proj-1", expect.anything());
+    expect(mockPostgresMergeQueueEnqueue).toHaveBeenCalledOnce();
+  });
+
+  it("fails non-fatally when projectId is absent and db is missing", async () => {
+    const result = await enqueueToMergeQueue({
+      seedId: "seed-missing-db",
+      runId: "run-missing-db",
+      worktreePath: "/tmp/test-worktree",
+      getFilesModified: () => [],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("merge queue db is required when projectId is not set");
+    expect(result.entry).toBeUndefined();
+  });
+
+  it("enqueues branch to merge queue after successful push with files_modified populated", async () => {
+    const result = await enqueueToMergeQueue({
       db,
       seedId: "seed-1",
       runId: "run-1",
@@ -118,14 +178,14 @@ describe("enqueueToMergeQueue", () => {
     expect(entries[0].branch_name).toBe("foreman/seed-1");
   });
 
-  it("gracefully handles enqueue errors without throwing", () => {
+  it("gracefully handles enqueue errors without throwing", async () => {
     // Close the db to force an error when enqueue tries to use it
     const badDb = createTestDb();
     insertProject(badDb);
     insertRun(badDb, "run-bad", "seed-bad");
     badDb.close();
 
-    const result = enqueueToMergeQueue({
+    const result = await enqueueToMergeQueue({
       db: badDb,
       seedId: "seed-bad",
       runId: "run-bad",
@@ -139,12 +199,12 @@ describe("enqueueToMergeQueue", () => {
     expect(result.entry).toBeUndefined();
   });
 
-  it("extracts files_modified correctly from getFilesModified callback", () => {
+  it("extracts files_modified correctly from getFilesModified callback", async () => {
     // Simulate git diff --name-only output parsing
     const gitDiffOutput = "src/lib/store.ts\nsrc/orchestrator/agent-worker.ts\npackage.json\n";
     const files = gitDiffOutput.trim().split("\n").filter(Boolean);
 
-    const result = enqueueToMergeQueue({
+    const result = await enqueueToMergeQueue({
       db,
       seedId: "seed-1",
       runId: "run-1",
@@ -160,8 +220,8 @@ describe("enqueueToMergeQueue", () => {
     ]);
   });
 
-  it("handles empty git diff output (no files modified)", () => {
-    const result = enqueueToMergeQueue({
+  it("handles empty git diff output (no files modified)", async () => {
+    const result = await enqueueToMergeQueue({
       db,
       seedId: "seed-1",
       runId: "run-1",
@@ -173,8 +233,8 @@ describe("enqueueToMergeQueue", () => {
     expect(result.entry!.files_modified).toEqual([]);
   });
 
-  it("handles getFilesModified throwing an error gracefully", () => {
-    const result = enqueueToMergeQueue({
+  it("handles getFilesModified throwing an error gracefully", async () => {
+    const result = await enqueueToMergeQueue({
       db,
       seedId: "seed-1",
       runId: "run-1",
@@ -187,7 +247,7 @@ describe("enqueueToMergeQueue", () => {
     expect(result.entry!.files_modified).toEqual([]);
   });
 
-  it("is idempotent: calling twice returns the same entry", () => {
+  it("is idempotent: calling twice returns the same entry", async () => {
     const opts = {
       db,
       seedId: "seed-1",
@@ -196,8 +256,8 @@ describe("enqueueToMergeQueue", () => {
       getFilesModified: () => ["src/foo.ts"],
     };
 
-    const first = enqueueToMergeQueue(opts);
-    const second = enqueueToMergeQueue(opts);
+    const first = await enqueueToMergeQueue(opts);
+    const second = await enqueueToMergeQueue(opts);
 
     expect(first.success).toBe(true);
     expect(second.success).toBe(true);
@@ -208,8 +268,8 @@ describe("enqueueToMergeQueue", () => {
     expect(queue.list()).toHaveLength(1);
   });
 
-  it("stores create_pr operation when requested", () => {
-    const result = enqueueToMergeQueue({
+  it("stores create_pr operation when requested", async () => {
+    const result = await enqueueToMergeQueue({
       db,
       seedId: "seed-1",
       runId: "run-1",

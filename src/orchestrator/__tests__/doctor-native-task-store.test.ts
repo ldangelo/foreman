@@ -51,11 +51,11 @@ describe("Doctor native task store awareness", () => {
     const store = ForemanStore.forProject(project);
     new NativeTaskStore(store.getDb()).create({ title: "Native task", externalId: "bd-native" });
 
-    const result = await new Doctor(store, project).checkTaskStoreMode();
+    const result = await new Doctor(store, project, undefined, undefined, undefined, undefined, undefined, "native").checkTaskStoreMode();
 
     expect(result.status).toBe("warn");
     expect(result.message).toBe("Task store: native (1 tasks)");
-    expect(result.details).toContain("Both native task store and beads data exist");
+    expect(result.details).toContain("Beads data still exists alongside the native task backend");
     store.close();
   });
 
@@ -70,10 +70,10 @@ describe("Doctor native task store awareness", () => {
     const store = ForemanStore.forProject(project);
     new NativeTaskStore(store.getDb()).create({ title: "Native task" });
 
-    const result = await new Doctor(store, project).checkBrBinary();
+    const result = await new Doctor(store, project, undefined, undefined, undefined, undefined, undefined, "native").checkBrBinary();
 
     expect(result.status).toBe("pass");
-    expect(result.message).toContain("native task store active");
+    expect(result.message).toContain("Native task backend active");
     store.close();
   });
 
@@ -86,10 +86,24 @@ describe("Doctor native task store awareness", () => {
     const store = ForemanStore.forProject(project);
     new NativeTaskStore(store.getDb()).create({ title: "Native task" });
 
-    const result = await new Doctor(store, project).checkBeadsInitialized();
+    const result = await new Doctor(store, project, undefined, undefined, undefined, undefined, undefined, "native").checkBeadsInitialized();
 
     expect(result.status).toBe("skip");
-    expect(result.message).toContain("Native task store active");
+    expect(result.message).toContain("Native task backend active");
+    store.close();
+  });
+
+  it("skips bead status sync when native task backend is active", async () => {
+    const { ForemanStore } = await import("../../lib/store.js");
+    const { Doctor } = await import("../doctor.js");
+
+    const project = makeProject();
+    const store = ForemanStore.forProject(project);
+
+    const result = await new Doctor(store, project, undefined, undefined, undefined, undefined, undefined, "native").checkBeadStatusSync();
+
+    expect(result.status).toBe("skip");
+    expect(result.message).toContain("Native task backend active");
     store.close();
   });
 });

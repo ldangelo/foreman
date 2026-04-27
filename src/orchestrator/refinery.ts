@@ -18,8 +18,24 @@ import { syncBeadStatusAfterMerge } from "./auto-merge.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { NativeTaskStore } from "../lib/task-store.js";
+import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
+import type { Run, EventType } from "../lib/store.js";
 
 const execFileAsync = promisify(execFile);
+
+type Awaitable<T> = T | Promise<T>;
+
+export interface RefineryRunLookup {
+  getRun(id: string): Awaitable<Run | null>;
+  getRunsByStatus(status: Run["status"], projectId?: string): Awaitable<Run[]>;
+  getRunsByStatuses(statuses: Run["status"][], projectId?: string): Awaitable<Run[]>;
+  getRunsByBaseBranch(baseBranch: string, projectId?: string): Awaitable<Run[]>;
+}
+
+export interface RefineryOptions {
+  runLookup?: RefineryRunLookup;
+  registeredProjectId?: string;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -94,19 +110,89 @@ export interface IRefineryTaskClient {
 export class Refinery {
   private conflictResolver: ConflictResolver;
   private vcsBackend: VcsBackend;
-  private taskStore: NativeTaskStore;
+  private readonly taskStore?: NativeTaskStore;
+  private readonly runLookup: RefineryRunLookup;
+  private readonly registeredProjectId?: string;
+  private readonly postgresAdapter?: PostgresAdapter;
 
   constructor(
     private store: ForemanStore,
     private seeds: IRefineryTaskClient,
     private projectPath: string,
     vcsBackend?: VcsBackend,
+    opts: RefineryOptions = {},
   ) {
     // Default to git for backward compatibility with callers that don't
     // provide an explicit VcsBackend (e.g. existing tests).
     this.vcsBackend = vcsBackend ?? VcsBackendFactory.createSync({ backend: "git" }, projectPath);
     this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG, this.vcsBackend);
-    this.taskStore = new NativeTaskStore(this.store.getDb());
+    this.runLookup = opts.runLookup ?? store;
+    this.registeredProjectId = opts.registeredProjectId;
+    if (this.registeredProjectId) {
+      this.postgresAdapter = new PostgresAdapter();
+    } else {
+      this.taskStore = new NativeTaskStore(this.store.getDb());
+    }
+  }
+
+  private async lookupRun(runId: string): Promise<Run | null> {
+    return Promise.resolve(this.runLookup.getRun(runId));
+  }
+
+  private async lookupRunsByStatus(status: Run["status"], projectId?: string): Promise<Run[]> {
+    return projectId === undefined
+      ? Promise.resolve(this.runLookup.getRunsByStatus(status))
+      : Promise.resolve(this.runLookup.getRunsByStatus(status, projectId));
+  }
+
+  private async lookupRunsByStatuses(statuses: Run["status"][], projectId?: string): Promise<Run[]> {
+    return projectId === undefined
+      ? Promise.resolve(this.runLookup.getRunsByStatuses(statuses))
+      : Promise.resolve(this.runLookup.getRunsByStatuses(statuses, projectId));
+  }
+
+  private async lookupRunsByBaseBranch(baseBranch: string, projectId?: string): Promise<Run[]> {
+    return projectId === undefined
+      ? Promise.resolve(this.runLookup.getRunsByBaseBranch(baseBranch))
+      : Promise.resolve(this.runLookup.getRunsByBaseBranch(baseBranch, projectId));
+  }
+
+  private async persistRunUpdate(run: Run, updates: Partial<Pick<Run, "status" | "completed_at" | "base_branch">>): Promise<void> {
+    if (this.registeredProjectId && this.postgresAdapter) {
+      try {
+        await this.postgresAdapter.updateRun(this.registeredProjectId, run.id, updates);
+        return;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[Refinery] Registered run update failed (non-fatal); falling back to local store: ${msg}`);
+      }
+    }
+
+    try {
+      await Promise.resolve(this.store.updateRun(run.id, updates));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[Refinery] Local run update failed (non-fatal): ${msg}`);
+    }
+  }
+
+  private async persistRunEvent(run: Run, eventType: EventType, data: Record<string, unknown>): Promise<void> {
+    if (this.registeredProjectId && this.postgresAdapter) {
+      try {
+        await this.postgresAdapter.logEvent(this.registeredProjectId, run.id, eventType, JSON.stringify(data));
+        return;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[Refinery] Registered event write failed (non-fatal); falling back to local store: ${msg}`);
+      }
+    }
+
+    try {
+      this.store.logEvent(run.project_id, eventType, data, run.id);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[Refinery] Local event write failed (non-fatal): ${msg}`);
+    }
   }
 
   /**
@@ -214,14 +300,12 @@ export class Refinery {
     subject: string,
     body: Record<string, unknown>,
   ): void {
-    try {
-      this.store.sendMessage(runId, "refinery", "foreman", subject, JSON.stringify({
+    void Promise.resolve().then(() => this.store.sendMessage(runId, "refinery", "foreman", subject, JSON.stringify({
         ...body,
         timestamp: new Date().toISOString(),
-      }));
-    } catch {
+      }))).catch(() => {
       // Non-fatal — mail is optional infrastructure
-    }
+    });
   }
 
   private isTestRuntime(): boolean {
@@ -281,15 +365,14 @@ export class Refinery {
       }
     }
 
-    this.store.updateRun(run.id, {
+    await this.persistRunUpdate(run, {
       status: "merged",
       completed_at: new Date().toISOString(),
     });
-    this.store.logEvent(
-      run.project_id,
+    await this.persistRunEvent(
+      run,
       "merge",
       { seedId: run.seed_id, branchName, targetBranch },
-      run.id,
     );
 
     this.sendMail(run.id, "merge-complete", {
@@ -318,7 +401,7 @@ export class Refinery {
     bodyNote?: string;
     existingOk?: boolean;
   }): Promise<CreatedPr> {
-    const run = this.store.getRun(opts.runId);
+    const run = await this.lookupRun(opts.runId);
     if (!run) throw new Error(`Run ${opts.runId} not found`);
 
     const baseBranch = opts.baseBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
@@ -343,8 +426,8 @@ export class Refinery {
           }
         }
         if (existingPr.state !== "CLOSED" || reopenedExistingPr) {
-          this.store.logEvent(
-            run.project_id,
+          await this.persistRunEvent(
+            run,
             "pr-created",
             {
               seedId: run.seed_id,
@@ -355,11 +438,8 @@ export class Refinery {
               reopened: reopenedExistingPr,
               draft: opts.draft ?? false,
             },
-            run.id,
           );
-          if (opts.updateRunStatus) {
-            this.store.updateRun(run.id, { status: "pr-created" });
-          }
+          if (opts.updateRunStatus) await this.persistRunUpdate(run, { status: "pr-created" });
           return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPr.url };
         }
       }
@@ -402,14 +482,13 @@ export class Refinery {
         return ghArgs;
       })(), this.projectPath);
 
-    this.store.logEvent(
-      run.project_id,
+    await this.persistRunEvent(
+      run,
       "pr-created",
       { seedId: run.seed_id, branchName, baseBranch, prUrl, draft: opts.draft ?? false, existing: false },
-      run.id,
     );
     if (opts.updateRunStatus) {
-      this.store.updateRun(run.id, { status: "pr-created" });
+      await this.persistRunUpdate(run, { status: "pr-created" });
     }
 
     return { runId: run.id, seedId: run.seed_id, branchName, prUrl };
@@ -425,7 +504,7 @@ export class Refinery {
     const unexpectedErrors: FailedRun[] = [];
     const prsCreated: CreatedPr[] = [];
 
-    const run = this.store.getRun(opts.runId);
+    const run = await this.lookupRun(opts.runId);
     if (!run) {
       unexpectedErrors.push({
         runId: opts.runId,
@@ -475,12 +554,7 @@ export class Refinery {
       if (!this.isTestRuntime() && shouldTreatLocalBranchDeleteFailureAsNonFatal(err)) {
         const existingPr = await this.getExistingPrState(branchName);
         if (existingPr?.state === "MERGED") {
-          this.store.logEvent(
-            run.project_id,
-            "merge-cleanup-fallback",
-            { seedId: run.seed_id, branchName, error: message.slice(0, 400) },
-            run.id,
-          );
+          await this.persistRunEvent(run, "merge-cleanup-fallback", { seedId: run.seed_id, branchName, error: message.slice(0, 400) });
           await this.finalizeSuccessfulMerge(run, branchName, targetBranch);
           merged.push({
             runId: run.id,
@@ -490,12 +564,11 @@ export class Refinery {
           return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
         }
       }
-      this.store.updateRun(run.id, { status: "failed" });
-      this.store.logEvent(
-        run.project_id,
+      await this.persistRunUpdate(run, { status: "failed" });
+      await this.persistRunEvent(
+        run,
         "fail",
         { seedId: run.seed_id, branchName, error: message },
-        run.id,
       );
       this.sendMail(run.id, "merge-failed", {
         seedId: run.seed_id,
@@ -524,24 +597,38 @@ export class Refinery {
    */
   private async closeNativeTaskPostMerge(runId: string, seedId: string): Promise<void> {
     try {
-      const row = this.store.getDb()
-        .prepare("SELECT id FROM tasks WHERE run_id = ?")
-        .get(runId) as { id: string } | undefined;
-
-      if (row) {
-        this.taskStore.updateStatus(row.id, "merged");
-      } else {
-        // No native task — fall back to beads-only sync.
-        // Note: syncBeadStatusAfterMerge does not actually use taskClient (only
-        // enqueues bead status updates via store), so we cast to ITaskClient.
-        await syncBeadStatusAfterMerge(
-          this.store,
-          this.seeds as unknown as import("../lib/task-client.js").ITaskClient,
+      if (this.registeredProjectId && this.postgresAdapter) {
+        const [task] = await this.postgresAdapter.listTasks(this.registeredProjectId, {
           runId,
-          seedId,
-          this.projectPath,
-        );
+          limit: 1,
+        });
+        if (task) {
+          await this.postgresAdapter.updateTask(this.registeredProjectId, task.id, { status: "merged" });
+          return;
+        }
+      } else {
+        const row = this.store.getDb()
+          .prepare("SELECT id FROM tasks WHERE run_id = ?")
+          .get(runId) as { id: string } | undefined;
+
+        if (row && this.taskStore) {
+          this.taskStore.updateStatus(row.id, "merged");
+          return;
+        }
       }
+
+      // No native task — fall back to beads-only sync.
+      // Note: syncBeadStatusAfterMerge does not actually use taskClient (only
+      // enqueues bead status updates via store), so we cast to ITaskClient.
+      await syncBeadStatusAfterMerge(
+        this.store,
+        this.seeds as unknown as import("../lib/task-client.js").ITaskClient,
+        runId,
+        seedId,
+        this.projectPath,
+        undefined,
+        this.runLookup,
+      );
     } catch {
       // Non-fatal — native task closure must not block the merge
     }
@@ -576,7 +663,7 @@ export class Refinery {
   ): Promise<void> {
     try {
       // Query runs that were stacked on the just-merged branch
-      const stackedRuns = this.store.getRunsByBaseBranch(mergedBranch);
+      const stackedRuns = await this.lookupRunsByBaseBranch(mergedBranch);
       if (stackedRuns.length === 0) return;
 
       for (const stackedRun of stackedRuns) {
@@ -603,8 +690,8 @@ export class Refinery {
             );
           }
           console.error(`[Refinery] Rebased stacked branch ${stackedBranch} onto ${targetBranch} (was on ${mergedBranch})`);
-          // Update the run's base_branch to reflect it's now on targetBranch
-          this.store.updateRun(stackedRun.id, { base_branch: null });
+          // Clear the stacked base branch after the restack.
+          await this.persistRunUpdate(stackedRun, { base_branch: null });
         } catch (rebaseErr: unknown) {
           const msg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
           console.warn(`[Refinery] Warning: failed to rebase stacked branch ${stackedBranch} onto ${targetBranch}: ${msg.slice(0, 300)}`);
@@ -661,23 +748,21 @@ export class Refinery {
         this.projectPath,
       );
 
-      this.store.updateRun(run.id, { status: "pr-created" });
-      this.store.logEvent(
-        run.project_id,
-        "pr-created",
-        { seedId: run.seed_id, branchName, baseBranch, prUrl, conflictNote },
-        run.id,
-      );
+       await this.persistRunUpdate(run, { status: "pr-created" });
+       await this.persistRunEvent(
+         run,
+         "pr-created",
+         { seedId: run.seed_id, branchName, baseBranch, prUrl, conflictNote },
+       );
       return { runId: run.id, seedId: run.seed_id, branchName, prUrl };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      this.store.updateRun(run.id, { status: "conflict" });
-      this.store.logEvent(
-        run.project_id,
-        "fail",
-        { seedId: run.seed_id, branchName, error: `PR creation failed: ${message}` },
-        run.id,
-      );
+       await this.persistRunUpdate(run, { status: "conflict" });
+       await this.persistRunEvent(
+         run,
+         "fail",
+         { seedId: run.seed_id, branchName, error: `PR creation failed: ${message}` },
+       );
       return null;
     }
   }
@@ -693,7 +778,7 @@ export class Refinery {
    * Without a seedId filter we only return "completed" runs to avoid accidentally
    * re-attempting bulk merges of runs that failed for unrelated reasons.
    */
-  getCompletedRuns(projectId?: string, seedId?: string): import("../lib/store.js").Run[] {
+  async getCompletedRuns(projectId?: string, seedId?: string): Promise<import("../lib/store.js").Run[]> {
     if (seedId) {
       // For targeted retries, look in completed AND terminal failure states.
       const retryStatuses: import("../lib/store.js").Run["status"][] = [
@@ -702,7 +787,7 @@ export class Refinery {
         "conflict",
         "failed",
       ];
-      const runs = this.store.getRunsByStatuses(retryStatuses, projectId);
+      const runs = await this.lookupRunsByStatuses(retryStatuses, projectId);
       const matching = runs.filter((r) => r.seed_id === seedId);
       // Prefer a completed run over newer stuck/failed runs for the same seed.
       // SQLite returns rows ordered by created_at DESC so stuck/failed may appear
@@ -710,7 +795,7 @@ export class Refinery {
       const completedRun = matching.find((r) => r.status === "completed");
       return completedRun ? [completedRun] : matching.slice(0, 1);
     }
-    return this.store.getRunsByStatus("completed", projectId);
+    return this.lookupRunsByStatus("completed", projectId);
   }
 
   /**
@@ -826,13 +911,13 @@ export class Refinery {
       // This is the most reliable path for immediate autoMerge calls because
       // the status update happens before autoMerge is called, but due to SQLite
       // WAL timing, the query might not see it immediately.
-      const fetchedRun = this.store.getRun(opts.runId);
-      rawRuns = fetchedRun ? [fetchedRun] : [];
-    } else if (opts?.overrideRun) {
-      rawRuns = [opts.overrideRun];
-    } else {
-      rawRuns = this.getCompletedRuns(opts?.projectId, opts?.seedId);
-    }
+       const fetchedRun = await this.lookupRun(opts.runId);
+       rawRuns = fetchedRun ? [fetchedRun] : [];
+     } else if (opts?.overrideRun) {
+       rawRuns = [opts.overrideRun];
+     } else {
+       rawRuns = await this.getCompletedRuns(opts?.projectId, opts?.seedId);
+     }
 
     const completedRuns = await this.orderByDependencies(rawRuns);
 
@@ -870,7 +955,7 @@ export class Refinery {
         if (!branchCommits.trim()) {
           console.warn(`[Refinery] Branch ${branchName} has no commits beyond ${targetBranch} — agent may not have committed work`);
           await this.addFailureNote(run.seed_id, `Branch ${branchName} has no unique commits beyond ${targetBranch}. The agent may not have committed its work. Manual intervention required — do not auto-reset.`);
-          this.store.updateRun(run.id, { status: "conflict" });
+            await this.persistRunUpdate(run, { status: "conflict" });
           this.sendMail(run.id, "merge-failed", {
             seedId: run.seed_id,
             branchName,
@@ -1126,12 +1211,11 @@ export class Refinery {
               `Merge failed: post-merge tests failed on ${new Date().toISOString().slice(0, 10)} — manual retry required. ${testResult.output.slice(0, 300)}`,
             );
 
-            this.store.updateRun(run.id, { status: "test-failed" });
-            this.store.logEvent(
-              run.project_id,
+            await this.persistRunUpdate(run, { status: "test-failed" });
+            await this.persistRunEvent(
+              run,
               "test-fail",
               { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
-              run.id,
             );
             this.sendMail(run.id, "merge-failed", {
               seedId: run.seed_id,
@@ -1163,15 +1247,14 @@ export class Refinery {
           }
         }
 
-        this.store.updateRun(run.id, {
+        await this.persistRunUpdate(run, {
           status: "merged",
           completed_at: new Date().toISOString(),
         });
-        this.store.logEvent(
-          run.project_id,
+        await this.persistRunEvent(
+          run,
           "merge",
           { seedId: run.seed_id, branchName, targetBranch },
-          run.id,
         );
 
         // Send merge-complete mail so inbox shows a successful merge event
@@ -1207,12 +1290,11 @@ export class Refinery {
         const message = err instanceof Error ? err.message : String(err);
         // Update run status to "failed" so subsequent bead status sync has a
         // terminal status to map from (fixes the exception gap).
-        this.store.updateRun(run.id, { status: "failed" });
-        this.store.logEvent(
-          run.project_id,
+        await this.persistRunUpdate(run, { status: "failed" });
+        await this.persistRunEvent(
+          run,
           "fail",
           { seedId: run.seed_id, branchName, error: message },
-          run.id,
         );
         this.sendMail(run.id, "merge-failed", {
           seedId: run.seed_id,
@@ -1249,22 +1331,17 @@ export class Refinery {
       testCommand?: string;
     },
   ): Promise<boolean> {
-    const run = this.store.getRun(runId);
+    const run = await this.lookupRun(runId);
     if (!run) throw new Error(`Run ${runId} not found`);
 
     const branchName = `foreman/${run.seed_id}`;
 
     if (strategy === "abort") {
-      this.store.updateRun(run.id, {
+      await this.persistRunUpdate(run, {
         status: "failed",
         completed_at: new Date().toISOString(),
       });
-      this.store.logEvent(
-        run.project_id,
-        "fail",
-        { seedId: run.seed_id, reason: "Conflict resolution aborted by user" },
-        run.id,
-      );
+      await this.persistRunEvent(run, "fail", { seedId: run.seed_id, reason: "Conflict resolution aborted by user" });
       await this.addFailureNote(run.seed_id, "Merge conflict resolution aborted by user.");
       return false;
     }
@@ -1297,15 +1374,14 @@ export class Refinery {
         // merge --abort may fail if there is nothing to abort
       }
       const message = err instanceof Error ? err.message : String(err);
-      this.store.updateRun(run.id, {
-        status: "failed",
-        completed_at: new Date().toISOString(),
-      });
-      this.store.logEvent(
-        run.project_id,
-        "fail",
-        { seedId: run.seed_id, error: message },
-          run.id,
+        await this.persistRunUpdate(run, {
+          status: "failed",
+          completed_at: new Date().toISOString(),
+        });
+        await this.persistRunEvent(
+          run,
+          "fail",
+          { seedId: run.seed_id, error: message },
         );
       await this.addFailureNote(run.seed_id, `Merge failed (theirs strategy): ${message.slice(0, 400)}. Manual retry required.`);
       return false;
@@ -1319,16 +1395,11 @@ export class Refinery {
         // Revert the merge
         await this.vcsBackend.rollbackFailedMerge(this.projectPath, preMergeHead);
 
-        this.store.updateRun(run.id, {
+        await this.persistRunUpdate(run, {
           status: "test-failed",
           completed_at: new Date().toISOString(),
         });
-        this.store.logEvent(
-          run.project_id,
-          "test-fail",
-          { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
-          run.id,
-        );
+        await this.persistRunEvent(run, "test-fail", { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) });
         await this.addFailureNote(run.seed_id, `Merge failed: tests failed after conflict resolution. Manual retry required. ${testResult.output.slice(0, 300)}`);
         return false;
       }
@@ -1347,15 +1418,14 @@ export class Refinery {
       }
     }
 
-    this.store.updateRun(run.id, {
+    await this.persistRunUpdate(run, {
       status: "merged",
       completed_at: new Date().toISOString(),
     });
-    this.store.logEvent(
-      run.project_id,
+    await this.persistRunEvent(
+      run,
       "merge",
       { seedId: run.seed_id, branchName, strategy: "theirs", targetBranch },
-      run.id,
     );
 
     // Close the bead after successful conflict-resolution merge.
@@ -1399,7 +1469,7 @@ export class Refinery {
     const baseBranch = opts?.baseBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
     const draft = opts?.draft ?? false;
 
-    const completedRuns = this.store.getRunsByStatus("completed", opts?.projectId);
+    const completedRuns = await this.getCompletedRuns(opts?.projectId);
 
     const created: CreatedPr[] = [];
     const failed: FailedRun[] = [];
@@ -1461,12 +1531,11 @@ export class Refinery {
 
         const prUrl = await gh(ghArgs, this.projectPath);
 
-        this.store.updateRun(run.id, { status: "pr-created" });
-        this.store.logEvent(
-          run.project_id,
+        await this.persistRunUpdate(run, { status: "pr-created" });
+        await this.persistRunEvent(
+          run,
           "pr-created",
           { seedId: run.seed_id, branchName, baseBranch, prUrl, draft },
-          run.id,
         );
         created.push({
           runId: run.id,
@@ -1479,11 +1548,10 @@ export class Refinery {
         void title;
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        this.store.logEvent(
-          run.project_id,
+        await this.persistRunEvent(
+          run,
           "fail",
           { seedId: run.seed_id, branchName, error: message },
-          run.id,
         );
         failed.push({
           runId: run.id,

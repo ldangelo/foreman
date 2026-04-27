@@ -4,10 +4,11 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
-import type { ForemanStore, NativeTask } from "../lib/store.js";
+import type { EventType, ForemanStore, NativeTask, Run } from "../lib/store.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache } from "../lib/setup.js";
@@ -19,6 +20,7 @@ import { isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
 import { getTaskOrder } from "./task-ordering.js";
+import { getPoolConfig } from "../lib/db/pool-manager.js";
 import type { EpicTask } from "./pipeline-executor.js";
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import { getWorkspacePath } from "../lib/workspace-paths.js";
@@ -55,6 +57,52 @@ interface DispatcherBeadsIssueDetail {
   children?: string[];
   dependents?: DispatcherDependentRef[];
   dependencies?: Array<string | DispatcherDependencyRef>;
+}
+
+interface NativeTaskOps {
+  hasNativeTasks(): Promise<boolean>;
+  getReadyTasks(): Promise<NativeTask[]>;
+  getTaskByExternalId(externalId: string): Promise<NativeTask | null>;
+  getTaskById(id: string): Promise<NativeTask | null>;
+  claimTask(taskId: string, runId: string): Promise<boolean>;
+}
+
+type Awaitable<T> = T | Promise<T>;
+
+interface OrphanedWorkerConfigStore {
+  getRun(runId: string): Awaitable<Run | null>;
+}
+
+interface BaseBranchRunLookup {
+  getRunsForSeed(seedId: string): Awaitable<Run[]>;
+}
+
+export interface DispatcherOverrides {
+  getRecentFailureCount?: (projectId: string, since: string) => Promise<number>;
+  nativeTaskOps?: NativeTaskOps;
+  getActiveSeedIds?: () => Promise<string[]>;
+  hasActiveOrPendingRun?: (seedId: string) => Promise<boolean>;
+  getActiveAgentCount?: () => Promise<number>;
+  externalProjectId?: string;
+  getRunsByStatus?: (status: Run["status"], projectId: string) => Promise<Run[]>;
+  getRunsForSeed?: (seedId: string, projectId: string) => Promise<Run[]>;
+  getRun?: (runId: string) => Promise<Run | null>;
+  getActiveRuns?: (projectId: string) => Promise<Run[]>;
+  runOps?: {
+    createRun?: (args: {
+      runId: string;
+      projectId: string;
+      seedId: string;
+      agentType: string;
+      branchName: string;
+      worktreePath: string | null;
+      baseBranch?: string | null;
+      mergeStrategy?: Run["merge_strategy"];
+    }) => Promise<Run | void>;
+    updateRun?: (runId: string, updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at">>) => Promise<void>;
+    sendMessage?: (runId: string, senderAgentType: string, recipientAgentType: string, subject: string, body: string) => Promise<void>;
+    logEvent?: (runId: string, projectId: string, eventType: string, payload: Record<string, unknown>) => Promise<void>;
+  };
 }
 
 async function createDispatcherBeadsClient(projectPath: string): Promise<TaskOrderingClient> {
@@ -94,7 +142,188 @@ export class Dispatcher {
     private store: ForemanStore,
     private projectPath: string,
     private bvClient?: BvClient | null,
+    private overrides?: DispatcherOverrides,
   ) {}
+
+  private requireRegisteredRunOp<K extends keyof NonNullable<DispatcherOverrides["runOps"]>>(
+    method: K,
+  ): NonNullable<NonNullable<DispatcherOverrides["runOps"]>[K]> {
+    const op = this.overrides?.runOps?.[method];
+    if (op) {
+      return op;
+    }
+
+    const projectId = this.overrides?.externalProjectId;
+    throw new Error(`Registered dispatcher write override missing runOps.${String(method)} for project ${projectId ?? "unknown"}`);
+  }
+
+  private validateRegisteredRunOps(requiredMethods: Array<keyof NonNullable<DispatcherOverrides["runOps"]>>): void {
+    if (!this.overrides?.externalProjectId) return;
+
+    for (const method of requiredMethods) {
+      this.requireRegisteredRunOp(method);
+    }
+  }
+
+  private async createRunRecord(
+    projectId: string,
+    seedId: string,
+    agentType: string,
+    worktreePath: string | null,
+    branchName: string,
+    opts?: {
+      baseBranch?: string | null;
+      mergeStrategy?: Run["merge_strategy"];
+      sessionKey?: string | null;
+    },
+  ): Promise<Run> {
+    if (this.overrides?.externalProjectId) {
+      const createRun = this.requireRegisteredRunOp("createRun");
+      const runId = randomUUID();
+      const createdAt = new Date().toISOString();
+      const run = await createRun({
+        runId,
+        projectId,
+        seedId,
+        agentType,
+        branchName,
+        worktreePath,
+        baseBranch: opts?.baseBranch ?? null,
+        mergeStrategy: opts?.mergeStrategy ?? null,
+      });
+      if (run) {
+        return run;
+      }
+      return {
+        id: runId,
+        project_id: projectId,
+        seed_id: seedId,
+        agent_type: agentType,
+        session_key: null,
+        worktree_path: worktreePath,
+        status: "pending",
+        started_at: null,
+        completed_at: null,
+        created_at: createdAt,
+        progress: null,
+        tmux_session: null,
+        base_branch: opts?.baseBranch ?? null,
+        merge_strategy: opts?.mergeStrategy ?? "auto",
+      };
+    }
+
+    const run = this.store.createRun(projectId, seedId, agentType, worktreePath ?? undefined, opts ? {
+      ...opts,
+      mergeStrategy: opts.mergeStrategy ?? undefined,
+    } : undefined);
+    return run;
+  }
+
+  private mapRunStatusForExternal(status: Run["status"]): "pending" | "running" | "success" | "failure" | "cancelled" | "skipped" | null {
+    switch (status) {
+      case "pending":
+        return "pending";
+      case "running":
+        return "running";
+      case "completed":
+      case "merged":
+      case "pr-created":
+        return "success";
+      case "failed":
+      case "test-failed":
+      case "stuck":
+      case "conflict":
+        return "failure";
+      case "reset":
+        return "cancelled";
+      default:
+        return null;
+    }
+  }
+
+  private async updateRunRecord(
+    runId: string,
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at">>,
+  ): Promise<void> {
+    if (this.overrides?.externalProjectId) {
+      const updateRun = this.requireRegisteredRunOp("updateRun");
+      const normalized = { ...updates };
+      if (updates.status) {
+        const mapped = this.mapRunStatusForExternal(updates.status);
+        if (!mapped) return;
+        normalized.status = mapped as Run["status"];
+      }
+      await updateRun(runId, normalized);
+      return;
+    }
+
+    this.store.updateRun(runId, updates);
+  }
+
+  private async sendMailRecord(
+    runId: string,
+    senderAgentType: string,
+    recipientAgentType: string,
+    subject: string,
+    body: string,
+  ): Promise<void> {
+    if (this.overrides?.externalProjectId) {
+      const sendMessage = this.requireRegisteredRunOp("sendMessage");
+      await sendMessage(runId, senderAgentType, recipientAgentType, subject, body);
+      return;
+    }
+
+    this.store.sendMessage(runId, senderAgentType, recipientAgentType, subject, body);
+  }
+
+  private async logEventRecord(
+    projectId: string,
+    eventType: EventType,
+    payload: Record<string, unknown>,
+    runId: string,
+  ): Promise<void> {
+    if (this.overrides?.externalProjectId) {
+      const logEvent = this.requireRegisteredRunOp("logEvent");
+      await logEvent(runId, projectId, eventType, payload);
+      return;
+    }
+
+    this.store.logEvent(projectId, eventType, payload, runId);
+  }
+
+  private async getActiveRunsRecord(projectId: string): Promise<Run[]> {
+    if (this.overrides?.getActiveRuns) {
+      return this.overrides.getActiveRuns(projectId);
+    }
+    return this.store.getActiveRuns(projectId);
+  }
+
+  private async getRunsByStatusRecord(
+    status: Run["status"],
+    projectId: string,
+  ): Promise<Run[]> {
+    if (this.overrides?.getRunsByStatus) {
+      return this.overrides.getRunsByStatus(status, projectId);
+    }
+    return this.store.getRunsByStatus(status, projectId);
+  }
+
+  private async getRunsForSeedRecord(
+    seedId: string,
+    projectId: string,
+  ): Promise<Run[]> {
+    if (this.overrides?.getRunsForSeed) {
+      return this.overrides.getRunsForSeed(seedId, projectId);
+    }
+    return this.store.getRunsForSeed(seedId, projectId);
+  }
+
+  private async getRunRecord(runId: string): Promise<Run | null> {
+    if (this.overrides?.getRun) {
+      return this.overrides.getRun(runId);
+    }
+    return this.store.getRun(runId);
+  }
 
   /**
    * Query ready seeds, create worktrees, write TASK.md, and record runs.
@@ -120,6 +349,10 @@ export class Dispatcher {
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = opts?.projectId ?? this.resolveProjectId();
+
+    if (!opts?.dryRun && this.overrides?.externalProjectId) {
+      this.validateRegisteredRunOps(["createRun", "updateRun", "logEvent", "sendMessage"]);
+    }
 
     // Drain the bead write queue before dispatching new tasks.
     // This ensures any pending br operations from completed agent-workers are
@@ -157,26 +390,29 @@ export class Dispatcher {
       const wfConfig = loadWorkflowConfig("default", this.projectPath);
       if (wfConfig.onError === "stop") {
         const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-        const failureStatuses: Array<"test-failed" | "failed" | "stuck" | "conflict"> =
-          ["test-failed", "failed", "stuck", "conflict"];
-        const failedRuns = this.store.getRunsByStatusesSince(failureStatuses, since, projectId);
-        if (failedRuns.length > 0) {
-          log(`[dispatch] onError=stop — ${failedRuns.length} failed run(s) detected. Refusing to dispatch until resolved. Use 'foreman reset' to clear.`);
+        const failedCount = this.overrides?.getRecentFailureCount
+          ? await this.overrides.getRecentFailureCount(projectId, since)
+          : this.store.getRunsByStatusesSince(["test-failed", "failed", "stuck", "conflict"], since, projectId).length;
+        if (failedCount > 0) {
+          log(`[dispatch] onError=stop — ${failedCount} failed run(s) detected. Refusing to dispatch until resolved. Use 'foreman reset' to clear.`);
           return {
             dispatched: [],
             skipped: [],
             resumed: [],
-            activeAgents: this.store.getActiveRuns(projectId).length,
-          };
-        }
-      }
+             activeAgents: (await this.getActiveRunsRecord(projectId)).length,
+           };
+         }
+       }
     } catch {
       // Workflow config not found — continue with default behavior
     }
 
     // Determine how many agent slots are available
-    const activeRuns = this.store.getActiveRuns(projectId);
-    const available = Math.max(0, maxAgents - activeRuns.length);
+    const activeRuns = await this.getActiveRunsRecord(projectId);
+    const activeAgentCount = this.overrides?.getActiveAgentCount
+      ? await this.overrides.getActiveAgentCount()
+      : activeRuns.length;
+    const available = Math.max(0, maxAgents - activeAgentCount);
 
     // ── Task store coexistence (REQ-014 / REQ-017) ────────────────────────
     // Decide whether to query the native SQLite task store or fall back to
@@ -192,7 +428,9 @@ export class Dispatcher {
       console.error(`[dispatch][${projectId}] FOREMAN_TASK_STORE=beads — using beads fallback`);
     } else {
       // 'auto': use native if tasks exist, otherwise fall back to beads
-      usingNativeStore = this.store.hasNativeTasks();
+      usingNativeStore = this.overrides?.nativeTaskOps
+        ? await this.overrides.nativeTaskOps.hasNativeTasks()
+        : this.store.hasNativeTasks();
       if (usingNativeStore) {
         console.error("[dispatch] Native tasks detected — using native task store (AC-014.1)");
       } else {
@@ -202,7 +440,9 @@ export class Dispatcher {
 
     let readySeeds: Issue[];
     if (usingNativeStore) {
-      const nativeTasks = this.store.getReadyTasks();
+      const nativeTasks = this.overrides?.nativeTaskOps
+        ? await this.overrides.nativeTaskOps.getReadyTasks()
+        : this.store.getReadyTasks();
       readySeeds = nativeTasks.map(nativeTaskToIssue);
     } else {
       readySeeds = await this.seeds.ready();
@@ -251,7 +491,7 @@ export class Dispatcher {
 
     // Filter to a specific seed if requested
     if (opts?.seedId) {
-      if (this.hasMergedOutcomeWithoutLaterReset(opts.seedId, projectId)) {
+      if (await this.hasMergedOutcomeWithoutLaterReset(opts.seedId, projectId)) {
         return {
           dispatched: [],
           skipped: [{
@@ -266,10 +506,14 @@ export class Dispatcher {
       let target = readySeeds.find((b) => b.id === opts.seedId);
       if (usingNativeStore && !target) {
         // Try external_id first (for tasks that have it set)
-        let nativeMatch = this.store.getTaskByExternalId(opts.seedId);
+        let nativeMatch = this.overrides?.nativeTaskOps
+          ? await this.overrides.nativeTaskOps.getTaskByExternalId(opts.seedId)
+          : this.store.getTaskByExternalId(opts.seedId);
         // Fall back to id lookup when external_id is not set (common for native tasks)
         if (!nativeMatch) {
-          nativeMatch = this.store.getTaskById(opts.seedId);
+          nativeMatch = this.overrides?.nativeTaskOps
+            ? await this.overrides.nativeTaskOps.getTaskById(opts.seedId)
+            : this.store.getTaskById(opts.seedId);
         }
         if (nativeMatch) {
           if (nativeMatch.status === "ready") {
@@ -354,14 +598,18 @@ export class Dispatcher {
     }
 
     // Skip seeds that already have an active run
-    const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
+    const activeSeedIds = new Set(
+      this.overrides?.getActiveSeedIds
+        ? await this.overrides.getActiveSeedIds()
+        : activeRuns.map((r) => r.seed_id),
+    );
 
     // Also skip seeds that have a completed-but-unmerged run (prevent duplicate runs)
-    const completedRuns = this.store.getRunsByStatus("completed", projectId);
+    const completedRuns = await this.getRunsByStatusRecord("completed", projectId);
     const completedSeedIds = new Set(completedRuns.map((r) => r.seed_id));
 
     for (const seed of readySeeds) {
-      if (this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
+      if (await this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
         skipped.push({
           seedId: seed.id,
           title: seed.title,
@@ -516,7 +764,7 @@ export class Dispatcher {
       }
 
       // Skip seeds that are in exponential backoff after recent stuck runs
-      const backoffResult = this.checkStuckBackoff(seed.id, projectId);
+      const backoffResult = await this.checkStuckBackoff(seed.id, projectId);
       if (backoffResult.inBackoff) {
         skipped.push({
           seedId: seed.id,
@@ -635,7 +883,10 @@ export class Dispatcher {
         // point — a concurrent dispatch cycle may have already created a pending
         // run for this seed between our getActiveRuns() call and now.  This
         // just-in-time check prevents duplicate runs in that race window.
-        if (this.store.hasActiveOrPendingRun(seed.id, projectId)) {
+        const hasCompetingRun = this.overrides?.hasActiveOrPendingRun
+          ? await this.overrides.hasActiveOrPendingRun(seed.id)
+          : this.store.hasActiveOrPendingRun(seed.id, projectId);
+        if (hasCompetingRun) {
           skipped.push({
             seedId: seed.id,
             title: seed.title,
@@ -643,7 +894,7 @@ export class Dispatcher {
           });
           continue;
         }
-        if (this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
+        if (await this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
           skipped.push({
             seedId: seed.id,
             title: seed.title,
@@ -653,7 +904,16 @@ export class Dispatcher {
         }
 
         // 1. Resolve base branch (may stack on a dependency branch)
-        const baseBranch = await resolveBaseBranch(seed.id, this.projectPath, this.store, branchBackend);
+        const baseBranch = await resolveBaseBranch(
+          seed.id,
+          this.projectPath,
+          {
+            getRunsForSeed: (seedId: string) => this.overrides?.getRunsForSeed
+              ? this.overrides.getRunsForSeed(seedId, projectId)
+              : this.store.getRunsForSeed(seedId, projectId),
+          },
+          branchBackend,
+        );
         if (baseBranch) {
           log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
         }
@@ -743,16 +1003,17 @@ export class Dispatcher {
 
         // 4. Record run in store (include base_branch for stacking awareness)
         // TRD-007: pass merge_strategy from workflow config
-        const run = this.store.createRun(
+        const run = await this.createRunRecord(
           projectId,
           seed.id,
           model,
           worktreePath,
+          branchName,
           { baseBranch: baseBranch ?? null, mergeStrategy: workflowMerge },
         );
 
         // 5. Log dispatch event
-        this.store.logEvent(projectId, "dispatch", {
+        await this.logEventRecord(projectId, "dispatch", {
           seedId: seed.id,
           title: seed.title,
           model,
@@ -762,7 +1023,7 @@ export class Dispatcher {
 
         // 5a. Send worktree-created mail so inbox shows worktree lifecycle event
         try {
-          this.store.sendMessage(run.id, "foreman", "foreman", "worktree-created", JSON.stringify({
+          await this.sendMailRecord(run.id, "foreman", "foreman", "worktree-created", JSON.stringify({
             seedId: seed.id,
             title: seed.title,
             worktreePath,
@@ -778,7 +1039,9 @@ export class Dispatcher {
         if (usingNativeStore) {
           // Atomic claim: UPDATE tasks SET status='in-progress', run_id=? WHERE id=? AND status='ready'
           // REQ-017 AC-017.2: claim + run_id linkage in one transaction (prevents double-dispatch).
-          const claimed = this.store.claimTask(seed.id, run.id);
+          const claimed = this.overrides?.nativeTaskOps
+            ? await this.overrides.nativeTaskOps.claimTask(seed.id, run.id)
+            : this.store.claimTask(seed.id, run.id);
           if (!claimed) {
             // Another dispatcher instance claimed this task between our getReadyTasks() query
             // and now — skip it and clean up the run we just created.
@@ -789,7 +1052,7 @@ export class Dispatcher {
             });
             // Best-effort cleanup: mark run as failed so it doesn't appear as active
             try {
-              this.store.updateRun(run.id, { status: "failed", completed_at: new Date().toISOString() });
+              await this.updateRunRecord(run.id, { status: "failed", completed_at: new Date().toISOString() });
             } catch {
               // Non-fatal — run cleanup is best-effort
             }
@@ -808,7 +1071,7 @@ export class Dispatcher {
 
         // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
         try {
-          this.store.sendMessage(run.id, "foreman", "foreman", "bead-claimed", JSON.stringify({
+          await this.sendMailRecord(run.id, "foreman", "foreman", "bead-claimed", JSON.stringify({
             seedId: seed.id,
             title: seed.title,
             model,
@@ -844,7 +1107,7 @@ export class Dispatcher {
         );
 
         // Update run with session key
-        this.store.updateRun(run.id, {
+        await this.updateRunRecord(run.id, {
           session_key: sessionKey,
           status: "running",
           started_at: new Date().toISOString(),
@@ -880,7 +1143,7 @@ export class Dispatcher {
       dispatched,
       skipped,
       resumed: [],
-      activeAgents: activeRuns.length + dispatched.length,
+      activeAgents: activeAgentCount + dispatched.length,
     };
   }
 
@@ -904,13 +1167,20 @@ export class Dispatcher {
     const projectId = this.resolveProjectId();
     const statuses = opts?.statuses ?? ["stuck"];
 
-    // Find resumable runs
-    const resumableRuns = statuses.flatMap(
-      (s) => this.store.getRunsByStatus(s, projectId),
-    );
+    if (this.overrides?.externalProjectId) {
+      this.validateRegisteredRunOps(["createRun", "updateRun", "logEvent"]);
+    }
 
-    const activeRuns = this.store.getActiveRuns(projectId);
-    const available = Math.max(0, maxAgents - activeRuns.length);
+    // Find resumable runs
+    const resumableRuns = (await Promise.all(
+      statuses.map((status) => this.getRunsByStatusRecord(status, projectId)),
+    )).flat();
+
+    const activeRuns = await this.getActiveRunsRecord(projectId);
+    const activeAgentCount = this.overrides?.getActiveAgentCount
+      ? await this.overrides.getActiveAgentCount()
+      : activeRuns.length;
+    const available = Math.max(0, maxAgents - activeAgentCount);
 
     const resumed: ResumedTask[] = [];
     const skipped: SkippedTask[] = [];
@@ -953,15 +1223,16 @@ export class Dispatcher {
       log(`Resuming agent for ${run.seed_id} [${model}] session=${sessionId}`);
 
       // Create a new run record for the resumed attempt
-      const newRun = this.store.createRun(
+      const newRun = await this.createRunRecord(
         projectId,
         run.seed_id,
         model,
         run.worktree_path,
+        `foreman/${run.seed_id}`,
       );
 
       // Log resume event
-      this.store.logEvent(projectId, "restart", {
+      await this.logEventRecord(projectId, "restart", {
         seedId: run.seed_id,
         model,
         previousRunId: run.id,
@@ -970,7 +1241,7 @@ export class Dispatcher {
       }, newRun.id);
 
       // Mark old run as restarted
-      this.store.updateRun(run.id, {
+      await this.updateRunRecord(run.id, {
         status: "failed",
         completed_at: new Date().toISOString(),
       });
@@ -990,7 +1261,7 @@ export class Dispatcher {
         opts?.runtimeMode,
       );
 
-      this.store.updateRun(newRun.id, {
+      await this.updateRunRecord(newRun.id, {
         session_key: sessionKey,
         status: "running",
         started_at: new Date().toISOString(),
@@ -1010,7 +1281,7 @@ export class Dispatcher {
       dispatched: [],
       skipped,
       resumed,
-      activeAgents: activeRuns.length + resumed.length,
+      activeAgents: activeAgentCount + resumed.length,
     };
   }
 
@@ -1025,11 +1296,13 @@ export class Dispatcher {
     input: string,
     outputDir: string,
   ): Promise<PlanStepDispatched> {
+    this.validateRegisteredRunOps(["createRun", "updateRun", "logEvent"]);
+
     // 1. Record run in store
-    const run = this.store.createRun(projectId, seed.id, "claude-code");
+    const run = await this.createRunRecord(projectId, seed.id, "claude-code", null, `foreman/${seed.id}`);
 
     // 2. Log dispatch event
-    this.store.logEvent(projectId, "dispatch", {
+    await this.logEventRecord(projectId, "dispatch", {
       seedId: seed.id,
       title: seed.title,
       ensembleCommand,
@@ -1041,7 +1314,7 @@ export class Dispatcher {
     const prompt = `${ensembleCommand} ${input}\n\nSave all outputs to the ${outputDir}/ directory.`;
 
     const sessionKey = `foreman:plan:${run.id}`;
-    this.store.updateRun(run.id, {
+    await this.updateRunRecord(run.id, {
       session_key: sessionKey,
       status: "running",
       started_at: new Date().toISOString(),
@@ -1056,11 +1329,11 @@ export class Dispatcher {
       });
 
       if (planResult.success) {
-        this.store.updateRun(run.id, {
+        await this.updateRunRecord(run.id, {
           status: "completed",
           completed_at: new Date().toISOString(),
         });
-        this.store.logEvent(projectId, "complete", {
+        await this.logEventRecord(projectId, "complete", {
           seedId: seed.id,
           title: seed.title,
           costUsd: planResult.costUsd,
@@ -1068,11 +1341,11 @@ export class Dispatcher {
         }, run.id);
       } else {
         const reason = planResult.errorMessage ?? "Pi plan step failed";
-        this.store.updateRun(run.id, {
+        await this.updateRunRecord(run.id, {
           status: "failed",
           completed_at: new Date().toISOString(),
         });
-        this.store.logEvent(projectId, "fail", {
+        await this.logEventRecord(projectId, "fail", {
           seedId: seed.id,
           reason,
           costUsd: planResult.costUsd,
@@ -1082,13 +1355,13 @@ export class Dispatcher {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       // Only update if not already updated by the result handler above
-      const currentRun = this.store.getRun(run.id);
+      const currentRun = await this.getRunRecord(run.id);
       if (currentRun?.status === "running") {
-        this.store.updateRun(run.id, {
+        await this.updateRunRecord(run.id, {
           status: "failed",
           completed_at: new Date().toISOString(),
         });
-        this.store.logEvent(projectId, "fail", {
+        await this.logEventRecord(projectId, "fail", {
           seedId: seed.id,
           reason: message,
         }, run.id);
@@ -1184,13 +1457,18 @@ export class Dispatcher {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, vcsBackend, runtimeMode);
-    const sessionKey = `foreman:sdk:${model}:${runId}`;
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
     const isEpic = epicTasks && epicTasks.length > 0;
     log(`Spawning ${isEpic ? "epic runner" : usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}${isEpic ? ` (${epicTasks.length} tasks)` : ""}`);
 
     const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
+    const projectId = this.resolveProjectId();
+    const staleWorktreeEventWriter = this.overrides?.externalProjectId
+      ? async (eventType: "worktree-rebased" | "worktree-rebase-failed", payload: Record<string, unknown>) => {
+          await this.logEventRecord(projectId, eventType as EventType, payload, runId);
+        }
+      : undefined;
 
     // FR-5: Check if worktree is stale and auto-rebase before spawning
     if (vcsBackend && targetBranch) {
@@ -1200,10 +1478,10 @@ export class Dispatcher {
           worktreePath,
           targetBranch,
           this.store,
-          this.resolveProjectId(),
+          projectId,
           runId,
           seed.id,
-          { autoRebase: true, failOnConflict: true },
+          staleWorktreeEventWriter ? { autoRebase: true, failOnConflict: true, eventWriter: staleWorktreeEventWriter } : { autoRebase: true, failOnConflict: true },
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1213,10 +1491,10 @@ export class Dispatcher {
       }
     }
 
-    await spawnWorkerProcess({
-      runId,
-      projectId: this.resolveProjectId(),
-      seedId: seed.id,
+      const { pid } = await spawnWorkerProcess({
+        runId,
+        projectId: this.overrides?.externalProjectId ?? this.resolveProjectId(),
+        seedId: seed.id,
       seedTitle: seed.title,
       seedDescription: seed.description,
       seedComments: seed.comments ?? undefined,
@@ -1243,13 +1521,15 @@ export class Dispatcher {
         priority: typeof seed.priority === 'number' ? seed.priority : 2,
       },
       // FR-1: Directory guardrail — verify agent cwd matches expected worktree
-      guardrailConfig: {
-        expectedCwd: worktreePath,
-        mode: "auto-correct",
-      },
-    });
+        guardrailConfig: {
+          expectedCwd: worktreePath,
+          mode: "auto-correct",
+        },
+      });
 
-    return { sessionKey };
+      const sessionKey = buildSdkSessionKey(model, runId, pid);
+
+      return { sessionKey };
   }
 
   // ── Session Resume ───────────────────────────────────────────────────
@@ -1271,13 +1551,11 @@ export class Dispatcher {
     const resumePrompt = this.buildResumePrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, undefined, runtimeMode);
-    const sessionKey = `foreman:sdk:${model}:${runId}:session-${sdkSessionId}`;
-
     log(`Resuming worker for ${seed.id} [${model}] session=${sdkSessionId}`);
 
-    await spawnWorkerProcess({
+    const { pid } = await spawnWorkerProcess({
       runId,
-      projectId: this.resolveProjectId(),
+      projectId: this.overrides?.externalProjectId ?? this.resolveProjectId(),
       seedId: seed.id,
       seedTitle: seed.title,
       model,
@@ -1288,6 +1566,8 @@ export class Dispatcher {
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
     });
 
+    const sessionKey = buildSdkSessionKey(model, runId, pid, sdkSessionId);
+
     return { sessionKey };
   }
 
@@ -1297,9 +1577,9 @@ export class Dispatcher {
    * Return recent stuck runs for a seed within the configured time window.
    * Ordered by created_at DESC (most recent first).
    */
-  private getRecentStuckRuns(seedId: string, projectId: string) {
+  private async getRecentStuckRuns(seedId: string, projectId: string): Promise<Run[]> {
     const cutoff = new Date(Date.now() - STUCK_RETRY_CONFIG.windowMs).toISOString();
-    const allRuns = this.store.getRunsForSeed(seedId, projectId);
+    const allRuns = await this.getRunsForSeedRecord(seedId, projectId);
     return allRuns.filter(
       (r) => r.status === "stuck" && r.created_at >= cutoff,
     );
@@ -1310,11 +1590,11 @@ export class Dispatcher {
    * stuck runs. Returns `{ inBackoff: false }` if the seed may be dispatched,
    * or `{ inBackoff: true, reason }` if it must be skipped this cycle.
    */
-  private checkStuckBackoff(
+  private async checkStuckBackoff(
     seedId: string,
     projectId: string,
-  ): { inBackoff: boolean; reason?: string } {
-    const recentStuck = this.getRecentStuckRuns(seedId, projectId);
+  ): Promise<{ inBackoff: boolean; reason?: string }> {
+    const recentStuck = await this.getRecentStuckRuns(seedId, projectId);
     const stuckCount = recentStuck.length;
 
     if (stuckCount === 0) return { inBackoff: false };
@@ -1352,11 +1632,11 @@ export class Dispatcher {
    * unless a later explicit reset exists. This protects against stale bead
    * status or delayed queue writes causing accidental redispatch after merge.
    */
-  private hasMergedOutcomeWithoutLaterReset(
+  private async hasMergedOutcomeWithoutLaterReset(
     seedId: string,
     projectId: string,
-  ): boolean {
-    const runs = this.store.getRunsForSeed(seedId, projectId);
+  ): Promise<boolean> {
+    const runs = await this.getRunsForSeedRecord(seedId, projectId);
     for (const run of runs) {
       if (run.status === "reset") return false;
       if (run.status === "merged" || run.status === "pr-created") return true;
@@ -1515,6 +1795,9 @@ export class Dispatcher {
   }
 
   private resolveProjectId(): string {
+    if (this.overrides?.externalProjectId) {
+      return this.overrides.externalProjectId;
+    }
     const project = this.store.getProjectByPath(this.projectPath);
     if (!project) {
       throw new Error(
@@ -1544,7 +1827,7 @@ export class Dispatcher {
 export async function resolveBaseBranch(
   seedId: string,
   projectPath: string,
-  store: Pick<ForemanStore, "getRunsForSeed">,
+  runLookup: BaseBranchRunLookup,
   backend?: Pick<VcsBackend, "branchExists">,
 ): Promise<string | undefined> {
   const brClient = await createDispatcherBeadsClient(projectPath);
@@ -1559,7 +1842,7 @@ export async function resolveBaseBranch(
       const branchExists = await depBackend.branchExists(projectPath, depBranch);
       if (!branchExists) continue;
       // Check if the dep's most recent run is "completed" (done but not yet merged)
-      const depRuns = store.getRunsForSeed(depId);
+      const depRuns = await runLookup.getRunsForSeed(depId);
       const latestDepRun = depRuns[0]; // DESC order → first = most recent
       if (latestDepRun && latestDepRun.status === "completed") {
         return depBranch; // Stack on this dependency branch
@@ -1656,6 +1939,7 @@ export interface WorkerConfig {
 
 /** Result returned by a SpawnStrategy */
 export interface SpawnResult {
+  pid: number | null;
 }
 
 /** Strategy interface for spawning worker processes */
@@ -1735,7 +2019,7 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     await errFd.close();
 
     log(`  Worker pid=${child.pid} for ${config.seedId}`);
-    return {};
+    return { pid: child.pid ?? null };
   }
 }
 
@@ -1772,6 +2056,12 @@ function buildWorkerEnv(
   const home = process.env.HOME ?? "/home/nobody";
   env.PATH = `${home}/.local/bin:/opt/homebrew/bin:${env.PATH ?? ""}`;
   env.TSX_DISABLE_IPC = "1";
+  if (!env.DATABASE_URL) {
+    const poolConfig = getPoolConfig();
+    if (typeof poolConfig?.connectionString === "string") {
+      env.DATABASE_URL = poolConfig.connectionString;
+    }
+  }
 
   if (notifyUrl) {
     env.FOREMAN_NOTIFY_URL = notifyUrl;
@@ -1806,9 +2096,21 @@ function log(msg: string): void {
   console.error(`[foreman ${ts}] ${msg}`);
 }
 
+export function buildSdkSessionKey(
+  model: string,
+  runId: string,
+  pid: number | null,
+  sdkSessionId?: string,
+): string {
+  const parts = [`foreman:sdk:${model}:${runId}`];
+  if (pid != null) parts.push(`pid-${pid}`);
+  if (sdkSessionId) parts.push(`session-${sdkSessionId}`);
+  return parts.join(":");
+}
+
 /**
  * Extract the SDK session ID from a foreman session key.
- * Format: foreman:sdk:<model>:<runId>:session-<sessionId>
+ * Format: foreman:sdk:<model>:<runId>[:pid-<pid>]:session-<sessionId>
  */
 function extractSessionId(sessionKey: string | null): string | null {
   if (!sessionKey) return null;
@@ -1879,7 +2181,7 @@ export async function deleteWorkerConfigFile(runId: string): Promise<void> {
  * Returns the number of files deleted.
  */
 export async function purgeOrphanedWorkerConfigs(
-  store: Pick<import("../lib/store.js").ForemanStore, "getRun">,
+  store: OrphanedWorkerConfigStore,
 ): Promise<number> {
   const dir = workerConfigDir();
   let entries: string[];
@@ -1899,7 +2201,7 @@ export async function purgeOrphanedWorkerConfigs(
     const runId = entry.slice("worker-".length, -".json".length);
     if (!runId) continue;
 
-    const run = store.getRun(runId);
+    const run = await store.getRun(runId);
     // Delete if the run is terminal, unknown, or absent from the DB
     if (!run || !activeStatuses.has(run.status)) {
       try {

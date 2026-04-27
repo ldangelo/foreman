@@ -160,6 +160,25 @@ describe("resolveBaseBranch()", () => {
     expect(result).toBe("foreman/dep-a");
   });
 
+  it("supports async override-backed run lookup when resolving stacked dependencies", async () => {
+    mockShowFn = vi.fn().mockResolvedValue({ dependencies: ["dep-a"] });
+    mockBranchExists = vi.fn().mockResolvedValue(true);
+    const runLookup = {
+      getRunsForSeed: vi.fn(async (id: string) => {
+        if (id === "dep-a") {
+          return [makeRun({ seed_id: "dep-a", status: "completed" })];
+        }
+        return [];
+      }),
+    };
+    const backend = makeBackend();
+
+    const result = await resolveBaseBranch("seed-b", "/tmp/project", runLookup, backend);
+
+    expect(result).toBe("foreman/dep-a");
+    expect(runLookup.getRunsForSeed).toHaveBeenCalledWith("dep-a");
+  });
+
   it("returns undefined and does not throw when br fails", async () => {
     mockShowFn = vi.fn().mockRejectedValue(new Error("br not found"));
     const store = makeStore([]);

@@ -85,6 +85,36 @@ describe("checkAndRebaseStaleWorktree", () => {
     expect(mockVcs.rebase).toHaveBeenCalledWith(worktreePath, "origin/dev");
   });
 
+  it("should use an injected event writer when provided", async () => {
+    const eventWriter = vi.fn().mockResolvedValue(undefined);
+
+    const mockVcs = createMockVcs({
+      getHeadId: vi.fn().mockResolvedValue("abc123"),
+      resolveRef: vi.fn().mockResolvedValue("def456"),
+    });
+
+    await checkAndRebaseStaleWorktree(
+      mockVcs as unknown as VcsBackend,
+      worktreePath,
+      targetBranch,
+      mockStoreInstance,
+      "proj-123",
+      "run-456",
+      "seed-abc",
+      { eventWriter },
+    );
+
+    expect(eventWriter).toHaveBeenCalledWith(
+      "worktree-rebased",
+      expect.objectContaining({
+        seedId: "seed-abc",
+        runId: "run-456",
+        reason: "pre-dispatch",
+      }),
+    );
+    expect(mockStore.logEvent).not.toHaveBeenCalled();
+  });
+
   it("should log worktree-rebased event on successful rebase", async () => {
     const mockVcs = createMockVcs({
       getHeadId: vi.fn().mockResolvedValue("abc123"),
@@ -183,6 +213,43 @@ describe("checkAndRebaseStaleWorktree", () => {
     );
   });
 
+  it("should use an injected event writer for rebase failures", async () => {
+    const eventWriter = vi.fn().mockResolvedValue(undefined);
+
+    const mockVcs = {
+      getHeadId: vi.fn().mockResolvedValue("abc123"),
+      fetch: vi.fn().mockResolvedValue(undefined),
+      resolveRef: vi.fn().mockResolvedValue("def456"),
+      rebase: vi.fn().mockResolvedValue({
+        success: false,
+        hasConflicts: true,
+        conflictingFiles: ["src/conflict.ts"],
+      }),
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman/seed-abc"),
+      status: vi.fn().mockResolvedValue(""),
+    };
+
+    await checkAndRebaseStaleWorktree(
+      mockVcs as unknown as VcsBackend,
+      worktreePath,
+      targetBranch,
+      mockStoreInstance,
+      "proj-123",
+      "run-456",
+      "seed-abc",
+      { failOnConflict: false, eventWriter },
+    );
+
+    expect(eventWriter).toHaveBeenCalledWith(
+      "worktree-rebase-failed",
+      expect.objectContaining({
+        seedId: "seed-abc",
+        conflictingFiles: ["src/conflict.ts"],
+      }),
+    );
+    expect(mockStore.logEvent).not.toHaveBeenCalled();
+  });
+
   it("should skip rebase when origin/targetBranch doesn't exist", async () => {
     const mockVcs = createMockVcs({
       getHeadId: vi.fn().mockResolvedValue("abc123"),
@@ -267,6 +334,8 @@ describe("checkAndRebaseStaleWorktree", () => {
         { failOnConflict: true },
       ),
     ).rejects.toThrow("Rebase failed with conflicts");
+
+    expect(mockStore.logEvent).toHaveBeenCalledTimes(1);
   });
 
   it("should not throw when failOnConflict=false and rebase conflicts", async () => {

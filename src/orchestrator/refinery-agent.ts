@@ -13,12 +13,14 @@ import { promisify } from "node:util";
 import { execFile as execFileSync } from "node:child_process";
 
 import type { VcsBackend } from "../lib/vcs/index.js";
-import { MergeQueue, type MergeQueueEntry } from "./merge-queue.js";
+import type { MergeQueueEntry } from "./merge-queue.js";
 import { PIPELINE_BUFFERS } from "../lib/config.js";
-import { ForemanStore } from "../lib/store.js";
+import { ForemanStore, type Run } from "../lib/store.js";
 import { runWithPiSdk, type PiRunResult } from "./pi-sdk-runner.js";
 import { createSendMailTool } from "./pi-sdk-tools.js";
-import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
+import { PostgresMailClient } from "../lib/postgres-mail-client.js";
+import { SqliteMailClient, type AgentMailClient } from "../lib/sqlite-mail-client.js";
+import { createProjectMailClient } from "../lib/project-mail-client.js";
 import {
   createBashTool,
   createReadTool,
@@ -32,6 +34,8 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 
 const execFileAsync = promisify(execFileSync);
 
+type Awaitable<T> = T | Promise<T>;
+
 // ── Types ────────────────────────────────────────────────────────────────
 
 export interface RefineryAgentConfig {
@@ -44,12 +48,32 @@ export interface RefineryAgentConfig {
   model?: string;
 }
 
+export interface RunLookup {
+  getRun(id: string): Awaitable<Run | null>;
+}
+
 export interface AgentResult {
   success: boolean;
   action: "merged" | "escalated" | "skipped" | "error";
   logPath: string;
   message?: string;
   costUsd?: number;
+}
+
+interface RefineryQueue {
+  list(status?: "pending" | "merging" | "merged" | "conflict" | "failed"): Promise<MergeQueueEntry[]>;
+  dequeue(): Promise<MergeQueueEntry | null>;
+  updateStatus(id: number, status: "pending" | "merging" | "merged" | "conflict" | "failed", extra?: { resolvedTier?: number; error?: string; completedAt?: string; lastAttemptedAt?: string; retryCount?: number }): Promise<void>;
+  resetForRetry(seedId: string): Promise<boolean>;
+}
+
+export function wrapLocalRefineryQueue(queue: { list: (status?: "pending" | "merging" | "merged" | "conflict" | "failed") => MergeQueueEntry[]; dequeue: () => MergeQueueEntry | null; updateStatus: (id: number, status: "pending" | "merging" | "merged" | "conflict" | "failed", extra?: { resolvedTier?: number; error?: string; completedAt?: string; lastAttemptedAt?: string; retryCount?: number }) => void; resetForRetry: (seedId: string) => boolean; }): RefineryQueue {
+  return {
+    list: async (status) => queue.list(status),
+    dequeue: async () => queue.dequeue(),
+    updateStatus: async (id, status, extra) => queue.updateStatus(id, status, extra),
+    resetForRetry: async (seedId) => queue.resetForRetry(seedId),
+  };
 }
 
 // ── Default Config ───────────────────────────────────────────────────────
@@ -68,21 +92,20 @@ export class RefineryAgent {
   private config: RefineryAgentConfig;
   private running = false;
   private systemPrompt: string = "";
-  private store: ForemanStore;
-  private mailClient: SqliteMailClient;
+  private runLookup: RunLookup;
+  private mailClient: AgentMailClient;
   private mailInitialized = false;
 
   constructor(
-    private mergeQueue: MergeQueue,
+    private mergeQueue: RefineryQueue,
     private vcsBackend: VcsBackend,
     private projectPath: string,
     config: Partial<RefineryAgentConfig> = {},
+    runLookup?: RunLookup,
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config, projectPath };
-    this.store = ForemanStore.forProject(this.projectPath);
+    this.runLookup = runLookup ?? ForemanStore.forProject(this.projectPath);
     this.mailClient = new SqliteMailClient();
-    // Note: mailClient.ensureProject(projectPath) must be called before use
-    // in instance methods. Called lazily in processQueue() to avoid async constructor.
   }
 
   /**
@@ -91,7 +114,7 @@ export class RefineryAgent {
    */
   private async ensureMailClient(): Promise<void> {
     if (!this.mailInitialized) {
-      await this.mailClient.ensureProject(this.projectPath);
+      this.mailClient = await createProjectMailClient(this.projectPath);
       this.mailInitialized = true;
     }
   }
@@ -154,7 +177,7 @@ export class RefineryAgent {
     await this.ensureMailClient();
 
     // Get pending entries in FIFO order using MergeQueue
-    const entries = this.mergeQueue.list("pending");
+    const entries = await this.mergeQueue.list("pending");
     console.log(`[refinery-agent] Found ${entries.length} pending entries`);
 
     for (const entry of entries) {
@@ -179,7 +202,7 @@ export class RefineryAgent {
 
     // Atomically claim the entry via MergeQueue
     // If another process has it, dequeue returns null
-    const claimed = this.mergeQueue.dequeue();
+    const claimed = await this.mergeQueue.dequeue();
     if (!claimed || claimed.id !== entry.id) {
       return {
         success: false,
@@ -195,7 +218,7 @@ export class RefineryAgent {
       // Read PR state
       const prState = await this.readPrState(entry);
       if (!prState) {
-        this.mergeQueue.updateStatus(entry.id, "failed", { error: "Could not read PR state" });
+        await this.mergeQueue.updateStatus(entry.id, "failed", { error: "Could not read PR state" });
         return { success: false, action: "error", logPath, message: "Could not read PR state" };
       }
 
@@ -203,33 +226,33 @@ export class RefineryAgent {
       const ciPassed = await this.checkCiStatus(entry);
       if (!ciPassed) {
         this.logAction(entry.id, "CI not yet passing, will retry on next poll");
-        this.mergeQueue.resetForRetry(entry.seed_id);
+        await this.mergeQueue.resetForRetry(entry.seed_id);
         return { success: false, action: "skipped", logPath, message: "CI not passing" };
       }
 
       // Get the worktree path from the run record
-      const run = this.store.getRun(entry.run_id);
+      const run = await this.runLookup.getRun(entry.run_id);
       const worktreePath = run?.worktree_path ?? join(this.projectPath, "worktrees", entry.seed_id);
 
       // Run agent to fix and merge
       const result = await this.runAgent(entry, prState, worktreePath);
 
       if (result.success) {
-        this.mergeQueue.updateStatus(entry.id, "merged", { completedAt: new Date().toISOString() });
+        await this.mergeQueue.updateStatus(entry.id, "merged", { completedAt: new Date().toISOString() });
         this.logAction(entry.id, `Successfully merged ${entry.branch_name}`);
       } else if (result.action === "escalated") {
         await this.escalate(entry, result.message ?? "Fix budget exhausted");
-        this.mergeQueue.updateStatus(entry.id, "conflict", { error: result.message });
+        await this.mergeQueue.updateStatus(entry.id, "conflict", { error: result.message });
         this.logAction(entry.id, `Escalated: ${result.message}`);
       } else {
-        this.mergeQueue.updateStatus(entry.id, "failed", { error: result.message });
+        await this.mergeQueue.updateStatus(entry.id, "failed", { error: result.message });
         this.logAction(entry.id, `Error: ${result.message}`);
       }
 
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.mergeQueue.updateStatus(entry.id, "failed", { error: message });
+      await this.mergeQueue.updateStatus(entry.id, "failed", { error: message });
       this.logAction(entry.id, `Error: ${message}`);
       return { success: false, action: "error", logPath, message };
     }

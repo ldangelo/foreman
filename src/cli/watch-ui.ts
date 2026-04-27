@@ -2,7 +2,7 @@ import chalk from "chalk";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ForemanStore, Run, RunProgress } from "../lib/store.js";
+import type { Run, RunProgress } from "../lib/store.js";
 import type { NotificationBus } from "../orchestrator/notification-bus.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 
@@ -276,7 +276,7 @@ export interface WatchState {
   successRate?: number | null;
 }
 
-export function poll(store: ForemanStore, runIds: string[]): WatchState {
+export async function poll(store: WatchStore, runIds: string[]): Promise<WatchState> {
   const entries: Array<{ run: Run; progress: RunProgress | null }> = [];
   let totalCost = 0;
   let totalTools = 0;
@@ -284,9 +284,9 @@ export function poll(store: ForemanStore, runIds: string[]): WatchState {
   let allDone = true;
 
   for (const id of runIds) {
-    const run = store.getRun(id);
+    const run = await store.getRun(id);
     if (!run) continue;
-    const progress = store.getRunProgress(run.id);
+    const progress = await store.getRunProgress(run.id);
 
     if (progress) {
       totalCost += progress.costUsd;
@@ -403,8 +403,14 @@ export interface WatchResult {
   detached: boolean;
 }
 
+interface WatchStore {
+  getRun(id: string): Run | null | Promise<Run | null>;
+  getRunProgress(runId: string): RunProgress | null | Promise<RunProgress | null>;
+  getSuccessRate(projectId: string): { rate: number | null; merged: number; failed: number } | Promise<{ rate: number | null; merged: number; failed: number }>;
+}
+
 export async function watchRunsInk(
-  store: ForemanStore,
+  store: WatchStore,
   runIds: string[],
   opts?: {
     /** Optional notification bus — when provided, status/progress events wake
@@ -528,7 +534,7 @@ export async function watchRunsInk(
 
   try {
     while (!detached) {
-      let state = poll(store, watchList);
+      let state = await poll(store, watchList);
 
       // Auto-dispatch: if a run completed, try to dispatch new tasks
       const currentActiveCount = state.runs.filter(
@@ -557,7 +563,7 @@ export async function watchRunsInk(
         // Re-poll to include new runs in state
         if (addedNew) {
           autoDispatchNotification = `[auto-dispatch] ${newDispatchedCount} new task(s)`;
-          state = poll(store, watchList);
+          state = await poll(store, watchList);
         }
       }
       prevActiveCount = currentActiveCount;
@@ -566,7 +572,7 @@ export async function watchRunsInk(
       {
         const projectId = state.runs[0]?.run.project_id;
         try {
-          const sr = store.getSuccessRate(projectId);
+          const sr = await store.getSuccessRate(projectId);
           state = { ...state, successRate: sr.rate };
         } catch {
           // Non-fatal — success rate is supplemental

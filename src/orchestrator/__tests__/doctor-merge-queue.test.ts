@@ -40,9 +40,10 @@ function makeMqEntry(overrides: Partial<MergeQueueEntry> = {}): MergeQueueEntry 
   };
 }
 
-function makeMocks(projectPath = "/tmp/project") {
+function makeStore(projectPath = "/tmp/project") {
   const store = {
     getProjectByPath: vi.fn(() => ({ id: "proj-1", name: "test", status: "active", path: projectPath, created_at: "", updated_at: "" })),
+    getDb: vi.fn(() => ({ kind: "sqlite-db" })),
     getRunsByStatus: vi.fn(() => [] as Run[]),
     getRunsForSeed: vi.fn(() => [] as Run[]),
     getActiveRuns: vi.fn(() => [] as Run[]),
@@ -50,15 +51,64 @@ function makeMocks(projectPath = "/tmp/project") {
     logEvent: vi.fn(),
     getRun: vi.fn((_id: string) => null as Run | null),
   };
+  return store;
+}
+
+function makeLocalQueue() {
   const mergeQueue = {
     list: vi.fn(() => [] as MergeQueueEntry[]),
     remove: vi.fn(),
     updateStatus: vi.fn(),
     missingFromQueue: vi.fn(() => [] as Array<{ run_id: string; seed_id: string }>),
     reEnqueue: vi.fn(),
+    reconcile: vi.fn(() => ({ enqueued: 0, skipped: 0, invalidBranch: 0, failedToEnqueue: [] as Array<{ run_id: string; seed_id: string; reason: string }> })),
   };
+  return mergeQueue;
+}
+
+function makeAsyncQueue() {
+  const entries: MergeQueueEntry[] = [];
+  const mergeQueue = {
+    list: vi.fn(async (status?: MergeQueueEntry["status"]) => {
+      await Promise.resolve();
+      return status ? entries.filter((entry) => entry.status === status) : entries;
+    }),
+    remove: vi.fn(async (_id: number) => {
+      await Promise.resolve();
+    }),
+    updateStatus: vi.fn(async (_id: number, _status: MergeQueueEntry["status"], _extra?: Record<string, unknown>) => {
+      await Promise.resolve();
+    }),
+    missingFromQueue: vi.fn(async () => [] as Array<{ run_id: string; seed_id: string }>),
+    reEnqueue: vi.fn(async (_id: number) => {
+      await Promise.resolve();
+      return true;
+    }),
+    reconcile: vi.fn(async (_repoPath: string) => {
+      await Promise.resolve();
+      return { enqueued: 0, skipped: 0, invalidBranch: 0, failedToEnqueue: [] as Array<{ run_id: string; seed_id: string; reason: string }> };
+    }),
+    entries,
+  };
+  return mergeQueue;
+}
+
+function makeMocks(projectPath = "/tmp/project") {
+  const store = makeStore(projectPath);
+  const mergeQueue = makeLocalQueue();
   const doctor = new Doctor(store as any, projectPath, mergeQueue as any);
   return { store, mergeQueue, doctor };
+}
+
+function makeRegisteredMocks(projectPath = "/tmp/project") {
+  const store = makeStore(projectPath);
+  const localQueue = makeLocalQueue();
+  const registeredQueue = makeAsyncQueue();
+  const runLookup = {
+    getRun: vi.fn(async (_id: string) => null as Run | null),
+  };
+  const doctor = new Doctor(store as any, projectPath, localQueue as any, undefined, undefined, registeredQueue as any, runLookup as any);
+  return { store, localQueue, registeredQueue, runLookup, doctor };
 }
 
 describe("Doctor - Merge Queue Health Checks", () => {
@@ -106,6 +156,19 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
       expect(result.status).toBe("fixed");
       expect(mergeQueue.updateStatus).toHaveBeenCalledWith(1, "failed", expect.any(Object));
+    });
+
+    it("awaits async queue methods when fixing stale entries", async () => {
+      const { doctor, registeredQueue } = makeRegisteredMocks();
+      const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+      registeredQueue.entries.push(makeMqEntry({ id: 1, status: "pending", enqueued_at: staleDate }));
+
+      const result = await doctor.checkStaleMergeQueueEntries({ fix: true });
+
+      expect(result.status).toBe("fixed");
+      expect(registeredQueue.list).toHaveBeenCalledTimes(1);
+      expect(registeredQueue.list.mock.calls[0]?.[0]).toBeUndefined();
+      expect(registeredQueue.updateStatus).toHaveBeenCalledWith(1, "failed", expect.any(Object));
     });
 
     it("returns pass when no entries exist", async () => {
@@ -162,6 +225,22 @@ describe("Doctor - Merge Queue Health Checks", () => {
       expect(mergeQueue.remove).toHaveBeenCalledWith(3);
       expect(mergeQueue.remove).not.toHaveBeenCalledWith(5);
     });
+
+    it("awaits async queue methods when fixing duplicates", async () => {
+      const { doctor, registeredQueue } = makeRegisteredMocks();
+      registeredQueue.entries.push(
+        makeMqEntry({ id: 1, branch_name: "foreman/dup", status: "pending" }),
+        makeMqEntry({ id: 5, branch_name: "foreman/dup", status: "pending" }),
+        makeMqEntry({ id: 3, branch_name: "foreman/dup", status: "pending" }),
+      );
+
+      const result = await doctor.checkDuplicateMergeQueueEntries({ fix: true });
+
+      expect(result.status).toBe("fixed");
+      expect(registeredQueue.remove).toHaveBeenCalledWith(1);
+      expect(registeredQueue.remove).toHaveBeenCalledWith(3);
+      expect(registeredQueue.remove).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe("checkOrphanedMergeQueueEntries", () => {
@@ -193,6 +272,25 @@ describe("Doctor - Merge Queue Health Checks", () => {
       expect(result.status).toBe("warn");
       expect(result.message).toContain("MQ-010");
       expect(result.message).toContain("1");
+    });
+
+    it("uses registered run lookup instead of local store.getRun when active", async () => {
+      const { doctor, registeredQueue, runLookup, store } = makeRegisteredMocks();
+      registeredQueue.entries.push(
+        makeMqEntry({ id: 1, run_id: "run-gone" }),
+        makeMqEntry({ id: 2, run_id: "run-exists" }),
+      );
+      runLookup.getRun.mockImplementation(async (id: string) => {
+        if (id === "run-exists") return makeRun({ id: "run-exists" });
+        return null;
+      });
+
+      const result = await doctor.checkOrphanedMergeQueueEntries();
+
+      expect(result.status).toBe("warn");
+      expect(runLookup.getRun).toHaveBeenCalledWith("run-gone");
+      expect(runLookup.getRun).toHaveBeenCalledWith("run-exists");
+      expect(store.getRun).not.toHaveBeenCalled();
     });
 
     it("fixes orphaned entries by deleting them", async () => {
@@ -270,6 +368,29 @@ describe("Doctor - Merge Queue Health Checks", () => {
       expect(result.details).toContain("foreman-56b46");
     });
 
+    it("does not treat a completed run as already resolved by itself", async () => {
+      const { doctor, mergeQueue, store } = makeMocks();
+      mergeQueue.list.mockReturnValue([makeMqEntry({ id: 7, seed_id: "foreman-56b46", status: "conflict" })]);
+      store.getRun.mockReturnValue(makeRun({ id: "run-1", seed_id: "foreman-56b46", status: "completed" }));
+
+      const result = await doctor.checkResolvedMergeQueueEntries();
+
+      expect(result.status).toBe("pass");
+      expect(result.message).toContain("No already-resolved merge queue entries");
+    });
+
+    it("uses registered run lookup instead of local store.getRun when active", async () => {
+      const { doctor, registeredQueue, runLookup, store } = makeRegisteredMocks();
+      registeredQueue.entries.push(makeMqEntry({ id: 7, seed_id: "foreman-56b46", status: "conflict" }));
+      runLookup.getRun.mockResolvedValue(makeRun({ id: "run-1", seed_id: "foreman-56b46", status: "merged" }));
+
+      const result = await doctor.checkResolvedMergeQueueEntries();
+
+      expect(result.status).toBe("warn");
+      expect(runLookup.getRun).toHaveBeenCalledWith("run-1");
+      expect(store.getRun).not.toHaveBeenCalled();
+    });
+
     it("fixes already resolved queue entries by removing them", async () => {
       const { doctor, mergeQueue, store } = makeMocks();
       mergeQueue.list.mockReturnValue([
@@ -281,6 +402,32 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
       expect(result.status).toBe("fixed");
       expect(mergeQueue.remove).toHaveBeenCalledWith(7);
+    });
+  });
+
+  describe("checkCompletedRunsNotQueued", () => {
+    it("uses local reconcile signature when no registered run lookup is active", async () => {
+      const { doctor, mergeQueue, store } = makeMocks();
+      mergeQueue.missingFromQueue.mockReturnValue([{ run_id: "run-1", seed_id: "seed-1" }]);
+      mergeQueue.reconcile.mockResolvedValue({ enqueued: 1, skipped: 0, invalidBranch: 0, failedToEnqueue: [] });
+
+      const result = await doctor.checkCompletedRunsNotQueued({ fix: true, projectPath: "/tmp/project" });
+
+      expect(result.status).toBe("fixed");
+      expect(mergeQueue.reconcile).toHaveBeenCalledWith(store.getDb(), "/tmp/project");
+    });
+
+    it("uses registered reconcile signature when registered run lookup is active", async () => {
+      const { doctor, registeredQueue, runLookup, store } = makeRegisteredMocks();
+      registeredQueue.missingFromQueue.mockReturnValue([{ run_id: "run-1", seed_id: "seed-1" }]);
+      registeredQueue.reconcile.mockResolvedValue({ enqueued: 1, skipped: 0, invalidBranch: 0, failedToEnqueue: [] });
+      runLookup.getRun.mockResolvedValue(makeRun({ id: "run-1", status: "completed" }));
+
+      const result = await doctor.checkCompletedRunsNotQueued({ fix: true, projectPath: "/tmp/project" });
+
+      expect(result.status).toBe("fixed");
+      expect(registeredQueue.reconcile).toHaveBeenCalledWith("/tmp/project");
+      expect(store.getDb).not.toHaveBeenCalled();
     });
   });
 
@@ -374,6 +521,22 @@ describe("Doctor - Merge Queue Health Checks", () => {
       expect(mergeQueue.reEnqueue).toHaveBeenCalledWith(10);
       expect(mergeQueue.reEnqueue).toHaveBeenCalledWith(11);
       expect(mergeQueue.reEnqueue).toHaveBeenCalledTimes(2);
+    });
+
+    it("awaits async queue methods when fixing stuck entries", async () => {
+      const { doctor, registeredQueue } = makeRegisteredMocks();
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      registeredQueue.entries.push(
+        makeMqEntry({ id: 10, status: "conflict", error: "Code conflicts", enqueued_at: twoHoursAgo }),
+        makeMqEntry({ id: 11, status: "failed", error: "Test failures", enqueued_at: twoHoursAgo }),
+      );
+
+      const result = await doctor.checkStuckConflictFailedEntries({ fix: true });
+
+      expect(result.status).toBe("fixed");
+      expect(registeredQueue.reEnqueue).toHaveBeenCalledWith(10);
+      expect(registeredQueue.reEnqueue).toHaveBeenCalledWith(11);
+      expect(registeredQueue.reEnqueue).toHaveBeenCalledTimes(2);
     });
 
     it("fix: true counts only successfully re-enqueued entries", async () => {

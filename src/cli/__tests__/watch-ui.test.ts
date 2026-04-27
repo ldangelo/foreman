@@ -370,88 +370,88 @@ describe("renderAgentCard with isExpanded=false", () => {
 // ── poll() ────────────────────────────────────────────────────────────────
 
 describe("poll", () => {
-  it("returns empty runs array when no IDs match", () => {
+  it("returns empty runs array when no IDs match", async () => {
     const store = makeMockStore({});
-    const state = poll(store as any, ["nonexistent"]);
+    const state = await poll(store as any, ["nonexistent"]);
     expect(state.runs).toHaveLength(0);
     expect(state.allDone).toBe(true);
   });
 
-  it("aggregates cost, tools, and files from progress", () => {
+  it("aggregates cost, tools, and files from progress", async () => {
     const run1 = makeRun({ id: "r1", status: "completed" });
     const run2 = makeRun({ id: "r2", status: "completed" });
     const prog1 = makeProgress({ costUsd: 0.01, toolCalls: 10, filesChanged: ["a.ts"] });
     const prog2 = makeProgress({ costUsd: 0.02, toolCalls: 5, filesChanged: ["b.ts", "c.ts"] });
 
     const store = makeMockStore({ r1: run1, r2: run2 }, { r1: prog1, r2: prog2 });
-    const state = poll(store as any, ["r1", "r2"]);
+    const state = await poll(store as any, ["r1", "r2"]);
 
     expect(state.totalCost).toBeCloseTo(0.03, 5);
     expect(state.totalTools).toBe(15);
     expect(state.totalFiles).toBe(3);
   });
 
-  it("sets allDone=false when any run is pending", () => {
+  it("sets allDone=false when any run is pending", async () => {
     const run = makeRun({ id: "r1", status: "pending" });
     const store = makeMockStore({ r1: run });
-    const state = poll(store as any, ["r1"]);
+    const state = await poll(store as any, ["r1"]);
     expect(state.allDone).toBe(false);
   });
 
-  it("sets allDone=false when any run is running", () => {
+  it("sets allDone=false when any run is running", async () => {
     const run = makeRun({ id: "r1", status: "running" });
     const store = makeMockStore({ r1: run });
-    const state = poll(store as any, ["r1"]);
+    const state = await poll(store as any, ["r1"]);
     expect(state.allDone).toBe(false);
   });
 
-  it("sets allDone=true when all runs are completed", () => {
+  it("sets allDone=true when all runs are completed", async () => {
     const run1 = makeRun({ id: "r1", status: "completed" });
     const run2 = makeRun({ id: "r2", status: "failed" });
     const store = makeMockStore({ r1: run1, r2: run2 });
-    const state = poll(store as any, ["r1", "r2"]);
+    const state = await poll(store as any, ["r1", "r2"]);
     expect(state.allDone).toBe(true);
   });
 
-  it("counts completedCount correctly", () => {
+  it("counts completedCount correctly", async () => {
     const run1 = makeRun({ id: "r1", status: "completed" });
     const run2 = makeRun({ id: "r2", status: "completed" });
     const run3 = makeRun({ id: "r3", status: "failed" });
     const store = makeMockStore({ r1: run1, r2: run2, r3: run3 });
-    const state = poll(store as any, ["r1", "r2", "r3"]);
+    const state = await poll(store as any, ["r1", "r2", "r3"]);
     expect(state.completedCount).toBe(2);
     expect(state.failedCount).toBe(1);
     expect(state.stuckCount).toBe(0);
   });
 
-  it("counts failedCount including test-failed", () => {
+  it("counts failedCount including test-failed", async () => {
     const run1 = makeRun({ id: "r1", status: "failed" });
     const run2 = makeRun({ id: "r2", status: "test-failed" });
     const store = makeMockStore({ r1: run1, r2: run2 });
-    const state = poll(store as any, ["r1", "r2"]);
+    const state = await poll(store as any, ["r1", "r2"]);
     expect(state.failedCount).toBe(2);
   });
 
-  it("counts stuckCount correctly", () => {
+  it("counts stuckCount correctly", async () => {
     const run1 = makeRun({ id: "r1", status: "stuck" });
     const run2 = makeRun({ id: "r2", status: "completed" });
     const store = makeMockStore({ r1: run1, r2: run2 });
-    const state = poll(store as any, ["r1", "r2"]);
+    const state = await poll(store as any, ["r1", "r2"]);
     expect(state.stuckCount).toBe(1);
   });
 
-  it("skips runs that are not found in store", () => {
+  it("skips runs that are not found in store", async () => {
     const run1 = makeRun({ id: "r1", status: "completed" });
     const store = makeMockStore({ r1: run1 });
-    const state = poll(store as any, ["r1", "missing-id"]);
+    const state = await poll(store as any, ["r1", "missing-id"]);
     expect(state.runs).toHaveLength(1);
     expect(state.runs[0].run.id).toBe("r1");
   });
 
-  it("handles runs with no progress (null)", () => {
+  it("handles runs with no progress (null)", async () => {
     const run = makeRun({ id: "r1", status: "running" });
     const store = makeMockStore({ r1: run }, { r1: null });
-    const state = poll(store as any, ["r1"]);
+    const state = await poll(store as any, ["r1"]);
     expect(state.runs[0].progress).toBeNull();
     expect(state.totalCost).toBe(0);
     expect(state.totalTools).toBe(0);

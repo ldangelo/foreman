@@ -1,7 +1,16 @@
-import type Database from "better-sqlite3";
 import { orderByCluster } from "./conflict-cluster.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
+
+interface SqlStatement<T = unknown> {
+  get(...params: unknown[]): T;
+  all(...params: unknown[]): T[];
+  run(...params: unknown[]): unknown;
+}
+
+interface SqlDbLike {
+  prepare(sql: string): SqlStatement;
+}
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -96,9 +105,9 @@ function rowToEntry(row: MergeQueueRow): MergeQueueEntry {
 // ── MergeQueue ─────────────────────────────────────────────────────────
 
 export class MergeQueue {
-  private db: Database.Database;
+  private db: SqlDbLike;
 
-  constructor(db: Database.Database) {
+  constructor(db: SqlDbLike) {
     this.db = db;
   }
 
@@ -373,7 +382,7 @@ export class MergeQueue {
    * and enqueue it with the list of modified files.
    */
   async reconcile(
-    db: Database.Database,
+    db: SqlDbLike,
     repoPath: string,
     backend?: VcsBackend,
   ): Promise<ReconcileResult> {

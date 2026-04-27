@@ -6,12 +6,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { ForemanStore } from "../lib/store.js";
-import type { Run } from "../lib/store.js";
+import type { Project, Run } from "../lib/store.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
-import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue.js";
+import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn, ReconcileResult } from "./merge-queue.js";
 import type { ITaskClient } from "../lib/task-client.js";
+import type { TaskClientBackend } from "../lib/task-client-factory.js";
 import { findMissingPrompts, findStalePrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
 import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
@@ -22,6 +23,36 @@ import { GhCli } from "../lib/gh-cli.js";
 import { healthCheck, getPool, initPool, destroyPool, isPoolInitialised } from "../lib/db/pool-manager.js";
 
 const execFileAsync = promisify(execFile);
+
+type MaybePromise<T> = T | Promise<T>;
+type MergeQueueListStatus = Parameters<MergeQueue["list"]>[0];
+type MergeQueueUpdateStatus = Parameters<MergeQueue["updateStatus"]>[1];
+type MergeQueueUpdateExtra = Parameters<MergeQueue["updateStatus"]>[2];
+
+interface MergeQueueLike {
+  list(status?: MergeQueueListStatus): MaybePromise<MergeQueueEntry[]>;
+  missingFromQueue(): MaybePromise<Array<{ run_id: string; seed_id: string }>>;
+  updateStatus(
+    id: number,
+    status: MergeQueueUpdateStatus,
+    extra?: MergeQueueUpdateExtra,
+  ): MaybePromise<void>;
+  remove(id: number): MaybePromise<void>;
+  reEnqueue(id: number): MaybePromise<boolean>;
+}
+
+interface RunLookupLike {
+  getRun(id: string): MaybePromise<Run | null>;
+  getProjectByPath(path: string): MaybePromise<Project | null>;
+  getRunsByStatuses(
+    statuses: Parameters<ForemanStore["getRunsByStatuses"]>[0],
+    projectId?: string,
+  ): MaybePromise<ReturnType<ForemanStore["getRunsByStatuses"]>>;
+  getRunsByStatus(status: Run["status"], projectId?: string): MaybePromise<Run[]>;
+  getActiveRuns(projectId?: string): MaybePromise<Run[]>;
+  getRunsForSeed(seedId: string, projectId?: string): MaybePromise<Run[]>;
+  updateRun(runId: string, updates: Partial<Pick<Run, "status" | "worktree_path" | "session_key" | "started_at" | "completed_at">>): MaybePromise<void>;
+}
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -52,7 +83,10 @@ function isSDKBasedRun(sessionKey: string | null): boolean {
 
 export class Doctor {
   private mergeQueue?: MergeQueue;
+  private mergeQueueLike?: MergeQueueLike;
   private taskClient?: ITaskClient;
+  private backendType?: TaskClientBackend;
+  private runLookup?: RunLookupLike;
   private vcsBackendPromise?: Promise<VcsBackend>;
   /**
    * Injected execFile-like function used only by `isBranchMerged`.
@@ -67,15 +101,57 @@ export class Doctor {
     mergeQueue?: MergeQueue,
     taskClient?: ITaskClient,
     execFn?: ExecFileAsyncFn,
+    mergeQueueLike?: MergeQueueLike,
+    runLookup?: RunLookupLike,
+    backendType?: TaskClientBackend,
   ) {
     this.mergeQueue = mergeQueue;
+    this.mergeQueueLike = mergeQueueLike ?? mergeQueue;
     this.taskClient = taskClient;
+    this.backendType = backendType;
+    this.runLookup = runLookup;
     this.execFn = execFn ?? (execFileAsync as ExecFileAsyncFn);
+  }
+
+  private isNativeTaskBackend(): boolean {
+    return this.backendType === "native";
+  }
+
+  private getMergeQueueLike(): MergeQueueLike | null {
+    return this.mergeQueueLike ?? null;
+  }
+
+  private getRunStore(): RunLookupLike {
+    return this.runLookup ?? this.store;
   }
 
   private getVcsBackend(): Promise<VcsBackend> {
     this.vcsBackendPromise ??= VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
     return this.vcsBackendPromise;
+  }
+
+  private async getRunById(runId: string): Promise<Run | null> {
+    if (this.runLookup) {
+      return await Promise.resolve(this.runLookup.getRun(runId));
+    }
+    return this.store.getRun(runId);
+  }
+
+  private async reconcileMissingCompletedRuns(projectPath: string): Promise<ReconcileResult> {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
+      throw new Error("No merge queue configured");
+    }
+    const localQueue = this.mergeQueue;
+    if (!localQueue) {
+      throw new Error("No local merge queue configured");
+    }
+
+    if (this.runLookup) {
+      return await Promise.resolve((mergeQueue as unknown as { reconcile(repoPath: string): MaybePromise<ReconcileResult> }).reconcile(projectPath));
+    }
+
+    return await Promise.resolve(localQueue.reconcile(this.store.getDb(), projectPath));
   }
 
   private getNativeTaskCount(): number {
@@ -121,6 +197,14 @@ export class Doctor {
   // ── System checks ──────────────────────────────────────────────────
 
   async checkBrBinary(): Promise<CheckResult> {
+    if (this.isNativeTaskBackend()) {
+      return {
+        name: "br (beads_rust) CLI binary",
+        status: "pass",
+        message: "Native task backend active — br not required.",
+      };
+    }
+
     const brPath = join(homedir(), ".local", "bin", "br");
     try {
       await access(brPath);
@@ -146,6 +230,14 @@ export class Doctor {
   }
 
   async checkBvBinary(): Promise<CheckResult> {
+    if (this.isNativeTaskBackend()) {
+      return {
+        name: "bv (beads_viewer) CLI binary",
+        status: "pass",
+        message: "Native task backend active — bv not required.",
+      };
+    }
+
     const bvPath = join(homedir(), ".local", "bin", "bv");
     try {
       await access(bvPath);
@@ -683,7 +775,7 @@ export class Doctor {
   }
 
   async checkProjectRegistered(): Promise<CheckResult> {
-    const project = this.store.getProjectByPath(this.projectPath);
+    const project = await Promise.resolve(this.getRunStore().getProjectByPath(this.projectPath));
     if (project) {
       return {
         name: "project registered in foreman",
@@ -699,6 +791,14 @@ export class Doctor {
   }
 
   async checkBeadsInitialized(): Promise<CheckResult> {
+    if (this.isNativeTaskBackend()) {
+      return {
+        name: "beads (.beads/) initialized",
+        status: "skip",
+        message: "Native task backend active — beads fallback not required",
+      };
+    }
+
     const beadsDir = join(this.projectPath, ".beads");
     if (existsSync(beadsDir)) {
       return {
@@ -724,6 +824,23 @@ export class Doctor {
   async checkTaskStoreMode(): Promise<CheckResult> {
     const nativeTaskCount = this.getNativeTaskCount();
     const beadsIssueCount = await this.getBeadsIssueCount();
+
+    if (this.isNativeTaskBackend()) {
+      if (beadsIssueCount > 0) {
+        return {
+          name: "task store mode",
+          status: "warn",
+          message: `Task store: native (${nativeTaskCount} tasks)`,
+          details: "Beads data still exists alongside the native task backend. Run 'foreman task import --from-beads' and then remove .beads/ to complete migration.",
+        };
+      }
+
+      return {
+        name: "task store mode",
+        status: "pass",
+        message: `Task store: native (${nativeTaskCount} tasks)`,
+      };
+    }
 
     if (nativeTaskCount > 0 && beadsIssueCount > 0) {
       return {
@@ -984,6 +1101,10 @@ export class Doctor {
   async checkOrphanedWorktrees(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
     const { fix = false, dryRun = false } = opts;
+    const runStore = this.getRunStore();
+    const project = this.runLookup
+      ? await Promise.resolve(runStore.getProjectByPath(this.projectPath))
+      : null;
 
     let worktrees;
     try {
@@ -1012,7 +1133,9 @@ export class Doctor {
 
     for (const wt of foremanWorktrees) {
       const seedId = wt.branch.slice("foreman/".length);
-      const runs = this.store.getRunsForSeed(seedId);
+      const runs = project?.id
+        ? await Promise.resolve(runStore.getRunsForSeed(seedId, project.id))
+        : await Promise.resolve(runStore.getRunsForSeed(seedId));
       const activeRun = runs.find((r: Run) =>
         ["pending", "running"].includes(r.status) && r.worktree_path === wt.path,
       );
@@ -1167,10 +1290,11 @@ export class Doctor {
 
   async checkZombieRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     const { fix = false, dryRun = false } = opts;
-    const project = this.store.getProjectByPath(this.projectPath);
+    const runStore = this.getRunStore();
+    const project = await Promise.resolve(runStore.getProjectByPath(this.projectPath));
     if (!project) return [];
 
-    const runningRuns = this.store.getRunsByStatus("running", project.id);
+    const runningRuns = await Promise.resolve(runStore.getRunsByStatus("running", project.id));
     if (runningRuns.length === 0) {
       return [
         {
@@ -1211,10 +1335,10 @@ export class Doctor {
             message: `Zombie run: status=running but no live process${pid ? ` (pid ${pid})` : ""}. Would mark failed (dry-run).`,
           });
         } else if (fix) {
-          this.store.updateRun(run.id, {
+          await Promise.resolve(runStore.updateRun(run.id, {
             status: "failed",
             completed_at: new Date().toISOString(),
-          });
+          }));
           results.push({
             name: `run: ${run.seed_id} [${run.agent_type}]`,
             status: "fixed",
@@ -1236,7 +1360,8 @@ export class Doctor {
 
   async checkStalePendingRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
-    const project = this.store.getProjectByPath(this.projectPath);
+    const runStore = this.getRunStore();
+    const project = await Promise.resolve(runStore.getProjectByPath(this.projectPath));
     if (!project) {
       return {
         name: "stale pending runs",
@@ -1245,7 +1370,7 @@ export class Doctor {
       };
     }
 
-    const pendingRuns = this.store.getRunsByStatus("pending", project.id);
+    const pendingRuns = await Promise.resolve(runStore.getRunsByStatus("pending", project.id));
     const staleThresholdMs = PIPELINE_TIMEOUTS.staleRunHours * 60 * 60 * 1000;
     const now = Date.now();
 
@@ -1272,10 +1397,10 @@ export class Doctor {
 
     if (fix) {
       for (const run of staleRuns) {
-        this.store.updateRun(run.id, {
+        await Promise.resolve(runStore.updateRun(run.id, {
           status: "failed",
           completed_at: new Date().toISOString(),
-        });
+        }));
       }
       return {
         name: `stale pending runs (>${PIPELINE_TIMEOUTS.staleRunHours}h)`,
@@ -1342,7 +1467,8 @@ export class Doctor {
 
   async checkFailedStuckRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     const { fix = false, dryRun = false } = opts;
-    const project = this.store.getProjectByPath(this.projectPath);
+    const runStore = this.getRunStore();
+    const project = await Promise.resolve(runStore.getProjectByPath(this.projectPath));
     if (!project) return [];
 
     const results: CheckResult[] = [];
@@ -1366,7 +1492,8 @@ export class Doctor {
     /**
      * For a set of runs (all failed or all stuck), filter out those that are
      * already resolved (seed closed or branch merged) and auto-mark them as
-     * completed in the store.  Returns the subset that still needs attention.
+     * merged in the store when fixing.  Returns the subset that still needs
+     * attention.
      */
     const filterAutoResolved = async (
       runs: import("../lib/store.js").Run[],
@@ -1377,7 +1504,9 @@ export class Doctor {
       for (const run of runs) {
         // If the bead/seed is already closed, the run record is stale.
         if (closedSeeds.has(run.seed_id)) {
-          this.store.updateRun(run.id, { status: "completed" });
+          if (fix && !dryRun) {
+            await Promise.resolve(runStore.updateRun(run.id, { status: "merged" }));
+          }
           autoResolvedCount++;
           continue;
         }
@@ -1385,7 +1514,9 @@ export class Doctor {
         // If the branch has already been merged, the run is done.
         const merged = await this.isBranchMerged(run.seed_id, defaultBranch);
         if (merged) {
-          this.store.updateRun(run.id, { status: "completed" });
+          if (fix && !dryRun) {
+            await Promise.resolve(runStore.updateRun(run.id, { status: "merged" }));
+          }
           autoResolvedCount++;
           continue;
         }
@@ -1396,8 +1527,8 @@ export class Doctor {
       return { unresolved, autoResolvedCount };
     };
 
-    const failedRuns = this.store.getRunsByStatus("failed", project.id);
-    const stuckRuns = this.store.getRunsByStatus("stuck", project.id);
+    const failedRuns = await Promise.resolve(runStore.getRunsByStatus("failed", project.id));
+    const stuckRuns = await Promise.resolve(runStore.getRunsByStatus("stuck", project.id));
 
     const { unresolved: unresolvedFailed, autoResolvedCount: failedResolved } =
       await filterAutoResolved(failedRuns);
@@ -1406,19 +1537,27 @@ export class Doctor {
 
     const totalResolved = failedResolved + stuckResolved;
     if (totalResolved > 0) {
-      results.push({
-        name: "failed/stuck runs (auto-resolved)",
-        status: "fixed",
-        message: `Auto-resolved ${totalResolved} run(s) whose branch was already merged or seed was already closed`,
-        fixApplied: `Marked ${totalResolved} run(s) as completed`,
-      });
+      if (fix && !dryRun) {
+        results.push({
+          name: "failed/stuck runs (auto-resolved)",
+          status: "fixed",
+          message: `Auto-resolved ${totalResolved} run(s) whose branch was already merged or seed was already closed`,
+          fixApplied: `Marked ${totalResolved} run(s) as merged`,
+        });
+      } else {
+        results.push({
+          name: "failed/stuck runs (auto-resolved)",
+          status: "warn",
+          message: `Found ${totalResolved} run(s) eligible for auto-resolution because their branch was already merged or seed was already closed${dryRun ? " (dry-run)" : ""}. Re-run with --fix to apply.`,
+        });
+      }
     }
 
     // ── Distinguish actionable vs. noise failures ─────────────────────────────
     // A failed run is "noise" (historical retry) if the same seed has a later
     // successful run (completed or merged).  These are not actionable.
     const { actionable: actionableFailed, historical: historicalFailed } =
-      this.partitionByHistoricalRetry(unresolvedFailed);
+      await this.partitionByHistoricalRetry(unresolvedFailed, runStore, project.id);
 
     // ── Age-based cleanup of historical-retry runs ────────────────────────────
     // Historical retries that are older than the retention threshold can be
@@ -1458,7 +1597,7 @@ export class Doctor {
       } else if (fix) {
         const allAged = [...agedHistoricalFailed, ...agedStuck];
         for (const run of allAged) {
-          this.store.updateRun(run.id, { status: "completed" });
+          await Promise.resolve(runStore.updateRun(run.id, { status: "completed" }));
         }
         results.push({
           name: `failed/stuck runs (aged, cleaned up)`,
@@ -1524,14 +1663,16 @@ export class Doctor {
    * Partition unresolved failed runs into "actionable" (seed has only failed runs)
    * and "historical" (seed has a later completed or merged run — noise from retries).
    */
-  private partitionByHistoricalRetry(
+  private async partitionByHistoricalRetry(
     runs: import("../lib/store.js").Run[],
-  ): { actionable: import("../lib/store.js").Run[]; historical: import("../lib/store.js").Run[] } {
+    runStore: RunLookupLike = this.getRunStore(),
+    projectId?: string,
+  ): Promise<{ actionable: import("../lib/store.js").Run[]; historical: import("../lib/store.js").Run[] }> {
     const actionable: import("../lib/store.js").Run[] = [];
     const historical: import("../lib/store.js").Run[] = [];
 
     for (const run of runs) {
-      const allSeedRuns = this.store.getRunsForSeed(run.seed_id);
+      const allSeedRuns = await Promise.resolve(runStore.getRunsForSeed(run.seed_id, projectId));
       const hasLaterSuccess = allSeedRuns.some(
         (r) =>
           ["completed", "merged"].includes(r.status) &&
@@ -1549,13 +1690,14 @@ export class Doctor {
 
   async checkRunStateConsistency(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     const { fix = false, dryRun = false } = opts;
-    const project = this.store.getProjectByPath(this.projectPath);
+    const runStore = this.getRunStore();
+    const project = await Promise.resolve(runStore.getProjectByPath(this.projectPath));
     if (!project) return [];
 
     const results: CheckResult[] = [];
 
     // Check for runs with completed_at set but still in running/pending status
-    const activeRuns = this.store.getActiveRuns(project.id);
+    const activeRuns = await Promise.resolve(runStore.getActiveRuns(project.id));
     const inconsistentRuns = activeRuns.filter((r) => r.completed_at !== null);
 
     if (inconsistentRuns.length === 0) {
@@ -1573,7 +1715,7 @@ export class Doctor {
             message: `Run has completed_at set but status="${run.status}". Would mark as failed (dry-run).`,
           });
         } else if (fix) {
-          this.store.updateRun(run.id, { status: "failed" });
+          await Promise.resolve(runStore.updateRun(run.id, { status: "failed" }));
           results.push({
             name: `run state: ${run.seed_id} [${run.agent_type}]`,
             status: "fixed",
@@ -1616,6 +1758,15 @@ export class Doctor {
   async checkBeadStatusSync(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
     const projectPath = opts.projectPath ?? this.projectPath;
+    const runStore = this.getRunStore();
+
+    if (this.isNativeTaskBackend()) {
+      return {
+        name: "bead status sync (SQLite ↔ br)",
+        status: "skip",
+        message: "Native task backend active — skipping bead status reconciliation",
+      };
+    }
 
     if (!this.taskClient) {
       return {
@@ -1625,7 +1776,7 @@ export class Doctor {
       };
     }
 
-    const project = this.store.getProjectByPath(this.projectPath);
+    const project = await Promise.resolve(runStore.getProjectByPath(this.projectPath));
     if (!project) {
       return {
         name: "bead status sync (SQLite ↔ br)",
@@ -1637,7 +1788,7 @@ export class Doctor {
     let result: Awaited<ReturnType<typeof syncBeadStatusOnStartup>>;
     try {
       // First pass: always run in dry-run mode to detect mismatches without side effects
-      result = await syncBeadStatusOnStartup(this.store, this.taskClient, project.id, {
+      result = await syncBeadStatusOnStartup(runStore, this.taskClient, project.id, {
         dryRun: true,
         projectPath,
       });
@@ -1677,7 +1828,7 @@ export class Doctor {
       // Second pass: apply fixes
       let fixResult: Awaited<ReturnType<typeof syncBeadStatusOnStartup>>;
       try {
-        fixResult = await syncBeadStatusOnStartup(this.store, this.taskClient, project.id, {
+        fixResult = await syncBeadStatusOnStartup(runStore, this.taskClient, project.id, {
           dryRun: false,
           projectPath,
         });
@@ -1696,7 +1847,7 @@ export class Doctor {
         : "";
       return {
         name: "bead status sync (SQLite ↔ br)",
-        status: "fixed",
+        status: fixResult.errors.length > 0 ? "warn" : "fixed",
         message: `${fixResult.mismatches.length} bead status mismatch(es) detected`,
         fixApplied: `Fixed ${fixResult.synced} seed status(es) in br${errSuffix}`,
         details: mismatchList + truncated,
@@ -1813,11 +1964,12 @@ export class Doctor {
   async checkStaleMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
-    if (!this.mergeQueue) {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
       return { name: "stale merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
     }
 
-    const allEntries = this.mergeQueue.list();
+    const allEntries = await Promise.resolve(mergeQueue.list());
     const staleThresholdMs = 24 * 60 * 60 * 1000;
     const now = Date.now();
 
@@ -1843,10 +1995,10 @@ export class Doctor {
 
     if (fix) {
       for (const entry of staleEntries) {
-        this.mergeQueue.updateStatus(entry.id, "failed", {
+        await Promise.resolve(mergeQueue.updateStatus(entry.id, "failed", {
           error: "MQ-008: Stale entry auto-failed by doctor",
           completedAt: new Date().toISOString(),
-        });
+        }));
       }
       return {
         name: "stale merge queue entries (>24h)",
@@ -1869,11 +2021,12 @@ export class Doctor {
   async checkDuplicateMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
-    if (!this.mergeQueue) {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
       return { name: "duplicate merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
     }
 
-    const pending = this.mergeQueue.list("pending");
+    const pending = await Promise.resolve(mergeQueue.list("pending"));
     const branchCounts = new Map<string, MergeQueueEntry[]>();
     for (const entry of pending) {
       const existing = branchCounts.get(entry.branch_name) ?? [];
@@ -1906,7 +2059,7 @@ export class Doctor {
         const maxId = Math.max(...entries.map((e) => e.id));
         for (const entry of entries) {
           if (entry.id !== maxId) {
-            this.mergeQueue.remove(entry.id);
+            await Promise.resolve(mergeQueue.remove(entry.id));
             removed++;
           }
         }
@@ -1932,12 +2085,19 @@ export class Doctor {
   async checkOrphanedMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
-    if (!this.mergeQueue) {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
       return { name: "orphaned merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
     }
 
-    const allEntries = this.mergeQueue.list();
-    const orphaned = allEntries.filter((e) => !this.store.getRun(e.run_id));
+    const allEntries = await Promise.resolve(mergeQueue.list());
+    const orphaned = [] as MergeQueueEntry[];
+
+    for (const entry of allEntries) {
+      if (!(await this.getRunById(entry.run_id))) {
+        orphaned.push(entry);
+      }
+    }
 
     if (orphaned.length === 0) {
       return { name: "orphaned merge queue entries", status: "pass", message: "All entries reference existing runs" };
@@ -1953,7 +2113,7 @@ export class Doctor {
 
     if (fix) {
       for (const entry of orphaned) {
-        this.mergeQueue.remove(entry.id);
+        await Promise.resolve(mergeQueue.remove(entry.id));
       }
       return {
         name: "orphaned merge queue entries",
@@ -1986,7 +2146,8 @@ export class Doctor {
   } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
-    if (!this.mergeQueue) {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
       return {
         name: "completed runs queued",
         status: "skip",
@@ -1994,7 +2155,7 @@ export class Doctor {
       };
     }
 
-    const missing = this.mergeQueue.missingFromQueue();
+    const missing = await Promise.resolve(mergeQueue.missingFromQueue());
 
     if (missing.length === 0) {
       return {
@@ -2017,10 +2178,7 @@ export class Doctor {
 
     if (fix && opts.projectPath) {
       try {
-        const result = await this.mergeQueue.reconcile(
-          this.store.getDb(),
-          opts.projectPath,
-        );
+        const result = await this.reconcileMissingCompletedRuns(opts.projectPath);
         return {
           name: "completed runs queued",
           status: "fixed",
@@ -2049,14 +2207,15 @@ export class Doctor {
   /**
    * Check for merge queue entries that are already resolved.
    *
-   * These are entries whose corresponding run is already terminal-successful
-   * (merged/completed/pr-created) or whose branch has already landed on the
+    * These are entries whose corresponding run is already terminal-successful
+    * (merged/pr-created) or whose branch has already landed on the
    * default branch. They should be removed rather than retried.
    */
   async checkResolvedMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
-    if (!this.mergeQueue) {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
       return { name: "resolved merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
     }
 
@@ -2071,12 +2230,12 @@ export class Doctor {
       // fall back to main
     }
 
-    const entries = this.mergeQueue.list();
+    const entries = await Promise.resolve(mergeQueue.list());
     const resolvedEntries: MergeQueueEntry[] = [];
 
     for (const entry of entries) {
-      const run = this.store.getRun(entry.run_id);
-      if (run && (run.status === "merged" || run.status === "completed" || run.status === "pr-created")) {
+      const run = await this.getRunById(entry.run_id);
+      if (run && (run.status === "merged" || run.status === "pr-created")) {
         resolvedEntries.push(entry);
         continue;
       }
@@ -2107,7 +2266,7 @@ export class Doctor {
 
     if (fix) {
       for (const entry of resolvedEntries) {
-        this.mergeQueue.remove(entry.id);
+        await Promise.resolve(mergeQueue.remove(entry.id));
       }
       return {
         name: "resolved merge queue entries",
@@ -2131,11 +2290,12 @@ export class Doctor {
   async checkStuckConflictFailedEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
-    if (!this.mergeQueue) {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
       return { name: "stuck conflict/failed entries", status: "pass", message: "No merge queue configured (skipping)" };
     }
 
-    const allEntries = this.mergeQueue.list();
+    const allEntries = await Promise.resolve(mergeQueue.list());
     const stuckThresholdMs = 60 * 60 * 1000; // 1 hour
     const now = Date.now();
 
@@ -2162,7 +2322,7 @@ export class Doctor {
     if (fix) {
       let requeued = 0;
       for (const entry of stuckEntries) {
-        if (this.mergeQueue.reEnqueue(entry.id)) {
+        if (await Promise.resolve(mergeQueue.reEnqueue(entry.id))) {
           requeued++;
         }
       }
@@ -2459,7 +2619,7 @@ export class Doctor {
   async checkDataIntegrity(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
 
-    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult, beadSyncResult] =
+    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult, orphanedGlobalStoreResult, beadSyncResult] =
       await Promise.all([
         this.checkOrphanedWorktrees(opts),
         this.checkZombieRuns(opts),
@@ -2468,10 +2628,11 @@ export class Doctor {
         this.checkRunStateConsistency(opts),
         this.checkBlockedSeeds(),
         this.checkBrRecoveryArtifacts(opts),
+        this.checkOrphanedGlobalStoreRuns(opts),
         this.checkBeadStatusSync(opts),
       ]);
 
-    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult, recoveryResult, beadSyncResult);
+    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult, recoveryResult, orphanedGlobalStoreResult, beadSyncResult);
 
     // Merge queue checks (only when merge queue is configured)
     if (this.mergeQueue) {
