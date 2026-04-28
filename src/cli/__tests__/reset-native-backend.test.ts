@@ -44,6 +44,7 @@ const {
     }),
     update: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
+    resetToReady: undefined,
   };
 
   const localStore = {

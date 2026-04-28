@@ -147,6 +147,7 @@ describe('runBashPhase timeout override', () => {
     mockExecFile.mockImplementationOnce((command, args, options, callback) => {
       expect(command).toBe('/bin/sh');
       expect(options?.timeout).toBe(120_000);
+      if (!callback) throw new Error('expected callback');
       callback(null, { stdout: 'ok', stderr: '' } as never, '' as never);
       return { on: vi.fn() } as never;
     });
@@ -162,6 +163,7 @@ describe('runBashPhase timeout override', () => {
     mockExecFile.mockImplementationOnce((command, args, options, callback) => {
       expect(command).toBe('/bin/sh');
       expect(options?.timeout).toBe(180_000);
+      if (!callback) throw new Error('expected callback');
       callback(null, { stdout: 'ok', stderr: '' } as never, '' as never);
       return { on: vi.fn() } as never;
     });
