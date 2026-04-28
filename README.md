@@ -128,7 +128,7 @@ flowchart TD
     end
 
     subgraph PIPELINE["Pipeline phases"]
-        AC --> P1
+        AC --> P1A
 
         subgraph P1["Phase 1: Explorer (Haiku, 30 turns, read-only)"]
             P1A[Register agent-mail identity] --> P1B[Run SDK query\nexplorerPrompt]
@@ -137,9 +137,9 @@ flowchart TD
             P1D --> P1E[Mail report to developer inbox]
         end
 
-        P1 --> P1_ok{success?}
+        P1A --> P1_ok{success?}
         P1_ok -- No --> STUCK[markStuck → task reset to open\nexponential backoff]
-        P1_ok -- Yes --> P2
+        P1_ok -- Yes --> P2A
 
         subgraph P2["Phase 2: Developer (Sonnet, 80 turns, read+write)"]
             P2A[Reserve worktree files via Agent Mail] --> P2B[Run SDK query\ndeveloperPrompt + explorer context]
@@ -148,10 +148,10 @@ flowchart TD
             P2D --> P2E[Release file reservations]
         end
 
-        P2 --> P2_ok{success?}
+        P2A --> P2_ok{success?}
         P2_ok -- No --> STUCK
 
-        P2_ok -- Yes --> P3
+        P2_ok -- Yes --> P3A
 
         subgraph P3["Phase 3: QA (Sonnet, 30 turns, read+bash)"]
             P3A[Run SDK query\nqaPrompt + dev report]
@@ -160,12 +160,12 @@ flowchart TD
             P3C --> P3D[Parse verdict: PASS / FAIL]
         end
 
-        P3 --> P3_ok{QA verdict?}
+        P3D --> P3_ok{QA verdict?}
         P3_ok -- FAIL, retries left --> RETRY[Increment devRetries\nPass QA feedback to dev]
-        RETRY --> P2
-        P3_ok -- FAIL, max retries --> P4
+        RETRY --> P2A
+        P3_ok -- FAIL, max retries --> P4A
 
-        P3_ok -- PASS --> P4
+        P3_ok -- PASS --> P4A
 
         subgraph P4["Phase 4: Reviewer (Sonnet, 20 turns, read-only)"]
             P4A[Run SDK query\nreviewerPrompt]
@@ -175,7 +175,7 @@ flowchart TD
             P4D -- Yes --> FAIL_REV[Mark pipeline FAILED_REVIEW]
         end
 
-        P4D -- No --> P5
+        P4D -- No --> P5A
 
         subgraph P5["Phase 5: Finalize"]
             P5A[git add, commit, push\nforeman/task-id branch]
