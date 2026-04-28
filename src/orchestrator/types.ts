@@ -16,6 +16,8 @@ export interface SeedInfo {
   type?: string;
   labels?: string[];
   comments?: string | null;
+  /** GitHub issue number for this task (from github_issue_number field). */
+  githubIssueNumber?: number;
 }
 
 /** @deprecated Use SeedInfo instead */

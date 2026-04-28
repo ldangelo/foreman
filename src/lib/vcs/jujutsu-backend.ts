@@ -1141,13 +1141,16 @@ export class JujutsuBackend implements VcsBackend {
    * Return pre-computed jj finalize commands for prompt rendering.
    */
   getFinalizeCommands(vars: FinalizeTemplateVars): FinalizeCommands {
-    const { seedId, seedTitle, baseBranch, worktreePath } = vars;
+    const { seedId, seedTitle, baseBranch, worktreePath, githubIssueNumber } = vars;
     // Escape single quotes so the shell-level single-quoted commit message is
     // safe even when seedTitle contains apostrophes or shell-special characters.
     const safeSeedTitle = seedTitle.replace(/'/g, "'\\''");
+    const footerSuffix = githubIssueNumber
+      ? `\\n\\nFixes #${githubIssueNumber}`
+      : "";
     return {
       stageCommand: "", // jj auto-stages
-      commitCommand: `jj describe -m '${safeSeedTitle} (${seedId})'`,
+      commitCommand: `jj describe -m '${safeSeedTitle} (${seedId})${footerSuffix}'`,
       pushCommand: `jj git push --bookmark foreman/${seedId} --allow-new`,
       integrateTargetCommand: `jj git fetch && jj rebase -d ${baseBranch}@origin`,
       branchVerifyCommand: `jj bookmark list foreman/${seedId}`,

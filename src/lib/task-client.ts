@@ -37,6 +37,8 @@ export interface Issue {
   description?: string | null;
   /** Labels attached to this issue (e.g. ["workflow:smoke"]). Populated by show(). */
   labels?: string[];
+  /** GitHub issue number for this task (from github_issue_number field). */
+  githubIssueNumber?: number;
 }
 
 // ── Update options ───────────────────────────────────────────────────────

@@ -910,16 +910,19 @@ export class GitBackend implements VcsBackend {
    * Return pre-computed git finalize commands for prompt rendering.
    */
   getFinalizeCommands(vars: FinalizeTemplateVars): FinalizeCommands {
-    const { seedId, seedTitle, baseBranch, worktreePath } = vars;
+    const { seedId, seedTitle, baseBranch, worktreePath, githubIssueNumber } = vars;
     // Escape single quotes in seedTitle so the shell-level single-quoted commit
     // message is safe even when the title contains apostrophes or shell-special
     // characters (brackets, colons, parentheses, $, !, etc.).
     // Strategy: end the single-quoted string, escape the quote, reopen it:
     //   O'Brien → 'O'\''Brien'
     const safeSeedTitle = seedTitle.replace(/'/g, "'\\''");
+    const footerSuffix = githubIssueNumber
+      ? `\\n\\nFixes #${githubIssueNumber}`
+      : "";
     return {
       stageCommand: "git add -A",
-      commitCommand: `git commit -m '${safeSeedTitle} (${seedId})'`,
+      commitCommand: `git commit -m '${safeSeedTitle} (${seedId})${footerSuffix}'`,
       pushCommand: `git push -u origin foreman/${seedId}`,
       integrateTargetCommand: `git fetch origin && git rebase origin/${baseBranch}`,
       branchVerifyCommand: `git rev-parse --abbrev-ref HEAD`,

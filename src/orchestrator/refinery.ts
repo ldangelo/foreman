@@ -20,6 +20,7 @@ import type { VcsBackend } from "../lib/vcs/index.js";
 import { NativeTaskStore } from "../lib/task-store.js";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import type { Run, EventType } from "../lib/store.js";
+import { closeLinkedGithubIssue, linkPrToGithubIssue } from "../daemon/github-poller.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -491,7 +492,31 @@ export class Refinery {
       await this.persistRunUpdate(run, { status: "pr-created" });
     }
 
+    // Link PR back to GitHub issue (TRD-032)
+    await this.#linkPrToGithubIssue(run.id, prUrl);
+
     return { runId: run.id, seedId: run.seed_id, branchName, prUrl };
+  }
+
+  /**
+   * Link a created PR back to the originating GitHub issue.
+   * Adds a comment to the GitHub issue referencing the PR URL.
+   * Non-fatal — PR linking must not block PR creation.
+   */
+  async #linkPrToGithubIssue(runId: string, prUrl: string): Promise<void> {
+    if (!this.registeredProjectId || !this.postgresAdapter) return;
+    try {
+      // Find the task linked to this run
+      const [task] = await this.postgresAdapter.listTasks(this.registeredProjectId, {
+        runId,
+        limit: 1,
+      });
+      if (!task) return;
+      const gh = new (await import("../lib/gh-cli.js")).GhCli();
+      await linkPrToGithubIssue(gh, this.registeredProjectId, task.id, prUrl);
+    } catch {
+      // Non-fatal — best effort PR linking
+    }
   }
 
   async mergePullRequest(opts: {
@@ -604,6 +629,8 @@ export class Refinery {
         });
         if (task) {
           await this.postgresAdapter.updateTask(this.registeredProjectId, task.id, { status: "merged" });
+          // Auto-close the linked GitHub issue (TRD-032)
+          await closeLinkedGithubIssue(this.postgresAdapter, new (await import("../lib/gh-cli.js")).GhCli(), this.registeredProjectId, task.id);
           return;
         }
       } else {

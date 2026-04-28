@@ -92,6 +92,8 @@ export interface EpicTask {
   seedTitle: string;
   /** Description of the child task bead. */
   seedDescription?: string;
+  /** GitHub issue number for this task (from github_issue_number field). */
+  githubIssueNumber?: number;
 }
 
 export interface PipelineRunConfig {
@@ -116,6 +118,8 @@ export interface PipelineRunConfig {
   env: Record<string, string | undefined>;
   /** Override target branch for finalize rebase/push and auto-merge. */
   targetBranch?: string;
+  /** GitHub issue number for this task (from github_issue_number field). */
+  githubIssueNumber?: number;
   /**
    * VCS backend instance for computing backend-specific commands.
    * When provided, finalize and reviewer prompts are rendered with
@@ -1035,6 +1039,7 @@ async function runPhaseSequence(
           seedTitle,
           baseBranch,
           worktreePath,
+          githubIssueNumber: config.githubIssueNumber,
         });
         vcsPromptVars.vcsStageCommand = finalizeCommands.stageCommand;
         vcsPromptVars.vcsCommitCommand = finalizeCommands.commitCommand;

@@ -18,6 +18,7 @@ import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import type { StateMismatch } from "../../lib/run-status.js";
 import { getWorkspaceRoot } from "../../lib/workspace-paths.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../../lib/project-config.js";
+import { GhCli } from "../../lib/gh-cli.js";
 // Re-export for callers that import these from this module (backward compatibility).
 export { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 export type { StateMismatch } from "../../lib/run-status.js";
@@ -60,6 +61,43 @@ function wrapLocalMergeQueue(queue: MergeQueue): ResetMergeQueue {
     remove: async (id) => queue.remove(id),
     missingFromQueue: async () => queue.missingFromQueue(),
   };
+}
+
+// ── GitHub Issue Link unlinking (TRD-043) ─────────────────────────────────────
+
+/**
+ * Attempt to unlink a task's GitHub issue from any associated PR.
+ * Called when a task is reset to "ready" — the previous PR branch is discarded.
+ *
+ * Silently ignores errors (non-fatal — the unlink is a best-effort cleanup).
+ */
+async function unlinkGitHubIssueIfNeeded(
+  seedId: string,
+  store: ForemanStore | PostgresStore,
+): Promise<void> {
+  try {
+    // ForemanStore.getTaskById is sync; PostgresStore.getTaskById is async
+    const task = await ("getTaskById" in store
+      ? (store as ForemanStore).getTaskById(seedId)
+      : null) as { external_id: string | null } | null;
+
+    if (!task) return;
+    const externalId = task.external_id ?? "";
+    if (!externalId.startsWith("github:")) return;
+
+    // Parse external_id: github:{owner}/{repo}#{issue_number}
+    const match = externalId.match(/^github:([^/]+)\/([^#]+)#(\d+)$/);
+    if (!match) return;
+    const [, owner, repo, issueNum] = match;
+    const issueNumber = parseInt(issueNum, 10);
+
+    // We don't have the PR number stored — use "connected" as the relation key.
+    // GitHub issue links use "connected" as the default relation name.
+    const gh = new GhCli();
+    await gh.unlinkIssueFromPullRequest(owner, repo, issueNumber, "connected");
+  } catch {
+    // Non-fatal: log and continue
+  }
 }
 
 // ── Stale-branch detection types ─────────────────────────────────────────────
@@ -918,6 +956,8 @@ export const resetCommand = new Command("reset")
               `  ${chalk.yellow("reset")} bead ${chalk.cyan(seedId)} → ${result.targetStatus ?? "retryable"}`,
             );
             seedsReset++;
+            // TRD-043: unlink from GitHub PR if this task has an associated issue
+            await unlinkGitHubIssueIfNeeded(seedId, store as ForemanStore);
             break;
           case "not-found":
             console.log(`    ${chalk.dim("skip")} bead ${seedId} no longer exists`);

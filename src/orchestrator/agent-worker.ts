@@ -306,6 +306,11 @@ interface WorkerConfig {
    */
   taskMeta?: TaskMeta;
   /**
+   * GitHub issue number for this task (from github_issue_number field).
+   * When set, finalize commit messages are suffixed with "Fixes #{issueNumber}" (TRD-042).
+   */
+  githubIssueNumber?: number;
+  /**
    * Directory guardrail config (FR-1). When set, wraps tool factories with
    * cwd verification in the Pi SDK session.
    */

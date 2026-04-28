@@ -10,7 +10,7 @@
  * @module src/daemon/webhook-handler
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual, randomBytes } from "node:crypto";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import { ProjectRegistry } from "../lib/project-registry.js";
@@ -83,6 +83,14 @@ export function extractBranchFromRef(ref: string): string {
   return ref.replace(/^refs\/heads\//, "");
 }
 
+/**
+ * Generate a cryptographically random webhook secret.
+ * Used when enabling webhooks for a repository.
+ */
+export function generateWebhookSecret(): string {
+  return randomBytes(32).toString("hex");
+}
+
 // ── Webhook Request Handler ─────────────────────────────────────────────────────
 
 export type WebhookHandler = (
@@ -127,6 +135,9 @@ export function createWebhookHandler(
 
       case "pull_request":
         return handlePullRequest(ctx, request, reply, rawBody as GitHubPrPayload);
+
+      case "issues":
+        return handleIssue(ctx, request, reply, rawBody as GitHubIssueWebhookPayload);
 
       default:
         // GitHub sends many event types — acknowledge but ignore unknowns
@@ -343,4 +354,255 @@ async function handlePullRequest(
     pr: prNumber,
     eventsRecorded,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Issue Event Handler (TRD-030, TRD-032, TRD-033, TRD-034, TRD-035)
+// ---------------------------------------------------------------------------
+
+export interface GitHubIssueWebhookPayload {
+  action: string;
+  issue: {
+    id: number;
+    number: number;
+    title: string;
+    body: string | null;
+    state: "open" | "closed";
+    user: { login: string; id: number };
+    labels: Array<{ id: number; name: string; color: string }>;
+    assignees: Array<{ login: string; id: number }>;
+    milestone: { id: number; title: string; number: number } | null;
+    created_at: string;
+    updated_at: string;
+    closed_at: string | null;
+    url: string;
+    html_url: string;
+  };
+  repository: {
+    id: number;
+    full_name: string;
+    clone_url: string;
+  };
+  label?: { name: string; color: string };
+  assignee?: { login: string; id: number };
+}
+
+/**
+ * Handle GitHub issues events: opened, closed, reopened, labeled, unlabeled, assigned, unassigned.
+ */
+async function handleIssue(
+  ctx: WebhookContext,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  payload: GitHubIssueWebhookPayload,
+): Promise<void> {
+  const { action, issue, repository, label, assignee } = payload;
+  const repoFullName = repository.full_name;
+  const [owner, repo] = repoFullName.split("/");
+  const externalId = `github:${owner}/${repo}#${issue.number}`;
+  const externalRepo = `${owner}/${repo}`;
+
+  request.log.info(
+    { action, issueNumber: issue.number, repo: repoFullName },
+    "[webhook:issue] Processing issue event",
+  );
+
+  const projects = await ctx.registry.list();
+  const matching = projects.filter((p) =>
+    p.githubUrl?.includes(repoFullName),
+  );
+
+  for (const project of matching) {
+    let repoConfig = await ctx.adapter.getGithubRepo(project.id, owner, repo);
+    if (!repoConfig) {
+      repoConfig = await ctx.adapter.upsertGithubRepo({
+        projectId: project.id,
+        owner,
+        repo,
+        webhookSecret: null,
+        webhookEnabled: true,
+      });
+    }
+
+    switch (action) {
+      case "opened": {
+        const existing = await ctx.adapter.listTasks(project.id, {
+          externalId,
+          limit: 1,
+        });
+        if (existing.length === 0) {
+          const foremanLabels = issue.labels.map((l) => `github:${l.name}`);
+          for (const dl of repoConfig.default_labels) {
+            if (!foremanLabels.includes(dl)) {
+              foremanLabels.push(dl);
+            }
+          }
+          const shouldAutoDispatch = issue.labels.some((l) => l.name === "foreman:dispatch");
+
+          const task = await ctx.adapter.createTask(project.id, {
+            title: issue.title,
+            description: issue.body ?? undefined,
+            type: "task",
+            priority: mapPriorityLabel(issue.labels),
+            status: "backlog",
+            externalId,
+            labels: foremanLabels,
+            milestone: issue.milestone?.title,
+            external_repo: externalRepo,
+            github_issue_number: issue.number,
+            sync_enabled: true,
+          });
+
+          await ctx.adapter.recordGithubSyncEvent({
+            projectId: project.id,
+            externalId,
+            eventType: "issue_opened",
+            direction: "from_github",
+            githubPayload: {
+              number: issue.number,
+              title: issue.title,
+              body: issue.body,
+              labels: issue.labels.map((l) => l.name),
+            },
+          });
+
+          request.log.info(
+            { taskId: task.id, issueNumber: issue.number, repo: repoFullName, shouldAutoDispatch },
+            "[webhook:issue] Task created from GitHub issue",
+          );
+        }
+        break;
+      }
+
+      case "closed": {
+        const existing = await ctx.adapter.listTasks(project.id, {
+          externalId,
+          limit: 1,
+        });
+        if (existing.length > 0) {
+          await ctx.adapter.updateTaskGitHubFields(project.id, existing[0]!.id, {
+            state: "closed",
+            lastSyncAt: new Date().toISOString(),
+          });
+          await ctx.adapter.recordGithubSyncEvent({
+            projectId: project.id,
+            externalId,
+            eventType: "issue_closed",
+            direction: "from_github",
+            githubPayload: { number: issue.number, state: "closed" },
+          });
+        }
+        break;
+      }
+
+      case "reopened": {
+        const existing = await ctx.adapter.listTasks(project.id, {
+          externalId,
+          limit: 1,
+        });
+        if (existing.length > 0) {
+          await ctx.adapter.updateTaskGitHubFields(project.id, existing[0]!.id, {
+            state: "open",
+            lastSyncAt: new Date().toISOString(),
+          });
+          await ctx.adapter.recordGithubSyncEvent({
+            projectId: project.id,
+            externalId,
+            eventType: "issue_reopened",
+            direction: "from_github",
+            githubPayload: { number: issue.number, state: "open" },
+          });
+        }
+        break;
+      }
+
+      case "labeled": {
+        if (!label) break;
+        const existing = await ctx.adapter.listTasks(project.id, {
+          externalId,
+          limit: 1,
+        });
+        if (existing.length > 0) {
+          const task = existing[0]!;
+          const currentLabels = task.labels ?? [];
+          const newLabel = `github:${label.name}`;
+          if (!currentLabels.includes(newLabel)) {
+            await ctx.adapter.updateTaskGitHubFields(project.id, task.id, {
+              labels: [...currentLabels, newLabel],
+              lastSyncAt: new Date().toISOString(),
+            });
+          }
+          await ctx.adapter.recordGithubSyncEvent({
+            projectId: project.id,
+            externalId,
+            eventType: "issue_labeled",
+            direction: "from_github",
+            githubPayload: { number: issue.number, label: label.name },
+          });
+        }
+        break;
+      }
+
+      case "unlabeled": {
+        if (!label) break;
+        const existing = await ctx.adapter.listTasks(project.id, {
+          externalId,
+          limit: 1,
+        });
+        if (existing.length > 0) {
+          const task = existing[0]!;
+          const currentLabels = task.labels ?? [];
+          const removedLabel = `github:${label.name}`;
+          await ctx.adapter.updateTaskGitHubFields(project.id, task.id, {
+            labels: currentLabels.filter((l: string) => l !== removedLabel),
+            lastSyncAt: new Date().toISOString(),
+          });
+          await ctx.adapter.recordGithubSyncEvent({
+            projectId: project.id,
+            externalId,
+            eventType: "issue_unlabeled",
+            direction: "from_github",
+            githubPayload: { number: issue.number, label: label.name },
+          });
+        }
+        break;
+      }
+
+      case "assigned": {
+        request.log.info(
+          { issueNumber: issue.number, assignee: assignee?.login },
+          "[webhook:issue] Assigned event received",
+        );
+        break;
+      }
+
+      case "unassigned": {
+        request.log.info(
+          { issueNumber: issue.number, assignee: assignee?.login },
+          "[webhook:issue] Unassigned event received",
+        );
+        break;
+      }
+
+      default:
+        request.log.info({ action }, "[webhook:issue] Ignored action");
+    }
+  }
+
+  return reply.code(200).send({
+    received: true,
+    event: "issues",
+    action,
+    issueNumber: issue.number,
+    repo: repoFullName,
+  });
+}
+
+function mapPriorityLabel(labels: Array<{ name: string }>): number {
+  const priorityLabel = labels.find((l) => l.name.startsWith("foreman:priority:"));
+  if (priorityLabel) {
+    const priority = parseInt(priorityLabel.name.split(":")[2]!, 10);
+    if (priority >= 0 && priority <= 4) return priority;
+  }
+  return 2;
 }

@@ -118,6 +118,13 @@ async function createDispatcherBeadsClient(projectPath: string): Promise<TaskOrd
  * form ('P0'–'P4') so the existing normalizePriority() helper works correctly.
  */
 export function nativeTaskToIssue(task: NativeTask): Issue {
+  let githubIssueNumber: number | undefined;
+  if (task.external_id?.startsWith("github:")) {
+    const match = task.external_id.match(/#(\d+)$/);
+    if (match) {
+      githubIssueNumber = parseInt(match[1]!, 10);
+    }
+  }
   return {
     id: task.id,
     title: task.title,
@@ -129,6 +136,7 @@ export function nativeTaskToIssue(task: NativeTask): Issue {
     created_at: task.created_at,
     updated_at: task.updated_at,
     description: task.description ?? undefined,
+    githubIssueNumber,
   };
 }
 
@@ -1495,32 +1503,33 @@ export class Dispatcher {
         runId,
         projectId: this.overrides?.externalProjectId ?? this.resolveProjectId(),
         seedId: seed.id,
-      seedTitle: seed.title,
-      seedDescription: seed.description,
-      seedComments: seed.comments ?? undefined,
-      model,
-      worktreePath,
-      projectPath: this.projectPath,
-      prompt,
-      env,
-      pipeline: usePipeline,
-      skipExplore: pipelineOpts?.skipExplore,
-      skipReview: pipelineOpts?.skipReview,
-      dbPath: join(this.projectPath, ".foreman", "foreman.db"),
-      seedType,
-      seedLabels: seed.labels,
-      seedPriority: seed.priority,
-      targetBranch,
-      epicTasks,
-      epicId,
-      taskMeta: {
-        id: seed.id,
-        title: seed.title,
-        description: seed.description ?? '',
-        type: seed.type ?? '',
-        priority: typeof seed.priority === 'number' ? seed.priority : 2,
-      },
-      // FR-1: Directory guardrail — verify agent cwd matches expected worktree
+        seedTitle: seed.title,
+        seedDescription: seed.description,
+        seedComments: seed.comments ?? undefined,
+        model,
+        worktreePath,
+        projectPath: this.projectPath,
+        prompt,
+        env,
+        pipeline: usePipeline,
+        skipExplore: pipelineOpts?.skipExplore,
+        skipReview: pipelineOpts?.skipReview,
+        dbPath: join(this.projectPath, ".foreman", "foreman.db"),
+        seedType,
+        seedLabels: seed.labels,
+        seedPriority: seed.priority,
+        targetBranch,
+        epicTasks,
+        epicId,
+        taskMeta: {
+          id: seed.id,
+          title: seed.title,
+          description: seed.description ?? '',
+          type: seed.type ?? '',
+          priority: typeof seed.priority === 'number' ? seed.priority : 2,
+        },
+        githubIssueNumber: seed.githubIssueNumber,
+        // FR-1: Directory guardrail — verify agent cwd matches expected worktree
         guardrailConfig: {
           expectedCwd: worktreePath,
           mode: "auto-correct",
@@ -1920,6 +1929,11 @@ export interface WorkerConfig {
    * Populated from the bead/seed that triggered this run.
    */
   taskMeta?: TaskMeta;
+  /**
+   * GitHub issue number for this task (from github_issue_number field).
+   * When set, finalize commit messages are suffixed with "Fixes #{issueNumber}" (TRD-042).
+   */
+  githubIssueNumber?: number;
   /**
    * Directory guardrail config (FR-1). When set, wraps tool factories with
    * cwd verification in the Pi SDK session. Prevents agents from operating
