@@ -117,6 +117,20 @@ async function tryRestoreFromCache(
   if (!existsSync(join(cacheDir, ".complete"))) return false;
   if (!existsSync(cachedPath)) return false;
 
+  try {
+    const stat = await fs.lstat(cachedPath);
+    if (stat.isDirectory()) {
+      const entries = await fs.readdir(cachedPath);
+      if (entries.length === 0) {
+        await fs.rm(join(cacheDir, ".complete"), { force: true });
+        await fs.rm(cachedPath, { recursive: true, force: true });
+        return false;
+      }
+    }
+  } catch {
+    return false;
+  }
+
   try { await fs.rm(targetPath, { recursive: true, force: true }); } catch { /* ok */ }
 
   await fs.symlink(cachedPath, targetPath);
