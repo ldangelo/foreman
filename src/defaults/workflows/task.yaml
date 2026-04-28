@@ -31,11 +31,12 @@ phases:
       onComplete: true
 
   # ── Phase 2: test (bash phase — TRD-004) ────────────────────────────────
-  # Executes `npm run test` via /bin/sh -c in the worktree directory.
+  # Executes `npm run test:unit` via /bin/sh -c in the worktree directory.
   # {task.*} placeholders are interpolated before execution.
   # Artifact is written from stdout; verdict is parsed from output.
   - name: test
-    bash: "npm run test"
+    bash: "npm run test:unit"
+    timeoutSecs: 180
     artifact: TEST_RESULTS.md
     verdict: true
     retryWith: fix

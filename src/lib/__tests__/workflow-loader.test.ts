@@ -276,6 +276,13 @@ phases:
     expect(config.phases.some((p) => p.name === "developer")).toBe(true);
   });
 
+  it("loads bundled task workflow with unit-test bash and timeout override", () => {
+    const config = loadWorkflowConfig("task", tmpDir);
+    const testPhase = config.phases.find((p) => p.name === "test");
+    expect(testPhase?.bash).toBe("npm run test:unit");
+    expect(testPhase?.timeoutSecs).toBe(180);
+  });
+
   it("throws WorkflowConfigError for unknown workflow with no bundled default", () => {
     expect(() => loadWorkflowConfig("nonexistent-workflow", tmpDir)).toThrow(WorkflowConfigError);
   });

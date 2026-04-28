@@ -1166,6 +1166,7 @@ async function runPhaseSequence(
         ctx.taskMeta,
         worktreePath,
         phase.artifact,
+        phase.timeoutSecs !== undefined ? phase.timeoutSecs * 1000 : undefined,
       );
       // TRD-004: record phase result (same structure as ctx.runPhase result)
       const result: PhaseResult = {

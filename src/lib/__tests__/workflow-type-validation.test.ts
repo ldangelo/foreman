@@ -6,10 +6,11 @@ describe('validateWorkflowConfig — bash/command/merge fields', () => {
   describe('phase type: exactly one of bash, command, prompt', () => {
     it('accepts a phase with bash: only', () => {
       const config = validateWorkflowConfig(
-        { name: 'test', phases: [{ name: 'test-phase', bash: 'npm run test' }] },
+        { name: 'test', phases: [{ name: 'test-phase', bash: 'npm run test:unit', timeoutSecs: 180 }] },
         'test',
       );
-      expect(config.phases[0]!.bash).toBe('npm run test');
+      expect(config.phases[0]!.bash).toBe('npm run test:unit');
+      expect(config.phases[0]!.timeoutSecs).toBe(180);
     });
 
     it('accepts a phase with command: only', () => {
@@ -26,6 +27,14 @@ describe('validateWorkflowConfig — bash/command/merge fields', () => {
         'test',
       );
       expect(config.phases[0]!.prompt).toBe('explorer.md');
+    });
+
+    it('accepts timeoutSecs on a bash phase', () => {
+      const config = validateWorkflowConfig(
+        { name: 'test', phases: [{ name: 'test-phase', bash: 'npm run test:unit', timeoutSecs: 180 }] },
+        'test',
+      );
+      expect(config.phases[0]!.timeoutSecs).toBe(180);
     });
 
     it('throws when a phase has both bash: and prompt:', () => {

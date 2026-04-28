@@ -133,6 +133,8 @@ export interface WorkflowPhaseConfig {
   models?: Record<string, string>;
   /** Maximum turns. Overrides the role's default maxTurns. */
   maxTurns?: number;
+  /** Optional timeout override in seconds for bash phases. */
+  timeoutSecs?: number;
   /**
    * Skip this phase if the named artifact already exists in the worktree.
    * Used for resume-from-crash semantics (e.g., "EXPLORER_REPORT.md").
@@ -416,6 +418,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     }
 
     if (typeof p["maxTurns"] === "number") phase.maxTurns = p["maxTurns"];
+    if (typeof p["timeoutSecs"] === "number") phase.timeoutSecs = p["timeoutSecs"];
     if (typeof p["skipIfArtifact"] === "string") phase.skipIfArtifact = p["skipIfArtifact"];
     if (typeof p["artifact"] === "string") phase.artifact = p["artifact"];
     if (typeof p["verdict"] === "boolean") phase.verdict = p["verdict"];

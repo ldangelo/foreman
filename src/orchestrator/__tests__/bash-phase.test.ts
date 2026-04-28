@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
@@ -8,6 +8,19 @@ import { interpolateTaskPlaceholders } from '../../lib/interpolate.js';
 // runBashPhase integration tests require execFile; we test the critical
 // non-execFile behaviors here: artifact writing and placeholder interpolation.
 // execFile smoke test is covered by TRD-004 manual verification.
+
+vi.mock('node:child_process', () => ({
+  execFile: vi.fn(),
+  execSync: vi.fn(),
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    writeFileSync: vi.fn(actual.writeFileSync),
+  };
+});
 
 describe('bash phase artifact writing', () => {
   let tmpDir: string;
@@ -122,5 +135,37 @@ describe('bash phase exit code handling', () => {
 
   it('timeout exit code is 124', () => {
     expect(124).toBe(124); // standard timeout exit code
+  });
+});
+
+describe('runBashPhase timeout override', () => {
+  it('uses the default 120s timeout when none is provided', async () => {
+    const { runBashPhase } = await import('../pipeline-executor.js');
+    const { execFile } = await import('node:child_process');
+    const mockExecFile = vi.mocked(execFile);
+
+    mockExecFile.mockImplementationOnce((command, args, options, callback) => {
+      expect(command).toBe('/bin/sh');
+      expect(options?.timeout).toBe(120_000);
+      callback(null, { stdout: 'ok', stderr: '' } as never, '' as never);
+      return { on: vi.fn() } as never;
+    });
+
+    await runBashPhase('echo ok', undefined, tmpdir());
+  });
+
+  it('uses the provided timeout override for bash phases', async () => {
+    const { runBashPhase } = await import('../pipeline-executor.js');
+    const { execFile } = await import('node:child_process');
+    const mockExecFile = vi.mocked(execFile);
+
+    mockExecFile.mockImplementationOnce((command, args, options, callback) => {
+      expect(command).toBe('/bin/sh');
+      expect(options?.timeout).toBe(180_000);
+      callback(null, { stdout: 'ok', stderr: '' } as never, '' as never);
+      return { on: vi.fn() } as never;
+    });
+
+    await runBashPhase('echo ok', undefined, tmpdir(), undefined, 180_000);
   });
 });
