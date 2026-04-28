@@ -36,6 +36,17 @@ function makeMockPool(responses: Array<{ sqlPattern: RegExp; rows?: unknown[]; r
   };
 }
 
+function makeCapturePool(
+  onQuery: (text: string, params?: unknown[]) => { rows: unknown[]; rowCount: number }
+): PoolLike {
+  return {
+    query: async (text: string, params?: unknown[]) => onQuery(text, params) as never,
+    connect: vi.fn(),
+    end: vi.fn(),
+    on: vi.fn(),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
@@ -524,10 +535,49 @@ describe("PostgresAdapter run operations", () => {
     }
   });
 
-  it("listActiveRuns returns pending and running runs", async () => {
-    const mockPool = makeMockPool([
-      {
-        sqlPattern: /status IN \('pending','running'\)/,
+  it("listActiveRuns excludes running runs whose task row is closed", async () => {
+    let sql = "";
+    const mockPool = makeCapturePool((text) => {
+      sql = text;
+      return { rows: [], rowCount: 0 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      const result = await adapter.listActiveRuns(PROJECT_ID);
+      expect(sql).toContain("status IN ('pending','running')");
+      expect(sql).toContain("NOT EXISTS");
+      expect(sql).toContain("t.id = r.bead_id");
+      expect(sql).toContain("t.status IN ('closed','merged')");
+      expect(result).toHaveLength(0);
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("listActiveRuns excludes running runs whose task row is merged", async () => {
+    let sql = "";
+    const mockPool = makeCapturePool((text) => {
+      sql = text;
+      return { rows: [], rowCount: 0 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      const result = await adapter.listActiveRuns(PROJECT_ID);
+      expect(sql).toContain("status IN ('pending','running')");
+      expect(sql).toContain("NOT EXISTS");
+      expect(sql).toContain("t.id = r.bead_id");
+      expect(sql).toContain("t.status IN ('closed','merged')");
+      expect(result).toHaveLength(0);
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("listActiveRuns returns running runs when no matching task row exists", async () => {
+    let sql = "";
+    const mockPool = makeCapturePool((text) => {
+      sql = text;
+      return {
         rows: [{
           id: "run-1",
           project_id: PROJECT_ID,
@@ -543,11 +593,16 @@ describe("PostgresAdapter run operations", () => {
           base_branch: null,
           merge_strategy: null,
         }],
-      },
-    ]);
+        rowCount: 1,
+      };
+    });
     await initPool({ poolOverride: mockPool });
     try {
       const result = await adapter.listActiveRuns(PROJECT_ID);
+      expect(sql).toContain("status IN ('pending','running')");
+      expect(sql).toContain("NOT EXISTS");
+      expect(sql).toContain("t.id = r.bead_id");
+      expect(sql).toContain("t.status IN ('closed','merged')");
       expect(result).toHaveLength(1);
       expect(result[0].status).toBe("running");
     } finally {

@@ -324,6 +324,7 @@ export const statusCommand = new Command("status")
           const client = createTrpcClient();
           const stats = await client.projects.stats({ projectId: proj.id }) as ProjectStats;
           const needsHuman = await client.projects.listNeedsHuman({ projectId: proj.id }) as Array<{ status: string }>;
+          const activeRuns = await client.runs.listActive({ projectId: proj.id }) as DaemonRunSummary[];
           aggregated.total += stats.tasks.total;
           aggregated.ready += stats.tasks.ready;
           aggregated.inProgress += stats.tasks.inProgress;
@@ -331,7 +332,7 @@ export const statusCommand = new Command("status")
           aggregated.blocked += stats.tasks.backlog;
           totalFailed += needsHuman.filter((task) => task.status === "failed" || task.status === "conflict").length;
           totalStuck += needsHuman.filter((task) => task.status === "stuck").length;
-          totalActiveAgents += stats.runs.active;
+          totalActiveAgents += (await activeRuns).length;
         } catch {
           // Ignore stale/inaccessible projects in aggregated status.
         }

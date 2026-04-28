@@ -1064,9 +1064,19 @@ export class PostgresAdapter {
    */
   async listActiveRuns(projectId: string): Promise<RunRow[]> {
     const rows = await query<RunRow>(
-      `${runRowSelectSql()} WHERE project_id = $1 AND status IN ('pending','running') ORDER BY created_at DESC`,
-      [projectId],
-    );
+      `${runRowSelectSql()} r
+       WHERE r.project_id = $1
+         AND r.status IN ('pending','running')
+         AND NOT EXISTS (
+           SELECT 1
+           FROM tasks t
+           WHERE t.project_id = r.project_id
+             AND t.id = r.bead_id
+             AND t.status IN ('closed','merged')
+         )
+       ORDER BY r.created_at DESC`,
+       [projectId],
+     );
     return rows.map((row) => ({ ...row, status: mapPipelineRunStatusToLegacy(row.status) }));
   }
 

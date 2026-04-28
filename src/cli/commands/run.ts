@@ -89,14 +89,12 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
       return runs.filter((run) => run.created_at >= since).length;
     },
     getActiveSeedIds: async () => {
-      const activeRuns = await pg.listPipelineRuns(projectId, { status: "running", limit: 1000 });
-      const pendingRuns = await pg.listPipelineRuns(projectId, { status: "pending", limit: 1000 });
-      return [...activeRuns, ...pendingRuns].map((run) => run.bead_id);
+      const activeRuns = await daemonStore.getActiveRuns(projectId);
+      return activeRuns.map((run) => run.seed_id);
     },
     getActiveAgentCount: async () => {
-      const activeRuns = await pg.listPipelineRuns(projectId, { status: "running", limit: 1000 });
-      const pendingRuns = await pg.listPipelineRuns(projectId, { status: "pending", limit: 1000 });
-      return activeRuns.length + pendingRuns.length;
+      const activeRuns = await daemonStore.getActiveRuns(projectId);
+      return activeRuns.length;
     },
     hasActiveOrPendingRun: async (seedId: string) => {
       const runs = await pg.listPipelineRuns(projectId, { beadId: seedId, limit: 20 });

@@ -422,15 +422,8 @@ const runsRouter = t.router({
       })
     )
     .query(async ({ input, ctx }) => {
-      const pending = await ctx.adapter.listPipelineRuns(input.projectId, {
-        beadId: input.beadId,
-        status: "pending",
-      });
-      const running = await ctx.adapter.listPipelineRuns(input.projectId, {
-        beadId: input.beadId,
-        status: "running",
-      });
-      return [...pending, ...running];
+      const active = await ctx.adapter.listActiveRuns(input.projectId);
+      return input.beadId ? active.filter((run) => run.seed_id === input.beadId) : active;
     }),
 
   /**

@@ -320,14 +320,12 @@ export class ForemanDaemon {
             return failures.filter((task) => task.updated_at >= since).length;
           },
           getActiveSeedIds: async () => {
-            const activeRuns = await pg.listPipelineRuns(project.id, { status: "running", limit: 1000 });
-            const pendingRuns = await pg.listPipelineRuns(project.id, { status: "pending", limit: 1000 });
-            return [...activeRuns, ...pendingRuns].map((run) => run.bead_id);
+            const activeRuns = await store.getActiveRuns(project.id);
+            return activeRuns.map((run) => run.seed_id);
           },
           getActiveAgentCount: async () => {
-            const activeRuns = await pg.listPipelineRuns(project.id, { status: "running", limit: 1000 });
-            const pendingRuns = await pg.listPipelineRuns(project.id, { status: "pending", limit: 1000 });
-            return activeRuns.length + pendingRuns.length;
+            const activeRuns = await store.getActiveRuns(project.id);
+            return activeRuns.length;
           },
           hasActiveOrPendingRun: async (seedId: string) => {
             const runs = await pg.listPipelineRuns(project.id, { beadId: seedId, limit: 20 });
