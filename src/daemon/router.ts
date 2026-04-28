@@ -723,8 +723,9 @@ const projectsRouter = t.router({
         ctx.adapter.listTasks(input.projectId, { status: ["closed"] }),
       ]);
 
-      const activeRuns = await ctx.adapter.listPipelineRuns(input.projectId, { status: "running" });
-      const pendingRuns = await ctx.adapter.listPipelineRuns(input.projectId, { status: "pending" });
+      const activeRuns = await ctx.adapter.listActiveRuns(input.projectId);
+      const pendingRuns = activeRuns.filter((run) => run.status === "pending");
+      const runningRuns = activeRuns.filter((run) => run.status === "running");
 
       return {
         tasks: {
@@ -737,7 +738,7 @@ const projectsRouter = t.router({
           total: backlog.length + ready.length + inProgress.length + merged.length + closed.length,
         },
         runs: {
-          active: activeRuns.length,
+          active: runningRuns.length,
           pending: pendingRuns.length,
         },
       };
