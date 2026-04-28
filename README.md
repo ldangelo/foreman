@@ -133,7 +133,7 @@ flowchart TD
         subgraph P1["Phase 1: Explorer (Haiku, 30 turns, read-only)"]
             P1A[Register agent-mail identity] --> P1B[Run SDK query\nexplorerPrompt]
             P1B --> P1C[Write EXPLORER_REPORT.md]
-            P1C --> P1D[Write EXPLORER_TRACE.{md,json}]
+            P1C --> P1D[Write EXPLORER_TRACE.\{md,json\}]
             P1D --> P1E[Mail report to developer inbox]
         end
 
@@ -144,7 +144,7 @@ flowchart TD
         subgraph P2["Phase 2: Developer (Sonnet, 80 turns, read+write)"]
             P2A[Reserve worktree files via Agent Mail] --> P2B[Run SDK query\ndeveloperPrompt + explorer context]
             P2B --> P2C[Write DEVELOPER_REPORT.md]
-            P2C --> P2D[Write DEVELOPER_TRACE.{md,json}]
+            P2C --> P2D[Write DEVELOPER_TRACE.\{md,json\}]
             P2D --> P2E[Release file reservations]
         end
 
@@ -156,7 +156,7 @@ flowchart TD
         subgraph P3["Phase 3: QA (Sonnet, 30 turns, read+bash)"]
             P3A[Run SDK query\nqaPrompt + dev report]
             P3A --> P3B[Run tests\nWrite QA_REPORT.md]
-            P3B --> P3C[Write QA_TRACE.{md,json}]
+            P3B --> P3C[Write QA_TRACE.\{md,json\}]
             P3C --> P3D[Parse verdict: PASS / FAIL]
         end
 
@@ -170,7 +170,7 @@ flowchart TD
         subgraph P4["Phase 4: Reviewer (Sonnet, 20 turns, read-only)"]
             P4A[Run SDK query\nreviewerPrompt]
             P4A --> P4B[Write REVIEW.md]
-            P4B --> P4C[Write REVIEWER_TRACE.{md,json}]
+            P4B --> P4C[Write REVIEWER_TRACE.\{md,json\}]
             P4C --> P4D{CRITICAL or\nWARNING issues?}
             P4D -- Yes --> FAIL_REV[Mark pipeline FAILED_REVIEW]
         end
