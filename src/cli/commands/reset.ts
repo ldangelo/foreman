@@ -670,12 +670,14 @@ export const resetCommand = new Command("reset")
       let originalBranch: string | undefined;
       try { originalBranch = await vcs.getCurrentBranch(projectPath); } catch { /* ignore */ }
 
-      const { taskClient } = await createTaskClient(projectPath);
-      const seeds: IShowUpdateClient = taskClient;
-      const store = ForemanStore.forProject(projectPath);
       const registered = opts.project
         ? (await listRegisteredProjects()).find((record) => record.id === opts.project || record.name === opts.project)
         : (await listRegisteredProjects()).find((record) => record.path === projectPath);
+      const { taskClient, backendType } = await createTaskClient(projectPath, {
+        registeredProjectId: registered?.id,
+      });
+      const seeds: IShowUpdateClient = taskClient;
+      const store = ForemanStore.forProject(projectPath);
       if (registered) {
         ensureCliPostgresPool(projectPath);
       }
@@ -1026,56 +1028,68 @@ export const resetCommand = new Command("reset")
         }
       }
 
-      // 7. Detect and fix seed/run state mismatches for terminal runs
-      console.log(chalk.bold("\nChecking for bead/run state mismatches..."));
-      const mismatchResult = await detectAndFixMismatches(helperStore, seeds, runtimeProjectId!, seedIds, { dryRun });
+      let mismatchResult: MismatchResult = { mismatches: [], fixed: 0, errors: [] };
+      let staleResult: StaleBranchDetectionOutput = { results: [], closed: 0, reset: 0, errors: [] };
 
-      if (mismatchResult.mismatches.length > 0) {
-        for (const m of mismatchResult.mismatches) {
-          const action = dryRun
-            ? chalk.yellow("(would fix)")
-            : chalk.green("fixed");
-          console.log(
-            `  ${chalk.yellow("mismatch")} ${chalk.cyan(m.seedId)}: ` +
-            `run=${m.runStatus}, bead=${m.actualSeedStatus} → ${m.expectedSeedStatus} ${action}`,
-          );
-        }
-      } else {
-        console.log(chalk.dim("  No mismatches found."));
-      }
+      if (backendType !== "native") {
+        // 7. Detect and fix seed/run state mismatches for terminal runs
+        console.log(chalk.bold("\nChecking for bead/run state mismatches..."));
+        const detectedMismatches = await detectAndFixMismatches(helperStore, seeds, runtimeProjectId!, seedIds, { dryRun });
+        mismatchResult.mismatches = detectedMismatches.mismatches;
+        mismatchResult.fixed = detectedMismatches.fixed;
+        mismatchResult.errors = detectedMismatches.errors;
 
-      // 8. Detect and handle stale branches for completed (review) runs.
-      //    This covers beads stuck in 'review' status from failed merge attempts.
-      console.log(chalk.bold("\nChecking for stale / already-merged review branches..."));
-      const staleResult = await detectAndHandleStaleBranches(
-        helperStore,
-        seeds,
-        mergeQueue,
-        projectPath,
-        runtimeProjectId!,
-        seedIds, // skip seeds already handled by the main reset loop
-        { dryRun },
-      );
-
-      for (const r of staleResult.results) {
-        if (r.action === "skip") continue;
-        if (r.action === "error") {
-          console.log(`  ${chalk.red("error")} ${chalk.cyan(r.seedId)}: ${r.error ?? r.reason}`);
-        } else if (r.action === "close") {
-          console.log(
-            `  ${dryRun ? chalk.yellow("(would close)") : chalk.green("close")} ` +
-            `bead ${chalk.cyan(r.seedId)} — ${r.reason}`,
-          );
+        if (mismatchResult.mismatches.length > 0) {
+          for (const m of mismatchResult.mismatches) {
+            const action = dryRun
+              ? chalk.yellow("(would fix)")
+              : chalk.green("fixed");
+            console.log(
+              `  ${chalk.yellow("mismatch")} ${chalk.cyan(m.seedId)}: ` +
+              `run=${m.runStatus}, bead=${m.actualSeedStatus} → ${m.expectedSeedStatus} ${action}`,
+            );
+          }
         } else {
-          console.log(
-            `  ${dryRun ? chalk.yellow("(would reset)") : chalk.yellow("reset")} ` +
-            `bead ${chalk.cyan(r.seedId)} → open — ${r.reason}`,
-          );
+          console.log(chalk.dim("  No mismatches found."));
         }
-      }
 
-      if (staleResult.results.filter((r) => r.action !== "skip" && r.action !== "error").length === 0) {
-        console.log(chalk.dim("  No stale review branches found."));
+        // 8. Detect and handle stale branches for completed (review) runs.
+        //    This covers beads stuck in 'review' status from failed merge attempts.
+        console.log(chalk.bold("\nChecking for stale / already-merged review branches..."));
+        const detectedStale = await detectAndHandleStaleBranches(
+          helperStore,
+          seeds,
+          mergeQueue,
+          projectPath,
+          runtimeProjectId!,
+          seedIds, // skip seeds already handled by the main reset loop
+          { dryRun },
+        );
+        staleResult.results = detectedStale.results;
+        staleResult.closed = detectedStale.closed;
+        staleResult.reset = detectedStale.reset;
+        staleResult.errors = detectedStale.errors;
+
+        for (const r of staleResult.results) {
+          if (r.action === "skip") continue;
+          if (r.action === "error") {
+            console.log(`  ${chalk.red("error")} ${chalk.cyan(r.seedId)}: ${r.error ?? r.reason}`);
+          } else if (r.action === "close") {
+            console.log(
+              `  ${dryRun ? chalk.yellow("(would close)") : chalk.green("close")} ` +
+              `bead ${chalk.cyan(r.seedId)} — ${r.reason}`,
+            );
+          } else {
+            console.log(
+              `  ${dryRun ? chalk.yellow("(would reset)") : chalk.yellow("reset")} ` +
+              `bead ${chalk.cyan(r.seedId)} → open — ${r.reason}`,
+            );
+          }
+        }
+
+        if (staleResult.results.filter((r) => r.action !== "skip" && r.action !== "error").length === 0) {
+          console.log(chalk.dim("  No stale review branches found."));
+        }
       }
 
       // Summary
