@@ -644,15 +644,16 @@ foreman attach --kill <id>              # Kill a running agent
 
 ## GitHub Integration
 
-Foreman integrates with GitHub for bi-directional issue tracking, real-time webhook events, and automated task management.
+Foreman integrates with GitHub for bi-directional issue tracking, webhook-driven automation, pull request workflows, and release automation.
 
 ### Features
 
-- **Bi-directional sync** — Push/pull GitHub issues as Foreman tasks via `foreman issue sync`
-- **Real-time webhooks** — Issue events (opened, closed, labeled, etc.) stream directly to ForemanDaemon via `POST /webhook`
-- **Branch-to-issue linking** — Worktree branches automatically link to GitHub issues; commit messages include `Fixes #{issue}`
-- **Auto-import rules** — Issues with `foreman` or `foreman:dispatch` label → `ready`; others → `backlog`
-- **Priority mapping** — `foreman:priority:0-4` label → Foreman priority 0 (critical) through 4 (backlog)
+- **Bi-directional issue sync** — Push and pull GitHub issues as Foreman tasks via `foreman issue sync`
+- **Real-time webhooks** — Issue and pull request events stream to ForemanDaemon via `POST /webhook`
+- **Auto-import rules** — Issues with `foreman` or `foreman:dispatch` label can be imported directly into Foreman
+- **Priority mapping** — `foreman:priority:0-4` labels map GitHub issues onto Foreman task priorities
+- **PR visibility** — Pull request events and merge outcomes are recorded alongside task and run state
+- **Release automation** — Conventional commits and GitHub Actions drive release tagging and binary publishing
 
 ### Label Conventions
 
@@ -660,7 +661,9 @@ GitHub labels drive Foreman behavior:
 
 | Label | Effect |
 |---|---|
+| `foreman` | Mark issue for Foreman-aware handling and import |
 | `foreman:dispatch` | Import as `ready` status — immediately dispatchable |
+| `foreman:skip` | Skip webhook auto-import |
 | `foreman:priority:0` | P0 — critical (priority 0) |
 | `foreman:priority:1` | P1 — high priority |
 | `foreman:priority:2` | P2 — medium (default) |
@@ -672,40 +675,42 @@ GitHub labels drive Foreman behavior:
 
 ```bash
 # View and manage GitHub configuration
-foreman issue configure                          # Configure repo (PAT, app token)
-foreman issue labels <repo>                       # List available labels
-foreman issue milestones <repo>                # List milestones
+foreman issue configure                          # Configure repo sync + credentials
+foreman issue labels <repo>                     # List available labels
+foreman issue milestones <repo>                 # List milestones
 
 # Sync issues
-foreman issue import <repo>                       # Import all open issues
-foreman issue import <repo> --milestone "v1.0"   # Filter by milestone
+foreman issue import <repo>                     # Import all open issues
+foreman issue import <repo> --milestone "v1.0" # Filter by milestone
 foreman issue import <repo> --labels "bug,enhancement"
-foreman issue import <repo> --dry-run            # Preview without creating
-foreman issue sync <repo>                         # Bi-directional sync
-foreman issue sync <repo> --create               # Create missing issues on GitHub
+foreman issue import <repo> --dry-run           # Preview without creating
+foreman issue sync <repo>                       # Bi-directional sync
+foreman issue sync <repo> --create              # Create missing issues on GitHub
 
 # Webhook management
-foreman issue webhook --enable <repo>            # Enable webhook + generate secret
-foreman issue webhook --disable <repo>           # Disable webhook
-foreman issue webhook --status <repo>            # Show webhook status
+foreman issue webhook --enable <repo>           # Enable webhook + generate secret
+foreman issue webhook --disable <repo>          # Disable webhook
+foreman issue webhook --status <repo>           # Show webhook status
 
 # Status and linking
-foreman issue status <repo>                       # Show linked issue status
-foreman issue link <repo>#<number>               # Link task to GitHub issue
-foreman issue view <repo>#<number>                # View single issue details
+foreman issue status <repo>                     # Show linked issue status
+foreman issue link <repo>#<number>              # Link task to GitHub issue
+foreman issue view <repo>#<number>              # View single issue details
 ```
 
-### Webhook Security
+### Webhooks
+
+Foreman includes a built-in webhook handler (`src/daemon/webhook-handler.ts`) that receives GitHub events and routes them through ForemanDaemon.
 
 Webhooks use **HMAC-SHA256** signature verification. The daemon rejects payloads with invalid signatures:
 
 ```bash
-export FOREMAN_WEBHOOK_SECRET=<your-secret>   # Set in daemon environment
+export FOREMAN_WEBHOOK_SECRET=<your-secret>     # Set in daemon environment
 ```
 
 The webhook secret is auto-generated when enabling via `foreman issue webhook --enable` and stored in the `github_repos` table.
 
-### Webhook Event Handling
+#### Webhook event handling
 
 | Event | Action |
 |---|---|
@@ -714,25 +719,57 @@ The webhook secret is auto-generated when enabling via `foreman issue webhook --
 | `issues.reopened` | Reopen Foreman task |
 | `issues.labeled` | Add `github:{label}` to task labels |
 | `issues.unlabeled` | Remove `github:{label}` from task labels |
-| `push` | Record `bead:synced` event; auto-rebase active worktrees |
-| `pull_request.closed` + merged | Record `bead:synced` with PR metadata |
+| `pull_request.closed` + merged | Record merge metadata against the task/run |
+| `push` | Record sync activity and support active branch/worktree reconciliation |
 
-### Branch Naming
+### Pull Requests and Branches
 
-Worktree branches follow the convention `foreman/{external_id}` where `external_id` is `github:{owner}/{repo}#{issue}`:
+Foreman worktrees and GitHub issues are linked through Foreman-managed task and run metadata.
 
+- Pull request activity is tracked per run, not just by branch name
+- Merged PR state must match the current branch head before a task is treated as merged
+- Historical PRs for older branch heads should not be treated as proof that the current run landed
+
+Commit messages can append `Fixes #{issue_number}` so merging a PR closes the linked GitHub issue when appropriate.
+
+### GitHub Actions and Releases
+
+Foreman can trigger and be triggered by GitHub Actions workflows:
+
+```yaml
+# .github/workflows/foreman-trigger.yml
+name: Trigger Foreman Task
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  foreman-task:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Foreman task from PR
+        run: |
+          foreman task create "Review PR: ${{ github.event.pull_request.title }}" \
+            --type task \
+            --priority 1 \
+            --labels "pr-review,github-automation"
 ```
-foreman/github-owner-repo#142
+
+Foreman can also post pipeline status back to GitHub checks:
+
+```bash
+export GITHUB_TOKEN=ghp_...        # GitHub personal access token
+export GITHUB_REPOSITORY=owner/repo
+
+# Foreman can post:
+# - checkrun status for pipeline phases
+# - final commit status after merge
 ```
 
-Commit messages automatically append `Fixes #{issue_number}` so merging closes the linked issue.
-
-### Environment Variables
-
-| Variable | Description |
-|---|---|
-| `FOREMAN_WEBHOOK_SECRET` | HMAC secret for webhook signature verification |
-| `FOREMAN_GITHUB_TOKEN` | GitHub API token (PAT or app token) for CLI operations |
+For release tagging and version bumps, use conventional commits and the release workflows described in [Semantic Versioning & Conventional Commits](#semantic-versioning--conventional-commits).
 
 ## Task Tracking
 
@@ -969,102 +1006,6 @@ Or trigger manually from the Actions tab with optional dry-run mode.
 ### Advanced Installation Options
 
 For additional install options (specific versions, custom directories, manual binary download), see the [CLI Reference](docs/cli-reference.md) and [Troubleshooting Guide](docs/troubleshooting.md).
-
-## GitHub Integration
-
-Foreman integrates with GitHub through webhooks and workflow automation to enable seamless pull request management and release workflows.
-
-### Webhook Handler
-
-Foreman includes a built-in webhook handler (`src/daemon/webhook-handler.ts`) that receives GitHub events via HTTP and routes them through ForemanDaemon. This enables:
-
-- **PR event handling** — trigger pipeline actions on pull request events
-- **Comment integration** — respond to @mentions in PR comments
-- **Status updates** — post pipeline status back to GitHub checks
-
-To enable webhooks:
-
-```bash
-# Register webhook endpoint with GitHub
-foreman webhook configure --url https://your-domain.com/webhook
-
-# Or manually configure in GitHub repo settings:
-# Settings → Webhooks → Add webhook
-# Payload URL: https://your-domain.com/webhook
-# Events: Pull requests, Issue comments
-```
-
-### GitHub Actions Workflow Integration
-
-Foreman can trigger and be triggered by GitHub Actions workflows:
-
-```yaml
-# .github/workflows/foreman-trigger.yml
-name: Trigger Foreman Task
-
-on:
-  pull_request:
-    types: [opened, synchronize]
-
-jobs:
-  foreman-task:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Create Foreman task from PR
-        run: |
-          foreman task create "Review PR: ${{ github.event.pull_request.title }}" \
-            --type task \
-            --priority 1 \
-            --labels "pr-review,github-automation"
-```
-
-### Tagging Instructions
-
-Foreman uses semantic versioning driven by conventional commits. Tags follow the format `v{major}.{minor}.{patch}`:
-
-```bash
-# Automatic versioning via release-please
-# Merge a commit with feat: or fix: prefix → release-please creates the tag
-
-# Manual tagging for hotfixes
-git tag v1.2.3 -m "fix: critical hotfix for auth regression"
-git push origin v1.2.3
-
-# Tag conventions:
-# - v*.*.* triggers the release pipeline
-# - Version bumps are determined by commit prefixes:
-#   feat: → minor bump
-#   fix: → patch bump
-#   feat!: or BREAKING CHANGE: → major bump
-```
-
-### GitHub Check Status Integration
-
-Foreman posts pipeline status to GitHub Checks API:
-
-```yaml
-# Configure in workflow YAML or environment
-export GITHUB_TOKEN=ghp_...        # GitHub personal access token
-export GITHUB_REPOSITORY=owner/repo
-
-# Foreman automatically posts:
-# - checkrun: pipeline phase status (Explorer, Developer, QA, Reviewer)
-# - commit status: final pass/fail after merge
-```
-
-### Commit Message Convention
-
-Use [Conventional Commits](https://www.conventionalcommits.org/) for automatic versioning:
-
-| Prefix | Example | Version Bump |
-|--------|---------|--------------|
-| `feat:` | `feat: add user auth endpoint` | minor (0.1.0 → 0.2.0) |
-| `fix:` | `fix: handle missing config gracefully` | patch (0.1.0 → 0.1.1) |
-| `feat!:` | `feat!: change API response format` | major (0.1.0 → 1.0.0) |
-| `docs:` | `docs: update README` | none (changelog only) |
-| `chore:` | `chore: update dependencies` | none |
 
 ## Development
 
