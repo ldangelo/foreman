@@ -11,7 +11,7 @@ const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 const SUBPROCESS_TIMEOUT_MS = 25_000;
 
 /** Per-test timeout (ms): allows up to 2 attempts × subprocess timeout + margin. */
-const TEST_TIMEOUT_MS = 30_000;
+const TEST_TIMEOUT_MS = 60_000;
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
   return runTsxModule(CLI, args, { cwd, timeout: SUBPROCESS_TIMEOUT_MS });
