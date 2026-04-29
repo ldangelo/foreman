@@ -43,6 +43,9 @@ SessionLogs/
 SESSION_LOG.md
 RUN_LOG.md
 
+# Generated Refinery queue-entry logs
+docs/reports/queue-entry-*/
+
 # Claude Code local config and worktrees
 .claude/settings.local.json
 .claude/worktrees/
