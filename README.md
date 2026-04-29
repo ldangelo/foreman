@@ -686,6 +686,103 @@ Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (back
 
 ## Configuration
 
+### GitHub Integration
+
+Foreman integrates with GitHub through webhooks, pull request automation, and CI/CD workflows.
+
+#### Webhook Receiver
+
+ForemanDaemon includes a webhook handler (`src/daemon/webhook-handler.ts`) that processes GitHub webhook events:
+
+```bash
+# Configure GitHub webhook in your repository settings
+# Point to: https://your-daemon-host/api/webhook
+```
+
+**Supported webhook events:**
+| Event | Action | Foreman Response |
+|-------|--------|-----------------|
+| `push` | — | Trigger merge queue processing |
+| `pull_request` | opened, synchronize | Sync task status with PR state |
+| `pull_request` | closed | Auto-close merged tasks |
+| `check_run` | completed | Update task status from CI checks |
+| `check_suite` | completed | Aggregate suite results |
+
+#### Pull Request Automation
+
+Foreman automatically creates pull requests when branches are ready:
+
+```bash
+# When finalize phase completes without auto-merge capability
+foreman pr                              # Create PR for current run
+foreman pr --target-branch develop      # PR to specific branch
+```
+
+PRs include:
+- Branch name (auto-generated from task ID)
+- Task description as PR body
+- Link to original task
+- CI status checks
+
+#### Tagging Instructions
+
+Foreman uses several tagging conventions for automation:
+
+**Git tags for releases:**
+```bash
+# release-please creates tags automatically
+git tag v1.0.0                          # Created by release-please
+git push origin v1.0.0                 # Triggers binary publish workflow
+```
+
+**Branch naming:**
+```bash
+foreman/task-{id}                       # Auto-created worktree branches
+foreman/{task-id}                      # Task branches for pipeline
+```
+
+**Commit conventions (Conventional Commits):**
+```bash
+feat: add user authentication           # → minor version bump
+fix: resolve login redirect bug        # → patch version bump
+feat!: breaking API change              # → major version bump
+docs: update README                    # → no version bump
+chore: dependency update               # → no version bump
+```
+
+**Version bumping rules:**
+| Prefix | Version Bump | Example |
+|--------|-------------|---------|
+| `fix:` | patch | 0.1.0 → 0.1.1 |
+| `feat:` | minor | 0.1.0 → 0.2.0 |
+| `feat!:` / `BREAKING CHANGE:` | major | 0.1.0 → 1.0.0 |
+| `docs:`, `chore:`, `refactor:` | none | — |
+
+#### CI/CD Workflow Integration
+
+Foreman ships with GitHub Actions workflows in `.github/workflows/`:
+
+```yaml
+# .github/workflows/ci.yml (example integration)
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: npm test
+      - name: Trigger foreman merge
+        if: github.ref == 'refs/heads/main'
+        run: foreman merge
+```
+
+**Workflow integration patterns:**
+- Use `foreman merge --no-tests` in CI to skip redundant test runs
+- Set `FOREMAN_GITHUB_TOKEN` secrets for PR creation from CI environments
+- Configure branch protection rules to require foreman status checks
+
 ### Workflow YAML
 
 Foreman pipelines are configured via workflow YAML files. See the **[Workflow YAML Reference](docs/workflow-yaml-reference.md)** for complete documentation with examples for Node.js, .NET, Go, Python, and Rust.
