@@ -10,6 +10,22 @@ jobs:
   test:
     name: Test (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: foreman
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d foreman"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/foreman
 
     strategy:
       matrix:
@@ -48,6 +64,13 @@ jobs:
 
       - name: Type check
         run: npx tsc --noEmit
+
+      - name: Write repo .env for integration tests
+        run: |
+          printf 'DATABASE_URL=%s\n' "$DATABASE_URL" > .env
+
+      - name: Run database migrations
+        run: npm run db:migrate
 
       - name: Run PR-required test lanes
         run: npm run test:ci
