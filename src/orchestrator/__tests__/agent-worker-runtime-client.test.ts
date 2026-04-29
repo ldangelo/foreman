@@ -8,7 +8,7 @@ describe("agent-worker runtime task client threading", () => {
     const source = readFileSync(sourcePath, "utf8");
 
     expect(source).toContain("async function createRuntimeTaskClient(projectPath: string, registeredProjectId?: string)");
-    expect(source.match(/createRuntimeTaskClient\(pipelineProjectPath, config\.projectId\)/g)).toHaveLength(3);
+    expect(source.match(/createRuntimeTaskClient\(pipelineProjectPath, registeredProjectId\)/g)).toHaveLength(3);
   });
 
   it("resolves worker databaseUrl from storeProjectPath so inferred registered Postgres stays enabled", () => {
@@ -39,10 +39,10 @@ describe("agent-worker runtime task client threading", () => {
     const pipelineSourcePath = fileURLToPath(new URL("../pipeline-executor.ts", import.meta.url));
     const pipelineSource = readFileSync(pipelineSourcePath, "utf8");
 
-    expect(source).toContain("await runPipeline(config, store, localStore, logFile, notifyClient, agentMailClient, registeredReadStore);");
+    expect(source).toContain("await runPipeline(config, store, localStore, logFile, notifyClient, agentMailClient, registeredReadStore, registeredProjectId);");
     expect(source).toContain("const registeredObservabilityWriter: PipelineObservabilityWriter | undefined = registeredReadStore");
     expect(source).toContain("await registeredReadStore.updateRunProgress(config.runId, progress);");
-    expect(source).toContain("await registeredReadStore.logEvent(config.projectId, eventType, data, config.runId);");
+    expect(source).toContain("await registeredReadStore.logEvent(registeredProjectId!, eventType, data, config.runId);");
     expect(source).toContain("observabilityWriter: registeredObservabilityWriter,");
     expect(pipelineSource).toContain('logEvent?: (eventType: "phase-start" | "complete" | "heartbeat", data: Record<string, unknown>) => Promise<void> | void;');
     expect(pipelineSource).toContain("ctx.heartbeatManager?.setSeedId(seedId);");
@@ -57,7 +57,8 @@ describe("agent-worker runtime task client threading", () => {
     const source = readFileSync(sourcePath, "utf8");
 
     expect(source).toContain("import { createDualWriteStore } from \"./rate-limit-dual-write.js\";");
-    expect(source).toContain("createDualWriteStore(localStore, pgStore, Boolean(databaseUrl), log);");
+    expect(source).toContain("const registeredProjectId = await resolveRegisteredProjectIdForPath(storeProjectPath, databaseUrl);");
+    expect(source).toContain("createDualWriteStore(localStore, pgStore, true, log)");
     expect(source).not.toContain("store.logRateLimitEvent(config.projectId, model, phase, error, retryAfterSeconds, config.runId);");
     expect(source).toContain("sendMail(agentMailClient, \"foreman\", \"rate-limit-alert\",");
   });

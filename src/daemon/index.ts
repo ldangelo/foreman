@@ -28,6 +28,7 @@ import { createTaskClient } from "../lib/task-client-factory.js";
 import { Dispatcher } from "../orchestrator/dispatcher.js";
 import { BvClient } from "../lib/bv.js";
 import { createTrpcClient } from "../lib/trpc-client.js";
+import { GitHubIssuesPoller } from "./github-poller.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -79,6 +80,7 @@ export class ForemanDaemon {
   private _httpPort: number;
   private _useSocket: boolean = true;
   private _dispatchInterval: ReturnType<typeof setInterval> | null = null;
+  private _githubPoller: GitHubIssuesPoller | null = null;
 
   constructor(options?: {
     socketPath?: string;
@@ -171,6 +173,9 @@ export class ForemanDaemon {
 
     // Start background dispatch loop
     await this.#startDispatchLoop();
+
+    // Start GitHub Issues polling loop (TRD-030, TRD-032)
+    await this.#startGithubPoller();
   }
 
   /** Try to bind on the Unix socket. Fall back to HTTP on failure. */
@@ -237,6 +242,7 @@ export class ForemanDaemon {
     }
 
     this.#stopDispatchLoop();
+    this.#stopGithubPoller();
     this._running = false;
     this.fastify.log.info("[ForemanDaemon] Stopped");
   }
@@ -275,6 +281,41 @@ export class ForemanDaemon {
       clearInterval(this._dispatchInterval);
       this._dispatchInterval = null;
       this.fastify.log.info("[ForemanDaemon] Dispatch loop stopped");
+    }
+  }
+
+  /** Start the GitHub Issues polling loop. Creates the poller and starts it. */
+  async #startGithubPoller(): Promise<void> {
+    const foremanLabel =
+      process.env.FOREMAN_GITHUB_LABEL ?? "foreman";
+    const pollIntervalMs =
+      parseInt(process.env.FOREMAN_GITHUB_POLL_INTERVAL_MS ?? "", 10) ||
+      60_000;
+
+    // Check if gh is installed before starting the poller
+    const gh = new (await import("../lib/gh-cli.js")).GhCli();
+    const ghInstalled = await gh.isInstalled();
+    if (!ghInstalled) {
+      this.fastify.log.info(
+        "[ForemanDaemon] GitHub CLI (gh) not found — GitHub Issues polling disabled. Install gh from https://cli.github.com to enable."
+      );
+      return;
+    }
+
+    const adapter = new PostgresAdapter();
+    const registry = new ProjectRegistry({ pg: adapter });
+    this._githubPoller = new GitHubIssuesPoller(adapter, registry, {
+      foremanLabel,
+      pollIntervalMs,
+    });
+    this._githubPoller.start();
+  }
+
+  /** Stop the GitHub Issues polling loop. */
+  #stopGithubPoller(): void {
+    if (this._githubPoller) {
+      this._githubPoller.stop();
+      this._githubPoller = null;
     }
   }
 

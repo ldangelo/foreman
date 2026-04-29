@@ -18,6 +18,11 @@ const TSX_LOADER = join(__dirname, "..", "..", "..", "node_modules", "tsx", "dis
 const DAEMON_ENTRY = join(__dirname, "..", "..", "daemon", "index.ts");
 
 function readDatabaseUrl(): string {
+  const envValue = process.env.DATABASE_URL?.trim();
+  if (envValue) {
+    return envValue.replace(/^['"]|['"]$/g, "");
+  }
+
   const envPath = join(process.cwd(), ".env");
   const match = readFileSync(envPath, "utf8").match(/^\s*DATABASE_URL=(.+)\s*$/m);
   if (!match?.[1]) {

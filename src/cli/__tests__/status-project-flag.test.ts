@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
+import { ForemanStore } from "../../lib/store.js";
 
 const CLI = path.resolve(__dirname, "../../cli/index.ts");
 
@@ -17,7 +18,25 @@ async function run(
   cwd: string,
   extraEnv?: Record<string, string>,
 ): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 15_000, env: extraEnv });
+  const registryBaseDir = extraEnv?.HOME ? join(extraEnv.HOME, ".foreman") : undefined;
+  return runTsxModule(CLI, args, {
+    cwd,
+    timeout: 15_000,
+    env: {
+      PATH: process.env.PATH,
+      HOME: extraEnv?.HOME,
+      TMPDIR: process.env.TMPDIR,
+      TMP: process.env.TMP,
+      TEMP: process.env.TEMP,
+      TSX_DISABLE_IPC: "1",
+      NO_COLOR: "1",
+      FOREMAN_HOME: undefined,
+      FOREMAN_TASK_STORE: undefined,
+      FOREMAN_TASK_BACKEND: undefined,
+      DATABASE_URL: undefined,
+      FOREMAN_REGISTRY_BASE_DIR: registryBaseDir,
+    },
+  });
 }
 
 describe("foreman status --project flag", () => {
@@ -33,6 +52,12 @@ describe("foreman status --project flag", () => {
     const dir = join(baseDir, name);
     mkdirSync(join(dir, ".foreman"), { recursive: true });
     return dir;
+  }
+
+  function registerLocalProject(projectDir: string, projectName: string): void {
+    const store = ForemanStore.forProject(projectDir);
+    store.registerProject(projectName, projectDir);
+    store.close();
   }
 
   function setupRegistryWithProject(registryDir: string, projectPath: string, projectName: string): void {
@@ -110,9 +135,7 @@ describe("foreman status --project flag", () => {
     execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
-    // Set up a local registry with only this project so isMultiProjectMode() returns false
-    const registryDir = join(tmpBase, ".foreman", "projects");
-    setupRegistryWithProject(registryDir, projectDir, "my-project");
+    registerLocalProject(projectDir, "my-project");
 
     const result = await run(["status"], projectDir, {
       ...process.env,

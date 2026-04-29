@@ -20,6 +20,7 @@ import type { EpicTask, PhaseObservabilityInput, PipelineObservabilityWriter } f
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import { PostgresStore } from "../lib/postgres-store.js";
+import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import { initPool } from "../lib/db/pool-manager.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import {
@@ -37,6 +38,7 @@ import type { AgentRole, WorkerNotification } from "./types.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import type { AgentMailClient } from "../lib/sqlite-mail-client.js";
 import { createProjectMailClient, resolveProjectDatabaseUrl } from "../lib/project-mail-client.js";
+import { ProjectRegistry } from "../lib/project-registry.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { autoMerge } from "./auto-merge.js";
@@ -90,6 +92,32 @@ class NotificationClient {
       // Silently ignore any synchronous errors (e.g. invalid URL)
     }
   }
+}
+
+async function resolveRegisteredProjectIdForPath(
+  projectPath: string,
+  databaseUrl?: string,
+): Promise<string | undefined> {
+  if (!databaseUrl) return undefined;
+
+  const registries = [
+    new ProjectRegistry({ pg: new PostgresAdapter() }),
+    new ProjectRegistry(),
+  ];
+
+  for (const registry of registries) {
+    try {
+      const projects = await registry.list();
+      const match = projects.find((project) => project.path === projectPath);
+      if (match) {
+        return match.id;
+      }
+    } catch {
+      // Fall through to the next registry source.
+    }
+  }
+
+  return undefined;
 }
 
 // ── Agent Mail helper ─────────────────────────────────────────────────────────
@@ -306,6 +334,11 @@ interface WorkerConfig {
    */
   taskMeta?: TaskMeta;
   /**
+   * GitHub issue number for this task (from github_issue_number field).
+   * When set, finalize commit messages are suffixed with "Fixes #{issueNumber}" (TRD-042).
+   */
+  githubIssueNumber?: number;
+  /**
    * Directory guardrail config (FR-1). When set, wraps tool factories with
    * cwd verification in the Pi SDK session.
    */
@@ -366,9 +399,10 @@ async function main(): Promise<void> {
   // Open local store and mirror key runtime writes into Postgres-backed store.
   const databaseUrl = resolveProjectDatabaseUrl(storeProjectPath);
   const localStore = ForemanStore.forProject(storeProjectPath);
-  const pgStore = PostgresStore.forProject(projectId);
-  const store = createDualWriteStore(localStore, pgStore, Boolean(databaseUrl), log);
-  const registeredReadStore = databaseUrl ? pgStore : undefined;
+  const registeredProjectId = await resolveRegisteredProjectIdForPath(storeProjectPath, databaseUrl);
+  const pgStore = registeredProjectId ? PostgresStore.forProject(registeredProjectId) : undefined;
+  const store = pgStore ? createDualWriteStore(localStore, pgStore, true, log) : localStore;
+  const registeredReadStore = registeredProjectId && pgStore ? pgStore : undefined;
 
   // Apply worker env vars.
   // NOTE: `ROLE_CONFIGS` in roles.ts is materialised at module load time,
@@ -382,7 +416,7 @@ async function main(): Promise<void> {
   }
 
   // Initialize Postgres pool for dual-write mirrors when DATABASE_URL is available.
-  if (databaseUrl) {
+  if (registeredProjectId && databaseUrl) {
     try {
       initPool({ databaseUrl });
     } catch {
@@ -409,7 +443,7 @@ async function main(): Promise<void> {
 
   // ── Pipeline mode: run each phase as a separate SDK session ─────────
   if (pipeline) {
-    await runPipeline(config, store, localStore, logFile, notifyClient, agentMailClient, registeredReadStore);
+    await runPipeline(config, store, localStore, logFile, notifyClient, agentMailClient, registeredReadStore, registeredProjectId);
     store.close();
     log(`Pipeline worker exiting for ${seedId}`);
     return;
@@ -889,6 +923,7 @@ async function runPipeline(
   notifyClient: NotificationClient,
   agentMailClient: AnyMailClient | null,
   registeredReadStore?: PostgresStore,
+  registeredProjectId?: string,
 ): Promise<void> {
   const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(config.worktreePath);
   const resolvedWorkflow = resolveWorkflowName(
@@ -907,11 +942,11 @@ async function runPipeline(
 
   const { taskClient: runtimeTaskClient, backendType: runtimeTaskBackend } = await createTaskClient(
     pipelineProjectPath,
-    {
-      forceBeadsFallback: process.env.FOREMAN_RUNTIME_MODE?.trim().toLowerCase() === "test",
-      registeredProjectId: config.projectId,
-    },
-  );
+      {
+        forceBeadsFallback: process.env.FOREMAN_RUNTIME_MODE?.trim().toLowerCase() === "test",
+        registeredProjectId,
+      },
+    );
   const registeredObservabilityWriter: PipelineObservabilityWriter | undefined = registeredReadStore
     ? {
         async updateProgress(progress) {
@@ -924,7 +959,7 @@ async function runPipeline(
         },
         async logEvent(eventType, data) {
           try {
-            await registeredReadStore.logEvent(config.projectId, eventType, data, config.runId);
+            await registeredReadStore.logEvent(registeredProjectId!, eventType, data, config.runId);
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
             log(`[pipeline-observability] ${eventType} event failed (non-fatal): ${msg}`);
@@ -1192,8 +1227,8 @@ async function runPipeline(
       }
 
       const now = new Date().toISOString();
-      const registeredRefineryOptions = config.projectId && registeredReadStore
-        ? { registeredProjectId: config.projectId, runLookup: registeredReadStore }
+      const registeredRefineryOptions = registeredProjectId && registeredReadStore
+        ? { registeredProjectId, runLookup: registeredReadStore }
         : undefined;
       if (finalizeSucceeded) {
 
@@ -1209,7 +1244,7 @@ async function runPipeline(
 
         let prCreated = false;
         try {
-          const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, config.projectId);
+          const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId);
           const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend, registeredRefineryOptions);
           const pr = await refinery.ensurePullRequestForRun({
             runId,
@@ -1232,7 +1267,7 @@ async function runPipeline(
           if ((workflowConfig.merge ?? "auto") !== "auto") {
             await updateTerminalRunStatus({
               runId,
-              projectId: config.projectId,
+              projectId: registeredProjectId,
               projectPath: pipelineProjectPath,
               updates: { status: "pr-created", completed_at: now },
             });
@@ -1290,8 +1325,8 @@ async function runPipeline(
               });
 
               try {
-                const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, config.projectId);
-                const registeredAutoMergeReadStore = config.projectId ? registeredReadStore : undefined;
+                const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId);
+                const registeredAutoMergeReadStore = registeredProjectId ? registeredReadStore : undefined;
                 const currentRun = registeredAutoMergeReadStore
                   ? (await registeredAutoMergeReadStore.getRun(runId)) ?? undefined
                   : store.getRun(runId) ?? undefined;
@@ -1301,7 +1336,7 @@ async function runPipeline(
                   projectPath: pipelineProjectPath,
                   targetBranch: config.targetBranch,
                   ...(registeredAutoMergeReadStore
-                    ? { registeredProjectId: config.projectId, readLookup: registeredAutoMergeReadStore }
+                    ? { registeredProjectId, readLookup: registeredAutoMergeReadStore }
                     : {}),
                   runId,
                   ...(currentRun ? { overrideRun: currentRun } : {}),
@@ -1329,7 +1364,7 @@ async function runPipeline(
         }
       } else {
         try {
-          const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, config.projectId);
+          const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId);
           const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend, registeredRefineryOptions);
           const pr = await refinery.ensurePullRequestForRun({
             runId,
@@ -1403,9 +1438,9 @@ async function runPipeline(
         eventType: "complete" | "stuck" | "fail",
         data: Record<string, unknown>,
       ): Promise<void> => {
-        if (projectId && registeredReadStore) {
+        if (registeredProjectId && registeredReadStore) {
           try {
-            await registeredReadStore.logEvent(projectId, eventType, data, runId);
+            await registeredReadStore.logEvent(registeredProjectId, eventType, data, runId);
             return;
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);

@@ -20,14 +20,23 @@ async function run(
   cwd: string,
   extraEnv?: Record<string, string>,
 ): Promise<ExecResult> {
+  const registryBaseDir = extraEnv?.HOME ? join(extraEnv.HOME, ".foreman") : undefined;
   const result = spawnSync("npx", ["tsx", CLI, ...args], {
     cwd,
     timeout: 60_000,
     env: {
-      ...process.env,
+      PATH: process.env.PATH,
+      HOME: extraEnv?.HOME,
+      TMPDIR: process.env.TMPDIR,
+      TMP: process.env.TMP,
+      TEMP: process.env.TEMP,
       TSX_DISABLE_IPC: "1",
       NO_COLOR: "1",
-      ...extraEnv,
+      FOREMAN_HOME: undefined,
+      FOREMAN_TASK_STORE: undefined,
+      FOREMAN_TASK_BACKEND: undefined,
+      DATABASE_URL: undefined,
+      FOREMAN_REGISTRY_BASE_DIR: registryBaseDir,
     },
     encoding: "utf8",
   });

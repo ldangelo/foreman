@@ -79,6 +79,14 @@ export interface TaskRow {
   updated_at: string;
   approved_at: string | null;
   closed_at: string | null;
+  // GitHub integration fields (TRD-007)
+  external_repo?: string | null;
+  github_issue_number?: number | null;
+  github_milestone?: string | null;
+  sync_enabled?: boolean;
+  last_sync_at?: string | null;
+  // Labels array (may not exist in all projects)
+  labels?: string[] | null;
 }
 
 export interface TaskDependencyRow {
@@ -254,6 +262,66 @@ export interface MergeQueueEntryRow {
   error: string | null;
   retry_count: number;
   last_attempted_at: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// GitHub integration types (TRD-007, TRD-008)
+// ---------------------------------------------------------------------------
+
+export interface GithubRepoRow {
+  id: string;
+  project_id: string;
+  owner: string;
+  repo: string;
+  auth_type: "pat" | "app";
+  auth_config: Record<string, unknown>;
+  default_labels: string[];
+  auto_import: boolean;
+  webhook_secret: string | null;
+  webhook_enabled: boolean;
+  sync_strategy: "foreman-wins" | "github-wins" | "manual" | "last-write-wins";
+  last_sync_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GithubSyncEventRow {
+  id: string;
+  project_id: string;
+  external_id: string;
+  event_type: string;
+  direction: "to_github" | "from_github";
+  github_payload: Record<string, unknown> | null;
+  foreman_changes: Record<string, unknown> | null;
+  conflict_detected: boolean;
+  resolved_with: string | null;
+  processed_at: string;
+}
+
+export interface UpsertGithubRepoInput {
+  id?: string;
+  projectId: string;
+  owner: string;
+  repo: string;
+  authType?: "pat" | "app";
+  authConfig?: Record<string, unknown>;
+  defaultLabels?: string[];
+  autoImport?: boolean;
+  webhookSecret?: string | null;
+  webhookEnabled?: boolean;
+  syncStrategy?: "foreman-wins" | "github-wins" | "manual" | "last-write-wins";
+  lastSyncAt?: string | null;
+}
+
+export interface RecordGithubSyncEventInput {
+  projectId: string;
+  externalId: string;
+  eventType: string;
+  direction: "to_github" | "from_github";
+  githubPayload?: Record<string, unknown> | null;
+  foremanChanges?: Record<string, unknown> | null;
+  conflictDetected?: boolean;
+  resolvedWith?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -456,9 +524,10 @@ export class PostgresAdapter {
     const rows = await query<TaskRow>(
       `INSERT INTO tasks (
          id, project_id, title, description, type, priority, status,
-         external_id, branch, created_at, updated_at, approved_at, closed_at
+         external_id, branch, created_at, updated_at, approved_at, closed_at,
+         external_repo, github_issue_number, github_milestone, sync_enabled
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        RETURNING *`,
       [
         id,
@@ -474,6 +543,10 @@ export class PostgresAdapter {
         updatedAt,
         approvedAt,
         closedAt,
+        taskData.external_repo as string | null ?? null,
+        taskData.github_issue_number as number | null ?? null,
+        taskData.github_milestone as string | null ?? null,
+        taskData.sync_enabled as boolean ?? false,
       ],
     );
     return rows[0];
@@ -493,6 +566,8 @@ export class PostgresAdapter {
       status?: string[];
       runId?: string;
       limit?: number;
+      externalId?: string;
+      labels?: string[];
     }
   ): Promise<TaskRow[]> {
     const conditions = ["project_id = $1"];
@@ -508,6 +583,16 @@ export class PostgresAdapter {
     if (filters?.runId !== undefined) {
       conditions.push(`run_id = $${i++}`);
       params.push(filters.runId);
+    }
+
+    if (filters?.externalId !== undefined) {
+      conditions.push(`external_id = $${i++}`);
+      params.push(filters.externalId);
+    }
+
+    if (filters?.labels && filters.labels.length > 0) {
+      conditions.push(`labels @> $${i++}::text[]`);
+      params.push(filters.labels);
     }
 
     const limit = filters?.limit ?? 100;
@@ -1784,7 +1869,199 @@ export class PostgresAdapter {
     sql += ` ORDER BY line_number ASC`;
     return query<MessageRow>(sql, params);
   }
+
+  // GitHub repository operations (TRD-008)
+  async upsertGithubRepo(input: UpsertGithubRepoInput): Promise<GithubRepoRow> {
+    const rows = await query<GithubRepoRow>(
+      `INSERT INTO github_repos (
+         id, project_id, owner, repo, auth_type, auth_config,
+         default_labels, auto_import, webhook_secret, webhook_enabled,
+         sync_strategy, last_sync_at, created_at, updated_at
+       )
+       VALUES (
+         COALESCE($1, gen_random_uuid()),
+         $2, $3, $4, $5, $6,
+         COALESCE($7, '{}'), COALESCE($8, false), $9, COALESCE($10, false),
+         COALESCE($11, 'github-wins'), $12,
+         now(), now()
+       )
+       ON CONFLICT (project_id, owner, repo)
+       DO UPDATE SET
+         auth_type     = EXCLUDED.auth_type,
+         auth_config   = EXCLUDED.auth_config,
+         default_labels     = EXCLUDED.default_labels,
+         auto_import        = EXCLUDED.auto_import,
+         webhook_secret     = EXCLUDED.webhook_secret,
+         webhook_enabled    = EXCLUDED.webhook_enabled,
+         sync_strategy      = EXCLUDED.sync_strategy,
+         last_sync_at       = EXCLUDED.last_sync_at,
+         updated_at         = now()
+       RETURNING *`,
+      [
+        input.id ?? null,
+        input.projectId,
+        input.owner,
+        input.repo,
+        input.authType ?? "pat",
+        JSON.stringify(input.authConfig ?? {}),
+        input.defaultLabels ? JSON.stringify(input.defaultLabels) : null,
+        input.autoImport ?? false,
+        input.webhookSecret ?? null,
+        input.webhookEnabled ?? false,
+        input.syncStrategy ?? "github-wins",
+        input.lastSyncAt ?? null,
+      ],
+    );
+    return rows[0];
+  }
+
+  async getGithubRepo(
+    projectId: string,
+    owner: string,
+    repo: string,
+  ): Promise<GithubRepoRow | null> {
+    const rows = await query<GithubRepoRow>(
+      `SELECT * FROM github_repos
+       WHERE project_id = $1 AND owner = $2 AND repo = $3`,
+      [projectId, owner, repo],
+    );
+    return rows[0] ?? null;
+  }
+
+  async listGithubRepos(projectId: string): Promise<GithubRepoRow[]> {
+    return query<GithubRepoRow>(
+      `SELECT * FROM github_repos
+       WHERE project_id = $1
+       ORDER BY created_at DESC`,
+      [projectId],
+    );
+  }
+
+  async deleteGithubRepo(id: string): Promise<boolean> {
+    const result = await execute(
+      `DELETE FROM github_repos WHERE id = $1`,
+      [id],
+    );
+    return (result as unknown as { rowCount: number }).rowCount > 0;
+  }
+
+  async recordGithubSyncEvent(
+    input: RecordGithubSyncEventInput,
+  ): Promise<GithubSyncEventRow> {
+    const rows = await query<GithubSyncEventRow>(
+      `INSERT INTO github_sync_events (
+         project_id, external_id, event_type, direction,
+         github_payload, foreman_changes,
+         conflict_detected, resolved_with, processed_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+       RETURNING *`,
+      [
+        input.projectId,
+        input.externalId,
+        input.eventType,
+        input.direction,
+        input.githubPayload ? JSON.stringify(input.githubPayload) : null,
+        input.foremanChanges ? JSON.stringify(input.foremanChanges) : null,
+        input.conflictDetected ?? false,
+        input.resolvedWith ?? null,
+      ],
+    );
+    return rows[0];
+  }
+
+  async listGithubSyncEvents(
+    projectId: string,
+    externalId?: string,
+    limit = 100,
+  ): Promise<GithubSyncEventRow[]> {
+    if (externalId) {
+      return query<GithubSyncEventRow>(
+        `SELECT * FROM github_sync_events
+         WHERE project_id = $1 AND external_id = $2
+         ORDER BY processed_at DESC
+         LIMIT $3`,
+        [projectId, externalId, limit],
+      );
+    }
+    return query<GithubSyncEventRow>(
+      `SELECT * FROM github_sync_events
+       WHERE project_id = $1
+       ORDER BY processed_at DESC
+       LIMIT $2`,
+      [projectId, limit],
+    );
+  }
+
+  async updateGithubRepoLastSync(id: string): Promise<void> {
+    await execute(
+      "UPDATE github_repos SET last_sync_at = now(), updated_at = now() WHERE id = $1",
+      [id],
+    );
+  }
+
+  async listTasksWithExternalId(projectId: string): Promise<TaskRow[]> {
+    return query<TaskRow>(
+      "SELECT * FROM tasks WHERE project_id = $1 AND external_repo IS NOT NULL AND github_issue_number IS NOT NULL ORDER BY updated_at DESC",
+      [projectId],
+    );
+  }
+
+  async updateTaskGitHubFields(
+    projectId: string,
+    taskId: string,
+    updates: {
+      title?: string;
+      description?: string | null;
+      state?: "open" | "closed";
+      labels?: string[];
+      milestone?: string | null;
+      syncEnabled?: boolean;
+      lastSyncAt?: string;
+    },
+  ): Promise<TaskRow | null> {
+    const setParts: string[] = [];
+    const params: unknown[] = [];
+    let i = 1;
+    if (updates.title !== undefined) {
+      setParts.push("title = $" + i++);
+      params.push(updates.title);
+    }
+    if (updates.description !== undefined) {
+      setParts.push("description = $" + i++);
+      params.push(updates.description);
+    }
+    if (updates.state !== undefined) {
+      setParts.push("status = $" + i++);
+      params.push(updates.state === "closed" ? "merged" : "backlog");
+    }
+    if (updates.labels !== undefined) {
+      setParts.push("labels = $" + i++ + "::text[]");
+      params.push(updates.labels);
+    }
+    if (updates.milestone !== undefined) {
+      setParts.push("github_milestone = $" + i++);
+      params.push(updates.milestone);
+    }
+    if (updates.syncEnabled !== undefined) {
+      setParts.push("sync_enabled = $" + i++);
+      params.push(updates.syncEnabled);
+    }
+    if (updates.lastSyncAt !== undefined) {
+      setParts.push("last_sync_at = $" + i++);
+      params.push(updates.lastSyncAt);
+    }
+    if (setParts.length === 0) {
+      return null;
+    }
+    setParts.push("updated_at = now()");
+    params.push(projectId, taskId);
+    const sql = "UPDATE tasks SET " + setParts.join(", ") + " WHERE id = $" + i + " AND project_id = $" + (i + 1) + " RETURNING *";
+    const rows = await query<TaskRow>(sql, params);
+    return rows[0] ?? null;
+  }
 }
+
 
 // ---------------------------------------------------------------------------
 // Named export

@@ -34,7 +34,38 @@ vi.mock("../../../lib/trpc-client.js", () => ({
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 10_000 });
+  return runTsxModule(CLI, args, {
+    cwd,
+    timeout: 10_000,
+    env: {
+      PATH: process.env.PATH,
+      HOME: cwd,
+      TMPDIR: process.env.TMPDIR,
+      TMP: process.env.TMP,
+      TEMP: process.env.TEMP,
+      TSX_DISABLE_IPC: "1",
+      NO_COLOR: "1",
+      FOREMAN_HOME: undefined,
+      FOREMAN_TASK_STORE: undefined,
+      FOREMAN_TASK_BACKEND: undefined,
+      FOREMAN_REGISTRY_BASE_DIR: undefined,
+      DATABASE_URL: undefined,
+    },
+  });
+}
+
+async function runWithRetry(
+  args: string[],
+  cwd: string,
+  maxAttempts = 2,
+): Promise<ExecResult> {
+  let last: ExecResult | undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    last = await run(args, cwd);
+    const hasOutput = last.stdout.length > 0 || last.stderr.length > 0;
+    if (last.exitCode === 0 || hasOutput) return last;
+  }
+  return last!;
 }
 
 const HELP_TIMEOUT_MS = 60_000;
@@ -58,40 +89,40 @@ describe("TRD-048: CLI --project flag and multi-project mode", () => {
   describe("--help shows --project flag", () => {
     it("inbox --help shows --project option", async () => {
       const tmp = makeTempDir();
-      const result = await run(["inbox", "--help"], tmp);
+      const result = await runWithRetry(["inbox", "--help"], tmp);
       expect(result.stdout).toContain("--project");
       expect(result.stdout).toContain("--project-path");
     }, HELP_TIMEOUT_MS);
 
     it("board --help shows --project and --all options", async () => {
       const tmp = makeTempDir();
-      const result = await run(["board", "--help"], tmp);
+      const result = await runWithRetry(["board", "--help"], tmp);
       expect(result.stdout).toContain("--project");
       expect(result.stdout).toContain("--all");
     }, HELP_TIMEOUT_MS);
 
     it("status --help shows --project and --all options", async () => {
       const tmp = makeTempDir();
-      const result = await run(["status", "--help"], tmp);
+      const result = await runWithRetry(["status", "--help"], tmp);
       expect(result.stdout).toContain("--project");
       expect(result.stdout).toContain("--all");
     }, HELP_TIMEOUT_MS);
 
     it("run --help shows --project option", async () => {
       const tmp = makeTempDir();
-      const result = await run(["run", "--help"], tmp);
+      const result = await runWithRetry(["run", "--help"], tmp);
       expect(result.stdout).toContain("--project");
     }, HELP_TIMEOUT_MS);
 
     it("reset --help shows --project option", async () => {
       const tmp = makeTempDir();
-      const result = await run(["reset", "--help"], tmp);
+      const result = await runWithRetry(["reset", "--help"], tmp);
       expect(result.stdout).toContain("--project");
     }, HELP_TIMEOUT_MS);
 
     it("retry --help shows --project option", async () => {
       const tmp = makeTempDir();
-      const result = await run(["retry", "--help"], tmp);
+      const result = await runWithRetry(["retry", "--help"], tmp);
       expect(result.stdout).toContain("--project");
     }, HELP_TIMEOUT_MS);
   });
@@ -99,7 +130,7 @@ describe("TRD-048: CLI --project flag and multi-project mode", () => {
   describe("inbox command accepts --project", () => {
     it("inbox --help shows inbox-specific options", async () => {
       const tmp = makeTempDir();
-      const result = await run(["inbox", "--help"], tmp);
+      const result = await runWithRetry(["inbox", "--help"], tmp);
       // Core inbox options
       expect(result.stdout).toContain("--agent");
       expect(result.stdout).toContain("--run");

@@ -74,7 +74,9 @@ vi.mock("../../lib/store.js", () => ({
 }));
 
 vi.mock("../../lib/db/postgres-adapter.js", () => ({
-  PostgresAdapter: vi.fn(() => mockPostgresAdapterInstance),
+  PostgresAdapter: vi.fn(function () {
+    return mockPostgresAdapterInstance;
+  }),
 }));
 
 vi.mock("../../lib/bv.js", () => ({

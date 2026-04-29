@@ -84,6 +84,12 @@ export interface FinalizeTemplateVars {
   baseBranch: string;
   /** Absolute path to the worktree/workspace directory. */
   worktreePath: string;
+  /**
+   * GitHub issue number for this task. When present, the finalize commit
+   * message is suffixed with "Fixes #{issueNumber}" to auto-close the issue
+   * when the PR is merged (TRD-042).
+   */
+  githubIssueNumber?: number;
 }
 
 /**

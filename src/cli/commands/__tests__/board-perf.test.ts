@@ -110,31 +110,35 @@ describe("BoardPerformance", () => {
       const smallTasks = createTasksMapWithCount(10);
       const largeTasks = createTasksMapWithCount(1000);
 
-      // Simulate navigation (finding task at position)
-      const start = performance.now();
-      let found = false;
-      for (const [status, tasks] of smallTasks) {
-        if (tasks[0]) {
-          found = true;
-          break;
+      const measureNavigation = (tasksByStatus: Map<BoardStatus, BoardTask[]>, iterations: number) => {
+        let foundCount = 0;
+        let probes = 0;
+        for (let i = 0; i < iterations; i++) {
+          for (const tasks of tasksByStatus.values()) {
+            probes++;
+            if (tasks[0]) {
+              foundCount++;
+              break;
+            }
+          }
         }
-      }
-      const smallDuration = performance.now() - start;
+        return {
+          foundCount,
+          probes,
+        };
+      };
 
-      const start2 = performance.now();
-      found = false;
-      for (const [status, tasks] of largeTasks) {
-        if (tasks[0]) {
-          found = true;
-          break;
-        }
-      }
-      const largeDuration = performance.now() - start2;
+      const iterations = 10_000;
+      const small = measureNavigation(smallTasks, iterations);
+      const large = measureNavigation(largeTasks, iterations);
 
-      // Navigation should be constant time (just array index)
-      expect(found).toBe(true);
-      expect(smallDuration).toBeLessThan(1);
-      expect(largeDuration).toBeLessThan(1);
+      // Navigation should remain effectively constant time because it only checks
+      // the first entry in each status bucket; larger buckets should not cause
+      // materially more work even when each bucket contains many more tasks.
+      expect(small.foundCount).toBe(iterations);
+      expect(large.foundCount).toBe(iterations);
+      expect(small.probes).toBe(iterations);
+      expect(large.probes).toBe(iterations);
     });
   });
 

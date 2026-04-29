@@ -104,6 +104,33 @@ export class GhApiError extends GhError {
   }
 }
 
+/** Thrown when GitHub API returns 403 with rate limit exceeded message. */
+export class GhRateLimitError extends GhApiError {
+  override readonly name = "GhRateLimitError" as string;
+  readonly retryAfter: number;
+
+  constructor(message: string, retryAfter: number) {
+    super(message, message, 1, 403);
+    this.retryAfter = retryAfter;
+  }
+}
+
+/** Thrown when a GitHub resource (issue, repo, user, etc.) is not found (404). */
+export class GhNotFoundError extends GhApiError {
+  override readonly name = "GhNotFoundError" as string;
+  readonly resourcePath: string;
+
+  constructor(resourcePath: string) {
+    super(
+      `GitHub resource not found: ${resourcePath}`,
+      "HTTP 404: Not Found",
+      1,
+      404,
+    );
+    this.resourcePath = resourcePath;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // GhCli
 // ---------------------------------------------------------------------------
@@ -268,7 +295,9 @@ export class GhCli {
    * @param endpoint - API endpoint path (e.g. `/repos/owner/repo`)
    * @param options - HTTP method, request body, jq filter, silent flag
    * @returns Parsed JSON response
-   * @throws GhApiError on non-success status
+   * @throws GhNotFoundError on 404
+   * @throws GhRateLimitError on 403 rate limit exceeded
+   * @throws GhApiError on other non-success status
    */
   async api<T = unknown>(
     endpoint: string,
@@ -304,11 +333,25 @@ export class GhCli {
       const statusMatch = result.stderr.match(/HTTP (\d{3})/);
       const status = statusMatch ? parseInt(statusMatch[1], 10) : undefined;
 
+      // Detect specialized error types
+      if (status === 404) {
+        throw new GhNotFoundError(endpoint);
+      }
+      if (status === 403 || result.stderr.toLowerCase().includes("rate limit")) {
+        // Try to extract retry-after seconds from gh error message
+        const retryMatch = result.stderr.match(/retry after (\d+) seconds?/i);
+        const retryAfter = retryMatch ? parseInt(retryMatch[1]!, 10) : 3600;
+        throw new GhRateLimitError(
+          `GitHub API rate limit exceeded. ${result.stderr || "Retry after " + retryAfter + " seconds."}`,
+          retryAfter,
+        );
+      }
+
       throw new GhApiError(
         `GitHub API error for '${endpoint}': ${result.stderr || `Exit code ${result.exitCode}`}`,
         result.stderr,
         result.exitCode,
-        status
+        status,
       );
     }
 
@@ -354,4 +397,314 @@ export class GhCli {
       fullName: data.full_name,
     };
   }
+
+  // ---------------------------------------------------------------------------
+  // Issue CRUD (built on top of api())
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Get a single issue by number.
+   *
+   * @throws GhNotFoundError if the issue does not exist
+   * @throws GhRateLimitError on rate limit
+   */
+  async getIssue(owner: string, repo: string, issueNumber: number): Promise<GitHubIssue> {
+    return this.api<GitHubIssue>(
+      `/repos/${owner}/${repo}/issues/${issueNumber}`,
+    );
+  }
+
+  /**
+   * List issues for a repository.
+   *
+   * @param owner - Repository owner
+   * @param repo - Repository name
+   * @param options - Filter options (labels, milestone, assignee, state, since)
+   * @returns Array of GitHub issues (excludes pull requests)
+   */
+  async listIssues(
+    owner: string,
+    repo: string,
+    options: ListIssuesOptions = {},
+  ): Promise<GitHubIssue[]> {
+    const params = new URLSearchParams();
+    if (options.labels) params.set("labels", options.labels);
+    if (options.milestone) params.set("milestone", options.milestone);
+    if (options.assignee) params.set("assignee", options.assignee);
+    if (options.state) params.set("state", options.state);
+    if (options.since) params.set("since", options.since);
+    params.set("per_page", "100");
+
+    const query = params.toString() ? `?${params.toString()}` : "";
+    return this.api<GitHubIssue[]>(
+      `/repos/${owner}/${repo}/issues${query}`,
+    );
+  }
+
+  /**
+   * Create a new issue.
+   *
+   * @param owner - Repository owner
+   * @param repo - Repository name
+   * @param options - Issue creation options
+   * @returns The created GitHub issue
+   */
+  async createIssue(
+    owner: string,
+    repo: string,
+    options: CreateIssueOptions,
+  ): Promise<GitHubIssue> {
+    const body: Record<string, unknown> = {
+      title: options.title,
+    };
+    if (options.body) body.body = options.body;
+    if (options.labels && options.labels.length > 0) body.labels = options.labels;
+    if (options.milestone) body.milestone = options.milestone;
+    if (options.assignee && options.assignee.length > 0) body.assignees = options.assignee;
+
+    return this.api<GitHubIssue>(
+      `/repos/${owner}/${repo}/issues`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+  }
+
+  /**
+   * Update an existing issue.
+   *
+   * @param owner - Repository owner
+   * @param repo - Repository name
+   * @param issueNumber - Issue number to update
+   * @param options - Fields to update
+   * @returns The updated GitHub issue
+   */
+  async updateIssue(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    options: UpdateIssueOptions,
+  ): Promise<GitHubIssue> {
+    const body: Record<string, unknown> = {};
+    if (options.title !== undefined) body.title = options.title;
+    if (options.body !== undefined) body.body = options.body;
+    if (options.state !== undefined) body.state = options.state;
+    if (options.labels !== undefined) body.labels = options.labels;
+    if (options.milestone !== undefined) body.milestone = options.milestone;
+    if (options.assignees !== undefined) body.assignees = options.assignees;
+
+    return this.api<GitHubIssue>(
+      `/repos/${owner}/${repo}/issues/${issueNumber}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      },
+    );
+  }
+
+  /**
+   * List all labels for a repository.
+   */
+  async listLabels(owner: string, repo: string): Promise<GitHubLabel[]> {
+    return this.api<GitHubLabel[]>(`/repos/${owner}/${repo}/labels`);
+  }
+
+  /**
+   * List all milestones for a repository.
+   */
+  async listMilestones(owner: string, repo: string): Promise<GitHubMilestone[]> {
+    return this.api<GitHubMilestone[]>(
+      `/repos/${owner}/${repo}/milestones?per_page=100`,
+    );
+  }
+
+  /**
+   * Get a GitHub user by username.
+   *
+   * @throws GhNotFoundError if the user does not exist
+   */
+  async getUser(username: string): Promise<GitHubUser> {
+    return this.api<GitHubUser>(`/users/${username}`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Webhook operations (TRD-037, TRD-038)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Create a webhook for a repository.
+   * Requires admin:repo_hook or repo scope.
+   */
+  async createWebhook(
+    owner: string,
+    repo: string,
+    webhookUrl: string,
+    secret: string,
+  ): Promise<{ id: number; url: string }> {
+    const body = {
+      name: "web",
+      active: true,
+      events: ["issues", "pull_request"],
+      config: {
+        url: webhookUrl,
+        content_type: "json",
+        secret,
+        insecure_ssl: "0",
+      },
+    };
+    return this.api<{ id: number; url: string }>(
+      `/repos/${owner}/${repo}/hooks`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  }
+
+  /**
+   * List webhooks for a repository.
+   */
+  async listWebhooks(owner: string, repo: string): Promise<Array<{ id: number; url: string; active: boolean }>> {
+    return this.api<
+      Array<{ id: number; url: string; active: boolean }>
+    >(`/repos/${owner}/${repo}/hooks`);
+  }
+
+  /**
+   * Delete a webhook by ID.
+   */
+  async deleteWebhook(owner: string, repo: string, webhookId: number): Promise<void> {
+    await this.api<void>(
+      `/repos/${owner}/${repo}/hooks/${webhookId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Issue Linking (TRD-041)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Link an issue to a pull request via the Issue Links API.
+   * Creates a "connects" relationship from the PR to the issue.
+   * Requires a PR branch that references the issue.
+   */
+  async linkIssueToPullRequest(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    prNumber: number,
+  ): Promise<void> {
+    await this.api<void>(
+      `/repos/${owner}/${repo}/issues/${issueNumber}/links`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          issue: {
+            number: issueNumber,
+          },
+          pull_request: {
+            number: prNumber,
+          },
+        }),
+      },
+    );
+  }
+
+  /**
+   * Remove a link between an issue and a pull request.
+   */
+  async unlinkIssueFromPullRequest(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    relation: string,
+  ): Promise<void> {
+    await this.api<void>(
+      `/repos/${owner}/${repo}/issues/${issueNumber}/links/${relation}`,
+      { method: "DELETE" },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GitHub API types (exported at module level)
+// ---------------------------------------------------------------------------
+
+/** GitHub issue as returned by the API. */
+export interface GitHubIssue {
+  id: number;
+  number: number;
+  title: string;
+  body: string | null;
+  state: "open" | "closed";
+  user: { login: string; id: number };
+  labels: Array<{ id: number; name: string; color: string }>;
+  assignees: Array<{ login: string; id: number }>;
+  milestone: { id: number; title: string; number: number } | null;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+  url: string;
+  html_url: string;
+  /** Present on single-issue GET responses (not on list responses). */
+  repository_url?: string;
+}
+
+/** GitHub label as returned by the API. */
+export interface GitHubLabel {
+  id: number;
+  name: string;
+  color: string;
+  description: string | null;
+}
+
+/** GitHub milestone as returned by the API. */
+export interface GitHubMilestone {
+  id: number;
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  description: string | null;
+  open_issues: number;
+  closed_issues: number;
+}
+
+/** GitHub user as returned by the API. */
+export interface GitHubUser {
+  login: string;
+  id: number;
+  avatar_url: string;
+  html_url: string;
+}
+
+/** Options for listing issues. */
+export interface ListIssuesOptions {
+  /** Filter by label(s), comma-separated or repeated. */
+  labels?: string;
+  /** Filter by milestone number or title. */
+  milestone?: string;
+  /** Filter by assignee username. */
+  assignee?: string;
+  /** Filter by state: open, closed, all. */
+  state?: "open" | "closed" | "all";
+  /** Filter issues updated after this ISO timestamp. */
+  since?: string;
+}
+
+/** Options for creating an issue. */
+export interface CreateIssueOptions {
+  title: string;
+  body?: string;
+  labels?: string[];
+  milestone?: string;
+  assignee?: string[];
+}
+
+/** Options for updating an issue. */
+export interface UpdateIssueOptions {
+  title?: string;
+  body?: string;
+  state?: "open" | "closed";
+  labels?: string[];
+  milestone?: string;
+  assignees?: string[];
 }

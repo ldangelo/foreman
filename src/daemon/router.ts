@@ -568,6 +568,448 @@ const runsRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// GitHub router (TRD-009)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a "owner/repo" string into owner and repo.
+ * Accepts "owner/repo" or "owner/repo/subpath" (extra parts discarded).
+ */
+function parseRepoKey(repoKey: string): { owner: string; repo: string } {
+  const parts = repoKey.trim().split("/");
+  if (parts.length < 2) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Invalid repo key '${repoKey}'. Expected format: owner/repo`,
+    });
+  }
+  return { owner: parts[0]!, repo: parts[1]! };
+}
+
+const githubRouter = t.router({
+  // --- Issue read operations ------------------------------------------------
+
+  /**
+   * Get a single GitHub issue.
+   * GET /repos/{owner}/{repo}/issues/{issue_number}
+   */
+  getIssue: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+        issueNumber: z.number().int().positive(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const issue = await ctx.gh.getIssue(input.owner, input.repo, input.issueNumber);
+      return issue;
+    }),
+
+  /**
+   * List issues for a repository with optional filters.
+   * GET /repos/{owner}/{repo}/issues
+   */
+  listIssues: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+        labels: z.string().optional(),
+        milestone: z.string().optional(),
+        assignee: z.string().optional(),
+        state: z.enum(["open", "closed", "all"]).optional(),
+        since: z.string().datetime().optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const issues = await ctx.gh.listIssues(input.owner, input.repo, {
+        labels: input.labels,
+        milestone: input.milestone,
+        assignee: input.assignee,
+        state: input.state,
+        since: input.since,
+      });
+      return issues;
+    }),
+
+  /**
+   * List repository labels.
+   * GET /repos/{owner}/{repo}/labels
+   */
+  listLabels: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const labels = await ctx.gh.listLabels(input.owner, input.repo);
+      return labels;
+    }),
+
+  /**
+   * List repository milestones.
+   * GET /repos/{owner}/{repo}/milestones
+   */
+  listMilestones: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const milestones = await ctx.gh.listMilestones(input.owner, input.repo);
+      return milestones;
+    }),
+
+  /**
+   * Get a GitHub user.
+   * GET /users/{username}
+   */
+  getUser: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        username: z.string().min(1),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      try {
+        const user = await ctx.gh.getUser(input.username);
+        return user;
+      } catch (err) {
+        if (err instanceof GhError) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: `GitHub user '${input.username}' not found`,
+          });
+        }
+        throw err;
+      }
+    }),
+
+  // --- Repo configuration ---------------------------------------------------
+
+  /**
+   * Configure a GitHub repository for a project.
+   * POST/PUT github_repos (upsert)
+   */
+  upsertRepo: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+        authType: z.enum(["pat", "app"]).optional(),
+        authConfig: z.record(z.string(), z.unknown()).optional(),
+        defaultLabels: z.array(z.string()).optional(),
+        autoImport: z.boolean().optional(),
+        webhookSecret: z.string().optional(),
+        webhookEnabled: z.boolean().optional(),
+        syncStrategy: z.enum(["foreman-wins", "github-wins", "manual", "last-write-wins"]).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const row = await ctx.adapter.upsertGithubRepo({
+        projectId: input.projectId,
+        owner: input.owner,
+        repo: input.repo,
+        authType: input.authType,
+        authConfig: input.authConfig,
+        defaultLabels: input.defaultLabels,
+        autoImport: input.autoImport,
+        webhookSecret: input.webhookSecret ?? null,
+        webhookEnabled: input.webhookEnabled,
+        syncStrategy: input.syncStrategy,
+      });
+      return row;
+    }),
+
+  /**
+   * List configured GitHub repos for a project.
+   */
+  listRepos: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.listGithubRepos(input.projectId);
+    }),
+
+  /**
+   * Get a single GitHub repo configuration.
+   */
+  getRepo: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const row = await ctx.adapter.getGithubRepo(input.projectId, input.owner, input.repo);
+      if (!row) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `GitHub repo ${input.owner}/${input.repo} not configured`,
+        });
+      }
+      return row;
+    }),
+
+  /**
+   * Delete a GitHub repo configuration.
+   */
+  deleteRepo: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        repoId: z.string().uuid(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const deleted = await ctx.adapter.deleteGithubRepo(input.repoId);
+      if (!deleted) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `GitHub repo ${input.repoId} not found`,
+        });
+      }
+      return { success: true };
+    }),
+
+  // --- Sync event audit log ------------------------------------------------
+
+  /**
+   * List sync events for a project.
+   */
+  listSyncEvents: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        externalId: z.string().optional(),
+        limit: z.number().int().positive().max(1000).optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.listGithubSyncEvents(
+        input.projectId,
+        input.externalId,
+        input.limit ?? 100,
+      );
+    }),
+
+  // --- Sync operations -----------------------------------------------------
+
+  /**
+   * Bi-directionally sync GitHub issues with Foreman tasks.
+   *
+   * Modes:
+   * - `push`: Push Foreman task changes to GitHub issues
+   * - `pull`: Pull GitHub issue changes to Foreman tasks
+   * - `bidirectional`: Both directions
+   * - `create`: Create GitHub issues from Foreman tasks without external_id
+   */
+  syncIssues: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+        mode: z.enum(["push", "pull", "bidirectional", "create"]),
+        strategy: z
+          .enum(["foreman-wins", "github-wins", "manual", "last-write-wins"])
+          .optional(),
+        auto: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      // Fetch repo config
+      const repoConfig = await ctx.adapter.getGithubRepo(
+        input.projectId,
+        input.owner,
+        input.repo,
+      );
+      if (!repoConfig) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `GitHub repo ${input.owner}/${input.repo} not configured. Run 'foreman issue configure --repo ${input.owner}/${input.repo}' first.`,
+        });
+      }
+
+      const strategy = input.strategy ?? repoConfig.sync_strategy;
+      let pushed = 0;
+      let pulled = 0;
+      let created = 0;
+      let conflicts = 0;
+
+      if (input.mode === "pull" || input.mode === "bidirectional") {
+        // Pull: sync GitHub issues -> Foreman tasks
+        const githubIssues = await ctx.gh.listIssues(input.owner, input.repo, {
+          state: "all",
+        });
+
+        for (const ghIssue of githubIssues) {
+          const externalId = `github:${input.owner}/${input.repo}#${ghIssue.number}`;
+          const existing = await ctx.adapter.listTasks(input.projectId, {
+            externalId,
+            limit: 1,
+          });
+
+          let hasConflict = false;
+
+          if (existing.length > 0) {
+            // Update existing task
+            const task = existing[0]!;
+            // Check for conflict
+            hasConflict =
+              ghIssue.title !== task.title ||
+              ghIssue.body !== (task.description ?? null);
+            if (hasConflict) {
+              conflicts++;
+              if (strategy === "github-wins" || strategy === "last-write-wins") {
+                await ctx.adapter.updateTaskGitHubFields(input.projectId, task.id, {
+                  title: ghIssue.title,
+                  description: ghIssue.body,
+                  state: ghIssue.state,
+                  lastSyncAt: new Date().toISOString(),
+                });
+              }
+            } else if (strategy === "foreman-wins") {
+              // Skip — keep Foreman state
+            }
+            // manual: record conflict but don't auto-resolve
+            pulled++;
+          } else {
+            // Create new task from GitHub issue
+            // (Import is handled by `foreman issue import`)
+          }
+
+          // Record sync event
+          await ctx.adapter.recordGithubSyncEvent({
+            projectId: input.projectId,
+            externalId,
+            eventType: "sync_pull",
+            direction: "from_github",
+            githubPayload: {
+              title: ghIssue.title,
+              body: ghIssue.body,
+              state: ghIssue.state,
+            },
+            conflictDetected: hasConflict,
+            resolvedWith:
+              strategy === "github-wins" || strategy === "last-write-wins"
+                ? strategy === "github-wins"
+                  ? "github"
+                  : "last-write-wins"
+                : undefined,
+          });
+        }
+
+        // Update last sync timestamp
+        await ctx.adapter.updateGithubRepoLastSync(repoConfig.id);
+      }
+
+      if (input.mode === "push" || input.mode === "bidirectional") {
+        // Push: sync Foreman tasks -> GitHub issues
+        const foremanTasks = await ctx.adapter.listTasksWithExternalId(
+          input.projectId,
+        );
+
+        for (const task of foremanTasks) {
+          if (
+            task.external_repo !==
+            `${input.owner}/${input.repo}`
+          ) {
+            continue; // Skip tasks for other repos
+          }
+          const issueNumber = task.github_issue_number;
+          if (!issueNumber) continue;
+
+          try {
+            const ghIssue = await ctx.gh.updateIssue(
+              input.owner,
+              input.repo,
+              issueNumber,
+              {
+                title: task.title,
+                body: task.description ?? undefined,
+              },
+            );
+
+            // Record sync event
+            await ctx.adapter.recordGithubSyncEvent({
+              projectId: input.projectId,
+              externalId: `github:${input.owner}/${input.repo}#${issueNumber}`,
+              eventType: "sync_push",
+              direction: "to_github",
+              foremanChanges: {
+                title: task.title,
+                description: task.description,
+              },
+            });
+            pushed++;
+          } catch {
+            // Issue may have been closed on GitHub
+          }
+        }
+
+        await ctx.adapter.updateGithubRepoLastSync(repoConfig.id);
+      }
+
+      if (input.mode === "create") {
+        // Create: create GitHub issues from Foreman tasks without external_id
+        const allTasks = await ctx.adapter.listTasks(input.projectId);
+        const foremanOnlyTasks = allTasks.filter(
+          (t) => t.external_id === null || !t.external_id.startsWith("github:"),
+        );
+
+        for (const task of foremanOnlyTasks) {
+          const ghIssue = await ctx.gh.createIssue(input.owner, input.repo, {
+            title: task.title,
+            body: task.description ?? undefined,
+          });
+
+          const externalId = `github:${input.owner}/${input.repo}#${ghIssue.number}`;
+          await ctx.adapter.updateTaskGitHubFields(input.projectId, task.id, {
+            // @ts-expect-error adapter uses snake_case internal names
+            external_id: externalId,
+            syncEnabled: true,
+          });
+
+          await ctx.adapter.recordGithubSyncEvent({
+            projectId: input.projectId,
+            externalId,
+            eventType: "sync_create",
+            direction: "to_github",
+            githubPayload: { number: ghIssue.number, title: ghIssue.title },
+          });
+          created++;
+        }
+      }
+
+      return {
+        mode: input.mode,
+        strategy,
+        pushed,
+        pulled,
+        created,
+        conflicts,
+      };
+    }),
+});
+
 const mailRouter = t.router({
   send: t.procedure
     .input(
@@ -955,6 +1397,7 @@ export const appRouter = t.router({
   tasks: tasksRouter,
   runs: runsRouter,
   mail: mailRouter,
+  github: githubRouter,
 });
 
 export type AppRouter = typeof appRouter;

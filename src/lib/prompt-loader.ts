@@ -2,10 +2,13 @@
  * Unified prompt loader.
  *
  * Single resolution chain for agent phase prompts:
- *   1. ~/.foreman/prompts/{workflow}/{phase}.md              (workflow-specific global prompt)
- *   2. ~/.foreman/prompts/default/{phase}.md                 (shared global fallback)
- *   3. ~/.foreman/prompts/{phase}.md                         (legacy flat global override)
- *   4. Error — no silent fallback to bundled defaults at runtime
+ *   1. {projectRoot}/.foreman/prompts/{workflow}/{phase}.md  (workflow-specific project override)
+ *   2. {projectRoot}/.foreman/prompts/default/{phase}.md     (shared project fallback)
+ *   3. {projectRoot}/.foreman/prompts/{phase}.md             (legacy flat project override)
+ *   4. ~/.foreman/prompts/{workflow}/{phase}.md              (workflow-specific global prompt)
+ *   5. ~/.foreman/prompts/default/{phase}.md                 (shared global fallback)
+ *   6. ~/.foreman/prompts/{phase}.md                         (legacy flat global override)
+ *   7. Error — no silent fallback to bundled defaults at runtime
  *
  * Bundled defaults live in src/defaults/prompts/{workflow}/{phase}.md and are
  * installed into a project by `foreman init` (or `foreman doctor --fix`).
@@ -101,10 +104,13 @@ export function renderTemplate(
  * Load and interpolate a phase prompt using the unified resolution chain.
  *
  * Resolution order:
- *   1. ~/.foreman/prompts/{workflow}/{phase}.md
- *   2. ~/.foreman/prompts/default/{phase}.md
- *   3. ~/.foreman/prompts/{phase}.md
- *   4. Throws PromptNotFoundError
+ *   1. {projectRoot}/.foreman/prompts/{workflow}/{phase}.md
+ *   2. {projectRoot}/.foreman/prompts/default/{phase}.md
+ *   3. {projectRoot}/.foreman/prompts/{phase}.md
+ *   4. ~/.foreman/prompts/{workflow}/{phase}.md
+ *   5. ~/.foreman/prompts/default/{phase}.md
+ *   6. ~/.foreman/prompts/{phase}.md
+ *   7. Throws PromptNotFoundError
  *
  * @param phase       - Phase name: "explorer" | "developer" | "qa" | "reviewer" | ...
  * @param vars        - Template variables for {{placeholder}} substitution.
@@ -118,6 +124,21 @@ export function loadPrompt(
   workflow: string,
   projectRoot: string,
 ): string {
+  const projectPromptCandidates = [
+    join(projectRoot, ".foreman", "prompts", workflow, `${phase}.md`),
+    join(projectRoot, ".foreman", "prompts", "default", `${phase}.md`),
+    join(projectRoot, ".foreman", "prompts", `${phase}.md`),
+  ];
+
+  for (const projectPromptPath of projectPromptCandidates) {
+    if (!existsSync(projectPromptPath)) continue;
+    try {
+      return renderTemplate(readFileSync(projectPromptPath, "utf-8"), vars);
+    } catch {
+      // Fall through to next tier/candidate
+    }
+  }
+
   const globalPromptCandidates = [
     getForemanHomePath("prompts", workflow, `${phase}.md`),
     getForemanHomePath("prompts", "default", `${phase}.md`),
