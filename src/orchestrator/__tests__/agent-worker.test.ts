@@ -198,8 +198,9 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
   it("routes single-agent progress and terminal observability through registered-aware helpers", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
     expect(source).toContain('import { writeSingleAgentProgress, writeSingleAgentTerminalEvent } from "./agent-worker-single-agent-observability.js";');
-    expect(source).toContain('const registeredReadStore = databaseUrl ? pgStore : undefined;');
-    expect(source).toContain('await runPipeline(config, store, localStore, logFile, notifyClient, agentMailClient, registeredReadStore);');
+    expect(source).toContain('const registeredProjectId = await resolveRegisteredProjectIdForPath(storeProjectPath, databaseUrl);');
+    expect(source).toContain('const registeredReadStore = registeredProjectId && pgStore ? pgStore : undefined;');
+    expect(source).toContain('await runPipeline(config, store, localStore, logFile, notifyClient, agentMailClient, registeredReadStore, registeredProjectId);');
     expect(source).toContain('let progressFlushTail: Promise<void> = Promise.resolve();');
     expect(source).toContain('progressFlushTail = progressFlushTail.then(() => writeSingleAgentProgress(localStore, registeredReadStore, runId, progress, log));');
     expect(source).toContain('await waitForProgressFlush();');

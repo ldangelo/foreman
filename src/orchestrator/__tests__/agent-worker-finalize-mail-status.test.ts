@@ -57,15 +57,15 @@ describe("agent-worker finalize mail status handling", () => {
 
   it("routes normal registered finalize terminal events Postgres-first with local fallback", () => {
     expect(source).toContain('const writeFinalizeTerminalEvent = async (');
-    expect(source).toContain('if (projectId && registeredReadStore) {');
-    expect(source).toContain('await registeredReadStore.logEvent(projectId, eventType, data, runId);');
+    expect(source).toContain('if (registeredProjectId && registeredReadStore) {');
+    expect(source).toContain('await registeredReadStore.logEvent(registeredProjectId, eventType, data, runId);');
     expect(source).toContain('Registered terminal event write failed (non-fatal); falling back to local store');
     expect(source).toContain('store.logEvent(projectId, eventType, data, runId);');
     expect(source).toContain('await writeFinalizeTerminalEvent(finalizeSucceeded ? "complete" : (finalizeRetryable ? "stuck" : "fail"), {');
   });
 
   it("threads registered project context into Refinery during finalize PR creation", () => {
-    expect(source).toContain('const registeredRefineryOptions = config.projectId && registeredReadStore');
+    expect(source).toContain('const registeredRefineryOptions = registeredProjectId && registeredReadStore');
     expect(source).toContain('new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend, registeredRefineryOptions);');
   });
 

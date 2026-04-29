@@ -37,7 +37,7 @@ describe("agent-worker.ts — merge queue handoff", () => {
   it("invokes immediate autoMerge after finalize enqueue for auto strategies", () => {
     expect(source).toContain("await autoMerge(");
     expect(source).toContain("Immediate merge drain result: merged=");
-    expect(source).toContain("registeredProjectId: config.projectId");
+    expect(source).toContain("registeredProjectId,");
     expect(source).toContain("readLookup: registeredAutoMergeReadStore");
   });
 
