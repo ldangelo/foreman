@@ -2,6 +2,12 @@ import { ForemanStore } from "../lib/store.js";
 import type { Run } from "../lib/store.js";
 import { PostgresStore } from "../lib/postgres-store.js";
 
+const TERMINAL_TASK_STATUS_BY_RUN_STATUS: Partial<Record<Run["status"], "failed" | "stuck" | "merged">> = {
+  failed: "failed",
+  stuck: "stuck",
+  merged: "merged",
+};
+
 export async function updateTerminalRunStatus(opts: {
   runId: string;
   projectId?: string;
@@ -12,6 +18,12 @@ export async function updateTerminalRunStatus(opts: {
     const pgStore = PostgresStore.forProject(opts.projectId);
     try {
       await pgStore.updateRun(opts.runId, opts.updates);
+      const linkedTaskStatus = opts.updates.status
+        ? TERMINAL_TASK_STATUS_BY_RUN_STATUS[opts.updates.status]
+        : undefined;
+      if (linkedTaskStatus) {
+        await pgStore.updateTaskStatusForRun(opts.runId, linkedTaskStatus);
+      }
       return;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

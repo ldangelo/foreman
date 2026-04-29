@@ -13,15 +13,17 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
-import { resolveProjectPathFromOptions } from "./project-task-support.js";
+import { ensureCliPostgresPool, resolveProjectPathFromOptions } from "./project-task-support.js";
 import {
   GhCli,
   GhRateLimitError,
   GhNotFoundError,
+  type GitHubLabelDefinition,
   type GitHubIssue,
 } from "../../lib/gh-cli.js";
 import {
   PostgresAdapter,
+  type GithubRepoRow,
   type UpsertGithubRepoInput,
 } from "../../lib/db/postgres-adapter.js";
 
@@ -38,6 +40,7 @@ async function resolveProject(opts: {
   projectPath?: string;
 }): Promise<{ projectId: string; projectPath: string }> {
   const projectPath = await resolveProjectPathFromOptions(opts);
+  ensureCliPostgresPool(projectPath);
   const adapter = new PostgresAdapter();
   const projects = await adapter.listProjects();
   const project = projects.find((p) => p.path === projectPath);
@@ -94,6 +97,131 @@ function parseRepoKey(repoKey: string): { owner: string; repo: string } {
     );
   }
   return { owner: parts[0]!, repo: parts[1]! };
+}
+
+export const REQUIRED_FOREMAN_GITHUB_LABELS: GitHubLabelDefinition[] = [
+  {
+    name: "foreman",
+    color: "0052cc",
+    description: "Import this issue directly into Foreman ready",
+  },
+  {
+    name: "foreman:dispatch",
+    color: "5319e7",
+    description: "Mark this issue ready for immediate Foreman dispatch",
+  },
+  {
+    name: "foreman:skip",
+    color: "b60205",
+    description: "Prevent Foreman from importing this issue",
+  },
+  {
+    name: "foreman:priority:0",
+    color: "b60205",
+    description: "Foreman priority P0 (critical)",
+  },
+  {
+    name: "foreman:priority:1",
+    color: "d93f0b",
+    description: "Foreman priority P1 (high)",
+  },
+  {
+    name: "foreman:priority:2",
+    color: "fbca04",
+    description: "Foreman priority P2 (medium)",
+  },
+  {
+    name: "foreman:priority:3",
+    color: "0e8a16",
+    description: "Foreman priority P3 (low)",
+  },
+  {
+    name: "foreman:priority:4",
+    color: "cfd3d7",
+    description: "Foreman priority P4 (backlog)",
+  },
+];
+
+export async function ensureRequiredGithubLabels(
+  gh: Pick<GhCli, "ensureLabels">,
+  owner: string,
+  repo: string,
+) {
+  return gh.ensureLabels(owner, repo, REQUIRED_FOREMAN_GITHUB_LABELS);
+}
+
+export function buildGithubRepoConfigInput(
+  projectId: string,
+  owner: string,
+  repo: string,
+  opts: {
+    autoImport?: boolean;
+    disableAutoImport?: boolean;
+    syncStrategy?: string;
+    label?: string | string[];
+  },
+  existing?: GithubRepoRow | null,
+): UpsertGithubRepoInput {
+  const autoImport = opts.disableAutoImport
+    ? false
+    : opts.autoImport === true
+      ? true
+      : existing?.auto_import ?? false;
+
+  const syncStrategy = (opts.syncStrategy as UpsertGithubRepoInput["syncStrategy"] | undefined)
+    ?? existing?.sync_strategy
+    ?? "github-wins";
+
+  const defaultLabels = opts.label
+    ? (Array.isArray(opts.label) ? opts.label : [opts.label])
+    : existing?.default_labels ?? [];
+
+  return {
+    id: existing?.id,
+    projectId,
+    owner,
+    repo,
+    authType: existing?.auth_type,
+    authConfig: existing?.auth_config,
+    defaultLabels,
+    autoImport,
+    webhookSecret: existing?.webhook_secret ?? null,
+    webhookEnabled: existing?.webhook_enabled ?? false,
+    syncStrategy,
+    lastSyncAt: existing?.last_sync_at ?? null,
+  };
+}
+
+export function mergeGithubRepoConfigInput(
+  projectId: string,
+  owner: string,
+  repo: string,
+  existing: GithubRepoRow | null | undefined,
+  overrides: Partial<UpsertGithubRepoInput>,
+): UpsertGithubRepoInput {
+  return {
+    id: existing?.id,
+    projectId,
+    owner,
+    repo,
+    authType: overrides.authType ?? existing?.auth_type,
+    authConfig: overrides.authConfig ?? existing?.auth_config,
+    defaultLabels: overrides.defaultLabels ?? existing?.default_labels ?? [],
+    autoImport: overrides.autoImport ?? existing?.auto_import ?? false,
+    webhookSecret:
+      overrides.webhookSecret !== undefined
+        ? overrides.webhookSecret
+        : existing?.webhook_secret ?? null,
+    webhookEnabled:
+      overrides.webhookEnabled !== undefined
+        ? overrides.webhookEnabled
+        : existing?.webhook_enabled ?? false,
+    syncStrategy: overrides.syncStrategy ?? existing?.sync_strategy ?? "github-wins",
+    lastSyncAt:
+      overrides.lastSyncAt !== undefined
+        ? overrides.lastSyncAt
+        : existing?.last_sync_at ?? null,
+  };
 }
 
 function handleGhError(err: unknown, action: string): void {
@@ -217,8 +345,10 @@ issueCommand.addCommand(
   new Command("configure")
     .description("Configure a GitHub repository for sync")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
-    .option("--auto-import", "Enable auto-import for new issues", false)
-    .option("--sync-strategy <strategy>", "Sync strategy", "github-wins")
+    .option("--auto-import", "Enable auto-import for new issues")
+    .option("--disable-auto-import", "Disable auto-import for new issues")
+    .option("--create-labels", "Create or update required Foreman GitHub labels")
+    .option("--sync-strategy <strategy>", "Sync strategy")
     .option("--label <label>", "Default label to apply (can be repeated)", undefined)
     .option("--project <name>", "Foreman project name")
     .option("--project-path <path>", "Foreman project path")
@@ -227,6 +357,8 @@ issueCommand.addCommand(
         opts: {
           repo: string;
           autoImport?: boolean;
+          disableAutoImport?: boolean;
+          createLabels?: boolean;
           syncStrategy?: string;
           label?: string | string[];
           project?: string;
@@ -236,17 +368,20 @@ issueCommand.addCommand(
         const { projectId } = await resolveProject(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
         const adapter = new PostgresAdapter();
+        const gh = new GhCli();
+        const existing = await adapter.getGithubRepo(projectId, owner, repo);
 
-        const input: UpsertGithubRepoInput = {
-          projectId,
-          owner,
-          repo,
-          autoImport: opts.autoImport,
-          syncStrategy: opts.syncStrategy as UpsertGithubRepoInput["syncStrategy"],
-          defaultLabels: opts.label ? (Array.isArray(opts.label) ? opts.label : [opts.label]) : [],
-        };
+        const input = buildGithubRepoConfigInput(projectId, owner, repo, opts, existing);
 
         try {
+          let labelResult:
+            | { created: string[]; updated: string[]; unchanged: string[] }
+            | undefined;
+          if (opts.createLabels) {
+            await gh.checkAuth();
+            labelResult = await ensureRequiredGithubLabels(gh, owner, repo);
+          }
+
           const row = await adapter.upsertGithubRepo(input);
           console.log(
             chalk.green(`\n  Configured ${owner}/${repo} for project ${projectId}\n`),
@@ -256,6 +391,17 @@ issueCommand.addCommand(
           console.log(
             `  ${chalk.dim("Default labels:")} ${chalk.yellow(row.default_labels.join(", ") || "(none)")}`,
           );
+          if (labelResult) {
+            console.log(
+              `  ${chalk.dim("Labels created:")} ${chalk.cyan(String(labelResult.created.length))}`,
+            );
+            console.log(
+              `  ${chalk.dim("Labels updated:")} ${chalk.cyan(String(labelResult.updated.length))}`,
+            );
+            console.log(
+              `  ${chalk.dim("Labels unchanged:")} ${chalk.cyan(String(labelResult.unchanged.length))}`,
+            );
+          }
           console.log();
         } catch (err) {
           console.error(chalk.red(`Error configuring repo: ${err instanceof Error ? err.message : String(err)}`));
@@ -589,13 +735,12 @@ issueCommand.addCommand(
             // Update repo config
             const repoConfig = await adapter.getGithubRepo(projectId, owner, repo);
             if (repoConfig) {
-              await adapter.upsertGithubRepo({
-                projectId,
-                owner,
-                repo,
-                webhookSecret: null,
-                webhookEnabled: false,
-              });
+              await adapter.upsertGithubRepo(
+                mergeGithubRepoConfigInput(projectId, owner, repo, repoConfig, {
+                  webhookSecret: null,
+                  webhookEnabled: false,
+                }),
+              );
             }
 
             console.log(
@@ -625,13 +770,12 @@ issueCommand.addCommand(
               );
 
               // Store secret in database
-              await adapter.upsertGithubRepo({
-                projectId,
-                owner,
-                repo,
-                webhookSecret: newSecret,
-                webhookEnabled: true,
-              });
+              await adapter.upsertGithubRepo(
+                mergeGithubRepoConfigInput(projectId, owner, repo, repoConfig, {
+                  webhookSecret: newSecret,
+                  webhookEnabled: true,
+                }),
+              );
 
               console.log(
                 chalk.green(`\n  Enabled webhook for ${owner}/${repo}\n`),
@@ -665,13 +809,12 @@ issueCommand.addCommand(
               secret,
             );
 
-            await adapter.upsertGithubRepo({
-              projectId,
-              owner,
-              repo,
-              webhookSecret: secret,
-              webhookEnabled: true,
-            });
+            await adapter.upsertGithubRepo(
+              mergeGithubRepoConfigInput(projectId, owner, repo, repoConfig, {
+                webhookSecret: secret,
+                webhookEnabled: true,
+              }),
+            );
 
             console.log(
               chalk.green(`\n  Enabled webhook for ${owner}/${repo}\n`),

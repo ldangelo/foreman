@@ -106,6 +106,10 @@ export class PostgresStore implements IStore {
     await this.adapter.updateTask(this.projectId, taskId, { status: newStatus });
   }
 
+  async updateTaskStatusForRun(runId: string, newStatus: string): Promise<void> {
+    await this.adapter.updateTaskStatusForRun(this.projectId, runId, newStatus);
+  }
+
   async getTaskById(id: string): Promise<NativeTask | null> {
     const task = await this.adapter.getTask(this.projectId, id);
     return (task as unknown as NativeTask) ?? null;

@@ -3,9 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const localUpdateRun = vi.fn();
 const localClose = vi.fn();
 const pgUpdateRun = vi.fn();
+const pgUpdateTaskStatusForRun = vi.fn();
 const pgClose = vi.fn();
 const localForProject = vi.fn(() => ({ updateRun: localUpdateRun, close: localClose }));
-const pgForProject = vi.fn(() => ({ updateRun: pgUpdateRun, close: pgClose }));
+const pgForProject = vi.fn(() => ({
+  updateRun: pgUpdateRun,
+  updateTaskStatusForRun: pgUpdateTaskStatusForRun,
+  close: pgClose,
+}));
 const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
 vi.mock("../../lib/store.js", () => ({
@@ -27,6 +32,7 @@ describe("updateTerminalRunStatus", () => {
     localUpdateRun.mockReset();
     localClose.mockReset();
     pgUpdateRun.mockReset();
+    pgUpdateTaskStatusForRun.mockReset();
     pgClose.mockReset();
     localForProject.mockClear();
     pgForProject.mockClear();
@@ -52,22 +58,42 @@ describe("updateTerminalRunStatus", () => {
     expect(localClose).not.toHaveBeenCalled();
   });
 
+  it.each(["failed", "merged"] as const)(
+    "syncs registered task status when a run reaches '%s'",
+    async (status) => {
+      await updateTerminalRunStatus({
+        runId: `run-${status}`,
+        projectId: `proj-${status}`,
+        projectPath: `/tmp/project-${status}`,
+        updates: { status, completed_at: "2026-04-25T00:01:00.000Z" },
+      });
+
+      expect(pgUpdateRun).toHaveBeenCalledWith(`run-${status}`, {
+        status,
+        completed_at: "2026-04-25T00:01:00.000Z",
+      });
+      expect(pgUpdateTaskStatusForRun).toHaveBeenCalledWith(`run-${status}`, status);
+      expect(localForProject).not.toHaveBeenCalled();
+    },
+  );
+
   it("falls back to local store when Postgres update fails and stays non-fatal", async () => {
     pgUpdateRun.mockRejectedValueOnce(new Error("pg down"));
 
     await expect(updateTerminalRunStatus({
-      runId: "run-2",
-      projectId: "proj-2",
-      projectPath: "/tmp/project-2",
+      runId: "run-3",
+      projectId: "proj-3",
+      projectPath: "/tmp/project-3",
       updates: { status: "failed", completed_at: "2026-04-25T00:01:00.000Z" },
     })).resolves.toBeUndefined();
 
-    expect(pgForProject).toHaveBeenCalledWith("proj-2");
-    expect(localForProject).toHaveBeenCalledWith("/tmp/project-2");
-    expect(localUpdateRun).toHaveBeenCalledWith("run-2", {
+    expect(pgForProject).toHaveBeenCalledWith("proj-3");
+    expect(localForProject).toHaveBeenCalledWith("/tmp/project-3");
+    expect(localUpdateRun).toHaveBeenCalledWith("run-3", {
       status: "failed",
       completed_at: "2026-04-25T00:01:00.000Z",
     });
+    expect(pgUpdateTaskStatusForRun).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
     expect(pgClose).toHaveBeenCalled();
     expect(localClose).toHaveBeenCalled();

@@ -143,12 +143,13 @@ export class ForemanDaemon {
     // 5. Webhook endpoint (TRD-061/062/063/064).
     // Reads FOREMAN_WEBHOOK_SECRET from env; skips if not set (daemon still starts).
     const webhookSecret = process.env.FOREMAN_WEBHOOK_SECRET;
+    const foremanLabel = process.env.FOREMAN_GITHUB_LABEL ?? "foreman";
     if (webhookSecret) {
       const { createContext: makeContext } = await import("./router.js");
       const ctx = await makeContext({ req: {} as never, res: {} as never });
       const webhookHandler = createWebhookHandler(
         { adapter: ctx.adapter, registry: ctx.registry },
-        { secret: webhookSecret },
+        { secret: webhookSecret, foremanLabel },
       );
       this.fastify.post("/webhook", webhookHandler);
       this.fastify.log.info("[ForemanDaemon] Webhook endpoint enabled at /webhook");

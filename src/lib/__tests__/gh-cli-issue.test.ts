@@ -11,6 +11,7 @@
 import { describe, it, expect } from "vitest";
 import {
   GhCli,
+  type GitHubLabelDefinition,
   GhNotInstalledError,
   GhNotAuthenticatedError,
   GhApiError,
@@ -99,6 +100,18 @@ describe("GhCli Issue extension API surface", () => {
 
   it("listLabels is a function", () => {
     expect(typeof gh.listLabels).toBe("function");
+  });
+
+  it("createLabel is a function", () => {
+    expect(typeof gh.createLabel).toBe("function");
+  });
+
+  it("updateLabel is a function", () => {
+    expect(typeof gh.updateLabel).toBe("function");
+  });
+
+  it("ensureLabels is a function", () => {
+    expect(typeof gh.ensureLabels).toBe("function");
   });
 
   it("listMilestones is a function", () => {
@@ -216,5 +229,78 @@ describe("GhCli constructor", () => {
   it("creates instance with custom gh path", () => {
     const gh = new GhCli({ ghPath: "/usr/local/bin/gh" });
     expect(gh).toBeDefined();
+  });
+});
+
+describe("GhCli.ensureLabels", () => {
+  it("creates missing labels, updates changed labels, and leaves matching labels unchanged", async () => {
+    const labels: GitHubLabelDefinition[] = [
+      { name: "foreman", color: "0052cc", description: "ready" },
+      { name: "foreman:dispatch", color: "5319e7", description: "dispatch" },
+      { name: "foreman:skip", color: "b60205", description: "skip" },
+    ];
+
+    class TestGhCli extends GhCli {
+      override async listLabels() {
+        return [
+          { id: 1, name: "foreman", color: "0052cc", description: "ready" },
+          { id: 2, name: "foreman:dispatch", color: "000000", description: "old" },
+        ];
+      }
+
+      override async createLabel(_owner: string, _repo: string, label: GitHubLabelDefinition) {
+        created.push(label.name);
+        return { id: 10, name: label.name, color: label.color, description: label.description } as GitHubLabel;
+      }
+
+      override async updateLabel(_owner: string, _repo: string, _currentName: string, label: GitHubLabelDefinition) {
+        updated.push(label.name);
+        return { id: 11, name: label.name, color: label.color, description: label.description } as GitHubLabel;
+      }
+    }
+
+    const created: string[] = [];
+    const updated: string[] = [];
+    const gh = new TestGhCli();
+
+    const result = await gh.ensureLabels("owner", "repo", labels);
+
+    expect(result.created).toEqual(["foreman:skip"]);
+    expect(result.updated).toEqual(["foreman:dispatch"]);
+    expect(result.unchanged).toEqual(["foreman"]);
+    expect(created).toEqual(["foreman:skip"]);
+    expect(updated).toEqual(["foreman:dispatch"]);
+  });
+
+  it("sends request bodies for createLabel and updateLabel", async () => {
+    class TestGhCli extends GhCli {
+      calls: Array<{ endpoint: string; options: unknown }> = [];
+
+      override async api<T>(endpoint: string, options?: unknown): Promise<T> {
+        this.calls.push({ endpoint, options });
+        return { id: 1, name: "foreman", color: "0052cc", description: "ready" } as T;
+      }
+    }
+
+    const gh = new TestGhCli();
+    await gh.createLabel("owner", "repo", { name: "foreman", color: "0052cc", description: "ready" });
+    await gh.updateLabel("owner", "repo", "foreman", { name: "foreman", color: "5319e7", description: "dispatch" });
+
+    expect(gh.calls).toEqual([
+      {
+        endpoint: "/repos/owner/repo/labels",
+        options: {
+          method: "POST",
+          body: JSON.stringify({ name: "foreman", color: "0052cc", description: "ready" }),
+        },
+      },
+      {
+        endpoint: "/repos/owner/repo/labels/foreman",
+        options: {
+          method: "PATCH",
+          body: JSON.stringify({ name: "foreman", color: "5319e7", description: "dispatch" }),
+        },
+      },
+    ]);
   });
 });

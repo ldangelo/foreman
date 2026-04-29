@@ -337,20 +337,22 @@ export class Refinery {
     }
   }
 
-  private async getExistingPrState(branchName: string): Promise<{ state: string; headRefName?: string; url?: string } | null> {
+  private async getExistingPrState(branchName: string): Promise<{ state: string; headRefName?: string; headRefOid?: string; url?: string } | null> {
     try {
-      const prRaw = await gh(["pr", "view", branchName, "--json", "state,headRefName,url", "--jq", "."], this.projectPath);
-      const parsed = JSON.parse(prRaw) as { state?: string; headRefName?: string; url?: string };
+      const prRaw = await gh(["pr", "view", branchName, "--json", "state,headRefName,headRefOid,url", "--jq", "."], this.projectPath);
+      const parsed = JSON.parse(prRaw) as { state?: string; headRefName?: string; headRefOid?: string; url?: string };
       if (!parsed.state) return null;
       return {
         state: parsed.state,
         headRefName: parsed.headRefName,
+        headRefOid: parsed.headRefOid,
         url: parsed.url,
       };
     } catch {
       return null;
     }
   }
+
 
   private async finalizeSuccessfulMerge(run: import("../lib/store.js").Run, branchName: string, targetBranch: string): Promise<void> {
     if (run.worktree_path) {
@@ -426,7 +428,7 @@ export class Refinery {
             }
           }
         }
-        if (existingPr.state !== "CLOSED" || reopenedExistingPr) {
+        if (existingPr.state === "OPEN" || reopenedExistingPr) {
           await this.persistRunEvent(
             run,
             "pr-created",
@@ -578,7 +580,10 @@ export class Refinery {
       const message = err instanceof Error ? err.message : String(err);
       if (!this.isTestRuntime() && shouldTreatLocalBranchDeleteFailureAsNonFatal(err)) {
         const existingPr = await this.getExistingPrState(branchName);
-        if (existingPr?.state === "MERGED") {
+        const currentBranchHead = existingPr?.headRefOid
+          ? await this.vcsBackend.resolveRef(this.projectPath, branchName).catch(() => null)
+          : null;
+        if (existingPr?.state === "MERGED" && currentBranchHead === existingPr.headRefOid) {
           await this.persistRunEvent(run, "merge-cleanup-fallback", { seedId: run.seed_id, branchName, error: message.slice(0, 400) });
           await this.finalizeSuccessfulMerge(run, branchName, targetBranch);
           merged.push({

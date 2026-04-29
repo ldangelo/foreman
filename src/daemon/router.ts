@@ -718,17 +718,27 @@ const githubRouter = t.router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      const existing = await ctx.adapter.getGithubRepo(
+        input.projectId,
+        input.owner,
+        input.repo,
+      );
       const row = await ctx.adapter.upsertGithubRepo({
+        id: existing?.id,
         projectId: input.projectId,
         owner: input.owner,
         repo: input.repo,
-        authType: input.authType,
-        authConfig: input.authConfig,
-        defaultLabels: input.defaultLabels,
-        autoImport: input.autoImport,
-        webhookSecret: input.webhookSecret ?? null,
-        webhookEnabled: input.webhookEnabled,
-        syncStrategy: input.syncStrategy,
+        authType: input.authType ?? existing?.auth_type,
+        authConfig: input.authConfig ?? existing?.auth_config,
+        defaultLabels: input.defaultLabels ?? existing?.default_labels ?? [],
+        autoImport: input.autoImport ?? existing?.auto_import ?? false,
+        webhookSecret:
+          input.webhookSecret !== undefined
+            ? input.webhookSecret
+            : existing?.webhook_secret ?? null,
+        webhookEnabled: input.webhookEnabled ?? existing?.webhook_enabled ?? false,
+        syncStrategy: input.syncStrategy ?? existing?.sync_strategy,
+        lastSyncAt: existing?.last_sync_at ?? null,
       });
       return row;
     }),

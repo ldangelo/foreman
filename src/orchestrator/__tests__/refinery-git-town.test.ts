@@ -310,6 +310,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         push: vi.fn(async () => undefined),
         removeWorkspace: vi.fn(async () => undefined),
         diff: vi.fn(async () => ""),
+        resolveRef: vi.fn(async () => "abc1234"),
       };
       const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcsBackend as any);
       const previousMode = process.env.FOREMAN_RUNTIME_MODE;
@@ -325,6 +326,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
                 stdout: JSON.stringify({
                   state: viewCount === 1 ? "OPEN" : "MERGED",
                   headRefName: "foreman/seed-merge-fallback",
+                  headRefOid: "abc1234",
                   url: "https://github.com/org/repo/pull/56",
                 }),
                 stderr: "",
@@ -355,6 +357,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
           expect.objectContaining({ seedId: "seed-merge-fallback", branchName: "foreman/seed-merge-fallback" }),
           "run-merge-fallback",
         );
+        expect(vcsBackend.resolveRef).toHaveBeenCalledWith("/tmp/project", "foreman/seed-merge-fallback");
         expect(vcsBackend.removeWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/worktrees/seed-merge-fallback");
       } finally {
         process.env.FOREMAN_RUNTIME_MODE = previousMode;
@@ -470,6 +473,59 @@ describe("MQ-T058d: PR creation strategy decision", () => {
           "pr-created",
           expect.objectContaining({ existing: false, prUrl: "https://github.com/org/repo/pull/99" }),
           "run-88",
+        );
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+
+    it("creates a fresh PR instead of reusing an already-merged PR for the same branch", async () => {
+      const { store, refinery } = createTestRefinery();
+      const run = makeRun({ id: "run-89", seed_id: "seed-merged-pr-refresh" });
+      store.getRun.mockReturnValue(run);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+          (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+            if (cmd === "git") {
+              callback(null, { stdout: args.includes("log") ? "abc123 refresh merged branch" : "", stderr: "" });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+              callback(null, {
+                stdout: JSON.stringify({
+                  state: "MERGED",
+                  headRefName: "foreman/seed-merged-pr-refresh",
+                  headRefOid: "oldmergedsha",
+                  url: "https://github.com/org/repo/pull/101",
+                }),
+                stderr: "",
+              });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "create") {
+              callback(null, { stdout: "https://github.com/org/repo/pull/102", stderr: "" });
+              return;
+            }
+            callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+          },
+        );
+
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-89", baseBranch: "main" });
+
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/102");
+        const calls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls;
+        const createCall = calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "create",
+        );
+        expect(createCall).toBeDefined();
+        expect(store.logEvent).toHaveBeenCalledWith(
+          "proj-1",
+          "pr-created",
+          expect.objectContaining({ existing: false, prUrl: "https://github.com/org/repo/pull/102" }),
+          "run-89",
         );
       } finally {
         process.env.FOREMAN_RUNTIME_MODE = previousMode;

@@ -14,7 +14,7 @@
  * @module gh-cli
  */
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -33,6 +33,18 @@ export interface GhApiOptions {
   body?: string;
   jq?: string;
   silent?: boolean;
+}
+
+export interface GitHubLabelDefinition {
+  name: string;
+  color: string;
+  description?: string;
+}
+
+export interface EnsureLabelsResult {
+  created: string[];
+  updated: string[];
+  unchanged: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -148,8 +160,53 @@ export class GhCli {
    */
   private async execGh(
     args: string[],
-    options: { timeout?: number; cwd?: string } = {}
+    options: { timeout?: number; cwd?: string; input?: string } = {}
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    if (options.input !== undefined) {
+      return await new Promise((resolve, reject) => {
+        const child = spawn(this.ghPath, args, {
+          cwd: options.cwd,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+
+        let stdout = "";
+        let stderr = "";
+        let timedOut = false;
+
+        const timeout = setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGTERM");
+        }, options.timeout ?? 60_000);
+
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk;
+        });
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk;
+        });
+        child.on("error", (err: NodeJS.ErrnoException) => {
+          clearTimeout(timeout);
+          if (err.code === "ENOENT") {
+            reject(new GhNotInstalledError());
+            return;
+          }
+          reject(err);
+        });
+        child.on("close", (code) => {
+          clearTimeout(timeout);
+          if (timedOut) {
+            resolve({ stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), exitCode: 124 });
+            return;
+          }
+          resolve({ stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), exitCode: code ?? 1 });
+        });
+
+        child.stdin.end(options.input, "utf8");
+      });
+    }
+
     try {
       const { stdout, stderr } = await execFileAsync(this.ghPath, args, {
         timeout: options.timeout ?? 60_000,
@@ -325,6 +382,7 @@ export class GhCli {
 
     const result = await this.execGh(args, {
       timeout: 30_000,
+      input: options.body,
     });
 
     if (result.exitCode !== 0) {
@@ -507,7 +565,75 @@ export class GhCli {
    * List all labels for a repository.
    */
   async listLabels(owner: string, repo: string): Promise<GitHubLabel[]> {
-    return this.api<GitHubLabel[]>(`/repos/${owner}/${repo}/labels`);
+    const labels: GitHubLabel[] = [];
+    for (let page = 1; ; page++) {
+      const batch = await this.api<GitHubLabel[]>(
+        `/repos/${owner}/${repo}/labels?per_page=100&page=${page}`,
+      );
+      labels.push(...batch);
+      if (batch.length < 100) {
+        break;
+      }
+    }
+    return labels;
+  }
+
+  /**
+   * Create a repository label.
+   */
+  async createLabel(owner: string, repo: string, label: GitHubLabelDefinition): Promise<GitHubLabel> {
+    return this.api<GitHubLabel>(`/repos/${owner}/${repo}/labels`, {
+      method: "POST",
+      body: JSON.stringify(label),
+    });
+  }
+
+  /**
+   * Update an existing repository label.
+   */
+  async updateLabel(owner: string, repo: string, currentName: string, label: GitHubLabelDefinition): Promise<GitHubLabel> {
+    return this.api<GitHubLabel>(`/repos/${owner}/${repo}/labels/${encodeURIComponent(currentName)}`, {
+      method: "PATCH",
+      body: JSON.stringify(label),
+    });
+  }
+
+  /**
+   * Ensure a set of repository labels exists with the expected color/description.
+   */
+  async ensureLabels(
+    owner: string,
+    repo: string,
+    labels: GitHubLabelDefinition[],
+  ): Promise<EnsureLabelsResult> {
+    const existing = await this.listLabels(owner, repo);
+    const existingByName = new Map(existing.map((label) => [label.name, label]));
+
+    const result: EnsureLabelsResult = {
+      created: [],
+      updated: [],
+      unchanged: [],
+    };
+
+    for (const label of labels) {
+      const current = existingByName.get(label.name);
+      if (!current) {
+        await this.createLabel(owner, repo, label);
+        result.created.push(label.name);
+        continue;
+      }
+
+      const desiredDescription = label.description ?? "";
+      const currentDescription = current.description ?? "";
+      if (current.color !== label.color || currentDescription !== desiredDescription) {
+        await this.updateLabel(owner, repo, current.name, label);
+        result.updated.push(label.name);
+      } else {
+        result.unchanged.push(label.name);
+      }
+    }
+
+    return result;
   }
 
   /**

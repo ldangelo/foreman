@@ -101,6 +101,8 @@ export type WebhookHandler = (
 export interface WebhookConfig {
   /** HMAC secret for verifying GitHub webhook payloads. */
   secret: string;
+  /** Label that should import issues directly to ready. */
+  foremanLabel?: string;
 }
 
 /**
@@ -137,13 +139,24 @@ export function createWebhookHandler(
         return handlePullRequest(ctx, request, reply, rawBody as GitHubPrPayload);
 
       case "issues":
-        return handleIssue(ctx, request, reply, rawBody as GitHubIssueWebhookPayload);
+        return handleIssue(ctx, config, request, reply, rawBody as GitHubIssueWebhookPayload);
 
       default:
         // GitHub sends many event types — acknowledge but ignore unknowns
         return reply.code(200).send({ received: true, ignored: true });
     }
   };
+}
+
+function shouldSkipIssueImport(issue: GitHubIssueWebhookPayload["issue"], config: WebhookConfig): boolean {
+  return issue.labels.some((label) => label.name === "foreman:skip");
+}
+
+function shouldReadyIssueImport(issue: GitHubIssueWebhookPayload["issue"], config: WebhookConfig): boolean {
+  const foremanLabel = config.foremanLabel ?? "foreman";
+  return issue.labels.some(
+    (label) => label.name === foremanLabel || label.name === "foreman:dispatch",
+  );
 }
 
 // ── Push Event Handler ─────────────────────────────────────────────────────────
@@ -392,6 +405,7 @@ export interface GitHubIssueWebhookPayload {
  */
 async function handleIssue(
   ctx: WebhookContext,
+  config: WebhookConfig,
   request: FastifyRequest,
   reply: FastifyReply,
   payload: GitHubIssueWebhookPayload,
@@ -431,20 +445,36 @@ async function handleIssue(
           limit: 1,
         });
         if (existing.length === 0) {
+          if (!repoConfig.auto_import) {
+            request.log.info(
+              { issueNumber: issue.number, repo: repoFullName },
+              "[webhook:issue] Auto-import disabled; skipping task creation",
+            );
+            break;
+          }
+
+          if (shouldSkipIssueImport(issue, config)) {
+            request.log.info(
+              { issueNumber: issue.number, repo: repoFullName },
+              "[webhook:issue] foreman:skip present; skipping task creation",
+            );
+            break;
+          }
+
           const foremanLabels = issue.labels.map((l) => `github:${l.name}`);
           for (const dl of repoConfig.default_labels) {
             if (!foremanLabels.includes(dl)) {
               foremanLabels.push(dl);
             }
           }
-          const shouldAutoDispatch = issue.labels.some((l) => l.name === "foreman:dispatch");
+          const shouldAutoDispatch = shouldReadyIssueImport(issue, config);
 
           const task = await ctx.adapter.createTask(project.id, {
             title: issue.title,
             description: issue.body ?? undefined,
             type: "task",
             priority: mapPriorityLabel(issue.labels),
-            status: "backlog",
+            status: shouldAutoDispatch ? "ready" : "backlog",
             externalId,
             labels: foremanLabels,
             milestone: issue.milestone?.title,

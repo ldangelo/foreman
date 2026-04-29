@@ -21,6 +21,8 @@ import {
   releaseClient,
 } from "./pool-manager.js";
 import type { RunProgress, SentinelConfigRow, SentinelRunRow } from "../store.js";
+import { randomBytes } from "node:crypto";
+import { normalizeTaskIdPrefix } from "../task-store.js";
 
 // ---------------------------------------------------------------------------
 // Type definitions
@@ -329,6 +331,15 @@ export interface RecordGithubSyncEventInput {
 // ---------------------------------------------------------------------------
 
 export class PostgresAdapter {
+  private async allocateTaskId(projectId: string): Promise<string> {
+    const rows = await query<{ name: string | null }>(
+      `SELECT name FROM projects WHERE id = $1 LIMIT 1`,
+      [projectId],
+    );
+    const prefix = normalizeTaskIdPrefix(rows[0]?.name);
+    return `${prefix}-${randomBytes(3).toString("hex").slice(0, 5)}`;
+  }
+
   // -------------------------------------------------------------------------
   // Project operations
   // -------------------------------------------------------------------------
@@ -508,12 +519,15 @@ export class PostgresAdapter {
    * @throws DatabaseError on constraint violation.
    */
   async createTask(projectId: string, taskData: Record<string, unknown>): Promise<TaskRow> {
-    const id = taskData.id as string;
+    const id = (taskData.id as string | undefined) ?? await this.allocateTaskId(projectId);
     const title = (taskData.title as string) ?? id;
     const description = taskData.description as string | null ?? null;
     const type = (taskData.type as string) ?? "task";
     const priority = (taskData.priority as number) ?? 2;
-    const externalId = taskData.external_id as string | null ?? null;
+    const externalId =
+      (taskData.external_id as string | null | undefined) ??
+      (taskData.externalId as string | null | undefined) ??
+      null;
     const branch = taskData.branch as string | null ?? null;
     const status = (taskData.status as string) ?? "backlog";
     const createdAt = (taskData.created_at as string) ?? new Date().toISOString();
@@ -543,10 +557,18 @@ export class PostgresAdapter {
         updatedAt,
         approvedAt,
         closedAt,
-        taskData.external_repo as string | null ?? null,
-        taskData.github_issue_number as number | null ?? null,
-        taskData.github_milestone as string | null ?? null,
-        taskData.sync_enabled as boolean ?? false,
+        (taskData.external_repo as string | null | undefined) ??
+          (taskData.externalRepo as string | null | undefined) ??
+          null,
+        (taskData.github_issue_number as number | null | undefined) ??
+          (taskData.githubIssueNumber as number | null | undefined) ??
+          null,
+        (taskData.github_milestone as string | null | undefined) ??
+          (taskData.githubMilestone as string | null | undefined) ??
+          null,
+        (taskData.sync_enabled as boolean | undefined) ??
+          (taskData.syncEnabled as boolean | undefined) ??
+          false,
       ],
     );
     return rows[0];
@@ -672,6 +694,20 @@ export class PostgresAdapter {
     await execute(
       `UPDATE tasks SET ${setClauses.join(", ")} WHERE id = $${i++} AND project_id = $${i}`,
       params,
+    );
+  }
+
+  /**
+   * Sync the claimed task linked to a run into a terminal status.
+   *
+   * No-op when no task is currently linked to the run.
+   */
+  async updateTaskStatusForRun(projectId: string, runId: string, status: string): Promise<void> {
+    await execute(
+      `UPDATE tasks
+       SET status = $1, updated_at = now()
+       WHERE project_id = $2 AND run_id = $3`,
+      [status, projectId, runId],
     );
   }
 
@@ -1881,7 +1917,7 @@ export class PostgresAdapter {
        VALUES (
          COALESCE($1, gen_random_uuid()),
          $2, $3, $4, $5, $6,
-         COALESCE($7, '{}'), COALESCE($8, false), $9, COALESCE($10, false),
+         COALESCE($7::text[], '{}'::text[]), COALESCE($8, false), $9, COALESCE($10, false),
          COALESCE($11, 'github-wins'), $12,
          now(), now()
        )
@@ -1904,7 +1940,7 @@ export class PostgresAdapter {
         input.repo,
         input.authType ?? "pat",
         JSON.stringify(input.authConfig ?? {}),
-        input.defaultLabels ? JSON.stringify(input.defaultLabels) : null,
+        input.defaultLabels ?? null,
         input.autoImport ?? false,
         input.webhookSecret ?? null,
         input.webhookEnabled ?? false,
