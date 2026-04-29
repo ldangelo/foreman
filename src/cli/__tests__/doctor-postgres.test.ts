@@ -1,6 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("doctor postgres connectivity", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.doUnmock("../../lib/db/pool-manager.js");
+  });
+
   afterEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
