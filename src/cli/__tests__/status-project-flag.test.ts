@@ -22,8 +22,18 @@ async function run(
     cwd,
     timeout: 15_000,
     env: {
-      ...extraEnv,
-      ...(registryBaseDir ? { FOREMAN_REGISTRY_BASE_DIR: registryBaseDir } : {}),
+      PATH: process.env.PATH,
+      HOME: extraEnv?.HOME,
+      TMPDIR: process.env.TMPDIR,
+      TMP: process.env.TMP,
+      TEMP: process.env.TEMP,
+      TSX_DISABLE_IPC: "1",
+      NO_COLOR: "1",
+      FOREMAN_HOME: undefined,
+      FOREMAN_TASK_STORE: undefined,
+      FOREMAN_TASK_BACKEND: undefined,
+      DATABASE_URL: extraEnv?.DATABASE_URL,
+      FOREMAN_REGISTRY_BASE_DIR: registryBaseDir,
     },
   });
 }
