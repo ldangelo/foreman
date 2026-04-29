@@ -17,7 +17,15 @@ async function run(
   cwd: string,
   extraEnv?: Record<string, string>,
 ): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 15_000, env: extraEnv });
+  const registryBaseDir = extraEnv?.HOME ? join(extraEnv.HOME, ".foreman") : undefined;
+  return runTsxModule(CLI, args, {
+    cwd,
+    timeout: 15_000,
+    env: {
+      ...extraEnv,
+      ...(registryBaseDir ? { FOREMAN_REGISTRY_BASE_DIR: registryBaseDir } : {}),
+    },
+  });
 }
 
 describe("foreman status --project flag", () => {

@@ -28,6 +28,7 @@ async function run(
       TSX_DISABLE_IPC: "1",
       NO_COLOR: "1",
       ...extraEnv,
+      ...(extraEnv?.HOME ? { FOREMAN_REGISTRY_BASE_DIR: join(extraEnv.HOME, ".foreman") } : {}),
     },
     encoding: "utf8",
   });
