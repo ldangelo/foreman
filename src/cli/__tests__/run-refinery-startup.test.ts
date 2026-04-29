@@ -164,6 +164,15 @@ vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }
 vi.mock("../../orchestrator/sentinel.js", () => ({ SentinelAgent: vi.fn(), wrapPostgresSentinelStore: (store: unknown) => store }));
 vi.mock("../../orchestrator/task-backend-ops.js", () => ({ syncBeadStatusOnStartup: vi.fn() }));
 vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({ isPiAvailable: vi.fn().mockReturnValue(false) }));
+// Skip runtime asset preflight — no prompts/workflows in CI/unit test env
+vi.mock("../../lib/prompt-loader.js", () => ({
+  findMissingPrompts: () => [],
+  findStalePrompts: () => [],
+}));
+vi.mock("../../lib/workflow-loader.js", () => ({
+  findMissingWorkflows: () => [],
+  findStaleWorkflows: () => [],
+}));
 vi.mock("../commands/project-task-support.js", () => ({
   listRegisteredProjects: () => mockProjectsList(),
   ensureCliPostgresPool: vi.fn(),
