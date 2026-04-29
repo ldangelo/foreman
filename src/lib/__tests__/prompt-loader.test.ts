@@ -53,6 +53,28 @@ describe("prompt loader", () => {
     expect(loaded).toBe("custom developer");
   });
 
+  it("prefers project-local workflow prompts over global foreman home prompts", () => {
+    const foremanHome = makeForemanHome();
+    mkdirSync(join(foremanHome, "prompts", "epic"), { recursive: true });
+    writeFileSync(
+      join(foremanHome, "prompts", "epic", "developer.md"),
+      "global developer",
+      "utf8",
+    );
+
+    const projectRoot = mkdtempSync(join(tmpdir(), "foreman-project-prompts-"));
+    tempDirs.push(projectRoot);
+    mkdirSync(join(projectRoot, ".foreman", "prompts", "epic"), { recursive: true });
+    writeFileSync(
+      join(projectRoot, ".foreman", "prompts", "epic", "developer.md"),
+      "local developer",
+      "utf8",
+    );
+
+    const loaded = loadPrompt("developer", {}, "epic", projectRoot);
+    expect(loaded).toBe("local developer");
+  });
+
   it("flags stale global default prompts that are missing critical markers", () => {
     const foremanHome = makeForemanHome();
     writeFileSync(
