@@ -32,7 +32,7 @@ async function run(
       FOREMAN_HOME: undefined,
       FOREMAN_TASK_STORE: undefined,
       FOREMAN_TASK_BACKEND: undefined,
-      DATABASE_URL: extraEnv?.DATABASE_URL,
+      DATABASE_URL: undefined,
       FOREMAN_REGISTRY_BASE_DIR: registryBaseDir,
     },
   });

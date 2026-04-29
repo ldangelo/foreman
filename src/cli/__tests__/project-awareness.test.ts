@@ -34,7 +34,24 @@ vi.mock("../../../lib/trpc-client.js", () => ({
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 10_000 });
+  return runTsxModule(CLI, args, {
+    cwd,
+    timeout: 10_000,
+    env: {
+      PATH: process.env.PATH,
+      HOME: cwd,
+      TMPDIR: process.env.TMPDIR,
+      TMP: process.env.TMP,
+      TEMP: process.env.TEMP,
+      TSX_DISABLE_IPC: "1",
+      NO_COLOR: "1",
+      FOREMAN_HOME: undefined,
+      FOREMAN_TASK_STORE: undefined,
+      FOREMAN_TASK_BACKEND: undefined,
+      FOREMAN_REGISTRY_BASE_DIR: undefined,
+      DATABASE_URL: undefined,
+    },
+  });
 }
 
 async function runWithRetry(
