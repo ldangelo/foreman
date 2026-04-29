@@ -642,6 +642,98 @@ foreman attach --follow <id>            # Follow log output
 foreman attach --kill <id>              # Kill a running agent
 ```
 
+## GitHub Integration
+
+Foreman integrates with GitHub for bi-directional issue tracking, real-time webhook events, and automated task management.
+
+### Features
+
+- **Bi-directional sync** — Push/pull GitHub issues as Foreman tasks via `foreman issue sync`
+- **Real-time webhooks** — Issue events (opened, closed, labeled, etc.) stream directly to ForemanDaemon via `POST /webhook`
+- **Branch-to-issue linking** — Worktree branches automatically link to GitHub issues; commit messages include `Fixes #{issue}`
+- **Auto-import rules** — Issues with `foreman` or `foreman:dispatch` label → `ready`; others → `backlog`
+- **Priority mapping** — `foreman:priority:0-4` label → Foreman priority 0 (critical) through 4 (backlog)
+
+### Label Conventions
+
+GitHub labels drive Foreman behavior:
+
+| Label | Effect |
+|---|---|
+| `foreman:dispatch` | Import as `ready` status — immediately dispatchable |
+| `foreman:priority:0` | P0 — critical (priority 0) |
+| `foreman:priority:1` | P1 — high priority |
+| `foreman:priority:2` | P2 — medium (default) |
+| `foreman:priority:3` | P3 — low priority |
+| `foreman:priority:4` | P4 — backlog |
+| `github:{name}` | Mirrored from GitHub; `{name}` is the original GitHub label |
+
+### CLI Commands
+
+```bash
+# View and manage GitHub configuration
+foreman issue configure                          # Configure repo (PAT, app token)
+foreman issue labels <repo>                       # List available labels
+foreman issue milestones <repo>                # List milestones
+
+# Sync issues
+foreman issue import <repo>                       # Import all open issues
+foreman issue import <repo> --milestone "v1.0"   # Filter by milestone
+foreman issue import <repo> --labels "bug,enhancement"
+foreman issue import <repo> --dry-run            # Preview without creating
+foreman issue sync <repo>                         # Bi-directional sync
+foreman issue sync <repo> --create               # Create missing issues on GitHub
+
+# Webhook management
+foreman issue webhook --enable <repo>            # Enable webhook + generate secret
+foreman issue webhook --disable <repo>           # Disable webhook
+foreman issue webhook --status <repo>            # Show webhook status
+
+# Status and linking
+foreman issue status <repo>                       # Show linked issue status
+foreman issue link <repo>#<number>               # Link task to GitHub issue
+foreman issue view <repo>#<number>                # View single issue details
+```
+
+### Webhook Security
+
+Webhooks use **HMAC-SHA256** signature verification. The daemon rejects payloads with invalid signatures:
+
+```bash
+export FOREMAN_WEBHOOK_SECRET=<your-secret>   # Set in daemon environment
+```
+
+The webhook secret is auto-generated when enabling via `foreman issue webhook --enable` and stored in the `github_repos` table.
+
+### Webhook Event Handling
+
+| Event | Action |
+|---|---|
+| `issues.opened` | Create Foreman task from issue (body → description, labels → task labels) |
+| `issues.closed` | Close Foreman task; record sync event |
+| `issues.reopened` | Reopen Foreman task |
+| `issues.labeled` | Add `github:{label}` to task labels |
+| `issues.unlabeled` | Remove `github:{label}` from task labels |
+| `push` | Record `bead:synced` event; auto-rebase active worktrees |
+| `pull_request.closed` + merged | Record `bead:synced` with PR metadata |
+
+### Branch Naming
+
+Worktree branches follow the convention `foreman/{external_id}` where `external_id` is `github:{owner}/{repo}#{issue}`:
+
+```
+foreman/github-owner-repo#142
+```
+
+Commit messages automatically append `Fixes #{issue_number}` so merging closes the linked issue.
+
+### Environment Variables
+
+| Variable | Description |
+|---|---|
+| `FOREMAN_WEBHOOK_SECRET` | HMAC secret for webhook signature verification |
+| `FOREMAN_GITHUB_TOKEN` | GitHub API token (PAT or app token) for CLI operations |
+
 ## Task Tracking
 
 Foreman uses **native tasks** stored in **Postgres** via ForemanDaemon. Tasks are created, tracked, and closed entirely within Foreman through tRPC procedures routed through the Unix socket.
@@ -685,103 +777,6 @@ Set `FOREMAN_TASK_STORE=native|beads|auto` to force or inspect task-store select
 Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (backlog).
 
 ## Configuration
-
-### GitHub Integration
-
-Foreman integrates with GitHub through webhooks, pull request automation, and CI/CD workflows.
-
-#### Webhook Receiver
-
-ForemanDaemon includes a webhook handler (`src/daemon/webhook-handler.ts`) that processes GitHub webhook events:
-
-```bash
-# Configure GitHub webhook in your repository settings
-# Point to: https://your-daemon-host/api/webhook
-```
-
-**Supported webhook events:**
-| Event | Action | Foreman Response |
-|-------|--------|-----------------|
-| `push` | — | Trigger merge queue processing |
-| `pull_request` | opened, synchronize | Sync task status with PR state |
-| `pull_request` | closed | Auto-close merged tasks |
-| `check_run` | completed | Update task status from CI checks |
-| `check_suite` | completed | Aggregate suite results |
-
-#### Pull Request Automation
-
-Foreman automatically creates pull requests when branches are ready:
-
-```bash
-# When finalize phase completes without auto-merge capability
-foreman pr                              # Create PR for current run
-foreman pr --target-branch develop      # PR to specific branch
-```
-
-PRs include:
-- Branch name (auto-generated from task ID)
-- Task description as PR body
-- Link to original task
-- CI status checks
-
-#### Tagging Instructions
-
-Foreman uses several tagging conventions for automation:
-
-**Git tags for releases:**
-```bash
-# release-please creates tags automatically
-git tag v1.0.0                          # Created by release-please
-git push origin v1.0.0                 # Triggers binary publish workflow
-```
-
-**Branch naming:**
-```bash
-foreman/task-{id}                       # Auto-created worktree branches
-foreman/{task-id}                      # Task branches for pipeline
-```
-
-**Commit conventions (Conventional Commits):**
-```bash
-feat: add user authentication           # → minor version bump
-fix: resolve login redirect bug        # → patch version bump
-feat!: breaking API change              # → major version bump
-docs: update README                    # → no version bump
-chore: dependency update               # → no version bump
-```
-
-**Version bumping rules:**
-| Prefix | Version Bump | Example |
-|--------|-------------|---------|
-| `fix:` | patch | 0.1.0 → 0.1.1 |
-| `feat:` | minor | 0.1.0 → 0.2.0 |
-| `feat!:` / `BREAKING CHANGE:` | major | 0.1.0 → 1.0.0 |
-| `docs:`, `chore:`, `refactor:` | none | — |
-
-#### CI/CD Workflow Integration
-
-Foreman ships with GitHub Actions workflows in `.github/workflows/`:
-
-```yaml
-# .github/workflows/ci.yml (example integration)
-name: CI
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run tests
-        run: npm test
-      - name: Trigger foreman merge
-        if: github.ref == 'refs/heads/main'
-        run: foreman merge
-```
-
-**Workflow integration patterns:**
-- Use `foreman merge --no-tests` in CI to skip redundant test runs
-- Set `FOREMAN_GITHUB_TOKEN` secrets for PR creation from CI environments
-- Configure branch protection rules to require foreman status checks
 
 ### Workflow YAML
 
