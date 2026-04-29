@@ -111,10 +111,11 @@ describe("BoardPerformance", () => {
       const largeTasks = createTasksMapWithCount(1000);
 
       const measureNavigation = (tasksByStatus: Map<BoardStatus, BoardTask[]>, iterations: number) => {
-        const start = performance.now();
         let foundCount = 0;
+        let probes = 0;
         for (let i = 0; i < iterations; i++) {
           for (const tasks of tasksByStatus.values()) {
+            probes++;
             if (tasks[0]) {
               foundCount++;
               break;
@@ -122,8 +123,8 @@ describe("BoardPerformance", () => {
           }
         }
         return {
-          duration: performance.now() - start,
           foundCount,
+          probes,
         };
       };
 
@@ -133,12 +134,11 @@ describe("BoardPerformance", () => {
 
       // Navigation should remain effectively constant time because it only checks
       // the first entry in each status bucket; larger buckets should not cause
-      // materially slower lookups.
+      // materially more work even when each bucket contains many more tasks.
       expect(small.foundCount).toBe(iterations);
       expect(large.foundCount).toBe(iterations);
-      expect(small.duration).toBeLessThan(50);
-      expect(large.duration).toBeLessThan(50);
-      expect(large.duration).toBeLessThan(small.duration * 3 + 1);
+      expect(small.probes).toBe(iterations);
+      expect(large.probes).toBe(iterations);
     });
   });
 
