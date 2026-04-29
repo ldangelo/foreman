@@ -1,5 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+async function runPostgresCheckWithPoolMocks(overrides: {
+  healthCheck: () => Promise<void>;
+  initPool: (...args: unknown[]) => unknown;
+  destroyPool: () => Promise<void>;
+  isPoolInitialised: () => boolean;
+}) {
+  const poolManager = await import("../../lib/db/pool-manager.js");
+  vi.spyOn(poolManager, "healthCheck").mockImplementation(overrides.healthCheck);
+  vi.spyOn(poolManager, "initPool").mockImplementation(
+    overrides.initPool as typeof poolManager.initPool,
+  );
+  vi.spyOn(poolManager, "destroyPool").mockImplementation(overrides.destroyPool);
+  vi.spyOn(poolManager, "isPoolInitialised").mockImplementation(overrides.isPoolInitialised);
+
+  const { Doctor } = await import("../../orchestrator/doctor.js");
+  const doctor = new Doctor({} as never, "/tmp/project");
+  const result = await doctor.checkPostgresConnectivity();
+
+  return result;
+}
+
 describe("doctor postgres connectivity", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -22,22 +43,12 @@ describe("doctor postgres connectivity", () => {
       .mockReturnValueOnce(false)
       .mockReturnValueOnce(true);
 
-    vi.doMock("../../lib/db/pool-manager.js", async () => {
-      const actual = await vi.importActual<typeof import("../../lib/db/pool-manager.js")>("../../lib/db/pool-manager.js");
-      return {
-        ...actual,
-        healthCheck,
-        initPool,
-        destroyPool,
-        isPoolInitialised,
-        getPool: vi.fn(),
-      };
+    const result = await runPostgresCheckWithPoolMocks({
+      healthCheck,
+      initPool,
+      destroyPool,
+      isPoolInitialised,
     });
-
-    const { Doctor } = await import("../../orchestrator/doctor.js");
-    const doctor = new Doctor({} as never, "/tmp/project");
-
-    const result = await doctor.checkPostgresConnectivity();
 
     expect(result).toEqual({
       name: "postgres connectivity",
@@ -55,22 +66,12 @@ describe("doctor postgres connectivity", () => {
     const destroyPool = vi.fn().mockResolvedValue(undefined);
     const isPoolInitialised = vi.fn().mockReturnValue(true);
 
-    vi.doMock("../../lib/db/pool-manager.js", async () => {
-      const actual = await vi.importActual<typeof import("../../lib/db/pool-manager.js")>("../../lib/db/pool-manager.js");
-      return {
-        ...actual,
-        healthCheck,
-        initPool,
-        destroyPool,
-        isPoolInitialised,
-        getPool: vi.fn(),
-      };
+    const result = await runPostgresCheckWithPoolMocks({
+      healthCheck,
+      initPool,
+      destroyPool,
+      isPoolInitialised,
     });
-
-    const { Doctor } = await import("../../orchestrator/doctor.js");
-    const doctor = new Doctor({} as never, "/tmp/project");
-
-    const result = await doctor.checkPostgresConnectivity();
 
     expect(result.status).toBe("pass");
     expect(initPool).not.toHaveBeenCalled();
@@ -86,22 +87,12 @@ describe("doctor postgres connectivity", () => {
       .mockReturnValueOnce(false)
       .mockReturnValueOnce(true);
 
-    vi.doMock("../../lib/db/pool-manager.js", async () => {
-      const actual = await vi.importActual<typeof import("../../lib/db/pool-manager.js")>("../../lib/db/pool-manager.js");
-      return {
-        ...actual,
-        healthCheck,
-        initPool,
-        destroyPool,
-        isPoolInitialised,
-        getPool: vi.fn(),
-      };
+    const result = await runPostgresCheckWithPoolMocks({
+      healthCheck,
+      initPool,
+      destroyPool,
+      isPoolInitialised,
     });
-
-    const { Doctor } = await import("../../orchestrator/doctor.js");
-    const doctor = new Doctor({} as never, "/tmp/project");
-
-    const result = await doctor.checkPostgresConnectivity();
 
     expect(result.status).toBe("fail");
     expect(result.message).toContain("connect ECONNREFUSED 127.0.0.1:5432");
