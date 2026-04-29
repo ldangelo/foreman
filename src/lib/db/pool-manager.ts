@@ -172,6 +172,7 @@ export function initPool(overrides?: {
     max: poolSize,
     idleTimeoutMillis: idleTimeoutMs,
     connectionTimeoutMillis: connectionTimeoutMs,
+    allowExitOnIdle: true,
   };
 
   _config = config;
