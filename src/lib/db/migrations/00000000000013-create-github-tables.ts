@@ -40,12 +40,12 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
     auth_config: {
       type: "jsonb",
       notNull: true,
-      default: "'{}'",
+      default: pgm.func("'{}'::jsonb"),
     },
     default_labels: {
       type: "text[]",
       notNull: true,
-      default: "'{}'",
+      default: pgm.func("'{}'::text[]"),
     },
     auto_import: {
       type: "boolean",
