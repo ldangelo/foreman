@@ -975,6 +975,102 @@ Or trigger manually from the Actions tab with optional dry-run mode.
 
 For additional install options (specific versions, custom directories, manual binary download), see the [CLI Reference](docs/cli-reference.md) and [Troubleshooting Guide](docs/troubleshooting.md).
 
+## GitHub Integration
+
+Foreman integrates with GitHub through webhooks and workflow automation to enable seamless pull request management and release workflows.
+
+### Webhook Handler
+
+Foreman includes a built-in webhook handler (`src/daemon/webhook-handler.ts`) that receives GitHub events via HTTP and routes them through ForemanDaemon. This enables:
+
+- **PR event handling** — trigger pipeline actions on pull request events
+- **Comment integration** — respond to @mentions in PR comments
+- **Status updates** — post pipeline status back to GitHub checks
+
+To enable webhooks:
+
+```bash
+# Register webhook endpoint with GitHub
+foreman webhook configure --url https://your-domain.com/webhook
+
+# Or manually configure in GitHub repo settings:
+# Settings → Webhooks → Add webhook
+# Payload URL: https://your-domain.com/webhook
+# Events: Pull requests, Issue comments
+```
+
+### GitHub Actions Workflow Integration
+
+Foreman can trigger and be triggered by GitHub Actions workflows:
+
+```yaml
+# .github/workflows/foreman-trigger.yml
+name: Trigger Foreman Task
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  foreman-task:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Create Foreman task from PR
+        run: |
+          foreman task create "Review PR: ${{ github.event.pull_request.title }}" \
+            --type task \
+            --priority 1 \
+            --labels "pr-review,github-automation"
+```
+
+### Tagging Instructions
+
+Foreman uses semantic versioning driven by conventional commits. Tags follow the format `v{major}.{minor}.{patch}`:
+
+```bash
+# Automatic versioning via release-please
+# Merge a commit with feat: or fix: prefix → release-please creates the tag
+
+# Manual tagging for hotfixes
+git tag v1.2.3 -m "fix: critical hotfix for auth regression"
+git push origin v1.2.3
+
+# Tag conventions:
+# - v*.*.* triggers the release pipeline
+# - Version bumps are determined by commit prefixes:
+#   feat: → minor bump
+#   fix: → patch bump
+#   feat!: or BREAKING CHANGE: → major bump
+```
+
+### GitHub Check Status Integration
+
+Foreman posts pipeline status to GitHub Checks API:
+
+```yaml
+# Configure in workflow YAML or environment
+export GITHUB_TOKEN=ghp_...        # GitHub personal access token
+export GITHUB_REPOSITORY=owner/repo
+
+# Foreman automatically posts:
+# - checkrun: pipeline phase status (Explorer, Developer, QA, Reviewer)
+# - commit status: final pass/fail after merge
+```
+
+### Commit Message Convention
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) for automatic versioning:
+
+| Prefix | Example | Version Bump |
+|--------|---------|--------------|
+| `feat:` | `feat: add user auth endpoint` | minor (0.1.0 → 0.2.0) |
+| `fix:` | `fix: handle missing config gracefully` | patch (0.1.0 → 0.1.1) |
+| `feat!:` | `feat!: change API response format` | major (0.1.0 → 1.0.0) |
+| `docs:` | `docs: update README` | none (changelog only) |
+| `chore:` | `chore: update dependencies` | none |
+
 ## Development
 
 If you want to contribute or build from source:
