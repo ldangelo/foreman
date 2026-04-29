@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
+import { ForemanStore } from "../../lib/store.js";
 
 const CLI = path.resolve(__dirname, "../../cli/index.ts");
 
@@ -51,6 +52,12 @@ describe("foreman status --project flag", () => {
     const dir = join(baseDir, name);
     mkdirSync(join(dir, ".foreman"), { recursive: true });
     return dir;
+  }
+
+  function registerLocalProject(projectDir: string, projectName: string): void {
+    const store = ForemanStore.forProject(projectDir);
+    store.registerProject(projectName, projectDir);
+    store.close();
   }
 
   function setupRegistryWithProject(registryDir: string, projectPath: string, projectName: string): void {
@@ -128,9 +135,7 @@ describe("foreman status --project flag", () => {
     execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
-    // Set up a local registry with only this project so isMultiProjectMode() returns false
-    const registryDir = join(tmpBase, ".foreman", "projects");
-    setupRegistryWithProject(registryDir, projectDir, "my-project");
+    registerLocalProject(projectDir, "my-project");
 
     const result = await run(["status"], projectDir, {
       ...process.env,
