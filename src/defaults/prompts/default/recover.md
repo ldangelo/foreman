@@ -16,6 +16,9 @@ codebase and should make fixes, run tests, and commit changes when appropriate.
 
 {{runSummary}}
 
+## Recommended Recovery
+{{recoveryRecommendation}}
+
 ## Test Output (if available)
 ```
 {{testOutput}}

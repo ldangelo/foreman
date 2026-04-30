@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
@@ -11,6 +11,11 @@ import { recoverCommand } from "../commands/recover.js";
 const mockExecFileSync = vi.hoisted(() => vi.fn(() => "mock-output\n"));
 const mockExecFile = vi.hoisted(() => vi.fn());
 const mockCreateTrpcClient = vi.hoisted(() => vi.fn());
+const mockRunWithPiSdk = vi.hoisted(() => vi.fn().mockResolvedValue({
+  success: true,
+  outputText: "done",
+  costUsd: 0,
+}));
 
 vi.mock("node:child_process", () => ({
   execFile: mockExecFile,
@@ -19,6 +24,10 @@ vi.mock("node:child_process", () => ({
 
 vi.mock("../../lib/trpc-client.js", () => ({
   createTrpcClient: mockCreateTrpcClient,
+}));
+
+vi.mock("../../orchestrator/pi-sdk-runner.js", () => ({
+  runWithPiSdk: mockRunWithPiSdk,
 }));
 
 vi.mock("../commands/project-task-support.js", () => ({
@@ -40,6 +49,7 @@ describe("foreman debug/recover command context", () => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-debug-recover-test-"));
     mkdirSync(join(tmpDir, ".foreman"), { recursive: true });
     vi.clearAllMocks();
+    mockRunWithPiSdk.mockResolvedValue({ success: true, outputText: "done", costUsd: 0 });
     localStore = {
       getRunsForSeed: vi.fn(),
       getRunProgress: vi.fn(),
@@ -158,6 +168,56 @@ describe("foreman debug/recover command context", () => {
     expect(localStore.getRunsForSeed).toHaveBeenCalledWith("seed-1");
     expect(localStore.getRunProgress).toHaveBeenCalled();
     expect(localStore.getAllMessages).toHaveBeenCalled();
+  });
+
+  it("surfaces recommended clean replay in raw recover output", async () => {
+    const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+    const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+    const worktreePath = join(tmpDir, "worktree");
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), [
+      "## Rebase",
+      "- Status: FAILED",
+      "- Recommended recovery: clean replay from current main",
+      "",
+    ].join("\n"));
+
+    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunProgress.mockReturnValue(null);
+    localStore.getAllMessages.mockReturnValue([]);
+    resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
+    listRegisteredProjectsMock.mockResolvedValue([]);
+
+    await runCommand(recoverCommand, ["seed-1", "--raw", "--reason", "stale-blocked"]);
+
+    const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(output).toContain("─── Recommended Recovery ───");
+    expect(output).toContain("Recommended recovery: clean-replay-from-main");
+  });
+
+  it("passes recommended clean replay guidance into the recovery prompt", async () => {
+    const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+    const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+    const worktreePath = join(tmpDir, "worktree-prompt");
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), [
+      "## Rebase",
+      "- Status: FAILED",
+      "- Recommended recovery: clean replay from current main",
+      "",
+    ].join("\n"));
+
+    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunProgress.mockReturnValue(null);
+    localStore.getAllMessages.mockReturnValue([]);
+    resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
+    listRegisteredProjectsMock.mockResolvedValue([]);
+
+    await runCommand(recoverCommand, ["seed-1", "--reason", "stale-blocked"]);
+
+    const prompt = mockRunWithPiSdk.mock.calls[0]?.[0]?.prompt as string;
+    expect(prompt).toContain("## Recommended Recovery");
+    expect(prompt).toContain("Recommended recovery: clean-replay-from-main");
   });
 
   it("keeps outside-a-repo behavior unchanged", async () => {

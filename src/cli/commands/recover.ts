@@ -115,6 +115,7 @@ async function resolveDaemonRecoverContext(projectPath: string): Promise<DaemonR
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type RecoveryReason = "test-failed" | "stuck" | "stale-blocked";
+type RecommendedRecovery = "clean-replay-from-main";
 
 // ── Artifact collection ─────────────────────────────────────────────────────
 
@@ -183,6 +184,26 @@ function runCommandSafe(args: string[], cwd: string): string {
   }
 }
 
+export function extractRecommendedRecovery(reports: Record<string, string>): RecommendedRecovery | null {
+  const finalizeReport = reports["FINALIZE_REPORT.md"];
+  if (!finalizeReport) return null;
+  if (/Recommended recovery:\s*clean replay from current main/i.test(finalizeReport)) {
+    return "clean-replay-from-main";
+  }
+  return null;
+}
+
+function formatRecoveryRecommendation(recommendedRecovery: RecommendedRecovery | null): string {
+  if (recommendedRecovery === "clean-replay-from-main") {
+    return [
+      "Recommended recovery: clean-replay-from-main",
+      "- Meaning: rebuild the branch from current main and replay only the intended source changes",
+      "- Use when finalize failed due to deterministic rebase/diverged-history conflicts",
+    ].join("\n");
+  }
+  return "(none)";
+}
+
 // ── Prompt builder ──────────────────────────────────────────────────────────
 
 function buildRecoveryPrompt(opts: {
@@ -197,6 +218,7 @@ function buildRecoveryPrompt(opts: {
   recentGitLog: string;
   reports: Record<string, string>;
   logContent: string | null;
+  recoveryRecommendation: string;
 }): string {
   const reportSections = Object.entries(opts.reports)
     .map(([name, content]) => `### ${name}\n\`\`\`\n${content.slice(0, 5000)}\n\`\`\``)
@@ -213,6 +235,7 @@ function buildRecoveryPrompt(opts: {
     runId: opts.runId,
     projectRoot: opts.projectRoot,
     runSummary: opts.runSummary,
+    recoveryRecommendation: opts.recoveryRecommendation,
     testOutput: opts.testOutput || "(not captured)",
     blockedBeads: opts.blockedBeads || "(none)",
     recentGitLog: opts.recentGitLog || "(not available)",
@@ -299,6 +322,9 @@ export const recoverCommand = new Command("recover")
       }
     }
 
+    const recommendedRecovery = extractRecommendedRecovery(reports);
+    const recoveryRecommendation = formatRecoveryRecommendation(recommendedRecovery);
+
     // 4. Bead info from br
     try {
       const beadInfo = execFileSync("br", ["show", beadId], {
@@ -349,6 +375,8 @@ export const recoverCommand = new Command("recover")
     if (opts.raw) {
       console.log(chalk.bold("─── Run Summary ───"));
       console.log(runSummary);
+      console.log(chalk.bold("\n─── Recommended Recovery ───"));
+      console.log(recoveryRecommendation);
       console.log(chalk.bold("\n─── Messages ───"));
       console.log(messagesText);
       for (const [name, content] of Object.entries(reports)) {
@@ -383,6 +411,7 @@ export const recoverCommand = new Command("recover")
       recentGitLog,
       reports,
       logContent,
+      recoveryRecommendation,
     });
 
     const model = opts.model ?? getHighspeedModel();
