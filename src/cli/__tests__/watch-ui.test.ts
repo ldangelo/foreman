@@ -414,9 +414,9 @@ describe("poll", () => {
   });
 
   it("counts completedCount correctly", async () => {
-    const run1 = makeRun({ id: "r1", status: "completed" });
-    const run2 = makeRun({ id: "r2", status: "completed" });
-    const run3 = makeRun({ id: "r3", status: "failed" });
+    const run1 = makeRun({ id: "r1", seed_id: "foreman-1", status: "completed" });
+    const run2 = makeRun({ id: "r2", seed_id: "foreman-2", status: "completed" });
+    const run3 = makeRun({ id: "r3", seed_id: "foreman-3", status: "failed" });
     const store = makeMockStore({ r1: run1, r2: run2, r3: run3 });
     const state = await poll(store as any, ["r1", "r2", "r3"]);
     expect(state.completedCount).toBe(2);
@@ -425,18 +425,47 @@ describe("poll", () => {
   });
 
   it("counts failedCount including test-failed", async () => {
-    const run1 = makeRun({ id: "r1", status: "failed" });
-    const run2 = makeRun({ id: "r2", status: "test-failed" });
+    const run1 = makeRun({ id: "r1", seed_id: "foreman-1", status: "failed" });
+    const run2 = makeRun({ id: "r2", seed_id: "foreman-2", status: "test-failed" });
     const store = makeMockStore({ r1: run1, r2: run2 });
     const state = await poll(store as any, ["r1", "r2"]);
     expect(state.failedCount).toBe(2);
   });
 
   it("counts stuckCount correctly", async () => {
-    const run1 = makeRun({ id: "r1", status: "stuck" });
-    const run2 = makeRun({ id: "r2", status: "completed" });
+    const run1 = makeRun({ id: "r1", seed_id: "foreman-1", status: "stuck" });
+    const run2 = makeRun({ id: "r2", seed_id: "foreman-2", status: "completed" });
     const store = makeMockStore({ r1: run1, r2: run2 });
     const state = await poll(store as any, ["r1", "r2"]);
+    expect(state.stuckCount).toBe(1);
+  });
+
+  it("dedupes completion counts by latest run per seed", async () => {
+    const olderFailed = makeRun({
+      id: "r1",
+      seed_id: "foreman-same",
+      status: "failed",
+      created_at: "2026-04-30T10:00:00.000Z",
+      completed_at: "2026-04-30T10:05:00.000Z",
+    });
+    const newerMergedState = makeRun({
+      id: "r2",
+      seed_id: "foreman-same",
+      status: "completed",
+      created_at: "2026-04-30T10:10:00.000Z",
+      completed_at: "2026-04-30T10:15:00.000Z",
+    });
+    const unrelatedStuck = makeRun({
+      id: "r3",
+      seed_id: "foreman-other",
+      status: "stuck",
+      created_at: "2026-04-30T10:20:00.000Z",
+      completed_at: "2026-04-30T10:25:00.000Z",
+    });
+    const store = makeMockStore({ r1: olderFailed, r2: newerMergedState, r3: unrelatedStuck });
+    const state = await poll(store as any, ["r1", "r2", "r3"]);
+    expect(state.completedCount).toBe(1);
+    expect(state.failedCount).toBe(0);
     expect(state.stuckCount).toBe(1);
   });
 
