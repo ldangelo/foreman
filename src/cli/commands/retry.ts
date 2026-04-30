@@ -405,6 +405,77 @@ export const retryCommand = new Command("retry")
               getTaskById: async (taskId) => await pg.getTask(registered.id, taskId) as never,
               claimTask: async (taskId, runId) => await pg.claimTask(registered.id, taskId, runId),
             },
+            runOps: {
+              createRun: async ({ runId, seedId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
+                const createdAt = new Date().toISOString();
+                const existing = await pg.listPipelineRuns(registered.id, { beadId: seedId });
+                await pg.createPipelineRun({
+                  id: runId,
+                  projectId: registered.id,
+                  beadId: seedId,
+                  runNumber: existing.length + 1,
+                  branch: branchName,
+                  trigger: "bead",
+                  agentType,
+                  worktreePath: worktreePath ?? undefined,
+                  baseBranch: baseBranch ?? undefined,
+                  mergeStrategy: mergeStrategy ?? undefined,
+                });
+                return {
+                  id: runId,
+                  project_id: registered.id,
+                  seed_id: seedId,
+                  agent_type: agentType,
+                  session_key: null,
+                  worktree_path: worktreePath,
+                  status: "pending",
+                  started_at: null,
+                  completed_at: null,
+                  created_at: createdAt,
+                  progress: null,
+                  tmux_session: null,
+                  base_branch: baseBranch ?? null,
+                  merge_strategy: mergeStrategy ?? "auto",
+                };
+              },
+              updateRun: async (runId, updates) => {
+                const patch: {
+                  status?: string;
+                  sessionKey?: string;
+                  worktreePath?: string;
+                  startedAt?: string;
+                  finishedAt?: string;
+                } = {};
+                if (updates.status) patch.status = updates.status;
+                if (updates.session_key !== undefined) patch.sessionKey = updates.session_key ?? undefined;
+                if (updates.worktree_path !== undefined) patch.worktreePath = updates.worktree_path ?? undefined;
+                if (updates.started_at) patch.startedAt = updates.started_at;
+                if (updates.completed_at) patch.finishedAt = updates.completed_at;
+                if (Object.keys(patch).length > 0) {
+                  await pg.updatePipelineRun(runId, patch);
+                }
+              },
+              sendMessage: async (runId, senderAgentType, recipientAgentType, subject, body) => {
+                await pg.sendMessage(registered.id, runId, senderAgentType, recipientAgentType, subject, body);
+              },
+              logEvent: async (runId, _projectId, eventType, payload) => {
+                const mappedEventType = eventType === "complete"
+                  ? "run:success"
+                  : eventType === "fail"
+                    ? "run:failure"
+                    : eventType === "restart" || eventType === "dispatch"
+                      ? "run:queued"
+                      : null;
+                if (!mappedEventType) return;
+                await pg.recordPipelineEvent({
+                  projectId: registered.id,
+                  runId,
+                  taskId: payload.seedId as string | undefined,
+                  eventType: mappedEventType,
+                  payload,
+                });
+              },
+            },
           });
         })()
       : undefined;

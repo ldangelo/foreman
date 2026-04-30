@@ -132,6 +132,13 @@ describe("retry command bootstrap", () => {
     expect(mockCreateTaskClient).not.toHaveBeenCalled();
     expect(mockPostgresAdapterCtor).toHaveBeenCalledTimes(1);
     expect(mockDispatcherCtor).toHaveBeenCalledTimes(1);
+    const overrides = (mockDispatcherCtor.mock.calls as unknown[][])[0]?.[4] as Record<string, unknown>;
+    const runOps = overrides.runOps as Record<string, unknown>;
+    expect(runOps.createRun).toBeTypeOf("function");
+    expect(runOps.updateRun).toBeTypeOf("function");
+    expect(runOps.sendMessage).toBeTypeOf("function");
+    expect(runOps.logEvent).toBeTypeOf("function");
+
   });
 
   it("keeps local/unregistered behavior unchanged", async () => {
