@@ -26,6 +26,7 @@ import type { TaskDependencyRow as DependencyRow, TaskRow } from "../../lib/db/p
 import { resolveProjectPathFromOptions } from "./project-task-support.js";
 import { createTrpcClient, type TrpcClient } from "../../lib/trpc-client.js";
 import { listRegisteredProjects, type RegisteredProjectSummary } from "./project-task-support.js";
+import type { PrState } from "../../lib/pr-state.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -229,15 +230,41 @@ function statusChalk(status: string): string {
   }
 }
 
-function printTaskTable(rows: TaskRow[]): void {
+/**
+ * Render a PR state badge for display in task list.
+ */
+function renderPrBadge(prState: PrState | undefined): string {
+  if (!prState) return chalk.dim("—");
+  switch (prState.status) {
+    case "none":
+      return chalk.dim("no PR");
+    case "open":
+      return chalk.green(`#${prState.number}`);
+    case "merged":
+      if (prState.isStale) {
+        return chalk.yellow(`#${prState.number} (stale)`);
+      }
+      return chalk.cyan(`#${prState.number}`);
+    case "closed":
+      return chalk.dim(`#${prState.number} (closed)`);
+    case "error":
+      return chalk.red("?");
+    default:
+      return chalk.dim("—");
+  }
+}
+
+function printTaskTable(rows: TaskRow[], prStates?: Map<string, PrState>): void {
   if (rows.length === 0) {
     console.log(chalk.dim("No tasks found."));
     return;
   }
 
   const idWidth = Math.max(COL_ID, ...rows.map((row) => row.id.length));
+  const showPr = prStates !== undefined;
 
   // Header
+  const prHeader = showPr ? COL_GAP + chalk.bold(pad("PR", 12)) : "";
   console.log(
     chalk.bold(pad("ID", idWidth)) +
       COL_GAP +
@@ -247,11 +274,18 @@ function printTaskTable(rows: TaskRow[]): void {
       COL_GAP +
       chalk.bold(pad("PRIORITY", COL_PRI)) +
       COL_GAP +
-      chalk.bold("STATUS"),
+      chalk.bold("STATUS") +
+      prHeader,
   );
-  console.log("─".repeat(idWidth + COL_TITLE + COL_TYPE + COL_PRI + COL_STATUS + (COL_GAP.length * 4)));
+
+  const prColWidth = 12;
+  const separatorLen = idWidth + COL_TITLE + COL_TYPE + COL_PRI + COL_STATUS + (COL_GAP.length * 4) + (showPr ? prColWidth + COL_GAP.length : 0);
+  console.log("─".repeat(separatorLen));
 
   for (const t of rows) {
+    const prState = prStates?.get(t.id);
+    const prBadge = renderPrBadge(prState);
+    const prCell = showPr ? COL_GAP + pad(prBadge, prColWidth) : "";
     console.log(
       chalk.dim(t.id.padEnd(idWidth)) +
         COL_GAP +
@@ -261,7 +295,8 @@ function printTaskTable(rows: TaskRow[]): void {
         COL_GAP +
         renderColumn(priorityLabel(t.priority), COL_PRI, (text) => colorPriority(text, t.priority)) +
         COL_GAP +
-        renderColumn(t.status, COL_STATUS, statusChalk),
+        renderColumn(t.status, COL_STATUS, statusChalk) +
+        prCell,
     );
   }
 }
@@ -591,9 +626,10 @@ const listCommand = new Command("list")
   .option("--status <status>", "Filter by status (e.g. ready, backlog, in-progress)")
   .option("--type <type>", "Filter by type (e.g. epic, bug, feature, task)")
   .option("--all", "Include closed and merged tasks (excluded by default)")
+  .option("--show-pr", "Show GitHub PR state for each task")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action(async (opts: { status?: string; type?: string; all?: boolean; project?: string; projectPath?: string }) => {
+  .action(async (opts: { status?: string; type?: string; all?: boolean; showPr?: boolean; project?: string; projectPath?: string }) => {
     try {
       const { client, projectId } = await resolveTaskProjectContext(opts);
       let rows = await listAllTasks(client, projectId);
@@ -627,6 +663,22 @@ const listCommand = new Command("list")
         return;
       }
 
+      // Fetch PR states if --show-pr is specified
+      let prStates: Map<string, PrState> | undefined;
+      if (opts.showPr) {
+        prStates = new Map<string, PrState>();
+        await Promise.all(
+          rows.map(async (task) => {
+            try {
+              const prState = await client.tasks.getPrState({ projectId, taskId: task.id }) as PrState;
+              prStates!.set(task.id, prState);
+            } catch {
+              // PR state fetch failed - leave as undefined
+            }
+          })
+        );
+      }
+
       const label = opts.status
         ? opts.type
           ? `Tasks (status: ${opts.status}, type: ${opts.type})`
@@ -637,7 +689,7 @@ const listCommand = new Command("list")
             ? `All Tasks`
             : `Active Tasks`;
       console.log(chalk.bold(`\n  ${label} (${rows.length})\n`));
-      printTaskTable(rows);
+      printTaskTable(rows, prStates);
       console.log();
     } catch (err) {
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
@@ -687,6 +739,35 @@ const showCommand = new Command("show")
       }
       if (task.closed_at) {
         console.log(`  Closed:      ${new Date(task.closed_at).toLocaleString()}`);
+      }
+
+      // Show PR state
+      try {
+        const prState = await client.tasks.getPrState({ projectId, taskId: task.id }) as PrState;
+        if (prState) {
+          console.log(chalk.bold("\n  Pull Request:"));
+          console.log(`    Status:     ${renderPrBadge(prState)}`);
+          if (prState.url) {
+            console.log(`    URL:        ${prState.url}`);
+          }
+          if (prState.number) {
+            console.log(`    Number:     #${prState.number}`);
+          }
+          if (prState.headSha) {
+            console.log(`    PR Head:    ${chalk.dim(prState.headSha.slice(0, 12))}`);
+          }
+          if (prState.currentHeadSha) {
+            console.log(`    Branch Head: ${chalk.dim(prState.currentHeadSha.slice(0, 12))}`);
+          }
+          if (prState.isStale) {
+            console.log(chalk.yellow(`    ⚠ Stale:    PR merged but branch has been updated since`));
+          }
+          if (prState.error) {
+            console.log(chalk.red(`    Error:      ${prState.error}`));
+          }
+        }
+      } catch {
+        // PR state fetch failed - don't show anything
       }
 
       // Show dependencies
