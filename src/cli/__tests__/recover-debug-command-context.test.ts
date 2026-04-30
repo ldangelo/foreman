@@ -213,11 +213,13 @@ describe("foreman debug/recover command context", () => {
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await runCommand(recoverCommand, ["seed-1", "--reason", "stale-blocked"]);
+    await runCommand(recoverCommand, ["seed-1", "--reason", "finalize-conflict"]);
 
     const prompt = mockRunWithPiSdk.mock.calls[0]?.[0]?.prompt as string;
+    expect(prompt).toContain("**Failure reason reported:** `finalize-conflict`");
     expect(prompt).toContain("## Recommended Recovery");
     expect(prompt).toContain("Recommended recovery: clean-replay-from-main");
+    expect(prompt).toContain("### PLAYBOOK: `finalize-conflict`");
   });
 
   it("keeps outside-a-repo behavior unchanged", async () => {

@@ -114,7 +114,7 @@ async function resolveDaemonRecoverContext(projectPath: string): Promise<DaemonR
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type RecoveryReason = "test-failed" | "stuck" | "stale-blocked";
+type RecoveryReason = "test-failed" | "stuck" | "stale-blocked" | "finalize-conflict";
 type RecommendedRecovery = "clean-replay-from-main";
 
 // ── Artifact collection ─────────────────────────────────────────────────────
@@ -253,7 +253,7 @@ export const recoverCommand = new Command("recover")
   .argument("<bead-id>", "The bead/seed ID that needs recovery")
   .option(
     "--reason <reason>",
-    "Failure reason: test-failed | stuck | stale-blocked",
+    "Failure reason: test-failed | stuck | stale-blocked | finalize-conflict",
     "test-failed",
   )
   .option("--run-id <id>", "Specific run ID (default: latest run for this seed)")
@@ -268,7 +268,7 @@ export const recoverCommand = new Command("recover")
     raw?: boolean;
   }) => {
     const reason = (opts.reason ?? "test-failed") as RecoveryReason;
-    const validReasons: RecoveryReason[] = ["test-failed", "stuck", "stale-blocked"];
+    const validReasons: RecoveryReason[] = ["test-failed", "stuck", "stale-blocked", "finalize-conflict"];
     if (!validReasons.includes(reason)) {
       console.error(chalk.red(`Invalid reason "${reason}". Must be one of: ${validReasons.join(", ")}`));
       process.exit(1);
