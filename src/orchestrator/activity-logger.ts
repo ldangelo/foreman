@@ -193,6 +193,15 @@ export function detectWarnings(phases: PhaseRecord[]): string[] {
     );
   }
 
+  const commandContractFailures = failedPhases.filter(
+    (p) => p.phaseType === "command" && p.error?.includes("Command phase contract violated:"),
+  );
+  if (commandContractFailures.length > 0) {
+    warnings.push(
+      `Command phase contract failures: ${commandContractFailures.map((p) => p.name).join(", ")}`,
+    );
+  }
+
   const missingArtifacts = phases.filter(
     (p) => !p.skipped && p.success === true && p.artifactExpected && p.artifactPresent === false,
   );

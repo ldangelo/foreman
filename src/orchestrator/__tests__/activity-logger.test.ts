@@ -60,4 +60,23 @@ describe("activity logger observability", () => {
       "Command phases without strong execution evidence: fix",
     );
   });
+
+  it("warns explicitly on command phase contract failures", () => {
+    const finalized = finalizePhaseRecord(
+      createPhaseRecord("fix", "MiniMax", {
+        phaseType: "command",
+        artifactExpected: "DEVELOPER_REPORT.md",
+      }),
+      {
+        success: false,
+        costUsd: 0.1,
+        turns: 3,
+        error: "Command phase contract violated: Expected artifact missing: DEVELOPER_REPORT.md",
+      },
+    );
+
+    expect(detectWarnings([finalized])).toContain(
+      "Command phase contract failures: fix",
+    );
+  });
 });
