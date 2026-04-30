@@ -311,6 +311,7 @@ export interface TRPCRunsClient {
   }): Promise<unknown>;
   listActive(input: { projectId: string; beadId?: string }): Promise<unknown>;
   get(input: { runId: string }): Promise<unknown>;
+  getProgress(input: { runId: string }): Promise<unknown>;
   updateStatus(input: {
     runId: string;
     status: string;
@@ -420,6 +421,7 @@ export function createTrpcClient(
       list: (input) => untypedClient.query("runs.list", input),
       listActive: (input) => untypedClient.query("runs.listActive", input),
       get: (input) => untypedClient.query("runs.get", input),
+      getProgress: (input) => untypedClient.query("runs.getProgress", input),
       updateStatus: (input) => untypedClient.mutation("runs.updateStatus", input),
       finalize: (input) => untypedClient.mutation("runs.finalize", input),
       logEvent: (input) => untypedClient.mutation("runs.logEvent", input),

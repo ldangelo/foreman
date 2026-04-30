@@ -486,6 +486,28 @@ const runsRouter = t.router({
     }),
 
   /**
+   * Get run progress (currentPhase, lastActivity, tool calls, etc.) as JSON.
+   * GET /trpc/runs.getProgress
+   */
+  getProgress: t.procedure
+    .input(
+      z.object({
+        runId: z.string().uuid(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const run = await ctx.adapter.getPipelineRun(input.runId);
+      if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "Run not found" });
+      // Return the progress JSON as a plain object, or null if not set
+      if (!run.progress) return null;
+      try {
+        return JSON.parse(run.progress);
+      } catch {
+        return null;
+      }
+    }),
+
+  /**
    * Update run status (used by sentinel/pipeline to transition state).
    * POST /trpc/runs.updateStatus
    */
