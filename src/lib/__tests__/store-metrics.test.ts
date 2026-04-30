@@ -165,6 +165,46 @@ describe("ForemanStore — metrics queries", () => {
     expect(breakdown.byAgent["claude-sonnet-4-6"]).toBeCloseTo(0.25);
   });
 
+  it("getRecentOutcomeCounts and getSuccessRate use the latest authoritative run per seed", () => {
+    const project = store.registerProject("p", "/p");
+
+    const seedRecoveredFailed = store.createRun(project.id, "seed-recovered-failed", "claude-code");
+    store.updateRun(seedRecoveredFailed.id, { status: "failed", completed_at: new Date().toISOString() });
+    const seedRecoveredMerged = store.createRun(project.id, "seed-recovered-failed", "claude-code");
+    store.updateRun(seedRecoveredMerged.id, { status: "merged", completed_at: new Date().toISOString() });
+
+    const seedRecoveredStuck = store.createRun(project.id, "seed-recovered-stuck", "claude-code");
+    store.updateRun(seedRecoveredStuck.id, { status: "stuck", completed_at: new Date().toISOString() });
+    const seedRecoveredPr = store.createRun(project.id, "seed-recovered-stuck", "claude-code");
+    store.updateRun(seedRecoveredPr.id, { status: "pr-created", completed_at: new Date().toISOString() });
+
+    const latestFailed = store.createRun(project.id, "seed-failed", "claude-code");
+    store.updateRun(latestFailed.id, { status: "failed", completed_at: new Date().toISOString() });
+
+    const latestStuck = store.createRun(project.id, "seed-stuck", "claude-code");
+    store.updateRun(latestStuck.id, { status: "stuck", completed_at: new Date().toISOString() });
+
+    const outcomeCounts = store.getRecentOutcomeCounts(project.id, "2000-01-01T00:00:00Z");
+    expect(outcomeCounts).toEqual({ merged: 2, failed: 1, stuck: 1 });
+
+    const sr = store.getSuccessRate(project.id);
+    expect(sr.merged).toBe(2);
+    expect(sr.failed).toBe(1);
+    expect(sr.rate).toBeCloseTo(2 / 3);
+  });
+
+  it("getRecentOutcomeCounts ignores older failed runs when the latest authoritative run is still active", () => {
+    const project = store.registerProject("p", "/p");
+
+    const failedRun = store.createRun(project.id, "seed-retrying", "claude-code");
+    store.updateRun(failedRun.id, { status: "failed", completed_at: new Date().toISOString() });
+    const retryRun = store.createRun(project.id, "seed-retrying", "claude-code");
+    store.updateRun(retryRun.id, { status: "running", started_at: new Date().toISOString(), completed_at: null });
+
+    const outcomeCounts = store.getRecentOutcomeCounts(project.id, "2000-01-01T00:00:00Z");
+    expect(outcomeCounts).toEqual({ merged: 0, failed: 0, stuck: 0 });
+  });
+
   it("getPhaseMetrics aggregates phase costs across multiple runs", () => {
     const project = store.registerProject("p", "/p");
 
