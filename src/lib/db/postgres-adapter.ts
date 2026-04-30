@@ -89,6 +89,11 @@ export interface TaskRow {
   last_sync_at?: string | null;
   // Labels array (may not exist in all projects)
   labels?: string[] | null;
+  // PR state from associated run (AC-4: task list surfaces PR state)
+  pr_state?: "none" | "draft" | "open" | "merged" | "closed" | null;
+  pr_url?: string | null;
+  /** HEAD SHA of the branch when the PR was last updated. Null if no PR exists. */
+  pr_head_sha?: string | null;
 }
 
 export interface TaskDependencyRow {
@@ -592,37 +597,41 @@ export class PostgresAdapter {
       labels?: string[];
     }
   ): Promise<TaskRow[]> {
-    const conditions = ["project_id = $1"];
+    const conditions = ["t.project_id = $1"];
     const params: unknown[] = [projectId];
     let i = 2;
 
     if (filters?.status && filters.status.length > 0) {
-      conditions.push(`status IN (${filters.status.map((_, idx) => `$${i + idx}`).join(",")})`);
+      conditions.push(`t.status IN (${filters.status.map((_, idx) => `$${i + idx}`).join(",")})`);
       params.push(...filters.status);
       i += filters.status.length;
     }
 
     if (filters?.runId !== undefined) {
-      conditions.push(`run_id = $${i++}`);
+      conditions.push(`t.run_id = $${i++}`);
       params.push(filters.runId);
     }
 
     if (filters?.externalId !== undefined) {
-      conditions.push(`external_id = $${i++}`);
+      conditions.push(`t.external_id = $${i++}`);
       params.push(filters.externalId);
     }
 
     if (filters?.labels && filters.labels.length > 0) {
-      conditions.push(`labels @> $${i++}::text[]`);
+      conditions.push(`t.labels @> $${i++}::text[]`);
       params.push(filters.labels);
     }
 
     const limit = filters?.limit ?? 100;
     params.push(limit);
 
+    // LEFT JOIN runs to get PR state (AC-4: task list surfaces PR state)
     return query<TaskRow>(
-      `SELECT * FROM tasks WHERE ${conditions.join(" AND ")}
-       ORDER BY priority ASC, created_at ASC
+      `SELECT t.*, r.pr_state, r.pr_url, r.pr_head_sha
+       FROM tasks t
+       LEFT JOIN runs r ON t.run_id = r.id
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY t.priority ASC, t.created_at ASC
        LIMIT $${i}`,
       params,
     );

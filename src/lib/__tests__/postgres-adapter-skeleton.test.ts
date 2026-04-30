@@ -295,7 +295,7 @@ describe("PostgresAdapter task operations", () => {
 
   it("listTasks returns rows from the database", async () => {
     const mockPool = makeMockPool([
-      { sqlPattern: /SELECT \* FROM tasks/, rows: [TASK_ROW] },
+      { sqlPattern: /SELECT t\.\*, r\.pr_state, r\.pr_url, r\.pr_head_sha/, rows: [{ ...TASK_ROW, pr_state: null, pr_url: null, pr_head_sha: null }] },
     ]);
     await initPool({ poolOverride: mockPool as PoolLike });
     try {
@@ -310,7 +310,7 @@ describe("PostgresAdapter task operations", () => {
 
   it("listTasks filters by status", async () => {
     const mockPool = makeMockPool([
-      { sqlPattern: /SELECT \* FROM tasks WHERE project_id = \$1 AND status IN/, rows: [TASK_ROW] },
+      { sqlPattern: /SELECT t\.\*, r\.pr_state, r\.pr_url, r\.pr_head_sha/, rows: [{ ...TASK_ROW, pr_state: null, pr_url: null, pr_head_sha: null }] },
     ]);
     await initPool({ poolOverride: mockPool as PoolLike });
     try {

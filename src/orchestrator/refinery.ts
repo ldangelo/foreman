@@ -158,7 +158,7 @@ export class Refinery {
       : Promise.resolve(this.runLookup.getRunsByBaseBranch(baseBranch, projectId));
   }
 
-  private async persistRunUpdate(run: Run, updates: Partial<Pick<Run, "status" | "completed_at" | "base_branch">>): Promise<void> {
+  private async persistRunUpdate(run: Run, updates: Partial<Pick<Run, "status" | "completed_at" | "base_branch" | "pr_url" | "pr_state" | "pr_head_sha">>): Promise<void> {
     if (this.registeredProjectId && this.postgresAdapter) {
       try {
         await this.postgresAdapter.updateRun(this.registeredProjectId, run.id, updates);
@@ -417,33 +417,65 @@ export class Refinery {
     if (opts.existingOk !== false && !this.isTestRuntime()) {
       const existingPr = await this.getExistingPrState(branchName);
       if (existingPr?.headRefName === branchName && existingPr.url) {
-        let reopenedExistingPr = false;
-        if (existingPr.state === "CLOSED") {
-          try {
-            await gh(["pr", "reopen", existingPr.url], this.projectPath);
-            reopenedExistingPr = true;
-          } catch (err: unknown) {
-            if (!shouldCreateFreshPrAfterReopenFailure(err)) {
-              throw err;
+        // AC-2: Never reuse PRs for older heads — verify HEAD SHA matches.
+        // Only treat PR as stale when we know the GitHub-tracked SHA (headRefOid
+        // is non-null) AND the current branch HEAD differs. When headRefOid is
+        // null/undefined (GitHub API didn't track it), fall back to
+        // branch-name-based reuse (the PR is still valid for this branch).
+        const currentBranchHead = await this.vcsBackend
+          .resolveRef(this.projectPath, branchName)
+          .catch(() => null);
+        if (
+          existingPr.headRefOid !== null &&
+          currentBranchHead !== null &&
+          currentBranchHead !== existingPr.headRefOid
+        ) {
+          // HEAD SHA changed — PR is stale; create fresh PR below.
+          // Log this mismatch so it's visible in run events.
+          await this.persistRunEvent(run, "pr-stale", {
+            seedId: run.seed_id,
+            branchName,
+            stalePrUrl: existingPr.url,
+            staleHead: existingPr.headRefOid,
+            currentHead: currentBranchHead,
+          });
+        } else {
+          // HEAD SHA unchanged — safe to reuse the existing PR.
+          let reopenedExistingPr = false;
+          if (existingPr.state === "CLOSED") {
+            try {
+              await gh(["pr", "reopen", existingPr.url], this.projectPath);
+              reopenedExistingPr = true;
+            } catch (err: unknown) {
+              if (!shouldCreateFreshPrAfterReopenFailure(err)) {
+                throw err;
+              }
             }
           }
-        }
-        if (existingPr.state === "OPEN" || reopenedExistingPr) {
-          await this.persistRunEvent(
-            run,
-            "pr-created",
-            {
-              seedId: run.seed_id,
-              branchName,
-              baseBranch,
-              prUrl: existingPr.url,
-              existing: true,
-              reopened: reopenedExistingPr,
-              draft: opts.draft ?? false,
-            },
-          );
-          if (opts.updateRunStatus) await this.persistRunUpdate(run, { status: "pr-created" });
-          return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPr.url };
+          if (existingPr.state === "OPEN" || reopenedExistingPr) {
+            await this.persistRunEvent(
+              run,
+              "pr-created",
+              {
+                seedId: run.seed_id,
+                branchName,
+                baseBranch,
+                prUrl: existingPr.url,
+                existing: true,
+                reopened: reopenedExistingPr,
+                draft: opts.draft ?? false,
+              },
+            );
+            // Update PR metadata on the run record (AC-1, AC-6).
+            const prState: Run["pr_state"] = opts.draft ?? false ? "draft" : "open";
+            await this.persistRunUpdate(run, {
+              status: opts.updateRunStatus ? "pr-created" : run.status,
+              pr_url: existingPr.url,
+              pr_state: prState,
+              pr_head_sha: currentBranchHead ?? null,
+            });
+            return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPr.url };
+          }
         }
       }
     }
@@ -493,6 +525,17 @@ export class Refinery {
     if (opts.updateRunStatus) {
       await this.persistRunUpdate(run, { status: "pr-created" });
     }
+    // Update PR metadata on the run record (AC-1, AC-6).
+    // Capture the current branch HEAD as pr_head_sha so we can detect SHA changes.
+    const currentHead = await this.vcsBackend
+      .resolveRef(this.projectPath, branchName)
+      .catch(() => null);
+    const prState: import("../lib/store.js").Run["pr_state"] = opts.draft ?? false ? "draft" : "open";
+    await this.persistRunUpdate(run, {
+      pr_url: prUrl,
+      pr_state: prState,
+      pr_head_sha: currentHead ?? null,
+    });
 
     // Link PR back to GitHub issue (TRD-032)
     await this.#linkPrToGithubIssue(run.id, prUrl);

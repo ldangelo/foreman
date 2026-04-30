@@ -1221,6 +1221,17 @@ async function runPhaseSequence(
       }
       // Increment i and continue to next phase
       if (result.success) {
+        // AC-6: Capture branch HEAD SHA at finalize success (durable PR identity metadata).
+        // This stores the commit_sha on the run record so PR reuse can verify SHA match later.
+        if (phaseName === "finalize" && result.success && config.vcsBackend) {
+          try {
+            const finalizedHead = await config.vcsBackend.getHeadId(worktreePath);
+            store.updateRun(runId, { commit_sha: finalizedHead });
+          } catch {
+            // Best effort — HEAD capture failure should not block pipeline completion.
+          }
+        }
+
         if (phase.mail?.onComplete !== false) {
           ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
             seedId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,

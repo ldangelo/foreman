@@ -241,7 +241,6 @@ sentinelCommand
   .action(async (opts) => {
     try {
       const projectPath = await resolveRepoRootProjectPath({});
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
       const localStore = ForemanStore.forProject(projectPath);
       const registered = await resolveSentinelRegisteredProject(projectPath);
       if (registered) {
@@ -334,7 +333,6 @@ sentinelCommand
   .action(async (opts) => {
     try {
       const projectPath = await resolveRepoRootProjectPath({});
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
       const localStore = ForemanStore.forProject(projectPath);
       const registered = await resolveSentinelRegisteredProject(projectPath);
       if (registered) {

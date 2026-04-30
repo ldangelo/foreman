@@ -125,6 +125,7 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
     mergeWithoutCommit: vi.fn().mockResolvedValue({ success: true }),
     resetHard: vi.fn().mockResolvedValue(undefined),
     getHeadId: vi.fn().mockResolvedValue("abc1234"),
+    resolveRef: vi.fn().mockResolvedValue("abc1234"),
     fetch: vi.fn().mockResolvedValue(undefined),
     diff: vi.fn().mockResolvedValue(""),
     getModifiedFiles: vi.fn().mockResolvedValue([]),
