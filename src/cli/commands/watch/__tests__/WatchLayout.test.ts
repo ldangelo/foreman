@@ -58,7 +58,7 @@ describe("WatchLayout", () => {
     it("subtracts 4 from total width for borders", () => {
       const totalWidth = 120;
       const widths = getPanelWidths("wide", totalWidth);
-      const sum = widths.agents + widths.board + widths.inbox;
+      const sum = widths.agents + widths.board + widths.inbox + widths.events;
       expect(sum).toBe(totalWidth - 4);
     });
   });

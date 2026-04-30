@@ -37,6 +37,7 @@ import {
   type WatchOptions,
   pollWatchData,
   pollInboxData,
+  pollPipelineEvents,
   handleWatchKey,
   nextPanel,
 } from "./WatchState.js";
@@ -44,21 +45,25 @@ import { renderWatch } from "./render.js";
 import { approveTask, retryTask } from "./actions.js";
 
 export const watchCommand = new Command("watch")
-  .description("Single-pane unified dashboard: agents, board, and inbox")
+  .description("Single-pane unified dashboard: agents, board, inbox, and pipeline events")
   .option("--refresh <ms>", "Refresh interval in milliseconds (default: 5000; min: 1000)", "")
   .option("--inbox-limit <n>", "Max inbox messages shown (default: 5)", "")
   .option("--inbox-poll <ms>", "Inbox-only poll interval in ms (default: 2000)", "")
+  .option("--events-limit <n>", "Max pipeline events shown (default: 5)", "")
   .option("--no-watch", "One-shot snapshot, no polling")
   .option("--no-board", "Hide board summary panel")
   .option("--no-inbox", "Hide inbox panel")
+  .option("--no-events", "Hide pipeline events panel")
   .option("--project <id>", "Filter to specific project ID")
   .action(async (opts: {
     refresh: string;
     "inbox-limit": string;
     "inbox-poll": string;
+    "events-limit": string;
     watch: boolean;
     board: boolean;
     inbox: boolean;
+    events: boolean;
     project?: string;
   }) => {
     const projectPath = await resolveRepoRootProjectPath({ project: opts.project });
@@ -81,9 +86,14 @@ export const watchCommand = new Command("watch")
       ? Math.max(500, parseInt(opts["inbox-poll"], 10) || 2000)
       : 2000;
 
+    const eventsLimit = opts["events-limit"]
+      ? Math.max(1, parseInt(opts["events-limit"], 10) || 5)
+      : 5;
+
     const noWatch = opts.watch === false;
     const noBoard = opts.board === false;
     const noInbox = opts.inbox === false;
+    const noEvents = opts.events === false;
     const projectId = opts.project;
 
     // Options object for poll functions
@@ -91,9 +101,11 @@ export const watchCommand = new Command("watch")
       refreshMs,
       inboxLimit,
       inboxPollMs,
+      eventsLimit,
       noWatch,
       noBoard,
       noInbox,
+      noEvents,
       projectId,
     };
 
@@ -227,6 +239,18 @@ export const watchCommand = new Command("watch")
           };
         }
 
+        // One-shot: poll pipeline events
+        if (!noEvents) {
+          const runIds = result.agents.map(e => e.run.id);
+          const eventsResult = await pollPipelineEvents(store!, null, eventsLimit, runIds, projectPath, projectId);
+          state.events = {
+            events: eventsResult.events,
+            totalCount: eventsResult.totalCount,
+            newestTimestamp: eventsResult.events[0]?.createdAt ?? null,
+            oldestTimestamp: eventsResult.events[eventsResult.events.length - 1]?.createdAt ?? null,
+          };
+        }
+
         console.log(renderWatch(state));
           store?.close();
           return;
@@ -264,7 +288,18 @@ export const watchCommand = new Command("watch")
         state.inboxLastSeenId = inboxResult.newestId;
       }
 
-      let inboxSleepResolve: (() => void) | null = null;
+      // Initial events poll
+      if (!noEvents) {
+        const runIds = state.agents.map(e => e.run.id);
+        const eventsResult = await pollPipelineEvents(store!, null, eventsLimit, runIds, projectPath, projectId);
+        state.events = {
+          events: eventsResult.events,
+          totalCount: eventsResult.totalCount,
+          newestTimestamp: eventsResult.events[0]?.createdAt ?? null,
+          oldestTimestamp: eventsResult.events[eventsResult.events.length - 1]?.createdAt ?? null,
+        };
+        state.eventsLastSeenId = eventsResult.newestId;
+      }
 
       // Main poll loop
       while (!detached) {
@@ -329,6 +364,36 @@ export const watchCommand = new Command("watch")
           // Update last seen
           if (inboxResult.newestId) {
             state.inboxLastSeenId = inboxResult.newestId;
+          }
+        }
+
+        // Events fast poll
+        if (!noEvents) {
+          const runIds = result.agents.map(e => e.run.id);
+          const eventsResult = await pollPipelineEvents(store!, state.eventsLastSeenId, eventsLimit, runIds, projectPath, projectId);
+
+          if (eventsResult.events.length > 0) {
+            // Prepend new events (they come in reverse chronological order)
+            const existingEvents = state.events?.events ?? [];
+            const newEntries = eventsResult.events.map((entry) => ({
+              ...entry,
+              isNew: state.eventsLastSeenId !== null && entry.id !== state.eventsLastSeenId,
+            }));
+
+            // Merge: new entries at top, capped at eventsLimit total
+            const merged = [...newEntries, ...existingEvents].slice(0, eventsLimit);
+
+            state.events = {
+              events: merged,
+              totalCount: eventsResult.totalCount,
+              newestTimestamp: newEntries[0]?.createdAt ?? state.events?.newestTimestamp ?? null,
+              oldestTimestamp: merged[merged.length - 1]?.createdAt ?? null,
+            };
+          }
+
+          // Update last seen
+          if (eventsResult.newestId) {
+            state.eventsLastSeenId = eventsResult.newestId;
           }
         }
       }

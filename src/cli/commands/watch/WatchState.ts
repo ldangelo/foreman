@@ -11,7 +11,7 @@
 import chalk from "chalk";
 import { resolve } from "node:path";
 import { ForemanStore } from "../../../lib/store.js";
-import type { Run, RunProgress, Message } from "../../../lib/store.js";
+import type { Run, RunProgress, Message, EventType } from "../../../lib/store.js";
 import type { BoardTask } from "../board.js";
 import { fetchDaemonDashboardState, type DashboardState } from "../dashboard.js";
 import { type BoardStatus } from "../board.js";
@@ -21,10 +21,12 @@ import { listRegisteredProjects } from "../project-task-support.js";
 
 // ── Panel focus ─────────────────────────────────────────────────────────
 
-export type PanelId = "agents" | "board" | "inbox";
+export type PanelId = "agents" | "board" | "inbox" | "events";
 
 export function nextPanel(current: PanelId): PanelId {
-  return current === "agents" ? "board" : current === "board" ? "inbox" : "agents";
+  const order: PanelId[] = ["agents", "board", "inbox", "events"];
+  const idx = order.indexOf(current);
+  return order[(idx + 1) % order.length];
 }
 
 // ── Watch options ─────────────────────────────────────────────────────────
@@ -33,9 +35,11 @@ export interface WatchOptions {
   refreshMs: number;       // Main poll interval (default: 5000)
   inboxLimit: number;     // Max messages shown (default: 5)
   inboxPollMs: number;    // Inbox-only poll interval (default: 2000)
+  eventsLimit: number;    // Max pipeline events shown (default: 5)
   noWatch: boolean;       // One-shot snapshot mode
   noBoard: boolean;       // Hide board panel
   noInbox: boolean;       // Hide inbox panel
+  noEvents: boolean;      // Hide events panel
   projectId?: string;     // Filter to specific project
 }
 
@@ -65,6 +69,24 @@ export interface InboxState {
   oldestTimestamp: string | null;
 }
 
+// ── Pipeline event types ───────────────────────────────────────────────
+
+export interface PipelineEventEntry {
+  id: string;
+  eventType: EventType;
+  runId: string | null;
+  details: Record<string, unknown> | null;
+  createdAt: string;
+  isNew: boolean;  // true if arrived since last render
+}
+
+export interface EventsState {
+  events: PipelineEventEntry[];
+  totalCount: number;
+  newestTimestamp: string | null;
+  oldestTimestamp: string | null;
+}
+
 // ── Watch state ──────────────────────────────────────────────────────────
 
 export interface WatchState {
@@ -73,12 +95,14 @@ export interface WatchState {
   agents: AgentEntry[];
   board: BoardSummary | null;
   inbox: InboxState | null;
+  events: EventsState | null;
   taskCounts: { total: number; ready: number; inProgress: number; completed: number; blocked: number } | null;
 
   // Time
   lastPollMs: number;  // monotonic timestamp of last full poll
   lastInboxPollMs: number;
   inboxLastSeenId: string | null;  // Most recently seen message ID
+  eventsLastSeenId: string | null; // Most recently seen event ID
 
   // UI
   focusedPanel: PanelId;
@@ -91,6 +115,7 @@ export interface WatchState {
   agentsOffline: boolean;
   boardOffline: boolean;
   inboxOffline: boolean;
+  eventsOffline: boolean;
 }
 
 // ── Initial state ────────────────────────────────────────────────────────
@@ -101,10 +126,12 @@ export function initialWatchState(): WatchState {
     agents: [],
     board: null,
     inbox: null,
+    events: null,
     taskCounts: null,
     lastPollMs: 0,
     lastInboxPollMs: 0,
     inboxLastSeenId: null,
+    eventsLastSeenId: null,
     focusedPanel: "agents",
     expandedAgentIndices: new Set(),
     selectedTaskIndex: -1,
@@ -113,6 +140,7 @@ export function initialWatchState(): WatchState {
     agentsOffline: false,
     boardOffline: false,
     inboxOffline: false,
+    eventsOffline: false,
   };
 }
 
@@ -308,6 +336,108 @@ export async function pollInboxData(
     return { messages, totalCount, newestId };
   } catch {
     return { messages: [], totalCount: 0, newestId: null };
+  }
+}
+
+// ── Pipeline events polling ─────────────────────────────────────────────
+
+interface DaemonPipelineEventRow {
+  id: string;
+  run_id: string | null;
+  event_type: string;
+  details: string | null;
+  created_at: string;
+}
+
+/**
+ * Poll pipeline events for the events panel.
+ * Returns events + total count for watched runIds.
+ */
+export async function pollPipelineEvents(
+  store: ForemanStore,
+  lastSeenId: string | null,
+  eventsLimit: number,
+  runIds: string[],
+  projectPath?: string,
+  projectId?: string,
+): Promise<{ events: PipelineEventEntry[]; totalCount: number; newestId: string | null }> {
+  try {
+    if (projectPath) {
+      try {
+        const projects = await listRegisteredProjects();
+        const normalizedProjectPath = resolve(projectPath);
+        const project = projectId
+          ? projects.find((record) => record.id === projectId || record.name === projectId)
+          : projects.find((record) => resolve(record.path) === normalizedProjectPath);
+        if (project) {
+          const client = createTrpcClient();
+          // Fetch events for all runIds
+          const eventLists = await Promise.all(
+            runIds.map((runId) => client.runs.listEvents({ runId }) as Promise<DaemonPipelineEventRow[]>),
+          );
+
+          const allEvents: PipelineEventEntry[] = eventLists
+            .flat()
+            .map((row) => ({
+              id: row.id,
+              eventType: row.event_type as EventType,
+              runId: row.run_id,
+              details: row.details ? JSON.parse(row.details) : null,
+              createdAt: row.created_at,
+              isNew: lastSeenId !== null && row.id === lastSeenId,
+            }));
+
+          // Sort by created_at descending (most recent first)
+          allEvents.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+          const totalCount = allEvents.length;
+          const recent = allEvents.slice(0, eventsLimit);
+          const newestId = recent[0]?.id ?? null;
+
+          // Mark first event as "new" if it's new since lastSeenId
+          const events: PipelineEventEntry[] = recent.map((e, i) => ({
+            ...e,
+            isNew: lastSeenId !== null && i === 0 && e.id !== lastSeenId,
+          }));
+
+          return { events, totalCount, newestId };
+        }
+      } catch {
+        // Fall through to legacy local-store path.
+      }
+    }
+
+    // Legacy local-store path
+    const allEvents: PipelineEventEntry[] = [];
+    for (const runId of runIds) {
+      const rows = store.getRunEvents(runId);
+      for (const row of rows) {
+        allEvents.push({
+          id: row.id,
+          eventType: row.event_type,
+          runId: row.run_id,
+          details: row.details ? JSON.parse(row.details) : null,
+          createdAt: row.created_at,
+          isNew: lastSeenId !== null && row.id === lastSeenId,
+        });
+      }
+    }
+
+    // Sort by created_at descending
+    allEvents.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const totalCount = allEvents.length;
+    const recent = allEvents.slice(0, eventsLimit);
+    const newestId = recent[0]?.id ?? null;
+
+    const events: PipelineEventEntry[] = recent.map((e, i) => ({
+      ...e,
+      isNew: lastSeenId !== null && i === 0 && e.id !== lastSeenId,
+    }));
+
+    return { events, totalCount, newestId };
+  } catch {
+    return { events: [], totalCount: 0, newestId: null };
   }
 }
 

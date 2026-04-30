@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 const mockResolveRepoRootProjectPath = vi.hoisted(() => vi.fn());
 const mockLoadDashboardConfig = vi.hoisted(() => vi.fn());
 const mockPollWatchData = vi.hoisted(() => vi.fn());
+const mockPollInboxData = vi.hoisted(() => vi.fn());
+const mockPollPipelineEvents = vi.hoisted(() => vi.fn());
 const mockRenderWatch = vi.hoisted(() => vi.fn());
 const mockForemanForProject = vi.hoisted(() => vi.fn());
 
@@ -26,7 +28,8 @@ vi.mock("../../lib/store.js", () => ({
 vi.mock("../commands/watch/WatchState.js", () => ({
   initialWatchState: vi.fn().mockReturnValue({}),
   pollWatchData: mockPollWatchData,
-  pollInboxData: vi.fn(),
+  pollInboxData: mockPollInboxData,
+  pollPipelineEvents: mockPollPipelineEvents,
   handleWatchKey: vi.fn().mockReturnValue({ render: false, wake: false, quit: false, none: true }),
   nextPanel: vi.fn(),
 }));
@@ -53,6 +56,8 @@ describe("watch command bootstrap", () => {
       board: null,
       taskCounts: { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 },
     });
+    mockPollInboxData.mockResolvedValue({ messages: [], totalCount: 0, newestId: null });
+    mockPollPipelineEvents.mockResolvedValue({ events: [], totalCount: 0, newestId: null });
     mockRenderWatch.mockReturnValue("watch output");
 
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
