@@ -416,6 +416,7 @@ function renderHelpOverlayView(width: number): ReturnType<typeof h> {
     ["c", "Close task"],
     ["C", "Close task with reason"],
     ["e / E", "Edit task in editor"],
+    ["n", "Create new task"],
     ["Enter", "Show task detail"],
     ["Esc", "Dismiss help / detail"],
     ["r", "Refresh board from store"],
@@ -596,7 +597,7 @@ function renderBoardFrame(
         );
       }),
     ),
-    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  s/S cycle status  c/C close  e/E edit  Enter detail  ? help  r refresh  q quit"),
+    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  s/S cycle status  c/C close  e/E edit  n new  Enter detail  ? help  r refresh  q quit"),
     state.errorMessage
       ? h(
         Box,
@@ -862,6 +863,142 @@ const KEY_E = "E";
 const KEY_r = "r";
 const KEY_q = "q";
 const KEY_QUESTION = "?";
+const KEY_n = "n";
+
+// ── New task editor template ────────────────────────────────────────────────
+
+const NEW_TASK_TEMPLATE = `# Create a new Foreman task
+# Fields: id (optional, auto-generated if empty), title, description, type, priority, status
+# Lines starting with # are comments and will be ignored
+# Priority: 0=critical, 1=high, 2=medium, 3=low, 4=backlog
+# Status: backlog, ready, in_progress, review, blocked, closed
+# Type: task, bug, feature, epic, chore, docs, question
+
+id:
+title:
+description:
+type: task
+priority: 2
+status: backlog
+`;
+
+/**
+ * Open the editor with a new task template and return the parsed content on success.
+ * On error or non-zero exit, returns null and sets errorMessage.
+ */
+export function createTaskInEditor(
+  onError: (msg: string) => void,
+): { id: string; title: string; description: string | null; type: string; priority: number; status: string } | null {
+  const editor = resolveEditor();
+  const tmpFile = joinPath(tmpdir(), `foreman-task-new-${randomUUID()}.yaml`);
+
+  try {
+    writeFileSync(tmpFile, NEW_TASK_TEMPLATE.trim() + "\n", "utf8");
+  } catch (err) {
+    onError(`Failed to write temp file: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+
+  let exitCode = 0;
+  try {
+    exitCode = spawnSync(editor, [tmpFile], {
+      stdio: "inherit",
+      shell: true,
+    }).status ?? 0;
+  } catch (err) {
+    onError(`Failed to launch editor '${editor}': ${err instanceof Error ? err.message : String(err)}`);
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    return null;
+  }
+
+  if (exitCode !== 0) {
+    onError(`Editor exited with code ${exitCode} — task not created.`);
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    return null;
+  }
+
+  try {
+    const raw = readFileSync(tmpFile, "utf8");
+    const parsed = yaml.load(raw) as Record<string, unknown>;
+
+    // Validate required field: title
+    if (!parsed.title || typeof parsed.title !== "string" || parsed.title.trim().length === 0) {
+      onError("Title is required.");
+      try { unlinkSync(tmpFile); } catch { /* ignore */ }
+      return null;
+    }
+
+    const VALID_TYPES = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
+    const taskType = typeof parsed.type === "string" && VALID_TYPES.includes(parsed.type)
+      ? parsed.type
+      : "task";
+
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    return {
+      id: typeof parsed.id === "string" && parsed.id.trim().length > 0 ? parsed.id.trim() : randomUUID(),
+      title: String(parsed.title).trim(),
+      description: typeof parsed.description === "string" ? parsed.description : null,
+      type: taskType,
+      priority: typeof parsed.priority === "number" ? clamp(parsed.priority, 0, 4) : 2,
+      status: typeof parsed.status === "string" ? String(parsed.status) : "backlog",
+    };
+  } catch (err) {
+    onError(`Failed to parse YAML: ${err instanceof Error ? err.message : String(err)}`);
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    return null;
+  }
+}
+
+/**
+ * Create a new task via the tRPC API.
+ */
+export async function createTaskAsync(
+  projectPath: string,
+  taskData: { id: string; title: string; description?: string | null; type?: string; priority?: number; status?: string },
+): Promise<{ taskId: string } | string> {
+  try {
+    const { client, projectId } = await resolveBoardContext(projectPath);
+    const created = await client.tasks.create({
+      projectId,
+      id: taskData.id,
+      title: taskData.title,
+      description: taskData.description ?? undefined,
+      type: taskData.type,
+      priority: taskData.priority,
+      status: taskData.status,
+    }) as { id: string };
+    return { taskId: created.id };
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+export const boardApi = {
+  createTaskInEditor,
+  createTaskAsync,
+};
+
+function suspendRawMode(): void {
+  if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+    try {
+      process.stdin.setRawMode(false);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function resumeRawMode(): void {
+  if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+    try {
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      process.stdin.setEncoding("utf8");
+    } catch {
+      // ignore
+    }
+  }
+}
 
 export interface KeyHandlerResult {
   nav: NavigationState;
@@ -1016,6 +1153,29 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         const task = getHighlightedTask(result.nav, state.tasks);
         if (!task) break;
         result.promptForCloseReason = true;
+        break;
+      }
+
+      // ── Create new task ─────────────────────────────────────────────────────
+      case KEY_n: {
+        suspendRawMode();
+        try {
+          const newTask = boardApi.createTaskInEditor((msg) => {
+            result.errorMessage = msg;
+          });
+
+          if (newTask) {
+            const createErr = await boardApi.createTaskAsync(projectPath, newTask);
+            if (typeof createErr === "string") {
+              result.errorMessage = createErr;
+            } else {
+              result.flashTaskId = createErr.taskId;
+              result.needsRefresh = true;
+            }
+          }
+        } finally {
+          resumeRawMode();
+        }
         break;
       }
 

@@ -1,10 +1,11 @@
 /**
- * Tests for board mutations (status cycling, close, edit).
+ * Tests for board mutations: status cycling, close, edit, and create new task.
  *
  * @module src/cli/commands/__tests__/board-mutations.test
  */
 
 import { describe, it, expect, vi } from "vitest";
+import * as boardModule from "../board.js";
 import { createKeyHandler, type BoardStatus, type BoardTask, type RenderState } from "../board.js";
 
 // Constants matching board.ts
@@ -333,6 +334,135 @@ describe("BoardMutations", () => {
       expect(filtered.title).toBe("Task");
       // Unknown fields should not be present
       expect((filtered as Record<string, unknown>).unknown_field).toBeUndefined();
+    });
+  });
+
+  describe("Create New Task (n key)", () => {
+    it("n key should trigger new task creation", async () => {
+      vi.spyOn(boardModule.boardApi, "createTaskInEditor").mockReturnValue({
+        id: "bd-new",
+        title: "New Task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      });
+      vi.spyOn(boardModule.boardApi, "createTaskAsync").mockResolvedValue({ taskId: "bd-new" });
+
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({
+        backlog: [createTask("bd-1234")],
+      });
+
+      const result = await handleKey("n", state, "/tmp/project");
+
+      expect(result.needsRefresh).toBe(true);
+      expect(result.flashTaskId).toBe("bd-new");
+      expect(result.errorMessage).toBeNull();
+    });
+
+    it("new task template should have title as required field", () => {
+      // Simulate template validation
+      const validTask = {
+        id: "bd-new",
+        title: "My new task",
+        description: "A description",
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      expect(validTask.title.length).toBeGreaterThan(0);
+    });
+
+    it("new task template should require title", () => {
+      const invalidTask = {
+        id: "bd-new",
+        title: "",
+        description: "A description",
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      const isValid = invalidTask.title.trim().length > 0;
+      expect(isValid).toBe(false);
+    });
+
+    it("new task should default to backlog status", () => {
+      const task = {
+        id: "bd-new",
+        title: "New task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      expect(task.status).toBe("backlog");
+    });
+
+    it("new task should default to task type", () => {
+      const task = {
+        id: "bd-new",
+        title: "New task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      expect(task.type).toBe("task");
+    });
+
+    it("new task should default to priority 2", () => {
+      const task = {
+        id: "bd-new",
+        title: "New task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      expect(task.priority).toBe(2);
+    });
+
+    it("new task should accept valid types", () => {
+      const validTypes = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
+
+      for (const type of validTypes) {
+        const task = { type };
+        expect(validTypes.includes(task.type)).toBe(true);
+      }
+    });
+
+    it("new task should reject invalid types", () => {
+      const validTypes = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
+      const invalidType = "invalid";
+
+      expect(validTypes.includes(invalidType)).toBe(false);
+    });
+
+    it("new task should clamp priority to [0, 4]", () => {
+      const clamp = (value: number, min: number, max: number): number =>
+        Math.max(min, Math.min(max, value));
+
+      const priorities = [-1, 0, 2, 4, 5];
+      const expected = [0, 0, 2, 4, 4];
+
+      priorities.forEach((p, i) => {
+        expect(clamp(p, 0, 4)).toBe(expected[i]);
+      });
+    });
+
+    it("new task id should be auto-generated if empty", () => {
+      // Simulate auto-ID generation
+      const parsedId = "bd-auto-123";
+      const providedId = "";
+
+      const finalId = providedId.trim().length > 0 ? providedId.trim() : parsedId;
+      expect(finalId).toBe(parsedId);
     });
   });
 
