@@ -131,6 +131,48 @@ describe("Dispatcher.drainBeadWriterInbox()", () => {
     expect(args).toEqual(["update", "bd-fail", "--status", "failed", "--lock-timeout", "10000"]);
   });
 
+  it("skips mark-failed when the latest run is already merged", async () => {
+    const project = store.getProjectByPath(tmpDir)!;
+    const run = store.createRun(project.id, "bd-fail", "worker");
+    store.updateRun(run.id, { status: "merged" });
+    store.enqueueBeadWrite("agent-worker", "mark-failed", { seedId: "bd-fail" });
+
+    await dispatcher.drainBeadWriterInbox();
+
+    const failedUpdateCalls = getCalls().filter(([, args]) =>
+      args[0] === "update" && args[1] === "bd-fail" && args.includes("failed")
+    );
+    expect(failedUpdateCalls).toHaveLength(0);
+  });
+
+  it("skips reset-seed when the latest run is already pr-created", async () => {
+    const project = store.getProjectByPath(tmpDir)!;
+    const run = store.createRun(project.id, "bd-reset-skip", "worker");
+    store.updateRun(run.id, { status: "pr-created" });
+    store.enqueueBeadWrite("agent-worker", "reset-seed", { seedId: "bd-reset-skip" });
+
+    await dispatcher.drainBeadWriterInbox();
+
+    const openUpdateCalls = getCalls().filter(([, args]) =>
+      args[0] === "update" && args[1] === "bd-reset-skip" && args.includes("open")
+    );
+    expect(openUpdateCalls).toHaveLength(0);
+  });
+
+  it("skips non-closed set-status when the latest run is already merged", async () => {
+    const project = store.getProjectByPath(tmpDir)!;
+    const run = store.createRun(project.id, "bd-status-skip", "worker");
+    store.updateRun(run.id, { status: "merged" });
+    store.enqueueBeadWrite("agent-worker", "set-status", { seedId: "bd-status-skip", status: "review" });
+
+    await dispatcher.drainBeadWriterInbox();
+
+    const reviewUpdateCalls = getCalls().filter(([, args]) =>
+      args[0] === "update" && args[1] === "bd-status-skip" && args.includes("review")
+    );
+    expect(reviewUpdateCalls).toHaveLength(0);
+  });
+
   it("executes br update --notes for add-notes operation", async () => {
     store.enqueueBeadWrite("agent-worker", "add-notes", { seedId: "bd-notes", notes: "Some failure note" });
 

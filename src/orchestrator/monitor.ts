@@ -26,6 +26,7 @@ export interface HungSessionReport {
 
 interface MonitorStore {
   getActiveRuns(projectId?: string): Promise<Run[]>;
+  getRun?(runId: string): Promise<Run | null> | Run | null;
   updateRun(runId: string, updates: Partial<Pick<Run, "status" | "worktree_path" | "started_at" | "completed_at">>): Promise<void>;
   logEvent(projectId: string, eventType: "complete" | "stuck" | "fail" | "recover", data: Record<string, unknown>, runId?: string): Promise<void>;
   getRunProgress(runId: string): Promise<import("../lib/store.js").RunProgress | null>;
@@ -68,6 +69,10 @@ export function isNotFoundError(err: unknown): boolean {
   return lower.includes("not found") || lower.includes("404");
 }
 
+function isTerminalSuccessStatus(status: Run["status"] | null | undefined): boolean {
+  return status === "merged" || status === "pr-created";
+}
+
 // ── Monitor ──────────────────────────────────────────────────────────────
 
 export class Monitor {
@@ -105,6 +110,10 @@ export class Monitor {
     const now = Date.now();
 
     for (const run of activeRuns) {
+      const currentRun = this.store.getRun ? await this.store.getRun(run.id) : run;
+      if (isTerminalSuccessStatus(currentRun?.status)) {
+        continue;
+      }
       try {
         // ── Completion check via taskClient.show() ────────────────────
         let issueStatus: string | null = null;
@@ -200,6 +209,9 @@ export class Monitor {
     const hung: HungSessionInfo[] = [];
 
     for (const run of activeRuns) {
+      const currentRun = this.store.getRun ? await this.store.getRun(run.id) : run;
+      if (isTerminalSuccessStatus(currentRun?.status)) continue;
+
       // Only check runs that are actually running (not just pending)
       if (run.status !== "running") continue;
 
@@ -246,6 +258,11 @@ export class Monitor {
    * Returns true if recovered (re-queued as pending), false if max retries exceeded.
    */
   async recoverStuck(run: Run, maxRetries = PIPELINE_LIMITS.maxRecoveryRetries): Promise<boolean> {
+    const currentRun = this.store.getRun ? await this.store.getRun(run.id) : run;
+    if (isTerminalSuccessStatus(currentRun?.status)) {
+      return true;
+    }
+
     // Count previous recovery attempts from the events log
     const recoverEvents = await this.store.getRunEvents(run.id, "recover");
     const retryCount = recoverEvents.length;

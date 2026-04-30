@@ -3,23 +3,27 @@ import type { Run } from "../../lib/store.js";
 import type { VcsBackend } from "../../lib/vcs/index.js";
 
 const {
+  mockPostgresGetRun,
   mockPostgresListTasks,
   mockPostgresUpdateTask,
   mockPostgresUpdateRun,
   mockPostgresLogEvent,
   MockPostgresAdapter,
 } = vi.hoisted(() => {
+  const mockPostgresGetRun = vi.fn().mockResolvedValue(null);
   const mockPostgresListTasks = vi.fn().mockResolvedValue([]);
   const mockPostgresUpdateTask = vi.fn().mockResolvedValue(undefined);
   const mockPostgresUpdateRun = vi.fn().mockResolvedValue(undefined);
   const mockPostgresLogEvent = vi.fn().mockResolvedValue(undefined);
   const MockPostgresAdapter = vi.fn(function (this: Record<string, unknown>) {
+    this.getRun = mockPostgresGetRun;
     this.listTasks = mockPostgresListTasks;
     this.updateTask = mockPostgresUpdateTask;
     this.updateRun = mockPostgresUpdateRun;
     this.logEvent = mockPostgresLogEvent;
   });
   return {
+    mockPostgresGetRun,
     mockPostgresListTasks,
     mockPostgresUpdateTask,
     mockPostgresUpdateRun,
@@ -673,6 +677,28 @@ describe("Refinery.mergeCompleted()", () => {
     expect(mockPostgresLogEvent).not.toHaveBeenCalled();
   });
 
+  it("preserves a registered pr-created run instead of downgrading it to failed", async () => {
+    const { store, seeds, vcs } = makeMocks();
+    const run = makeRun({ id: "run-registered-keep", seed_id: "seed-registered-keep" });
+    const { refinery } = makeRegisteredRefinery(store, seeds, vcs, run);
+    mockPostgresGetRun.mockResolvedValueOnce({ id: run.id, status: "pr-created" });
+
+    await (refinery as any).persistRunUpdate(run, { status: "failed" });
+
+    expect(mockPostgresUpdateRun).not.toHaveBeenCalled();
+    expect(store.updateRun).not.toHaveBeenCalled();
+  });
+
+  it("preserves a local merged run instead of downgrading it to conflict", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-local-keep", seed_id: "seed-local-keep" });
+    store.getRun.mockReturnValue({ ...run, status: "merged" });
+
+    await (refinery as any).persistRunUpdate(run, { status: "conflict" });
+
+    expect(store.updateRun).not.toHaveBeenCalled();
+  });
+
   it("uses branch: label from bead as target branch instead of default", async () => {
     const { store, seeds, refinery, vcs } = makeMocks();
     const run = makeRun();
@@ -1112,8 +1138,8 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.merged).toHaveLength(1);
     // getRunsByStatuses should NOT be called when overrideRun is provided
     expect(store.getRunsByStatuses).not.toHaveBeenCalled();
-    // getRun should NOT be called when overrideRun is provided
-    expect(store.getRun).not.toHaveBeenCalled();
+    // getRunsByStatuses should stay bypassed when overrideRun is provided.
+    // store.getRun may still be consulted by later persistence helpers.
   });
 
   it("skips query and uses overrideRun even when seedId differs", async () => {

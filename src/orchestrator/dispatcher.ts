@@ -253,7 +253,18 @@ export class Dispatcher {
     runId: string,
     updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at">>,
   ): Promise<void> {
+    const shouldPreserveTerminalSuccess = (currentStatus: Run["status"] | undefined, nextStatus: Run["status"] | undefined): boolean =>
+      currentStatus !== undefined
+      && nextStatus !== undefined
+      && (currentStatus === "merged" || currentStatus === "pr-created")
+      && (nextStatus === "failed" || nextStatus === "stuck");
+
     if (this.overrides?.externalProjectId) {
+      const currentRun = this.overrides.getRun ? await this.overrides.getRun(runId) : null;
+      if (shouldPreserveTerminalSuccess(currentRun?.status, updates.status)) {
+        return;
+      }
+
       const updateRun = this.requireRegisteredRunOp("updateRun");
       const normalized = { ...updates };
       if (updates.status) {
@@ -262,6 +273,13 @@ export class Dispatcher {
         normalized.status = mapped as Run["status"];
       }
       await updateRun(runId, normalized);
+      return;
+    }
+
+    const currentRun = "getRun" in this.store
+      ? this.store.getRun(runId)
+      : null;
+    if (shouldPreserveTerminalSuccess(currentRun?.status, updates.status)) {
       return;
     }
 
@@ -1687,6 +1705,11 @@ export class Dispatcher {
     };
 
     let processed = 0;
+    const projectId = this.resolveProjectId();
+    const latestRunHasTerminalSuccess = (seedId: string): boolean => {
+      const latestRun = this.store.getRunsForSeed(seedId, projectId)[0];
+      return latestRun?.status === "merged" || latestRun?.status === "pr-created";
+    };
 
     for (const entry of pending) {
       try {
@@ -1713,17 +1736,29 @@ export class Dispatcher {
             break;
 
           case "reset-seed":
+            if (latestRunHasTerminalSuccess(seedId)) {
+              console.error(`[bead-writer][${this.resolveProjectId()}] Skipped reset-seed for ${seedId} because latest run is already terminal-success (from ${entry.sender})`);
+              break;
+            }
             execFileSync(bin, ["update", seedId, "--status", "open", ...lockArgs], execOpts);
             console.error(`[bead-writer][${this.resolveProjectId()}] Reset seed ${seedId} to open (from ${entry.sender})`);
             break;
 
           case "mark-failed":
+            if (latestRunHasTerminalSuccess(seedId)) {
+              console.error(`[bead-writer][${this.resolveProjectId()}] Skipped mark-failed for ${seedId} because latest run is already terminal-success (from ${entry.sender})`);
+              break;
+            }
             execFileSync(bin, ["update", seedId, "--status", "failed", ...lockArgs], execOpts);
             console.error(`[bead-writer][${this.resolveProjectId()}] Marked seed ${seedId} as failed (from ${entry.sender})`);
             break;
 
           case "set-status": {
             const targetStatus = payload.status as string;
+            if (targetStatus !== "closed" && latestRunHasTerminalSuccess(seedId)) {
+              console.error(`[bead-writer][${this.resolveProjectId()}] Skipped set-status ${targetStatus} for ${seedId} because latest run is already terminal-success (from ${entry.sender})`);
+              break;
+            }
             execFileSync(bin, ["update", seedId, "--status", targetStatus, ...lockArgs], execOpts);
             console.error(`[bead-writer][${this.resolveProjectId()}] Set seed ${seedId} to ${targetStatus} (from ${entry.sender})`);
             break;

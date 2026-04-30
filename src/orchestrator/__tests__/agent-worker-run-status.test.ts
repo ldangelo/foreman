@@ -1,12 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const localGetRun = vi.fn();
 const localUpdateRun = vi.fn();
 const localClose = vi.fn();
+const pgGetRun = vi.fn();
 const pgUpdateRun = vi.fn();
 const pgUpdateTaskStatusForRun = vi.fn();
 const pgClose = vi.fn();
-const localForProject = vi.fn(() => ({ updateRun: localUpdateRun, close: localClose }));
+const localForProject = vi.fn(() => ({ getRun: localGetRun, updateRun: localUpdateRun, close: localClose }));
 const pgForProject = vi.fn(() => ({
+  getRun: pgGetRun,
   updateRun: pgUpdateRun,
   updateTaskStatusForRun: pgUpdateTaskStatusForRun,
   close: pgClose,
@@ -29,14 +32,18 @@ const { updateTerminalRunStatus } = await import("../agent-worker-run-status.js"
 
 describe("updateTerminalRunStatus", () => {
   beforeEach(() => {
+    localGetRun.mockReset();
     localUpdateRun.mockReset();
     localClose.mockReset();
+    pgGetRun.mockReset();
     pgUpdateRun.mockReset();
     pgUpdateTaskStatusForRun.mockReset();
     pgClose.mockReset();
     localForProject.mockClear();
     pgForProject.mockClear();
     warnSpy.mockClear();
+    localGetRun.mockReturnValue(null);
+    pgGetRun.mockResolvedValue(null);
   });
 
   it("uses Postgres first for registered terminal updates and skips local fallback on success", async () => {
@@ -76,6 +83,33 @@ describe("updateTerminalRunStatus", () => {
       expect(localForProject).not.toHaveBeenCalled();
     },
   );
+
+  it("preserves a registered pr-created run instead of downgrading it to failed", async () => {
+    pgGetRun.mockResolvedValueOnce({ id: "run-keep", status: "pr-created" });
+
+    await updateTerminalRunStatus({
+      runId: "run-keep",
+      projectId: "proj-keep",
+      projectPath: "/tmp/project-keep",
+      updates: { status: "failed", completed_at: "2026-04-25T00:01:00.000Z" },
+    });
+
+    expect(pgUpdateRun).not.toHaveBeenCalled();
+    expect(pgUpdateTaskStatusForRun).not.toHaveBeenCalled();
+    expect(localForProject).not.toHaveBeenCalled();
+  });
+
+  it("preserves a local merged run instead of downgrading it to stuck", async () => {
+    localGetRun.mockReturnValueOnce({ id: "run-keep-local", status: "merged" });
+
+    await updateTerminalRunStatus({
+      runId: "run-keep-local",
+      projectPath: "/tmp/local-project",
+      updates: { status: "stuck", completed_at: "2026-04-25T00:02:00.000Z" },
+    });
+
+    expect(localUpdateRun).not.toHaveBeenCalled();
+  });
 
   it("falls back to local store when Postgres update fails and stays non-fatal", async () => {
     pgUpdateRun.mockRejectedValueOnce(new Error("pg down"));

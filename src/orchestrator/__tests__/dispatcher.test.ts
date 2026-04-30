@@ -25,6 +25,7 @@ const mockStore = {
   getActiveRuns: vi.fn().mockReturnValue([]),
   getRunsByStatus: vi.fn().mockReturnValue([]),
   getRunsByStatuses: vi.fn().mockReturnValue([]),
+  getRun: vi.fn().mockReturnValue(null),
   getStuckRunsForSeed: vi.fn().mockReturnValue([]),
   hasNativeTasks: vi.fn().mockReturnValue(false),
   getReadyTasks: vi.fn().mockReturnValue([]),
@@ -100,6 +101,48 @@ describe("purgeOrphanedWorkerConfigs", () => {
     expect(store.getRun).toHaveBeenCalledWith("run-1");
     expect(purged).toBe(0);
     expect(existsSync(configPath)).toBe(true);
+  });
+});
+
+describe("Dispatcher terminal-success preservation", () => {
+  it("does not downgrade a local merged run to failed via updateRunRecord", async () => {
+    const store = {
+      ...mockStore,
+      getRun: vi.fn().mockReturnValue({ id: "run-merged", status: "merged" }),
+      updateRun: vi.fn(),
+    } as unknown as ForemanStore;
+    const dispatcher = new Dispatcher(mockSeeds, store, "/tmp");
+
+    await (dispatcher as any).updateRunRecord("run-merged", {
+      status: "failed",
+      completed_at: "2026-04-30T00:00:00.000Z",
+    });
+
+    expect((store as any).updateRun).not.toHaveBeenCalled();
+  });
+
+  it("does not downgrade a registered pr-created run to failed via updateRunRecord", async () => {
+    const updateRun = vi.fn();
+    const dispatcher = new Dispatcher(
+      mockSeeds,
+      mockStore,
+      "/tmp",
+      null,
+      {
+        externalProjectId: "proj-1",
+        getRun: vi.fn().mockResolvedValue({ id: "run-pr", status: "pr-created" }),
+        runOps: {
+          updateRun,
+        },
+      } as any,
+    );
+
+    await (dispatcher as any).updateRunRecord("run-pr", {
+      status: "failed",
+      completed_at: "2026-04-30T00:00:00.000Z",
+    });
+
+    expect(updateRun).not.toHaveBeenCalled();
   });
 });
 
@@ -380,6 +423,7 @@ describe("Dispatcher override-backed control-plane reads", () => {
     } as unknown as ForemanStore;
 
     const overrides = {
+      externalProjectId: "proj-registered",
       getRun: vi.fn().mockResolvedValue({ id: "run-1", status: "running" }),
       runOps: {
         createRun: vi.fn().mockResolvedValue(undefined),
@@ -400,7 +444,8 @@ describe("Dispatcher override-backed control-plane reads", () => {
       ),
     ).rejects.toThrow("plan failed");
 
-    expect(overrides.getRun).toHaveBeenCalledWith("run-1");
+    expect(overrides.getRun).toHaveBeenCalled();
+    expect(typeof overrides.getRun.mock.calls[0]?.[0]).toBe("string");
   });
 
   it("uses registered createRun override result instead of local SQLite createRun", async () => {
