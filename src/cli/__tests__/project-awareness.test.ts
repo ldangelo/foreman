@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
+import { inboxCommand } from "../commands/inbox.js";
 
 // Mock createTrpcClient to return a client whose projects.list() rejects.
 // This makes isMultiProjectMode() return false (error caught in try/catch),
@@ -87,12 +88,11 @@ describe("TRD-048: CLI --project flag and multi-project mode", () => {
   });
 
   describe("--help shows --project flag", () => {
-    it("inbox --help shows --project option", async () => {
-      const tmp = makeTempDir();
-      const result = await runWithRetry(["inbox", "--help"], tmp);
-      expect(result.stdout).toContain("--project");
-      expect(result.stdout).toContain("--project-path");
-    }, HELP_TIMEOUT_MS);
+    it("inbox --help shows --project option", () => {
+      const output = inboxCommand.helpInformation();
+      expect(output).toContain("--project");
+      expect(output).toContain("--project-path");
+    });
 
     it("board --help shows --project and --all options", async () => {
       const tmp = makeTempDir();
@@ -128,15 +128,14 @@ describe("TRD-048: CLI --project flag and multi-project mode", () => {
   });
 
   describe("inbox command accepts --project", () => {
-    it("inbox --help shows inbox-specific options", async () => {
-      const tmp = makeTempDir();
-      const result = await runWithRetry(["inbox", "--help"], tmp);
+    it("inbox --help shows inbox-specific options", () => {
+      const output = inboxCommand.helpInformation();
       // Core inbox options
-      expect(result.stdout).toContain("--agent");
-      expect(result.stdout).toContain("--run");
-      expect(result.stdout).toContain("--bead");
-      expect(result.stdout).toContain("--watch");
-      expect(result.stdout).toContain("--ack");
-    }, HELP_TIMEOUT_MS);
+      expect(output).toContain("--agent");
+      expect(output).toContain("--run");
+      expect(output).toContain("--bead");
+      expect(output).toContain("--watch");
+      expect(output).toContain("--ack");
+    });
   });
 });
