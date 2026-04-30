@@ -362,11 +362,11 @@ export class ForemanDaemon {
             return failures.filter((task) => task.updated_at >= since).length;
           },
           getActiveSeedIds: async () => {
-            const activeRuns = await store.getActiveRuns(project.id);
+            const activeRuns = await pg.listActiveRuns(project.id);
             return activeRuns.map((run) => run.seed_id);
           },
           getActiveAgentCount: async () => {
-            const activeRuns = await store.getActiveRuns(project.id);
+            const activeRuns = await pg.listActiveRuns(project.id);
             return activeRuns.length;
           },
           hasActiveOrPendingRun: async (seedId: string) => {

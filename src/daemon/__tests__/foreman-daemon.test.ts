@@ -39,6 +39,7 @@ let mockPostgresAdapterInstance: {
   getTaskByExternalId: ReturnType<typeof vi.fn>;
   getTask: ReturnType<typeof vi.fn>;
   claimTask: ReturnType<typeof vi.fn>;
+  listActiveRuns: ReturnType<typeof vi.fn>;
   listPipelineRuns: ReturnType<typeof vi.fn>;
   createPipelineRun: ReturnType<typeof vi.fn>;
   updatePipelineRun: ReturnType<typeof vi.fn>;
@@ -113,6 +114,7 @@ function createMockPostgresAdapterInstance() {
     getTaskByExternalId: vi.fn(),
     getTask: vi.fn(),
     claimTask: vi.fn(),
+    listActiveRuns: vi.fn(),
     listPipelineRuns: vi.fn(),
     createPipelineRun: vi.fn(),
     updatePipelineRun: vi.fn(),
@@ -283,6 +285,61 @@ describe("ForemanDaemon dispatch loop", () => {
         registeredProjectId: "proj-123",
       });
       await daemon.stop();
+    } finally {
+      if (originalWebhookSecret !== undefined) {
+        process.env.FOREMAN_WEBHOOK_SECRET = originalWebhookSecret;
+      } else {
+        delete process.env.FOREMAN_WEBHOOK_SECRET;
+      }
+    }
+  });
+
+  it("uses Postgres listActiveRuns for registered-project active run lookups", async () => {
+    const originalWebhookSecret = process.env.FOREMAN_WEBHOOK_SECRET;
+    delete process.env.FOREMAN_WEBHOOK_SECRET;
+
+    const createTaskClientMock = vi.mocked(await import("../../lib/task-client-factory.js")).createTaskClient;
+    const dispatcherModule = vi.mocked(await import("../../orchestrator/dispatcher.js"), { deep: true });
+    const trpcClientMock = vi.mocked(await import("../../lib/trpc-client.js")).createTrpcClient;
+
+    type ActiveRunOverrides = {
+      getActiveAgentCount?: () => Promise<number>;
+      getActiveSeedIds?: () => Promise<string[]>;
+    };
+
+    trpcClientMock.mockReturnValue({
+      projects: {
+        list: vi.fn(async () => [
+          {
+            id: "proj-registered",
+            name: "registered-project",
+            path: "/tmp/registered-project",
+            status: "active",
+          },
+        ]),
+      },
+    } as never);
+
+    createTaskClientMock.mockResolvedValue({
+      backendType: "native",
+      taskClient: {},
+    } as never);
+
+    mockPostgresAdapterInstance.listActiveRuns.mockResolvedValue([
+      { seed_id: "seed-1" },
+      { seed_id: "seed-2" },
+    ]);
+
+    try {
+      const daemon = new ForemanDaemon({ httpPort: 9997, socketPath: join(tmpdir(), "foreman-daemon-test.sock") });
+      await daemon.start();
+      await daemon.stop();
+
+      const overrides = dispatcherModule.Dispatcher.mock.calls[0]?.[4] as ActiveRunOverrides | undefined;
+      expect(overrides).toBeDefined();
+      await expect(overrides?.getActiveSeedIds?.()).resolves.toEqual(["seed-1", "seed-2"]);
+      await expect(overrides?.getActiveAgentCount?.()).resolves.toBe(2);
+      expect(mockPostgresAdapterInstance.listActiveRuns).toHaveBeenCalledWith("proj-registered");
     } finally {
       if (originalWebhookSecret !== undefined) {
         process.env.FOREMAN_WEBHOOK_SECRET = originalWebhookSecret;
