@@ -8,6 +8,16 @@ const TERMINAL_TASK_STATUS_BY_RUN_STATUS: Partial<Record<Run["status"], "failed"
   merged: "merged",
 };
 
+const TERMINAL_SUCCESS_STATUSES = new Set<Run["status"]>(["pr-created", "merged"]);
+const FAILURE_STATUSES = new Set<Run["status"]>(["failed", "stuck"]);
+
+function shouldPreserveTerminalSuccess(currentStatus: Run["status"] | undefined, nextStatus: Run["status"] | undefined): boolean {
+  return currentStatus !== undefined
+    && nextStatus !== undefined
+    && TERMINAL_SUCCESS_STATUSES.has(currentStatus)
+    && FAILURE_STATUSES.has(nextStatus);
+}
+
 export async function updateTerminalRunStatus(opts: {
   runId: string;
   projectId?: string;
@@ -17,6 +27,11 @@ export async function updateTerminalRunStatus(opts: {
   if (opts.projectId) {
     const pgStore = PostgresStore.forProject(opts.projectId);
     try {
+      const currentRun = await pgStore.getRun(opts.runId);
+      if (shouldPreserveTerminalSuccess(currentRun?.status, opts.updates.status)) {
+        return;
+      }
+
       await pgStore.updateRun(opts.runId, opts.updates);
       const linkedTaskStatus = opts.updates.status
         ? TERMINAL_TASK_STATUS_BY_RUN_STATUS[opts.updates.status]
@@ -37,6 +52,11 @@ export async function updateTerminalRunStatus(opts: {
 
   const localStore = ForemanStore.forProject(opts.projectPath);
   try {
+    const currentRun = await Promise.resolve(localStore.getRun(opts.runId));
+    if (shouldPreserveTerminalSuccess(currentRun?.status, opts.updates.status)) {
+      return;
+    }
+
     await Promise.resolve(localStore.updateRun(opts.runId, opts.updates));
   } finally {
     localStore.close();
