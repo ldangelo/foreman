@@ -208,11 +208,9 @@ async function renderStatus(projectPath: string): Promise<void> {
     const store = ForemanStore.forProject(projectPath);
     const project = store.getProjectByPath(projectPath);
     if (project) {
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const failedCount = store.getRunsByStatusSince("failed", since, project.id).length;
-      const stuckCount = store.getRunsByStatusSince("stuck", since, project.id).length;
-      if (failedCount > 0) console.log(`  Failed:      ${chalk.red(failedCount)} ${chalk.dim("(last 24h)")}`);
-      if (stuckCount > 0) console.log(`  Stuck:       ${chalk.red(stuckCount)} ${chalk.dim("(last 24h)")}`);
+      const outcomeCounts = store.getRecentOutcomeCounts(project.id);
+      if (outcomeCounts.failed > 0) console.log(`  Failed:      ${chalk.red(outcomeCounts.failed)} ${chalk.dim("(last 24h)")}`);
+      if (outcomeCounts.stuck > 0) console.log(`  Stuck:       ${chalk.red(outcomeCounts.stuck)} ${chalk.dim("(last 24h)")}`);
       const sr = store.getSuccessRate(project.id);
       console.log(`  Success Rate (24h): ${formatSuccessRate(sr.rate)}${sr.rate === null ? chalk.dim(" (need 3+ runs)") : ""}`);
     }

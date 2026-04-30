@@ -1331,12 +1331,57 @@ export class ForemanStore {
 
   // ── Success Rate ─────────────────────────────────────────────────────
 
+  getRecentOutcomeCounts(projectId?: string, since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()): { merged: number; failed: number; stuck: number } {
+    const rows = projectId
+      ? this.db
+        .prepare(
+          `SELECT rowid, seed_id, status, completed_at, created_at FROM runs
+           WHERE project_id = ?
+           ORDER BY created_at DESC, rowid DESC`,
+        )
+        .all(projectId) as Array<{ rowid: number; seed_id: string; status: Run["status"]; completed_at: string | null; created_at: string }>
+      : this.db
+        .prepare(
+          `SELECT rowid, seed_id, status, completed_at, created_at FROM runs
+           ORDER BY created_at DESC, rowid DESC`,
+        )
+        .all() as Array<{ rowid: number; seed_id: string; status: Run["status"]; completed_at: string | null; created_at: string }>;
+
+    const seenSeeds = new Set<string>();
+    let merged = 0;
+    let failed = 0;
+    let stuck = 0;
+
+    for (const row of rows) {
+      if (seenSeeds.has(row.seed_id)) continue;
+      seenSeeds.add(row.seed_id);
+
+      if (!row.completed_at || row.completed_at <= since) continue;
+
+      if (row.status === "merged" || row.status === "pr-created") {
+        merged += 1;
+        continue;
+      }
+      if (row.status === "failed" || row.status === "test-failed" || row.status === "reset") {
+        failed += 1;
+        continue;
+      }
+      if (row.status === "stuck") {
+        stuck += 1;
+      }
+    }
+
+    return { merged, failed, stuck };
+  }
+
   /**
    * Compute the 24-hour pipeline success rate for a project.
    *
-   * Success rate = merged / (merged + test-failed + failed), where:
+   * Success rate = merged / (merged + failed), where:
    * - "merged" includes both `merged` and `pr-created` statuses
-   * - `completed` (pending merge), `reset`, `running`, `pending`, `stuck` are excluded
+   * - "failed" includes `failed`, `test-failed`, and `reset`
+   * - only the latest authoritative run per seed is counted
+   * - `completed` (pending merge), `running`, `pending`, and `stuck` are excluded
    *
    * Returns `{ rate: null, merged: 0, failed: 0 }` when fewer than 3 terminal
    * runs have completed in the last 24 hours (not enough data to be meaningful).
@@ -1344,36 +1389,7 @@ export class ForemanStore {
    * @param projectId - Scope to a specific project; omit for global.
    */
   getSuccessRate(projectId?: string): { rate: number | null; merged: number; failed: number } {
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const statuses = ["merged", "test-failed", "failed", "pr-created", "reset"];
-    const placeholders = statuses.map(() => "?").join(", ");
-
-    let rows: Array<{ status: string; count: number }>;
-    if (projectId) {
-      rows = this.db
-        .prepare(
-          `SELECT status, COUNT(*) as count FROM runs
-           WHERE project_id = ? AND completed_at > ? AND status IN (${placeholders})
-           GROUP BY status`,
-        )
-        .all(projectId, since, ...statuses) as Array<{ status: string; count: number }>;
-    } else {
-      rows = this.db
-        .prepare(
-          `SELECT status, COUNT(*) as count FROM runs
-           WHERE completed_at > ? AND status IN (${placeholders})
-           GROUP BY status`,
-        )
-        .all(since, ...statuses) as Array<{ status: string; count: number }>;
-    }
-
-    const counts: Record<string, number> = {};
-    for (const row of rows) {
-      counts[row.status] = row.count;
-    }
-
-    const merged = (counts["merged"] ?? 0) + (counts["pr-created"] ?? 0);
-    const failed = (counts["failed"] ?? 0) + (counts["test-failed"] ?? 0) + (counts["reset"] ?? 0);
+    const { merged, failed } = this.getRecentOutcomeCounts(projectId);
     const total = merged + failed;
 
     // Require at least 3 terminal runs before showing a percentage
