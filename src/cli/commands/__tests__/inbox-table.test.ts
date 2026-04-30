@@ -37,7 +37,7 @@ describe("parseMessageBody", () => {
     const result = parseMessageBody(body);
     expect(result.kind).toBeUndefined();
     expect(result.tool).toBeUndefined();
-    expect(result.args).toBeUndefined();
+    expect(result.argsPreview).toBeUndefined();
     expect(result.seedId).toBeUndefined();
     expect(result.runId).toBeUndefined();
   });
@@ -46,7 +46,7 @@ describe("parseMessageBody", () => {
     const result = parseMessageBody("this is just plain text body");
     expect(result.kind).toBeUndefined();
     expect(result.tool).toBeUndefined();
-    expect(result.args).toBeUndefined();
+    expect(result.argsPreview).toBeUndefined();
     expect(result.seedId).toBeUndefined();
     expect(result.runId).toBeUndefined();
   });
@@ -188,8 +188,9 @@ describe("formatMessageTable", () => {
       deleted_at: null,
     };
     const row = formatMessageTable(msg, 40);
-    expect(row.args.length).toBeLessThanOrEqual(43); // 40 + "…"
-    expect(row.args.endsWith("…")).toBe(true);
+    expect(row.args).toBeDefined();
+    expect(row.args?.length).toBeLessThanOrEqual(43); // 40 + "…"
+    expect(row.args?.endsWith("…")).toBe(true);
   });
 
   it("uses seedId as ticket when available", () => {
