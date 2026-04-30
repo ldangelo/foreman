@@ -1288,15 +1288,34 @@ async function runPhaseSequence(
       await appendFile(logFile, `\n${artifactWarning}\n`);
     }
 
+    const commandPhaseContractReasons: string[] = [];
+    if (phase.command && result.success) {
+      if (result.commandHonored === false && (result.traceWarnings?.length ?? 0) > 0) {
+        commandPhaseContractReasons.push(...(result.traceWarnings ?? []));
+      }
+      if (interpolatedArtifact && artifactPresent === false) {
+        const missingArtifactReason = `Expected artifact missing: ${interpolatedArtifact}`;
+        if (!commandPhaseContractReasons.includes(missingArtifactReason)) {
+          commandPhaseContractReasons.push(missingArtifactReason);
+        }
+      }
+    }
+
+    const commandPhaseContractError = commandPhaseContractReasons.length > 0
+      ? `Command phase contract violated: ${commandPhaseContractReasons.join("; ")}`
+      : undefined;
+    const phaseSucceeded = result.success && !commandPhaseContractError;
+    const phaseError = commandPhaseContractError ?? result.error;
+
     // Record phase result
     phaseRecords.push({
       name: feedbackContext ? `${phaseName} (retry)` : phaseName,
       phaseType,
       skipped: false,
-      success: result.success,
+      success: phaseSucceeded,
       costUsd: result.costUsd,
       turns: result.turns,
-      error: result.error,
+      error: phaseError,
       commandsRun: phase.command ? [prompt] : undefined,
       artifactExpected: interpolatedArtifact,
       artifactPresent,
@@ -1322,12 +1341,12 @@ async function runPhaseSequence(
     // FR-4: Finalize and record activity phase
     if (ctx.activityPhases) {
       const completedActivityPhase = finalizePhaseRecord(activityPhase, {
-        success: result.success,
+        success: phaseSucceeded,
         costUsd: result.costUsd,
         turns: result.turns,
         tokensIn: result.tokensIn,
         tokensOut: result.tokensOut,
-        error: result.error,
+        error: phaseError,
         toolCalls: progress.toolCalls,
         toolBreakdown: progress.toolBreakdown,
         filesChanged: progress.filesChanged ?? [],
@@ -1367,14 +1386,9 @@ async function runPhaseSequence(
     progress.costByPhase[phaseName] = (progress.costByPhase[phaseName] ?? 0) + result.costUsd;
     await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);
 
-    // NOTE: Missing artifact after a successful phase run is no longer treated as
-    // a failure here. The phase returned success so we continue. Artifact existence is
-    // checked at the START of a run (skipIfArtifact) rather than blocking on absence
-    // after a successful run. This avoids false failures in test/deterministic modes.
-
     // 7. Handle failure
-    if (!result.success) {
-      const errorMsg = result.error ?? `${phaseName} failed`;
+    if (!phaseSucceeded) {
+      const errorMsg = phaseError ?? `${phaseName} failed`;
       const isRateLimit = isRateLimitError(errorMsg);
 
       // P1: Track Explorer failures for circuit breaker
