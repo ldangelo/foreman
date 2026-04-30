@@ -1,6 +1,6 @@
 {
   "name": "@oftheangels/foreman",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Multi-agent AI coding orchestrator with native task management, git worktree isolation, and compatibility fallback for legacy beads flows",
   "type": "module",
   "main": "dist/index.js",
