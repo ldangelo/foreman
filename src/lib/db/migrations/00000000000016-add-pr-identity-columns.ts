@@ -18,7 +18,6 @@ export async function up(migration: MigrationBuilder): Promise<void> {
     pr_state: {
       type: "varchar(16)",
       notNull: false,
-      default: "'none'",
       check: "pr_state IN ('none','draft','open','merged','closed')",
     },
   });

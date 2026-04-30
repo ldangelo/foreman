@@ -597,28 +597,28 @@ export class PostgresAdapter {
       labels?: string[];
     }
   ): Promise<TaskRow[]> {
-    const conditions = ["project_id = $1"];
+    const conditions = ["t.project_id = $1"];
     const params: unknown[] = [projectId];
     let i = 2;
 
     if (filters?.status && filters.status.length > 0) {
-      conditions.push(`status IN (${filters.status.map((_, idx) => `$${i + idx}`).join(",")})`);
+      conditions.push(`t.status IN (${filters.status.map((_, idx) => `$${i + idx}`).join(",")})`);
       params.push(...filters.status);
       i += filters.status.length;
     }
 
     if (filters?.runId !== undefined) {
-      conditions.push(`run_id = $${i++}`);
+      conditions.push(`t.run_id = $${i++}`);
       params.push(filters.runId);
     }
 
     if (filters?.externalId !== undefined) {
-      conditions.push(`external_id = $${i++}`);
+      conditions.push(`t.external_id = $${i++}`);
       params.push(filters.externalId);
     }
 
     if (filters?.labels && filters.labels.length > 0) {
-      conditions.push(`labels @> $${i++}::text[]`);
+      conditions.push(`t.labels @> $${i++}::text[]`);
       params.push(filters.labels);
     }
 
@@ -630,7 +630,7 @@ export class PostgresAdapter {
       `SELECT t.*, r.pr_state, r.pr_url, r.pr_head_sha
        FROM tasks t
        LEFT JOIN runs r ON t.run_id = r.id
-       WHERE t.project_id = $1 AND ${conditions.join(" AND ")}
+       WHERE ${conditions.join(" AND ")}
        ORDER BY t.priority ASC, t.created_at ASC
        LIMIT $${i}`,
       params,
