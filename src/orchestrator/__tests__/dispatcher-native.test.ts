@@ -598,7 +598,8 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
     consoleSpy.mockRestore();
 
     // claimTask should have been called with the task ID and the run ID created
-    expect(store.claimTask).toHaveBeenCalledWith("t-atomic-001", "run-xyz-123");
+    // AC-051.3: controllerId may be undefined if not set on dispatcher
+    expect(store.claimTask).toHaveBeenCalledWith("t-atomic-001", "run-xyz-123", undefined);
 
     // The task was claimed and dispatched
     expect(result.dispatched).toHaveLength(1);
